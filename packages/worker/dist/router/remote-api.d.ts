@@ -1,3 +1,4 @@
+import { type SessionRouterRpc } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type NimbusAuthEnv } from '../auth/index.js';
 import { type NimbusConfig } from '@nimbus-sh/config/sandbox';
 export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, NimbusRuntimeName } from '@nimbus-sh/config/sandbox';
@@ -21,77 +22,9 @@ export interface NimbusSdkRouterConfig {
     remote?: boolean | NimbusRemoteApiConfig;
     config?: NimbusConfig;
 }
-interface NimbusSessionRpcStub {
-    _rpcReady(options?: {
-        preinstall?: string[];
-    }): Promise<unknown>;
-    _rpcBootProbe(): Promise<unknown>;
-    _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
-    _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<unknown>;
-    _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<unknown>;
-    _rpcReadFile(path: string): Promise<unknown>;
-    _rpcReadFileBytes(path: string): Promise<unknown>;
-    _rpcWriteFile(path: string, content: string | Uint8Array): Promise<unknown>;
-    _rpcStat(path: string): Promise<unknown>;
-    _rpcLstat(path: string): Promise<unknown>;
-    _rpcReaddir(path: string): Promise<unknown>;
-    _rpcRename(from: string, to: string): Promise<unknown>;
-    _rpcChmod(path: string, mode: number): Promise<unknown>;
-    _rpcFsReadRange(path: string, offset: number, length: number): Promise<unknown>;
-    _rpcExists(path: string): Promise<unknown>;
-    _rpcMkdir(path: string): Promise<unknown>;
-    _rpcDeleteFile(path: string, options?: Record<string, unknown>): Promise<unknown>;
-    _rpcInstallRuntime(spec: string, options?: Record<string, unknown>): Promise<unknown>;
-    _rpcEnsureRuntimes(specs: string[], options?: Record<string, unknown>): Promise<unknown>;
-    _rpcListRuntimes(): Promise<unknown>;
-    _rpcListProcesses(): Promise<unknown>;
-    _rpcKillProcess(pid: number): Promise<unknown>;
-    _rpcWriteProcessInput(pid: number, data: string): Promise<unknown>;
-    _rpcEndProcessInput(pid: number): Promise<unknown>;
-    _rpcResizeProcess(pid: number, size: {
-        columns: number;
-        rows: number;
-    }): Promise<unknown>;
-    _rpcSignalProcess(pid: number, signal: string): Promise<unknown>;
-    _rpcProcessLogs(pid: number, options?: {
-        cursor?: number;
-        lines?: number;
-        bytes?: number;
-    }): Promise<unknown>;
-    _rpcListPorts(): Promise<unknown>;
-    _rpcExposePort(port: number, options?: {
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<unknown>;
-    _rpcEnsureDurableApp(input: {
-        owner?: string;
-        preferredPort?: number;
-        visibility?: 'scoped' | 'public';
-    }): Promise<unknown>;
-    _rpcRemoveDurableApp(owner: string): Promise<unknown>;
-    _rpcExposeApp(target: RemoteAppTarget, options?: {
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<unknown>;
-    _rpcListApps(): Promise<unknown>;
-    _rpcRotateLink(target: RemoteAppTarget): Promise<unknown>;
-    _rpcRemoveApp(target: RemoteAppTarget): Promise<unknown>;
-    _rpcUnexposePort(port: number): Promise<unknown>;
-    _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
-}
-/** An app target on the wire: a port, a pid, a name/owner, or the explicit object forms. */
-type RemoteAppTarget = number | string | {
-    port: number;
-} | {
-    pid: number;
-} | {
-    name: string;
-} | {
-    owner: string;
-};
 interface NimbusSessionNamespace {
     idFromName(name: string): DurableObjectId;
-    get(id: DurableObjectId): NimbusSessionRpcStub;
+    get(id: DurableObjectId): SessionRouterRpc;
 }
 interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
     NIMBUS_SESSION?: NimbusSessionNamespace;

@@ -2,7 +2,9 @@
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { type ExecChunk, type ExecExit, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { type ExecChunk, type ExecExit, type ExecStream, type ExecOutput } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
+export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime, };
 import { type NimbusConfig, type NimbusCodeLanguage, type RuntimeSpec } from '@nimbus-sh/config/sandbox';
 export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, RuntimeSpec, NimbusRuntimeName as RuntimeName } from '@nimbus-sh/config/sandbox';
 export interface NimbusFromEnvOptions {
@@ -32,44 +34,7 @@ export interface NimbusSandboxOptions {
     /** The named shell every command runs in unless the call names another; see {@link NimbusExecOptions.shellId}. */
     shellId?: string;
 }
-export interface NimbusExecOptions {
-    /**
-     * Run in a named shell whose cwd and environment persist between calls, the
-     * way a terminal tab does; calls on one name run one at a time. Omitted,
-     * the call runs in a shell of its own that starts from the session shell's
-     * cwd and environment and remembers nothing: no variable, function, alias
-     * or option it sets reaches another call, and unnamed calls run at once.
-     */
-    shellId?: string;
-    cwd?: string;
-    env?: Record<string, string>;
-    timeoutMs?: number;
-    stdin?: string;
-    /**
-     * Identity the command runs as. Omitted, the spawn inherits the session
-     * user, which is what every programmatic exec has always run as.
-     */
-    cred?: VfsCred;
-    /**
-     * A name for this call. Every process the command starts carries it, and
-     * so does everything those processes spawn: `processes.list()`,
-     * `ports.list()` and `apps.list()` report it as `execId`, so a listening
-     * port names the call that started its server. A resident server keeps it
-     * across a session reset. 1 to 160 characters from `A-Z a-z 0-9 . _ : -`,
-     * starting with a letter or digit; anything else is refused before the
-     * command runs. Omitted, nothing is tagged.
-     */
-    execId?: string;
-    /**
-     * `startProcess` only: what to do when the process exits on its own with
-     * a non-zero code. 'never' (default) leaves it stopped; 'on-failure'
-     * restarts it under the session's restart budget with backoff. A platform
-     * reset re-drives the process either way.
-     */
-    restart?: NimbusRestartPolicy;
-}
-export type NimbusRestartPolicy = 'never' | 'on-failure';
-export type NimbusAppVisibility = 'scoped' | 'public';
+export type NimbusExecOptions = Omit<SessionExecOptions, 'preinstall' | 'shellRoot'>;
 /** The sandbox file plane; see `NimbusSandbox.files`. */
 export interface NimbusSandboxFiles {
     /** The same API bound to `cred` — the view `SqliteVFS.as(cred)` gives in-process. */
@@ -84,59 +49,20 @@ export interface NimbusSandboxFiles {
     chmod(path: string, mode: number): Promise<void>;
     /** Read `length` bytes at `offset` without materializing the whole file. */
     readRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-    list(path?: string): Promise<{
-        name: string;
-        type: string;
-    }[]>;
+    list(path?: string): Promise<SessionDirectoryEntry[]>;
     mkdir(path: string): Promise<void>;
     exists(path: string): Promise<boolean>;
     delete(path: string, options?: {
         recursive?: boolean;
     }): Promise<void>;
 }
-/**
- * An application target: a port, a pid, a name, or an owner — every
- * `apps.*` verb takes one. A bare number is a port when something listens
- * on it or a reservation names it, else a pid; a bare string is a name
- * first, then an owner. The object forms are unambiguous.
- */
-export type NimbusAppTarget = number | string | {
-    port: number;
-} | {
-    pid: number;
-} | {
-    name: string;
-} | {
-    owner: string;
+/** The SDK builds a browser URL, or leaves it undefined when the deployment is not addressable. */
+export type NimbusExposedApp = Omit<SessionExposedApp, 'url'> & {
+    url: string | undefined;
 };
-export interface NimbusExposedApp {
-    /** The application's identity: derived (`auto:…`) for an ordinary process, explicit for a durable worker app. */
-    owner: string;
-    name: string | null;
-    port: number;
-    pid: number | null;
-    capability: string | null;
-    visibility: NimbusAppVisibility;
-    /** Browser-facing URL, built the way `ports.url` builds one; undefined when the deployment is not addressable. */
+export type NimbusApp = Omit<SessionApp, 'url'> & {
     url: string | undefined;
-    /** The `execId` of the call that started `pid`; absent when none named one. */
-    execId?: string;
-}
-export interface NimbusApp {
-    owner: string;
-    name: string | null;
-    port: number | null;
-    pid: number | null;
-    status: 'running' | 'starting' | 'stopped' | 'failed';
-    visibility: NimbusAppVisibility;
-    capability: string | null;
-    restart: NimbusRestartPolicy;
-    /** With status 'failed': what went wrong, e.g. `listened on 3000, owns 5173`. */
-    diagnostic: string | null;
-    url: string | undefined;
-    /** The `execId` of the call that started `pid`; absent when none named one. */
-    execId?: string;
-}
+};
 /** A slice of a command's stdout or stderr, as the bytes it wrote. */
 export type NimbusExecChunk = ExecChunk;
 /** How a command ended: what `exec` returns, without the output. */
@@ -147,235 +73,12 @@ export type NimbusExecExit = ExecExit;
  * stops reading stops the command at its next write.
  */
 export type NimbusExecStream = ExecStream;
-export interface NimbusExecResult extends NimbusExecExit {
-    stdout: string;
-    stderr: string;
-}
-export interface NimbusTerminalSize {
-    columns: number;
-    rows: number;
-}
-export interface NimbusDestroyOptions {
-    reason?: string;
-}
-export interface NimbusDestroyResult {
-    ok: true;
-    killed: number;
-    destroyedAt: number;
-    reason: string | null;
-}
-/**
- * A started background process. It is still running when `startProcess`
- * returns, so there is no exit code or captured output here — poll
- * `processes.logs(pid)` (which carries the exit record once it lands),
- * `processes.list()`, or `processes.attach(pid)`.
- */
-export interface NimbusStartResult {
-    command: string;
-    pid: number;
-    process: NimbusProcess;
-    ports: NimbusPort[];
-    startedAt: number;
-}
-export interface NimbusProcess {
-    pid: number;
-    command: string;
-    argv: string[];
-    cwd: string;
-    state: string;
-    exitCode: number | null;
-    startTime: number;
-    endTime: number | null;
-    longRunning: boolean;
-    attachedTty: boolean;
-    /** The `execId` of the call that started this process or an ancestor; absent when none named one. */
-    execId?: string;
-}
-export interface NimbusProcessLogChunk {
-    seq: number;
-    ts: number;
-    stream: 'stdout' | 'stderr';
-    data: string;
-    binary?: boolean;
-}
-export interface NimbusProcessExitInfo {
-    code: number;
-    at: number;
-    reason?: string;
-}
-export interface NimbusProcessLogsOptions {
-    cursor?: number;
-    lines?: number;
-    bytes?: number;
-}
-export interface NimbusProcessLogsResult {
-    pid: number;
-    chunks: NimbusProcessLogChunk[];
-    text: string;
-    cursor: number;
-    truncated: boolean;
-    exit: NimbusProcessExitInfo | null;
-}
+export type NimbusExecResult = ExecOutput;
 export interface NimbusProcessAttachOptions {
     pollIntervalMs?: number;
     lines?: number;
     bytes?: number;
     signal?: AbortSignal;
-}
-export interface NimbusPort {
-    port: number;
-    pid: number;
-    registeredAt: number;
-    /**
-     * Bearer token for THIS port on THIS session. Presenting it on the
-     * preview route authorises that one port and nothing else, which is what
-     * lets an embedder publish a guest's dev server without publishing the
-     * session. A new registration on the port retires it.
-     */
-    capability: string;
-    /** The `execId` of the call that started the listening process; absent when none named one. */
-    execId?: string;
-}
-export interface NimbusFileStat {
-    type: 'file' | 'directory' | string;
-    size: number;
-    ctime?: number;
-    mtime: number;
-    mode: number;
-}
-export interface NimbusRuntimeSummary {
-    name: string;
-    version: string;
-    root: string;
-    abi: string;
-    bins: string[];
-    sizeBytes: number;
-    license: string;
-}
-export interface NimbusAvailableRuntime {
-    name: string;
-    abi: string;
-    defaultVersion: string;
-    versions: Array<{
-        version: string;
-        sizeBytes: number;
-        license: string;
-    }>;
-}
-/**
- * The RPC surface a sandbox drives: what a `NimbusSession` Durable Object
- * answers, and what a hosted runtime's `session()` hands its embedder.
- */
-export interface NimbusSessionSurface {
-    _rpcReady(options?: {
-        preinstall?: string[];
-    }): Promise<{
-        ok: true;
-        preinstalled: string[];
-    }>;
-    _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
-    _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<NimbusStartResult>;
-    _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
-    _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<string | null>;
-    _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
-    _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<void>;
-    _rpcStat(path: string, pid?: undefined, cred?: VfsCred): Promise<NimbusFileStat | null>;
-    _rpcLstat(path: string, pid?: undefined, cred?: VfsCred): Promise<NimbusFileStat | null>;
-    _rpcReaddir(path: string, pid?: undefined, cred?: VfsCred): Promise<{
-        name: string;
-        type: string;
-    }[]>;
-    _rpcRename(from: string, to: string, pid?: undefined, cred?: VfsCred): Promise<void>;
-    _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;
-    _rpcFsReadRange(path: string, offset: number, length: number, pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
-    _rpcExists(path: string, pid?: undefined, cred?: VfsCred): Promise<boolean>;
-    _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
-    _rpcDeleteFile(path: string, options?: {
-        recursive?: boolean;
-    }, cred?: VfsCred): Promise<void>;
-    _rpcInstallRuntime(spec: string, options?: {
-        force?: boolean;
-    }): Promise<unknown>;
-    _rpcEnsureRuntimes(specs: string[], options?: {
-        force?: boolean;
-    }): Promise<unknown>;
-    _rpcListRuntimes(): Promise<{
-        installed: NimbusRuntimeSummary[];
-        available: NimbusAvailableRuntime[];
-    }>;
-    _rpcListProcesses(): Promise<NimbusProcess[]>;
-    _rpcKillProcess(pid: number): Promise<{
-        ok: boolean;
-        pid: number;
-    }>;
-    _rpcWriteProcessInput(pid: number, data: string): Promise<{
-        ok: boolean;
-        pid: number;
-    }>;
-    _rpcEndProcessInput(pid: number): Promise<{
-        ok: boolean;
-        pid: number;
-    }>;
-    _rpcResizeProcess(pid: number, size: NimbusTerminalSize): Promise<{
-        ok: boolean;
-        pid: number;
-    }>;
-    _rpcSignalProcess(pid: number, signal: string): Promise<{
-        ok: boolean;
-        pid: number;
-    }>;
-    _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
-    _rpcListPorts(): Promise<NimbusPort[]>;
-    _rpcExposePort(port: number, options?: {
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<{
-        port: number;
-        listening: boolean;
-        pid: number | null;
-        registeredAt: number | null;
-        capability: string | null;
-        visibility?: 'scoped' | 'public';
-        owner?: string | null;
-        name?: string | null;
-        execId?: string;
-    }>;
-    _rpcExposeApp(target: NimbusAppTarget, options?: {
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<Omit<NimbusExposedApp, 'url'> & {
-        url: string | null;
-    }>;
-    _rpcListApps(): Promise<Array<Omit<NimbusApp, 'url'> & {
-        url: string | null;
-    }>>;
-    _rpcRotateLink(target: NimbusAppTarget): Promise<Omit<NimbusExposedApp, 'url'> & {
-        url: string | null;
-    }>;
-    _rpcRemoveApp(target: NimbusAppTarget): Promise<{
-        owner: string;
-        removed: boolean;
-        port: number | null;
-    }>;
-    _rpcEnsureDurableApp(input: {
-        owner: string;
-        preferredPort?: number;
-        visibility?: 'scoped' | 'public';
-    }): Promise<{
-        port: number;
-        capability: string | null;
-        visibility: 'scoped' | 'public';
-    }>;
-    _rpcRemoveDurableApp(owner: string): Promise<{
-        owner: string;
-        removed: boolean;
-        port: number | null;
-    }>;
-    _rpcUnexposePort(port: number): Promise<{
-        port: number;
-        ok: boolean;
-    }>;
-    _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
 }
 interface NimbusSessionNamespace {
     idFromName(name: string): DurableObjectId;
@@ -455,9 +158,8 @@ export declare class NimbusSandbox {
      * pid — it does not wait for the command to finish.
      */
     startProcess(command: string, options?: NimbusExecOptions): Promise<NimbusStartResult>;
-    runCode(code: string, options?: NimbusExecOptions & {
+    runCode(code: string, options?: Omit<SessionRunCodeOptions, 'preinstall' | 'shellRoot' | 'language'> & {
         language?: NimbusCodeLanguage;
-        install?: 'never' | 'ifMissing';
     }): Promise<NimbusExecResult>;
     destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
     /**
@@ -477,15 +179,42 @@ export declare class NimbusSandbox {
         available: () => Promise<NimbusAvailableRuntime[]>;
         installed: () => Promise<NimbusRuntimeSummary[]>;
         list: () => Promise<{
-            installed: NimbusRuntimeSummary[];
-            available: NimbusAvailableRuntime[];
+            installed: {
+                name: string;
+                version: string;
+                root: string;
+                abi: string;
+                bins: string[];
+                sizeBytes: number;
+                license: string;
+            }[];
+            available: {
+                name: string;
+                abi: string;
+                defaultVersion: string;
+                versions: {
+                    version: string;
+                    sizeBytes: number;
+                    license: string;
+                }[];
+            }[];
         }>;
         install: (spec: RuntimeSpec, options?: {
             force?: boolean;
-        }) => Promise<unknown>;
+        }) => Promise<{
+            spec: string;
+            exitCode: number;
+            stdout: string;
+            stderr: string;
+        }>;
         ensure: (specs: RuntimeSpec | RuntimeSpec[], options?: {
             force?: boolean;
-        }) => Promise<unknown>;
+        }) => Promise<{
+            spec: string;
+            exitCode: number;
+            stdout: string;
+            stderr: string;
+        }[]>;
     };
     processes: {
         list: () => Promise<NimbusProcess[]>;
@@ -530,10 +259,10 @@ export declare class NimbusSandbox {
             pid: number | null;
             registeredAt: number | null;
             capability: string | null;
-            visibility?: "scoped" | "public";
-            owner?: string | null;
-            name?: string | null;
-            execId?: string;
+            visibility?: "scoped" | "public" | undefined;
+            owner?: string | null | undefined;
+            name?: string | null | undefined;
+            execId?: string | undefined;
         }>;
         unexpose: (port: number) => Promise<{
             port: number;
@@ -604,10 +333,26 @@ export declare class NimbusSandbox {
         disconnect: () => Promise<undefined>;
         tools: {
             exec: {
-                execute: (command: string, opts?: NimbusExecOptions) => Promise<NimbusExecResult>;
+                execute: (command: string, opts?: NimbusExecOptions) => Promise<{
+                    command: string;
+                    exitCode: number;
+                    success: boolean;
+                    duration: number;
+                    timestamp: number;
+                    stdout: string;
+                    stderr: string;
+                }>;
             };
             runCode: {
-                execute: (code: string, opts?: Parameters<NimbusSandbox["runCode"]>[1]) => Promise<NimbusExecResult>;
+                execute: (code: string, opts?: Parameters<NimbusSandbox["runCode"]>[1]) => Promise<{
+                    command: string;
+                    exitCode: number;
+                    success: boolean;
+                    duration: number;
+                    timestamp: number;
+                    stdout: string;
+                    stderr: string;
+                }>;
             };
             readFile: {
                 execute: (input: unknown) => Promise<string | null>;
@@ -634,7 +379,31 @@ export declare class NimbusSandbox {
                 execute: (input: unknown) => Promise<boolean>;
             };
             startProcess: {
-                execute: (command: string, opts?: NimbusExecOptions) => Promise<NimbusStartResult>;
+                execute: (command: string, opts?: NimbusExecOptions) => Promise<{
+                    command: string;
+                    pid: number;
+                    process: {
+                        pid: number;
+                        command: string;
+                        argv: string[];
+                        cwd: string;
+                        state: string;
+                        exitCode: number | null;
+                        startTime: number;
+                        endTime: number | null;
+                        longRunning: boolean;
+                        attachedTty: boolean;
+                        execId?: string | undefined;
+                    };
+                    ports: {
+                        port: number;
+                        pid: number;
+                        registeredAt: number;
+                        capability: string;
+                        execId?: string | undefined;
+                    }[];
+                    startedAt: number;
+                }>;
             };
             killProcess: {
                 execute: (input: number | {
@@ -685,7 +454,24 @@ export declare class NimbusSandbox {
                     pid: number;
                     lines?: number;
                     bytes?: number;
-                }) => Promise<NimbusProcessLogsResult>;
+                }) => Promise<{
+                    pid: number;
+                    chunks: {
+                        seq: number;
+                        ts: number;
+                        stream: "stdout" | "stderr";
+                        data: string;
+                        binary?: boolean | undefined;
+                    }[];
+                    text: string;
+                    cursor: number;
+                    truncated: boolean;
+                    exit: {
+                        code: number;
+                        at: number;
+                        reason?: string | undefined;
+                    } | null;
+                }>;
             };
             exposePort: {
                 execute: (input: number | {
@@ -697,10 +483,10 @@ export declare class NimbusSandbox {
                     pid: number | null;
                     registeredAt: number | null;
                     capability: string | null;
-                    visibility?: "scoped" | "public";
-                    owner?: string | null;
-                    name?: string | null;
-                    execId?: string;
+                    visibility?: "scoped" | "public" | undefined;
+                    owner?: string | null | undefined;
+                    name?: string | null | undefined;
+                    execId?: string | undefined;
                 }>;
             };
             unexposePort: {
@@ -712,7 +498,13 @@ export declare class NimbusSandbox {
                 }>;
             };
             listPorts: {
-                execute: () => Promise<NimbusPort[]>;
+                execute: () => Promise<{
+                    port: number;
+                    pid: number;
+                    registeredAt: number;
+                    capability: string;
+                    execId?: string | undefined;
+                }[]>;
             };
             exposeApp: {
                 execute: (input: NimbusAppTarget | {
@@ -725,12 +517,34 @@ export declare class NimbusSandbox {
                 execute: () => Promise<NimbusApp[]>;
             };
             installRuntime: {
-                execute: (spec: RuntimeSpec) => Promise<unknown>;
+                execute: (spec: RuntimeSpec) => Promise<{
+                    spec: string;
+                    exitCode: number;
+                    stdout: string;
+                    stderr: string;
+                }>;
             };
             listRuntimes: {
                 execute: () => Promise<{
-                    installed: NimbusRuntimeSummary[];
-                    available: NimbusAvailableRuntime[];
+                    installed: {
+                        name: string;
+                        version: string;
+                        root: string;
+                        abi: string;
+                        bins: string[];
+                        sizeBytes: number;
+                        license: string;
+                    }[];
+                    available: {
+                        name: string;
+                        abi: string;
+                        defaultVersion: string;
+                        versions: {
+                            version: string;
+                            sizeBytes: number;
+                            license: string;
+                        }[];
+                    }[];
                 }>;
             };
         };

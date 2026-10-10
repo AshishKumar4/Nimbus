@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the programmatic session wire contract and result schemas now live
+  in `@nimbus-sh/core/runtime/session-protocol.js`, shared by SDK, HTTP, hosted
+  sessions and Durable Objects. Existing SDK option/result type names remain
+  available as shared or derived aliases rather than augmentable interfaces. Runtime-install
+  replies now validate their declared spec, exit code, stdout and stderr fields.
+- Breaking: `NimbusSessionSurface._rpcWriteFile` and the hosted session's raw
+  method now return the committed revision (`Promise<number>`), matching the
+  Durable Object wire result. Public `files.write` consistently returns void
+  on every transport, as declared; it no longer leaks the revision on colocated
+  calls. Producer-only `Programmatic*`, serialized process/port and app result
+  types move from the worker implementation module to the core contract.
+- Breaking: `RuntimeInstallSummary` is removed from
+  `@nimbus-sh/worker/runtime/package-manager`. Use `SessionRuntimeInstallResult`
+  from `@nimbus-sh/core/runtime/session-protocol.js`; no deprecated re-export
+  remains.
+
 - Changed: the shared base64url decoder requires canonical unpadded encodings,
   rejecting nonzero unused padding bits. JWT, signed OAuth state and sealed
   JSON verification therefore reject alternate strings for the same bytes;

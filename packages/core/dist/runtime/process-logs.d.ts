@@ -39,22 +39,12 @@
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
 import { type PersistedLogPid } from './process-log-retention.js';
+import type { SessionProcessLogChunk, SessionProcessExit, SessionProcessLogsOptions } from './session-protocol.js';
 export type { PersistedLogPid };
-export type LogStream = 'stdout' | 'stderr';
-export interface LogChunk {
-    ts: number;
-    stream: LogStream;
-    /**
-     * A derived text view (ANSI preserved), or a binary placeholder. The
-     * underlying byte log is retained independently of this rendering.
-     */
-    data: string;
-    /** Set for chunks we flagged as binary — lets UI render differently. */
-    binary?: boolean;
-}
-export interface SequencedLogChunk extends LogChunk {
-    seq: number;
-}
+export type LogStream = SessionProcessLogChunk['stream'];
+/** A derived text view of the independently retained byte log. */
+export type LogChunk = Omit<SessionProcessLogChunk, 'seq'>;
+export type SequencedLogChunk = SessionProcessLogChunk;
 /** The stored and relayed log is bytes; text is a read-time view only. */
 export interface ByteLogChunk {
     ts: number;
@@ -76,18 +66,8 @@ export interface PersistedLogChunk {
     binary?: boolean;
     seq?: number;
 }
-export interface ProcessLogReadOptions {
-    cursor?: number;
-    lines?: number;
-    bytes?: number;
-}
-export interface ProcessExitInfo {
-    code: number;
-    /** When the exit was recorded (ms epoch). */
-    at: number;
-    /** Optional synthetic reason, used by external-exit path (timeout/abort). */
-    reason?: string;
-}
+export type ProcessLogReadOptions = SessionProcessLogsOptions;
+export type ProcessExitInfo = SessionProcessExit;
 /**
  * live in NimbusSession (production: ctx.storage.sql) and in test
  * harnesses (functional probes: in-memory mock).

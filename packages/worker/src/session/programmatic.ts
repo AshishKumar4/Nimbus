@@ -5,14 +5,6 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-
-/**
- * session/programmatic.ts - public sandbox RPC helpers.
- *
- * These helpers are called by NimbusSession one-line delegators so the
- * Durable Object exposes a typed, programmatic sandbox surface without
- * duplicating the interactive terminal boot path.
- */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { PID_GEN_STRIDE, execIdField, parseExecId, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
@@ -25,12 +17,19 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import { z } from 'zod/v4';
+import {
+  SessionProcessLogsOptionsSchema,
+  type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions,
+  type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult,
+  type SessionProcess, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget,
+  type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize,
+  type SessionRuntimeInstallOptions, type SessionResult,
+} from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
 import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
-import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
+import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, SpawnedWorker } from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { adoptGeneration, generation, raiseGeneration, releaseGeneration, type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
@@ -123,45 +122,6 @@ export interface ProgrammaticHost extends TimerHost {
   ensureFacetManager(): ComposedFacetManager;
 }
 
-export interface ProgrammaticReadyOptions {
-  preinstall?: string[];
-}
-
-export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
-  cwd?: string;
-  env?: Record<string, string>;
-  timeoutMs?: number;
-  stdin?: string;
-  /**
-   * Identity the command runs as. Omitted, the spawn inherits the session
-   * user, which is what every programmatic exec has always run as.
-   */
-  cred?: VfsCred;
-  /**
-   * Run in a NAMED shell whose cwd and environment persist between calls, the
-   * way an interactive terminal does; it is the workspace's shell of that name.
-   * Omitted, the call runs in a shell of its own and nothing is remembered.
-   */
-  shellId?: string;
-  /** @internal Initial cwd for a shellId with no durable state yet. */
-  shellRoot?: string;
-  /**
-   * A name for this call, which every process it starts carries, and every
-   * process those spawn: `listProcesses` and `listPorts` report it, and a
-   * resident keeps it across a reset. 1 to 160 characters from
-   * `A-Z a-z 0-9 . _ : -`, starting with a letter or digit (`parseExecId`).
-   * Not unique: two calls may share one.
-   */
-  execId?: string;
-  /**
-   * What to do when the started process exits on its own with a non-zero
-   * code: 'never' (the default) leaves it stopped; 'on-failure' restarts it
-   * under the restart budget with backoff. A platform reset re-drives it
-   * either way. Carried to the launch as `$NIMBUS_RESTART`.
-   */
-  restart?: ResidentRestartPolicy;
-}
-
 /**
  * Run `body` in the named shell `options.shellId`, or with none when no
  * `shellId` was given. The named shells are the workspace's
@@ -173,7 +133,7 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
  */
 async function withShellState<T>(
   self: ProgrammaticHost,
-  options: ProgrammaticExecOptions,
+  options: SessionExecOptions,
   background: boolean,
   run: (named: NamedShell | null) => Promise<T>,
 ): Promise<T> {
@@ -213,68 +173,6 @@ async function adoptStoredShells(self: ProgrammaticHost, workspace: NimbusWorksp
 /** The most keys one Durable Object storage `delete` takes. */
 const STORAGE_DELETE_KEYS = 128;
 
-export interface ProgrammaticDestroyOptions {
-  reason?: string;
-}
-
-export interface ProgrammaticDestroyResult {
-  ok: true;
-  killed: number;
-  destroyedAt: number;
-  reason: string | null;
-}
-
-/** The buffered exec result: the exec stream read to its end. */
-export type ProgrammaticExecResult = ExecOutput;
-
-/**
- * A started background process. There is no exit code or output here — the
- * process is still running when this returns. Read both back through
- * `processLogs(pid)`, which carries the exit record once it lands.
- */
-export interface ProgrammaticStartResult {
-  command: string;
-  pid: number;
-  process: SerializedProcess;
-  ports: SerializedPort[];
-  startedAt: number;
-}
-
-export interface SerializedProcess {
-  pid: number;
-  command: string;
-  argv: string[];
-  cwd: string;
-  state: string;
-  exitCode: number | null;
-  startTime: number;
-  endTime: number | null;
-  longRunning: boolean;
-  attachedTty: boolean;
-  /** The exec that started the process (`ProgrammaticExecOptions.execId`); absent when none named one. */
-  execId?: string;
-}
-
-export interface SerializedPort {
-  port: number;
-  pid: number;
-  registeredAt: number;
-  capability: string;
-  /** The exec id of the process listening (`SerializedProcess.execId`). */
-  execId?: string;
-}
-
-/**
- * The durable half of the port capability lives in `./port-capability.js`, so
- * the facet manager can retire a stale one without importing this module.
- */
-
-const ProcessLogsOptionsSchema = z.object({
-  cursor: z.number().int().nonnegative().optional(),
-  lines: z.number().int().nonnegative().optional(),
-  bytes: z.number().int().nonnegative().optional(),
-}).strict();
-
 function getHome(self: ProgrammaticHost): string {
   try {
     const shellEnv = self.shell?.getEnv?.();
@@ -298,8 +196,8 @@ function runtimeDeps(self: ProgrammaticHost) {
 
 export async function ensureProgrammaticReady(
   self: ProgrammaticHost,
-  options: ProgrammaticReadyOptions = {},
-): Promise<{ ok: true; preinstalled: string[] }> {
+  options: SessionReadyOptions = {},
+): Promise<SessionResult<'ready'>> {
   await self.ensureRuntimeReady();
 
   const preinstall = Array.from(new Set(options.preinstall ?? []))
@@ -335,7 +233,7 @@ interface ShellJob {
 function startShellJob(
   self: ProgrammaticHost,
   command: string,
-  options: ProgrammaticExecOptions,
+  options: SessionExecOptions,
   job: {
     /** Background job: keep an input channel, tee output to the log ring, and
      *  let a registry command adopt this pid instead of allocating a second. */
@@ -417,7 +315,7 @@ function startShellJob(
  * normalization (the SDK resolves it); handed to the shell it degrades to
  * silently wrong cwd semantics and ENOENT writes. Name the field and fail.
  */
-function assertAbsoluteExecCwd(options: ProgrammaticExecOptions): void {
+function assertAbsoluteExecCwd(options: SessionExecOptions): void {
   const cwd = options.cwd;
   if (cwd !== undefined && (typeof cwd !== 'string' || !cwd.startsWith('/'))) {
     throw new Error(`cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(cwd)}`);
@@ -425,7 +323,7 @@ function assertAbsoluteExecCwd(options: ProgrammaticExecOptions): void {
 }
 
 /** A caller's string that every process the call starts carries: refused before anything runs unless it is a name. */
-function assertExecId(options: ProgrammaticExecOptions): void {
+function assertExecId(options: SessionExecOptions): void {
   if (options.execId !== undefined) parseExecId(options.execId);
 }
 
@@ -433,8 +331,8 @@ function assertExecId(options: ProgrammaticExecOptions): void {
 export async function rpcExec(
   self: ProgrammaticHost,
   command: string,
-  options: ProgrammaticExecOptions = {},
-): Promise<ProgrammaticExecResult> {
+  options: SessionExecOptions = {},
+): Promise<ExecOutput> {
   return collectExecStream(await rpcExecStream(self, command, options));
 }
 
@@ -446,7 +344,7 @@ export async function rpcExec(
 export async function rpcExecStream(
   self: ProgrammaticHost,
   command: string,
-  options: ProgrammaticExecOptions = {},
+  options: SessionExecOptions = {},
 ): Promise<ExecStream> {
   assertAbsoluteExecCwd(options);
   assertExecId(options);
@@ -468,7 +366,7 @@ export async function rpcExecStream(
 async function streamOnShell(
   self: ProgrammaticHost,
   command: string,
-  options: ProgrammaticExecOptions,
+  options: SessionExecOptions,
   named: NamedShell | null,
   started: (writer: ExecStreamWriter) => void,
 ): Promise<ExecExit> {
@@ -571,8 +469,8 @@ function collectJobOutput(
 export async function rpcStartProcess(
   self: ProgrammaticHost,
   command: string,
-  options: ProgrammaticExecOptions = {},
-): Promise<ProgrammaticStartResult> {
+  options: SessionExecOptions = {},
+): Promise<SessionStartResult> {
   assertAbsoluteExecCwd(options);
   assertExecId(options);
   await ensureProgrammaticReady(self, options);
@@ -582,7 +480,7 @@ export async function rpcStartProcess(
   // The policy rides the command's environment: the resident the command
   // starts reads it off its env at launch and journals it, so the shell,
   // the SDK and a child_process spawn all carry it the same way.
-  const withPolicy: ProgrammaticExecOptions = options.restart === 'on-failure'
+  const withPolicy: SessionExecOptions = options.restart === 'on-failure'
     ? { ...options, env: { ...(options.env ?? {}), [RESTART_POLICY_ENV]: 'on-failure' } }
     : options;
   return withShellState(self, withPolicy, true, (named) => startOnShell(self, command, withPolicy, named));
@@ -591,9 +489,9 @@ export async function rpcStartProcess(
 async function startOnShell(
   self: ProgrammaticHost,
   command: string,
-  options: ProgrammaticExecOptions,
+  options: SessionExecOptions,
   named: NamedShell | null,
-): Promise<ProgrammaticStartResult> {
+): Promise<SessionStartResult> {
   const job = startShellJob(self, command, options, { background: true }, named);
   const line = String(command);
 
@@ -663,11 +561,8 @@ function finishBackgroundJob(
 export async function rpcRunCode(
   self: ProgrammaticHost,
   code: string,
-  options: ProgrammaticExecOptions & {
-    language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
-    install?: 'never' | 'ifMissing';
-  } = {},
-): Promise<ProgrammaticExecResult> {
+  options: SessionRunCodeOptions = {},
+): Promise<ExecOutput> {
   const language = options.language ?? 'javascript';
   if (language === 'python' && options.install === 'ifMissing') {
     await ensureProgrammaticReady(self, { ...options, preinstall: ['python'] });
@@ -686,7 +581,7 @@ export async function rpcRunCode(
 export async function rpcInstallRuntime(
   self: ProgrammaticHost,
   spec: string,
-  options: { force?: boolean } = {},
+  options: SessionRuntimeInstallOptions = {},
 ) {
   await ensureProgrammaticReady(self);
   return withRecall(() => installRuntimeProgrammatic(runtimeDeps(self), String(spec), options));
@@ -695,7 +590,7 @@ export async function rpcInstallRuntime(
 export async function rpcEnsureRuntimes(
   self: ProgrammaticHost,
   specs: string[],
-  options: { force?: boolean } = {},
+  options: SessionRuntimeInstallOptions = {},
 ) {
   await ensureProgrammaticReady(self);
   return withRecall(() => ensureRuntimesProgrammatic(
@@ -705,7 +600,7 @@ export async function rpcEnsureRuntimes(
   ));
 }
 
-export async function rpcListRuntimes(self: ProgrammaticHost) {
+export async function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionResult<'listRuntimes'>> {
   await ensureProgrammaticReady(self);
   return {
     installed: (await self.runtimeManager.list()),
@@ -713,12 +608,12 @@ export async function rpcListRuntimes(self: ProgrammaticHost) {
   };
 }
 
-export async function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]> {
+export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {
   await ensureProgrammaticReady(self);
   return self.processes.publishedAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
-export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {
+export async function rpcKillProcess(self: ProgrammaticHost, pid: number) {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
   let ok = false;
@@ -746,13 +641,13 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promi
   return { ok, pid: n };
 }
 
-export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string): Promise<{ ok: boolean; pid: number }> {
+export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string) {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
   return writeProcessInput(self.processes, n, String(data ?? ''));
 }
 
-export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {
+export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number) {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
   return endProcessInput(self.processes, n);
@@ -761,8 +656,8 @@ export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number): P
 export async function rpcResizeProcess(
   self: ProgrammaticHost,
   pid: number,
-  size: { columns: number; rows: number },
-): Promise<{ ok: boolean; pid: number }> {
+  size: SessionTerminalSize,
+) {
   await ensureProgrammaticReady(self);
   return resizeProcess(self.processes, Number(pid), Number(size.columns), Number(size.rows));
 }
@@ -771,7 +666,7 @@ export async function rpcSignalProcess(
   self: ProgrammaticHost,
   pid: number,
   signal: string,
-): Promise<{ ok: boolean; pid: number }> {
+) {
   await ensureProgrammaticReady(self);
   return signalProcess(self.processes, Number(pid), String(signal));
 }
@@ -782,7 +677,7 @@ export async function rpcProcessLogs(
   options: ProcessLogReadOptions = {},
 ) {
   await ensureProgrammaticReady(self);
-  const parsed = ProcessLogsOptionsSchema.parse(options);
+  const parsed = SessionProcessLogsOptionsSchema.parse(options);
   const readOptions: ProcessLogReadOptions = {
     cursor: parsed.cursor,
     ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
@@ -798,33 +693,12 @@ export async function rpcProcessLogs(
   };
 }
 
-export async function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]> {
+export async function rpcListPorts(self: ProgrammaticHost): Promise<SessionPort[]> {
   await ensureProgrammaticReady(self);
   // The composed manager's copy is the one implementation — persistence
   // at tell-time included.
   return self.ensureFacetManager().apps.listPorts();
 }
-
-/** What `apps.expose` / `apps.rotateLink` answer: the application's address, as the caller can reach it. */
-export interface ExposedAppResult {
-  owner: string;
-  name: string | null;
-  port: number;
-  pid: number | null;
-  capability: string | null;
-  visibility: PortVisibility;
-  /** Built from the deployment's preview suffix or the session's last-seen origin; null when neither is known. */
-  url: string | null;
-  /** The exec id of `pid` (`SerializedProcess.execId`). */
-  execId?: string;
-}
-
-export interface ListedApp extends ResidentAppSummary {
-  url: string | null;
-}
-
-/** An app target as every app verb takes it: a port, a pid, or a name/owner. */
-export type AppTarget = number | string | { port: number } | { pid: number } | { name: string } | { owner: string };
 
 /**
  * Browser-facing URL for an application, built inside the session: the
@@ -869,7 +743,7 @@ function sessionIdOf(self: ProgrammaticHost): string | null {
 export async function rpcExposePort(
   self: ProgrammaticHost,
   port: number,
-  options?: { visibility?: 'scoped' | 'public'; name?: string },
+  options?: SessionExposeOptions,
 ) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
@@ -901,9 +775,9 @@ export async function rpcExposePort(
  */
 export async function rpcExposeApp(
   self: ProgrammaticHost,
-  target: AppTarget,
-  options: { visibility?: 'scoped' | 'public'; name?: string } = {},
-): Promise<ExposedAppResult> {
+  target: SessionAppTarget,
+  options: SessionExposeOptions = {},
+): Promise<SessionExposedApp> {
   await ensureProgrammaticReady(self);
   const resolved = await resolveAppTarget(self, target);
   if (resolved.port === null) {
@@ -1022,7 +896,7 @@ async function applyExposure(
  * new value at once if the port is live, so the new URL answers without
  * waiting for a restore.
  */
-export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): Promise<ExposedAppResult> {
+export async function rpcRotateLink(self: ProgrammaticHost, target: SessionAppTarget): Promise<SessionExposedApp> {
   await ensureProgrammaticReady(self);
   const resolved = await resolveAppTarget(self, target);
   if (resolved.port === null || resolved.reservation === null) {
@@ -1073,7 +947,7 @@ async function assertServingOwner(self: ProgrammaticHost, port: number, owner: s
 }
 
 /** Every stamped identity, with the URL each is reachable at. */
-export async function rpcListApps(self: ProgrammaticHost): Promise<ListedApp[]> {
+export async function rpcListApps(self: ProgrammaticHost): Promise<SessionApp[]> {
   await ensureProgrammaticReady(self);
   const apps = await self.facetManager!.listResidentApps();
   return apps.map((app) => ({
@@ -1089,8 +963,8 @@ export async function rpcListApps(self: ProgrammaticHost): Promise<ListedApp[]> 
  */
 export async function rpcRemoveApp(
   self: ProgrammaticHost,
-  target: AppTarget,
-): Promise<{ owner: string; removed: boolean; port: number | null }> {
+  target: SessionAppTarget,
+) {
   await ensureProgrammaticReady(self);
   const resolved = await resolveAppTarget(self, target);
   if (resolved.owner === null) {
@@ -1113,7 +987,7 @@ export async function rpcRemoveApp(
   return { ...durable, removed: durable.removed || killed > 0 };
 }
 
-function describeTarget(target: AppTarget): string {
+function describeTarget(target: SessionAppTarget): string {
   if (typeof target === 'number') return `target ${target}`;
   if (typeof target === 'string') return `'${target}'`;
   if ('port' in target) return `port ${target.port}`;
@@ -1131,7 +1005,7 @@ function describeTarget(target: AppTarget): string {
  */
 async function resolveAppTarget(
   self: ProgrammaticHost,
-  target: AppTarget,
+  target: SessionAppTarget,
 ): Promise<{ owner: string | null; port: number | null; reservation: PortReservation | null }> {
   const fm = self.facetManager!;
   const byPort = async (port: number) => {
@@ -1209,8 +1083,8 @@ async function resolveAppTarget(
  */
 export async function rpcEnsureDurableApp(
   self: ProgrammaticHost,
-  input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string },
-): Promise<{ port: number; capability: string | null; visibility: 'scoped' | 'public' }> {
+  input: SessionDurableAppOptions,
+) {
   await ensureProgrammaticReady(self);
   // The composed manager owns the durable-app verbs — one implementation,
   // capability minted there so a URL handed out before boot is the one the
@@ -1241,15 +1115,11 @@ export async function rpcUnexposePort(self: ProgrammaticHost, port: number) {
 export async function rpcRemoveDurableApp(
   self: ProgrammaticHost,
   owner: string,
-): Promise<{ owner: string; removed: boolean; port: number | null }> {
+) {
   await ensureProgrammaticReady(self);
   // The composed manager owns the durable-app verbs — validation included.
   return self.ensureFacetManager().apps.removeDurableApp(owner);
 }
-
-
-
-
 
 /**
  * `spawnWorker` for a colocated embedder holding the DO stub: boot the
@@ -1305,8 +1175,8 @@ export async function rpcDeleteFile(
 
 export async function rpcDestroy(
   self: ProgrammaticHost,
-  options: ProgrammaticDestroyOptions = {},
-): Promise<ProgrammaticDestroyResult> {
+  options: SessionDestroyOptions = {},
+): Promise<SessionDestroyResult> {
   self.ensureSqliteFs();
   const guardedVfs = self.sqliteFs!;
   const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
@@ -1523,7 +1393,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function serializeProcess(p: ProcessEntry | undefined): SerializedProcess | null {
+function serializeProcess(p: ProcessEntry | undefined): SessionProcess | null {
   if (!p) return null;
   return {
     pid: p.pid,
@@ -1540,7 +1410,7 @@ function serializeProcess(p: ProcessEntry | undefined): SerializedProcess | null
   };
 }
 
-function serializePort(self: ProgrammaticHost, p: PortEntry): SerializedPort {
+function serializePort(self: ProgrammaticHost, p: PortEntry): SessionPort {
   return {
     port: Number(p.port),
     pid: Number(p.pid),
