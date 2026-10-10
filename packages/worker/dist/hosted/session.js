@@ -79,7 +79,7 @@ export class HostedSession extends RpcTarget {
         return rpc._rpcReadFileBytes(this.client(), path, undefined, this.cred(cred));
     }
     async _rpcWriteFile(path, content, _pid, cred) {
-        await rpc._rpcWriteFile(this.client(), path, content, undefined, this.cred(cred));
+        return rpc._rpcWriteFile(this.client(), path, content, undefined, this.cred(cred));
     }
     async _rpcStat(path, _pid, cred) { return rpc._rpcStat(this.client(), path, undefined, this.cred(cred)); }
     async _rpcLstat(path, _pid, cred) { return rpc._rpcLstat(this.client(), path, undefined, this.cred(cred)); }

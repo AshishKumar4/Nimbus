@@ -8,7 +8,6 @@ import {
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { HostedSession } from '@nimbus-sh/worker/workspace-host';
 import {
   EXEC_STREAM_CONTENT_TYPE,
   collectExecStream,
@@ -16,7 +15,37 @@ import {
   type ExecChunk,
   type ExecExit,
   type ExecStream,
+  type ExecOutput,
 } from '@nimbus-sh/core/runtime/exec-stream.js';
+import {
+  SessionResults, SessionSuccessSchema, SessionFailureSchema,
+  type SessionJsonOperation, type SessionOperation, type SessionResult,
+  type SessionRpc as NimbusSessionSurface,
+  type SessionExecOptions, type SessionRunCodeOptions,
+  type SessionRestartPolicy as NimbusRestartPolicy,
+  type SessionAppVisibility as NimbusAppVisibility,
+  type SessionAppTarget as NimbusAppTarget,
+  type SessionApp, type SessionExposedApp,
+  type SessionTerminalSize as NimbusTerminalSize,
+  type SessionDestroyOptions as NimbusDestroyOptions,
+  type SessionDestroyResult as NimbusDestroyResult,
+  type SessionStartResult as NimbusStartResult,
+  type SessionProcess as NimbusProcess,
+  type SessionProcessLogChunk as NimbusProcessLogChunk,
+  type SessionProcessExit as NimbusProcessExitInfo,
+  type SessionProcessLogsOptions as NimbusProcessLogsOptions,
+  type SessionProcessLogs as NimbusProcessLogsResult,
+  type SessionPort as NimbusPort,
+  type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry,
+  type SessionRuntimeSummary as NimbusRuntimeSummary,
+  type SessionAvailableRuntime as NimbusAvailableRuntime,
+} from '@nimbus-sh/core/runtime/session-protocol.js';
+export type {
+  NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget,
+  NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult,
+  NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions,
+  NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime,
+};
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
@@ -66,45 +95,7 @@ export interface NimbusSandboxOptions {
   shellId?: string;
 }
 
-export interface NimbusExecOptions {
-  /**
-   * Run in a named shell whose cwd and environment persist between calls, the
-   * way a terminal tab does; calls on one name run one at a time. Omitted,
-   * the call runs in a shell of its own that starts from the session shell's
-   * cwd and environment and remembers nothing: no variable, function, alias
-   * or option it sets reaches another call, and unnamed calls run at once.
-   */
-  shellId?: string;
-  cwd?: string;
-  env?: Record<string, string>;
-  timeoutMs?: number;
-  stdin?: string;
-  /**
-   * Identity the command runs as. Omitted, the spawn inherits the session
-   * user, which is what every programmatic exec has always run as.
-   */
-  cred?: VfsCred;
-  /**
-   * A name for this call. Every process the command starts carries it, and
-   * so does everything those processes spawn: `processes.list()`,
-   * `ports.list()` and `apps.list()` report it as `execId`, so a listening
-   * port names the call that started its server. A resident server keeps it
-   * across a session reset. 1 to 160 characters from `A-Z a-z 0-9 . _ : -`,
-   * starting with a letter or digit; anything else is refused before the
-   * command runs. Omitted, nothing is tagged.
-   */
-  execId?: string;
-  /**
-   * `startProcess` only: what to do when the process exits on its own with
-   * a non-zero code. 'never' (default) leaves it stopped; 'on-failure'
-   * restarts it under the session's restart budget with backoff. A platform
-   * reset re-drives the process either way.
-   */
-  restart?: NimbusRestartPolicy;
-}
-
-export type NimbusRestartPolicy = 'never' | 'on-failure';
-export type NimbusAppVisibility = 'scoped' | 'public';
+export type NimbusExecOptions = Omit<SessionExecOptions, 'preinstall' | 'shellRoot'>;
 
 /** The sandbox file plane; see `NimbusSandbox.files`. */
 export interface NimbusSandboxFiles {
@@ -120,7 +111,7 @@ export interface NimbusSandboxFiles {
   chmod(path: string, mode: number): Promise<void>;
   /** Read `length` bytes at `offset` without materializing the whole file. */
   readRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-  list(path?: string): Promise<{ name: string; type: string }[]>;
+  list(path?: string): Promise<SessionDirectoryEntry[]>;
   mkdir(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   delete(path: string, options?: { recursive?: boolean }): Promise<void>;
@@ -131,49 +122,9 @@ function fileWireOptions(cred: VfsCred | undefined): [] | [{ cred: VfsCred }] {
   return cred === undefined ? [] : [{ cred }];
 }
 
-/**
- * An application target: a port, a pid, a name, or an owner — every
- * `apps.*` verb takes one. A bare number is a port when something listens
- * on it or a reservation names it, else a pid; a bare string is a name
- * first, then an owner. The object forms are unambiguous.
- */
-export type NimbusAppTarget =
-  | number
-  | string
-  | { port: number }
-  | { pid: number }
-  | { name: string }
-  | { owner: string };
-
-export interface NimbusExposedApp {
-  /** The application's identity: derived (`auto:…`) for an ordinary process, explicit for a durable worker app. */
-  owner: string;
-  name: string | null;
-  port: number;
-  pid: number | null;
-  capability: string | null;
-  visibility: NimbusAppVisibility;
-  /** Browser-facing URL, built the way `ports.url` builds one; undefined when the deployment is not addressable. */
-  url: string | undefined;
-  /** The `execId` of the call that started `pid`; absent when none named one. */
-  execId?: string;
-}
-
-export interface NimbusApp {
-  owner: string;
-  name: string | null;
-  port: number | null;
-  pid: number | null;
-  status: 'running' | 'starting' | 'stopped' | 'failed';
-  visibility: NimbusAppVisibility;
-  capability: string | null;
-  restart: NimbusRestartPolicy;
-  /** With status 'failed': what went wrong, e.g. `listened on 3000, owns 5173`. */
-  diagnostic: string | null;
-  url: string | undefined;
-  /** The `execId` of the call that started `pid`; absent when none named one. */
-  execId?: string;
-}
+/** The SDK builds a browser URL, or leaves it undefined when the deployment is not addressable. */
+export type NimbusExposedApp = Omit<SessionExposedApp, 'url'> & { url: string | undefined };
+export type NimbusApp = Omit<SessionApp, 'url'> & { url: string | undefined };
 
 /** A slice of a command's stdout or stderr, as the bytes it wrote. */
 export type NimbusExecChunk = ExecChunk;
@@ -186,84 +137,7 @@ export type NimbusExecExit = ExecExit;
  */
 export type NimbusExecStream = ExecStream;
 
-export interface NimbusExecResult extends NimbusExecExit {
-  stdout: string;
-  stderr: string;
-}
-
-export interface NimbusTerminalSize {
-  columns: number;
-  rows: number;
-}
-
-export interface NimbusDestroyOptions {
-  reason?: string;
-}
-
-export interface NimbusDestroyResult {
-  ok: true;
-  killed: number;
-  destroyedAt: number;
-  reason: string | null;
-}
-
-/**
- * A started background process. It is still running when `startProcess`
- * returns, so there is no exit code or captured output here — poll
- * `processes.logs(pid)` (which carries the exit record once it lands),
- * `processes.list()`, or `processes.attach(pid)`.
- */
-export interface NimbusStartResult {
-  command: string;
-  pid: number;
-  process: NimbusProcess;
-  ports: NimbusPort[];
-  startedAt: number;
-}
-
-export interface NimbusProcess {
-  pid: number;
-  command: string;
-  argv: string[];
-  cwd: string;
-  state: string;
-  exitCode: number | null;
-  startTime: number;
-  endTime: number | null;
-  longRunning: boolean;
-  attachedTty: boolean;
-  /** The `execId` of the call that started this process or an ancestor; absent when none named one. */
-  execId?: string;
-}
-
-export interface NimbusProcessLogChunk {
-  seq: number;
-  ts: number;
-  stream: 'stdout' | 'stderr';
-  data: string;
-  binary?: boolean;
-}
-
-export interface NimbusProcessExitInfo {
-  code: number;
-  at: number;
-  reason?: string;
-}
-
-export interface NimbusProcessLogsOptions {
-  cursor?: number;
-  lines?: number;
-  bytes?: number;
-}
-
-export interface NimbusProcessLogsResult {
-  pid: number;
-  chunks: NimbusProcessLogChunk[];
-  text: string;
-  cursor: number;
-  truncated: boolean;
-  exit: NimbusProcessExitInfo | null;
-}
+export type NimbusExecResult = ExecOutput;
 
 export interface NimbusProcessAttachOptions {
   pollIntervalMs?: number;
@@ -271,97 +145,6 @@ export interface NimbusProcessAttachOptions {
   bytes?: number;
   signal?: AbortSignal;
 }
-
-export interface NimbusPort {
-  port: number;
-  pid: number;
-  registeredAt: number;
-  /**
-   * Bearer token for THIS port on THIS session. Presenting it on the
-   * preview route authorises that one port and nothing else, which is what
-   * lets an embedder publish a guest's dev server without publishing the
-   * session. A new registration on the port retires it.
-   */
-  capability: string;
-  /** The `execId` of the call that started the listening process; absent when none named one. */
-  execId?: string;
-}
-
-export interface NimbusFileStat {
-  type: 'file' | 'directory' | string;
-  size: number;
-  ctime?: number;
-  mtime: number;
-  mode: number;
-}
-
-export interface NimbusRuntimeSummary {
-  name: string;
-  version: string;
-  root: string;
-  abi: string;
-  bins: string[];
-  sizeBytes: number;
-  license: string;
-}
-
-export interface NimbusAvailableRuntime {
-  name: string;
-  abi: string;
-  defaultVersion: string;
-  versions: Array<{ version: string; sizeBytes: number; license: string }>;
-}
-
-/**
- * The RPC surface a sandbox drives: what a `NimbusSession` Durable Object
- * answers, and what a hosted runtime's `session()` hands its embedder.
- */
-export interface NimbusSessionSurface {
-  _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;
-  _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
-  _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<NimbusStartResult>;
-  _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
-  // The file methods' third slot is the session's `pid` — a process claim
-  // the SDK never makes, so it is always `undefined` here — and the slot
-  // after it is the host credential `files.as(cred)` binds to.
-  _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<string | null>;
-  _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
-  _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<void>;
-  _rpcStat(path: string, pid?: undefined, cred?: VfsCred): Promise<NimbusFileStat | null>;
-  _rpcLstat(path: string, pid?: undefined, cred?: VfsCred): Promise<NimbusFileStat | null>;
-  _rpcReaddir(path: string, pid?: undefined, cred?: VfsCred): Promise<{ name: string; type: string }[]>;
-  _rpcRename(from: string, to: string, pid?: undefined, cred?: VfsCred): Promise<void>;
-  _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;
-  _rpcFsReadRange(path: string, offset: number, length: number, pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
-  _rpcExists(path: string, pid?: undefined, cred?: VfsCred): Promise<boolean>;
-  _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
-  _rpcDeleteFile(path: string, options?: { recursive?: boolean }, cred?: VfsCred): Promise<void>;
-  _rpcInstallRuntime(spec: string, options?: { force?: boolean }): Promise<unknown>;
-  _rpcEnsureRuntimes(specs: string[], options?: { force?: boolean }): Promise<unknown>;
-  _rpcListRuntimes(): Promise<{ installed: NimbusRuntimeSummary[]; available: NimbusAvailableRuntime[] }>;
-  _rpcListProcesses(): Promise<NimbusProcess[]>;
-  _rpcKillProcess(pid: number): Promise<{ ok: boolean; pid: number }>;
-  _rpcWriteProcessInput(pid: number, data: string): Promise<{ ok: boolean; pid: number }>;
-  _rpcEndProcessInput(pid: number): Promise<{ ok: boolean; pid: number }>;
-  _rpcResizeProcess(pid: number, size: NimbusTerminalSize): Promise<{ ok: boolean; pid: number }>;
-  _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
-  _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
-  _rpcListPorts(): Promise<NimbusPort[]>;
-  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null; visibility?: 'scoped' | 'public'; owner?: string | null; name?: string | null; execId?: string }>;
-  _rpcExposeApp(target: NimbusAppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<Omit<NimbusExposedApp, 'url'> & { url: string | null }>;
-  _rpcListApps(): Promise<Array<Omit<NimbusApp, 'url'> & { url: string | null }>>;
-  _rpcRotateLink(target: NimbusAppTarget): Promise<Omit<NimbusExposedApp, 'url'> & { url: string | null }>;
-  _rpcRemoveApp(target: NimbusAppTarget): Promise<{ owner: string; removed: boolean; port: number | null }>;
-  _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<{ port: number; capability: string | null; visibility: 'scoped' | 'public' }>;
-  _rpcRemoveDurableApp(owner: string): Promise<{ owner: string; removed: boolean; port: number | null }>;
-  _rpcUnexposePort(port: number): Promise<{ port: number; ok: boolean }>;
-  _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
-}
-
-/** A hosted runtime serves every method a sandbox calls; a method added to the surface fails here until it does. */
-type HostedSessionServesTheSurface = HostedSession extends NimbusSessionSurface ? true : never;
-const hostedSessionServesTheSurface: HostedSessionServesTheSurface = true;
-void hostedSessionServesTheSurface;
 
 interface NimbusSessionNamespace {
   idFromName(name: string): DurableObjectId;
@@ -394,18 +177,6 @@ export class NimbusRemoteError extends Error {
   }
 }
 
-const RemoteRpcSuccessSchema = z.object({
-  ok: z.literal(true),
-  result: z.unknown().optional(),
-}).passthrough();
-
-const RemoteRpcFailureSchema = z.object({
-  ok: z.boolean().optional(),
-  error: z.string().optional(),
-  message: z.string().optional(),
-  code: z.string().optional(),
-}).passthrough();
-
 async function remotePayload(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return null;
@@ -420,7 +191,7 @@ async function remotePayload(response: Response): Promise<unknown> {
 }
 
 function remoteFailure(response: Response, payload: unknown): NimbusRemoteError {
-  const failure = RemoteRpcFailureSchema.safeParse(payload);
+  const failure = SessionFailureSchema.safeParse(payload);
   const fallback = `Nimbus remote API request failed (${response.status})`;
   return new NimbusRemoteError(failure.success ? failure.data.error ?? failure.data.message ?? fallback : fallback, {
     status: response.status,
@@ -428,189 +199,6 @@ function remoteFailure(response: Response, payload: unknown): NimbusRemoteError 
     body: payload,
   });
 }
-
-
-
-const UndefinedResultSchema = z.undefined();
-const UnknownResultSchema = z.unknown();
-/** `_rpcWriteFile` answers with the byte count the VFS wrote. */
-const WriteFileResultSchema = z.number();
-const StringOrNullSchema = z.string().nullable();
-const Uint8ArrayOrNullSchema = z.instanceof(Uint8Array).nullable();
-const BooleanResultSchema = z.boolean();
-
-const ReadyResultSchema = z.object({
-  ok: z.literal(true),
-  preinstalled: z.array(z.string()),
-});
-
-const ExecResultSchema = z.object({
-  command: z.string(),
-  exitCode: z.number(),
-  success: z.boolean(),
-  stdout: z.string(),
-  stderr: z.string(),
-  duration: z.number(),
-  timestamp: z.number(),
-});
-
-const ProcessSchema = z.object({
-  pid: z.number(),
-  command: z.string(),
-  argv: z.array(z.string()),
-  cwd: z.string(),
-  state: z.string(),
-  exitCode: z.number().nullable(),
-  startTime: z.number(),
-  endTime: z.number().nullable(),
-  longRunning: z.boolean(),
-  attachedTty: z.boolean().optional().default(false),
-  execId: z.string().optional(),
-});
-
-const PortSchema = z.object({
-  port: z.number(),
-  pid: z.number(),
-  registeredAt: z.number(),
-  capability: z.string(),
-  execId: z.string().optional(),
-});
-
-const StartResultSchema = z.object({
-  command: z.string(),
-  pid: z.number(),
-  process: ProcessSchema,
-  ports: z.array(PortSchema),
-  startedAt: z.number(),
-});
-
-const FileStatSchema = z.object({
-  type: z.string(),
-  size: z.number(),
-  ctime: z.number().optional(),
-  mtime: z.number(),
-  mode: z.number(),
-});
-
-const DirectoryEntrySchema = z.object({
-  name: z.string(),
-  type: z.string(),
-});
-
-const RuntimeSummarySchema = z.object({
-  name: z.string(),
-  version: z.string(),
-  root: z.string(),
-  abi: z.string(),
-  bins: z.array(z.string()),
-  sizeBytes: z.number(),
-  license: z.string(),
-});
-
-const AvailableRuntimeSchema = z.object({
-  name: z.string(),
-  abi: z.string(),
-  defaultVersion: z.string(),
-  versions: z.array(z.object({
-    version: z.string(),
-    sizeBytes: z.number(),
-    license: z.string(),
-  })),
-});
-
-const RuntimeListSchema = z.object({
-  installed: z.array(RuntimeSummarySchema),
-  available: z.array(AvailableRuntimeSchema),
-});
-
-const ProcessControlResultSchema = z.object({
-  ok: z.boolean(),
-  pid: z.number(),
-});
-
-const ProcessLogChunkSchema = z.object({
-  seq: z.number(),
-  ts: z.number(),
-  stream: z.enum(['stdout', 'stderr']),
-  data: z.string(),
-  binary: z.boolean().optional(),
-});
-
-const ProcessExitInfoSchema = z.object({
-  code: z.number(),
-  at: z.number(),
-  reason: z.string().optional(),
-});
-
-const ProcessLogsResultSchema = z.object({
-  pid: z.number(),
-  chunks: z.array(ProcessLogChunkSchema),
-  text: z.string(),
-  cursor: z.number(),
-  truncated: z.boolean(),
-  exit: ProcessExitInfoSchema.nullable(),
-});
-
-const ExposedPortSchema = z.object({
-  port: z.number(),
-  listening: z.boolean(),
-  pid: z.number().nullable(),
-  registeredAt: z.number().nullable(),
-  capability: z.string().nullable(),
-  visibility: z.enum(['scoped', 'public']).optional(),
-  owner: z.string().nullable().optional(),
-  name: z.string().nullable().optional(),
-  execId: z.string().optional(),
-});
-
-const ExposedAppSchema = z.object({
-  owner: z.string(),
-  name: z.string().nullable(),
-  port: z.number(),
-  pid: z.number().nullable(),
-  capability: z.string().nullable(),
-  visibility: z.enum(['scoped', 'public']),
-  url: z.string().nullable(),
-  execId: z.string().optional(),
-});
-
-const AppSchema = z.object({
-  owner: z.string(),
-  name: z.string().nullable(),
-  port: z.number().nullable(),
-  pid: z.number().nullable(),
-  status: z.enum(['running', 'starting', 'stopped', 'failed']),
-  visibility: z.enum(['scoped', 'public']),
-  capability: z.string().nullable(),
-  restart: z.enum(['never', 'on-failure']),
-  diagnostic: z.string().nullable(),
-  url: z.string().nullable(),
-  execId: z.string().optional(),
-});
-
-const EnsureDurableAppSchema = z.object({
-  port: z.number(),
-  capability: z.string().nullable(),
-  visibility: z.enum(['scoped', 'public']),
-});
-
-const RemoveDurableAppSchema = z.object({
-  owner: z.string(),
-  removed: z.boolean(),
-  port: z.number().nullable(),
-});
-
-const UnexposedPortSchema = z.object({
-  port: z.number(),
-  ok: z.boolean(),
-});
-
-const DestroyResultSchema = z.object({
-  ok: z.literal(true),
-  killed: z.number(),
-  destroyedAt: z.number(),
-  reason: z.string().nullable(),
-});
 
 const ToolPathInputSchema = z.object({
   path: z.string().optional(),
@@ -738,61 +326,56 @@ export class NimbusSandbox {
 
   private remoteStub(): NimbusSessionSurface {
     return {
-      _rpcReady: (options) => this.remoteRpc('ready', [options], ReadyResultSchema),
+      _rpcReady: (options) => this.remoteRpc('ready', [options]),
       _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
-      _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options], StartResultSchema),
-      _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options], ExecResultSchema),
+      _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
+      _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
       // A credential rides the wire as a trailing `{ cred }` options object
       // so the payload names it explicitly; the remote dispatcher decides
       // what to do with it (today: refuse, as it refuses `cred` on exec).
-      _rpcReadFile: (path, _pid, cred) => this.remoteRpc('readFile', [path, ...fileWireOptions(cred)], StringOrNullSchema),
-      _rpcReadFileBytes: (path, _pid, cred) => this.remoteRpc('readFileBytes', [path, ...fileWireOptions(cred)], Uint8ArrayOrNullSchema),
-      _rpcWriteFile: async (path, content, _pid, cred) => {
-        // The byte count is the wire contract but not part of the public
-        // `files.write` surface, so it is validated and dropped. Declaring
-        // this `undefined` made every remote write throw after succeeding.
-        await this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)], WriteFileResultSchema);
-      },
-      _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)], FileStatSchema.nullable()),
-      _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)], FileStatSchema.nullable()),
-      _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)], UndefinedResultSchema),
-      _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)], UndefinedResultSchema),
+      _rpcReadFile: (path, _pid, cred) => this.remoteRpc('readFile', [path, ...fileWireOptions(cred)]),
+      _rpcReadFileBytes: (path, _pid, cred) => this.remoteRpc('readFileBytes', [path, ...fileWireOptions(cred)]),
+      _rpcWriteFile: (path, content, _pid, cred) => this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)]),
+      _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)]),
+      _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)]),
+      _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)]),
+      _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)]),
       _rpcFsReadRange: (path, offset, length, _pid, cred) =>
-        this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)], Uint8ArrayOrNullSchema),
-      _rpcReaddir: (path, _pid, cred) => this.remoteRpc('readdir', [path, ...fileWireOptions(cred)], z.array(DirectoryEntrySchema)),
-      _rpcExists: (path, _pid, cred) => this.remoteRpc('exists', [path, ...fileWireOptions(cred)], BooleanResultSchema),
-      _rpcMkdir: (path, _pid, cred) => this.remoteRpc('mkdir', [path, ...fileWireOptions(cred)], UndefinedResultSchema),
+        this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)]),
+      _rpcReaddir: (path, _pid, cred) => this.remoteRpc('readdir', [path, ...fileWireOptions(cred)]),
+      _rpcExists: (path, _pid, cred) => this.remoteRpc('exists', [path, ...fileWireOptions(cred)]),
+      _rpcMkdir: (path, _pid, cred) => this.remoteRpc('mkdir', [path, ...fileWireOptions(cred)]),
       _rpcDeleteFile: (path, options, cred) =>
-        this.remoteRpc('deleteFile', [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }], UndefinedResultSchema),
-      _rpcInstallRuntime: (spec, options) => this.remoteRpc('installRuntime', [spec, options], UnknownResultSchema),
-      _rpcEnsureRuntimes: (specs, options) => this.remoteRpc('ensureRuntimes', [specs, options], UnknownResultSchema),
-      _rpcListRuntimes: () => this.remoteRpc('listRuntimes', [], RuntimeListSchema),
-      _rpcListProcesses: () => this.remoteRpc('listProcesses', [], z.array(ProcessSchema)),
-      _rpcKillProcess: (pid) => this.remoteRpc('killProcess', [pid], ProcessControlResultSchema),
-      _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data], ProcessControlResultSchema),
-      _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid], ProcessControlResultSchema),
-      _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size], ProcessControlResultSchema),
-      _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal], ProcessControlResultSchema),
-      _rpcProcessLogs: (pid, options) => this.remoteRpc('processLogs', [pid, options], ProcessLogsResultSchema),
-      _rpcListPorts: () => this.remoteRpc('listPorts', [], z.array(PortSchema)),
-      _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options], ExposedPortSchema),
-      _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input], EnsureDurableAppSchema),
-      _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }], RemoveDurableAppSchema),
-      _rpcExposeApp: (target, options) => this.remoteRpc('exposeApp', [target, options], ExposedAppSchema),
-      _rpcListApps: () => this.remoteRpc('listApps', [], z.array(AppSchema)),
-      _rpcRotateLink: (target) => this.remoteRpc('rotateLink', [target], ExposedAppSchema),
-      _rpcRemoveApp: (target) => this.remoteRpc('removeApp', [target], RemoveDurableAppSchema),
-      _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port], UnexposedPortSchema),
-      _rpcDestroy: (options) => this.remoteRpc('destroy', [options], DestroyResultSchema),
+        this.remoteRpc('deleteFile', [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
+      _rpcInstallRuntime: (spec, options) => this.remoteRpc('installRuntime', [spec, options]),
+      _rpcEnsureRuntimes: (specs, options) => this.remoteRpc('ensureRuntimes', [specs, options]),
+      _rpcListRuntimes: () => this.remoteRpc('listRuntimes', []),
+      _rpcListProcesses: () => this.remoteRpc('listProcesses', []),
+      _rpcKillProcess: (pid) => this.remoteRpc('killProcess', [pid]),
+      _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data]),
+      _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid]),
+      _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size]),
+      _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal]),
+      _rpcProcessLogs: (pid, options) => this.remoteRpc('processLogs', [pid, options]),
+      _rpcListPorts: () => this.remoteRpc('listPorts', []),
+      _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options]),
+      _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input]),
+      _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }]),
+      _rpcExposeApp: (target, options) => this.remoteRpc('exposeApp', [target, options]),
+      _rpcListApps: () => this.remoteRpc('listApps', []),
+      _rpcRotateLink: (target) => this.remoteRpc('rotateLink', [target]),
+      _rpcRemoveApp: (target) => this.remoteRpc('removeApp', [target]),
+      _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port]),
+      _rpcDestroy: (options) => this.remoteRpc('destroy', [options]),
     };
   }
 
-  private async remoteRpc<T>(op: string, args: unknown[], resultSchema: z.ZodType<T>): Promise<T> {
+  private async remoteRpc<Op extends SessionJsonOperation>(op: Op, args: unknown[]): Promise<SessionResult<Op>> {
     const response = await this.remoteFetch(op, args, 'application/json');
     const payload = await remotePayload(response);
-    const success = RemoteRpcSuccessSchema.safeParse(payload);
+    const success = SessionSuccessSchema.safeParse(payload);
     if (!response.ok || !success.success) throw remoteFailure(response, payload);
-    return resultSchema.parse(WireDecoder.parse(success.data.result));
+    return SessionResults[op].parse(WireDecoder.parse(success.data.result));
   }
 
   /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
@@ -803,7 +386,7 @@ export class NimbusSandbox {
     throw remoteFailure(response, await remotePayload(response));
   }
 
-  private async remoteFetch(op: string, args: unknown[], accept: string): Promise<Response> {
+  private async remoteFetch(op: SessionOperation, args: unknown[], accept: string): Promise<Response> {
     if (this.target.kind !== 'remote') {
       throw new Error('Nimbus internal error: remote call on non-remote target');
     }
@@ -867,10 +450,7 @@ export class NimbusSandbox {
 
   async runCode(
     code: string,
-    options: NimbusExecOptions & {
-      language?: NimbusCodeLanguage;
-      install?: 'never' | 'ifMissing';
-    } = {},
+    options: Omit<SessionRunCodeOptions, 'preinstall' | 'shellRoot' | 'language'> & { language?: NimbusCodeLanguage } = {},
   ): Promise<NimbusExecResult> {
     const language = options.language ?? 'javascript';
     const requirement = codeRuntimeRequirement(language, options.install);
@@ -914,7 +494,7 @@ export class NimbusSandbox {
       },
       write: async (path: string, content: string | Uint8Array): Promise<void> => {
         await this.ready();
-        return this.rpc(this.stub()._rpcWriteFile(path, content, undefined, cred));
+        await this.rpc(this.stub()._rpcWriteFile(path, content, undefined, cred));
       },
       stat: async (path: string): Promise<NimbusFileStat | null> => {
         await this.ready();
@@ -938,7 +518,7 @@ export class NimbusSandbox {
         await this.ready();
         return this.rpc(this.stub()._rpcFsReadRange(path, offset, length, undefined, cred));
       },
-      list: async (path = this.root): Promise<{ name: string; type: string }[]> => {
+      list: async (path = this.root): Promise<SessionDirectoryEntry[]> => {
         await this.ready();
         return this.rpc(this.stub()._rpcReaddir(path, undefined, cred));
       },
@@ -1103,7 +683,7 @@ export class NimbusSandbox {
     },
   };
 
-  private exposedApp(result: Omit<NimbusExposedApp, 'url'> & { url: string | null }): NimbusExposedApp {
+  private exposedApp(result: SessionExposedApp): NimbusExposedApp {
     return {
       ...result,
       url: this.portUrl(result.port, {
@@ -1200,9 +780,9 @@ export class NimbusSandbox {
     return caps;
   }
 
-  private execOptions(options: NimbusExecOptions): Record<string, unknown> {
+  private execOptions(options: NimbusExecOptions): SessionExecOptions {
     const shellId = options.shellId ?? this.options.shellId;
-    const normalized: Record<string, unknown> = { ...options, ...(shellId === undefined ? {} : { shellId }) };
+    const normalized: SessionExecOptions = { ...options, ...(shellId === undefined ? {} : { shellId }) };
     if (typeof normalized.cwd === 'string') {
       // The session shell only understands absolute paths; a relative cwd
       // forwarded verbatim used to reach it anyway — `pwd` echoed the
@@ -1413,11 +993,4 @@ async function resolveHeaders(input: NimbusHeaders | undefined): Promise<Headers
   if (!input) return undefined;
   return typeof input === 'function' ? await input() : input;
 }
-
-
-
-
-
-
-
 

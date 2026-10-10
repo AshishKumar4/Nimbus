@@ -14,16 +14,11 @@
 import { runtimeCatalogSource, type RuntimeCatalogEnv } from './runtime-catalog.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
+import type { SessionRuntimeInstallResult } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type RuntimeWarmHook } from '@nimbus-sh/core/runtime/nimbus-command.js';
 import type { MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 export { runtimeCatalogSource };
 export type { RuntimeWarmHook };
-export interface RuntimeInstallSummary {
-    spec: string;
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-}
 export interface RuntimeCommandHint {
     command: string;
     runtimeName: string;
@@ -43,7 +38,7 @@ export declare function installRuntimeProgrammatic(deps: {
     warmRuntime?: RuntimeWarmHook;
 }, spec: string, opts?: {
     force?: boolean;
-}): Promise<RuntimeInstallSummary>;
+}): Promise<SessionRuntimeInstallResult>;
 export declare function ensureRuntimesProgrammatic(deps: {
     runtimes: RuntimeManager;
     registry: MinShellRegistry;
@@ -52,7 +47,7 @@ export declare function ensureRuntimesProgrammatic(deps: {
     warmRuntime?: RuntimeWarmHook;
 }, specs: string[], opts?: {
     force?: boolean;
-}): Promise<RuntimeInstallSummary[]>;
+}): Promise<SessionRuntimeInstallResult[]>;
 /**
  * Command-not-found hints, catalog-driven: a bare name the shell could not
  * resolve is answered with the runtime that provides it, so `python3` hints
