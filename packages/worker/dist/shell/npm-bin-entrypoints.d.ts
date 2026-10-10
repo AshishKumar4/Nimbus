@@ -1,11 +1,9 @@
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 type Output = {
-    write(data: string): void | Promise<void>;
-    writeBytes?(data: Uint8Array): void | Promise<void>;
+    write(data: string): void;
 };
 /** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
 export declare function isRuntimeInstallHint(command: object): boolean;
@@ -19,7 +17,6 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
     /** The session's namespace: bins are found in it, as the running command when one runs. */
     filesystem: ProcessFiles;
     getCwd(): string;
-    processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
     /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */
     learnedServer(server: ServerIdentity): Promise<boolean>;

@@ -139,83 +139,29 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             const bundleProfile = bundleProfileForNpmBin(bin);
             const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
-            const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
-            // A hint: a bin that listens runs on as a resident however it started.
-            const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
-            const longRunning = attachedTty || knownServerBin(name, argv) || await deps.learnedServer(server);
             const runtimeCmd = await upstreamResolve(runtimeName, from);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
                 return 1;
             }
             const runRuntime = runtimeCmd;
-            const shellLine = `${name} ${argv.join(' ')}`.trim();
-            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty, parentPid: ctx.pid });
-            const pid = entry.pid;
-            const startedAt = Date.now();
-            if (longRunning)
-                deps.processes.openInput(pid);
-            const label = longRunning ? 'started (long-running)' : 'started';
-            deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
-            deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning, attachedTty });
-            // Output goes to the pid's log ring and the caller's streams; nothing
-            // abandons this invocation — it runs until the program exits.
-            const writeThrough = (stream, target) => (data) => {
-                const text = String(data);
-                try {
-                    deps.processes.appendOutput(pid, stream, text);
-                }
-                catch { }
-                try {
-                    target.write(text);
-                }
-                catch { }
+            // The bin's program runs as `node <target>` does: the runtime owns its
+            // process, output and exit. The bin adds how it is shown, and hints to
+            // start it as a resident (a bin that listens runs on as one however it
+            // started).
+            const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
+            const launch = {
+                command: `${name} ${argv.join(' ')}`.trim(),
+                attachedTty: looksAttachedTtyNpmBin(metadata, argv, ctx.env),
+                serves: knownServerBin(name, argv) || await deps.learnedServer(server),
+                server,
             };
-            let exitCode = 1;
-            try {
-                // A user-invoked bin is a foreground program: the shell waits for its
-                // real exit — no dispatch timeout. Ctrl-C ends it through the
-                // terminator the exec path registers on the pid.
-                exitCode = await runRuntime({
-                    ...ctx,
-                    args: ['/' + bin.targetPath, ...argv],
-                    stdout: { write: writeThrough('stdout', ctx.stdout) },
-                    stderr: { write: writeThrough('stderr', ctx.stderr) },
-                    __nimbusBinSpawn: {
-                        skipSpawn: true,
-                        callerPid: pid,
-                        command: shellLine,
-                        forceLongRunning: longRunning,
-                        attachedTty,
-                        server,
-                    },
-                    __nimbusBundleProfile: bundleProfile,
-                });
-            }
-            catch (e) {
-                writeThrough('stderr', ctx.stderr)(`bin error: ${formatError(e)}\n`);
-                exitCode = 1;
-            }
-            finally {
-                // A resident has it now, started as one or run on as one once it
-                // listened (FacetManager._promote).
-                const resident = deps.processes.get(pid);
-                const handedOffToLongRunningFacet = exitCode === 0 && resident?.longRunning === true && resident.state === 'running';
-                if (!handedOffToLongRunningFacet) {
-                    try {
-                        deps.processes.exit(pid, exitCode);
-                    }
-                    catch { }
-                    try {
-                        if (!deps.processes.getExit(pid))
-                            deps.processes.markExit(pid, exitCode);
-                    }
-                    catch { }
-                    deps.notifyTerminalEvent({ type: 'exit', pid, code: exitCode, command: shellLine });
-                    deps.emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt);
-                }
-            }
-            return exitCode;
+            return await runRuntime({
+                ...ctx,
+                args: ['/' + bin.targetPath, ...argv],
+                __nimbusBin: launch,
+                __nimbusBundleProfile: bundleProfile,
+            });
         };
     }
 }

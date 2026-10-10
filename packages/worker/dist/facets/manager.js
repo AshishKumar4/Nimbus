@@ -16,13 +16,13 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_NODE_LIB_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
+import { createNodeFacetRuntime, fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
@@ -142,9 +142,6 @@ function* launchNames(cwd, program, argv, modules, refs) {
             yield pattern.dir;
     }
 }
-// A piped stdin's largest single write to the process input channel, a
-// quarter of that queue's bound (core/runtime/process-input.ts).
-const STDIN_PIPE_PIECE_BYTES = 64 * 1024;
 /** A run after a stop would load another module map than the run before it. */
 class ReplayCodeChanged extends Error {
     constructor() {
@@ -657,22 +654,6 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
     `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
     generateSqliteFacetPreamble();
 /**
- * The runtime's own modules in every launch's map: the runtime-code
- * interpreter, its primordials and its host module, whose primordials load at
- * the launch's start and the other two only when the program first produces
- * code no launch staged (core/_shared/commonjs-cell.ts, RUNTIME CODE); and
- * Node's library, loaded when the program first needs it (node-shims.ts
- * __nimbusNodeLib).
- */
-function runtimeModules(sources) {
-    return {
-        [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
-        [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
-        [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
-        [RUNTIME_NODE_LIB_MODULE]: sources.nodeLib,
-    };
-}
-/**
  * The URL an entry's import() resolves against and its `Function` carries:
  * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
  * `<cwd>/[stdin]`).
@@ -736,11 +717,11 @@ function entryFrameFile(filename, cwd, esModule) {
  * A node program's module head, the same for both lifetimes: its imports,
  * the SUPERVISOR's answering and the stop's replay, and its code cells.
  */
-function nodeProgramModule(bundleSource, entry, usesSqlite, stagedBindings, wasmImports) {
+function nodeProgramModule(bundleSource, runtime, usesSqlite, stagedBindings, wasmImports) {
     return `
 ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
-${COMMONJS_CELL_IMPORTS}
+${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
@@ -756,10 +737,7 @@ ${STOP_REPLAY_SOURCE}
 // The process's code: a module per cell, compiled when first required. The
 // only other way a string becomes code in a Worker is \`new Function\` at
 // module evaluation, which compiled the whole closure before the program ran.
-const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
-const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
-const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
-${COMMONJS_CELL_RUNTIME_SOURCE}
+${runtime.code}
 `;
 }
 /**
@@ -800,6 +778,7 @@ function nodeProgramRuntime(sources, esModule) {
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
+      return __task;
     };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
@@ -816,8 +795,8 @@ ${RESIDENCY_MISS_REPORT}
 
     // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
     if (__supervisor && !captureOutput) {
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => __nimbusWriteLiveOutput("stdout", d, enc, cb, __queueRpcWrite);
+      __processMod.stderr.write = (d, enc, cb) => __nimbusWriteLiveOutput("stderr", d, enc, cb, __queueRpcWrite);
     }
     // A fatal report goes to fd 2 as Node's does: past any write a program
     // installs, after what the program wrote, and not program output that
@@ -859,9 +838,10 @@ ${RESIDENCY_MISS_REPORT}
 export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule, esModuleMap) {
     const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
+    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
     return {
         code: `
-${nodeProgramModule(bundleSource, entry, usesSqlite, vfsState.stagedBindings, wasmImports)}
+${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
 
 // The module bundle, at module level (startup time); the code cells the store
 // adopts are getters over the map's own text.
@@ -1079,7 +1059,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
 };
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
+        codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
     };
 }
 /**
@@ -1186,10 +1166,11 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
         cred: opts.cred,
     });
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
+    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
     return {
         code: `
 import { DurableObject } from "cloudflare:workers";
-${nodeProgramModule(bundleSource, entry, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
+${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
@@ -1610,7 +1591,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
+        codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
     };
 }
 /**
@@ -3383,31 +3364,37 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         budgetState.fileCount++;
         added++;
     }
-    // A module brings its static imports: learned one miss per launch, nuxt's
-    // on-change alone would have cost a relaunch for each of its files.
+    // A module brings what it loads synchronously, its closure staged whole or
+    // not at all: its static imports (learned one miss per launch, nuxt's
+    // on-change alone would have cost a relaunch for each of its files) and
+    // its require wrappers' loads (a learned @vitejs/plugin-vue without
+    // vue/compiler-sfc failed "Failed to resolve vue/compiler-sfc"). A part of
+    // a closure is no use: the module it leaves out fails its synchronous read.
+    // The file itself was read, so it stays, as data, whether its closure fits
+    // or not (observed-read-closure.mjs: Tailwind v3 reads .js content files as
+    // text); executed without its closure, the run fails naming what it missed
+    // and the next launch stages that (facet-observed-residency.mjs). What the
+    // module defers with import() is fetched when it runs, and what the runs
+    // executed is evidence of its own.
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const cell = bundle[path];
-        const source = typeof cell === 'string' ? cell : new TextDecoder().decode(cell);
-        const closure = await prefetchForRequire(requireFsOverBridge(vfs), source, '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer));
+        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer), {
+            purpose: 'dependency-closure', held: bundle,
+            // UTF-8 bytes, which bound both the raw bytes `room` counts and the
+            // cell lengths the bundle's own cap counts.
+            maxAdditionalBytes: Math.max(0, Math.min(room - bytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
+            maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
+        });
         if ('kind' in closure)
             continue;
         for (const [dep, content] of Object.entries(closure.bundle)) {
-            if (closure.speculative.has(dep))
-                continue;
             if (bundle[dep] !== undefined) {
                 requiredPaths.add(dep);
                 continue;
             }
             const cellLen = _bundleCellLength(content);
-            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-                break;
-            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
-                continue;
             const raw = _bundleCellRawBytes(content);
-            if (bytes + raw > room)
-                continue;
             bundle[dep] = content;
             requiredPaths.add(dep);
             bytes += raw;
@@ -6026,6 +6013,7 @@ export class FacetManager {
         // guest takes what is queued then, for its synchronous reads of fd 0
         // (node-shims.ts, __nimbusPrepareStdin).
         const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
+        const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
         const abortController = new AbortController();
         // Ctrl-C / kill on a user program has to end the in-flight run, not just
         // mark the table row: the runOnce request carries this signal.
@@ -6069,6 +6057,7 @@ export class FacetManager {
                     // and the remedy — the same shape the got/next guards print.
                     pacer.settle();
                     stdinPump?.stop();
+                    foreground?.release();
                     if (err instanceof ClosureBoundExceededError) {
                         const o = err.outcome;
                         const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
@@ -6291,6 +6280,7 @@ export class FacetManager {
                     // A promoted process reads on, as the resident.
                     if (!promoted)
                         stdinPump?.stop();
+                    foreground?.release();
                     if (inputChannel > 0)
                         this.stdinTaken.get(inputChannel)?.release();
                     this.stdinTaken.delete(inputChannel);
@@ -6308,6 +6298,7 @@ export class FacetManager {
             if (admitted)
                 throw err;
             stdinPump?.stop();
+            foreground?.release();
             if (abortController.signal.aborted) {
                 this._end(entry.pid, { code: 137, killed: true });
                 return { exitCode: 130, stdout: '', stderr: '' };
@@ -6594,7 +6585,7 @@ export class FacetManager {
         if (this.hooks.deliverOutput)
             await this.hooks.deliverOutput(pid, stream, bytes);
         else
-            this.processes.appendOutputBytes(pid, stream, bytes);
+            await this.processes.appendOutputBytes(pid, stream, bytes);
     }
     /**
      * A chunk a process printed, tagged with its run and its offset in what the
@@ -6871,35 +6862,7 @@ export class FacetManager {
      * shell.
      */
     _pumpStdinPipe(pid, pipe) {
-        const opened = !this.processes.hasInput(pid);
-        if (opened)
-            this.processes.openInput(pid);
-        let stopped = false;
-        void (async () => {
-            for (;;) {
-                // A piece at a time: the queue is bounded, and one larger than its
-                // room would never fit.
-                const piece = await pipe.readBytes(STDIN_PIPE_PIECE_BYTES);
-                if (stopped)
-                    return;
-                if (piece === null) {
-                    this.processes.endInput(pid);
-                    return;
-                }
-                while (!this.processes.writeInputBytes(pid, piece).ok) {
-                    if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped)
-                        return;
-                }
-            }
-        })().catch(() => { if (!stopped)
-            this.processes.endInput(pid); });
-        return {
-            stop: () => {
-                stopped = true;
-                if (opened)
-                    this.processes.closeInput(pid);
-            },
-        };
+        return this.processes.pumpInput(pid, pipe);
     }
     /**
      * W5 Lever 5: push a DiagFailure into the OOM ring for every facet
@@ -7696,6 +7659,9 @@ export class FacetManager {
             entry = this._spawnLaunchEntry(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), cwd, opts.invokerPid, redriven);
         }
         this.processes.setLongRunning(entry.pid);
+        // Every long-running process has an input channel on its pid, one a
+        // launcher reserved included.
+        this.processes.openInput(entry.pid);
         if (opts.attachedTty)
             this.processes.setAttachedTty(entry.pid);
         if (!opts.skipSpawn) {
@@ -8428,7 +8394,7 @@ export class FacetManager {
     }
     _holdForeground(pid, launch) {
         this.processes.setForeground(pid, true);
-        const unsubscribe = this.processes.subscribeLogs(pid, (chunk) => launch.write(chunk.stream, chunk.data));
+        const unsubscribe = this.processes.subscribeOutputBytes(pid, (chunk) => launch.write(chunk.stream, chunk.data));
         let onAbort = () => { };
         const interrupted = new Promise((_, reject) => {
             onAbort = () => {

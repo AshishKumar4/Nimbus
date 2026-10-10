@@ -82,12 +82,9 @@ export interface RunFreshOpts {
      *  notice + /api/processes listing. */
     command?: string;
     /**
-     * G4 (runtime-pkg wave): caller has already allocated a
-     * process supervisor PID for this invocation; runFresh / facetMgr.exec
-     * should reuse it instead of spawning a duplicate. Used by the
-     * .bin handler in src/session/init.ts to keep `ps` showing ONE
-     * row per bin invocation instead of two (the wrapper + the inner
-     * node script).
+     * The caller has already allocated the process supervisor PID for this
+     * invocation (a child_process broker's child, a launch wrapper's process);
+     * runFresh / facetMgr.exec reuse it instead of spawning another.
      */
     skipSpawn?: boolean;
     callerPid?: number;

@@ -23,8 +23,8 @@
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
- *   - supportsBinSpawn: true for node and bun (a .bin handler, the
- *     child_process broker or a background job propagates a callerPid);
+ *   - supportsBinSpawn: true for node and bun (the child_process broker
+ *     or a background job propagates a callerPid);
  *     other runtimes use a plain spawn flow.
  *
  * Anti-requirements observed
@@ -54,6 +54,17 @@ export interface RuntimeRunResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+}
+/**
+ * A program run as an npm bin (worker shell/npm-bin-entrypoints.ts): how its
+ * process is shown, and hints to start it as a resident.
+ */
+export interface BinLaunch {
+    command: string;
+    attachedTty: boolean;
+    /** A server by the hints (worker facets/server-hints.ts): resident without its code's analysis. */
+    serves: boolean;
+    server: ServerIdentity;
 }
 /**
  * Options the handler passes to the runner. Mirrors RunFreshOpts.
