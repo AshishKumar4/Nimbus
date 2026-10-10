@@ -11,8 +11,10 @@ export interface ModuleSourceEnv {
 /** Source already verified against its deployment pin. Shared across generated programs. */
 export class ImmutableModuleSource {
   readonly byteLength: number;
-  constructor(readonly text: string, readonly asset: ModuleSourceAsset) {
-    this.byteLength = new TextEncoder().encode(text).byteLength;
+  readonly text: string;
+  constructor(bytes: Uint8Array, readonly asset: ModuleSourceAsset) {
+    this.text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    this.byteLength = bytes.byteLength;
   }
 }
 

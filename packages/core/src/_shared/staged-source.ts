@@ -31,7 +31,7 @@ export function immutableModuleSource(env: StagedSourceEnv, asset: StagedAsset):
   const key = asset.path + ':' + asset.sha256;
   let pending = sources.get(key);
   if (!pending) {
-    pending = fetchStagedText(env, asset).then((text) => new ImmutableModuleSource(text, { path: asset.path, sha256: asset.sha256 }));
+    pending = fetchStagedBytes(env, asset).then((bytes) => new ImmutableModuleSource(bytes, { path: asset.path, sha256: asset.sha256 }));
     sources.set(key, pending);
     pending.catch(() => { if (sources.get(key) === pending) sources.delete(key); });
   }

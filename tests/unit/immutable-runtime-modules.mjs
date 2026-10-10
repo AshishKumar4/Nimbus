@@ -11,7 +11,7 @@ import { stagedAssets } from './lib/staged-assets.mjs';
 const text = 'const shared = "' + 'library'.repeat(10_000) + '";';
 const sha256 = createHash('sha256').update(text).digest('hex');
 const asset = { path: '/_assets/' + sha256 + '.js', sha256 };
-const shared = new ImmutableModuleSource(text, asset);
+const shared = new ImmutableModuleSource(new TextEncoder().encode(text), asset);
 const source = moduleSource`${shared}\nexport default shared.length + ${42};`;
 const encoded = new TextEncoder().encode(JSON.stringify(source.recipe()));
 const image = facetImagePath(await facetImageDigest(encoded));
