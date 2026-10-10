@@ -17,6 +17,7 @@ import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLi
 import { httpFetchCases } from './lib/http-fetch-cases.mjs';
 import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
 import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { generateNodeLibModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -201,13 +202,18 @@ const probePort = net.createServer(); probePort.listen(0, '127.0.0.1', portReady
 await portReady.promise;
 const port = probePort.address().port;
 const released = Promise.withResolvers(); probePort.close(released.resolve); await released.promise;
+writeFileSync(join(dir, 'node-lib.js'), generateNodeLibModule());
 writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
+const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
 import * as __real_http from 'node:http';
 import * as __real_https from 'node:https';
 import * as __real_net from 'node:net';
-import * as __real_dns from 'node:dns';
+import * as __real_util from 'node:util';
+import * as __real_url from 'node:url';
+import * as __real_buffer from 'node:buffer';
+import __real_process from 'node:process';
+import lib from './node-lib.js';
 import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
 const builtins = {}, __pendingIO = [], registered = new Map();
 let nextPort = 49152;
@@ -222,6 +228,15 @@ globalThis.__nimbusRawSetTimeout = setTimeout;
 const previousHttp = { ...__real_http.default, request: __real_http.default.request };
 const previousAddress = __real_http.default.Server.prototype.address;
 ${NODE_ERROR_PREAMBLE}
+const primordials = {};
+lib.primordialsOf(primordials, globalThis);
+const nodeLib = lib.createNodeLib({
+  util: __real_util.default, Buffer: __real_buffer.Buffer, process: __real_process, url: __real_url.default,
+  primordials, sources: lib.sources, errors: { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable },
+  slots: lib.createWorkerdSlots(__real_util.default), builtinObjects: lib.builtinObjects, uvErrors: lib.uvErrors,
+  optionValue: () => undefined, fetch: fetch.bind(globalThis), timers: { setTimeout, clearTimeout },
+});
+builtins.dns = nodeLib.require('dns');
 ${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
 const exercise = ${exercise.toString()};
@@ -245,8 +260,8 @@ export default { async fetch(request) {
       return globalThis.__nimbusServeHttp(new Request(incoming, { headers }));
     };
     try {
-      if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, __real_dns.default, __real_net.default, (server) => previousAddress.call(server)));
-      if (mode === 'review-parity') return Response.json(await httpFetchReviewCases(http, builtins.dns ?? __real_dns.default, __real_net.default));
+      if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, builtins.dns, __real_net.default, (server) => previousAddress.call(server)));
+      if (mode === 'review-parity') return Response.json(await httpFetchReviewCases(http, builtins.dns, __real_net.default));
       return Response.json(await httpFetchCases(http));
     }
     finally { globalThis.fetch = nativeFetch; }
@@ -288,7 +303,9 @@ try {
   assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
   const gaps = JSON.parse(readFileSync(new URL('../fixtures/node-http-fetch-gaps.json', import.meta.url), 'utf8'));
   assert.deepEqual({ node: expectedClient.gaps, nimbus: actualClient.gaps }, gaps, 'physical socket gaps stay pinned until Outbound TCP');
-  const previous = await (await fetch(`http://127.0.0.1:${port}/run?case=review-previous`, { signal: AbortSignal.timeout(10000) })).json();
+  let previous;
+  try { previous = await (await fetch(`http://127.0.0.1:${port}/run?case=review-previous`, { signal: AbortSignal.timeout(10000) })).json(); }
+  catch (error) { throw new Error(logs, { cause: error }); }
   const review = await (await fetch(`http://127.0.0.1:${port}/run?case=review-parity`, { signal: AbortSignal.timeout(10000) })).json();
   console.log('HTTP_REVIEW_PARITY ' + JSON.stringify({ node: expectedReview, previous, nimbus: review }));
   assert.deepEqual(review, expectedReview, 'review regressions match host Node and are compared with the previous native shim');
