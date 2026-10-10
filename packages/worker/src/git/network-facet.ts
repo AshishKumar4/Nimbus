@@ -2735,6 +2735,7 @@ export default {
         // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
         await git.fetch({
           fs, http,
+          uploadPack: { discover: __nimbusGitPack.discover, requestPack: __nimbusGitPack.requestPack },
           dir: opts.dir,
           remote: opts.remote || 'origin',
           ref: opts.ref || undefined,

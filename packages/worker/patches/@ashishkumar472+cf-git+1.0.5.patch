@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index 80a5167..35d8a17 100644
+index 80a5167..b9b783b 100644
 --- a/index.js
 +++ b/index.js
 @@ -1809,0 +1810 @@ class GitConfig {
@@ -281,7 +281,100 @@ index 80a5167..35d8a17 100644
 +          // A reader that stores the pack as it arrives sets the pace:
 +          // at most 64 packets (4 MiB) wait for it.
 +          await packfile.drained(64);
-@@ -8749,16 +8820,22 @@ async function _fetch({
+@@ -8587,0 +8659 @@ async function _fetch({
++  uploadPack,
+@@ -8626,2 +8698,6 @@ async function _fetch({
+-  if (corsProxy === undefined) {
+-    corsProxy = await config.get('http.corsProxy');
++  // Nimbus: the upload-pack protocol is Nimbus's (git/pack/upload-pack.ts),
++  // the one smart-HTTP client its clone also uses: discovery here, and one
++  // pack request below.
++  if (!uploadPack) throw new MissingParameterError('uploadPack')
++  if (since !== null || exclude.length > 0) {
++    throw new Error('fetch: --shallow-since and --shallow-exclude are not supported')
+@@ -8629,9 +8705,2 @@ async function _fetch({
+-
+-  const GitRemoteHTTP = GitRemoteManager.getRemoteHelperFor({ url });
+-  const remoteHTTP = await GitRemoteHTTP.discover({
+-    http,
+-    onAuth,
+-    onAuthSuccess,
+-    onAuthFailure,
+-    corsProxy,
+-    service: 'git-upload-pack',
++  const auth = onAuth ? await onAuth(url, {}) : undefined;
++  const transport = {
+@@ -8639,5 +8708,17 @@ async function _fetch({
+-    headers,
+-    protocolVersion: 1,
+-  });
+-  const auth = remoteHTTP.auth; // hack to get new credentials from CredentialManager API
+-  const remoteRefs = remoteHTTP.refs;
++    auth: auth ? { username: auth.username || '', password: auth.password || '' } : undefined,
++    onProgress: line => {
++      if (onMessage) onMessage(line);
++      const matches = onProgress && line.match(/([^:]*).*\((\d+?)\/(\d+?)\)/);
++      if (matches) {
++        onProgress({
++          phase: matches[1].trim(),
++          loaded: parseInt(matches[2], 10),
++          total: parseInt(matches[3], 10),
++        });
++      }
++    },
++  };
++  const remoteHTTP = await uploadPack.discover(transport);
++  const remoteRefs = new Map(
++    [...remoteHTTP.refs].filter(([name]) => !name.endsWith('^{}'))
++  );
+@@ -8682,17 +8762,0 @@ async function _fetch({
+-  // Assemble the application/x-git-upload-pack-request
+-  const capabilities = filterCapabilities(
+-    [...remoteHTTP.capabilities],
+-    [
+-      'multi_ack_detailed',
+-      'no-done',
+-      'side-band-64k',
+-      // Note: I removed 'thin-pack' option since our code doesn't "fatten" packfiles,
+-      // which is necessary for compatibility with git. It was the cause of mysterious
+-      // 'fatal: pack has [x] unresolved deltas' errors that plagued us for some time.
+-      // isomorphic-git is perfectly happy with thin packfiles in .git/objects/pack but
+-      // canonical git it turns out is NOT.
+-      'ofs-delta',
+-      `agent=${pkg.agent}`,
+-    ]
+-  );
+-  if (relative) capabilities.push('deepen-relative');
+@@ -8723,3 +8787,2 @@ async function _fetch({
+-  const packstream = writeUploadPackRequest({
+-    capabilities,
+-    wants,
++  const answer = await uploadPack.requestPack(transport, remoteHTTP.capabilities, {
++    wants: [...wants],
+@@ -8728,16 +8791,2 @@ async function _fetch({
+-    depth,
+-    since,
+-    exclude,
+-  });
+-  // CodeCommit will hang up if we don't send a Content-Length header
+-  // so we can't stream the body.
+-  const packbuffer = Buffer.from(await collect(packstream));
+-  const raw = await GitRemoteHTTP.connect({
+-    http,
+-    onProgress,
+-    corsProxy,
+-    service: 'git-upload-pack',
+-    url,
+-    auth,
+-    body: [packbuffer],
+-    headers,
++    ...(depth !== null ? { depth } : {}),
++    relative,
+@@ -8745,20 +8794,27 @@ async function _fetch({
+-  const response = await parseUploadPackResponse(raw.body);
+-  if (raw.headers) {
+-    response.headers = raw.headers;
+-  }
 -  // Apply all the 'shallow' and 'unshallow' commands
 -  for (const oid of response.shallows) {
 -    if (!oids.has(oid)) {
@@ -298,6 +391,11 @@ index 80a5167..35d8a17 100644
 -        const haveAllParents =
 -          hasParents.length === 0 || hasParents.every(has => has);
 -        if (!haveAllParents) {
++  const response = {
++    shallows: answer.shallows,
++    unshallows: answer.unshallows,
++    packfile: answer.pack,
++  };
 +  // The shallow boundary and the remote refs name objects the pack brings:
 +  // they change only once it is stored, so no reader sees a tip it lacks.
 +  const updateRefs = async () => {
@@ -320,7 +418,7 @@ index 80a5167..35d8a17 100644
 +            oids.add(oid);
 +          }
 +        } catch (err) {
-@@ -8767,40 +8844 @@ async function _fetch({
+@@ -8767,40 +8823 @@ async function _fetch({
 -      } catch (err) {
 -        oids.add(oid);
 -      }
@@ -362,7 +460,7 @@ index 80a5167..35d8a17 100644
 -    if (prune) {
 -      response.pruned = pruned;
 +      }
-@@ -8808,13 +8846,50 @@ async function _fetch({
+@@ -8808,13 +8825,50 @@ async function _fetch({
 -  } else {
 -    const { pruned } = await GitRefManager.updateRemoteRefs({
 -      fs,
@@ -426,32 +524,49 @@ index 80a5167..35d8a17 100644
 +      if (prune) {
 +        response.pruned = pruned;
 +      }
-@@ -8822 +8897 @@ async function _fetch({
+@@ -8822 +8876 @@ async function _fetch({
 -  }
 +  };
-@@ -8862,0 +8938,17 @@ async function _fetch({
+@@ -8847,15 +8901,14 @@ async function _fetch({
+-  if (onProgress || onMessage) {
+-    const lines = splitLines(response.progress);
+-    forAwait(lines, async line => {
+-      if (onMessage) await onMessage(line);
+-      if (onProgress) {
+-        const matches = line.match(/([^:]*).*\((\d+?)\/(\d+?)\)/);
+-        if (matches) {
+-          await onProgress({
+-            phase: matches[1].trim(),
+-            loaded: parseInt(matches[2], 10),
+-            total: parseInt(matches[3], 10),
+-          });
+-        }
+-      }
+-    });
 +  if (fs.packs && fs.packs.ingest) {
 +    // A filesystem that stores packs itself takes this one as it arrives,
 +    // indexes it in the same pass, and names it: never whole in memory.
 +    const getExternalRefDelta = oid => _readObject({ fs, cache, gitdir, oid });
 +    const packSha = await fs.packs.ingest(gitdir, response.packfile, getExternalRefDelta);
-+    if (raw.body.error) throw raw.body.error
 +    await updateRefs();
 +    const res = {
 +      defaultBranch: response.HEAD,
 +      fetchHead: response.FETCH_HEAD.oid,
 +      fetchHeadDescription: response.FETCH_HEAD.description,
 +    };
-+    if (response.headers) res.headers = response.headers;
 +    if (prune) res.pruned = response.pruned;
 +    if (packSha) res.packfile = `objects/pack/pack-${packSha}.pack`;
 +    return res
-+  }
-@@ -8874,3 +8965,0 @@ async function _fetch({
+@@ -8864 +8916,0 @@ async function _fetch({
+-  if (raw.body.error) throw raw.body.error
+@@ -8871,6 +8922,0 @@ async function _fetch({
+-  if (response.headers) {
+-    res.headers = response.headers;
+-  }
 -  if (prune) {
 -    res.pruned = response.pruned;
 -  }
-@@ -8893 +8982,7 @@ async function _fetch({
+@@ -8893 +8939,7 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
@@ -460,22 +575,22 @@ index 80a5167..35d8a17 100644
 +  await updateRefs();
 +  if (prune) {
 +    res.pruned = response.pruned;
-@@ -8933,0 +9029 @@ async function _init({
+@@ -8933,0 +8986 @@ async function _init({
 +  // What git init writes where files keep an exec bit, symlinks work and names are case-sensitive.
-@@ -8938 +9034 @@ async function _init({
+@@ -8938 +8991 @@ async function _init({
 -      '\tfilemode = false\n' +
 +      '\tfilemode = true\n' +
-@@ -8940,3 +9036 @@ async function _init({
+@@ -8940,3 +8993 @@ async function _init({
 -      (bare ? '' : '\tlogallrefupdates = true\n') +
 -      '\tsymlinks = false\n' +
 -      '\tignorecase = true\n'
 +      (bare ? '' : '\tlogallrefupdates = true\n')
-@@ -9546,0 +9641 @@ async function expandOidPacked({
+@@ -9546,0 +9598 @@ async function expandOidPacked({
 +  if (fs.packs) return fs.packs.expand(gitdir, short)
-@@ -9552 +9647 @@ async function expandOidPacked({
+@@ -9552 +9604 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -10290,21 +10385,22 @@ async function _merge({
+@@ -10290,21 +10342,22 @@ async function _merge({
 -    const tree = await GitIndexManager.acquire(
 -      { fs, gitdir, cache, allowUnmerged: false },
 -      async index => {
@@ -519,3 +634,7 @@ index 80a5167..35d8a17 100644
 +    const tree = abortOnConflict
 +      ? await merge(null)
 +      : await GitIndexManager.acquire({ fs, gitdir, cache, allowUnmerged: false }, merge);
+@@ -10631,0 +10685 @@ async function fetch({
++  uploadPack,
+@@ -10663,0 +10718 @@ async function fetch({
++      uploadPack,
