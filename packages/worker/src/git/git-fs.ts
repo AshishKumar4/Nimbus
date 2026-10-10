@@ -117,9 +117,9 @@ export function createGitFs<P>(backend: GitFsBackend, packs: P) {
       unlink: (filepath: string): Promise<void> => backend.unlink(normalizeVfsPath(filepath), filepath),
       readdir: (filepath: string): Promise<string[]> => backend.readdir(normalizeVfsPath(filepath), filepath),
       mkdir: (filepath: string): Promise<void> => backend.mkdir(normalizeVfsPath(filepath)),
+      // Taking options, it is also cf-git's recursive delete (models/FileSystem.js binds `_rm` to it).
       rmdir: (filepath: string, options?: { recursive?: boolean }): Promise<void> =>
         backend.rmdir(normalizeVfsPath(filepath), filepath, options?.recursive === true),
-      rm: (filepath: string): Promise<void> => backend.rmdir(normalizeVfsPath(filepath), filepath, true),
       stat: (filepath: string) => statOf(filepath, true),
       lstat: (filepath: string) => statOf(filepath, false),
       async chmod(): Promise<void> { /* no-op: git's modes live in the index */ },
