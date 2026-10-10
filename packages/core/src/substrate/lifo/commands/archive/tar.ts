@@ -108,7 +108,7 @@ const command: Command = async (ctx) => {
         data = await decompressGzip(data);
       }
 
-      const entries = parseTar(data);
+      const entries = await parseTar(data);
 
       // Ensure target dir exists
       if (changeDir) {
@@ -138,7 +138,7 @@ const command: Command = async (ctx) => {
         data = await decompressGzip(data);
       }
 
-      const entries = parseTar(data);
+      const entries = await parseTar(data);
       for (const entry of entries) {
         await ctx.stdout.write(`${entry.path}${entry.type === 'directory' ? '/' : ''}\n`);
       }
