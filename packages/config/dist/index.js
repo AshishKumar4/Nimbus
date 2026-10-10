@@ -25,9 +25,7 @@
  * Options for {@link buildNimbusWranglerConfig}.
  */
 import { MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS } from './facet-limits.generated.js';
-export function defineNimbusConfig(config) {
-    return config;
-}
+export * from './sandbox.js';
 /**
  * The bundler aliases that every Nimbus embedder needs.
  * Exposed as a named constant so embedders building their own configs
