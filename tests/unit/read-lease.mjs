@@ -514,7 +514,8 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(decode(watcher.readFile('/home/user/d/b.txt')), 'later');
   // An answer that hands it a socket the session cannot see: its writes wait for their publication from then on.
   ports.bindFacetStub(pid, { async handleHttpRequest() { return Object.defineProperty(new Response(null), 'webSocket', { value: {} }); } });
-  await ports.routeRequest(8080, new Request('https://x.invalid/'), '/');
+  ports.register(8081, pid);
+  await ports.routeRequest(8081, new Request('https://x.invalid/'), '/');
   const third = barrier(s, s.files.bind({ pid: 11, cred: USER }));
   assert.ok(third.readLease, 'no lease to meet');
   let waited = false;
