@@ -289,8 +289,8 @@ async function bundleProcessFsJournalReader() {
  * worker it exports (network-facet.ts assembleGitNetworkFacetSource). Its
  * node:crypto and node:zlib imports resolve to the facet module's own
  * namespace imports of them (GIT_PACK_NODE_IMPORTS), which an IIFE cannot
- * make itself; its import of cf-git ('./git-bundle.js') is the facet's
- * module record's, resolved when it runs.
+ * make itself; its import of cf-git is the facet's module record's,
+ * resolved when it runs (pack/network-worker.ts).
  */
 async function bundleGitPack() {
   const builtins = {
@@ -302,7 +302,6 @@ async function bundleGitPack() {
     bundle: true,
     format: 'iife',
     globalName: '__nimbusGitPack',
-    external: ['./git-bundle.js'],
     target: 'esnext',
     platform: 'neutral',
     absWorkingDir: root,

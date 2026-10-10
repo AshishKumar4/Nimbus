@@ -26,16 +26,15 @@ import { graphFiltersAssemble, graphFiltersDiscard, graphFiltersPiece, graphFilt
 import { historyPlan, historyResume, historyStep, type HistoryKind, type StagedFile } from './history.js';
 import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
-import { retryingGitHttp, type GitHttp } from './transport.js';
+import { retryingGitHttp } from './transport.js';
+import type * as GitBundle from '../../../vendor/git.generated.mjs';
 
-/** cf-git, as the facet's module record carries it (scripts/bundle-git.mjs). */
-interface GitBundle {
-  git: {
-    fetch(options: Record<string, unknown>): Promise<unknown>;
-    push(options: Record<string, unknown>): Promise<unknown>;
-  };
-  gitHttp: GitHttp;
-}
+/**
+ * cf-git: a copy of vendor/git.generated.mjs in the facet's own module record
+ * (runtime/git-bundle-artifact.ts), there only when the facet is loaded, so
+ * its specifier is the record's, not one this bundle resolves.
+ */
+const GIT_BUNDLE_MODULE = './git-bundle.js';
 
 type ClonePhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish';
 
@@ -329,11 +328,9 @@ export const networkWorker = {
       try { useRpcResource(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch { /* the line is best-effort */ }
     };
 
-    // cf-git and its HTTP client: a module of the facet's own record
-    // (scripts/bundle-git.mjs), there only when the facet is loaded.
-    let bundle: GitBundle;
+    let bundle: typeof GitBundle;
     try {
-      bundle = await import('./git-bundle.js');
+      bundle = await import(GIT_BUNDLE_MODULE) as typeof GitBundle;
     } catch (e) {
       return respond(false, {
         error: 'Failed to load bundled isomorphic-git: ' + (e as Error | undefined)?.message,

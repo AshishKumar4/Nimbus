@@ -27,12 +27,6 @@
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
-/**
- * The clone's job marker, in its git directory from prepare until the clone
- * is whole: the proof an abort needs that the destination is the clone's,
- * and what tells every other git command the repository is not yet one.
- */
-export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep = {
     step: 'plan';
@@ -258,11 +252,8 @@ export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: 
  * every batch and history piece, a fence's reload, fetch/pull/push).
  */ network: WorkspaceNetwork): Promise<GitNetworkResult>;
 /**
- * Generate the dynamic worker code for the git network facet.
- *
- * Exports `default { async fetch(request, workerEnv) { ... } }`.
- * Reads op args from the POST body, runs isomorphic-git with a buffered
- * fs adapter, and flushes writes through W7 v3.
+ * The git network facet's module: the pack layer's bundle (pack/facet.ts),
+ * whose network worker (pack/network-worker.ts) it exports.
  */
 export declare function assembleGitNetworkFacetSource(): string;
 //# sourceMappingURL=network-facet.d.ts.map
