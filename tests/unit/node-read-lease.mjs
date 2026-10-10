@@ -196,7 +196,7 @@ await runScenarios(import.meta.path, {
     const { authority, probe } = await boot((authority, pid) => {
       authority.files.holdOutput(authority.host.processes);
       authority.files.continueAtCommit(pid);
-    }, undefined, `require("net").connect({ port: 9, host: "127.0.0.1" }).on("error", () => {});\n${PROGRAM}`);
+    }, undefined, `require("tls").connect({ host: "127.0.0.1", port: 9 }).on("error", () => {});\n${PROGRAM}`);
     const reader = authority.files.bind({ pid: 99, cred: CRED });
     const { readLease } = reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true });
     assert.ok(readLease, 'no lease to meet');

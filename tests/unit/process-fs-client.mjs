@@ -181,8 +181,8 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   answer();
   await published;
   assert.equal(c.published(), null, 'asked again with nothing held since');
-  // A raw socket opens: asked whatever is known, and its writes wait for their publication from then on.
-  await c.published(true);
+  // A raw socket opens: with nothing logged or held it opens at once, the session told, and its writes wait for their publication from then on.
+  assert.equal(c.rawSocket(), null, 'a raw socket waited with nothing logged or held');
   const later = lease(9);
   c.submit(writeFile('home/user/g.txt', 'waits'));
   let flushed = false;
@@ -192,6 +192,35 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   later();
   await flushing;
   assert.equal(c.published(), null);
+  await c.settle();
+}
+
+// ── A raw socket's escape reaches the session before any wave the process sends after it ──
+{
+  const s = session();
+  s.files.holdOutput(new SessionProcessSupervisor());
+  s.files.continueAtCommit(PID);
+  let land;
+  const landing = new Promise((resolve) => { land = resolve; });
+  let landed = false;
+  const sent = [];
+  const c = processFsClient({
+    session: {
+      ...s.port,
+      // The transport delivers the escape late.
+      published: (escape) => (escape ? landing.then(() => s.port.published(true)).then(() => { landed = true; }) : s.port.published(false)),
+      writeBatchStream: (...args) => { sent.push(landed); return s.port.writeBatchStream(...args); },
+    },
+    retry: RETRY,
+  });
+  assert.equal(c.rawSocket(), null, 'a raw socket waited with nothing logged or held');
+  c.submit(writeFile('home/user/after.txt', 'after'));
+  const flushing = c.flush();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(sent, [], 'a wave left before the session was told of the raw socket');
+  land();
+  await flushing;
+  assert.deepEqual(sent, [true]);
   await c.settle();
 }
 

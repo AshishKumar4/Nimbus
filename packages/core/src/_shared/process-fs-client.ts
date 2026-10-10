@@ -208,14 +208,21 @@ export interface ProcessFsClient {
   effect(): Promise<void> | null;
   /**
    * The gate an effect leaving by a way the session's gate does not see (a
-   * request out by the runtime's own network, a raw socket) is released at,
-   * after `effect`: once every
-   * write of the process's the session answered ahead of its publication
-   * (WriteBatchStreamResult.held) is published, or null when none is.
-   * `escape` (a raw socket opens): asked whatever is known, and the
-   * process's writes wait for their publication from now on.
+   * request out by the runtime's own network) is released at, after
+   * `effect`: once every write of the process's the session answered ahead
+   * of its publication (WriteBatchStreamResult.held) is published, or null
+   * when none is.
    */
-  published(escape?: boolean): Promise<void> | null;
+  published(): Promise<void> | null;
+  /**
+   * A raw socket opens, which carries whatever the process sends on it from
+   * now on, past every gate of the session's. The session is told (once),
+   * and every wave sent from now on goes after that, so each is answered
+   * once published. The socket opens at the gate this answers: once what
+   * was logged before it is answered and published, or null when nothing
+   * waits.
+   */
+  rawSocket(): Promise<void> | null;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
   settle(): Promise<void>;
   /** The failures not yet reported, taken (the next effect reports them). */
@@ -566,6 +573,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Waves the session answered ahead of their publication, and how many of them it has since said are published (`published`). */
   let heldWaves = 0;
   let publishedThrough = 0;
+  /** The session told of a raw socket (rawSocket): every wave after it is sent once it lands. */
+  let escaped: Promise<void> | null = null;
   const marks: { mark: number; resolve(): void }[] = [];
   const counters: ProcessFsStats = {
     ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
@@ -687,6 +696,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const send = async (entries: Entry[]): Promise<void> => {
     let writer: string | null;
     try {
+      if (escaped !== null) await escaped;
       writer = await writerFor(entries);
     } catch (error) {
       if (error instanceof Error && isProcessGone(error)) {
@@ -1228,13 +1238,24 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       options.drain?.();
       return answered >= logged ? null : client.flush();
     },
-    published(escape = false) {
+    published() {
       const ask = options.session.published;
-      if (processGone !== null || ask === undefined || (!escape && publishedThrough === heldWaves)) return null;
+      if (processGone !== null || ask === undefined || publishedThrough === heldWaves) return null;
       const through = heldWaves;
-      return ask.call(options.session, escape).then(() => {
+      return ask.call(options.session, false).then(() => {
         if (publishedThrough < through) publishedThrough = through;
       });
+    },
+    rawSocket() {
+      const ask = options.session.published;
+      if (processGone !== null || ask === undefined) return null;
+      if (escaped === null) {
+        escaped = ask.call(options.session, true);
+        // Not told, every write after it fails (send) rather than be answered ahead of its publication.
+        escaped.catch(() => {});
+      }
+      const logged = client.effect();
+      return logged === null ? client.published() : logged.then(() => client.published() ?? undefined);
     },
     async settle() {
       settling = true;

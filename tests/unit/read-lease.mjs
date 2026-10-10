@@ -639,16 +639,26 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { readLease } = barrier(s, reader);
   const data = new TextEncoder().encode('racing');
-  const { readable, writable } = new TransformStream();
-  // Begun before its first record arrives.
-  let answered = false;
-  const waving = writer.writeStream(readable).then((answer) => { answered = true; return answer; });
-  await sleep(5);
-  await writer.published({ escape: true });
-  void encodeWriteBatchStream({
+  const encoded = encodeWriteBatchStream({
     inodes: [{ path: 'home/user/d/r', parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
     chunks: [{ path: 'home/user/d/r', chunkId: 0, data }],
-  }).pipeTo(writable);
+  }).getReader();
+  let arrive;
+  const arrived = new Promise((resolve) => { arrive = resolve; });
+  // Begun before its first record arrives.
+  let answered = false;
+  const waving = writer.writeStream(new ReadableStream({
+    type: 'bytes',
+    async pull(controller) {
+      await arrived;
+      const { done, value } = await encoded.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+  })).then((answer) => { answered = true; return answer; });
+  await sleep(5);
+  await writer.published({ escape: true });
+  arrive();
   await sleep(20);
   assert.equal(answered, false, 'a wave in flight when its process escaped was answered before its publication');
   reader.recalled(readLease.owner, 'revoke');

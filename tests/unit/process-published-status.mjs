@@ -65,6 +65,7 @@ const { pid } = processes.spawn('serve --port 8080', ['serve', '--port', '8080']
 ports.register(8080, pid);
 let terminated = 0;
 processes.setTerminator(pid, () => { terminated++; });
+processes.appendOutput(pid, 'stdout', 'serving\n');
 holding = pid;
 
 const views = async () => {
@@ -91,7 +92,7 @@ assert.equal(followed, null, 'logs -f ended on an end not yet published, missing
 release();
 await settle();
 await following;
-assert.match(followed, /process exited with code 137/);
+assert.match(followed, /serving[^]*process exited with code 137/);
 const ended = await views();
 assert.equal(ended.listed[0], 'killed');
 assert.equal(ended.listed[1], 137);

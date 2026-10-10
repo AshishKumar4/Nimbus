@@ -31,6 +31,8 @@ const dec = new TextDecoder();
 const dir = '/home/user/t';
 const peerPath = `${dir}/peer.txt`;
 const minePath = `${dir}/mine.txt`;
+const closingPath = `${dir}/closing.txt`;
+const openingPath = `${dir}/opening.txt`;
 vfs.mkdir(dir, { recursive: true });
 vfs.writeFile(peerPath, enc.encode('V1'));
 
@@ -40,7 +42,7 @@ let sawAtSend = null;
 let sawAtOpen = null;
 let sawAtClose = null;
 let closedWith = null;
-const parked = async () => { const bytes = await bridge.readFile(minePath); return bytes === null ? null : dec.decode(bytes); };
+const parked = async (path) => { const bytes = await bridge.readFile(path); return bytes === null ? null : dec.decode(bytes); };
 
 // The relay queue, as the supervisor would hold it. Each poll hands back one
 // batch; the third party writes to the filesystem just before the frame is
@@ -66,7 +68,7 @@ const supervisor = {
   wsOpen: async (url, protocols) => {
     assert.equal(url, 'wss://third-party.invalid/socket');
     assert.deepEqual(protocols, ['chat']);
-    sawAtOpen = await parked();
+    sawAtOpen = await parked(openingPath);
     return { id: 42, protocol: 'chat' };
   },
   wsPoll: async (id) => {
@@ -80,10 +82,10 @@ const supervisor = {
     return frames[pollIndex++];
   },
   wsSend: async (id, text, bytes) => {
-    sawAtSend = await parked();
+    sawAtSend = await parked(minePath);
     sentFrames.push(text !== null ? text : dec.decode(bytes));
   },
-  wsClose: async (id, code, reason) => { sawAtClose = await parked(); closedWith = { id, code, reason }; },
+  wsClose: async (id, code, reason) => { sawAtClose = await parked(closingPath); closedWith = { id, code, reason }; },
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
@@ -173,7 +175,7 @@ await new Promise((resolve) => setTimeout(resolve, 40));
 assert.deepEqual(sentFrames, ['notify', 'hi'], 'a binary send crosses as bytes');
 
 // So is its close (its code and reason), and another socket's handshake (its URL and headers).
-fs.writeFileSync(minePath, 'CLOSING');
+fs.writeFileSync(closingPath, 'CLOSING');
 const closed = new Promise((resolve) => { socket.onclose = resolve; });
 socket.close(1000, 'done');
 const closeEvent = await closed;
@@ -182,7 +184,7 @@ assert.equal(closeEvent.wasClean, true);
 assert.equal(socket.readyState, WebSocket.CLOSED);
 assert.deepEqual(closedWith, { id: 42, code: 1000, reason: 'done' });
 assert.equal(sawAtClose, 'CLOSING', 'parked writes reached the authority before the close left the facet');
-fs.writeFileSync(minePath, 'OPENING');
+fs.writeFileSync(openingPath, 'OPENING');
 const second = new WebSocket('wss://third-party.invalid/socket', ['chat']);
 await new Promise((resolve) => setTimeout(resolve, 40));
 assert.equal(sawAtOpen, 'OPENING', 'parked writes reached the authority before the handshake left the facet');
