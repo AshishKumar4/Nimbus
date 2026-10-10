@@ -36,6 +36,7 @@
  * DB at ~/.local/share/opencode/*.db.
  */
 import { type NodeFacetSources } from './node-shims-artifact.js';
+import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 /** Map-module specifier for the opencode ESM bundle. */
 export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
 /**
@@ -182,6 +183,8 @@ export declare const WORKER_POLYFILL_SRC: string;
  */
 export declare function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): {
     code: string;
+    source: ModuleSource;
     codeModules: Record<string, string>;
+    immutableModules: Record<string, ImmutableModuleSource>;
 };
 //# sourceMappingURL=opencode-facet-runner.d.ts.map

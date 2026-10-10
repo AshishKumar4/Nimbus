@@ -55,6 +55,7 @@ function __nimbusFrontPath(path) {
 }
 
 function __nimbusFrontUrl(url) {
+  const hex = (byte) => byte >= 48 && byte <= 57 ? byte - 48 : byte >= 65 && byte <= 70 ? byte - 55 : byte >= 97 && byte <= 102 ? byte - 87 : -1;
   __nimbusFront(url, "pathToFileURL", (real) => function (path, options) {
     if (typeof path !== "string") throw invalidArgType("path", "string", path);
     return Reflect.apply(real, this, arguments);
@@ -77,7 +78,17 @@ function __nimbusFrontUrl(url) {
     if (path.protocol !== "file:") throw nodeError(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
     if (!windows && path.hostname !== "") throw nodeError(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
     const pathname = windows ? path.pathname.replace(/\//g, "\\") : path.pathname;
-    const decoded = __nimbusNodeLib().require("querystring").unescapeBuffer(pathname, false);
+    // lib/internal/data_url.js percentDecode, after Node's UTF-8 conversion.
+    const input = __BufferMod.from(pathname, "utf8");
+    const bytes = new Uint8Array(input.length);
+    let length = 0;
+    for (let i = 0; i < input.length; i++) {
+      const high = input[i] === 37 ? hex(input[i + 1]) : -1;
+      const low = high >= 0 ? hex(input[i + 2]) : -1;
+      if (low >= 0) { bytes[length++] = (high << 4) | low; i += 2; }
+      else bytes[length++] = input[i];
+    }
+    const decoded = __BufferMod.from(bytes.buffer, bytes.byteOffset, length);
     if (!windows) return decoded;
     if (path.hostname !== "") return __BufferMod.concat([__BufferMod.from("\\\\" + url.domainToUnicode(path.hostname)), decoded]);
     const letter = decoded[1] | 0x20;

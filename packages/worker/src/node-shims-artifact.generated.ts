@@ -10,9 +10,9 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-29b54b308cc9141f.js";
-export const NODE_SHIMS_BUILD_ID: string = "29b54b308cc9141f";
-export const NODE_SHIMS_SHA256: string = "29b54b308cc9141fc2ed376494660ece276f4fa684d838bbf09e7a784e492423";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-d25177d540856e5c.js";
+export const NODE_SHIMS_BUILD_ID: string = "d25177d540856e5c";
+export const NODE_SHIMS_SHA256: string = "d25177d540856e5ce4d734eb23514dfb09b275c7379a3e45f8cc738f1cc8db69";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-6949e9269dc59d18.js";
@@ -40,6 +40,16 @@ export const JS_INTERPRETER_OPS_BUILD_ID: string = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256: string = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-a5172fce61f3cc45.js";
-export const NODE_LIB_BUILD_ID: string = "a5172fce61f3cc45";
-export const NODE_LIB_SHA256: string = "a5172fce61f3cc4528b10ea26c5653ae0a84f8f5f83eec90a3afaee5a201dd9a";
+export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-12b4803c53369862.js";
+export const NODE_LIB_BUILD_ID: string = "12b4803c53369862";
+export const NODE_LIB_SHA256: string = "12b4803c53369862d37495c3536de93f5e660c736443e099452a6cebf8fb7629";
+
+/** dist/runtime/node-lib-module.js generateNodeDnsModule() */
+export const NODE_DNS_ENTRY: string = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
+export const NODE_DNS_BUILD_ID: string = "cb7f3315fd57bcc8";
+export const NODE_DNS_SHA256: string = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
+
+/** @nimbus-sh/core _shared/commonjs-cell.js COMMONJS_CELL_RUNTIME_SOURCE */
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-5be352d0ef9a9ed0.js";
+export const NODE_REGISTRY_BUILD_ID: string = "5be352d0ef9a9ed0";
+export const NODE_REGISTRY_SHA256: string = "5be352d0ef9a9ed0fa0fe0acee8c0b3dae498c678b1355fa0e4ab935315f38b0";

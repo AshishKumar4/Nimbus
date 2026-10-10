@@ -7075,6 +7075,7 @@ function __nimbusNodeLib() {
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
+    createCaresBinding: lib.createCaresBinding,
     primordials,
     sources: lib.sources,
   });

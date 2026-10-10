@@ -13,6 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
@@ -687,13 +688,13 @@ export function facetJournal(ctx, env, name) {
  */
 export async function residentWorkerConfig(env, disk, supervisor, boot) {
     if (boot.kind === 'code' && boot.code.env !== undefined) {
-        const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk()), supervisor);
+        const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source)), supervisor);
         assertModuleMapWithinCodeLimit(configModules(isolated));
         return isolated;
     }
     const config = boot.kind === 'staged'
         ? await stagedBootAssembler()(env, boot.stage)
-        : await residentLoaderConfig(boot.code, disk());
+        : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
     assertModuleMapWithinCodeLimit(configModules(config));
     const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
     if (!supervisorRpc) {
