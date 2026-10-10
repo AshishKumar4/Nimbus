@@ -45,7 +45,7 @@ async function hit(sid, port, path) {
   const started = Date.now();
   try {
     const r = await fetch(`${BASE}/s/${sid}/port/${port}/${path}`, {
-      headers: requestHeaders(),
+      headers: requestHeaders({}, sid),
       signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
     });
     return { status: r.status, body: await r.text(), ms: Date.now() - started };

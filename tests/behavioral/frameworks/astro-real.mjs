@@ -34,7 +34,7 @@ try{
     // under Node. Its file watcher may take a moment to see the write.
     let edited={status:0,body:''};
     for(let i=0;i<30&&!edited.body.includes('<strong>'+MARKER+'-edited</strong>');i++){
-      edited=await fetch(`${BASE}/s/${sid}/port/${PORT}/`,{headers:requestHeaders(),signal:AbortSignal.timeout(30000)})
+      edited=await fetch(`${BASE}/s/${sid}/port/${PORT}/`,{headers:requestHeaders({}, sid),signal:AbortSignal.timeout(30000)})
         .then(async(r)=>({status:r.status,body:await r.text()})).catch((e)=>({status:0,body:e.message}));
       if(!edited.body.includes('<strong>'+MARKER+'-edited</strong>'))await sleep(1000);
     }

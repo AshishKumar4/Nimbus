@@ -18,7 +18,7 @@ const a = makeAsserter('monaco-polish/new/vertical-resize-editor-terminal');
 console.log(`monaco-polish/new/vertical-resize-editor-terminal — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 // DOM + CSS structure (cheap static sanity; the live drag below proves

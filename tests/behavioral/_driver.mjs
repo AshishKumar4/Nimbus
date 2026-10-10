@@ -15,12 +15,15 @@ import { appendFileSync } from 'node:fs';
 import { dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { deletionResult } from './_ledger.mjs';
+import { createProbeTarget, redactCredentials } from './_session-transport.mjs';
+export { redactCredentials };
+export { makeAsserter } from './_assertions.mjs';
 
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
 export const WS_BASE = BASE.replace(/^http/, 'ws');
 export const AUTH_COOKIE = process.env.NIMBUS_PROBE_COOKIE || process.env.NIMBUS_AUTH_COOKIE || '';
-export let AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
+export const AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
+export const probeTarget = createProbeTarget({ base: BASE, token: AUTH_TOKEN, cookie: AUTH_COOKIE });
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -29,20 +32,13 @@ export function stripAnsi(s) {
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
 }
 
-function authHeaders() {
-  const headers = {};
-  if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
-  if (AUTH_COOKIE) headers.Cookie = AUTH_COOKIE;
-  return headers;
-}
-
-export function requestHeaders(extra = {}) {
-  return { ...authHeaders(), ...extra };
+export function requestHeaders(extra = {}, sid) {
+  return probeTarget.headers(extra, sid);
 }
 
 /** Options for `new WebSocket(url, wsHeaders())` carrying probe auth. */
-export function wsHeaders() {
-  const headers = authHeaders();
+export function wsHeaders(sid) {
+  const headers = probeTarget.headers({}, sid);
   return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
@@ -70,18 +66,6 @@ async function sessionRecord(sid, openedAt, base, headers) {
   } catch (error) {
     return `the session's record: unavailable (${error.message})`;
   }
-}
-
-/**
- * `text` with every credential it may carry replaced by `…`: an attach token
- * in a URL's query (`nimbus_token=`, and any `token=`/`access_token=`), and
- * a bearer. The one helper for every URL or response a probe prints; every
- * assertion detail goes through it (makeAsserter).
- */
-export function redactCredentials(text) {
-  return String(text)
-    .replace(/([?&#](?:nimbus_token|access_token|token)=)[^&#\s"'<>]+/gi, '$1…')
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/g, '$1…');
 }
 
 /** A close frame in one clause: `code 1006 (abnormal): <reason>`. */
@@ -141,12 +125,10 @@ function keepSocketAlive(ws, everyMs = SOCKET_KEEPALIVE_MS) {
   ws.on('error', stop);
 }
 
-const sessionAttachPaths = new Map();
-
 // Every minted session is DELETEd at exit unless deleteSession already did; only SIGKILL or a crash escapes.
 const LEDGER = process.env.NIMBUS_PROBE_LEDGER || '';
 const PROBE = relative(dirname(fileURLToPath(import.meta.url)), process.argv[1] || '');
-const undeleted = new Map(); // sid → the headers it was minted with
+const undeleted = new Map(); // sid → its target-scoped session record
 const minted = []; // { sid, at }: every session this probe minted, in order
 let exitHookArmed = false;
 
@@ -160,7 +142,8 @@ function ledger(event, sid, status, extra = {}) {
  * session, whose DELETE answers 401 by design and which the demo's TTL reaps.
  * run-all reports it as TTL-reaped rather than leaked (see _ledger.mjs).
  */
-function noteMinted(sid, status, { reap } = {}) {
+function noteMinted(session) {
+  const { sessionId: sid, status, reap } = session;
   if (!exitHookArmed) {
     exitHookArmed = true;
     // First, so a failure names its sessions as they were before the hook below deletes them.
@@ -170,7 +153,7 @@ function noteMinted(sid, status, { reap } = {}) {
       process.on(signal, () => process.exit(130));
     }
   }
-  undeleted.set(sid, requestHeaders({ 'X-Nimbus-Cleanup-Reason': 'probe-exit' }));
+  undeleted.set(sid, session);
   // One time for the mint, in the failure's list and the ledger alike: read
   // twice, the two could fall in different milliseconds.
   const at = new Date().toISOString();
@@ -204,18 +187,18 @@ import(${JSON.stringify(new URL('./_ledger.mjs', import.meta.url).href)})
 function deleteUndeletedSync() {
   // NIMBUS_PROBE_KEEP_SESSIONS=1 leaves them for forensics (a dead session's next incarnation holds its _diag).
   if (undeleted.size === 0 || process.env.NIMBUS_PROBE_KEEP_SESSIONS === '1') return;
-  const sessions = [...undeleted];
+  const sessions = [...undeleted.values()];
   let statuses;
   try {
     statuses = JSON.parse(execFileSync(process.execPath, ['-e', DELETE_SESSIONS], {
-      input: JSON.stringify({ base: BASE, sessions, tries: DELETE_TRIES, budgetMs: DELETE_BUDGET_MS }),
+      input: JSON.stringify({ sessions, tries: DELETE_TRIES, budgetMs: DELETE_BUDGET_MS }),
       encoding: 'utf8',
       timeout: 60_000,
     }));
   } catch (e) {
     statuses = sessions.map(() => ({ status: `error: ${String(e?.message ?? e).split('\n')[0]}`, confirmed: false }));
   }
-  sessions.forEach(([sid], i) => {
+  sessions.forEach(({ sessionId: sid }, i) => {
     const result = statuses[i];
     const tries = result.attempts > 1 ? ` after ${result.attempts} tries` : '';
     console.log(`deleteSession (exit hook): ${sid} → ${result.status} confirmed=${result.confirmed === true}${tries}`);
@@ -223,83 +206,11 @@ function deleteUndeletedSync() {
   });
 }
 
-/**
- * Why `POST /new` produced no session, in terms an operator can act on.
- *
- * A rejected credential is not a probe failure, but it presents as one:
- * measured 2026-08-05, a redeploy elsewhere on this machine rotated the
- * target's `JWT_SECRET` mid-suite and 360 probes failed in 35 seconds
- * with `no Location (status 401)` — the whole suite red, no Nimbus code
- * reached, hours spent looking for the bug in Nimbus. The credential is
- * the first thing this message names.
- */
-function newSessionFailure(status, body) {
-  const detail = body.trim().split('\n')[0].slice(0, 200);
-  if (status !== 401 && status !== 403) {
-    return `POST ${BASE}/new → ${status}, no Location${detail ? `: ${detail}` : ''}`;
-  }
-  if (AUTH_TOKEN) {
-    return (
-      `POST ${BASE}/new → ${status}: the target rejected this probe's bearer token.\n`
-      + `The token is signed with a JWT_SECRET the target no longer has — the target was\n`
-      + `redeployed with a rotated secret — or the token has expired. No probe code ran.\n`
-      + `Re-mint a token for the target BASE points at:\n`
-      + `  staging   → bun tests/behavioral/_staging-target.mjs token\n`
-      + `  throwaway → bun tests/behavioral/_throwaway-target.mjs token --name <name>`
-    );
-  }
-  return (
-    `POST ${BASE}/new → ${status}: no probe credential was sent.\n`
-    + `Export NIMBUS_PROBE_TOKEN (\`bun tests/behavioral/_staging-target.mjs token\`) or\n`
-    + `NIMBUS_PROBE_COOKIE before running probes against a deployed target.`
-  );
-}
-
 /** POST /new → 302 → sid. The only session-creation surface. */
 export async function mintSession() {
-  const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual', headers: requestHeaders() });
-  const loc = r.headers.get('location');
-  if (loc) {
-    const m = loc.match(/\/s\/([^/]+)/);
-    if (!m) throw new Error(`unexpected Location: ${loc}`);
-    sessionAttachPaths.set(m[1], loc);
-    noteMinted(m[1], r.status);
-    return m[1];
-  }
-
-  // The one target where an unauthenticated POST /new is expected to fail:
-  // production gates it on an interactive login, and the public anonymous
-  // demo endpoint mints a sid-pinned attach token for the session it opens.
-  // Anything else — or a probe carrying a credential — is still the loud
-  // credential failure, not a silent fallback.
-  const text = await r.text().catch(() => '');
-  const code = (() => { try { return JSON.parse(text)?.code; } catch { return undefined; } })();
-  if (r.status === 401 && code === 'E_DEMO_LOGIN_REQUIRED' && !AUTH_TOKEN && !AUTH_COOKIE) {
-    const created = await fetch(`${BASE}/api/demo/anon-session`, { method: 'POST' });
-    const body = await created.json().catch(() => ({}));
-    if (!created.ok) {
-      throw new Error(
-        `anon session ${created.status}: ${JSON.stringify(body)}`
-        + (created.status === 429 ? ' (per-IP rate limit; retry in a minute)' : '')
-        + (created.status === 503 ? ' (global anon capacity reached)' : ''),
-      );
-    }
-    const token = new URL(body.wsUrl, BASE).searchParams.get('nimbus_token');
-    if (!body.sessionId || !token) {
-      throw new Error(`anon session gave no sid/token: ${JSON.stringify(body)}`);
-    }
-    // Live binding: importers that read AUTH_TOKEN after this call see the
-    // sid-pinned bearer, so requestHeaders()/wsHeaders() pick it up too.
-    AUTH_TOKEN = token;
-    // The shell page, as POST /new's Location names it: a browser exchanges
-    // its token there for the session cookie. wsUrl is the WebSocket, which
-    // answers a page load 426 and sets nothing.
-    sessionAttachPaths.set(body.sessionId, `/s/${encodeURIComponent(body.sessionId)}/?nimbus_token=${encodeURIComponent(token)}`);
-    noteMinted(body.sessionId, created.status, { reap: 'ttl' });
-    return body.sessionId;
-  }
-
-  throw new Error(newSessionFailure(r.status, text));
+  const session = await probeTarget.create({ anonymous: true });
+  noteMinted(session);
+  return session.sessionId;
 }
 
 /**
@@ -308,15 +219,11 @@ export async function mintSession() {
  * session cookie on first navigation; otherwise the clean session path.
  */
 export function attachPathFor(sid) {
-  return sessionAttachPaths.get(sid) || `/s/${sid}/`;
+  return probeTarget.session(sid).attachPath;
 }
 
 export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
-  const r = await fetch(`${BASE}/s/${encodeURIComponent(sid)}/`, {
-    method: 'DELETE',
-    headers: requestHeaders({ 'X-Nimbus-Cleanup-Reason': reason }),
-  });
-  const result = await deletionResult(r);
+  const result = await probeTarget.delete(sid, { reason });
   ledger('delete', sid, result.status, { confirmed: result.ok });
   if (result.ok) undeleted.delete(sid);
   return result;
@@ -326,7 +233,7 @@ export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
 export async function fetchPreview(sid, opts = {}) {
   const url = `${BASE}/s/${sid}/preview/${opts.path || ''}`;
   const t0 = Date.now();
-  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
+  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const text = await r.text().catch(() => '');
   return { status: r.status, html: text, elapsed: Date.now() - t0, url };
 }
@@ -336,7 +243,7 @@ export async function fetchPort(sid, port, path = '', init = {}) {
   const url = `${BASE}/s/${sid}/port/${port}/${path}`;
   const t0 = Date.now();
   const extraHeaders = init.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {};
-  const r = await fetch(url, { ...init, redirect: 'manual', headers: requestHeaders(extraHeaders) });
+  const r = await fetch(url, { ...init, redirect: 'manual', headers: requestHeaders(extraHeaders, sid) });
   const text = await r.text().catch(() => '');
   return { status: r.status, body: text, headers: r.headers, elapsed: Date.now() - t0, url };
 }
@@ -358,7 +265,7 @@ export class Terminal {
     // Deploy readiness drives the freshly deployed target explicitly;
     // it must not inherit BASE from another suite in the caller's env.
     this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
-    this.wsOptions = options.wsOptions ?? wsHeaders();
+    this.wsOptions = options.wsOptions ?? ((options.base ?? BASE) === BASE ? wsHeaders(sid) : undefined);
     this.keepaliveMs = options.keepaliveMs ?? SOCKET_KEEPALIVE_MS;
     this.ws = null;
     // reset() clears the caller's view, never the shell protocol stream.
@@ -523,7 +430,8 @@ export class Terminal {
 
 export async function connectProcessTerminal(sid, pid, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const ws = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${pid}`, wsHeaders());
+  const wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
+  const ws = new WebSocket(`${wsBase}/s/${sid}/api/logs/${pid}`, options.wsOptions ?? ((options.base ?? BASE) === BASE ? wsHeaders(sid) : undefined));
   keepSocketAlive(ws, options.keepaliveMs);
   let closed = false;
   let closeDetail = null;
@@ -622,30 +530,4 @@ export function hasOutputLine(output, expected) {
     .split('\n')
     .map((line) => line.trim())
     .includes(expected);
-}
-
-/**
- * Helper for assertion-style probes. Maintains pass/fail counts +
- * a label.
- */
-export function makeAsserter(label) {
-  let pass = 0;
-  let fail = 0;
-  const failures = [];
-  return {
-    check(name, ok, detail = '') {
-      if (ok) { console.log(`  ✓ ${name}`); pass++; return; }
-      // A detail is often a URL or a response: never a live credential.
-      const shown = redactCredentials(String(detail));
-      console.log(`  ✗ ${name}${shown ? ' — ' + shown : ''}`);
-      failures.push(`${name}: ${shown}`);
-      fail++;
-    },
-    summary() {
-      console.log(`\n  ──── [${label}] ${pass} pass / ${fail} fail`);
-      return { pass, fail, failures };
-    },
-    get pass() { return pass; },
-    get fail() { return fail; },
-  };
 }

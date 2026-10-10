@@ -90,7 +90,7 @@ await t.waitFor((b) => /Nimbus Vite Dev Server|Local:|Preview:/i.test(b),
 // ── assert: GET /preview/@modules/vfile-mini does NOT contain `"#minpath"` ──
 {
   const url = `${BASE}/s/${sid}/preview/@modules/vfile-mini`;
-  const resp = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
+  const resp = await fetch(url, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const code = await resp.text().catch(() => '');
   a.check('vfile-mini bundle 200',
     resp.status === 200, `status=${resp.status} url=${url}`);
@@ -114,7 +114,7 @@ await t.waitFor((b) => /Nimbus Vite Dev Server|Local:|Preview:/i.test(b),
 //    the inlined-resolved form or a 200 that doesn't expose `#X`.
 {
   const url = `${BASE}/s/${sid}/preview/@modules/vfile-mini`;
-  const resp = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
+  const resp = await fetch(url, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const code = await resp.text();
   // Must not contain a bare `#minpath` reachable to the browser as a literal.
   const lit = (code.match(/["']#minpath["']/g) || []).length;

@@ -19,7 +19,7 @@ console.log(`editor/monaco/new/ctrl-p-opens-file — ${process.env.BASE}`);
 const sid = await mintSession();
 
 // Probe 1-3: HTML/JS source-level checks.
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 a.check('Ctrl+P global keydown handler present',
@@ -44,7 +44,7 @@ a.check('palette items click → openFile()',
 
 // Probe 4-5: protocol-level — fs-list with reqId echoes correctly,
 // then a follow-up fs-read on one of the entries succeeds.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

@@ -10,7 +10,7 @@ const a = makeAsserter('monaco-polish/regression/terminal-still-fits-after-resiz
 console.log(`monaco-polish/regression/terminal-still-fits-after-resize — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 a.check('applyTerminalFit helper calls fitAddon.fit()',

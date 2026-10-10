@@ -21,7 +21,7 @@ console.log(`${label} — ${process.env.BASE} SID=${sid}`);
 const viaPort = async (port) => {
   let last = '';
   for (let i = 0; i < 40; i++) {
-    const r = await fetch(`${process.env.BASE}/s/${sid}/port/${port}/`, { headers: requestHeaders(), signal: AbortSignal.timeout(20_000) })
+    const r = await fetch(`${process.env.BASE}/s/${sid}/port/${port}/`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(20_000) })
       .then(async (res) => ({ status: res.status, body: await res.text() }), (e) => ({ status: 0, body: e.message }));
     if (r.status === 200) return r;
     last = `${r.status} ${r.body.slice(0, 200)}`;

@@ -123,7 +123,7 @@ const bootBefore = started.output.match(/boot=([^\s]+)/)?.[1] ?? '';
   // A request sent right after the 204 can still reach the pre-reset instance.
   const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, {
     method: 'POST',
-    headers: requestHeaders(),
+    headers: requestHeaders({}, sid),
   });
   a.check('_diag/abort answers the reset', abort.status === 204,
     `status=${abort.status}`);

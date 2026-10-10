@@ -16,7 +16,7 @@ const a = makeAsserter('editor/monaco/new/ctrl-s-saves-file');
 console.log(`editor/monaco/new/ctrl-s-saves-file — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 // HTML/JS: Ctrl+S global handler + Monaco addCommand binding.
@@ -35,7 +35,7 @@ const path = '/home/user/probe-ctrl-s-' + Date.now() + '.txt';
 const PAYLOAD = 'ctrl-s-probe-' + Date.now() + '\nsecond line\n  indented';
 
 async function withWs(fn) {
-  const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+  const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
   const messages = [];
   ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
   await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

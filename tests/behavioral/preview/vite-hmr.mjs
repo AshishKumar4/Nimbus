@@ -31,7 +31,7 @@ try {
   const started = await terminal.run(`cd ${root} && NIMBUS_REAL_VITE=1 vite --host 0.0.0.0 --port ${port}`, 120000);
   console.log(started.output);
   const get = async path => {
-    const response = await fetch(url + path, { headers: requestHeaders(), signal: AbortSignal.timeout(30000) });
+    const response = await fetch(url + path, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(30000) });
     return { status: response.status, body: await response.text() };
   };
   const page = await get('');
@@ -41,7 +41,7 @@ try {
 
   const messages = [];
   let error = '';
-  socket = new WebSocket(url.replace(/^http/, 'ws') + '__nimbus_hmr', ['vite-hmr'], wsHeaders());
+  socket = new WebSocket(url.replace(/^http/, 'ws') + '__nimbus_hmr', ['vite-hmr'], wsHeaders(sid));
   socket.on('message', data => {
     try { messages.push(JSON.parse(String(data))); } catch {}
   });

@@ -76,7 +76,7 @@ a.check('plain dev-server spawn is explicitly non-attached-TTY',
 // "post-banner state up to now"). Then trigger real dev-server work
 // (a /preview/ HEAD + a /preview/src/main.js GET + a file-write to
 // trigger HMR) and assert that NEW chunks arrive within 8 s.
-const logsWs = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${vitePid}`, wsHeaders());
+const logsWs = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${vitePid}`, wsHeaders(sid));
 let backlogSeen = false;
 let backlogFrame = null;
 let chunksSeen = 0;
@@ -117,10 +117,10 @@ const chunksBefore = chunksSeen;
 //   3. Append a byte to src/main.js to trigger an HMR full-reload
 {
   const url0 = `${BASE}/s/${sid}/preview/`;
-  const resp0 = await fetch(url0, { redirect: 'manual', headers: requestHeaders() });
+  const resp0 = await fetch(url0, { redirect: 'manual', headers: requestHeaders({}, sid) });
   await resp0.text().catch(() => '');
   const url1 = `${BASE}/s/${sid}/preview/src/main.js`;
-  const resp1 = await fetch(url1, { redirect: 'manual', headers: requestHeaders() });
+  const resp1 = await fetch(url1, { redirect: 'manual', headers: requestHeaders({}, sid) });
   await resp1.text().catch(() => '');
   console.log(`  triggered: GET / → ${resp0.status}, GET /src/main.js → ${resp1.status}`);
 }

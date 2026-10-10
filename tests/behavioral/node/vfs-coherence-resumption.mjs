@@ -40,7 +40,7 @@ await t.waitForPrompt(60_000);
 async function peerWrite(path, content) {
   const r = await fetch(`${BASE}/s/${sid}/api/write-file`, {
     method: 'POST',
-    headers: requestHeaders({ 'content-type': 'application/json' }),
+    headers: requestHeaders({ 'content-type': 'application/json' }, sid),
     body: JSON.stringify({ path, content }),
   });
   if (!r.ok) throw new Error(`peer write failed: ${r.status} ${await r.text().catch(() => '')}`);

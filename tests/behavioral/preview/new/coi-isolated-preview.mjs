@@ -18,7 +18,7 @@
 // Chrome runs with web security on: the rules under test are the browser's.
 // NIMBUS_PROBE_SCREENSHOTS=<dir> saves the offer, desktop and 390 px.
 
-import { AUTH_TOKEN, deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
+import { deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
 import {
   applyProbeCookies,
   exchangeAttachCookie,
@@ -144,8 +144,8 @@ try {
   // The session's DELETE below ends the app with everything else.
   await t.close();
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message || String(error)));
 

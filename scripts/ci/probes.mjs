@@ -123,6 +123,7 @@ try {
   }
   rows.push(...verdict.probes.map((probe) => ({
     name: `tests/behavioral/${probe.probe}`, exitCode: probe.code ?? 1, seconds: probe.elapsed, output: scrub(probe.output ?? ''),
+    assertions: probe.assertions ? JSON.parse(scrub(JSON.stringify(probe.assertions))) : null,
   })));
   const { minted, deleted, leaks } = verdict.sessions;
   rows.push({
