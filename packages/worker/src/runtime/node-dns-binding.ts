@@ -58,7 +58,7 @@ export const NODE_DNS_BINDING_SOURCE = String.raw`function createCaresBinding(pl
     }
     if (!response.ok) throw "EBADRESP";
     let result;
-    try { result = await response.json(); } catch { throw "EBADRESP"; }
+    try { result = await response.json(); } catch { throw signal.aborted ? signal.reason : "EBADRESP"; }
     if (!result || !Number.isInteger(result.Status)) throw "EBADRESP";
     if (result.Status !== 0) throw statusCodes[result.Status] || "EBADRESP";
     if (result.TC) throw "EBADRESP";

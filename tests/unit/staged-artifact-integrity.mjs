@@ -38,6 +38,8 @@ import {
 import { fetchOpencodeWasmBytes } from '../../packages/worker/src/runtime/opencode-artifact.ts';
 import {
   NODE_LIB_ENTRY,
+  NODE_DNS_ENTRY,
+  NODE_REGISTRY_ENTRY,
   NODE_SHIMS_ENTRY,
   RESIDENT_STORE_ENTRY,
   JS_INTERPRETER_ENTRY,
@@ -204,6 +206,8 @@ try {
     ['js-interpreter', JS_INTERPRETER_ENTRY, 'interpreter'],
     ['js-interpreter-ops', JS_INTERPRETER_OPS_ENTRY, 'interpreterOps'],
     ['node-lib', NODE_LIB_ENTRY, 'nodeLib'],
+    ['node-dns', NODE_DNS_ENTRY, 'nodeDns'],
+    ['node-registry', NODE_REGISTRY_ENTRY, 'registry'],
   ];
   const stagedText = (entry) => readFileSync(path.join(workerRoot, 'public', entry.slice(1)), 'utf8');
   // A truncated body, as an interrupted read or a short 200 would give.

@@ -119,6 +119,7 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
 export function generatedModuleSet(generated, entry) {
   const set = { [entry]: generated.code, ...generated.modules };
   for (const [name, text] of Object.entries(generated.codeModules)) set[name] = { cjs: text };
+  for (const [name, source] of Object.entries(generated.immutableModules)) set[name] = { cjs: source.text };
   return set;
 }
 
