@@ -21,8 +21,9 @@
  */
 import { ProcessTable, type ProcessEntry, type ProcessRestart } from './process-table.js';
 import { type ProcessInputPacket } from './process-input.js';
-import { ProcessLogStore, type LogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
+import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
+import type { OutputGate } from './output-gate.js';
 import type { VfsCred } from './os-contracts.js';
 export interface ProcessSpawnOptions {
     /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -55,12 +56,6 @@ export declare class SessionProcessSupervisor {
     private readonly table;
     private readonly input;
     private logs;
-    /**
-     * The log ring holds text lines; a process's output arrives as bytes. One
-     * streaming decoder per (pid, stream) is this text consumer's edge, so a
-     * character split across two chunks survives. Dropped at markExit.
-     */
-    private readonly outputDecoders;
     /** Terminators for processes whose work is a promise this session owns. */
     private terminators;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -75,6 +70,18 @@ export declare class SessionProcessSupervisor {
     private release;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     private defaultSignalAction;
+    /** Holds a process's output until its writes are published; see setOutputGate. */
+    private outputGate;
+    /** Each pid's latest output still held: what its next output goes after. */
+    private readonly heldOutput;
+    /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
+    private readonly releasing;
+    /**
+     * The pids whose end is decided but not yet published: observers are told
+     * they run. A pid's own slot, kept until its end is published, whatever
+     * becomes of its table entry.
+     */
+    private readonly unpublishedEnds;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
     /** Mark an existing entry as long-running. Idempotent. */
@@ -82,7 +89,19 @@ export declare class SessionProcessSupervisor {
     /** Mark an existing entry as an attached terminal process. Idempotent. */
     setAttachedTty(pid: number): void;
     setForeground(pid: number, foreground: boolean): void;
+    /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
     get(pid: number): ProcessEntry | undefined;
+    /**
+     * `pid`'s status as observers are told it (ps, process listings, a parent
+     * waiting on it): its end once published, after the output before it
+     * (releaseOutput); running until then.
+     */
+    published(pid: number): ProcessEntry | undefined;
+    /** Every process, as observers are told it (see {@link published}). */
+    publishedAll(): ProcessEntry[];
+    private asPublished;
+    /** Whether `pid`'s end is decided and still held from its observers (see {@link published}). */
+    endHeld(pid: number): boolean;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
     /** Every process spawned under `pid`, transitively, oldest first. */
@@ -150,6 +169,8 @@ export declare class SessionProcessSupervisor {
      * genuine owner exists.
      */
     setOnTerminal(cb: (pid: number) => void): void;
+    /** A decided end is told to observers (published) once the output before it is. */
+    private publishEnd;
     private fireTerminal;
     /** Mark a process as exited. First terminal state wins. */
     exit(pid: number, exitCode: number): void;
@@ -170,6 +191,8 @@ export declare class SessionProcessSupervisor {
      * A prune serves whoever runs next, not the processes it removes, so a
      * release that fails goes to that process's own stderr log, where its
      * output is read; every expired entry is still released and forgotten.
+     * One whose end is still held from its observers has not ended to them,
+     * and waits for a prune after it is published.
      */
     reap(maxAge?: number): Promise<number>;
     /**
@@ -185,8 +208,8 @@ export declare class SessionProcessSupervisor {
      * that waited for its children does: what a caller ran to completion has
      * nothing left to report. Each is released first (see {@link setRelease}),
      * so what it bound goes with its entry rather than outliving it; with no
-     * release set this refuses. One still running is kept. Logs are
-     * orphaned as by {@link reap}.
+     * release set this refuses. One still running, or whose end is still held
+     * from its observers, is kept. Logs are orphaned as by {@link reap}.
      */
     reapTree(pid: number): Promise<number>;
     /**
@@ -205,6 +228,13 @@ export declare class SessionProcessSupervisor {
     get pidBase(): number;
     /** Open the process's input channel. Until opened, input writes fail. */
     openInput(pid: number): void;
+    inheritInput(pid: number, parentPid: number): void;
+    pumpInput(pid: number, source: {
+        readBytes(maxLength: number): Promise<Uint8Array | null>;
+    }): {
+        stop(): void;
+        done: Promise<void>;
+    };
     hasInput(pid: number): boolean;
     writeInput(pid: number, data: string): {
         ok: boolean;
@@ -214,13 +244,17 @@ export declare class SessionProcessSupervisor {
         ok: boolean;
         full?: boolean;
     };
+    writeInputBytesWait(pid: number, data: Uint8Array): Promise<{
+        ok: boolean;
+    }>;
+    endInputAfterWrites(pid: number): Promise<void>;
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
     whenInputWritable(pid: number): Promise<boolean>;
     /** Signal stdin EOF. Queued packets still drain; further writes fail. */
     endInput(pid: number): void;
     /** End and drop the input channel entirely. */
     closeInput(pid: number): void;
-    readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket>;
+    readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {
@@ -243,10 +277,23 @@ export declare class SessionProcessSupervisor {
     setDefaultSignalAction(cb: (pid: number, code: number, signal: ProcessSignalName) => void): void;
     /** Controlling-terminal descriptor; null when no input channel is open. */
     terminal(pid: number): ProcessTerminalDescriptor | null;
+    /**
+     * Hold each process's output (its log and live sinks, a pipe to another
+     * process, the terminal, its exit) until `gate` lets it through. One slot.
+     */
+    setOutputGate(gate: OutputGate | null): void;
+    /**
+     * `deliver` once `pid`'s output may reach its observers: now, when the
+     * gate holds nothing of pid's, else after the gate and after pid's output
+     * before it, in the order the process made it. Every observer of a
+     * process's output and its exit is reached through here.
+     */
+    releaseOutput<T>(pid: number, deliver: () => T): T | Promise<Awaited<T>>;
+    private deliverOutput;
     appendOutput(pid: number, stream: LogStream, data: string): void;
-    /** A process's own output: bytes on the relay, decoded at this edge. */
-    appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): void;
-    /** Record exit in the log store. Idempotent: the first record wins. */
+    /** Store bytes once, and await the live byte sink's pipe backpressure. */
+    appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void>;
+    /** Record exit in the log store, after the output before it. Idempotent: the first record wins. */
     markExit(pid: number, code: number, reason?: string): void;
     getExit(pid: number): ProcessExitInfo | null;
     hasLogs(pid: number): boolean;
@@ -267,6 +314,7 @@ export declare class SessionProcessSupervisor {
         exit: ProcessExitInfo | null;
     } | null;
     subscribeLogs(pid: number, cb: (chunk: LogChunk) => void): () => void;
+    subscribeOutputBytes(pid: number, cb: (chunk: ByteLogChunk) => void | Promise<void>): () => void;
     subscribeExit(pid: number, cb: (exit: ProcessExitInfo) => void): () => void;
     get logStats(): ProcessLogStore['stats'];
     /**

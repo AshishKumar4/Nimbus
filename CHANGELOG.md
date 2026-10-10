@@ -5,6 +5,35 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: process stdin is one bounded byte channel for Node, WASI and registry
+  children. Inherited fd 0 keeps queued bytes, future writes and EOF; full
+  pipes hold their writers until a reader makes room. Registry and shebang
+  children stream byte-exact stdout/stderr, and foreground output no longer
+  passes through a decoded log or binary placeholder. Logs persist bytes and
+  derive their text view on read. Missing/nonexecutable children fail spawn
+  with ENOENT/EACCES, and a vanished reader releases a blocked writer. npm-bin
+  entrypoints retain their broker-owned pid/fd0 and forward logged bytes
+  without feeding the same foreground subscriber back into itself. A child's
+  parent-side stdin is destroyed on exit, so a delayed end cannot write to
+  a removed reader and abort its parent's asynchronous work. A source read
+  failure preserves queued input and then reports EIO instead of clean EOF.
+  Broker-owned WASI runs reuse the same process and stream their bytes rather
+  than returning a rendered, truncated process-log tail.
+- Fixed: echo, progress, replay wakeups and impossible-child refusals use a
+  timer-independent continuation fence, so incoming filesystem RPC traffic
+  cannot withhold their bookkeeping. Fresh CPU turns still use the session's
+  alarm-backed paced-work scheduler. Complete-file stdin reads use bounded
+  1 MiB windows rather than one RPC per small stream chunk.
+- Fixed: CPython, Ruby, bash and the clang toolchain use the shared live WASI
+  byte relay instead of returning collected output at exit. Redirected files
+  receive flushed output during the run, binary pipes preserve their bytes,
+  and REPL/server control frames are bounded metadata rather than stored text.
+- Fixed: Node byte-mode readable streams expose Buffer chunks at their public
+  edge, preserving Buffer methods and encoding-aware toString calls.
+- Fixed: live Node console output no longer retains a second whole-output
+  string. Opencode's explicit one-shot text-result capture is bounded to
+  1 MiB per stream; an oversized result fails with EFBIG and a nonzero exit
+  instead of silently truncating it or exhausting the facet's memory.
 - Fixed: `fs.stat(path, options, callback)` treated the options object as
   the callback. `{ bigint: true }` was ignored by every stat call; it now
   returns `BigIntStats` in nanoseconds.

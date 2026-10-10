@@ -1,5 +1,17 @@
 import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
 
+/** One byte edge for all runtimes: native bytes pass through, text is encoded once. */
+export function stdinBytesOf(stream: Pick<CommandInputStream, 'read' | 'readBytes'>): { readBytes(maxLength: number): Promise<Uint8Array | null> } {
+  if (stream.readBytes) return { readBytes: n => stream.readBytes!(n) };
+  const encoder = new TextEncoder();
+  let rest: Uint8Array | null = null;
+  return { readBytes: async (n) => {
+    if (rest === null) { const text = await stream.read(); if (text === null) return null; rest = encoder.encode(text); }
+    const piece = rest.subarray(0,n); rest = piece.length < rest.length ? rest.subarray(piece.length) : null;
+    return piece;
+  } };
+}
+
 /**
  * One consuming source behind the full reader contract, byte-accurate:
  * the text is encoded once and every offset is a byte offset, so

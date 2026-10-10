@@ -41,6 +41,9 @@ export interface BashBootArgs {
   stdinData: string;
   stdinClosed: boolean;
   stdinTty: boolean;
+  processPid?: number;
+  sharedInput?: boolean;
+  outputControls?: import('../wasi/output-control.js').OutputControlFrame[];
   /** Applet names the busybox multicall module answers to (busybox --list). */
   busyboxApplets: string[];
   coreutilsRoot: string;
@@ -59,6 +62,7 @@ export interface BashSlice {
   exitCode: number;
   stdout: string;
   stderr: string;
+  control?: Record<string, string>;
   error?: string;
   stats?: Record<string, unknown>;
 }
@@ -193,6 +197,7 @@ export interface BashProcCtx {
   pipeReq: BashPipeReq;
   /** 'blockwrite': the descriptor whose pipe was at capacity. */
   writeFd: number;
+  outputWait?: Promise<void>;
   /** 'exec': the execve arguments. */
   execPath: string;
   execArgv: string[];
@@ -309,6 +314,9 @@ export interface BashSession {
   environ: string[];
   stdinTty: boolean;
   stdin: BashStdin;
+  processPid: number;
+  sharedInput: boolean;
+  inputPending?: Promise<void>;
   procs: Map<number, BashProc>;
   /**
    * Processes that exited normally, each keeping its bash instance and
@@ -349,8 +357,8 @@ export interface BashSession {
   rootPid: number;
   rootExit: number | null;
   steps: number;
-  out: string;
-  err: string;
+  output: ReturnType<typeof import('../wasi/stdio.js').wasiOutputRelay>;
+  outputControl: ReturnType<typeof import('../wasi/output-control.js').outputControlReader> | null;
   /** preview1 names a guest asked for and this scheduler answered ENOSYS. */
   missingWasi: Set<string>;
   stats: BashStats;

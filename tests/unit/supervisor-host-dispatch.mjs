@@ -172,7 +172,7 @@ const INPUTS = {
   cpSpawn: [req],
   cpStdinWrite: [childPid, data],
   cpStdinEnd: [childPid],
-  cpReadStdin: [childPid, waitMs, { epoch, cursor }],
+  cpReadStdin: [childPid, waitMs, { epoch, cursor }, 65536],
   stdinFileRead: [path, offset, length],
   stdinPrepared: [],
   getCachedTarball: ['sha256-AAAA'],

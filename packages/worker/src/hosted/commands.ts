@@ -141,7 +141,7 @@ workspace.runtimes.registerRunner(
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
     const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
+    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -190,6 +190,8 @@ workspace.runtimes.registerRunner(
     const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
+      filesystem: workspace.filesystem,
+      processes: self.processes,
       startResident: cpythonResidentStart(facetMgr),
       network: workspace.network,
     })(manifest, installRoot, binName, binKind)(ctx);
@@ -228,6 +230,7 @@ workspace.runtimes.registerRunner(
     const runner = await makeRubyRunnerFactory({
       facets: facetHostForManager(facetMgr),
       filesystem: workspace.filesystem,
+      processes: self.processes,
       registry,
       startResident: rubyResidentStart(facetMgr),
       getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
@@ -257,6 +260,7 @@ workspace.runtimes.registerRunner(
         manifest,
         cred: ctx.cred,
         pid: ctx.pid,
+        processes: self.processes,
         filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
         env: ctx.env,
         cwd: ctx.cwd || '/home/user',
@@ -265,7 +269,7 @@ workspace.runtimes.registerRunner(
     }
     const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
+    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -943,11 +947,12 @@ const shellExecuteTracked = async (
 
   // Wrap the caller-supplied streams so every chunk is both displayed
   // AND captured in the ring buffer keyed by this PID.
-  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => {
+  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void | Promise<void>; writeBytes?(d: Uint8Array): void | Promise<void> }) => {
     const toTarget = textSink((text) => target.write(text));
-    return (d: Uint8Array) => {
-      try { self.processes.appendOutputBytes(pid, stream, d); } catch {}
-      try { toTarget(d); } catch {}
+    return async (d: Uint8Array) => {
+      await self.processes.appendOutputBytes(pid, stream, d);
+      if (target.writeBytes) await target.writeBytes(d);
+      else toTarget(d);
     };
   };
 
@@ -1312,7 +1317,7 @@ registry.register('npx', async (ctx: any) => {
 registry.register('ps', async (ctx: any) => {
   // Pids are generation-strided (see PID_GEN_STRIDE) so they can be 7+
   // digits; size the column to the widest pid in this listing.
-  const procs = self.processes.getAll();
+  const procs = self.processes.publishedAll();
   const pidWidth = Math.max(3, ...procs.map((p: any) => String(p.pid).length));
   ctx.stdout.write(`  ${'PID'.padStart(pidWidth)}  STATUS              COMMAND\n`);
   for (const proc of procs) {
@@ -1337,7 +1342,7 @@ registry.register('ps', async (ctx: any) => {
   if (self.viteDevServer?.isRunning) {
     ctx.stdout.write(`  \x1b[33m${'---'.padStart(pidWidth)}\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (${self.viteBasePath}/)\n`);
   }
-  if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
+  if (procs.length === 0 && !self.viteDevServer?.isRunning) {
     ctx.stdout.write('  (no processes)\n');
   }
   return 0;
@@ -1494,7 +1499,7 @@ registry.register('logs', async (ctx: any) => {
 });
 
 registry.register('jobs', async (ctx: any) => {
-  const running = self.processes.getRunning();
+  const running = self.processes.publishedAll().filter((p) => p.state === 'running');
   if (running.length === 0 && !self.viteDevServer?.isRunning) {
     ctx.stdout.write('No background jobs.\n');
     return 0;

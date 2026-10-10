@@ -51,8 +51,8 @@ function makeShellEntrypoint(shellName, shell) {
             scriptMode: true,
             stdin: inheritedStdin.stdin,
             terminalStdin: ctx.terminalStdin,
-            onStdout: textSink((data) => ctx.stdout.write(data)),
-            onStderr: textSink((data) => ctx.stderr.write(data)),
+            onStdout: ctx.stdout.writeBytes ? (bytes) => ctx.stdout.writeBytes(bytes) : textSink((data) => ctx.stdout.write(data)),
+            onStderr: ctx.stderr.writeBytes ? (bytes) => ctx.stderr.writeBytes(bytes) : textSink((data) => ctx.stderr.write(data)),
             runExitTrap: true,
             terminalFds: {
                 stdin: ctx.isFdTerminal?.(0) ?? false,

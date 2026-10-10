@@ -120,7 +120,7 @@ export async function registerHostedCommands(self, workspace) {
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-        return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(manifest, installRoot, binName, binKind)(ctx);
+        return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(manifest, installRoot, binName, binKind)(ctx);
     });
     // Pyodide v1 — Python 3.13 via the same R2-package-manager
     // substrate that ships clang. Manifest entrypoints `python` and
@@ -164,6 +164,8 @@ export async function registerHostedCommands(self, workspace) {
         const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
         return await makeCPythonRunnerFactory({
             facets: facetHostForManager(facetMgr),
+            filesystem: workspace.filesystem,
+            processes: self.processes,
             startResident: cpythonResidentStart(facetMgr),
             network: workspace.network,
         })(manifest, installRoot, binName, binKind)(ctx);
@@ -199,6 +201,7 @@ export async function registerHostedCommands(self, workspace) {
         const runner = await makeRubyRunnerFactory({
             facets: facetHostForManager(facetMgr),
             filesystem: workspace.filesystem,
+            processes: self.processes,
             registry,
             startResident: rubyResidentStart(facetMgr),
             getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
@@ -225,6 +228,7 @@ export async function registerHostedCommands(self, workspace) {
                 manifest,
                 cred: ctx.cred,
                 pid: ctx.pid,
+                processes: self.processes,
                 filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
                 env: ctx.env,
                 cwd: ctx.cwd || '/home/user',
@@ -233,7 +237,7 @@ export async function registerHostedCommands(self, workspace) {
         }
         const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-        return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(manifest, installRoot, binName, binKind)(ctx);
+        return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(manifest, installRoot, binName, binKind)(ctx);
     });
     {
         // Cast registry to the minimal package-manager shape. CommandRegistry
@@ -844,15 +848,12 @@ export async function registerHostedCommands(self, workspace) {
         // AND captured in the ring buffer keyed by this PID.
         const tee = (stream, target) => {
             const toTarget = textSink((text) => target.write(text));
-            return (d) => {
-                try {
-                    self.processes.appendOutputBytes(pid, stream, d);
-                }
-                catch { }
-                try {
+            return async (d) => {
+                await self.processes.appendOutputBytes(pid, stream, d);
+                if (target.writeBytes)
+                    await target.writeBytes(d);
+                else
                     toTarget(d);
-                }
-                catch { }
             };
         };
         // The script runs as the wrapper, on a shell of its own (as npm runs a
@@ -1230,7 +1231,7 @@ export async function registerHostedCommands(self, workspace) {
     registry.register('ps', async (ctx) => {
         // Pids are generation-strided (see PID_GEN_STRIDE) so they can be 7+
         // digits; size the column to the widest pid in this listing.
-        const procs = self.processes.getAll();
+        const procs = self.processes.publishedAll();
         const pidWidth = Math.max(3, ...procs.map((p) => String(p.pid).length));
         ctx.stdout.write(`  ${'PID'.padStart(pidWidth)}  STATUS              COMMAND\n`);
         for (const proc of procs) {
@@ -1257,7 +1258,7 @@ export async function registerHostedCommands(self, workspace) {
         if (self.viteDevServer?.isRunning) {
             ctx.stdout.write(`  \x1b[33m${'---'.padStart(pidWidth)}\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (${self.viteBasePath}/)\n`);
         }
-        if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
+        if (procs.length === 0 && !self.viteDevServer?.isRunning) {
             ctx.stdout.write('  (no processes)\n');
         }
         return 0;
@@ -1395,7 +1396,7 @@ export async function registerHostedCommands(self, workspace) {
         });
     });
     registry.register('jobs', async (ctx) => {
-        const running = self.processes.getRunning();
+        const running = self.processes.publishedAll().filter((p) => p.state === 'running');
         if (running.length === 0 && !self.viteDevServer?.isRunning) {
             ctx.stdout.write('No background jobs.\n');
             return 0;

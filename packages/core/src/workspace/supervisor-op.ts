@@ -111,7 +111,7 @@ export interface SupervisorOpDeps {
   readonly filesystem?: NimbusFilesystemAuthority;
   /** Absent a process table, operations use the unprivileged session user. */
   readonly processes?: SessionProcessSupervisor;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   /**
    * The host's `_rpc*` surface for ops beyond the native set — an in-process
    * workspace's dispatch record, or the session itself for
@@ -270,7 +270,7 @@ export interface SupervisorOpTools {
   readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   readonly vfs: SqliteVFS;
   readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
   /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
   readonly hydrated: (path: string) => Promise<void>;
@@ -324,7 +324,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cpSpawn: { method: '_rpcCpSpawn', args: [0] },
   cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0,1] },
   cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
-  cpReadStdin: { method: '_rpcCpReadStdin', args: [0,1,2,'pid','writerId'] },
+  cpReadStdin: { method: '_rpcCpReadStdin', args: [0,1,2,'pid','writerId',3] },
   stdinFileRead: { method: '_rpcStdinFileRead', args: [0,1,2,'pid'] },
   stdinPrepared: { method: '_rpcStdinPrepared', args: ['pid', 'run'] },
   getCachedTarball: { method: '_rpcGetCachedTarball', args: [0, 'pid', 'run'] },
@@ -513,8 +513,8 @@ const NATIVE_OPS = {
     t.bridge(e.pid, e.cred);
     return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
   },
-  stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
-  stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
+  stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, bytesArg(e, 0)),
+  stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, bytesArg(e, 0)),
 } satisfies Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
 
 /**

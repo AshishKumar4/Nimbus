@@ -264,4 +264,5 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
       upstream.readable.pipeTo(socket.writable).catch(() => socket.close().catch(() => {})),
     ]);
   }
+
 }

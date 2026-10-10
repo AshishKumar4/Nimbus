@@ -75,7 +75,7 @@ class RuntimeOwner {
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
             persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
-        });
+        }, (send) => void this.processes.releaseOutput(this.shellProcessPid, send));
         this._cpRegistry = options.workspace.registry;
         this.services = services.bindRuntimeServices(this, {
             ctx: options.ctx,
