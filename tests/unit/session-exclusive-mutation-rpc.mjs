@@ -9,6 +9,8 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
@@ -231,6 +233,44 @@ for (const delivered of [false, true]) {
     const outcome = await Promise.race([rpcDestroy(self).then((result) => result.ok), new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000))]);
     assert.equal(outcome, true, 'a destroy waited on a wave that never ends');
     await writing.catch(() => {});
+  } finally { harness.db.close(); }
+}
+
+// A wave whose native part commits ahead of a reader's recall and whose
+// mounted part waits on a backend that never answers, the reader answered:
+// the destroy's cut ends that wait, the wave ends refused, its native part is
+// published, and the destroy completes.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    sqliteFs.as(CRED_KERNEL).mkdir('srv');
+    const files = new ProcessFiles(sqliteFs);
+    const hung = [];
+    files.vfs.mount('/m', asyncOnly(new MemoryVFS(), {
+      deep: true,
+      beforeCall: (method) => (method === 'writeFile' ? new Promise(() => { hung.push(method); }) : undefined),
+    }));
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    const write = (path, text) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: new TextEncoder().encode(text) } });
+    const writing = files.bind({ pid: 8, cred: CRED_KERNEL }).writeStream(encodeWriteBatchStream({
+      inodes: [], chunks: [], ops: [write('srv/a.txt', 'native'), write('m/b.txt', 'mounted')],
+    }));
+    for (let i = 0; i < 200 && (hung.length === 0 || sqliteFs.publishedFor() === null); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(hung, ['writeFile'], 'the mounted part never reached its backend');
+    assert.notEqual(sqliteFs.publishedFor(), null, 'the native part committed nothing ahead of the recall');
+    reader.recalled(readLease.owner, 'revoke');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    const outcome = await Promise.race([rpcDestroy(self).then((result) => result.ok), new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000))]);
+    assert.equal(outcome, true, 'a destroy waited on a wave its mounted backend never answers');
+    assert.equal((await writing).ok, false, 'a cut wave was answered as applied');
   } finally { harness.db.close(); }
 }
 

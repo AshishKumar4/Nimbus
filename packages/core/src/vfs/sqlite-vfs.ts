@@ -851,6 +851,25 @@ export function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { s
   return { signal: controller.signal, dispose: () => { for (const remove of listeners) remove(); } };
 }
 
+/**
+ * `work`, a mounted backend's answer to a wave, raced with the wave's
+ * `signal`: once it aborts, the wave goes on at once (ending refused), and a
+ * late answer is dropped. The namespace's guard starts no backend call
+ * after the abort (WaveRouter.apply).
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return work;
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => { work.catch(() => {}); reject(signal.reason); };
+    if (signal.aborted) return abort();
+    signal.addEventListener('abort', abort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener('abort', abort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', abort); reject(error); },
+    );
+  });
+}
+
 /** A batch's directory record over a symbolic link it does not remove: refused, never followed or replaced. */
 function linkedDirectoryRefusal(path: string): Error {
   return vfsError('ENOTDIR', path, 'a directory record never replaces a symbolic link; remove the link in the same batch');
@@ -9107,6 +9126,8 @@ export class SqliteVFS {
       owner?: string;
     },
   ): Promise<boolean> {
+    /** Every answer a mounted backend owes the wave, which its cut does not wait for (untilAborted). */
+    const backend = <T>(work: Promise<T>): Promise<T> => untilAborted(work, at.signal);
     /**
      * Where `named` lands, by the namespace's lookup: its directory resolved
      * (again when anything has committed since), then the name placed by the
@@ -9125,7 +9146,7 @@ export class SqliteVFS {
       if (route === undefined || route.epoch !== epoch) {
         // Synchronous while the lookup stays on this filesystem's backends.
         const answer = parent === '' ? '' : this.withHolds(at.holds, () => router.resolveDirectory('/' + parent, cred, at.signal));
-        const resolved = typeof answer === 'string' ? answer : await answer;
+        const resolved = typeof answer === 'string' ? answer : await backend(answer);
         route = { resolved, epoch };
         at.routes.set(parent, route);
       }
@@ -9154,7 +9175,7 @@ export class SqliteVFS {
         at.setPhase('publish');
         await at.settleBefore();
         reached();
-        await router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner);
+        await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner));
         at.committed(null);
         return true;
       }
@@ -9165,7 +9186,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         // A directory has no receipt, here as in a group.
-        await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner);
+        await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner));
         at.committed(null);
         return true;
       }
@@ -9184,7 +9205,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         // Made under the umask the process made it with, as on this filesystem (W7Call umask).
-        const stat = await router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner);
+        const stat = await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner));
         // An open's answer is the file's stat (its description writes it by number).
         at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null);
         return true;
@@ -9204,7 +9225,7 @@ export class SqliteVFS {
         at.setPhase('publish');
         await at.settleBefore();
         reached();
-        await router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner);
+        await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner));
         at.committed(null);
         return true;
       }
@@ -9217,7 +9238,7 @@ export class SqliteVFS {
         at.setPhase('publish');
         await at.settleBefore();
         reached();
-        await router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner);
+        await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner));
         at.committed(null);
         return true;
       }
@@ -9280,11 +9301,11 @@ export class SqliteVFS {
           await at.settleBefore();
           reached();
           const bytes = concatBytes(file.held.map((chunk) => chunk.data));
-          const stat = await router.apply(file.call !== undefined
+          const stat = await backend(router.apply(file.call !== undefined
             ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
             : file.link
             ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
-            : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, at.owner);
+            : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, at.owner));
           at.committed(stat === null ? null : { path: file.named, ...stat });
         } finally {
           at.file = null;
