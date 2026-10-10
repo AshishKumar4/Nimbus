@@ -29,19 +29,51 @@ function pktLine(text) {
     out.set(body, 4);
     return out;
 }
-function headers(options, extra) {
+/**
+ * The repository's URL without credentials, and the credentials to send: a
+ * URL's own (https://user:password@host/repo.git), as git takes them, else
+ * the options'.
+ */
+function remote(options) {
+    const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
+    if (parsed === null || (parsed.username === '' && parsed.password === ''))
+        return { url: withoutSlash(options.url), auth: options.auth };
+    const auth = { username: unescapeUserinfo(parsed.username), password: unescapeUserinfo(parsed.password) };
+    parsed.username = '';
+    parsed.password = '';
+    return { url: withoutSlash(parsed.href), auth };
+}
+function withoutSlash(url) {
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+/** A URL's username or password as written: each run of percent-escapes decoded, a stray `%` kept. */
+function unescapeUserinfo(text) {
+    return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+        try {
+            return decodeURIComponent(run);
+        }
+        catch {
+            return run;
+        }
+    });
+}
+function headers(auth, extra) {
     const result = { 'user-agent': 'git/nimbus', ...extra };
-    if (options.auth && (options.auth.username || options.auth.password)) {
-        result.authorization = 'Basic ' + btoa(options.auth.username + ':' + options.auth.password);
+    if (auth && (auth.username || auth.password)) {
+        // Basic credentials are UTF-8, as git sends them.
+        const bytes = encoder.encode(auth.username + ':' + auth.password);
+        let binary = '';
+        for (const byte of bytes)
+            binary += String.fromCharCode(byte);
+        result.authorization = 'Basic ' + btoa(binary);
     }
     return result;
-}
-function repoUrl(url) {
-    return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 /** A request whose transient failures are retried before any byte is read (transport.ts). */
 async function send(options, path, init) {
     const doFetch = options.fetch ?? fetch;
+    const { url, auth } = remote(options);
+    const request = { ...init, headers: headers(auth, init.headers) };
     // Headers that do not come within the stall time are a stall too.
     const stallMs = options.stallMs ?? STALL_MS;
     const attempt = async () => {
@@ -50,7 +82,7 @@ async function send(options, path, init) {
             timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
         });
         try {
-            return await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
+            return await Promise.race([doFetch(url + path, { ...request, signal: options.signal }), stalled]);
         }
         finally {
             if (timer !== null)
@@ -152,7 +184,7 @@ function text(payload) {
 }
 export async function discover(options) {
     const response = await send(options, '/info/refs?service=git-upload-pack', {
-        headers: headers(options, { accept: 'application/x-git-upload-pack-advertisement' }),
+        headers: { accept: 'application/x-git-upload-pack-advertisement' },
     });
     if (response.status === 401 || response.status === 403) {
         await response.body?.cancel();
@@ -215,6 +247,11 @@ function requestCapabilities(advertised, request) {
             throw new UploadPackError('the server does not support shallow fetches');
         capabilities.push('shallow');
     }
+    if (request.relative) {
+        if (!advertised.has('deepen-relative'))
+            throw new UploadPackError('the server does not support --deepen');
+        capabilities.push('deepen-relative');
+    }
     if (request.filter !== undefined) {
         if (!advertised.has('filter'))
             throw new UploadPackError('the server does not support --filter');
@@ -252,10 +289,10 @@ export async function requestPack(options, advertised, request) {
     const response = await send(options, '/git-upload-pack', {
         method: 'POST',
         body,
-        headers: headers(options, {
+        headers: {
             'content-type': 'application/x-git-upload-pack-request',
             accept: 'application/x-git-upload-pack-result',
-        }),
+        },
     });
     if (!response.ok || !response.body) {
         const detail = response.body ? (await response.text()).slice(0, 300) : '';

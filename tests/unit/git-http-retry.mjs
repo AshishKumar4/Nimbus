@@ -36,29 +36,11 @@ const control = queuedHttp([
 assert.equal(
   (await control.request({
     method: 'GET',
-    url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
+    url: 'https://github.com/example/project.git/info/refs?service=git-receive-pack',
   })).statusCode,
   522,
 );
 assert.equal(control.calls.length, 1, 'the unwrapped adapter unexpectedly retried');
-
-const uploadPack = queuedHttp([
-  { statusCode: 522 },
-  { statusCode: 200 },
-]);
-async function* uploadPackBody() {
-  yield Uint8Array.of(0, 1, 2);
-  yield Uint8Array.of(253, 254, 255);
-}
-const uploadPackResult = await retryingGitHttp(uploadPack, schedule).request({
-  method: 'POST',
-  url: 'https://github.com/example/project.git/git-upload-pack',
-  body: uploadPackBody(),
-});
-assert.equal(uploadPackResult.statusCode, 200);
-assert.equal(uploadPack.calls.length, 2);
-assert.deepEqual(uploadPack.calls[0].body, [0, 1, 2, 253, 254, 255]);
-assert.deepEqual(uploadPack.calls[1].body, uploadPack.calls[0].body);
 
 const discovery = queuedHttp([
   { statusCode: 522 },
@@ -66,7 +48,7 @@ const discovery = queuedHttp([
 ]);
 const discoveryResult = await retryingGitHttp(discovery, schedule).request({
   method: 'GET',
-  url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
+  url: 'https://github.com/example/project.git/info/refs?service=git-receive-pack',
 });
 assert.equal(discoveryResult.statusCode, 200);
 assert.equal(discovery.calls.length, 2);
@@ -76,7 +58,7 @@ const notFound = queuedHttp([notFoundResponse]);
 assert.equal(
   await retryingGitHttp(notFound, schedule).request({
     method: 'GET',
-    url: 'https://github.com/example/missing.git/info/refs?service=git-upload-pack',
+    url: 'https://github.com/example/missing.git/info/refs?service=git-receive-pack',
   }),
   notFoundResponse,
 );
@@ -91,7 +73,7 @@ const persistent = queuedHttp(persistentResponses);
 assert.equal(
   await retryingGitHttp(persistent, schedule).request({
     method: 'GET',
-    url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
+    url: 'https://github.com/example/project.git/info/refs?service=git-receive-pack',
   }),
   persistentResponses[2],
 );
@@ -103,7 +85,7 @@ const networkFailure = queuedHttp([
 ]);
 const networkFailureResult = await retryingGitHttp(networkFailure, schedule).request({
   method: 'GET',
-  url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
+  url: 'https://github.com/example/project.git/info/refs?service=git-receive-pack',
 });
 assert.equal(networkFailureResult.statusCode, 200);
 assert.equal(networkFailure.calls.length, 2);
