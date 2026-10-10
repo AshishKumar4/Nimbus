@@ -1,7 +1,8 @@
 export async function httpFetchCases(http) {
   const cookies = ['a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/', 'b=2; HttpOnly'];
-  let uploaded = '', abortResponse;
+  let uploaded = '';
   let connectionIsSocket = false;
+  /** @type {PromiseWithResolvers<import('node:http').ServerResponse>} */
   const arrived = Promise.withResolvers();
   const server = http.createServer(async (req, res) => {
     if (req.url === '/cookies') { res.setHeader('set-cookie', cookies); res.end('cookies'); return; }
@@ -12,7 +13,7 @@ export async function httpFetchCases(http) {
     }
     if (req.url === '/bytes') { req.pipe(res); return; }
     if (req.url === '/wire') { req.resume(); req.on('end', () => res.end(JSON.stringify([req.headers['content-length'] ?? null, req.headers['transfer-encoding'] ?? null]))); return; }
-    if (req.url === '/abort') { abortResponse = res; arrived.resolve(); req.on('error', () => {}); return; }
+    if (req.url === '/abort') { arrived.resolve(res); req.on('error', () => {}); return; }
     if (req.url === '/connection') {
       const count = await new Promise((resolve, reject) => server.getConnections((error, value) => error ? reject(error) : resolve(value)));
       res.end(JSON.stringify({ count, remotePort: req.socket.remotePort, connectionIsSocket }));
@@ -95,10 +96,9 @@ export async function httpFetchCases(http) {
     const sent = request('/abort');
     const sentClosed = abort(sent);
     sent.end();
-    await arrived.promise;
+    const abortResponse = await arrived.promise;
     sent.abort();
     parity.abortAfterSend = await sentClosed;
-    if (!abortResponse) throw new Error('the server never saw the aborted request');
     abortResponse.end('late');
     const connections = [];
     for (let i = 0; i < 2; i++) {
