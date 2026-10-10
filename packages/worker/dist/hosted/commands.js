@@ -957,7 +957,7 @@ export async function registerHostedCommands(self, workspace) {
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     installNpmBinFallbackResolver(registry, {
         filesystem: workspace.filesystem,
-        getCwd: () => shell?.cwd || '/home/user',
+        getCwd: () => shell?.getCwd() || '/home/user',
         getFacetManager: () => {
             self.ensureFacetManager();
             return facetMgr;

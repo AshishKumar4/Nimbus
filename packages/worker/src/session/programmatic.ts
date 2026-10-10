@@ -43,7 +43,6 @@ import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 export interface ProgrammaticShell {
-  env?: Record<string, string>;
   getEnv(): Record<string, string>;
 }
 
@@ -277,10 +276,6 @@ const ProcessLogsOptionsSchema = z.object({
 }).strict();
 
 function getHome(self: ProgrammaticHost): string {
-  try {
-    const envHome = self.shell?.env?.HOME;
-    if (envHome) return String(envHome);
-  } catch {}
   try {
     const shellEnv = self.shell?.getEnv?.();
     if (shellEnv?.HOME) return String(shellEnv.HOME);
