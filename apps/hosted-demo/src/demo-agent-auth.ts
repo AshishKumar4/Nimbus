@@ -1,6 +1,6 @@
 import {
   createNimbusAgentOAuthCookie,
-} from '@nimbus-sh/sdk/worker';
+} from '@nimbus-sh/sdk/oauth';
 import type { DemoAuth } from './demo-auth.js';
 import { demoTenantSegment } from './demo-nimbus.js';
 import { readDemoAuthConfig } from './demo-oauth-config.js';
