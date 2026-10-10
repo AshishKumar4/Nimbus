@@ -574,6 +574,13 @@ export interface WriteBatchStreamProgress {
   sequence?: WaveSequenceAnswer;
   /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
   mutations?: WaveMutation[];
+  /**
+   * Answered at its commit, ahead of its publication (its writer continues:
+   * SqliteVFS.as's `continues`): what its writer's runtime waits for before
+   * an effect leaves by a way the session's gate does not see
+   * (RuntimeFsBridge.published).
+   */
+  held?: true;
 }
 
 /**
@@ -9269,15 +9276,20 @@ export class SqliteVFS {
     const caller = this.activeHolds;
     const owner = options.mutationOwner;
     const holds = owner !== undefined && caller?.has(owner) !== true ? new Set([owner, ...(caller ?? [])]) : caller;
-    // Its records commit ahead of the read recalls they meet; its answer waits for their publication.
+    // Its records commit ahead of the read recalls they meet; its answer
+    // waits for their publication, unless its writer continues (as itself:
+    // under a lease not its own, it waits).
     const pipeline = this.newPipeline(holds, false);
+    if (holds !== caller) pipeline.continues = false;
     return this.spanning(async () => {
+      let result: WriteBatchStreamResult;
       try {
-        return await this.consumeStream(stream, options, cred, origin, holds, pipeline);
+        result = await this.consumeStream(stream, options, cred, origin, holds, pipeline);
       } finally {
         const published = this.endPipeline(pipeline);
         if (!pipeline.continues) await published;
       }
+      return this.heldPipelines.has(pipeline) ? { ...result, held: true } : result;
     }, options.mutationOwner);
   }
 

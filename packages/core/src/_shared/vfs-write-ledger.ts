@@ -60,6 +60,7 @@ function __nimbusProcessFs() {
         const bound = supervisor();
         if (typeof bound.retireWaveWriter === "function") await bound.retireWaveWriter(writer);
       },
+      published: (escape) => supervisor().fsPublished(escape ? { escape } : undefined),
       // The subtrees the process writes often enough: decided here
       // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
       grants: {

@@ -427,6 +427,8 @@ const NATIVE_OPS = {
   // A delegation's holder: its next recall (a long poll), and its answer to one.
   fsAwaitRecall: (e, t) => fsFor(e, t).awaitRecall(stringArg(e, 0), z.number().int().nonnegative().optional().parse(e.args?.[1])),
   fsRecalled: (e, t) => fsFor(e, t).recalled(stringArg(e, 0), z.enum(['share', 'revoke']).parse(e.args?.[1])),
+  // Its held writes published, before an effect of its goes out past the session's gate.
+  fsPublished: (e, t) => fsFor(e, t).published(z.object({ escape: z.boolean().optional() }).optional().parse(e.args?.[0])),
   readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
   stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
   lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),

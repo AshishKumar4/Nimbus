@@ -20,7 +20,7 @@ import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult, 
 import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
-import type { OutputGate } from './output-gate.js';
+import type { OutputGate, ProcessOutputGate } from './output-gate.js';
 import { withRecall } from '../vfs/recall.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
@@ -122,6 +122,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     private readonly delegations: Delegations,
     /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
     private readonly mounted: () => readonly string[],
+    /** The session's gate on the process's output (ProcessFiles.outputGate). */
+    private readonly gate: ProcessOutputGate,
   ) {}
 
   gateLaunch(named: readonly string[]): Promise<void> {
@@ -286,6 +288,12 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard();
     if (this.pid === undefined) this.target.recalled(owner);
     else this.delegations.recalled(this.pid, owner, kind);
+  }
+  published(options?: { escape?: boolean }): Promise<void> | void {
+    this.guard();
+    if (this.pid === undefined) return this.target.published();
+    if (options?.escape === true) this.gate.escaped(this.pid);
+    return this.gate.before(this.pid) ?? undefined;
   }
 }
 
@@ -476,30 +484,44 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * its that another reader's recall holds (SqliteVFS.publishedFor). None
    * held, nothing waits.
    */
-  readonly outputGate: OutputGate = {
+  readonly outputGate: ProcessOutputGate = {
     before: (pid) => {
       const holds = this.delegations.holdsAt(pid);
       return holds === undefined ? null : this.engine.publishedFor(holds);
     },
+    escaped: (pid) => { this.gated.delete(pid); },
   };
-  /** Whether every external channel of a process waits at `outputGate` (holdOutput): its writes continue at commit. */
+  /** Whether the session's process output waits at `outputGate` (holdOutput). */
   private outputHeld = false;
+  /** The processes whose writes answer at their commit (gateOutput), until one escapes the gate. */
+  private readonly gated = new Set<number>();
 
   /**
-   * From now on each process's output waits for what it wrote to be
-   * published (`outputGate`, installed on `processes`), so its writes
-   * answer at commit rather than at their publication: the writer
-   * continues, and what it makes visible after a write is held instead. The
-   * host gates every other channel a process's effects leave by (its ports'
-   * answers) with the same gate.
+   * From now on each process's output (its log, pipes, terminal and exit)
+   * waits at `outputGate` for what it wrote to be published. The host gates
+   * the answers its ports give with the same gate.
    */
   holdOutput(processes: { setOutputGate(gate: OutputGate | null): void }): void {
     processes.setOutputGate(this.outputGate);
     this.outputHeld = true;
   }
 
+  /**
+   * Process `pid`'s writes answer at their commit from now on, ahead of
+   * their publication: the writer continues, and whatever it makes visible
+   * waits for the publication instead. Only for a process whose every way
+   * out does: its output and its ports' answers at `outputGate` (holdOutput),
+   * a request or a frame it sends at its runtime's own boundary
+   * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
+   * ending this (`escaped`).
+   */
+  gateOutput(pid: number): void {
+    if (this.outputHeld) this.gated.add(pid);
+  }
+
   async releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
+    this.gated.delete(pid);
     this.listings.delete(pid);
     const scope = this.processes.get(pid);
     try {
@@ -593,9 +615,9 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // recall none of them, on SQLite and through the namespace alike.
     const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
     const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
-    const continues = pid === undefined ? undefined : () => this.outputHeld;
+    const continues = pid === undefined ? undefined : () => this.gated.has(pid);
     const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
-    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view));
+    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
     // Every other method forwards to the guarded bridge.
     let awaited = this.awaitedDescriptors.get(scope);
     if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
@@ -704,6 +726,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   releaseExclusiveMutation(owner: string): void { return this.bridge.releaseExclusiveMutation(owner); }
   awaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> { return this.bridge.awaitRecall(owner, waitMs); }
   recalled(owner: string, kind: RecallKind): void { return this.bridge.recalled(owner, kind); }
+  published(options?: { escape?: boolean }): Promise<void> | void { return this.bridge.published(options); }
 
   /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
   private live(): void {

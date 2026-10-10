@@ -76,6 +76,12 @@ export interface ProcessFsSession {
   retireWriter?(writer: string): Promise<void>;
   /** Delegations; absent, the process holds none and the session decides every op. */
   readonly grants?: ProcessFsGrantSession;
+  /**
+   * Settled once every write of the process's the session answered ahead of
+   * its publication is published (SupervisorRPC.fsPublished); `escape`, see
+   * RuntimeFsBridge.published. Absent, the session answers none so.
+   */
+  published?(escape: boolean): Promise<void>;
 }
 
 /** The session's delegation calls (fsAcquireExclusiveMutation with `delegate`, fsAwaitRecall, fsRecalled, fsReleaseExclusiveMutation). */
@@ -200,6 +206,15 @@ export interface ProcessFsClient {
    * nothing an effect it released claimed.
    */
   effect(): Promise<void> | null;
+  /**
+   * The gate an effect leaving by a way the session's gate does not see (a
+   * request out, a frame out) is released at, after `effect`: once every
+   * write of the process's the session answered ahead of its publication
+   * (WriteBatchStreamResult.held) is published, or null when none is.
+   * `escape` (a raw socket opens): asked whatever is known, and the
+   * process's writes wait for their publication from now on.
+   */
+  published(escape?: boolean): Promise<void> | null;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
   settle(): Promise<void>;
   /** The failures not yet reported, taken (the next effect reports them). */
@@ -547,6 +562,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Entries logged, the last one answered (every one before it is), and the flushes waiting for a place in the log. */
   let logged = 0;
   let answered = 0;
+  /** Waves the session answered ahead of their publication, and how many of them it has since said are published (`published`). */
+  let heldWaves = 0;
+  let publishedThrough = 0;
   const marks: { mark: number; resolve(): void }[] = [];
   const counters: ProcessFsStats = {
     ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
@@ -744,6 +762,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     let receipt = 0;
     const back: Entry[] = [];
     const mutations = new Map<number, WaveMutation>((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+    if (answer.held === true) heldWaves++;
     for (const [index, entry] of entries.entries()) {
       if (refused !== null && entry.seq === refused.seq) {
         counters.refused++;
@@ -1207,6 +1226,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (processGone !== null) return null;
       options.drain?.();
       return answered >= logged ? null : client.flush();
+    },
+    published(escape = false) {
+      const ask = options.session.published;
+      if (processGone !== null || ask === undefined || (!escape && publishedThrough === heldWaves)) return null;
+      const through = heldWaves;
+      return ask.call(options.session, escape).then(() => {
+        if (publishedThrough < through) publishedThrough = through;
+      });
     },
     async settle() {
       settling = true;

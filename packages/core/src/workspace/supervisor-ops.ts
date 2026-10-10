@@ -100,6 +100,7 @@ export const SUPERVISOR_OP_TABLE = {
   fsReleaseExclusiveMutation: 'once',
   fsAwaitRecall: null,
   fsRecalled: 'once',
+  fsPublished: null,
   innerDoFetch: null,
   innerDoCall: null,
   fanoutExecute: null,

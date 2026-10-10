@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
@@ -50,6 +51,7 @@ function session({ fenced = true } = {}) {
   const op = createSupervisorOpHandler({ vfs: engine, filesystem: files, deliveries });
   const calls = { waves: 0, epochs: 0, ops: [] };
   const s = {
+    engine,
     kernel,
     files,
     op,
@@ -74,6 +76,7 @@ function session({ fenced = true } = {}) {
         });
         return s.fault ? s.fault(deliver, fence) : deliver();
       },
+      published: (escape) => op({ op: 'fsPublished', args: escape ? [{ escape }] : [], pid: PID }),
       grants: {
         acquire: (path, delegate) => op({ op: 'fsAcquireExclusiveMutation', args: [path, { delegate }], pid: PID }),
         release: (owner) => op({ op: 'fsReleaseExclusiveMutation', args: [owner], pid: PID }),
@@ -151,6 +154,44 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   c.readLeased(first, c.readLeaseAsk());
   assert.equal(c.readTrusted(), true);
   assert.deepEqual(c.readUncovered(), ['dev', 'mnt', 'proc'], 'a late answer for a recalled lease changed what the held one vouches for');
+  await c.settle();
+}
+
+// ── A gated process's waves answer at commit: its effects past the session's gate wait for their publication (published), asked only while one is held ──
+{
+  const s = session();
+  s.files.holdOutput(new SessionProcessSupervisor());
+  s.files.gateOutput(PID);
+  const lease = (pid) => {
+    const view = s.files.bind({ pid, cred: CRED_SESSION_USER });
+    const { readLease } = view.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+    return () => view.recalled(readLease.owner, 'revoke');
+  };
+  const c = client(s);
+  assert.equal(c.published(), null, 'asked with nothing written');
+  const answer = lease(7);
+  c.submit(writeFile('home/user/g.txt', 'gated'));
+  await c.flush();
+  const published = c.published();
+  assert.notEqual(published, null, 'a wave answered ahead of its publication went unasked');
+  let settled = false;
+  void published.then(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(settled, false, 'published before the reader answered its recall');
+  answer();
+  await published;
+  assert.equal(c.published(), null, 'asked again with nothing held since');
+  // A raw socket opens: asked whatever is known, and its writes wait for their publication from then on.
+  await c.published(true);
+  const later = lease(9);
+  c.submit(writeFile('home/user/g.txt', 'waits'));
+  let flushed = false;
+  const flushing = c.flush().then(() => { flushed = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(flushed, false, 'an escaped process\'s write was answered before its publication');
+  later();
+  await flushing;
+  assert.equal(c.published(), null);
   await c.settle();
 }
 

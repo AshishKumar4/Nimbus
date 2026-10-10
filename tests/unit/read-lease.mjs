@@ -19,6 +19,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
@@ -378,12 +379,13 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(decode(landed.readFile('home/user/d/a.txt')), 'held');
 }
 
-// ── A writer whose output is held continues at commit; its output and exit wait for the publication ──
+// ── A gated writer continues at commit; its output and exit wait for the publication, and an ungated one waits at its write ──
 {
   const s = session();
   const processes = new SessionProcessSupervisor();
   s.files.holdOutput(processes);
   const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  s.files.gateOutput(pid);
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
@@ -396,18 +398,125 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.throws(() => other.readFile('/home/user/d/a.txt'), (error) => error.code === 'EAGAIN', 'another read it before its publication');
   processes.appendOutput(pid, 'stdout', 'written\n');
   processes.markExit(pid, 0);
+  // A process the session does not gate waits at its write, as before.
+  let ungated = false;
+  const waiting = withRecall(() => other.writeFile('/home/user/d/b.txt', 'waits')).then(() => { ungated = true; });
   await sleep(10);
   assert.equal(logged(), '', 'its output went out before what it wrote was published');
   assert.equal(processes.getExit(pid), null, 'its exit went out before what it wrote was published');
+  assert.equal(ungated, false, 'an ungated writer was answered before its publication');
   // Another process's output waits for nothing of this one's.
   assert.equal(s.files.outputGate.before(9), null);
   reader.recalled(readLease.owner, 'revoke');
   await s.files.outputGate.before(pid);
+  await waiting;
   await sleep(0);
   assert.equal(logged(), 'written\n');
   assert.equal(processes.getExit(pid)?.code, 0);
   assert.equal(s.files.outputGate.before(pid), null);
   assert.equal(new TextDecoder().decode(other.readFile('/home/user/d/a.txt')), 'held');
+}
+
+// ── A dev server's "saved" waits for its write's publication; so does each later piece of its answer, and a socket it is handed ends its gate ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const ports = new PortRegistry();
+  ports.setOutputGate(s.files.outputGate);
+  const { pid } = processes.spawn('node', ['server.js'], '/home/user', { cred: USER });
+  s.files.gateOutput(pid);
+  const writer = s.files.bind({ pid, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const watcher = s.files.bind({ pid: 9, cred: USER });
+  const encode = (text) => new TextEncoder().encode(text);
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  let more;
+  ports.bindFacetStub(pid, {
+    async handleHttpRequest() {
+      await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'saved'));
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encode('saved\n'));
+          more = async () => {
+            await withRecall(() => writer.writeFile('/home/user/d/b.txt', 'later'));
+            controller.enqueue(encode('later\n'));
+            controller.close();
+          };
+        },
+      }));
+    },
+  });
+  ports.register(8080, pid);
+  const leased = barrier(s, reader);
+  let answered = false;
+  const routed = ports.routeRequest(8080, new Request('https://x.invalid/'), '/').then((response) => { answered = true; return response; });
+  await sleep(20);
+  assert.equal(answered, false, 'its "saved" went out before what it wrote was published');
+  reader.recalled(leased.readLease.owner, 'revoke');
+  const response = await routed;
+  // The client, told "saved", asks another process: what it wrote is there.
+  assert.equal(decode(reader.readFile('/home/user/d/a.txt')), 'saved');
+  const body = response.body.getReader();
+  assert.equal(decode((await body.read()).value), 'saved\n');
+  // A later piece follows a later write, which another reader's lease holds.
+  const watched = barrier(s, watcher);
+  void more();
+  let pieced = false;
+  const piece = body.read().then((chunk) => { pieced = true; return chunk; });
+  await sleep(20);
+  assert.equal(pieced, false, 'a later piece of its answer went out before what it wrote was published');
+  watcher.recalled(watched.readLease.owner, 'revoke');
+  assert.equal(decode((await piece).value), 'later\n');
+  assert.equal(decode(watcher.readFile('/home/user/d/b.txt')), 'later');
+  // An answer that hands it a socket the session cannot see: its writes wait for their publication from then on.
+  class Upgraded extends Response { get webSocket() { return {}; } }
+  ports.bindFacetStub(pid, { async handleHttpRequest() { return new Upgraded(null); } });
+  await ports.routeRequest(8080, new Request('https://x.invalid/'), '/');
+  const third = barrier(s, s.files.bind({ pid: 11, cred: USER }));
+  let waited = false;
+  const writing = withRecall(() => writer.writeFile('/home/user/d/c.txt', 'waits')).then(() => { waited = true; });
+  await sleep(10);
+  assert.equal(waited, false, 'a writer holding a socket no gate sees was answered before its publication');
+  s.files.bind({ pid: 11, cred: USER }).recalled(third.readLease.owner, 'revoke');
+  await writing;
+}
+
+// ── A gated writer's wave is answered at its commit, held; its runtime waits for the publication where an effect leaves past the gate, and an escape ends its gate ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  s.files.gateOutput(pid);
+  const writer = s.files.bind({ pid, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { encodeWriteBatchStream } = await import('../../packages/platform/src/w7-frame.ts');
+  const data = new TextEncoder().encode('waved');
+  const wave = () => writer.writeStream(encodeWriteBatchStream({
+    inodes: [{ path: 'home/user/d/w', parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path: 'home/user/d/w', chunkId: 0, data }],
+  }));
+  assert.equal(writer.published(), undefined, 'nothing held, and its runtime waited');
+  const { readLease } = barrier(s, reader);
+  const answer = await wave();
+  assert.equal(answer.ok, true);
+  assert.equal(answer.held, true, 'a wave answered ahead of its publication said nothing of it');
+  let published = false;
+  const waiting = Promise.resolve(writer.published()).then(() => { published = true; });
+  await sleep(10);
+  assert.equal(published, false, 'its runtime was let go before its publication');
+  reader.recalled(readLease.owner, 'revoke');
+  await waiting;
+  // It opens a socket no gate sees: from then on its writes wait for their publication, and its waves say nothing held.
+  await writer.published({ escape: true });
+  const again = barrier(s, s.files.bind({ pid: 9, cred: USER }));
+  let answered = false;
+  const waved = wave().then((result) => { answered = true; return result; });
+  await sleep(10);
+  assert.equal(answered, false, 'an escaped writer\'s wave was answered before its publication');
+  s.files.bind({ pid: 9, cred: USER }).recalled(again.readLease.owner, 'revoke');
+  assert.equal((await waved).held, undefined);
 }
 
 // ── Held for publication: another opener's description waits for it, its writer's reads its own ──
