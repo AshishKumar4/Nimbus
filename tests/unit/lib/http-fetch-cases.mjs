@@ -88,6 +88,7 @@ export async function httpFetchCases(http) {
     await arrived.promise;
     sent.abort();
     parity.abortAfterSend = await sentClosed;
+    if (!abortResponse) throw new Error('the server never saw the aborted request');
     abortResponse.end('late');
     const connections = [];
     for (let i = 0; i < 2; i++) {
@@ -111,7 +112,7 @@ export async function httpFetchCases(http) {
     agent.destroy();
     await close(server);
     parity.addresses = [];
-    for (const host of ['127.0.0.1', '0.0.0.0', '::1', '0:0:0:0:0:0:0:1', '::', undefined]) {
+    for (const host of ['127.0.0.1', '0.0.0.0', '::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1', '::', undefined]) {
       const listener = http.createServer();
       await listen(listener, host);
       parity.addresses.push({ ...listener.address(), port: listener.address().port > 0 });

@@ -25,7 +25,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
   };
   const checkPath = (path) => {
     if (/[^\u0021-\u00ff]/.test(path)) throw fail("ERR_UNESCAPED_CHARACTERS", "Request path contains unescaped characters", TypeError);
-    if (/^(?:[\\/]{2}|[a-zA-Z][a-zA-Z0-9+.-]*:)/.test(path)) throw fail("ERR_INVALID_ARG_VALUE", "options.path must be a path-only request target", TypeError);
+    if (/^(?:[/\\]{2}|[^/\\]*:)/.test(path)) throw fail("ERR_INVALID_ARG_VALUE", "options.path must be a path-only request target", TypeError);
   };
   class IncomingMessage extends NativeIncomingMessage {
     #reader;
@@ -145,7 +145,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       checkPath(this.path);
       const target = new URL(this.protocol + "//" + (this.host.includes(":") && !this.host.startsWith("[") ? "[" + this.host + "]" : this.host));
       target.port = this.port;
-      const address = new URL(this.path, target);
+      const address = this.path && this.path !== "/" ? new URL(this.path, target) : target;
       const headers = new Headers();
       for (const name of this.getRawHeaderNames()) {
         const value = this.getHeader(name);

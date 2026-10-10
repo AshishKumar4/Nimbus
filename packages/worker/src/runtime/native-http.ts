@@ -114,7 +114,15 @@ Object.defineProperty(builtins, "http", {
         }
         const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
         const family = net.isIP(state.host);
-        if (family) state.host = new net.SocketAddress({ address: state.host, family: family === 6 ? "ipv6" : "ipv4" }).address;
+        if (family === 6) {
+          state.host = new URL("http://[" + state.host + "]").hostname.slice(1, -1);
+          // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
+          const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(state.host);
+          if (mapped) {
+            const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+            state.host = "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
+          }
+        }
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const allocationSettled = () => {
