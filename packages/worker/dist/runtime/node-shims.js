@@ -1056,13 +1056,14 @@ const __fsMod = (() => {
   // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
   // declares readLeaseCovers (and SESSION_KERNEL_ROOTS).
 ${READ_LEASE_COVER_PREAMBLE}
-  /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
-  let _uncoveredLandings = 0;
-  /** \`__nsResolve\`, where it landed counted: \`k\`'s entry, or with \`listing\` its names, through any link. */
+  /** While a leased answer is made (_leasedRead): what its lease does not vouch for, and whether a lookup landed on any of it. */
+  let _leasedUncovered = null;
+  let _landedUncovered = false;
+  /** \`__nsResolve\`, where it landed noted: \`k\`'s entry, or with \`listing\` its names, through any link. */
   function _nsResolveViewed(k, follow, listing) {
     const found = __nsLookup(k, follow);
     if (found === "ELOOP") return found;
-    if (!readLeaseCovers(found.path, listing, __nimbusProcessFs().readUncovered())) _uncoveredLandings++;
+    if (_leasedUncovered !== null && !readLeaseCovers(found.path, listing, _leasedUncovered)) _landedUncovered = true;
     return found.row !== undefined ? found : null;
   }
 
@@ -3532,19 +3533,25 @@ ${READ_LEASE_COVER_PREAMBLE}
     for (const local of Object.keys(__vfsDirs || {})) if (local === k || local.startsWith(prefix)) return true;
     return false;
   }
-  /** \`read\`, the sync view's answer, counted; undefined when the view cannot say (EAGAIN: a mount it did not list). */
-  function _leasedRead(read) {
-    // An answer that landed where the lease does not vouch (a link out of it) is the session's.
-    const landings = _uncoveredLandings;
+  /**
+   * \`read\`, the sync view's answer under a lease that does not vouch for
+   * \`uncovered\`, counted; undefined when the view cannot say (EAGAIN: a
+   * mount it did not list) or it landed there (a link out of what is vouched for).
+   */
+  function _leasedRead(uncovered, read) {
+    _leasedUncovered = uncovered;
+    _landedUncovered = false;
     try {
       const value = read();
-      if (_uncoveredLandings !== landings) return undefined;
+      if (_landedUncovered) return undefined;
       _stats.leasedReads++;
       return value;
     } catch (error) {
-      if ((error && error.code === "EAGAIN") || _uncoveredLandings !== landings) return undefined;
+      if ((error && error.code === "EAGAIN") || _landedUncovered) return undefined;
       _stats.leasedReads++;
       throw error;
+    } finally {
+      _leasedUncovered = null;
     }
   }
 
@@ -3553,8 +3560,9 @@ ${READ_LEASE_COVER_PREAMBLE}
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), false, __nimbusProcessFs().readUncovered()) && !_ownAt(_strip(absPath), syscall === "stat")) {
-      const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
+    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
+    if (uncovered !== null && readLeaseCovers(_strip(absPath), false, uncovered) && !_ownAt(_strip(absPath), syscall === "stat")) {
+      const local = _leasedRead(uncovered, () => (syscall === "stat" ? statSync(p) : lstatSync(p)));
       if (local !== undefined) return local;
     }
     if (supervisor && typeof supervisor[syscall] === "function") {
@@ -3576,8 +3584,9 @@ ${READ_LEASE_COVER_PREAMBLE}
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), true, __nimbusProcessFs().readUncovered()) && !_ownUnder(_strip(absPath))) {
-      const local = _leasedRead(() => readdirSync(p, opts));
+    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
+    if (uncovered !== null && readLeaseCovers(_strip(absPath), true, uncovered) && !_ownUnder(_strip(absPath))) {
+      const local = _leasedRead(uncovered, () => readdirSync(p, opts));
       // In the order the session's listing is given in.
       if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
     }
