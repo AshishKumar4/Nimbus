@@ -43,6 +43,11 @@
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
     },
+    "./oauth": {
+      "workspace": "./src/session/agent-oauth.ts",
+      "types": "./dist/session/agent-oauth.d.ts",
+      "import": "./dist/session/agent-oauth.js"
+    },
     "./session-id": {
       "workspace": "./src/_shared/session-id.ts",
       "types": "./dist/_shared/session-id.d.ts",

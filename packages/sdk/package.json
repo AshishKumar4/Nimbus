@@ -53,6 +53,11 @@
       "types": "./dist/worker.d.ts",
       "import": "./dist/worker.js"
     },
+    "./oauth": {
+      "workspace": "./src/oauth.ts",
+      "types": "./dist/oauth.d.ts",
+      "import": "./dist/oauth.js"
+    },
     "./errors": {
       "workspace": "./src/errors.ts",
       "types": "./dist/errors.d.ts",
