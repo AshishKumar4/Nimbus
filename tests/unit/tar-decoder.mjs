@@ -142,11 +142,7 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
   ];
   assert.deepEqual(await parseTar(createTar(written)), written);
   // A header that claims more than the archive holds (8 GiB in 512 bytes): never buffered.
-  const claims = archive([{ name: 'ok', data: enc.encode('ok') }]);
-  const lying = new Uint8Array(claims.length + 512);
-  lying.set(header({ name: 'huge', size: 0o77777777777 }), 0);
-  lying.set(claims, 512);
-  assert.deepEqual((await parseTar(lying.subarray(0, 512))).map((entry) => entry.path), []);
+  assert.deepEqual(await parseTar(header({ name: 'huge', size: 0o77777777777 })), []);
   const escaping = new Uint8Array(1024);
   escaping.set(header({ name: '../../outside', size: 0o77777777777 }), 0);
   assert.deepEqual(await parseTar(escaping), [], 'an entry it leaves out is never buffered');
