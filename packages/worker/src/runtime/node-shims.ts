@@ -185,8 +185,7 @@ if (typeof __real_net !== "undefined") {
       }
       // Already connecting: the native connect refuses it, opening nothing.
       if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
-      const [options, cb] = Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args);
-      __nativeConnectChecks(options);
+      __nativeConnectChecks((Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args))[0]);
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
@@ -196,10 +195,6 @@ if (typeof __real_net !== "undefined") {
       if (ready) {
         const socket = this;
         const fail = __nimbusCarrierFailure || ((error) => socket.destroy(error));
-        // Its callback listens from now, as the native connect's does: ahead
-        // of what the program queues for the connection meanwhile (a TLS
-        // socket's handshake, before the writes it buffers).
-        if (cb) socket.once("connect", cb);
         // Writes/TLS wrapping must see a connecting socket while it waits,
         // just as they do after an ordinary native connect was issued.
         socket.connecting = true;
@@ -213,7 +208,7 @@ if (typeof __real_net !== "undefined") {
           // (its end) stands.
           const undestroy = socket._undestroy;
           socket._undestroy = function () { if (this.destroyed) Reflect.apply(undestroy, this, arguments); };
-          try { Reflect.apply(__nativeConnect, socket, [options]); }
+          try { Reflect.apply(__nativeConnect, socket, args); }
           catch (error) { fail(error); }
         }, fail));
         return socket;

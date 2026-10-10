@@ -57,7 +57,10 @@ for (const kind of ['plain', 'tls']) {
     const socket = kind === 'plain' ? new f.Socket() : f.tls.connect({ host: 'example.test', port: 443 });
     const errors = [];
     socket.on('error', (error) => errors.push(error));
-    if (kind === 'plain') assert.equal(socket.connect({ host: 'example.test', port: 80 }), socket, 'connect returns its Socket at once');
+    if (kind === 'plain') {
+      assert.equal(socket.connect({ host: 'example.test', port: 80 }), socket, 'connect returns its Socket at once');
+      assert.throws(() => socket.connect({ host: 'example.test', port: 80 }), { code: 'ERR_SOCKET_CONNECTING' }, 'a second connect while the first waits is refused, as the native connect refuses it');
+    }
     await tick();
     assert.equal(f.calls.length, 0, `${name}: no native connect before the boundary acknowledgement`);
     if (state.startsWith('cancel-')) {
