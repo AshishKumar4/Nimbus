@@ -46,6 +46,7 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
+import { SinkWriter } from '../_shared/byte-stream.js';
 import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
 import type { TypeScriptStripOptions } from './typescript-strip.js';
 import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
@@ -70,6 +71,10 @@ export interface RuntimeRunResult {
  * Options the handler passes to the runner. Mirrors RunFreshOpts.
  */
 export interface RuntimeRunOpts {
+  /** Host-local byte sink. Runners stream here instead of a text capture result. */
+  output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
+  /** Existing fd-0 channel (a broker child or attached terminal), inherited without read-ahead. */
+  stdinPid?: number;
   argv: string[];
   env: Record<string, string> | undefined;
   cwd: string | undefined;
@@ -431,10 +436,15 @@ export function buildRuntimeHandler(
     // synchronous read that needs more than has arrived waits for it in the
     // runner, which stops the run and runs it again once the input is there
     // (worker runtime/stop-replay.ts).
-    const programStdin: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'> = pipedStdin === undefined ? {}
+    const outputStreams = { stdout: new SinkWriter(ctx.stdout), stderr: new SinkWriter(ctx.stderr) };
+    const programStdin: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'> = {
+      ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
+      output: nimbusCtx.__nimbusBinSpawn?.liveInput ? undefined : (stream, bytes) => outputStreams[stream].write(bytes),
+      ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
       : pipedStdin.file
         ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-        : { stdin: pipedStdin };
+        : { stdin: pipedStdin }),
+    };
     // ── Flag-span computation (primitive #1) ──
     //
     // Real-Node only treats args UP TO the first non-flag token as
@@ -467,7 +477,7 @@ export function buildRuntimeHandler(
       filename: string;
       dirname: string;
       command: string;
-      stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'>;
+      stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'>;
       reserved?: boolean;
       launchesServer?: boolean;
       /** The code returns the value `node -p` prints (node-eval.ts): Node prints only an eval's, not a file's. */
@@ -477,29 +487,37 @@ export function buildRuntimeHandler(
       esModule?: boolean;
       esModuleMap?: string;
     }): Promise<number> => {
-      const result = await spec.run(code, {
-        cred: ctx.cred,
-        invokerPid: ctx.pid,
-        signal: ctx.signal,
-        argv: program.argv,
-        env: ctx.env,
-        cwd: ctx.cwd,
-        filename: program.filename,
-        dirname: program.dirname,
-        command: program.command,
-        ...(spec.nodeCommandLine
-          ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
-          : {}),
-        ...program.stdin,
-        ...(program.reserved === false ? {} : reservedProcess),
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
-        ...(program.launchesServer ? { launchesServer: true } : {}),
-        // Evaluated as Node's loader runs an ES module, in Node's scope.
-        ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
-        ...(program.esModuleMap ? { esModuleMap: program.esModuleMap } : {}),
-        moduleScope,
-      });
+      let result: RuntimeRunResult;
+      try {
+        result = await spec.run(code, {
+          cred: ctx.cred,
+          invokerPid: ctx.pid,
+          signal: ctx.signal,
+          argv: program.argv,
+          env: ctx.env,
+          cwd: ctx.cwd,
+          filename: program.filename,
+          dirname: program.dirname,
+          command: program.command,
+          output: programStdin.output,
+          ...(spec.nodeCommandLine
+            ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+            : {}),
+          ...program.stdin,
+          ...(program.reserved === false ? {} : reservedProcess),
+          ...(captureOutput ? { captureOutput: true } : {}),
+          ...(bundleProfile ? { bundleProfile } : {}),
+          ...(program.launchesServer ? { launchesServer: true } : {}),
+          ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+          ...(program.esModuleMap ? { esModuleMap: program.esModuleMap } : {}),
+          moduleScope,
+        });
+      } finally {
+        // Flush a trailing incomplete character at the actual display edge,
+        // including a runner that failed after publishing some output.
+        await outputStreams.stdout.end();
+        await outputStreams.stderr.end();
+      }
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
       return result.exitCode;
@@ -660,6 +678,7 @@ export function buildRuntimeHandler(
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
+        stdin: { output: programStdin.output },
         launchesServer: await launches(written, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
       });
     }
@@ -682,6 +701,7 @@ export function buildRuntimeHandler(
         filename,
         dirname,
         command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+        stdin: programStdin,
         reserved: false,
       });
     }

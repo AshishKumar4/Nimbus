@@ -75,7 +75,9 @@ try {
   await page.click('#btnTreeRefresh');
   await page.waitForSelector('.tree-node[data-path="/home/user/phone-layout.js"]', { visible: true, timeout: 30_000 });
   await screenshot('phone-files-390x844');
-  await page.click('.tree-node[data-path="/home/user/phone-layout.js"]');
+  // The tree renders again after the node first shows (the refresh's load,
+  // the write's coalesced watch refresh): click the path's node as it is then.
+  await page.locator('.tree-node[data-path="/home/user/phone-layout.js"]').click();
   await page.waitForFunction((content) => window.__nimbusMonacoEditor?.getValue() === content
     && document.querySelector('.monaco-editor .view-lines')?.getBoundingClientRect().width > 0, { timeout: 60_000 }, FILE_CONTENT);
   await pane('#editorPanel');

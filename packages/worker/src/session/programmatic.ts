@@ -721,7 +721,7 @@ export async function rpcListRuntimes(self: ProgrammaticHost) {
 
 export async function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]> {
   await ensureProgrammaticReady(self);
-  return self.processes.getAll().map((p: ProcessEntry) => serializeProcess(p)!);
+  return self.processes.publishedAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
 export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{ ok: boolean; pid: number }> {

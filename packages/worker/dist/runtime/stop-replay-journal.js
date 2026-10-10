@@ -1,5 +1,7 @@
 import { REPLAY_FETCH_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_STALL_MS } from './stop-replay-contracts.js';
 import { operationPolicy } from './stop-replay-policy.js';
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
+import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 export { SUPERVISOR_CALLS_WITHOUT_EFFECTS } from './stop-replay-policy.js';
 /** What a call repeats outside the process; unknown names are never safe. */
 export function supervisorCallEffect(op, args) {
@@ -290,7 +292,7 @@ export class ReplayJournal {
             const prep = this.preparation;
             const [path, offset, length] = args ?? [];
             const authorized = prep && prep.run === run && !prep.pending && path === this.stdinFile?.path && offset === prep.at
-                && typeof length === 'number' && Number.isSafeInteger(length) && length > 0 && length <= Math.min(65536, prep.remaining);
+                && typeof length === 'number' && Number.isSafeInteger(length) && length > 0 && length <= Math.min(STDIN_FILE_READ_PIECE_BYTES, prep.remaining);
             if (!authorized)
                 return this.answer(callKey(op, args), describeCall(op, args), dispatch);
             prep.pending = true;
@@ -389,7 +391,7 @@ export class ReplayJournal {
             throw new Error('this run of the process has stopped');
         // The next answer in the run before's order goes once this one has.
         if (expected !== undefined && expected.completion !== null)
-            setTimeout(() => this.advance(), 0);
+            afterTurn(() => this.advance());
         if (entry !== null && this.entries !== null && this.entries === entries) {
             entry.digest = digest;
             entry.completion = this.completions++;

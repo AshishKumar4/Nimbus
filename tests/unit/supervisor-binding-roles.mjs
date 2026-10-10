@@ -32,6 +32,9 @@ for (const badProps of [{ doId: 's', pid: 7 }, { doId: 's', pid: 7, bindingKind:
   await assert.rejects(bad.cpSpawn({ command: 'node' }), /run|guest-originated/);
   await assert.rejects(bad.stdinFileRead('/input', 0, 1), /run|guest-originated/);
   await assert.rejects(bad.stdout(new Uint8Array([1])), /run|guest-originated/);
+  const before = received.length;
+  await assert.rejects(bad.cpReadStdin(7,8000,undefined,1), /run|guest-originated/, 'a wrong-role fd0 read refuses, never enters its long poll');
+  assert.equal(received.length,before,'the refusal is at the caller, before a host request or timeout');
 }
 // Every SUPERVISOR and globalOutbound binding of a resident or one-shot
 // process comes from the one checked mint (bindingSupervisor); the

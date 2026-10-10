@@ -28,7 +28,7 @@
 import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
-import { supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
 import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, type FacetKind } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
@@ -189,6 +189,8 @@ export interface IsolatePoolOptions {
    * (npm resolve, pre-bundle), which never call `_pid()`.
    */
   supervisorPid?: number;
+  /** A runtime program's explicit pid/run capability; helpers keep their infrastructure binding. */
+  processSupervisor?: SupervisorBindingProps;
   /**
    * Raw JavaScript source prepended to every generated worker module.
    * Lets callers inject bundled helpers, such as a tar parser. The user
@@ -613,12 +615,13 @@ export class IsolatePool {
         // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
         // to the user's session DO, not the peer DO. Default to the
         // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
-        const supervisor = infrastructureSupervisorProps(ctx, opts.supervisorPid ?? 0, {
-          doId: opts.supervisorDoIdOverride,
-          route: opts.supervisorRoute,
+        const supervisor = opts?.processSupervisor ?? infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
+          doId: opts?.supervisorDoIdOverride,
+          route: opts?.supervisorRoute,
           network: opts.network,
         });
-        bindings.SUPERVISOR = supervisorRpc({ props: supervisor });
+        bindings.SUPERVISOR = opts?.processSupervisor
+          ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });
         // Whatever the minted worker's env carries must be in its loader
         // cache key — workerd's loader cache survives a DO hibernation
         // wake while generation-strided pids (1000001 → 2000001) do not:
@@ -628,7 +631,8 @@ export class IsolatePool {
         // not exist". doIdShort alone cannot cover this — it changes
         // across sessions, not across wakes of the same session. So does
         // the instance a binding delivers mutations to, when it names one.
-        this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}`, supervisor);
+        const run = supervisor.bindingKind === 'process' ? `:${supervisor.writerId}` : '';
+        this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}${run}`, supervisor);
       } else {
         // Supervisor entrypoint unavailable — running without ctx.exports
         // (e.g. unit-test harness, or LOADER.load contexts where the

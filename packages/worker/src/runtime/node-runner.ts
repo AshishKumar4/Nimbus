@@ -44,9 +44,9 @@ import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
+import { stdinBytesOf } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
-import type { StdinBytes } from '../facets/manager.js';
 
 /**
  * Argv long-running detection. Signals we honour:
@@ -73,6 +73,7 @@ export interface RunFreshResult {
 }
 
 export interface RunFreshOpts {
+  output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
   argv?: string[];
   env?: Record<string, string>;
   cwd?: string;
@@ -156,7 +157,9 @@ export async function runFresh(
     const { stdin, stdinFile, ...execOpts } = opts;
     const stdinOpts = stdinFile ? { stdinFile: { ...stdinFile, syncRead: false } }
       : stdin ? { stdinPipe: stdinBytesOf(stdin) } : {};
-    const r: FacetExecResult = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
+    const r: FacetExecResult = await facetMgr.exec(code, { ...execOpts, ...stdinOpts,
+      ...(opts.output ? { captureOutput: false, foreground: { signal: opts.signal ?? new AbortController().signal, write: opts.output } } : {}),
+    });
     // It listened, and runs on as a resident, whose start was said (FacetManager._promote).
     if (r.promotedPid !== undefined) return residentStarted(facetMgr, r.promotedPid, '');
     return {
@@ -228,29 +231,4 @@ function residentStarted(facetMgr: FacetManager, pid: number, notice: string): R
   const finished = facetMgr.processExitCode?.(pid) ?? null;
   if (finished !== null) return { exitCode: finished, stdout: '', stderr: '', longRunning: false };
   return { exitCode: 0, stdout: notice, stderr: '', spawnedPid: pid, longRunning: true };
-}
-
-function isByteStream(stream: NonNullable<RunFreshOpts['stdin']>): stream is NonNullable<RunFreshOpts['stdin']> & StdinBytes {
-  return !!stream.readBytes;
-}
-
-/** A shell stream's bytes: exact through readBytes, else its text encoded. */
-function stdinBytesOf(stream: NonNullable<RunFreshOpts['stdin']>): StdinBytes {
-  if (isByteStream(stream)) return { readBytes: (maxLength) => stream.readBytes(maxLength) };
-  // A text-only stream: at most `maxLength` bytes a read, as readBytes gives,
-  // so a piece is never more than the pump asked for.
-  const encoder = new TextEncoder();
-  let rest: Uint8Array | null = null;
-  return {
-    readBytes: async (maxLength) => {
-      if (rest === null) {
-        const text = await stream.read();
-        if (text === null) return null;
-        rest = encoder.encode(text);
-      }
-      const piece = rest.subarray(0, maxLength);
-      rest = piece.byteLength < rest.byteLength ? rest.subarray(piece.byteLength) : null;
-      return piece;
-    },
-  };
 }

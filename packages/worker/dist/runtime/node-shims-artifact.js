@@ -13,6 +13,23 @@
  */
 import { JS_INTERPRETER_BUILD_ID, JS_INTERPRETER_PRIMORDIALS_BUILD_ID, JS_INTERPRETER_PRIMORDIALS_ENTRY, JS_INTERPRETER_PRIMORDIALS_SHA256, JS_INTERPRETER_ENTRY, JS_INTERPRETER_OPS_BUILD_ID, JS_INTERPRETER_OPS_ENTRY, JS_INTERPRETER_OPS_SHA256, JS_INTERPRETER_SHA256, NODE_LIB_BUILD_ID, NODE_LIB_ENTRY, NODE_LIB_SHA256, NODE_SHIMS_BUILD_ID, NODE_SHIMS_ENTRY, NODE_SHIMS_SHA256, RESIDENT_STORE_BUILD_ID, RESIDENT_STORE_ENTRY, RESIDENT_STORE_SHA256, VFS_WRITE_LEDGER_BUILD_ID, VFS_WRITE_LEDGER_ENTRY, VFS_WRITE_LEDGER_SHA256, } from '../node-shims-artifact.generated.js';
 import { fetchStagedText, memoizeUntilRejected, stagedRuntimeSource, } from './staged-source.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_NODE_LIB_MODULE, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+/** The registry bootstrap and its modules, for every runner that hosts node shims. */
+export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode = '[]', stackEntry = 'null', } = {}) {
+    return {
+        imports: COMMONJS_CELL_IMPORTS,
+        code: `const __NIMBUS_CODE_CELLS = ${codeCells};
+const __NIMBUS_RUNTIME_CODE = ${runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${stackEntry};
+${COMMONJS_CELL_RUNTIME_SOURCE}`,
+        modules: {
+            [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
+            [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
+            [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+            [RUNTIME_NODE_LIB_MODULE]: sources.nodeLib,
+        },
+    };
+}
 const STAGED_BY = 'scripts/bundle-node-shims.mjs';
 const REQUIRED_BY = 'the node runtime';
 const NODE_SHIMS = stagedRuntimeSource({

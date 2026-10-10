@@ -40,6 +40,6 @@ export const JS_INTERPRETER_OPS_BUILD_ID: string = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256: string = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-ad1b066834de9c8e.js";
-export const NODE_LIB_BUILD_ID: string = "ad1b066834de9c8e";
-export const NODE_LIB_SHA256: string = "ad1b066834de9c8e47e56f356a47a964cd9cb7da657413da3cd42b50899389fd";
+export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-be6ead1028137c33.js";
+export const NODE_LIB_BUILD_ID: string = "be6ead1028137c33";
+export const NODE_LIB_SHA256: string = "be6ead1028137c33491c487cc1b2433460501363d1679fe732d6946d65bc9af5";

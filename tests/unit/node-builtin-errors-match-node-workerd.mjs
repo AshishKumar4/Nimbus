@@ -7,6 +7,10 @@
 // code and words, the error has Node's shape: name, constructor, String(),
 // stack header, own keys (node-shims.ts, "The builtins workerd provides").
 // Before, 246 had workerd's: own name and toString, no [CODE] in the stack.
+// zlib, buffer and crypto run Node's own argument checks first
+// (node-builtin-fronts.ts), which closed 193 of the recorded differences; a
+// DOMException those checks throw is workerd's, whose code, name, message and
+// stack are own properties (recorded as dom-exception-own-keys).
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -114,6 +118,12 @@ for (const [call, node] of want) {
     : theirs.code !== thrown.code ? (theirs.code === undefined ? 'uncoded' : 'other-code')
     : theirs.message !== thrown.message ? 'wording' : null;
   if (gap !== null) { gaps[call] = gap; continue; }
+  // workerd's DOMException carries code, name, message and stack as its own
+  // enumerable properties; Node's carries none.
+  if (thrown.ctor === 'DOMException' && theirs.ctor === 'DOMException'
+    && ['name', 'code', 'header', 'string'].every((field) => JSON.stringify(theirs[field]) === JSON.stringify(thrown[field]))) {
+    if (JSON.stringify(theirs.keys) !== JSON.stringify(thrown.keys)) { gaps[call] = 'dom-exception-own-keys'; continue; }
+  }
   for (const field of ['name', 'code', 'ctor', 'header', 'string', 'keys', 'ownName']) {
     if (JSON.stringify(theirs[field]) !== JSON.stringify(thrown[field])) shapes.push(`${call} ${field}: ${JSON.stringify(thrown[field])} here ${JSON.stringify(theirs[field])}`);
   }

@@ -25,6 +25,7 @@ import { ProcessInputStore, type ProcessInputPacket } from './process-input.js';
 import {
   ProcessLogStore,
   type LogChunk,
+  type ByteLogChunk,
   type LogStream,
   type PersistAdapter,
   type ProcessExitInfo,
@@ -32,9 +33,9 @@ import {
   type SequencedLogChunk,
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
+import type { OutputGate } from './output-gate.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
-import { StreamTextDecoders } from '../_shared/bytes.js';
 
 export interface ProcessSpawnOptions {
   /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -69,12 +70,7 @@ export class SessionProcessSupervisor {
   private readonly table = new ProcessTable();
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
-  /**
-   * The log ring holds text lines; a process's output arrives as bytes. One
-   * streaming decoder per (pid, stream) is this text consumer's edge, so a
-   * character split across two chunks survives. Dropped at markExit.
-   */
-  private readonly outputDecoders = new StreamTextDecoders<string>();
+
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -90,6 +86,18 @@ export class SessionProcessSupervisor {
   private release: ((pid: number) => Promise<void>) | null = null;
   /** Ends a process by a signal's default action; see setDefaultSignalAction. */
   private defaultSignalAction: ((pid: number, code: number, signal: ProcessSignalName) => void) | null = null;
+  /** Holds a process's output until its writes are published; see setOutputGate. */
+  private outputGate: OutputGate | null = null;
+  /** Each pid's latest output still held: what its next output goes after. */
+  private readonly heldOutput = new Map<number, Promise<void>>();
+  /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
+  private readonly releasing = new Set<number>();
+  /**
+   * The pids whose end is decided but not yet published: observers are told
+   * they run. A pid's own slot, kept until its end is published, whatever
+   * becomes of its table entry.
+   */
+  private readonly unpublishedEnds = new Set<number>();
 
   // ── Lifecycle / PID authority ─────────────────────────────────────────
 
@@ -115,8 +123,33 @@ export class SessionProcessSupervisor {
     this.table.setForeground(pid, foreground);
   }
 
+  /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
   get(pid: number): ProcessEntry | undefined {
     return this.table.get(pid);
+  }
+
+  /**
+   * `pid`'s status as observers are told it (ps, process listings, a parent
+   * waiting on it): its end once published, after the output before it
+   * (releaseOutput); running until then.
+   */
+  published(pid: number): ProcessEntry | undefined {
+    const entry = this.table.get(pid);
+    return entry && this.asPublished(entry);
+  }
+
+  /** Every process, as observers are told it (see {@link published}). */
+  publishedAll(): ProcessEntry[] {
+    return this.table.getAll().map((entry) => this.asPublished(entry));
+  }
+
+  private asPublished(entry: ProcessEntry): ProcessEntry {
+    return this.unpublishedEnds.has(entry.pid) ? { ...entry, state: 'running', exitCode: null, endTime: null } : entry;
+  }
+
+  /** Whether `pid`'s end is decided and still held from its observers (see {@link published}). */
+  endHeld(pid: number): boolean {
+    return this.unpublishedEnds.has(pid);
   }
 
   getRunning(): ProcessEntry[] {
@@ -300,6 +333,13 @@ export class SessionProcessSupervisor {
     });
   }
 
+  /** A decided end is told to observers (published) once the output before it is. */
+  private publishEnd(pid: number, wasRunning: boolean): void {
+    if (!wasRunning || this.table.get(pid)?.state === 'running') return;
+    this.unpublishedEnds.add(pid);
+    void this.releaseOutput(pid, () => { this.unpublishedEnds.delete(pid); });
+  }
+
   private fireTerminal(pid: number, wasRunning: boolean): void {
     if (!wasRunning || this.table.get(pid)?.state === 'running') return;
     this.forgetWaits(pid);
@@ -314,6 +354,7 @@ export class SessionProcessSupervisor {
   exit(pid: number, exitCode: number): void {
     const wasRunning = this.table.get(pid)?.state === 'running';
     this.table.exit(pid, exitCode);
+    this.publishEnd(pid, wasRunning);
     this.terminators.delete(pid);
     this.fireTerminal(pid, wasRunning);
   }
@@ -326,6 +367,7 @@ export class SessionProcessSupervisor {
   kill(pid: number, exitCode?: number): boolean {
     const wasRunning = this.table.get(pid)?.state === 'running';
     const killed = this.table.kill(pid, exitCode);
+    this.publishEnd(pid, wasRunning);
     this.terminate(pid);
     this.input.close(pid);
     this.fireTerminal(pid, wasRunning);
@@ -343,11 +385,14 @@ export class SessionProcessSupervisor {
    * A prune serves whoever runs next, not the processes it removes, so a
    * release that fails goes to that process's own stderr log, where its
    * output is read; every expired entry is still released and forgotten.
+   * One whose end is still held from its observers has not ended to them,
+   * and waits for a prune after it is published.
    */
   async reap(maxAge?: number): Promise<number> {
     const release = this.release;
     if (!release) return 0;
-    const { reaped, failures } = await this.releaseAndForget(release, this.table.expired(maxAge));
+    const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid));
+    const { reaped, failures } = await this.releaseAndForget(release, expired);
     for (const { pid, error } of failures) this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
     return reaped;
   }
@@ -368,14 +413,14 @@ export class SessionProcessSupervisor {
    * that waited for its children does: what a caller ran to completion has
    * nothing left to report. Each is released first (see {@link setRelease}),
    * so what it bound goes with its entry rather than outliving it; with no
-   * release set this refuses. One still running is kept. Logs are
-   * orphaned as by {@link reap}.
+   * release set this refuses. One still running, or whose end is still held
+   * from its observers, is kept. Logs are orphaned as by {@link reap}.
    */
   async reapTree(pid: number): Promise<number> {
     const release = this.release;
     if (!release) throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
     const ended = [this.table.get(pid), ...this.table.descendantsOf(pid)]
-      .filter((entry): entry is ProcessEntry => entry !== undefined && entry.state !== 'running');
+      .filter((entry): entry is ProcessEntry => entry !== undefined && entry.state !== 'running' && !this.unpublishedEnds.has(entry.pid));
     const { reaped, failures } = await this.releaseAndForget(release, ended);
     // The caller waited for this tree: it hears every failure, once all of it is gone.
     if (failures.length === 1) throw failures[0].error;
@@ -436,6 +481,9 @@ export class SessionProcessSupervisor {
     this.input.open(pid);
   }
 
+  inheritInput(pid: number, parentPid: number): void { this.input.inherit(pid, parentPid); }
+  pumpInput(pid: number, source: { readBytes(maxLength: number): Promise<Uint8Array | null> }): { stop(): void; done: Promise<void> } { return this.input.pump(pid, source); }
+
   hasInput(pid: number): boolean {
     return this.input.has(pid);
   }
@@ -448,6 +496,10 @@ export class SessionProcessSupervisor {
   writeInputBytes(pid: number, data: Uint8Array): { ok: boolean; full?: boolean } {
     return this.input.writeBytes(pid, data);
   }
+
+  writeInputBytesWait(pid: number, data: Uint8Array): Promise<{ ok: boolean }> { return this.input.writeBytesWait(pid, data); }
+
+  endInputAfterWrites(pid: number): Promise<void> { return this.input.endAfterWrites(pid); }
 
   /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
   whenInputWritable(pid: number): Promise<boolean> {
@@ -464,8 +516,8 @@ export class SessionProcessSupervisor {
     this.input.close(pid);
   }
 
-  readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket> {
-    return this.input.read(pid, waitMs);
+  readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket> {
+    return this.input.read(pid, waitMs, maxBytes);
   }
 
   /** See ProcessInputStore.unread: input taken back to the front of the queue. */
@@ -536,25 +588,69 @@ export class SessionProcessSupervisor {
 
   // ── Output / exit records ─────────────────────────────────────────────
 
-  appendOutput(pid: number, stream: LogStream, data: string): void {
-    this.logs.append(pid, stream, data);
-    this.logActivity?.();
+  /**
+   * Hold each process's output (its log and live sinks, a pipe to another
+   * process, the terminal, its exit) until `gate` lets it through. One slot.
+   */
+  setOutputGate(gate: OutputGate | null): void {
+    this.outputGate = gate;
   }
 
-  /** A process's own output: bytes on the relay, decoded at this edge. */
-  appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): void {
-    const text = this.outputDecoders.decode(`${pid}:${stream}`, data);
-    if (text.length > 0) this.appendOutput(pid, stream, text);
+  /**
+   * `deliver` once `pid`'s output may reach its observers: now, when the
+   * gate holds nothing of pid's, else after the gate and after pid's output
+   * before it, in the order the process made it. Every observer of a
+   * process's output and its exit is reached through here.
+   */
+  releaseOutput<T>(pid: number, deliver: () => T): T | Promise<Awaited<T>> {
+    if ((this.outputGate === null && this.heldOutput.size === 0) || this.releasing.has(pid)) return deliver();
+    const prior = this.heldOutput.get(pid);
+    const gated = this.outputGate?.before(pid) ?? null;
+    const turn = prior === undefined ? gated : gated === null ? prior : Promise.all([prior, gated]);
+    if (turn === null) return this.deliverOutput(pid, deliver);
+    let delivery!: T;
+    const admitted = turn.then(() => { delivery = this.deliverOutput(pid, deliver); });
+    // What comes after waits for this to be let through, not for its readers.
+    const held = admitted.then(() => {}, () => {});
+    this.heldOutput.set(pid, held);
+    void held.then(() => { if (this.heldOutput.get(pid) === held) this.heldOutput.delete(pid); });
+    return (async (): Promise<Awaited<T>> => {
+      await admitted;
+      return await delivery;
+    })();
   }
 
-  /** Record exit in the log store. Idempotent: the first record wins. */
-  markExit(pid: number, code: number, reason?: string): void {
-    for (const stream of ['stdout', 'stderr'] as const) {
-      const tail = this.outputDecoders.drop(`${pid}:${stream}`);
-      if (tail.length > 0) this.logs.append(pid, stream, tail);
+  private deliverOutput<T>(pid: number, deliver: () => T): T {
+    this.releasing.add(pid);
+    try {
+      return deliver();
+    } finally {
+      this.releasing.delete(pid);
     }
-    this.logs.markExit(pid, code, reason);
-    this.logActivity?.();
+  }
+
+  appendOutput(pid: number, stream: LogStream, data: string): void {
+    void this.releaseOutput(pid, () => {
+      this.logs.append(pid, stream, data);
+      this.logActivity?.();
+    });
+  }
+
+  /** Store bytes once, and await the live byte sink's pipe backpressure. */
+  appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void> {
+    return this.releaseOutput(pid, () => {
+      const delivery = this.logs.appendBytes(pid, stream, data);
+      this.logActivity?.();
+      return delivery;
+    });
+  }
+
+  /** Record exit in the log store, after the output before it. Idempotent: the first record wins. */
+  markExit(pid: number, code: number, reason?: string): void {
+    void this.releaseOutput(pid, () => {
+      this.logs.markExit(pid, code, reason);
+      this.logActivity?.();
+    });
   }
 
   getExit(pid: number): ProcessExitInfo | null {
@@ -598,6 +694,8 @@ export class SessionProcessSupervisor {
   subscribeLogs(pid: number, cb: (chunk: LogChunk) => void): () => void {
     return this.logs.subscribe(pid, cb);
   }
+
+  subscribeOutputBytes(pid: number, cb: (chunk: ByteLogChunk) => void | Promise<void>): () => void { return this.logs.subscribeBytes(pid, cb); }
 
   subscribeExit(pid: number, cb: (exit: ProcessExitInfo) => void): () => void {
     return this.logs.subscribeExit(pid, cb);

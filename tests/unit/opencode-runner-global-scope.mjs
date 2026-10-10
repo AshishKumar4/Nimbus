@@ -14,10 +14,9 @@
 // clobber the test runner's own globals.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { dirname, join } from 'node:path';
 
 if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
   const { generateOpencodeRunnerCode, SQLITE_WASM_MODULE_NAME, YOGA_WASM_MODULE_NAME } = await import(
@@ -38,7 +37,7 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
   const { nodeFacetSources } = await import('./lib/node-facet-sources.mjs');
 
   const mode = process.env.NIMBUS_GLOBAL_SCOPE_EVAL_MODE;
-  let source = generateOpencodeRunnerCode({
+  const generated = generateOpencodeRunnerCode({
     argv: mode === 'server' ? ['serve', '--port', '4096', '--hostname', '127.0.0.1'] : [],
     env: {},
     cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
@@ -50,11 +49,18 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
     vfsMetadata: '{}',
     mode,
   });
+  let source = generated.code;
+  source += '\nexport function probeNodeLibrary() { const Stats = builtins.fs.Stats; return [typeof Stats, builtins.util.inspect({ ready: true }), builtins.assert.strict === builtins["assert/strict"]]; }\n';
 
   // The module map serves these specifiers in workerd; alias each to a stub
   // file so plain ESM import works here. Fail loud if a specifier vanishes —
   // an unrewritten import means the eval below is no longer the real module.
   const dir = mkdtempSync(join(tmpdir(), 'oc-runner-global-scope-'));
+  for (const [name, text] of Object.entries(generated.codeModules)) {
+    const path = join(dir, name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  }
   const alias = (specifier, stubName, stubSource) => {
     const find = [`from "${specifier}"`, `from '${specifier}'`].find(text => source.includes(text));
     assert.ok(find, `generated source imports ${specifier}`);
@@ -115,7 +121,9 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
   let evalError = null;
   let entrypoint;
   try {
-    entrypoint = (await import(entry)).default;
+    const loaded = await import(entry);
+    entrypoint = loaded.default;
+    assert.deepEqual(loaded.probeNodeLibrary(), ['function', '{ ready: true }', true]);
   } catch (error) {
     evalError = error;
   }

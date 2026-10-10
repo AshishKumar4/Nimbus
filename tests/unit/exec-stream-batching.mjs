@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { createExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
+const writer = createExecStream(() => {});
+let chunks = 0, bytes = 0;
+const consume = (async () => { for await (const chunk of writer.stream.output) { chunks++; bytes += chunk.data.length; } })();
+for (let i = 0; i < 10_000; i++) await writer.write('stdout', new Uint8Array([65]));
+writer.end({ command: 'tiny burst', exitCode: 0, success: true, duration: 0, timestamp: 0 });
+await consume;
+assert.equal(bytes, 10_000);
+assert.ok(chunks < 32, `a producer's microtask burst must be batched rather than emit ${chunks} network frames`);
+console.log('exec-stream-batching: small burst writes preserve bytes without per-item framing');

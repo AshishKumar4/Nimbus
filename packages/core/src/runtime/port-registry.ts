@@ -29,6 +29,7 @@
  */
 
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
@@ -446,8 +447,7 @@ export class PortRegistry {
       // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
       // which every hop preserves. A target with no such entrypoint serves
       // HTTP only, and says so rather than dropping the socket.
-      const isWebSocket = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
-      const handler = isWebSocket
+      const handler = isWebSocketUpgradeRequest(request.headers)
         ? entry.facetStub.handleWebSocketRequest
         : entry.facetStub.handleHttpRequest;
       if (!handler) {

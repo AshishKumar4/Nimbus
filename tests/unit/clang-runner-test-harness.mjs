@@ -7,6 +7,8 @@
 // `clangBinHandler` end to end without a wasm boot.
 
 import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
+import { runtimeSupervisor } from './lib/runtime-session.mjs';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -102,13 +104,15 @@ function toolchainFacet(spec, calls) {
       try {
         for (const input of inputs) {
           if (await fs.readFile(input.replace(/^\/+/, '')) === null) {
-            return { exitCode: 1, stdout: '', stderr: `${spec.tag}: error: ${input}: ENOENT\n` };
+            await spec.syscalls.processes.appendOutputBytes(spec.syscalls.pid, 'stderr', new TextEncoder().encode(`${spec.tag}: error: ${input}: ENOENT\n`));
+            return { exitCode: 1, stdout: '', stderr: '' };
           }
         }
         // path_open creates the file, never its directory.
         await fs.writeFile(output.replace(/^\/+/, ''), new TextEncoder().encode('\0asm'), { createParents: false });
       } catch (error) {
-        return { exitCode: 1, stdout: '', stderr: `${spec.tag}: error: ${error.message}\n` };
+        await spec.syscalls.processes.appendOutputBytes(spec.syscalls.pid, 'stderr', new TextEncoder().encode(`${spec.tag}: error: ${error.message}\n`));
+        return { exitCode: 1, stdout: '', stderr: '' };
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     },
@@ -174,11 +178,17 @@ export function makeInvocationVfs(options = {}) {
     open(spec) { return toolchainFacet(spec, calls); },
   };
   const filesystem = detachingAuthority(new ProcessFiles(raw));
-  const handler = makeClangRunnerFactory({ facets, filesystem })(
+  const processes = new SessionProcessSupervisor();
+  processes.setPidBase(16);
+  const handler = makeClangRunnerFactory({ facets, filesystem, processes })(
     MANIFEST, '/runtime/clang', 'clang', undefined,
   );
 
-  const run = ctx => handler({ ...ctx, vfs: new ProcessView(filesystem.bind({ pid: 17, cred: ctx.cred })) });
+  const run = async ctx => {
+    const parent = processes.spawn('sh', ['sh'], ctx.cwd || '/home/user', { cred: ctx.cred });
+    try { return await handler({ ...ctx, pid: parent.pid, vfs: new ProcessView(filesystem.bind({ pid: parent.pid, cred: ctx.cred })) }); }
+    finally { processes.exit(parent.pid, 0); }
+  };
   return { root, run, user, calls };
 }
 

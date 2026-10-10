@@ -24,6 +24,8 @@
 
 import { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
+import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
+import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import type { ProcessExitNotice, ProcessExitNoticeSource } from '@nimbus-sh/core/runtime/process-exit-notices.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -805,7 +807,7 @@ export async function _rpcFsReadRange(
 
 /** A bounded range used only to prepare fd 0, never an ordinary file read. */
 export async function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{ data: Uint8Array; size: number }> {
-  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536) throw new RangeError('invalid stdin preparation range');
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > STDIN_FILE_READ_PIECE_BYTES) throw new RangeError('invalid stdin preparation range');
   const stat = await self.supervisorBridge(pid).stat(path);
   if (!stat) throw Object.assign(new Error(`ENOENT: no such stdin file '${path}'`), { code: 'ENOENT' });
   const data = await _rpcFsReadRange(self, path, offset, Math.min(length, Math.max(0, stat.size - offset)), pid);
@@ -1085,19 +1087,21 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, a
     // (runtime/stop-replay.ts), is not delivered twice.
     if (at !== undefined && run !== undefined) data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
     if (data.byteLength === 0) return;
-    if (self.facetProcessManager?.routeOutput(pid, 1, data)) return;
+    const childOutput = self.facetProcessManager?.routeOutput(pid, 1, data);
+    if (childOutput) { await childOutput; return; }
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
     // output. Skip pid=0 (the supervisor-rpc fallback when no props.pid
     // was threaded) to avoid polluting a sentinel slot with output from
     // un-traceable facets.
     try {
-      if (pid > 0) self.processes.appendOutputBytes(pid, 'stdout', data);
+      if (pid > 0) await self.processes.appendOutputBytes(pid, 'stdout', data);
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
         const text = decodeForTerminal(pid, 'stdout', data);
         if (text.length > 0) self.terminal.write(normalizeTerminalNewlines(text));
       }
     } catch (e: any) {
+      if (isBrokenPipe(e)) { self.facetManager?.kill(pid, 'SIGPIPE'); throw e; }
       // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
       // drops here are exactly what hides bugs; default-off so we don't
       // blow up terminals with normal-operation noise, but diagnosable on
@@ -1112,9 +1116,10 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, a
     if (isPriorGenerationPid(self, pid)) return;
     if (at !== undefined && run !== undefined) data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
     if (data.byteLength === 0) return;
-    if (self.facetProcessManager?.routeOutput(pid, 2, data)) return;
+    const childOutput = self.facetProcessManager?.routeOutput(pid, 2, data);
+    if (childOutput) { await childOutput; return; }
     try {
-      if (pid > 0) self.processes.appendOutputBytes(pid, 'stderr', data);
+      if (pid > 0) await self.processes.appendOutputBytes(pid, 'stderr', data);
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
@@ -1122,6 +1127,7 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, a
         if (text.length > 0) self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(text)}\x1b[0m`);
       }
     } catch (e: any) {
+      if (isBrokenPipe(e)) { self.facetManager?.kill(pid, 'SIGPIPE'); throw e; }
       if (self.nimbusDebug && self.terminal) {
         try { self.terminal.write(`\x1b[33m[rpc-error] _rpcStderr(pid=${pid}) threw: ${e?.message || e}\x1b[0m\r\n`); } catch {}
       }
@@ -1130,7 +1136,8 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, a
 
 function shouldMirrorProcessOutputToShell(self: ProcessRpcHost, pid: number): boolean {
   if (pid <= 0) return true;
-  const entry = self.processes.get(pid);
+  // As published: output the gate held is delivered before the end it preceded.
+  const entry = self.processes.published(pid);
   // No table entry: either a reaped process's late flush or a facet that
   // outlived an instance reset. Neither owns the user's shell anymore — the
   // output still lands in the log ring above, never on the shell WS (an
@@ -1174,22 +1181,30 @@ export async function _rpcReportExit(
       self.processes.markExit(pid, code, PRIOR_GENERATION_EXIT_REASON);
       return;
     }
+    try { self.processes.closeInput(pid); } catch {}
+    // A relayed socket is held open by the supervisor on the process's behalf,
+    // so it does not die when the facet does. Nothing else would ever close
+    // it, and a live one keeps buffering into the supervisor's heap.
+    try { self.webSocketRelay?.closeForPid(pid); } catch {}
+    self.supervisorForgetBridge?.(pid);
+    await self.processes.releaseOutput(pid, () => reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules));
+}
+
+/** A process's own exit report, to everything that observes it. */
+function reportExit(
+  self: ExitRpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null,
+  runtimeCode?: unknown[], executedModules?: string[],
+): void {
     // Exit callbacks may release the foreground launch; capture its ownership first.
     const entry = self.processes.get(pid);
     const normalForeground = code === 0
       && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
-    try { self.processes.closeInput(pid); } catch {}
     for (const stream of ['stdout', 'stderr'] as const) {
       const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
       if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
         self.terminal.write(normalizeTerminalNewlines(rest));
       }
     }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
-    try { self.webSocketRelay?.closeForPid(pid); } catch {}
-    self.supervisorForgetBridge?.(pid);
     if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
     // (e.g. from an external kill path) don't dump twice.
@@ -1245,10 +1260,12 @@ export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
 
 export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, code: number, durationMs: number): void {
     if (code === 0) return;
-    if (self.processes.logSize(pid) > 0) {
-      self._emitExitDump(pid, code);
-    }
-    queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    void self.processes.releaseOutput(pid, () => {
+      if (self.processes.logSize(pid) > 0) {
+        self._emitExitDump(pid, code);
+      }
+      queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    });
 }
 
   /**
@@ -1265,6 +1282,12 @@ export function _reportExternalExit(self: RpcHost, pid: number, code: number, re
     // it, and a live one keeps buffering into the supervisor's heap.
     try { self.webSocketRelay?.closeForPid(pid); } catch {}
     self.supervisorForgetBridge?.(pid);
+    void self.processes.releaseOutput(pid, () => reportExternalExit(self, pid, code, reason));
+}
+
+/** An exit the process did not report itself, to everything that observes it. */
+function reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
+    if (self.processes.getExit(pid)) return;
     if (reason) {
       self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
@@ -1396,20 +1419,11 @@ export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: 
  * UTF-8 into U+FFFD.
  */
 export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{ ok: boolean; full?: boolean }> {
-    if (self.processes.hasInput(childPid)) {
-      return self.processes.writeInputBytes(childPid, data);
-    }
-    const fpm = self._ensureFacetProcessManager();
-    return fpm.stdinWrite(childPid, data);
+    return self.processes.writeInputBytesWait(childPid, data);
 }
 
 export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void> {
-    if (self.processes.hasInput(childPid)) {
-      self.processes.endInput(childPid);
-      return;
-    }
-    const fpm = self._ensureFacetProcessManager();
-    fpm.stdinEnd(childPid);
+    await self.processes.endInputAfterWrites(childPid);
 }
 
 /**
@@ -1428,7 +1442,7 @@ async function withDeliveredAcquire<T extends object>(
   return acquired ? { ...reply, acquired } : reply;
 }
 
-export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string) {
+export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number) {
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
@@ -1442,23 +1456,15 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
     const taken = self.facetManager?.stdinTakenBy?.(childPid);
     if (taken && !taken.admits(writerId)) return { data: new Uint8Array(0), ended: false };
     let packet: { data: Uint8Array; ended: boolean; resize?: { columns: number; rows: number }; signal?: string };
-    if (self.processes.hasInput(childPid)) {
-      // The input store holds typed text and piped bytes; the child's stdin
-      // pump takes bytes, so text is encoded at this edge and bytes pass as
-      // they are.
-      const input = await self.processes.readInput(childPid, waitMs);
-      packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
-    } else {
-      const fpm = self._ensureFacetProcessManager();
-      packet = await fpm.cpReadStdin(childPid, waitMs);
-    }
+    // Every child and terminal descriptor is a reference onto the same store.
+    const input = await self.processes.readInput(childPid, waitMs, maxBytes);
+    packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
     if (taken) {
       // The run stopped while this read waited: what it would have taken goes
       // back in front of the channel for the run after it.
       if (!taken.admits(writerId)) {
         if (packet.data.byteLength > 0) {
-          if (self.processes.hasInput(childPid)) self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
-          else self._ensureFacetProcessManager().unreadStdin(childPid, [packet.data]);
+          self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
         }
         return { data: new Uint8Array(0), ended: false };
       }

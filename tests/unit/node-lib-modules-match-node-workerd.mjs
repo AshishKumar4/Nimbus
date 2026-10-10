@@ -496,6 +496,216 @@ t.ref();
 console.log('hasRef ' + t.hasRef() + ' ' + t.ref.name + ' ' + t.unref.name);
 console.log('main done');
 `,
+  'process.cjs': SHOW + String.raw`
+const EventEmitter = require('events');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+show2('emitter', () => [process instanceof EventEmitter, process.constructor.name, Object.getPrototypeOf(Object.getPrototypeOf(process)) === EventEmitter.prototype,
+  Object.hasOwn(process, 'on'), typeof process._events, typeof process._eventsCount, process.listenerCount('nimbus-x')]);
+let heard;
+process.on('nimbus-x', (v) => { heard = v; });
+show2('emit', () => [process.emit('nimbus-x', 7), heard, process.listenerCount('nimbus-x'), process.eventNames().includes('nimbus-x')]);
+show2('identity', () => [process.argv0, process.argv[0] === process.execPath, process.release.name, process.release.lts, process.debugPort, process.domain]);
+show2('hrtime', () => { const a = process.hrtime(); const d = process.hrtime(a); return [a.length, typeof a[0], d[0] >= 0 && d[1] >= 0 && d[1] < 1e9, typeof process.hrtime.bigint()]; });
+show2('hrtime array', () => process.hrtime(5));
+show2('hrtime length', () => process.hrtime([1]));
+show2('cpuUsage shape', () => Object.keys(process.cpuUsage()));
+show2('cpuUsage prev', () => process.cpuUsage({ user: -1, system: 0 }));
+show2('cpuUsage type', () => process.cpuUsage({ user: 'x', system: 0 }));
+show2('cpuUsage object', () => process.cpuUsage(5));
+show2('threadCpuUsage shape', () => Object.keys(process.threadCpuUsage()));
+show2('resourceUsage shape', () => Object.keys(process.resourceUsage()));
+show2('memoryUsage shape', () => [Object.keys(process.memoryUsage()), typeof process.memoryUsage.rss()]);
+show2('kill float', () => process.kill(1.5));
+show2('kill string pid', () => process.kill('abc'));
+show2('kill signal', () => process.kill(process.pid, 'SIGNOPE'));
+show2('kill probe', () => process.kill(process.pid, 0));
+show2('kill probe by string', () => process.kill(String(process.pid), 0));
+show2('assert', () => process.assert(false, 'm'));
+show2('assert ok', () => process.assert(true));
+show2('capture', () => { process.setUncaughtExceptionCaptureCallback(() => {}); const had = process.hasUncaughtExceptionCaptureCallback(); try { process.setUncaughtExceptionCaptureCallback(() => {}); } catch (e) { return [had, e.code, e.message]; } });
+show2('capture bad', () => process.setUncaughtExceptionCaptureCallback(5));
+show2('capture clear', () => [process.setUncaughtExceptionCaptureCallback(null), process.hasUncaughtExceptionCaptureCallback()]);
+show2('ref', () => { const calls = []; process.ref({ [Symbol.for('nodejs.ref')]() { calls.push('sym'); }, ref() { calls.push('ref'); } }); process.unref({ unref() { calls.push('unref'); } }); process.ref(null); return calls; });
+show2('flags', () => { const f = process.allowedNodeEnvironmentFlags; return [f.size > 50, f.has('--max-old-space-size'), f.has('max_old_space_size'), f.has('--max-old-space-size=4'), f.has('--no-warnings'), f.has('--expose-gc'), f.has('inspect'), Object.isFrozen(f), f instanceof Set]; });
+show2('loadEnvFile missing', () => process.loadEnvFile('nope.env'));
+show2('loadEnvFile type', () => process.loadEnvFile(5));
+process.env.KEEP = 'mine';
+show2('loadEnvFile', () => [process.loadEnvFile('envs/app.env'), process.env.FROM_FILE, process.env.QUOTED, process.env.KEEP]);
+show2('uptime', () => typeof process.uptime() === 'number' && process.uptime() >= 0 && process.uptime() < 600);
+show2('memory', () => [typeof process.availableMemory(), typeof process.constrainedMemory()]);
+show2('rawDebug', () => typeof process._rawDebug);
+`,
+  'envs/app.env': 'FROM_FILE=yes\nQUOTED="a b"\nKEEP=file\n',
+  'capture.cjs': String.raw`
+process.on('uncaughtExceptionMonitor', (e, type) => console.log('monitor ' + e.message + ' ' + type));
+process.on('uncaughtException', () => console.log('uncaughtException (should not)'));
+process.setUncaughtExceptionCaptureCallback((e) => console.log('captured ' + e.message));
+setTimeout(() => { throw new Error('later'); }, 1);
+setTimeout(() => console.log('still running'), 20);
+`,
+  'fsstats.cjs': SHOW + String.raw`
+const fs = require('fs');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() + 'n' : v)))); } catch (e) { show(label, e); } };
+fs.writeFileSync('statted.txt', 'x'.repeat(5000));
+fs.mkdirSync('stattedDir', { recursive: true });
+const shape = (s) => [s.constructor.name, s instanceof fs.Stats, Object.keys(s).join(','), s.isFile(), s.isDirectory(), s.isSymbolicLink(), s.isCharacterDevice(), typeof s.mtime, s.mtime instanceof Date, s.size, s.blksize, s.blocks, typeof s.dev, typeof s.ino, s.nlink > 0];
+show2('file', () => shape(fs.statSync('statted.txt')));
+show2('dir', () => shape(fs.statSync('stattedDir')).slice(0, 6));
+show2('dates lazy', () => { const s = fs.statSync('statted.txt'); const before = Object.keys(s).includes('mtime'); const m = s.mtime; return [before, Object.keys(s).includes('mtime'), m.getTime() === Math.round(s.mtimeMs)]; });
+show2('bigint', () => { const s = fs.statSync('statted.txt', { bigint: true }); return [s.constructor.name, typeof s.size, typeof s.mtimeNs, s.isFile(), s instanceof fs.Stats, s.mtimeNs / 1000000n === s.mtimeMs]; });
+show2('lstat bigint', () => fs.lstatSync('statted.txt', { bigint: true }).constructor.name);
+// An epoch's milliseconds, exactly, in nanoseconds: 1700000000001 is no multiple of 4.
+fs.utimesSync('statted.txt', new Date(1700000000001), new Date(1700000000001));
+show2('bigint ms exact', () => BigInt(Math.trunc(fs.statSync('statted.txt').mtimeMs)) === fs.statSync('statted.txt', { bigint: true }).mtimeMs);
+const throwing = { get bigint() { throw new Error('options read'); } };
+show2('stat options throw', () => fs.stat('statted.txt', throwing, () => console.log('stat called back (should not)')));
+show2('statSync options throw', () => fs.statSync('statted.txt', throwing));
+show2('fstat bigint', () => { const fd = fs.openSync('statted.txt', 'r'); try { return fs.fstatSync(fd, { bigint: true }).constructor.name; } finally { fs.closeSync(fd); } });
+show2('constants', () => [fs.F_OK, fs.R_OK, fs.W_OK, fs.X_OK, fs.F_OK === fs.constants.F_OK]);
+show2('lchmod', () => [typeof fs.lchmod, typeof fs.lchmodSync, 'lchmod' in fs, typeof fs.promises.lchmod]);
+show2('toUnixTimestamp', () => [fs._toUnixTimestamp(new Date(1500)), fs._toUnixTimestamp('12'), fs._toUnixTimestamp(3.5), fs._toUnixTimestamp(-1) > 1e9]);
+show2('toUnixTimestamp bad', () => fs._toUnixTimestamp({}));
+show2('Stats ctor', () => { const s = new fs.Stats(1, 0o100644, 1, 0, 0, 0, 4096, 1, 10, 1, 0, 0, 0, 0); return [s.isFile(), s.size, s instanceof fs.Stats]; });
+(async () => {
+  await new Promise((resolve) => fs.stat('statted.txt', { bigint: true }, (e, s) => { console.log('stat cb bigint: ' + (e ? e.code : s.constructor.name)); resolve(); }));
+  console.log('promises bigint: ' + (await fs.promises.stat('statted.txt', { bigint: true })).constructor.name);
+  try { await fs.promises.lchmod('statted.txt', 0o600); } catch (e) { console.log('promises lchmod: ' + e.code + ' ' + e.message); }
+  const settled = fs.promises.stat('statted.txt', throwing).then(() => 'resolved', (e) => 'rejected ' + e.message);
+  console.log('promises options throw: ' + await Promise.race([settled, new Promise((resolve) => setTimeout(() => resolve('pending'), 200))]));
+})();
+`,
+  'dnsconst.cjs': String.raw`
+const dns = require('dns');
+const p = require('dns/promises');
+const names = Object.keys(dns).filter((k) => /^[A-Z0-9_]+$/.test(k));
+console.log(JSON.stringify(names.map((k) => [k, dns[k]])));
+console.log(JSON.stringify(Object.keys(p).filter((k) => /^[A-Z0-9_]+$/.test(k)).map((k) => [k, p[k] === dns[k]])));
+`,
+  // The builtins workerd provides behind Node's argument checks
+  // (node-builtin-fronts.ts): what they take still works as Node's does, and
+  // the classes and globals keep their identities.
+  'fronts.cjs': SHOW + String.raw`
+const zlib = require('zlib');
+const buffer = require('buffer');
+const crypto = require('crypto');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+// A DOMException's own keys are workerd's (node-builtin-errors-match-node-workerd records them).
+const dom = (label, f) => { try { f(); console.log(label + ': no error'); } catch (e) { console.log(label + ': ' + e.constructor.name + ' ' + e.name + ' ' + e.code + ' ' + JSON.stringify(e.message)); } };
+show2('zlib round trip', () => zlib.inflateSync(zlib.deflateSync('hello')).toString());
+show2('zlib options ignored', () => zlib.gunzipSync(zlib.gzipSync('x', 5)).toString());
+show2('zlib array buffer', () => zlib.inflateRawSync(new Uint8Array(zlib.deflateRawSync(Buffer.from('ab'))).buffer).toString());
+show2('zlib brotli', () => zlib.brotliDecompressSync(zlib.brotliCompressSync('br')).toString());
+show2('crc32', () => [zlib.crc32('abc'), zlib.crc32(Buffer.from('abc'), 7)]);
+show2('crc32 value', () => zlib.crc32('abc', -1));
+show2('isUtf8', () => [buffer.isUtf8(Buffer.from('é')), buffer.isUtf8(new Uint8Array([0xff])), buffer.isAscii(new Uint8Array([65]).buffer), buffer.isUtf8(new Uint16Array([0x4141]))]);
+show2('isUtf8 dataview', () => buffer.isUtf8(new DataView(new ArrayBuffer(1))));
+show2('transcode', () => buffer.transcode(Buffer.from('é'), 'utf8', 'latin1'));
+show2('SlowBuffer', () => buffer.SlowBuffer(4).length);
+// (Its upper bound is the platform's kMaxLength, workerd's 2 ** 31 - 1.)
+show2('SlowBuffer string', () => buffer.SlowBuffer('4'));
+show2('atob btoa', () => [atob(btoa('hi')), buffer.atob === atob, buffer.btoa === btoa, atob(' aGk= ')]);
+dom('atob bad', () => atob('a=b='));
+dom('atob one left', () => atob('abcde'));
+dom('btoa wide', () => btoa('\u0100'));
+show2('btoa symbol', () => btoa(Symbol('s')));
+show2('Blob', () => { const b = new buffer.Blob(['ab', new Uint8Array([99])], { type: 'text/plain' }); return [b.size, b.type, b instanceof Blob, b.constructor === Blob, buffer.Blob === Blob, Blob.name]; });
+show2('File', () => { const f = new buffer.File(['x'], 'a.txt'); return [f.name, f.size, f instanceof Blob, f instanceof File, f.constructor === File]; });
+show2('Blob options', () => new Blob([], 5));
+show2('Blob subclass', () => { class MyBlob extends Blob {} const b = new MyBlob(['z']); return [b instanceof MyBlob, b instanceof Blob, b.size]; });
+show2('hash', () => [crypto.hash('sha1', 'abc'), crypto.createHmac('sha256', 'k').update('d').digest('hex').slice(0, 8)]);
+show2('cipher', () => { const key = Buffer.alloc(32, 1); const iv = Buffer.alloc(16, 2); const c = crypto.createCipheriv('aes-256-cbc', key, iv); const enc = Buffer.concat([c.update(Buffer.from('secret')), c.final()]); const d = crypto.createDecipheriv('aes-256-cbc', key, iv); return Buffer.concat([d.update(enc), d.final()]).toString(); });
+show2('cipher key object', () => crypto.createCipheriv('aes-128-cbc', crypto.createSecretKey(Buffer.alloc(16)), Buffer.alloc(16)).update(Buffer.from('x')).length);
+show2('cipher wrong key object', () => { const { publicKey } = crypto.generateKeyPairSync('ed25519'); return crypto.createCipheriv('aes-128-ecb', publicKey, null); });
+show2('secret key', () => [crypto.createSecretKey(Buffer.alloc(8)).symmetricKeySize, crypto.createSecretKey('abc', 'utf8').symmetricKeySize]);
+show2('ecdh', () => crypto.createECDH('prime256v1').generateKeys().length);
+show2('ecdh unknown', () => crypto.createECDH('nope'));
+show2('dh group', () => crypto.getDiffieHellman('modp14').getPrime().length);
+show2('dh unknown', () => crypto.createDiffieHellmanGroup('modp99'));
+show2('dh group any case', () => [crypto.getDiffieHellman('MODP14').getPrime().length, crypto.createDiffieHellmanGroup('Modp15').getPrime().length]);
+show2('random', () => [crypto.randomFillSync(Buffer.alloc(4)).length, crypto.randomInt(5) < 5, crypto.randomInt(2, 3), crypto.getRandomValues(new Uint8Array(2)).length]);
+show2('randomInt range', () => crypto.randomInt(3, 2));
+show2('randomInt too wide', () => crypto.randomInt(0, 2 ** 49));
+dom('getRandomValues float', () => crypto.getRandomValues(new Float64Array(1)));
+// Its kind is its internal slot's, whatever tag it carries.
+show2('getRandomValues tagged', () => { const u = new Uint8Array(4); Object.defineProperty(u, Symbol.toStringTag, { value: 'Float64Array' }); return crypto.getRandomValues(u).length; });
+show2('getRandomValues tagged subclass', () => { class Tagged extends Uint16Array { get [Symbol.toStringTag]() { return 'Float32Array'; } } return crypto.getRandomValues(new Tagged(2)).length; });
+dom('getRandomValues float tagged', () => { const f = new Float32Array(1); Object.defineProperty(f, Symbol.toStringTag, { value: 'Uint8Array' }); return crypto.getRandomValues(f); });
+show2('timingSafeEqual', () => [crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('a')), crypto.timingSafeEqual(new Uint8Array(1), new ArrayBuffer(1))]);
+show2('timingSafeEqual length', () => crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('ab')));
+show2('timingSafeEqual buf2', () => crypto.timingSafeEqual(Buffer.from('a'), 'a'));
+show2('pbkdf2Sync', () => crypto.pbkdf2Sync('p', 's', 1, 8, 'sha256').toString('hex'));
+show2('pbkdf2 iterations', () => crypto.pbkdf2('p', 's', 0, 8, 'sha256', () => {}));
+show2('pbkdf2 callback', () => crypto.pbkdf2('p', 's', 1, 8, 'sha256'));
+show2('keys', () => { const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  return [crypto.createPrivateKey(privateKey.export({ type: 'pkcs8', format: 'pem' })).asymmetricKeyType, crypto.createPublicKey(publicKey.export({ type: 'spki', format: 'pem' })).type,
+    crypto.createPublicKey(privateKey).type, crypto.createPublicKey({ key: publicKey }).type]; });
+show2('private key from key object', () => crypto.createPrivateKey(crypto.createSecretKey(Buffer.alloc(8))));
+show2('sign no key', () => crypto.sign('sha256', Buffer.from('d')));
+show2('verify array buffer', () => crypto.verify('sha256', new ArrayBuffer(1), 'k', Buffer.alloc(1)));
+show2('rsa', () => { const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 }); return crypto.privateDecrypt(privateKey, crypto.publicEncrypt(publicKey, Buffer.from('m'))).toString(); });
+show2('rsa oaepHash', () => crypto.publicEncrypt({ key: 'k', oaepHash: 5 }, Buffer.from('m')));
+show2('keygen options', () => crypto.generateKeySync('hmac'));
+show2('keygen null options', () => crypto.generateKeyPairSync('ed25519', null));
+show2('keygen', () => [crypto.generateKeySync('hmac', { length: 64 }).symmetricKeySize, crypto.generateKeyPairSync('ed25519').publicKey.asymmetricKeyType]);
+show2('getCipherInfo', () => [crypto.getCipherInfo('aes-128-cbc').keyLength, crypto.getCipherInfo('nope')]);
+show2('setEngine', () => crypto.setEngine('nimbus-none'));
+show2('setEngine flags', () => crypto.setEngine('x', 'y'));
+show2('sign verify', () => { const s = crypto.createSign('sha256'); s.update('d'); return typeof s.sign; });
+show2('sign unknown', () => crypto.createSign('nope'));
+(async () => {
+  await new Promise((resolve) => crypto.generateKey('hmac', { length: 64 }, (e, k) => { console.log('generateKey: ' + (e ? e.code : k.symmetricKeySize)); resolve(); }));
+  await new Promise((resolve) => crypto.pbkdf2('p', 's', 1, 8, 'sha256', (e, k) => { console.log('pbkdf2: ' + (e ? e.code : k.toString('hex'))); resolve(); }));
+  await new Promise((resolve) => crypto.randomFill(new Uint8Array(4), (e, b) => { console.log('randomFill: ' + (e ? e.code : b.length)); resolve(); }));
+  await new Promise((resolve) => crypto.randomInt(10, (e, n) => { console.log('randomInt cb: ' + (e ? e.code : n < 10)); resolve(); }));
+})();
+`,
+  // Node's random fills past the Web Crypto quota (65536 bytes a call), as
+  // its randomBytes, randomFillSync and randomFill take up to 2 ** 31 - 1;
+  // every 65536-byte piece filled (a piece left zero would be a gap in the chunking).
+  'random.cjs': SHOW + String.raw`
+const crypto = require('crypto');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+const dom = (label, f) => { try { f(); console.log(label + ': no error'); } catch (e) { console.log(label + ': ' + e.constructor.name + ' ' + e.name + ' ' + e.code); } };
+const PIECE = 65536;
+// Each piece's bytes (from \`from\` to \`to\`) hold a nonzero one.
+const filled = (bytes, from = 0, to = bytes.length) => {
+  for (let at = from; at < to; at += PIECE) {
+    let any = false;
+    for (let i = at; i < Math.min(to, at + PIECE); i++) if (bytes[i] !== 0) { any = true; break; }
+    if (!any) return false;
+  }
+  return true;
+};
+const bytesOf = (view) => new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+for (const size of [PIECE + 1, 1 << 20, 16 << 20]) {
+  show2('randomBytes ' + size, () => { const b = crypto.randomBytes(size); return [b.length, Buffer.isBuffer(b), filled(b)]; });
+  show2('randomFillSync ' + size, () => { const b = Buffer.alloc(size); const r = crypto.randomFillSync(b); return [r === b, filled(b)]; });
+  show2('pseudoRandomBytes ' + size, () => crypto.pseudoRandomBytes(size).length);
+}
+show2('randomFillSync region', () => { const b = Buffer.alloc(3 * PIECE); const r = crypto.randomFillSync(b, PIECE / 2, 2 * PIECE); return [r === b, r.length, b.subarray(0, PIECE / 2).every((x) => x === 0), filled(b, PIECE / 2, PIECE / 2 + 2 * PIECE), b.subarray(PIECE / 2 + 2 * PIECE).every((x) => x === 0)]; });
+show2('randomFillSync elements', () => { const u = new Uint32Array(PIECE); crypto.randomFillSync(u, 1, PIECE - 2); return [u[0], u[PIECE - 1], filled(bytesOf(u), 4, 4 * (PIECE - 1))]; });
+show2('randomFillSync array buffer', () => { const a = new ArrayBuffer(PIECE * 2 + 7); return [crypto.randomFillSync(a) === a, filled(new Uint8Array(a))]; });
+show2('randomFillSync small', () => crypto.randomFillSync(Buffer.alloc(10), 2, 3).length);
+show2('randomFillSync offset range', () => crypto.randomFillSync(new Uint32Array(4), 5));
+show2('randomFillSync size range', () => crypto.randomFillSync(new Uint32Array(4), 3, 2));
+show2('randomFillSync offset type', () => crypto.randomFillSync(Buffer.alloc(4), 'x'));
+show2('randomBytes too big', () => crypto.randomBytes(2 ** 31));
+show2('randomBytes type', () => crypto.randomBytes('4'));
+show2('randomFill callback', () => crypto.randomFill(Buffer.alloc(4), 0, 4));
+dom('getRandomValues quota', () => crypto.getRandomValues(new Uint8Array(PIECE + 1)));
+show2('getRandomValues quota words', () => { try { crypto.getRandomValues(new Uint8Array(PIECE + 1)); } catch (e) { return e.message; } });
+dom('webcrypto quota', () => crypto.webcrypto.getRandomValues(new Uint8Array(PIECE + 1)));
+dom('global quota', () => globalThis.crypto.getRandomValues(new Uint8Array(PIECE + 1)));
+show2('getRandomValues at quota', () => crypto.getRandomValues(new Uint8Array(PIECE)).length);
+(async () => {
+  for (const size of [PIECE + 1, 1 << 20, 16 << 20]) {
+    await new Promise((resolve) => crypto.randomBytes(size, (e, b) => { console.log('randomBytes cb ' + size + ': ' + (e ? e.code : [b.length, filled(b)])); resolve(); }));
+    await new Promise((resolve) => crypto.randomFill(new Uint16Array(size / 2 >>> 0), (e, u) => { console.log('randomFill cb ' + size + ': ' + (e ? e.code : [u.length, filled(bytesOf(u))])); resolve(); }));
+  }
+  await new Promise((resolve) => crypto.randomFill(Buffer.alloc(3 * PIECE), PIECE, (e, b) => { console.log('randomFill offset cb: ' + (e ? e.code : [b.subarray(0, PIECE).every((x) => x === 0), filled(b, PIECE)])); resolve(); }));
+  console.log('randomBytes promisified: ' + (await require('util').promisify(crypto.randomBytes)(PIECE + 1)).length);
+})();
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -508,7 +718,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs', 'random.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));

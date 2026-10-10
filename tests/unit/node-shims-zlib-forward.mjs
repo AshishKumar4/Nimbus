@@ -154,10 +154,11 @@ function shimScope(extraParams) {
   const { zlib, Buffer } = shimScope([{ name: '__real_zlib', value: undefined }]);
 
   // Sync stays impossible without a native primitive, but the refusal must be
-  // actionable: name the function and point at the async replacement.
+  // actionable: name the function and point at the async replacement. (A
+  // missing buffer is refused first, by Node's own check: node-builtin-fronts.ts.)
   for (const name of ['gzipSync', 'gunzipSync', 'deflateSync', 'inflateSync']) {
     try {
-      zlib[name]();
+      zlib[name]('x');
       assert.fail(`${name} must refuse`);
     } catch (e) {
       assert.match(e.message, new RegExp(name), 'refusal names the function');

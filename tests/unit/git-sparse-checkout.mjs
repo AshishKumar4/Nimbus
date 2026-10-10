@@ -56,7 +56,7 @@ function seed(name) {
  * carries the disk's stat data, which ours does not match until refreshed.
  */
 async function pairOf(name) {
-  const p = new Pair(name, seed(name));
+  const p = await Pair.of(name, seed(name));
   await p.run(['status', '--porcelain'], { stdout: true });
   return p;
 }

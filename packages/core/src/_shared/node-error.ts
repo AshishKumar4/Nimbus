@@ -212,7 +212,12 @@ type Message = string | ((...args: never[]) => string);
  */
 const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
   ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
+  ERR_ASSERTION: ['%s', Error],
+  ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: ['The feature %s is unavailable on the current platform, which is being used to run Node.js', TypeError],
   ERR_CONSTRUCT_CALL_REQUIRED: ['Class constructor %s cannot be invoked without `new`', TypeError],
+  ERR_CRYPTO_ENGINE_UNKNOWN: ['Engine "%s" was not found', Error],
+  ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: ['Invalid key object type %s, expected %s.', TypeError],
+  ERR_CRYPTO_SIGN_KEY_REQUIRED: ['No key provided to sign', Error],
   ERR_FALSY_VALUE_REJECTION: [function (this: Record<string, unknown>, reason: unknown) {
     this.reason = reason;
     return 'Promise was rejected with falsy value';
@@ -235,6 +240,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
     `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
   ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
   ERR_INVALID_URI: ['URI malformed', URIError],
+  ERR_METHOD_NOT_IMPLEMENTED: ['The %s method is not implemented', Error],
   ERR_MISSING_ARGS: [(...names: (string | string[])[]) => {
     const wrapped = names.map((name) => (Array.isArray(name) ? name.map((n) => `"${n}"`).join(' or ') : `"${name}"`));
     return `The ${formatList(wrapped, 'and')} argument${names.length > 1 ? 's' : ''} must be specified`;
@@ -244,6 +250,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
   ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option: string, allowPositionals: boolean) => `Unknown option '${option}'${allowPositionals
     ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}`
     : ''}`, TypeError],
+  ERR_OPERATION_FAILED: ['Operation failed: %s', Error, TypeError],
   ERR_OUT_OF_RANGE: [(str: string, range: string, input: unknown, replaceDefaultBoolean = false) => {
     let received: string;
     if (Number.isInteger(input) && Math.abs(input as number) > 2 ** 32) {
@@ -260,6 +267,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
   ERR_SOCKET_BAD_PORT: [(name: string, port: unknown, allowZero = true) =>
     `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
   ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],
+  ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: ['`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', Error],
   ERR_UNKNOWN_SIGNAL: ['Unknown signal: %s', TypeError],
   ERR_WORKER_UNSUPPORTED_OPERATION: ['%s is not supported in workers', TypeError],
 };

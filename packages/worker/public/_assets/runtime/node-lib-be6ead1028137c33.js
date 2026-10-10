@@ -623,7 +623,30 @@ module.exports = {
   const hosted = {
     "internal/util": internalUtil,
     "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort, AbortError },
-    "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
+    "internal/options": {
+      getOptionValue: (name) => platform.optionValue(name),
+      // Over the CLI's option table (core node-cli-options.generated.ts), as src/node_options.cc gives it.
+      getCLIOptionsInfo() {
+        const optionTypes = { noop: 0, v8: 1, boolean: 2, value: 5 };
+        return {
+          options: new Map(platform.cliOptions.map(([name, kind, env]) => [name, { envVarSettings: env ? 0 : 1, type: optionTypes[kind] }])),
+          aliases: new Map(platform.cliAliases.map(([from, expansion]) => [from, [...expansion]])),
+        };
+      },
+    },
+    "internal/worker": { isMainThread: true },
+    "internal/fs/utils": {
+      // lib/internal/fs/utils.js getValidatedPath: a path string or bytes, or a file: URL's path.
+      getValidatedPath(fileURLOrPath, propName = "path") {
+        const path = fileURLOrPath != null && fileURLOrPath.href && fileURLOrPath.protocol ? platform.url.fileURLToPath(fileURLOrPath) : fileURLOrPath;
+        if (typeof path !== "string" && !types.isUint8Array(path)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE(propName, ["string", "Buffer", "URL"], path);
+        if ((typeof path === "string" ? path : String.fromCharCode(...path)).includes("\u0000")) {
+          throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE(propName, path, "must be a string, Uint8Array, or URL without null bytes");
+        }
+        return path;
+      },
+    },
+    diagnostics_channel: platform.diagnosticsChannel,
     "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
     "internal/abort_controller": abortController,
     "internal/console/global": platform.console,
@@ -646,7 +669,13 @@ module.exports = {
     icu: icuBinding,
     constants: { os: { signals: platform.signals } },
     buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
-    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
+    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error), exitCodes: { kNoFailure: 0, kGenericUserError: 1 } },
+    process_methods: platform.processMethods,
+    // src/node_options.h's enums, as getCLIOptionsInfo's entries use them.
+    options: {
+      envSettings: { kAllowedInEnvvar: 0, kDisallowedInEnvvar: 1 },
+      types: { kNoOp: 0, kV8Option: 1, kBoolean: 2, kInteger: 3, kUInteger: 4, kString: 5, kHostPort: 6, kStringList: 7 },
+    },
     // Node's tracing is off: no category is enabled, and nothing traces.
     trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
   };
@@ -1694,6 +1723,9 @@ ObjectFreeze(primordials);
   eastAsianWideRanges: "1100-115f,231a-231b,2329-232a,23e9-23ec,23f0,23f3,25fd-25fe,2614-2615,2630-2637,2648-2653,267f,268a-268f,2693,26a1,26aa-26ab,26bd-26be,26c4-26c5,26ce,26d4,26ea,26f2-26f3,26f5,26fa,26fd,2705,270a-270b,2728,274c,274e,2753-2755,2757,2795-2797,27b0,27bf,2b1b-2b1c,2b50,2b55,2e80-2e99,2e9b-2ef3,2f00-2fd5,2ff0-303e,3041-3096,3099-30ff,3105-312f,3131-318e,3190-31e5,31ef-321e,3220-3247,3250-a48c,a490-a4c6,a960-a97c,ac00-d7a3,f900-faff,fe10-fe19,fe30-fe52,fe54-fe66,fe68-fe6b,ff01-ff60,ffe0-ffe6,16fe0-16fe4,16ff0-16ff6,17000-18cd5,18cff-18d1e,18d80-18df2,1aff0-1aff3,1aff5-1affb,1affd-1affe,1b000-1b122,1b132,1b150-1b152,1b155,1b164-1b167,1b170-1b2fb,1d300-1d356,1d360-1d376,1f004,1f0cf,1f18e,1f191-1f19a,1f200-1f202,1f210-1f23b,1f240-1f248,1f250-1f251,1f260-1f265,1f300-1f320,1f32d-1f335,1f337-1f37c,1f37e-1f393,1f3a0-1f3ca,1f3cf-1f3d3,1f3e0-1f3f0,1f3f4,1f3f8-1f43e,1f440,1f442-1f4fc,1f4ff-1f53d,1f54b-1f54e,1f550-1f567,1f57a,1f595-1f596,1f5a4,1f5fb-1f64f,1f680-1f6c5,1f6cc,1f6d0-1f6d2,1f6d5-1f6d8,1f6dc-1f6df,1f6eb-1f6ec,1f6f4-1f6fc,1f7e0-1f7eb,1f7f0,1f90c-1f93a,1f93c-1f945,1f947-1f9ff,1fa70-1fa7c,1fa80-1fa8a,1fa8e-1fac6,1fac8,1facd-1fadc,1fadf-1faea,1faef-1faf8,20000-2fffd,30000-3fffd",
   builtinObjects: ["Object","Function","Array","Number","Infinity","NaN","Boolean","String","Symbol","Date","Promise","RegExp","Error","AggregateError","EvalError","RangeError","ReferenceError","SyntaxError","TypeError","URIError","JSON","Math","Intl","ArrayBuffer","Atomics","Uint8Array","Int8Array","Uint16Array","Int16Array","Uint32Array","Int32Array","Float32Array","Float64Array","Uint8ClampedArray","BigUint64Array","BigInt64Array","DataView","Map","BigInt","Set","WeakMap","WeakSet","Proxy","Reflect","FinalizationRegistry","WeakRef"],
   uvErrors: [[-7,"E2BIG","argument list too long"],[-13,"EACCES","permission denied"],[-98,"EADDRINUSE","address already in use"],[-99,"EADDRNOTAVAIL","address not available"],[-97,"EAFNOSUPPORT","address family not supported"],[-11,"EAGAIN","resource temporarily unavailable"],[-3000,"EAI_ADDRFAMILY","address family not supported"],[-3001,"EAI_AGAIN","temporary failure"],[-3002,"EAI_BADFLAGS","bad ai_flags value"],[-3013,"EAI_BADHINTS","invalid value for hints"],[-3003,"EAI_CANCELED","request canceled"],[-3004,"EAI_FAIL","permanent failure"],[-3005,"EAI_FAMILY","ai_family not supported"],[-3006,"EAI_MEMORY","out of memory"],[-3007,"EAI_NODATA","no address"],[-3008,"EAI_NONAME","unknown node or service"],[-3009,"EAI_OVERFLOW","argument buffer overflow"],[-3014,"EAI_PROTOCOL","resolved protocol is unknown"],[-3010,"EAI_SERVICE","service not available for socket type"],[-3011,"EAI_SOCKTYPE","socket type not supported"],[-114,"EALREADY","connection already in progress"],[-9,"EBADF","bad file descriptor"],[-16,"EBUSY","resource busy or locked"],[-125,"ECANCELED","operation canceled"],[-4080,"ECHARSET","invalid Unicode character"],[-103,"ECONNABORTED","software caused connection abort"],[-111,"ECONNREFUSED","connection refused"],[-104,"ECONNRESET","connection reset by peer"],[-89,"EDESTADDRREQ","destination address required"],[-17,"EEXIST","file already exists"],[-14,"EFAULT","bad address in system call argument"],[-27,"EFBIG","file too large"],[-113,"EHOSTUNREACH","host is unreachable"],[-4,"EINTR","interrupted system call"],[-22,"EINVAL","invalid argument"],[-5,"EIO","i/o error"],[-106,"EISCONN","socket is already connected"],[-21,"EISDIR","illegal operation on a directory"],[-40,"ELOOP","too many symbolic links encountered"],[-24,"EMFILE","too many open files"],[-90,"EMSGSIZE","message too long"],[-36,"ENAMETOOLONG","name too long"],[-100,"ENETDOWN","network is down"],[-101,"ENETUNREACH","network is unreachable"],[-23,"ENFILE","file table overflow"],[-105,"ENOBUFS","no buffer space available"],[-19,"ENODEV","no such device"],[-2,"ENOENT","no such file or directory"],[-12,"ENOMEM","not enough memory"],[-64,"ENONET","machine is not on the network"],[-92,"ENOPROTOOPT","protocol not available"],[-28,"ENOSPC","no space left on device"],[-38,"ENOSYS","function not implemented"],[-107,"ENOTCONN","socket is not connected"],[-20,"ENOTDIR","not a directory"],[-39,"ENOTEMPTY","directory not empty"],[-88,"ENOTSOCK","socket operation on non-socket"],[-95,"ENOTSUP","operation not supported on socket"],[-75,"EOVERFLOW","value too large for defined data type"],[-1,"EPERM","operation not permitted"],[-32,"EPIPE","broken pipe"],[-71,"EPROTO","protocol error"],[-93,"EPROTONOSUPPORT","protocol not supported"],[-91,"EPROTOTYPE","protocol wrong type for socket"],[-34,"ERANGE","result too large"],[-30,"EROFS","read-only file system"],[-108,"ESHUTDOWN","cannot send after transport endpoint shutdown"],[-29,"ESPIPE","invalid seek"],[-3,"ESRCH","no such process"],[-110,"ETIMEDOUT","connection timed out"],[-26,"ETXTBSY","text file is busy"],[-18,"EXDEV","cross-device link not permitted"],[-4094,"UNKNOWN","unknown error"],[-4095,"EOF","end of file"],[-6,"ENXIO","no such device or address"],[-31,"EMLINK","too many links"],[-112,"EHOSTDOWN","host is down"],[-121,"EREMOTEIO","remote I/O error"],[-25,"ENOTTY","inappropriate ioctl for device"],[-4028,"EFTYPE","inappropriate file type or format"],[-84,"EILSEQ","illegal byte sequence"],[-94,"ESOCKTNOSUPPORT","socket type not supported"],[-61,"ENODATA","no data available"],[-49,"EUNATCH","protocol driver not attached"],[-8,"ENOEXEC","exec format error"]],
+  // node's options and their aliases (core node-cli-options.generated.ts): [name, kind, allowed in NODE_OPTIONS].
+  cliOptions: [["--abort-on-uncaught-exception","v8",true],["--addons","boolean",true],["--allow-addons","boolean",true],["--allow-child-process","boolean",true],["--allow-fs-read","value",true],["--allow-fs-write","value",true],["--allow-wasi","boolean",true],["--allow-worker","boolean",true],["--build-snapshot","boolean",false],["--build-snapshot-config","value",false],["--check","boolean",false],["--completion-bash","boolean",false],["--conditions","value",true],["--cpu-prof","boolean",true],["--cpu-prof-dir","value",true],["--cpu-prof-interval","value",true],["--cpu-prof-name","value",true],["--debug","boolean",false],["--debug-arraybuffer-allocations","boolean",true],["--debug-brk","boolean",false],["--deprecation","boolean",true],["--diagnostic-dir","value",true],["--disable-proto","value",true],["--disable-sigusr1","boolean",true],["--disable-warning","value",true],["--disable-wasm-trap-handler","boolean",true],["--disallow-code-generation-from-strings","v8",true],["--dns-result-order","value",true],["--enable-etw-stack-walking","v8",true],["--enable-fips","boolean",true],["--enable-source-maps","boolean",true],["--entry-url","boolean",true],["--env-file","value",false],["--env-file-if-exists","value",false],["--eval","value",false],["--experimental-abortcontroller","noop",true],["--experimental-addon-modules","boolean",true],["--experimental-async-context-frame","boolean",true],["--experimental-config-file","value",false],["--experimental-default-config-file","boolean",false],["--experimental-default-type","value",true],["--experimental-detect-module","boolean",true],["--experimental-eventsource","boolean",true],["--experimental-fetch","boolean",true],["--experimental-global-customevent","boolean",true],["--experimental-global-navigator","boolean",true],["--experimental-global-webcrypto","boolean",true],["--experimental-import-meta-resolve","boolean",true],["--experimental-inspector-network-resource","boolean",false],["--experimental-json-modules","noop",true],["--experimental-loader","value",true],["--experimental-modules","noop",true],["--experimental-network-inspection","boolean",false],["--experimental-print-required-tla","boolean",true],["--experimental-repl-await","boolean",true],["--experimental-report","noop",true],["--experimental-require-module","boolean",true],["--experimental-sea-config","value",false],["--experimental-shadow-realm","boolean",true],["--experimental-specifier-resolution","noop",true],["--experimental-sqlite","boolean",true],["--experimental-strip-types","boolean",true],["--experimental-test-coverage","boolean",false],["--experimental-test-isolation","value",false],["--experimental-test-module-mocks","boolean",false],["--experimental-test-snapshots","noop",false],["--experimental-top-level-await","noop",true],["--experimental-transform-types","boolean",true],["--experimental-vm-modules","boolean",true],["--experimental-wasi-unstable-preview1","noop",true],["--experimental-wasm-modules","noop",true],["--experimental-websocket","boolean",true],["--experimental-webstorage","boolean",true],["--experimental-worker","noop",true],["--experimental-worker-inspection","boolean",false],["--expose-gc","v8",true],["--expose-internals","boolean",false],["--extra-info-on-fatal-exception","boolean",true],["--force-async-hooks-checks","boolean",true],["--force-context-aware","boolean",true],["--force-fips","boolean",true],["--force-node-api-uncaught-exceptions-policy","boolean",true],["--frozen-intrinsics","boolean",true],["--global-search-paths","boolean",true],["--harmony-shadow-realm","v8",false],["--heap-prof","boolean",true],["--heap-prof-dir","value",true],["--heap-prof-interval","value",true],["--heap-prof-name","value",true],["--heapsnapshot-near-heap-limit","value",true],["--heapsnapshot-signal","value",true],["--help","boolean",false],["--http-parser","noop",true],["--huge-max-old-generation-size","v8",true],["--icu-data-dir","value",true],["--import","value",true],["--input-type","value",true],["--insecure-http-parser","boolean",true],["--inspect","boolean",true],["--inspect-brk","boolean",true],["--inspect-brk-node","boolean",false],["--inspect-port","value",true],["--inspect-publish-uid","value",true],["--inspect-wait","boolean",true],["--interactive","boolean",false],["--interpreted-frames-native-stack","v8",true],["--jitless","v8",true],["--localstorage-file","value",true],["--max-http-header-size","value",true],["--max-old-space-size","v8",true],["--max-old-space-size-percentage","value",true],["--max-semi-space-size","v8",true],["--napi-modules","noop",true],["--network-family-autoselection","boolean",true],["--network-family-autoselection-attempt-timeout","value",true],["--node-memory-debug","noop",true],["--node-snapshot","boolean",true],["--openssl-config","value",true],["--openssl-legacy-provider","boolean",true],["--openssl-shared-config","boolean",true],["--pending-deprecation","boolean",true],["--perf-basic-prof","v8",true],["--perf-basic-prof-only-functions","v8",true],["--perf-prof","v8",true],["--perf-prof-unwinding-info","v8",true],["--permission","boolean",true],["--preserve-symlinks","boolean",true],["--preserve-symlinks-main","boolean",true],["--print","boolean",false],["--prof","v8",false],["--prof-process","boolean",false],["--redirect-warnings","value",true],["--report-compact","boolean",true],["--report-dir","value",true],["--report-exclude-env","boolean",true],["--report-exclude-network","boolean",true],["--report-filename","value",true],["--report-on-fatalerror","boolean",true],["--report-on-signal","boolean",true],["--report-signal","value",true],["--report-uncaught-exception","boolean",true],["--require","value",true],["--run","value",false],["--secure-heap","value",true],["--secure-heap-min","value",true],["--security-revert","value",false],["--snapshot-blob","value",true],["--stack-trace-limit","value",true],["--test","boolean",false],["--test-concurrency","value",false],["--test-coverage-branches","value",true],["--test-coverage-exclude","value",true],["--test-coverage-functions","value",true],["--test-coverage-include","value",true],["--test-coverage-lines","value",true],["--test-force-exit","boolean",false],["--test-name-pattern","value",true],["--test-only","boolean",true],["--test-reporter","value",true],["--test-reporter-destination","value",true],["--test-shard","value",true],["--test-skip-pattern","value",true],["--test-timeout","value",false],["--test-udp-no-try-send","boolean",false],["--test-update-snapshots","boolean",false],["--throw-deprecation","boolean",true],["--title","value",true],["--tls-cipher-list","value",true],["--tls-keylog","value",true],["--tls-max-v1.2","boolean",true],["--tls-max-v1.3","boolean",true],["--tls-min-v1.0","boolean",true],["--tls-min-v1.1","boolean",true],["--tls-min-v1.2","boolean",true],["--tls-min-v1.3","boolean",true],["--trace-atomics-wait","boolean",true],["--trace-deprecation","boolean",true],["--trace-env","boolean",true],["--trace-env-js-stack","boolean",true],["--trace-env-native-stack","boolean",true],["--trace-event-categories","value",true],["--trace-event-file-pattern","value",true],["--trace-exit","boolean",true],["--trace-promises","boolean",true],["--trace-require-module","value",true],["--trace-sigint","boolean",true],["--trace-sync-io","boolean",true],["--trace-tls","boolean",true],["--trace-uncaught","boolean",true],["--trace-warnings","boolean",true],["--track-heap-objects","boolean",true],["--unhandled-rejections","value",true],["--use-bundled-ca","boolean",true],["--use-env-proxy","boolean",true],["--use-largepages","value",true],["--use-openssl-ca","boolean",true],["--use-system-ca","boolean",true],["--v8-options","boolean",false],["--v8-pool-size","value",true],["--verify-base-objects","boolean",true],["--version","boolean",false],["--warnings","boolean",true],["--watch","boolean",true],["--watch-kill-signal","value",true],["--watch-path","value",true],["--watch-preserve-output","boolean",true],["--zero-fill-buffers","boolean",true],["[has_env_file_string]","boolean",false],["[has_eval_string]","boolean",false],["[ssl_openssl_cert_store]","boolean",false]],
+  cliAliases: [["--debug-brk=",["--debug-brk"]],["--debug-port",["--inspect-port"]],["--debug=",["--debug"]],["--enable-network-family-autoselection",["--network-family-autoselection"]],["--es-module-specifier-resolution",["--experimental-specifier-resolution"]],["--experimental-permission",["--permission"]],["--inspect-brk-node=",["--inspect-port","--inspect-brk-node"]],["--inspect-brk=",["--inspect-port","--inspect-brk"]],["--inspect-wait=",["--inspect-port","--inspect-wait"]],["--inspect=",["--inspect-port","--inspect"]],["--loader",["--experimental-loader"]],["--print <arg>",["-pe"]],["--prof-process",["--prof-process","--"]],["--report-directory",["--report-dir"]],["--security-reverts",["--security-revert"]],["--trace-events-enabled",["--trace-event-categories","v8,node,node.async_hooks"]],["-C",["--conditions"]],["-c",["--check"]],["-e",["--eval"]],["-h",["--help"]],["-i",["--interactive"]],["-p",["--print"]],["-pe",["--print","--eval"]],["-r",["--require"]],["-v",["--version"]]],
   sources: {
     "internal/util/inspect": function (exports, require, module, process, internalBinding, primordials) {
 'use strict';
@@ -11622,6 +11654,567 @@ function setTraceSigInt(enable) {
 
 module.exports = {
   setTraceSigInt,
+};
+
+    },
+    "internal/process/per_thread": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+// This files contains process bootstrappers that can be
+// run when setting up each thread, including the main
+// thread and the worker threads.
+
+const {
+  ArrayPrototypeEvery,
+  ArrayPrototypeForEach,
+  ArrayPrototypeIncludes,
+  ArrayPrototypeMap,
+  ArrayPrototypePush,
+  ArrayPrototypeSplice,
+  BigUint64Array,
+  Float64Array,
+  FunctionPrototypeCall,
+  NumberMAX_SAFE_INTEGER,
+  ObjectDefineProperty,
+  ObjectEntries,
+  ObjectFreeze,
+  ReflectApply,
+  RegExpPrototypeExec,
+  SafeArrayIterator,
+  Set,
+  SetPrototypeEntries,
+  SetPrototypeValues,
+  StringPrototypeEndsWith,
+  StringPrototypeIncludes,
+  StringPrototypeReplace,
+  StringPrototypeSlice,
+  Symbol,
+  SymbolFor,
+  SymbolIterator,
+} = primordials;
+
+const {
+  ErrnoException,
+  codes: {
+    ERR_ASSERTION,
+    ERR_FEATURE_UNAVAILABLE_ON_PLATFORM,
+    ERR_INVALID_ARG_TYPE,
+    ERR_INVALID_ARG_VALUE,
+    ERR_OPERATION_FAILED,
+    ERR_OUT_OF_RANGE,
+    ERR_UNKNOWN_SIGNAL,
+    ERR_WORKER_UNSUPPORTED_OPERATION,
+  },
+} = require('internal/errors');
+const { emitExperimentalWarning } = require('internal/util');
+const format = require('internal/util/inspect').format;
+const {
+  validateArray,
+  validateNumber,
+  validateObject,
+  validateString,
+} = require('internal/validators');
+
+const dc = require('diagnostics_channel');
+const execveDiagnosticChannel = dc.channel('process.execve');
+
+const constants = internalBinding('constants').os.signals;
+
+let getValidatedPath; // We need to lazy load it because of the circular dependency.
+
+const kInternal = Symbol('internal properties');
+
+function assert(x, msg) {
+  if (!x) throw new ERR_ASSERTION(msg || 'assertion error');
+}
+const { exitCodes: { kNoFailure } } = internalBinding('errors');
+
+const binding = internalBinding('process_methods');
+
+// The 3 entries filled in by the original process.hrtime contains
+// the upper/lower 32 bits of the second part of the value,
+// and the remaining nanoseconds of the value.
+const hrValues = binding.hrtimeBuffer;
+// Use a BigUint64Array because this is actually a bit
+// faster than simply returning a BigInt from C++ in V8 7.1.
+const hrBigintValues = new BigUint64Array(binding.hrtimeBuffer.buffer, 0, 1);
+
+function hrtime(time) {
+  binding.hrtime();
+
+  if (time !== undefined) {
+    validateArray(time, 'time');
+    if (time.length !== 2) {
+      throw new ERR_OUT_OF_RANGE('time', 2, time.length);
+    }
+
+    const sec = (hrValues[0] * 0x100000000 + hrValues[1]) - time[0];
+    const nsec = hrValues[2] - time[1];
+    const needsBorrow = nsec < 0;
+    return [needsBorrow ? sec - 1 : sec, needsBorrow ? nsec + 1e9 : nsec];
+  }
+
+  return [
+    hrValues[0] * 0x100000000 + hrValues[1],
+    hrValues[2],
+  ];
+}
+
+function hrtimeBigInt() {
+  binding.hrtimeBigInt();
+  return hrBigintValues[0];
+}
+
+function nop() {}
+
+// The execution of this function itself should not cause any side effects.
+function wrapProcessMethods(binding) {
+  const {
+    cpuUsage: _cpuUsage,
+    threadCpuUsage: _threadCpuUsage,
+    memoryUsage: _memoryUsage,
+    rss,
+    resourceUsage: _resourceUsage,
+    loadEnvFile: _loadEnvFile,
+    execve: _execve,
+  } = binding;
+
+  function _rawDebug(...args) {
+    binding._rawDebug(ReflectApply(format, null, args));
+  }
+
+  // Create the argument array that will be passed to the native function.
+  const cpuValues = new Float64Array(2);
+
+  // Replace the native function with the JS version that calls the native
+  // function.
+  function cpuUsage(prevValue) {
+    // If a previous value was passed in, ensure it has the correct shape.
+    if (prevValue) {
+      if (!previousValueIsValid(prevValue.user)) {
+        validateObject(prevValue, 'prevValue');
+
+        validateNumber(prevValue.user, 'prevValue.user');
+        throw new ERR_INVALID_ARG_VALUE.RangeError('prevValue.user',
+                                                   prevValue.user);
+      }
+
+      if (!previousValueIsValid(prevValue.system)) {
+        validateNumber(prevValue.system, 'prevValue.system');
+        throw new ERR_INVALID_ARG_VALUE.RangeError('prevValue.system',
+                                                   prevValue.system);
+      }
+    }
+
+    // Call the native function to get the current values.
+    _cpuUsage(cpuValues);
+
+    // If a previous value was passed in, return diff of current from previous.
+    if (prevValue) {
+      return {
+        user: cpuValues[0] - prevValue.user,
+        system: cpuValues[1] - prevValue.system,
+      };
+    }
+
+    // If no previous value passed in, return current value.
+    return {
+      user: cpuValues[0],
+      system: cpuValues[1],
+    };
+  }
+
+  const threadCpuValues = new Float64Array(2);
+
+  // Replace the native function with the JS version that calls the native
+  // function.
+  function threadCpuUsage(prevValue) {
+    // If a previous value was passed in, ensure it has the correct shape.
+    if (prevValue) {
+      if (!previousValueIsValid(prevValue.user)) {
+        validateObject(prevValue, 'prevValue');
+
+        validateNumber(prevValue.user, 'prevValue.user');
+        throw new ERR_INVALID_ARG_VALUE.RangeError('prevValue.user',
+                                                   prevValue.user);
+      }
+
+      if (!previousValueIsValid(prevValue.system)) {
+        validateNumber(prevValue.system, 'prevValue.system');
+        throw new ERR_INVALID_ARG_VALUE.RangeError('prevValue.system',
+                                                   prevValue.system);
+      }
+    }
+
+    if (process.platform === 'sunos') {
+      throw new ERR_OPERATION_FAILED('threadCpuUsage is not available on SunOS');
+    }
+
+    // Call the native function to get the current values.
+    _threadCpuUsage(threadCpuValues);
+
+    // If a previous value was passed in, return diff of current from previous.
+    if (prevValue) {
+      return {
+        user: threadCpuValues[0] - prevValue.user,
+        system: threadCpuValues[1] - prevValue.system,
+      };
+    }
+
+    // If no previous value passed in, return current value.
+    return {
+      user: threadCpuValues[0],
+      system: threadCpuValues[1],
+    };
+  }
+
+  // Ensure that a previously passed in value is valid. Currently, the native
+  // implementation always returns numbers <= Number.MAX_SAFE_INTEGER.
+  function previousValueIsValid(num) {
+    return typeof num === 'number' &&
+        num <= NumberMAX_SAFE_INTEGER &&
+        num >= 0;
+  }
+
+  const memValues = new Float64Array(5);
+  function memoryUsage() {
+    _memoryUsage(memValues);
+    return {
+      rss: memValues[0],
+      heapTotal: memValues[1],
+      heapUsed: memValues[2],
+      external: memValues[3],
+      arrayBuffers: memValues[4],
+    };
+  }
+
+  memoryUsage.rss = rss;
+
+  function exit(code) {
+    if (arguments.length !== 0) {
+      process.exitCode = code;
+    }
+
+    if (!process._exiting) {
+      process._exiting = true;
+      process.emit('exit', process.exitCode || kNoFailure);
+    }
+    // FIXME(joyeecheung): This is an undocumented API that gets monkey-patched
+    // in the user land. Either document it, or deprecate it in favor of a
+    // better public alternative.
+    process.reallyExit(process.exitCode || kNoFailure);
+
+    // If this is a worker, v8::Isolate::TerminateExecution() is called above.
+    // That function spoofs the stack pointer to cause the stack guard
+    // check to throw the termination exception. Because v8 performs
+    // stack guard check upon every function call, we give it a chance.
+    //
+    // Without this, user code after `process.exit()` would take effect.
+    // test/parallel/test-worker-voluntarily-exit-followed-by-addition.js
+    // test/parallel/test-worker-voluntarily-exit-followed-by-throw.js
+    nop();
+  }
+
+  function kill(pid, sig) {
+    let err;
+
+    // eslint-disable-next-line eqeqeq
+    if (pid != (pid | 0)) {
+      throw new ERR_INVALID_ARG_TYPE('pid', 'number', pid);
+    }
+
+    // Preserve null signal
+    if (sig === (sig | 0)) {
+      // XXX(joyeecheung): we have to use process._kill here because
+      // it's monkey-patched by tests.
+      err = process._kill(pid, sig);
+    } else {
+      sig ||= 'SIGTERM';
+      if (constants[sig]) {
+        err = process._kill(pid, constants[sig]);
+      } else {
+        throw new ERR_UNKNOWN_SIGNAL(sig);
+      }
+    }
+
+    if (err)
+      throw new ErrnoException(err, 'kill');
+
+    return true;
+  }
+
+  function execve(execPath, args = [], env = process.env) {
+    emitExperimentalWarning('process.execve');
+
+    const { isMainThread } = require('internal/worker');
+
+    if (!isMainThread) {
+      throw new ERR_WORKER_UNSUPPORTED_OPERATION('Calling process.execve');
+    } else if (process.platform === 'win32' || process.platform === 'os400') {
+      throw new ERR_FEATURE_UNAVAILABLE_ON_PLATFORM('process.execve');
+    }
+
+    validateString(execPath, 'execPath');
+    validateArray(args, 'args');
+
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (typeof arg !== 'string' || StringPrototypeIncludes(arg, '\u0000')) {
+        throw new ERR_INVALID_ARG_VALUE(`args[${i}]`, arg, 'must be a string without null bytes');
+      }
+    }
+
+    const envArray = [];
+    validateObject(env, 'env');
+
+    for (const { 0: key, 1: value } of ObjectEntries(env)) {
+      if (
+        typeof key !== 'string' ||
+        typeof value !== 'string' ||
+        StringPrototypeIncludes(key, '\u0000') ||
+        StringPrototypeIncludes(value, '\u0000')
+      ) {
+        throw new ERR_INVALID_ARG_VALUE(
+          'env', env, 'must be an object with string keys and values without null bytes',
+        );
+      } else {
+        ArrayPrototypePush(envArray, `${key}=${value}`);
+      }
+    }
+
+    if (execveDiagnosticChannel.hasSubscribers) {
+      execveDiagnosticChannel.publish({ execPath, args, env: envArray });
+    }
+
+    // Perform the system call
+    _execve(execPath, args, envArray);
+  }
+
+  const resourceValues = new Float64Array(16);
+  function resourceUsage() {
+    _resourceUsage(resourceValues);
+    return {
+      userCPUTime: resourceValues[0],
+      systemCPUTime: resourceValues[1],
+      maxRSS: resourceValues[2],
+      sharedMemorySize: resourceValues[3],
+      unsharedDataSize: resourceValues[4],
+      unsharedStackSize: resourceValues[5],
+      minorPageFault: resourceValues[6],
+      majorPageFault: resourceValues[7],
+      swappedOut: resourceValues[8],
+      fsRead: resourceValues[9],
+      fsWrite: resourceValues[10],
+      ipcSent: resourceValues[11],
+      ipcReceived: resourceValues[12],
+      signalsCount: resourceValues[13],
+      voluntaryContextSwitches: resourceValues[14],
+      involuntaryContextSwitches: resourceValues[15],
+    };
+  }
+
+  /**
+   * Loads the `.env` file to process.env.
+   * @param {string | URL | Buffer | undefined} path
+   */
+  function loadEnvFile(path = undefined) { // Provide optional value so that `loadEnvFile.length` returns 0
+    if (path != null) {
+      getValidatedPath ??= require('internal/fs/utils').getValidatedPath;
+      path = getValidatedPath(path);
+      _loadEnvFile(path);
+    } else {
+      _loadEnvFile();
+    }
+  }
+
+  return {
+    _rawDebug,
+    cpuUsage,
+    threadCpuUsage,
+    resourceUsage,
+    memoryUsage,
+    kill,
+    exit,
+    execve,
+    loadEnvFile,
+  };
+}
+
+const replaceUnderscoresRegex = /_/g;
+const leadingDashesRegex = /^--?/;
+const trailingValuesRegex = /=.*$/;
+
+// This builds the initial process.allowedNodeEnvironmentFlags
+// from data in the config binding.
+function buildAllowedFlags() {
+  const {
+    envSettings: { kAllowedInEnvvar },
+    types: { kBoolean },
+  } = internalBinding('options');
+  const { getCLIOptionsInfo } = require('internal/options');
+  const { options, aliases } = getCLIOptionsInfo();
+
+  const allowedNodeEnvironmentFlags = [];
+  for (const { 0: name, 1: info } of options) {
+    if (info.envVarSettings === kAllowedInEnvvar) {
+      ArrayPrototypePush(allowedNodeEnvironmentFlags, name);
+      if (info.type === kBoolean) {
+        const negatedName = `--no-${name.slice(2)}`;
+        ArrayPrototypePush(allowedNodeEnvironmentFlags, negatedName);
+      }
+    }
+  }
+
+  function isAccepted(to) {
+    if (!to.length || to[0] !== '-' || to === '--') return true;
+    const recursiveExpansion = aliases.get(to);
+    if (recursiveExpansion) {
+      if (recursiveExpansion[0] === to)
+        ArrayPrototypeSplice(recursiveExpansion, 0, 1);
+      return ArrayPrototypeEvery(recursiveExpansion, isAccepted);
+    }
+    return options.get(to).envVarSettings === kAllowedInEnvvar;
+  }
+  for (const { 0: from, 1: expansion } of aliases) {
+    if (ArrayPrototypeEvery(expansion, isAccepted)) {
+      let canonical = from;
+      if (StringPrototypeEndsWith(canonical, '='))
+        canonical = StringPrototypeSlice(canonical, 0, canonical.length - 1);
+      if (StringPrototypeEndsWith(canonical, ' <arg>'))
+        canonical = StringPrototypeSlice(canonical, 0, canonical.length - 4);
+      ArrayPrototypePush(allowedNodeEnvironmentFlags, canonical);
+    }
+  }
+
+  const trimLeadingDashes =
+    (flag) => StringPrototypeReplace(flag, leadingDashesRegex, '');
+
+  // Save these for comparison against flags provided to
+  // process.allowedNodeEnvironmentFlags.has() which lack leading dashes.
+  const nodeFlags = ArrayPrototypeMap(allowedNodeEnvironmentFlags,
+                                      trimLeadingDashes);
+
+  class NodeEnvironmentFlagsSet extends Set {
+    constructor(array) {
+      super();
+      this[kInternal] = { array };
+    }
+
+    add() {
+      // No-op, `Set` API compatible
+      return this;
+    }
+
+    delete() {
+      // No-op, `Set` API compatible
+      return false;
+    }
+
+    clear() {
+      // No-op, `Set` API compatible
+    }
+
+    has(key) {
+      // This will return `true` based on various possible
+      // permutations of a flag, including present/missing leading
+      // dash(es) and/or underscores-for-dashes.
+      // Strips any values after `=`, inclusive.
+      // TODO(addaleax): It might be more flexible to run the option parser
+      // on a dummy option set and see whether it rejects the argument or
+      // not.
+      if (typeof key === 'string') {
+        key = StringPrototypeReplace(key, replaceUnderscoresRegex, '-');
+        if (RegExpPrototypeExec(leadingDashesRegex, key) !== null) {
+          key = StringPrototypeReplace(key, trailingValuesRegex, '');
+          return ArrayPrototypeIncludes(this[kInternal].array, key);
+        }
+        return ArrayPrototypeIncludes(nodeFlags, key);
+      }
+      return false;
+    }
+
+    entries() {
+      this[kInternal].set ??=
+        new Set(new SafeArrayIterator(this[kInternal].array));
+      return SetPrototypeEntries(this[kInternal].set);
+    }
+
+    forEach(callback, thisArg = undefined) {
+      ArrayPrototypeForEach(
+        this[kInternal].array,
+        (v) => ReflectApply(callback, thisArg, [v, v, this]),
+      );
+    }
+
+    get size() {
+      return this[kInternal].array.length;
+    }
+
+    values() {
+      this[kInternal].set ??=
+        new Set(new SafeArrayIterator(this[kInternal].array));
+      return SetPrototypeValues(this[kInternal].set);
+    }
+  }
+  const flagSetValues = NodeEnvironmentFlagsSet.prototype.values;
+  ObjectDefineProperty(NodeEnvironmentFlagsSet.prototype, SymbolIterator, {
+    __proto__: null,
+    value: flagSetValues,
+  });
+  ObjectDefineProperty(NodeEnvironmentFlagsSet.prototype, 'keys', {
+    __proto__: null,
+    value: flagSetValues,
+  });
+
+  ObjectFreeze(NodeEnvironmentFlagsSet.prototype.constructor);
+  ObjectFreeze(NodeEnvironmentFlagsSet.prototype);
+
+  return ObjectFreeze(new NodeEnvironmentFlagsSet(
+    allowedNodeEnvironmentFlags,
+  ));
+}
+
+// Lazy load internal/trace_events_async_hooks only if the async_hooks
+// trace event category is enabled.
+let traceEventsAsyncHook;
+// Dynamically enable/disable the traceEventsAsyncHook
+function toggleTraceCategoryState(asyncHooksEnabled) {
+  if (asyncHooksEnabled) {
+    traceEventsAsyncHook ||= require('internal/trace_events_async_hooks').createHook();
+    traceEventsAsyncHook.enable();
+  } else if (traceEventsAsyncHook) {
+    traceEventsAsyncHook.disable();
+  }
+}
+
+const { arch, platform, version } = process;
+
+let refSymbol;
+function ref(maybeRefable) {
+  if (maybeRefable == null) return;
+  const fn = maybeRefable[refSymbol ??= SymbolFor('nodejs.ref')] || maybeRefable.ref;
+  if (typeof fn === 'function') FunctionPrototypeCall(fn, maybeRefable);
+}
+
+let unrefSymbol;
+function unref(maybeRefable) {
+  if (maybeRefable == null) return;
+  const fn = maybeRefable[unrefSymbol ??= SymbolFor('nodejs.unref')] || maybeRefable.unref;
+  if (typeof fn === 'function') FunctionPrototypeCall(fn, maybeRefable);
+}
+
+module.exports = {
+  toggleTraceCategoryState,
+  assert,
+  buildAllowedFlags,
+  wrapProcessMethods,
+  hrtime,
+  hrtimeBigInt,
+  arch,
+  platform,
+  version,
+  ref,
+  unref,
 };
 
     },

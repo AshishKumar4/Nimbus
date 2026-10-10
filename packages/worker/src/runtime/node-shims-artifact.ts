@@ -42,6 +42,12 @@ import {
   type StagedSourceEnv,
 } from './staged-source.js';
 
+import {
+  COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE,
+  RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_INTERPRETER_MODULE,
+  RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_NODE_LIB_MODULE,
+} from '@nimbus-sh/core/_shared/commonjs-cell.js';
+
 /** What a node facet's generated worker text splices around the program. */
 export interface NodeFacetSources {
   /** The node-compat shims: node-shims.ts generateShimsCode(). */
@@ -58,6 +64,25 @@ export interface NodeFacetSources {
   interpreterOps: string;
   /** Node's library (runtime/node-lib-module.ts generateNodeLibModule()), a module of the map. */
   nodeLib: string;
+}
+
+/** The registry bootstrap and its modules, for every runner that hosts node shims. */
+export function createNodeFacetRuntime(sources: NodeFacetSources, {
+  codeCells = '[]', runtimeCode = '[]', stackEntry = 'null',
+}: { codeCells?: string; runtimeCode?: string; stackEntry?: string } = {}) {
+  return {
+    imports: COMMONJS_CELL_IMPORTS,
+    code: `const __NIMBUS_CODE_CELLS = ${codeCells};
+const __NIMBUS_RUNTIME_CODE = ${runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${stackEntry};
+${COMMONJS_CELL_RUNTIME_SOURCE}`,
+    modules: {
+      [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
+      [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
+      [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+      [RUNTIME_NODE_LIB_MODULE]: sources.nodeLib,
+    },
+  };
 }
 
 const STAGED_BY = 'scripts/bundle-node-shims.mjs';

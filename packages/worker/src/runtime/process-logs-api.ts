@@ -254,7 +254,7 @@ export function handleProcessesListRequest(
     restartedFrom?: ProcessRestart;
   }> = [];
 
-  for (const p of processes.getAll()) {
+  for (const p of processes.publishedAll()) {
     const snap = processes.logSnapshot(p.pid);
     listed.push({
       pid: p.pid,
