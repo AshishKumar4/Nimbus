@@ -158,7 +158,7 @@ Object.defineProperty(builtins, "http", {
           try {
             // Native listen validates the arguments and binds the native port.
             // An EADDRINUSE from workerd is synchronous; Node emits it instead.
-            Reflect.apply(listen, this, [{ ...options, port }, ...(callback ? [callback] : [])]);
+            Reflect.apply(listen, this, [{ ...options, port, host: state.host }, ...(callback ? [callback] : [])]);
             state.port = Number(this.address()?.port ?? port);
             ctx.ports.set(state.port, this);
             ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
