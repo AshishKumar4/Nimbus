@@ -15367,6 +15367,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #signal;
     #counted = false;
     #contentLength;
+    #completeBody;
     socket = null;
     connection = null;
     reusedSocket = false;
@@ -15443,9 +15444,12 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       this._headerSent = true;
       let body;
       if (this.method !== "GET" && this.method !== "HEAD") {
-        const stream = new TransformStream();
-        this.#writer = stream.writable.getWriter();
-        body = stream.readable;
+        if (this.#completeBody !== undefined) body = this.#completeBody;
+        else {
+          const stream = new TransformStream();
+          this.#writer = stream.writable.getWriter();
+          body = stream.readable;
+        }
       }
       this.#context.started(this);
       this.#counted = true;
@@ -15455,6 +15459,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       try {
         response = fetch(address, { method: this.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
       } catch (error) { this.destroy(error); return; }
+      this.#completeBody = undefined;
       Promise.resolve(response).then((response) => {
         if (this.destroyed) { response.body?.cancel().catch(() => {}); return; }
         const incoming = this.#incoming = this.res = new IncomingMessage(response, this);
@@ -15480,7 +15485,10 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
       if (!this.#started && this.writableLength === 0) {
-        this.#contentLength = chunk == null ? 0 : typeof chunk === "string" ? Buffer.byteLength(chunk, encoding) : chunk instanceof Uint8Array ? chunk.byteLength : undefined;
+        if (chunk == null) this.#completeBody = Buffer.alloc(0);
+        else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
+        else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
+        this.#contentLength = this.#completeBody?.byteLength;
       }
       if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
       this.#start();
