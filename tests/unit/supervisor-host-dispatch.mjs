@@ -145,6 +145,8 @@ const INPUTS = {
   // A delegation the release's check grants: nothing recalls it, so the poll answers null at once.
   fsAwaitRecall: () => [delegation.owner, 0],
   fsRecalled: () => [delegation.owner, 'share'],
+  // Nothing of the process's is held: answered at once.
+  fsPublished: [],
   fsRead: () => [fileHandle.id, offset, length],
   fsWrite: () => [fileHandle.id, offset, bytes],
   // Closes a handle of its own: the shared one stays open for the descriptor
@@ -440,6 +442,7 @@ const nativeAssert = {
     const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
     await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
   },
+  fsPublished: (r) => assert.equal(r, undefined, 'fsPublished answers nothing'),
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),
   openWaveWriter: (r) => assert.match(r, /^[0-9a-f-]{36}$/, 'openWaveWriter answered an epoch'),
   retireWaveWriter: (r) => assert.equal(r, undefined, 'retireWaveWriter answers nothing'),
