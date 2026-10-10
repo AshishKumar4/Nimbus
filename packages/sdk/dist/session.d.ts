@@ -26,7 +26,7 @@ import type { IssueTokenOptions } from '@nimbus-sh/worker/auth';
  * // → "https://my-nimbus.workers.dev/s/pretty-otter-1234/?nimbus_token=eyJ…"
  * ```
  */
-export declare function sessionAttachUrl(endpoint: string, sessionId: string, token: string): string;
+export declare function sessionAttachUrl(endpoint: string, sessionId: string | undefined, token: string): string;
 /**
  * Convenience: mint a token AND build the attach URL in one call.
  *

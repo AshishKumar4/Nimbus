@@ -571,6 +571,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+  <script src="/_assets/session-id/session-id.js"></script>
   <script>
     // ── Session-aware URL helpers ──
     // This page is served at /s/<id>/ via the asset binding. All DO-bound
@@ -579,22 +580,9 @@
     const SESSION_PREFIX = (function() {
       const parts = location.pathname.split('/').filter(Boolean);
       const candidate = parts[0] === 's' ? parts[1] : '';
-      return isNimbusSessionId(candidate) ? '/s/' + candidate : '';
+      return NimbusSessionId.isNimbusIdComponent(candidate) ? '/s/' + candidate : '';
     })();
     const SESSION_ID = SESSION_PREFIX.startsWith('/s/') ? SESSION_PREFIX.slice(3) : '';
-    function isNimbusSessionId(value) {
-      if (!value) return false;
-      const parts = String(value).split('-');
-      return parts.length === 3 &&
-        isLowerWord(parts[0], 3, 14) &&
-        isLowerWord(parts[1], 3, 14) &&
-        parts[2].length === 4 &&
-        Array.from(parts[2]).every((ch) => ch >= '0' && ch <= '9');
-    }
-    function isLowerWord(value, min, max) {
-      if (!value || value.length < min || value.length > max) return false;
-      return Array.from(value).every((ch) => ch >= 'a' && ch <= 'z');
-    }
     const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') +
                    '//' + location.host + SESSION_PREFIX + '/ws';
     const STATS_URL = SESSION_PREFIX + '/api/stats';
@@ -793,6 +781,81 @@
     document.getElementById('btnRefresh').onclick = () => reloadPreview();
     document.getElementById('btnReloadPreview').onclick = () => reloadPreview();
 
+    const SessionTransport = (function() {
+      let socket = null;
+      let nextReqId = 1;
+      const pending = new Map();
+      const queued = new Map();
+      const listeners = new Map();
+      const isOpen = () => socket?.readyState === WebSocket.OPEN;
+
+      function subscribe(type, listener) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(listener);
+        return () => listeners.get(type).delete(listener);
+      }
+      function emit(type, message) {
+        for (const listener of listeners.get(type) || []) listener(message);
+      }
+      function settle(reqId, error, result) {
+        const slot = pending.get(reqId);
+        if (!slot) return;
+        pending.delete(reqId);
+        queued.delete(reqId);
+        clearTimeout(slot.timer);
+        if (error) slot.reject(error);
+        else slot.resolve(result);
+      }
+      function drain() {
+        if (!isOpen()) return;
+        for (const [reqId, frame] of queued) {
+          try {
+            socket.send(JSON.stringify(frame));
+            queued.delete(reqId);
+          } catch (error) { settle(reqId, error); }
+        }
+      }
+      function request(frame) {
+        const reqId = nextReqId++;
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => settle(reqId, new Error('fs request timed out')), 15000);
+          pending.set(reqId, { resolve, reject, timer });
+          queued.set(reqId, { ...frame, reqId });
+          drain();
+        });
+      }
+      function disconnect() {
+        for (const reqId of pending.keys()) {
+          if (!queued.has(reqId)) settle(reqId, new Error('Session connection closed'));
+        }
+        emit('close');
+      }
+      function attach(sock) {
+        if (socket) disconnect();
+        socket = sock;
+        sock.addEventListener('open', () => {
+          if (sock !== socket) return;
+          drain();
+          emit('open');
+        });
+        sock.addEventListener('close', () => {
+          if (sock !== socket) return;
+          disconnect();
+        });
+      }
+      function receive(message) {
+        if (typeof message?.type !== 'string') return false;
+        if (message.type.endsWith('-result') && pending.has(message.reqId)) {
+          settle(message.reqId, null, message);
+          return true;
+        }
+        if (!listeners.has(message.type)) return false;
+        emit(message.type, message);
+        return true;
+      }
+      return { request, subscribe, attach, receive, isOpen };
+    })();
+
     // ── Editor module ──
     //
     // Lazy-loads Monaco via cdnjs UMD on first call to ensureLoaded().
@@ -811,12 +874,6 @@
       // Cached fs-list result from a previous Ctrl+P (5s TTL).
       let fileListCache = null;
       let fileListCachedAt = 0;
-      // Pending fs-read / fs-write / fs-list resolves keyed by op id.
-      // The terminal WS multiplexes; we tag each message with a `reqId`
-      // so concurrent reads (e.g. preview tab + palette refresh) don't
-      // race on the same path.
-      const pending = new Map();
-      let nextReqId = 1;
       const DEFAULT_WELCOME_PATH = '/home/user/welcome.md';
 
       // Current open file state.
@@ -842,71 +899,6 @@
         el.title = path;
         el.classList.remove('editor-tab-empty');
         el.classList.toggle('dirty', !!dirty);
-      }
-
-      // Send a fs-* message and await the paired result. Frames created
-      // before ws.onopen are registered in pendingReqs first, then queued
-      // for the open handler to drain, so callers always get the same
-      // promise lifecycle.
-      const outQueue = [];
-      function fsRequest(frame, resultType) {
-        const reqId = nextReqId++;
-        frame.reqId = reqId;
-        return new Promise((resolve, reject) => {
-          const t = setTimeout(() => {
-            if (pending.has(reqId)) {
-              pending.delete(reqId);
-              reject(new Error('fs request timed out'));
-            }
-          }, 15000);
-          pending.set(reqId, { resolve, reject, t, resultType });
-          // Try to send now if the WS is OPEN; otherwise queue.
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            try { ws.send(JSON.stringify(frame)); }
-            catch (e) {
-              // OPEN but send threw — surface the failure immediately.
-              clearTimeout(t); pending.delete(reqId); reject(e);
-            }
-          } else {
-            outQueue.push(frame);
-          }
-        });
-      }
-      // Drain the outbound queue. Called from ws.onopen. Idempotent
-      // (safe to call multiple times — empty queue is a no-op).
-      // Resilient to reconnects: queue accumulates while ws.readyState
-      // is CONNECTING/CLOSED and flushes on next onopen.
-      function drainFsQueue() {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const drained = outQueue.splice(0);
-        for (const frame of drained) {
-          try { ws.send(JSON.stringify(frame)); }
-          catch (e) {
-            // Send failed on a drained frame — reject the pending entry.
-            const slot = pending.get(frame.reqId);
-            if (slot) {
-              pending.delete(frame.reqId);
-              clearTimeout(slot.t);
-              slot.reject(e);
-            }
-          }
-        }
-      }
-      // Hook into the main WS onmessage to deliver fs-*-result frames.
-      // Called by connect() right after parsing each incoming message —
-      // returns true to indicate the message was handled here (and the
-      // shell-side dispatch should skip it).
-      function tryHandleFsResult(msg) {
-        if (!msg || typeof msg.type !== 'string') return false;
-        if (!msg.type.endsWith('-result')) return false;
-        const reqId = msg.reqId;
-        if (typeof reqId !== 'number') return false;
-        const slot = pending.get(reqId);
-        if (!slot) return false;
-        pending.delete(reqId);
-        clearTimeout(slot.t);
-        slot.resolve(msg);
-        return true;
       }
 
       // Detect language from extension. Monaco built-ins cover most.
@@ -1127,7 +1119,7 @@
         await ensureLoaded();
         let result;
         try {
-          result = await fsRequest({ type: 'fs-read', path }, 'fs-read-result');
+          result = await SessionTransport.request({ type: 'fs-read', path });
         } catch (e) {
           // A newer open owns the editor and its status line now.
           if (request !== openRequests) return;
@@ -1191,7 +1183,7 @@
         const content = editor.getValue();
         let result;
         try {
-          result = await fsRequest({ type: 'fs-write', path: openPath, content }, 'fs-write-result');
+          result = await SessionTransport.request({ type: 'fs-write', path: openPath, content });
         } catch (e) {
           setStatusFlash('save failed: ' + (e?.message || e));
           return;
@@ -1235,7 +1227,7 @@
         if (!fileListCache || (now - fileListCachedAt) > 5000) {
           list.innerHTML = '<div class="palette-empty">Loading…</div>';
           try {
-            const r = await fsRequest({ type: 'fs-list', dir: '/home/user', recursive: true }, 'fs-list-result');
+            const r = await SessionTransport.request({ type: 'fs-list', dir: '/home/user', recursive: true });
             fileListCache = (r.entries || []).filter(e => e.type !== 'directory').map(e => e.path);
             fileListCachedAt = Date.now();
           } catch (e) {
@@ -1346,8 +1338,8 @@
       }
 
       return {
-        ensureLoaded, openFile, save, openPalette, tryHandleFsResult,
-        drainFsQueue, invalidateFileListCache, openDefaultWelcome,
+        ensureLoaded, openFile, save, openPalette,
+        invalidateFileListCache, openDefaultWelcome,
         refreshMarkdownPreview, unsavedPath,
       };
     })();
@@ -1393,8 +1385,6 @@
       const renderOrder = [];
       let loaded = false;
       let pending = null;
-      let nextReqId = 70_000;
-      const pendingReqs = new Map();
       let selectedPath = null;
 
       function loadExpandedSet() {
@@ -1409,59 +1399,6 @@
       }
       const expanded = loadExpandedSet();
       expanded.add(ROOT);
-
-      // Outbound queue mirrors Editor.fsRequest for the same websocket
-      // connection race.
-      const outQueue = [];
-      function fsRequest(frame, resultType) {
-        const reqId = nextReqId++;
-        frame.reqId = reqId;
-        return new Promise((resolve, reject) => {
-          const t = setTimeout(() => {
-            if (pendingReqs.has(reqId)) {
-              pendingReqs.delete(reqId);
-              reject(new Error('fs request timed out'));
-            }
-          }, 15000);
-          pendingReqs.set(reqId, { resolve, reject, t });
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            try { ws.send(JSON.stringify(frame)); }
-            catch (e) {
-              clearTimeout(t); pendingReqs.delete(reqId); reject(e);
-            }
-          } else {
-            outQueue.push(frame);
-          }
-        });
-      }
-      function drainFsQueue() {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const drained = outQueue.splice(0);
-        for (const frame of drained) {
-          try { ws.send(JSON.stringify(frame)); }
-          catch (e) {
-            const slot = pendingReqs.get(frame.reqId);
-            if (slot) {
-              pendingReqs.delete(frame.reqId);
-              clearTimeout(slot.t);
-              if (slot.reject) slot.reject(e);
-            }
-          }
-        }
-      }
-      // Hook into main WS onmessage like the Editor module does.
-      function tryHandleFsResult(msg) {
-        if (!msg || typeof msg.type !== 'string') return false;
-        if (!msg.type.endsWith('-result')) return false;
-        const reqId = msg.reqId;
-        if (typeof reqId !== 'number') return false;
-        const slot = pendingReqs.get(reqId);
-        if (!slot) return false;
-        pendingReqs.delete(reqId);
-        clearTimeout(slot.t);
-        slot.resolve(msg);
-        return true;
-      }
 
       function iconFor(node) {
         if (node.type === 'directory') return node.expanded ? '📂' : '📁';
@@ -1521,12 +1458,12 @@
         // ws.onopen drains it). Without this hint, users staring at
         // an empty tree-body would see no feedback. Cleared on
         // success / error path below.
-        if (path === ROOT && !loaded && (!ws || ws.readyState !== WebSocket.OPEN)) {
+        if (path === ROOT && !loaded && !SessionTransport.isOpen()) {
           body.innerHTML = '<div class="tree-empty">Waiting for connection…</div>';
         }
         let result;
         try {
-          result = await fsRequest({ type: 'fs-list', dir: path, recursive: false }, 'fs-list-result');
+          result = await SessionTransport.request({ type: 'fs-list', dir: path, recursive: false });
         } catch (e) {
           body.innerHTML = '<div class="tree-empty">fs-list failed: ' + escapeHtml(e?.message || String(e)) + '</div>';
           return;
@@ -1685,7 +1622,7 @@
         if (!name) return;
         const path = parent + '/' + name.replace(/^\/+/, '');
         try {
-          await fsRequest({ type: 'fs-write', path, content: '' }, 'fs-write-result');
+          await SessionTransport.request({ type: 'fs-write', path, content: '' });
           // Refresh the parent folder.
           const pn = nodes.get(parent);
           if (pn) {
@@ -1712,7 +1649,7 @@
         // Synthesize via .keep file — fs-write auto-mkdirs the parent
         // chain (init.ts handler does this).
         try {
-          await fsRequest({ type: 'fs-write', path: dirPath + '/.keep', content: '' }, 'fs-write-result');
+          await SessionTransport.request({ type: 'fs-write', path: dirPath + '/.keep', content: '' });
           const pn = nodes.get(parent);
           if (pn) { pn.loaded = false; await loadFolder(parent); }
           expanded.add(dirPath);
@@ -1750,11 +1687,8 @@
       //   PUSH { type:'fs-watch-event', subId, events:VfsEvent[], dropped? }
       //   IN  { type:'fs-watch-unsubscribe', reqId, subId? }
       //
-      // Local lifecycle:
-      //   - subscribeOnce() is called from ws.onopen (after drainFsQueue).
-      //     Re-invocations are no-ops while a subId is live; on WS close
-      //     the server-side listener is reaped (ws.ts cleanup) so the
-      //     next reconnect re-subscribes fresh.
+      // The transport re-subscribes after each connection opens; the server
+      // reaps the old listener when that connection closes.
       //   - applyWatchEvent() coalesces all 'fs-watch-event' frames into
       //     per-parent refresh actions on a single 100ms window — 5+
       //     events that share the same parent dir produce ONE re-fetch
@@ -1779,14 +1713,8 @@
 
       function subscribeOnce() {
         if (watchSubId) return; // already subscribed
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        // Fire-and-forget — record the subId on the success result.
-        // We use fsRequest's queued-send semantics for the reply
-        // routing (pendingReqs keyed by reqId), but tolerate failures.
-        fsRequest(
-          { type: 'fs-watch-subscribe', paths: [ROOT] },
-          'fs-watch-subscribe-result',
-        ).then((r) => {
+        if (!SessionTransport.isOpen()) return;
+        SessionTransport.request({ type: 'fs-watch-subscribe', paths: [ROOT] }).then((r) => {
           if (r && r.ok && typeof r.subId === 'string') {
             watchSubId = r.subId;
           }
@@ -1910,10 +1838,10 @@
         };
       }
 
-      return {
-        ensureLoaded, tryHandleFsResult, markDirty, setSelected, drainFsQueue,
-        subscribeOnce, applyWatchEvent, getWatchStats,
-      };
+      SessionTransport.subscribe('open', subscribeOnce);
+      SessionTransport.subscribe('close', () => { watchSubId = null; });
+      SessionTransport.subscribe('fs-watch-event', applyWatchEvent);
+      return { ensureLoaded, markDirty, setSelected, getWatchStats };
     })();
 
     // Tabbed preview surface. Markdown preview and live app previews share
@@ -2652,8 +2580,8 @@
       }
 
       /**
-       * Claim the probe's reply. Editor/FileTree ignore it already (both
-       * require a numeric reqId); returning true keeps the frame out of
+       * Claim the probe's reply. SessionTransport uses numeric request IDs;
+       * returning true keeps this frame out of
        * the shell dispatch and documents where it lands.
        */
       function tryHandleProbeResult(msg) {
@@ -2827,19 +2755,13 @@
       // finally land.
       const sock = new WebSocket(WS_URL);
       ws = sock;
+      SessionTransport.attach(sock);
       ws.onopen = () => {
         if (sock !== ws) return;
         clearNimbusDisconnectError();
         Conn.onOpen();
         setStatus('connected'); rd = 1000;
         ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
-        // Drain any fs-* frames that Editor / FileTree queued before WS
-        // opened. Drain order does not matter; the server routes by reqId.
-        try { if (typeof Editor !== 'undefined') Editor.drainFsQueue(); } catch {}
-        try { if (typeof FileTree !== 'undefined') FileTree.drainFsQueue(); } catch {}
-        // Subscribe the FileTree to server-pushed fs-watch-event frames so
-        // terminal-side writes appear without a manual refresh click.
-        try { if (typeof FileTree !== 'undefined') FileTree.subscribeOnce(); } catch {}
         refreshStats();
         if (statsTimer) clearInterval(statsTimer);
         statsTimer = setInterval(() => {
@@ -2860,15 +2782,7 @@
         try {
           const msg = JSON.parse(e.data);
           if (Conn.tryHandleProbeResult(msg)) return;
-          // fs-*-result frames route to the editor's pending-request
-          // resolver. Return early so shell dispatch does not see them
-          // as unknown types.
-          if (Editor.tryHandleFsResult(msg)) return;
-          // FileTree consumes fs-list results too.
-          if (FileTree.tryHandleFsResult(msg)) return;
-          // Server-pushed fs-watch-event frames route to FileTree, which
-          // coalesces per-parent refreshes on a 100ms window.
-          if (FileTree.applyWatchEvent(msg)) return;
+          if (SessionTransport.receive(msg)) return;
           if (msg.type === 'output') {
             term.write(msg.data);
             // Snappy preview switch: both vite (/preview/) and wrangler

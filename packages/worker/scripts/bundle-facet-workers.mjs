@@ -912,6 +912,7 @@ async function main() {
   }
 
   const waveWriter = await bundleWaveWriter();
+  const rpcDisposal = await bundleAsPreamble(join(platformRoot, 'src', 'rpc-dispose.ts'), 'rpc-dispose');
 
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
@@ -950,6 +951,7 @@ async function main() {
     '',
     '/** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */',
     `export const WAVE_WRITER_PREAMBLE: string = ${JSON.stringify(waveWriter)};`,
+    `export const RPC_DISPOSE_PREAMBLE: string = ${JSON.stringify(rpcDisposal)};`,
     '',
     '/**',
     ' * Declares `function nodeError(Base, code, message, props)`,',
