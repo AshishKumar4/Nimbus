@@ -1308,6 +1308,10 @@ export async function rpcDestroy(
   options: ProgrammaticDestroyOptions = {},
 ): Promise<ProgrammaticDestroyResult> {
   self.ensureSqliteFs();
+  // A commit held for a reader's recall holds leases at what it changed
+  // until it is published, which a reader's trust bounds: not a mutation to
+  // refuse a destroy for, and one the wipe below would cut short.
+  for (let held = self.sqliteFs!.publishedFor(); held !== null; held = self.sqliteFs!.publishedFor()) await held;
   if (self.sqliteFs!.hasExclusiveMutation()) {
     throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
   }

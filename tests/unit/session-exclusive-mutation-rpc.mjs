@@ -5,6 +5,7 @@ import { mock } from 'bun:test';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
@@ -93,7 +94,7 @@ for (const delivered of [false, true]) {
   await assert.rejects(
     rpcDestroy({
       ensureSqliteFs() {},
-      sqliteFs: { hasExclusiveMutation: () => true },
+      sqliteFs: { publishedFor: () => null, hasExclusiveMutation: () => true },
     }),
     /EBUSY: session has an active exclusive filesystem mutation/,
   );
@@ -107,7 +108,7 @@ for (const delivered of [false, true]) {
     ensureSqliteFs() {
       if (this.sqliteFs) return;
       this.sqliteFs = {
-        hasExclusiveMutation: () => false,
+        publishedFor: () => null, hasExclusiveMutation: () => false,
         acquireGlobalExclusiveMutation() {
           guardActive = true;
           return { root: '', owner: 'destroy-owner' };
@@ -142,7 +143,7 @@ for (const delivered of [false, true]) {
   const self = {
     ensureSqliteFs() {},
     sqliteFs: {
-      hasExclusiveMutation: () => false,
+      publishedFor: () => null, hasExclusiveMutation: () => false,
       acquireGlobalExclusiveMutation() {
         guardActive = true;
         return { root: '', owner: 'destroy-owner' };
@@ -162,6 +163,36 @@ for (const delivered of [false, true]) {
   await assert.rejects(rpcDestroy(self), /injected destroy failure/);
   assert.equal(guardActive, false);
   assert.equal(releases, 1, 'failed destroy did not release its reservation');
+}
+
+// A commit held for a reader's recall (a launch's image, the reader not yet
+// answered) holds leases at what it changed: a destroy waits for its
+// publication, which the reader's trust bounds, and is not refused EBUSY.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    const files = new ProcessFiles(sqliteFs);
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    const launching = files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
+    launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
+    launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+    assert.equal(sqliteFs.hasExclusiveMutation(), true, 'nothing held for the destroy to meet');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    let settled = false;
+    const destroying = rpcDestroy(self).finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(settled, false, 'a destroy went ahead of a commit held for its publication');
+    reader.recalled(readLease.owner, 'revoke');
+    assert.equal((await destroying).ok, true, 'a destroy was refused for a commit held for its publication');
+  } finally { harness.db.close(); }
 }
 
 console.log('session exclusive mutation RPC: ok');
