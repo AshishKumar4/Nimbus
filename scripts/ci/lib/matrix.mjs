@@ -3,17 +3,27 @@
 // record of release exceptions (tests/behavioral/_deferred.mjs).
 //
 // Green if and only if every task was graded, every red row is a deferred
-// probe's own row that failed exactly as approved (outcomeOf: it ran to its
-// asserter's summary, its one named assertion failed, and every other
-// assertion passed), and every deferred probe ran and failed. A deferred
+// probe's own row that completed its structured checks, with its one named
+// assertion failed exactly as approved, and every other
+// assertion passed, and every deferred probe ran and failed. A deferred
 // probe that passes, or that did not run, is red: its deferral has ended,
 // or no longer names anything. The session ledger and a not-graded task are
 // never deferrable or excludable (and _deferred.mjs refuses to list them).
 // Excluded probes must not run; they are recorded and printed, not graded.
 import { PROBE_TARGET_SKIPS } from '../../../tests/behavioral/_probe-target-skips.mjs';
+import { completedAssertions } from '../../../tests/behavioral/_assertions.mjs';
+import { readFileSync } from 'node:fs';
 
 /** A row's probe, as _deferred.mjs names it: `tests/behavioral/a/b.mjs` → `a/b`. */
 const probeOf = (name) => name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '');
+
+/** Live and dry grading share the same verdict-file boundary; an unreadable file is not graded. */
+export function gradeVerdictFiles(paths, deferred) {
+  return gradeMatrix(paths.map(path => {
+    try { return path ? JSON.parse(readFileSync(path, 'utf8')) : null; }
+    catch { return null; }
+  }), deferred);
+}
 
 /** The release suite's selection: target-capability skips plus exclusions, including in requested repeats. */
 export function matrixProbeArgs(entries, { repeat = '', times = '5' } = {}) {
@@ -31,46 +41,27 @@ export function describeReleaseException(entry) {
   return `DEFERRED ${entry.probe} — red in ${entry.rows.length} row${entry.rows.length === 1 ? '' : 's'}, shipped by deferral of ✗ ${entry.assertion} with ${JSON.stringify(entry.failure)} only: ${entry.reason} ${approval}`;
 }
 
-/**
- * What a probe's output says it asserted, structurally: makeAsserter
- * (_driver.mjs) prints each check as `  ✓ <label>` or `  ✗ <label> — <detail>`
- * on a line of its own, and, if the probe reached its end, a summary
- * `  ──── [<probe>] <pass> pass / <fail> fail`. The summary's counts are
- * read too, so a ✗ lost from a truncated output still counts.
- *
- * @param {string} output
- * @returns {{ finished: boolean, pass: number, fail: number, failed: Array<{ label: string, detail: string }> }}
- *   `detail`, the ✗ line's text after ` — ` (its first line only)
- */
-export function outcomeOf(output) {
-  const failed = [];
-  for (const line of output.split('\n')) {
-    const check = /^ {2}✗ (.*?)(?: — (.*))?$/.exec(line);
-    if (check) failed.push({ label: check[1], detail: check[2] ?? '' });
-  }
-  const summary = [...output.matchAll(/^ {2}──── \[[^\]]*\] (\d+) pass \/ (\d+) fail$/gm)].at(-1);
-  return { finished: summary !== undefined, pass: Number(summary?.[1] ?? 0), fail: Number(summary?.[2] ?? 0), failed };
-}
-
 /** Why a deferred probe's red row is not the failure its deferral allows, or null when it is. */
 function beyondDeferral(row, entry) {
-  const outcome = outcomeOf(row.output);
-  if (!outcome.finished) return 'it did not reach its summary (an exception, or killed), so not every other assertion ran';
-  const others = outcome.failed.filter((check) => check.label !== entry.assertion);
-  if (others.length > 0) return `other assertions failed: ${others.map((check) => `✗ ${check.label}`).join('; ')}`;
-  const pinned = outcome.failed.find((check) => check.label === entry.assertion);
-  if (outcome.fail !== 1 || outcome.failed.length !== 1 || !pinned) {
-    return `its summary says ${outcome.fail} failed, and the one deferrable is ✗ ${entry.assertion}${outcome.failed.length ? '' : ' (no ✗ line found)'}`;
+  const checks = completedAssertions(row.assertions);
+  if (!checks || row.assertions.some(result => result.label !== entry.probe)) return 'it has no complete structured assertion result (an exception, killed or malformed), so not every other assertion ran';
+  const failed = checks.filter(check => !check.ok);
+  const others = failed.filter((check) => check.name !== entry.assertion);
+  if (others.length > 0) return `other assertions failed: ${others.map((check) => `✗ ${check.name}`).join('; ')}`;
+  const pinned = failed.find((check) => check.name === entry.assertion);
+  if (failed.length !== 1 || !pinned) {
+    return `its structured result says ${failed.length} failed, and the one deferrable is ✗ ${entry.assertion}`;
   }
+  const detail = pinned.detail.split('\n')[0];
   if ('detail' in entry.failure) {
     const fragments = [entry.failure.detail].flat();
-    return fragments.every((fragment) => pinned.detail.includes(fragment)) ? null
-      : `it failed with ${JSON.stringify(pinned.detail.slice(0, 120))}, not the approved detail containing every fragment ${JSON.stringify(fragments)}`;
+    return fragments.every((fragment) => detail.includes(fragment)) ? null
+      : `it failed with ${JSON.stringify(detail.slice(0, 120))}, not the approved detail containing every fragment ${JSON.stringify(fragments)}`;
   }
-  const http = /^HTTP (\d{3}): (.*)$/.exec(pinned.detail);
+  const http = /^HTTP (\d{3}): (.*)$/.exec(detail);
   const title = http ? /<title[^>]*>([^<]*)<\/title>/i.exec(http[2])?.[1] : undefined;
   if (Number(http?.[1]) !== entry.failure.status || title !== entry.failure.title) {
-    return `it failed with ${http ? `HTTP ${http[1]}${title === undefined ? ' (no <title>)' : ` "${title}"`}` : JSON.stringify(pinned.detail.slice(0, 120))}, `
+    return `it failed with ${http ? `HTTP ${http[1]}${title === undefined ? ' (no <title>)' : ` "${title}"`}` : JSON.stringify(detail.slice(0, 120))}, `
       + `not the approved HTTP ${entry.failure.status} "${entry.failure.title}"`;
   }
   return null;
@@ -120,7 +111,7 @@ export function gradeMatrix(verdicts, deferred) {
     const beyond = entry ? beyondDeferral(row, entry) : null;
     if (entry && beyond === null) {
       if (!covered.has(entry.probe)) covered.set(entry.probe, []);
-      covered.get(entry.probe).push({ task: row.task, exitCode: row.exitCode, seconds: row.seconds, output: row.output });
+      covered.get(entry.probe).push({ task: row.task, exitCode: row.exitCode, seconds: row.seconds, output: row.output, assertions: row.assertions });
     } else {
       red.push(`${row.name} (${row.task}, exit ${row.exitCode})${beyond ? `: deferred for ✗ ${entry.assertion} only, and ${beyond}` : ''}`);
     }

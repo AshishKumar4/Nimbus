@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
-import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { publishPackages } from './lib/publish-packages.mjs';
+import { step } from './lib/step.mjs';
+import { prepareTarball } from './lib/publish-tarballs.mjs';
 
 const args = process.argv.slice(2);
 const outAt = args.indexOf('--out');
@@ -20,43 +21,27 @@ const head = top.status === 0 ? git(['rev-parse', 'HEAD']).stdout.trim() : null;
 const work = mkdtempSync(join(tmpdir(), 'nimbus-publish-pack-'));
 const rows = [];
 const tarballs = [];
-const digest = (algorithm, bytes) => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
-
-async function step(name, cwd, command, argv) {
-  const begin = Date.now();
-  const result = await new Promise((resolve) => {
-    let output = '';
-    const child = spawn(command, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    const keep = (bytes) => { process.stderr.write(bytes); output = (output + String(bytes)).slice(-256 * 1024); };
-    child.stdout.on('data', keep);
-    child.stderr.on('data', keep);
-    child.on('error', (error) => keep(Buffer.from(error.message)));
-    child.on('close', (code) => resolve({ name, exitCode: code ?? 128, seconds: (Date.now() - begin) / 1000, output }));
-  });
-  rows.push(result);
-  return result.exitCode === 0;
-}
-
-async function pack(dir) {
-  const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-  const packed = spawnSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', work], { cwd: dir, encoding: 'utf8', maxBuffer: 64 << 20 });
-  if (packed.status !== 0) throw new Error(`npm pack ${pkg.name}: ${packed.stderr || packed.stdout}`);
-  const [receipt] = JSON.parse(packed.stdout);
-  const bytes = readFileSync(join(work, receipt.filename));
-  tarballs.push({ name: pkg.name, version: pkg.version, file: receipt.filename, sha256: digest('sha256', bytes), shasum: digest('sha1', bytes), integrity: 'sha512-' + digest('sha512', bytes), bytes: bytes.length, base64: bytes.toString('base64') });
-  return join(work, receipt.filename);
-}
-
 let exitCode = 1;
 try {
   if (!head || git(['status', '--porcelain', '--untracked-files=all']).stdout.trim()) throw new Error('publish packing requires a clean committed checkout');
-  if (!await step('dist-publish', root, 'bun', ['scripts/dist-integrity.mjs', '--publish'])) throw new Error('dist publish gate failed; no tarballs were packed');
-  if (!await step('published-versions', root, 'bun', ['scripts/check-published.mjs'])) throw new Error('published version integrity check failed; no tarballs were packed');
+  const dist = await step('dist-publish', root, 'bun', ['scripts/dist-integrity.mjs', '--publish']);
+  rows.push(dist);
+  if (dist.exitCode !== 0) throw new Error('dist publish gate failed; no tarballs were packed');
+  const prepared = publishPackages(root).map(pkg => prepareTarball(pkg.dir, work));
+  const manifest = join(work, 'prepared.json');
+  writeFileSync(manifest, JSON.stringify(prepared.map(({ base64, ...receipt }) => receipt)));
+  const published = await step('published-versions', root, 'bun', ['scripts/check-published.mjs', '--prepared', manifest]);
+  rows.push(published);
+  if (published.exitCode !== 0) throw new Error('published version integrity check failed; no signing artifacts will be returned');
   const dir = join(work, 'runtime-cpython');
-  if (!await step('runtime-cpython-build', join(root, 'packages/worker'), 'node', ['scripts/bundle-runtime.mjs', 'cpython', '3.13.14-1', '--npm-package', dir])) throw new Error('CPython package build failed');
-  const runtimeTarball = await pack(dir);
-  if (!await step('runtime-packages', root, 'node', ['packages/core/scripts/check-runtime-packages.mjs', '--runtime-tarball', runtimeTarball])) throw new Error('runtime gate failed; no signing artifacts will be returned');
-  for (const pkg of publishPackages(root)) await pack(pkg.dir);
+  const runtimeBuild = await step('runtime-cpython-build', join(root, 'packages/worker'), 'node', ['scripts/bundle-runtime.mjs', 'cpython', '3.13.14-1', '--npm-package', dir]);
+  rows.push(runtimeBuild);
+  if (runtimeBuild.exitCode !== 0) throw new Error('CPython package build failed');
+  const runtime = prepareTarball(dir, work);
+  const runtimeGate = await step('runtime-packages', root, 'node', ['packages/core/scripts/check-runtime-packages.mjs', '--runtime-tarball', runtime.path]);
+  rows.push(runtimeGate);
+  if (runtimeGate.exitCode !== 0) throw new Error('runtime gate failed; no signing artifacts will be returned');
+  tarballs.push(...[runtime, ...prepared].map(({ path, ...artifact }) => artifact));
   exitCode = 0;
 } catch (error) {
   rows.push({ name: 'publish-pack', exitCode: 1, seconds: 0, output: error.message });

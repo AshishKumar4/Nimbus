@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { buildFacetWorkerCode } from '../../../packages/worker/src/facets/build-facet.ts';
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_ARTIFACTS } from '../../../packages/worker/src/napi-wasm-artifacts.generated.ts';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_SHA256 } from '../../../packages/worker/src/rolldown-facet-artifact.generated.ts';
+import { namedFacetPlatform } from './named-facet-platform.mjs';
 
 const staged = (asset) => {
   const bytes = readFileSync(new URL(`../../../packages/worker/public${asset.path}`, import.meta.url));
@@ -98,8 +99,6 @@ export async function freshFacetClass() {
  */
 export function durableObject(BuildFacet, classFor = async () => BuildFacet, { deliveryDelayMs = () => 0 } = {}) {
   // loaderIds: what LOADER.get was asked for (policy-keyed); facetNames: the facets those became.
-  const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], facetNames: [], aborted: [], prebundling: 0, mostPrebundling: 0, calls: 0 };
-  const facets = new Map();
   const inFlight = new Map();
   let evaluating = 0;
   const busy = () => evaluating > 0 || [...inFlight.values()].some((calls) => calls.size > 0);
@@ -121,48 +120,31 @@ export function durableObject(BuildFacet, classFor = async () => BuildFacet, { d
       .then(resolve, reject)
       .finally(() => calls.delete(entry));
   });
-  const ctx = {
-    id: { toString: () => 'build-facet-do' },
-    facets: {
-      abort(name, reason) {
-        counts.aborted.push(name);
-        facets.delete(name);
-        for (const entry of inFlight.get(name) ?? []) entry.reject(reason instanceof Error ? reason : new Error(String(reason)));
-        inFlight.delete(name);
-      },
-      get(name, load) {
-        if (!facets.has(name)) counts.facetNames.push(name);
-        if (!facets.has(name)) facets.set(name, load().then(({ class: FacetClass }) => { counts.facetInstances++; return new FacetClass({}, {}); }));
-        const instance = facets.get(name);
-        return {
-          warm: () => call(name, undefined, async () => (await instance).warm()),
-          build: (options, plugin) => call(name, options, async () => (await instance).build(structuredClone(options), plugin)),
-          prebundle: (spec) => {
-            counts.prebundling++;
-            counts.mostPrebundling = Math.max(counts.mostPrebundling, counts.prebundling);
-            return call(name, spec, async () => (await instance).prebundle(structuredClone(spec))).finally(() => counts.prebundling--);
-          },
-        };
-      },
+  const platform = namedFacetPlatform({
+    id: 'build-facet-do',
+    async classFor(id) {
+      evaluating++;
+      try { return await classFor(id); } finally { evaluating--; }
     },
-  };
-  const env = {
-    ASSETS: { async fetch() { throw new Error('the worker is handed out by LOADER.get below'); } },
-    LOADER: {
-      async get(id) {
-        counts.loaderGets++;
-        counts.loaderIds.push(id);
-        evaluating++;
-        try {
-          const FacetClass = await classFor(id);
-          return { getDurableObjectClass: () => FacetClass };
-        } finally {
-          evaluating--;
-        }
-      },
+    onAbort(name, reason) {
+      for (const entry of inFlight.get(name) ?? []) entry.reject(reason instanceof Error ? reason : new Error(String(reason)));
+      inFlight.delete(name);
     },
-  };
-  return { ctx, env, counts, busy };
+    invoke(name, method, args, instance) {
+      if (method === 'prebundle') {
+        counts.prebundling++;
+        counts.mostPrebundling = Math.max(counts.mostPrebundling, counts.prebundling);
+      }
+      const answer = call(name, args[0], async () => {
+        const target = await instance;
+        return target[method](...(method === 'build' ? [structuredClone(args[0]), args[1]] : structuredClone(args)));
+      });
+      return method === 'prebundle' ? answer.finally(() => counts.prebundling--) : answer;
+    },
+  });
+  const { counts } = platform;
+  Object.assign(counts, { prebundling: 0, mostPrebundling: 0, calls: 0 });
+  return { ...platform, busy };
 }
 
 export function releaseBuildFacetHarness() {

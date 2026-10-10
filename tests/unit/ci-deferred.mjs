@@ -1,222 +1,111 @@
 #!/usr/bin/env bun
-// The release matrix's grade (scripts/ci/lib/matrix.mjs) against the user's
-// deferrals (tests/behavioral/_deferred.mjs): green if and only if every red
-// row is a deferred probe's that failed exactly as approved (its one named
-// assertion, and nothing else, setup and cleanup included), and every
-// deferred probe ran and failed. And the record itself: every entry names an
-// existing probe, its assertion, the user's approval, an owner and a
-// tracking item, and none is a check that can never be deferred or excluded.
-// Exclusions skip release-only selection and keep their approval in staged.json.
-
+// Exercise the real assertion producer and release grading together. Human
+// output is diagnostic, never evidence that a deferred probe completed.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { makeAsserter } from '../behavioral/_assertions.mjs';
+import { describeReleaseException, gradeMatrix, matrixProbeArgs } from '../../scripts/ci/lib/matrix.mjs';
+import { validateDeferrals, NEVER_DEFERRED } from '../behavioral/_deferred.mjs';
+import { PROBE_TARGET_SKIPS } from '../behavioral/_probe-target-skips.mjs';
 
-import { describeReleaseException, gradeMatrix, matrixProbeArgs, outcomeOf } from '../../scripts/ci/lib/matrix.mjs';
-import { DEFERRED, validateDeferrals } from '../behavioral/_deferred.mjs';
-import { HOSTED_DEMO_CHECKS, PROBE_TARGET_SKIPS, PRODUCTION_ONLY_CHECKS } from '../behavioral/_probe-target-skips.mjs';
-
-const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
-
-{
-  for (const entry of DEFERRED) {
-    assert.ok(existsSync(join(BEHAVIORAL, `${entry.probe}.mjs`)), `${entry.probe}: no such probe`);
-    if (entry.excluded === true) continue;
-    const source = readFileSync(join(BEHAVIORAL, `${entry.probe}.mjs`), 'utf8');
-    assert.ok(source.includes(`'${entry.assertion}'`) || source.includes(`"${entry.assertion}"`), `${entry.probe}: it asserts no ${JSON.stringify(entry.assertion)}`);
-  }
-  const good = { probe: 'frameworks/nuxt-real', assertion: 'a', failure: { status: 503, title: 't' }, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
-  for (const [entry, refused] of [
-    [{ ...good, assertion: '' }, /assertion is required/],
-    [{ ...good, failure: undefined }, /failure \{ status, title \} or \{ detail \} is required/],
-    [{ ...good, failure: { status: 503 } }, /failure \{ status, title \} or \{ detail \} is required/],
-    [{ ...good, approved: 'main, 2026-10-07' }, /approved must be the user's, dated/],
-    [{ ...good, approved: 'user' }, /approved must be the user's, dated/],
-    [{ ...good, probe: 'frameworks/no-such-probe' }, /no such probe/],
-    [{ ...good, probe: 'session-ledger' }, /session-ledger can never be deferred/],
-    ...[...HOSTED_DEMO_CHECKS, ...PRODUCTION_ONLY_CHECKS].map((probe) => [{ ...good, probe }, new RegExp(`${probe} can never be deferred`)]),
-  ]) {
-    assert.throws(() => validateDeferrals([entry]), refused, JSON.stringify(entry));
-  }
-  assert.throws(() => validateDeferrals([good, good]), /listed twice/);
-  const excluded = { probe: good.probe, excluded: true, reason: 'r', approved: 'user, 2026-10-10', owner: 'o', tracking: 't' };
-  assert.deepEqual(validateDeferrals([excluded]), [excluded], 'an exclusion needs no approved assertion or failure');
-  for (const field of ['probe', 'reason', 'approved', 'owner', 'tracking']) {
-    assert.throws(() => validateDeferrals([{ ...excluded, [field]: '' }]), new RegExp(`${field} is required`));
-  }
-  for (const failure of [good.failure, undefined]) {
-    assert.throws(() => validateDeferrals([{ ...excluded, failure }]), /excluded probe must not specify a failure/);
-  }
-  assert.throws(() => validateDeferrals([{ ...excluded, assertion: 'a' }]), /excluded probe must not specify a failure or assertion/);
-  for (const probe of [...HOSTED_DEMO_CHECKS, ...PRODUCTION_ONLY_CHECKS, 'session-ledger']) {
-    assert.throws(() => validateDeferrals([{ ...excluded, probe }]), /can never be deferred or excluded/);
-  }
-  assert.throws(() => validateDeferrals([{ ...excluded, approved: 'main, 2026-10-10' }]), /approved must be the user's, dated/);
-  assert.throws(() => validateDeferrals([{ ...excluded, probe: 'frameworks/no-such-probe' }]), /no such probe/);
-  assert.throws(() => validateDeferrals([good, excluded]), /listed twice/);
-  assert.throws(() => validateDeferrals([{ ...excluded, excluded: 'true' }]), /excluded must be true or false/);
-  console.log(`  ok  _deferred.mjs: ${DEFERRED.length} approved entries; exact failures and exclusions share required metadata, duplicate and never-deferrable checks`);
-}
-
-const PINNED = 'nuxt dev SSR serves the Vue app through the port route on its first run';
-const deferral = { probe: 'frameworks/nuxt-real', assertion: PINNED, failure: { status: 503, title: 'Starting Nuxt... | Nuxt' }, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
-// The real first-run detail (staging, 2026-10-07T05:20Z), and a served page that is the wrong app.
-const NITRO_503 = 'HTTP 503: <!DOCTYPE html><html lang="en"><head><title data-app-name="Nuxt">Starting Nuxt... | Nuxt</title><meta charset="utf-8">';
-const WRONG_200 = 'HTTP 200: <!DOCTYPE html><html><head><title>Welcome to Nuxt</title></head><body><div id="__nuxt">';
-const row = (name, exitCode, output = '') => ({ name: name === 'session-ledger' || name === 'probes' ? name : `tests/behavioral/${name}.mjs`, exitCode, seconds: 1, output });
-/** nuxt-real's output as makeAsserter prints it: each check, then (unless it threw) the summary. */
-const nuxt = (checks, { finished = true } = {}) => [
-  'frameworks/nuxt-real — BASE=https://example.workers.dev',
-  ...checks.map(([ok, label, detail]) => `  ${ok ? '✓' : '✗'} ${label}${detail ? ` — ${detail}` : ''}`),
-  ...(finished ? ['', `  ──── [frameworks/nuxt-real] ${checks.filter(([ok]) => ok).length} pass / ${checks.filter(([ok]) => !ok).length} fail`] : ['error: install failed', '      at nuxt-real.mjs:26:35']),
-].join('\n');
-const withPinned = (detail) => nuxt([[true, 'nuxi creates the real minimal project'], [true, 'npm install succeeds'], [false, PINNED, `${detail}\nnuxt dev output…`], [true, 'probe session deleted']]);
-const asApproved = withPinned(NITRO_503);
-const verdict = (...tasks) => ({ tasks: tasks.map((rows, i) => ({ task: `part ${i + 1}/${tasks.length}`, outcome: { kind: 'exited' }, rows })) });
+const probe = 'frameworks/nuxt-real';
+const pinned = 'the app serves';
+const deferral = { probe, assertion: pinned, failure: { status: 503, title: 'Starting Nuxt... | Nuxt' },
+  reason: 'loading', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
+const exclusion = { probe, excluded: true, reason: 'memory failure varies', approved: 'user, 2026-10-10', owner: 'Main', tracking: 'memory' };
+const loading = 'HTTP 503: <html><head><title>Starting Nuxt... | Nuxt</title></head>';
+const assertions = (label, checks, complete = true) => {
+  let emitted;
+  const a = makeAsserter(label, { write() {}, emit(result) { emitted = structuredClone(result); } });
+  for (const [ok, name, detail] of checks) a.check(name, ok, detail);
+  if (complete) a.summary();
+  return [emitted];
+};
+const approved = assertions(probe, [[true, 'setup'], [false, pinned, loading], [true, 'cleanup']]);
+const row = (name, exitCode, checks = null, output = 'arbitrary human diagnostics') => ({
+  name: name === 'session-ledger' || name === 'probes' ? name : `tests/behavioral/${name}.mjs`, exitCode, seconds: 1, output, assertions: checks,
+});
+const verdict = (...tasks) => ({ tasks: tasks.map((rows, index) => ({ task: `part ${index + 1}`, outcome: { kind: 'exited' }, rows })) });
 const ledger = row('session-ledger', 0);
+const grade = (checks, code = 1, entry = deferral) => gradeMatrix([verdict([row(entry.probe, code, checks), ledger])], [entry]);
 
-{
-  const excluded = validateDeferrals([{ probe: 'frameworks/nuxt-real', excluded: true, reason: 'memory failure varies',
-    approved: 'user, 2026-10-10', owner: 'Main', tracking: 'memory' }])[0];
-  const args = matrixProbeArgs([excluded], { repeat: 'frameworks/nuxt-real,nuxt-real.mjs,tests/behavioral/frameworks/nuxt-real.mjs,git-local', times: '3' });
-  assert.deepEqual(args, ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, excluded.probe].join(','), '--repeat', 'git-local', '--times', '3'],
-    'release-only skips preserve target capabilities and omit excluded repeats in every runner spelling');
-  assert.deepEqual(matrixProbeArgs([excluded], { repeat: excluded.probe }), ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, excluded.probe].join(',')]);
-  const graded = gradeMatrix([verdict([row('git-local', 0), ledger])], [excluded]);
-  assert.equal(graded.exitCode, 0, graded.problems.join('\n'));
-  assert.deepEqual(graded.applied, [excluded], 'the staged record carries the exclusion without invented rows or failure');
-  const stored = JSON.parse(JSON.stringify({ matrix: { deferrals: graded.applied } }));
-  assert.equal(describeReleaseException(stored.matrix.deferrals[0]),
-    'EXCLUDED frameworks/nuxt-real — memory failure varies (approved user, 2026-10-10; owner Main; tracking memory)',
-    'release and promotion describe the same persisted exclusion');
-  for (const exitCode of [0, 1, 2]) {
-    const ran = gradeMatrix([verdict([row(excluded.probe, exitCode, 'unexpected run'), ledger])], [excluded]);
-    assert.equal(ran.exitCode, 1, 'an exclusion never covers a row that actually ran');
-    assert.match(ran.problems.join('\n'), /ran despite its release exclusion/);
-    assert.deepEqual(ran.applied, []);
-  }
-  assert.equal(gradeMatrix([verdict([row('session-ledger', 1)])], [excluded]).exitCode, 1, 'exclusion does not hide a leaked session');
-  assert.equal(gradeMatrix([null], [excluded]).exitCode, 2, 'exclusion does not grade a missing verdict');
-  const deferred = { ...deferral, probe: 'frameworks/remix-real' };
-  const mixed = gradeMatrix([verdict([row(deferred.probe, 1, asApproved), ledger])], [excluded, deferred]);
-  assert.equal(mixed.exitCode, 0, mixed.problems.join('\n'));
-  assert.deepEqual(mixed.applied.map(entry => entry.probe), [excluded.probe, deferred.probe]);
-  assert.match(describeReleaseException(mixed.applied[1]), /^DEFERRED frameworks\/remix-real — red in 1 row/);
-  console.log('  ok  exclusions share validation, release selection, grading and staged reporting with exact deferrals');
+assert.deepEqual(validateDeferrals([deferral, { ...exclusion, probe: 'frameworks/remix-real' }]).length, 2);
+for (const [entry, message] of [
+  [{ ...deferral, assertion: '' }, /assertion is required/],
+  [{ ...deferral, failure: undefined }, /failure/],
+  [{ ...deferral, failure: { status: 503 } }, /failure/],
+  [{ ...deferral, approved: 'main, 2026-10-07' }, /approved/],
+  [{ ...deferral, probe: 'frameworks/no-such-probe' }, /no such probe/],
+  [{ ...exclusion, failure: deferral.failure }, /must not specify a failure/],
+  [{ ...exclusion, failure: undefined }, /must not specify a failure/],
+  [{ ...exclusion, assertion: 'a' }, /must not specify a failure/],
+  [{ ...exclusion, excluded: 'true' }, /excluded must/],
+]) assert.throws(() => validateDeferrals([entry]), message);
+for (const field of ['probe', 'reason', 'approved', 'owner', 'tracking']) {
+  assert.throws(() => validateDeferrals([{ ...exclusion, [field]: '' }]), /required/);
 }
+for (const protectedProbe of NEVER_DEFERRED) for (const entry of [deferral, exclusion]) {
+  assert.throws(() => validateDeferrals([{ ...entry, probe: protectedProbe }]), /can never be deferred or excluded/);
+}
+assert.throws(() => validateDeferrals([deferral, exclusion]), /listed twice/);
 
-{
-  const assertion = 'boundary: only this launch failure';
-  const detail = '"last":"no resident process was launched"';
-  const entry = { ...deferral, probe: 'frameworks/remix-real', assertion, failure: { detail } };
-  assert.deepEqual(validateDeferrals([entry]), [entry], 'an exact approved detail is a valid failure form');
-  for (const failure of [{ detail: '' }, { detail: ' ' }, { detail: 7 }, { detail, status: 503, title: 't' }, { detail, typo: true }, { status: 503, title: 't', detail }]) {
-    assert.throws(() => validateDeferrals([{ ...entry, failure }]), /failure/, `invalid or mixed form ${JSON.stringify(failure)}`);
-  }
-  const output = (checks, finished = true) => [
-    ...checks.map(([ok, label, text]) => `  ${ok ? '✓' : '✗'} ${label}${text ? ` — ${text}` : ''}`),
-    ...(finished ? [`  ──── [frameworks/remix-real] ${checks.filter(([ok]) => ok).length} pass / ${checks.filter(([ok]) => !ok).length} fail`] : []),
-  ].join('\n');
-  const checks = [[true, 'setup'], [false, assertion, `prefix {${detail}} suffix`], [true, 'cleanup']];
-  const grade = (text, exitCode = 1) => gradeMatrix([verdict([row(entry.probe, exitCode, text), ledger])], [entry]);
-  assert.equal(grade(output(checks)).exitCode, 0, 'the exact substring on the one failed assertion matches');
-  for (const text of [
-    output([[true, 'setup'], [false, assertion, 'different failure'], [true, 'cleanup']]),
-    output([[true, 'setup'], [false, assertion, 'no resident process was launched'], [true, 'cleanup']]),
-    output([[true, 'setup'], [false, assertion, 'different failure'], [true, 'cleanup', detail]]),
-    output([...checks, [false, 'another assertion', detail]]),
-    output(checks, false),
-    output(checks).replace('2 pass / 1 fail', '2 pass / 2 fail'),
-    output([...checks, [false, assertion, detail]]).replace('2 pass / 2 fail', '2 pass / 1 fail'),
-  ]) {
-    const result = grade(text);
-    assert.equal(result.exitCode, 1, `mismatch, incomplete probe or extra failure remains red: ${text}`);
-    assert.deepEqual(result.applied, []);
-  }
-  assert.equal(grade(output([[true, 'setup'], [true, assertion], [true, 'cleanup']]), 0).exitCode, 1, 'passing requires removing the approved detail deferral');
-  assert.equal(gradeMatrix([verdict([ledger])], [entry]).exitCode, 1, 'a missing detail-deferred row cannot grade green');
-  const relaunch = '[restart] Relaunching with --conditions=development';
-  const compound = { ...entry, failure: { detail: [detail, relaunch] } };
-  assert.deepEqual(validateDeferrals([compound]), [compound], 'every exact fragment is part of the approved failure');
-  const compoundGrade = (actual) => gradeMatrix([verdict([row(entry.probe, 1, output([[true, 'setup'], [false, assertion, actual], [true, 'cleanup']])), ledger])], [compound]);
-  assert.equal(compoundGrade(`{${detail},"dev":"${relaunch}"}`).exitCode, 0, 'both required fragments match');
-  assert.equal(compoundGrade(`{${detail}}`).exitCode, 1, 'a different no-resident failure without the approved relaunch is red');
-  assert.equal(compoundGrade(relaunch).exitCode, 1, 'relaunch alone without the approved launch failure is red');
-  for (const failure of [{ detail: [] }, { detail: [''] }, { detail: [detail, ' '] }, { detail: [detail, 7] }]) {
-    assert.throws(() => validateDeferrals([{ ...entry, failure }]), /failure/, `invalid fragment list ${JSON.stringify(failure)}`);
-  }
-  console.log('  ok  exact detail approval shares strict completed-probe/one-failure/pass-removes rules with HTTP approval');
+const accepted = grade(approved);
+assert.equal(accepted.exitCode, 0, accepted.problems.join('\n'));
+assert.deepEqual(accepted.applied[0].rows[0].assertions, approved, 'the complete approval evidence is retained for staging and promotion');
+assert.equal(gradeMatrix([verdict([row('legacy-probe', 0), ledger])], []).exitCode, 0, 'legacy successful probes need no invented assertion results');
+assert.equal(gradeMatrix([verdict([row(probe, 1, approved, '')])], [deferral]).exitCode, 0, 'missing/truncated text cannot erase complete structured evidence');
+
+for (const [checks, why] of [
+  [null, /no complete structured/],
+  [assertions(probe, [[true, 'setup'], [false, pinned, loading]], false), /no complete structured/],
+  [[{ ...approved[0], complete: 'true' }], /no complete structured/],
+  [[{ ...approved[0], checks: [{ name: pinned, ok: 'false', detail: loading }] }], /no complete structured/],
+  [assertions('another-probe', [[false, pinned, loading]]), /no complete structured/],
+  [assertions(probe, [[false, 'setup', 'install failed'], [false, pinned, loading], [true, 'cleanup']]), /other assertions failed/],
+  [assertions(probe, [[false, pinned, loading], [false, 'cleanup', 'leaked']]), /other assertions failed/],
+  [assertions(probe, [[false, pinned, loading], [false, pinned, loading]]), /2 failed/],
+  [assertions(probe, [[true, pinned]]), /0 failed/],
+  [assertions(probe, [[false, pinned, 'HTTP 502: no process listening']]), /not the approved HTTP 503/],
+  [assertions(probe, [[false, pinned, 'HTTP 200: <title>Wrong app</title>']]), /not the approved HTTP 503/],
+]) {
+  const result = grade(checks);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.red.join('\n'), why);
+  assert.deepEqual(result.applied, []);
+}
+const spoofedText = '  ✗ the app serves — ' + loading + '\n  ──── [frameworks/nuxt-real] 2 pass / 1 fail';
+assert.equal(gradeMatrix([verdict([row(probe, 1, null, spoofedText)])], [deferral]).exitCode, 1, 'human-looking summaries cannot authorize a deferral');
+assert.equal(gradeMatrix([verdict([row(probe, 1, approved), row('unrelated', 1), ledger])], [deferral]).exitCode, 1);
+assert.equal(gradeMatrix([verdict([row(probe, 1, approved), row('session-ledger', 1)])], [deferral]).exitCode, 1);
+assert.equal(gradeMatrix([verdict([row(probe, 0, assertions(probe, [[true, pinned]]))])], [deferral]).exitCode, 1, 'passing ends the deferral');
+assert.equal(gradeMatrix([verdict([row(probe, 1, approved)], [row(probe, 0)])], [deferral]).exitCode, 1, 'a passing repeat ends it');
+assert.equal(gradeMatrix([verdict([ledger])], [deferral]).exitCode, 1, 'a missing deferred probe is red');
+assert.equal(gradeMatrix([null], [deferral]).exitCode, 2);
+assert.equal(gradeMatrix([{ tasks: [{ task: 'lost', outcome: { kind: 'failed' }, rows: null }] }], [deferral]).exitCode, 2);
+assert.equal(gradeMatrix([verdict([row('probes', 2, null, 'token missing')])], [deferral]).exitCode, 2);
+
+const detail = { ...deferral, probe: 'frameworks/remix-real', assertion: 'launch', failure: { detail: ['no resident process was launched', 'oxide'] } };
+const detailChecks = text => assertions(detail.probe, [[true, 'setup'], [false, 'launch', text], [true, 'cleanup']]);
+assert.equal(grade(detailChecks('no resident process was launched: oxide'), 1, detail).exitCode, 0);
+for (const text of ['no resident process was launched', 'oxide', 'a different failure', 'no resident process was launched\noxide']) {
+  assert.equal(grade(detailChecks(text), 1, detail).exitCode, 1, 'every approved detail fragment must match the failure itself');
+}
+for (const failure of [{ detail: [] }, { detail: [''] }, { detail: ['okay', 7] }, { detail: 'x', status: 503, title: 'x' }]) {
+  assert.throws(() => validateDeferrals([{ ...detail, failure }]), /failure/);
 }
 
-{
-  const graded = gradeMatrix([verdict([row('git-local', 0), row('frameworks/nuxt-real', 1, asApproved), ledger])], [deferral]);
-  assert.equal(graded.exitCode, 0, graded.problems.join('\n'));
-  assert.deepEqual(graded.applied.map((entry) => entry.probe), ['frameworks/nuxt-real']);
-  assert.match(graded.applied[0].rows[0].output, /Starting Nuxt/, 'the deferred probe\'s output is kept');
-  console.log('  ok  a deferred probe failing exactly as approved: green, with the deferral applied and the probe\'s output kept');
+assert.deepEqual(matrixProbeArgs([exclusion], { repeat: `${probe},nuxt-real.mjs,tests/behavioral/${probe}.mjs,git-local`, times: '3' }),
+  ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, probe].join(','), '--repeat', 'git-local', '--times', '3']);
+const excluded = gradeMatrix([verdict([row('legacy-probe', 0), ledger])], [exclusion]);
+assert.equal(excluded.exitCode, 0);
+assert.deepEqual(excluded.applied, [exclusion]);
+assert.equal(describeReleaseException(JSON.parse(JSON.stringify(excluded.applied[0]))),
+  'EXCLUDED frameworks/nuxt-real — memory failure varies (approved user, 2026-10-10; owner Main; tracking memory)');
+for (const code of [0, 1, 2]) {
+  const ran = gradeMatrix([verdict([row(probe, code, approved)])], [exclusion]);
+  assert.equal(ran.exitCode, 1);
+  assert.match(ran.problems.join('\n'), /ran despite its release exclusion/);
 }
-{
-  // The deferral is for one assertion: any other failure in the probe is red.
-  const cases = [
-    ['npm install failed, then the probe threw (no summary)', nuxt([[true, 'nuxi creates the real minimal project'], [false, 'npm install succeeds', 'ENOENT']], { finished: false }), /did not reach its summary/],
-    ['scaffold failed, then threw', nuxt([[false, 'nuxi creates the real minimal project', 'exit 1']], { finished: false }), /did not reach its summary/],
-    ['the pinned failure, and cleanup failed too', nuxt([[true, 'nuxi creates the real minimal project'], [true, 'npm install succeeds'], [false, PINNED, '503'], [false, 'probe session deleted', 'status=500']]), /other assertions failed: ✗ probe session deleted/],
-    ['an install failure that did not throw', nuxt([[true, 'nuxi creates the real minimal project'], [false, 'npm install succeeds', 'x'], [false, PINNED, '503'], [true, 'probe session deleted']]), /other assertions failed: ✗ npm install succeeds/],
-    ['a summary counting a failure whose ✗ line was lost', `${nuxt([[true, 'a'], [false, PINNED, '503']])}`.replace('1 pass / 1 fail', '1 pass / 2 fail'), /its summary says 2 failed/],
-    ['the pinned assertion only in prose, not as a ✗', `  ✗ npm install succeeds — the next step is ${PINNED}\n\n  ──── [frameworks/nuxt-real] 2 pass / 1 fail`, /other assertions failed: ✗ npm install succeeds/],
-    // The pinned assertion failing some other way: the approval is for Nitro's 503, not for the assertion.
-    ['a 200 serving the wrong Vue content', withPinned(WRONG_200), /failed with HTTP 200 "Welcome to Nuxt", not the approved HTTP 503 "Starting Nuxt\.\.\. \| Nuxt"/],
-    ['a 502 from the port route', withPinned('HTTP 502: No process listening on port 3000'), /failed with HTTP 502 \(no <title>\)/],
-    ['a 503 that is not the loading page', withPinned('HTTP 503: <html><head><title>Service Unavailable</title>'), /failed with HTTP 503 "Service Unavailable"/],
-    ['never served', withPinned('not served'), /failed with "not served"/],
-  ];
-  for (const [what, output, why] of cases) {
-    const graded = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, output), ledger])], [deferral]);
-    assert.equal(graded.exitCode, 1, what);
-    assert.match(graded.red.join('\n'), why, what);
-    assert.deepEqual(graded.applied, [], what);
-  }
-  assert.deepEqual(outcomeOf(asApproved), { finished: true, pass: 3, fail: 1, failed: [{ label: PINNED, detail: NITRO_503 }] }, 'outcomeOf reads the checks, their details and the summary');
-  console.log('  ok  a deferred probe failing any other way (setup, cleanup, an exception, a lost ✗): red, saying how');
-}
-{
-  const graded = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, asApproved), row('git-local', 1), ledger])], [deferral]);
-  assert.equal(graded.exitCode, 1);
-  assert.deepEqual(graded.red, ['tests/behavioral/git-local.mjs (part 1/1, exit 1)']);
-  console.log('  ok  any other red row: red');
-}
-{
-  const graded = gradeMatrix([verdict([row('frameworks/nuxt-real', 0), ledger])], [deferral]);
-  assert.equal(graded.exitCode, 1);
-  assert.match(graded.problems.join('\n'), /frameworks\/nuxt-real passes; remove its deferral/);
-  assert.deepEqual(graded.applied, []);
-  // Passing in any one row is enough: a repeat that passes ends the deferral too.
-  const once = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, asApproved)], [row('frameworks/nuxt-real', 0)])], [deferral]);
-  assert.equal(once.exitCode, 1);
-  console.log('  ok  a deferred probe that passes: red, "remove its deferral"');
-}
-{
-  const graded = gradeMatrix([verdict([row('git-local', 0), ledger])], [deferral]);
-  assert.equal(graded.exitCode, 1);
-  assert.match(graded.problems.join('\n'), /frameworks\/nuxt-real did not run/);
-  console.log('  ok  a deferred probe that did not run: red');
-}
-{
-  const graded = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, asApproved), row('session-ledger', 1, 'leaked: x')])], [deferral]);
-  assert.equal(graded.exitCode, 1, 'a leaked session is never deferrable');
-  const notRun = gradeMatrix([verdict([row('probes', 2, 'NIMBUS_PROBE_TOKEN is not set')])], [deferral]);
-  assert.equal(notRun.exitCode, 2, 'a task that was not graded leaves the matrix not graded');
-  const noVerdict = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, asApproved)]), null], [deferral]);
-  assert.equal(noVerdict.exitCode, 2);
-  const lost = gradeMatrix([{ tasks: [{ task: 'part 1/1', outcome: { kind: 'failed' }, rows: null }] }], [deferral]);
-  assert.equal(lost.exitCode, 2);
-  console.log('  ok  the session ledger is never deferrable, and a task or verdict missing leaves the matrix not graded');
-}
-{
-  const graded = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, asApproved), ledger]), verdict([row('auth/new/hosted-demo-try-terminal', 0)])], [deferral]);
-  assert.equal(graded.exitCode, 0, 'rows from the suite and the hosted checks are graded together');
-  const red = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, asApproved), ledger]), verdict([row('auth/new/hosted-demo-try-terminal', 1)])], [deferral]);
-  assert.equal(red.exitCode, 1);
-  console.log('  ok  the suite and the hosted checks are one matrix');
-}
-console.log('ci-deferred OK');
+const mixed = gradeMatrix([verdict([row(detail.probe, 1, detailChecks('no resident process was launched: oxide')), ledger])], [exclusion, detail]);
+assert.equal(mixed.exitCode, 0);
+assert.deepEqual(mixed.applied.map(entry => entry.probe), [probe, detail.probe]);
+console.log('ci-deferred: structured completion, exact approvals, exclusions and fail-closed release grading');

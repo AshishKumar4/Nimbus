@@ -2,7 +2,7 @@
 // python/stderr-traceback — uncaught exception prints a traceback to
 // stderr and exits 1.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, deleteSession, heredocCommand, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('python/stderr-traceback');
@@ -34,6 +34,13 @@ await t.run('nimbus install python', 180_000);
     has1 ? '' : JSON.stringify(stripped.slice(-200)));
 }
 
+// Runtime setup must not shift the user's traceback line numbers.
+await t.run(heredocCommand('/home/user/traceback-lines.py', 'value = 1\nraise RuntimeError("user line two")\n'), 30_000);
+const failed = stripAnsi((await t.run('python /home/user/traceback-lines.py', 120_000)).output);
+a.check('traceback names line 2 of the actual user program',
+  /File "\/home\/user\/traceback-lines\.py", line 2/.test(failed) && /RuntimeError: user line two/.test(failed), failed);
+
 await t.close();
+a.check('probe session deleted', (await deleteSession(sid)).ok);
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

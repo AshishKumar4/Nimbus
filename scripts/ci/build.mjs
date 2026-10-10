@@ -23,14 +23,12 @@
 //     a lane's applied patch is checked against, apart from the patch.
 // Exit: 0, both rows green and no patch; 1, otherwise; 2, not graded (no
 // clean git checkout here).
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-
-/** Each row's output keeps its last 256 KiB. */
-const OUTPUT_CAP = 256 * 1024;
+import { OUTPUT_CAP, step } from './lib/step.mjs';
 
 const argv = process.argv.slice(2);
 const outAt = argv.indexOf('--out');
@@ -48,26 +46,6 @@ function finish(head, rows, patch, status, blobs = {}) {
   writeFileSync(out, `${JSON.stringify({ head, rows, patch, blobs })}\n`);
   for (const row of rows) console.error(`build: ${row.name} exit ${row.exitCode} in ${row.seconds.toFixed(1)} s`);
   process.exit(status);
-}
-
-/** Run a command at the root, its output passed through and its tail kept. */
-function step(name, root, command, args) {
-  const began = Date.now();
-  return new Promise((resolve) => {
-    let output = '';
-    const keep = (chunk) => {
-      process.stderr.write(chunk);
-      output = (output + chunk.toString()).slice(-OUTPUT_CAP);
-    };
-    const child = spawn(command, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout.on('data', keep);
-    child.stderr.on('data', keep);
-    child.on('error', (error) => keep(`\n${command} could not start: ${error.message}\n`));
-    child.on('close', (code, signal) => {
-      if (signal) keep(`\n${command} was killed by ${signal}\n`);
-      resolve({ name, exitCode: code ?? 128, seconds: (Date.now() - began) / 1000, output });
-    });
-  });
 }
 
 const top = git(['rev-parse', '--show-toplevel']);

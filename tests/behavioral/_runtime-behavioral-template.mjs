@@ -35,7 +35,7 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
-import { mintSession, attachPathFor, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE, AUTH_TOKEN } from './_driver.mjs';
+import { mintSession, attachPathFor, probeTarget, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
 
@@ -138,13 +138,12 @@ export function waitForSessionTerminalText(page, pattern, timeout = 30_000) {
   return page.waitForFunction(sessionTerminalInPage, { timeout }, pattern.source);
 }
 
-export async function applyProbeCookies(page, base = BASE) {
-  if (AUTH_TOKEN) {
-    await page.setExtraHTTPHeaders({ Authorization: `Bearer ${AUTH_TOKEN}` });
-  }
-  if (!AUTH_COOKIE) return;
+export async function applyProbeCookies(page, base = BASE, sid) {
+  const { Authorization, Cookie } = probeTarget.headers({}, sid);
+  if (Authorization) await page.setExtraHTTPHeaders({ Authorization });
+  if (!Cookie) return;
   const url = new URL(base);
-  const cookies = AUTH_COOKIE
+  const cookies = Cookie
     .split(';')
     .map((entry) => entry.trim())
     .filter(Boolean)
@@ -180,7 +179,7 @@ const exchangedSessions = new Set();
  * API, and WebSocket requests for every page in this browser.
  */
 export async function exchangeAttachCookie(page, sid) {
-  if (!AUTH_TOKEN || !sid || exchangedSessions.has(sid)) return;
+  if (!sid || exchangedSessions.has(sid)) return;
   const attachPath = attachPathFor(sid);
   if (!attachPath.includes('nimbus_token=')) return;
   exchangedSessions.add(sid);
@@ -198,7 +197,7 @@ export async function exchangeAttachCookie(page, sid) {
 
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
-  await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
   await exchangeAttachCookie(page, sid);
   const consoleMessages = [];
   const pageErrors = [];

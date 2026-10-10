@@ -5,6 +5,8 @@
 
 import { readFileSync } from 'node:fs';
 import { makeAsserter } from '../../_driver.mjs';
+import { launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { createDemoAgentAuthCookie } from '../../../../apps/hosted-demo/src/demo-agent-auth.ts';
 
 const a = makeAsserter('auth/new/hosted-demo-launch-oauth');
 const {
@@ -13,7 +15,6 @@ const {
   sanitizeReturnTo,
 } = await import('../../../../apps/hosted-demo/src/demo-oauth-config.ts');
 const {
-  createNimbusAgentOAuthCookie,
   loadNimbusAgentOAuthFromRequest,
 } = await import('../../../../packages/worker/src/session/agent-oauth.ts');
 
@@ -69,33 +70,41 @@ a.check('return_to rejects protocol-relative URLs',
   sanitizeReturnTo('//evil.example.com/new') === null);
 
 const html = readFileSync(new URL('../../../../packages/worker/public/index.html', import.meta.url), 'utf8');
-const demoAgentAuthSource = readFileSync(new URL('../../../../apps/hosted-demo/src/demo-agent-auth.ts', import.meta.url), 'utf8');
-a.check('landing launch form opens modal',
-  html.includes('id="hero-launch-form"')
-  && html.includes('id="launch-modal"')
-  && html.includes('id="launch-login"'));
-a.check('modal login points at authenticated launch return path',
-  html.includes('href="/login?return_to=%2Fnew%3Flaunch%3D1"'));
-a.check('modal exposes Cloudflare login copy',
-  html.includes('Login / Register with Cloudflare'));
-a.check('modal does not expose secondary launch/cancel actions',
-  !html.includes('id="launch-direct"')
-  && !html.includes('id="launch-cancel"')
-  && !html.includes('Launch sandbox'));
-a.check('launch script checks browser auth endpoint',
-  html.includes("fetch('/api/demo/auth/me'"));
-a.check('authenticated users submit launch form without modal path',
-  html.includes("return 'authenticated'")
-  && html.includes('form.submit()')
-  && html.indexOf("return 'authenticated'") < html.indexOf('form.submit()'));
-a.check('launch script falls back for generic embedders',
-  html.includes('form.submit()'));
-
-a.check('hosted demo seeds the shared agent OAuth cookie helper',
-  demoAgentAuthSource.includes('createNimbusAgentOAuthCookie')
-  && demoAgentAuthSource.includes('cfAccessToken')
-  && demoAgentAuthSource.includes('demoTenantSegment'),
-  demoAgentAuthSource);
+const browser = await launchBrowser({ webSecurity: true });
+try {
+  const page = await browser.newPage();
+  let authStatus = 401;
+  const requests = [];
+  await page.setRequestInterception(true);
+  page.on('request', async (request) => {
+    const url = new URL(request.url());
+    requests.push({ path: url.pathname, method: request.method() });
+    if (url.origin !== origin) return request.abort();
+    if (url.pathname === '/') return request.respond({ status: 200, contentType: 'text/html', body: html });
+    if (url.pathname === '/api/demo/auth/me') return request.respond({ status: authStatus, contentType: 'application/json', body: '{}' });
+    if (url.pathname === '/new') return request.respond({ status: 200, contentType: 'text/html', body: '<body>submitted launch</body>' });
+    return request.respond({ status: 404, body: '' });
+  });
+  await page.goto(origin, { waitUntil: 'domcontentloaded' });
+  await page.click('#hero-launch-form button');
+  await page.waitForSelector('#launch-modal:not([hidden])');
+  const login = await page.$eval('#launch-login', node => ({ href: node.href, text: node.textContent, focused: document.activeElement === node }));
+  a.check('unauthenticated launch opens and focuses the login modal', login.focused && login.text.includes('Login / Register with Cloudflare'), JSON.stringify(login));
+  a.check('modal login returns to the authenticated launch path', new URL(login.href).searchParams.get('return_to') === '/new?launch=1', login.href);
+  a.check('unauthenticated launch does not submit the form', !requests.some(request => request.path === '/new'));
+  await page.keyboard.press('Escape');
+  a.check('Escape closes the login modal', await page.$eval('#launch-modal', node => node.hidden));
+  for (const status of [200, 404]) {
+    authStatus = status;
+    await page.goto(origin, { waitUntil: 'domcontentloaded' });
+    await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.click('#hero-launch-form button')]);
+    a.check(status === 200 ? 'authenticated launch submits without modal' : 'generic embedder fallback submits the launch',
+      new URL(page.url()).pathname === '/new' && await page.$eval('body', node => node.textContent) === 'submitted launch');
+  }
+  a.check('the actual form sends POST /new', requests.some(request => request.path === '/new' && request.method === 'POST'));
+} finally {
+  await browser.close();
+}
 
 const demoAuth = {
   v: 1,
@@ -110,17 +119,7 @@ const demoAuth = {
   cfAccountId: '0123456789abcdef0123456789abcdef',
 };
 const sessionId = 'single-login-123';
-const agentCookie = await createNimbusAgentOAuthCookie({
-  mode: 'oauth',
-  accessToken: demoAuth.cfAccessToken,
-  refreshToken: demoAuth.cfRefreshToken,
-  tokenType: demoAuth.cfTokenType,
-  expiresAt: demoAuth.cfTokenExpiresAt,
-  connectedAt: demoAuth.loginAt,
-  accountId: demoAuth.cfAccountId,
-  sessionId,
-  tenantSegment: `demo:${demoAuth.userId}`,
-}, '0123456789abcdef0123456789abcdef', `/s/${sessionId}`);
+const agentCookie = await createDemoAgentAuthCookie({ NIMBUS_AGENT_COOKIE_SECRET: '0123456789abcdef0123456789abcdef' }, demoAuth, sessionId);
 a.check('authenticated launch seeds session-scoped agent OAuth cookie',
   agentCookie
   && agentCookie.includes('nimbus_agent_oauth=')
