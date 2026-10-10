@@ -14,7 +14,9 @@
 //   - refs and the shallow file change only after the pack is stored: while
 //     it is still arriving, another command sees the old tip and boundary;
 //   - a fetch whose pack turns out corrupt fails, and leaves no temporary file;
-//   - a fetch the server refuses fails naming the refusal, as a clone's does.
+//   - a fetch the server refuses fails naming the refusal, as a clone's does;
+//   - credentials in the remote's URL, or Unicode ones from the environment,
+//     go to the server as Basic credentials, UTF-8, the URL without them.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -167,6 +169,26 @@ try {
     assert.match(refused.stderr, /fetch failed: git upload-pack: authentication failed \(HTTP 403\)/);
   } finally {
     refusing.stop();
+  }
+
+  const recording = startGitHttpServer(served);
+  try {
+    const repo = '/home/user/repo';
+    const basic = (user, password) => 'Basic ' + Buffer.from(`${user}:${password}`, 'utf8').toString('base64');
+    const port = new URL(recording.url).port;
+    assert.equal((await session.git(repo, ['remote', 'add', 'withcreds', `http://us%C3%A9r:p%40ss@127.0.0.1:${port}/repo.git`])).code, 0);
+    const fromUrl = await session.git(repo, ['fetch', 'withcreds']);
+    assert.equal(fromUrl.code, 0, fromUrl.stderr);
+    assert.ok(recording.requests.length > 0 && recording.requests.every((r) => r.authorization === basic('usér', 'p@ss')),
+      'the URL\'s credentials, UTF-8: ' + JSON.stringify(recording.requests));
+    recording.requests.length = 0;
+    assert.equal((await session.git(repo, ['remote', 'add', 'plain', `${recording.url}/repo.git`])).code, 0);
+    const fromEnv = await session.git(repo, ['fetch', 'plain'], { GIT_USERNAME: 'José', GIT_PASSWORD: 'пароль-✓' });
+    assert.equal(fromEnv.code, 0, fromEnv.stderr);
+    assert.ok(recording.requests.length > 0 && recording.requests.every((r) => r.authorization === basic('José', 'пароль-✓')),
+      'the environment\'s credentials, UTF-8: ' + JSON.stringify(recording.requests));
+  } finally {
+    recording.stop();
   }
   console.log('git-fetch-stream: ok');
 } finally {
