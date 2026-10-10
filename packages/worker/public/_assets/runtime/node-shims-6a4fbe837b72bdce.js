@@ -3270,32 +3270,6 @@ const __fsMod = (() => {
     return null;
   }
 
-  // What the view answers for under a trusted read lease, compiled from
-  // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
-  // declares readLeaseCovers (and SESSION_KERNEL_ROOTS).
-var { SESSION_KERNEL_ROOTS, readLeaseCovers } = (() => {
-var SESSION_KERNEL_ROOTS = [".nimbus", "var/lib/nimbus"];
-function readLeaseCovers(key, listing, roots) {
-  for (const root of roots) {
-    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;
-    if (listing && (key === "" || root.startsWith(key) && root.charCodeAt(key.length) === 47)) return false;
-  }
-  return true;
-}
-return { SESSION_KERNEL_ROOTS, readLeaseCovers };
-})();
-
-  /** While a leased answer is made (_leasedRead): what its lease does not vouch for, and whether a lookup landed on any of it. */
-  let _leasedUncovered = null;
-  let _landedUncovered = false;
-  /** `__nsResolve`, where it landed noted: `k`'s entry, or with `listing` its names, through any link. */
-  function _nsResolveViewed(k, follow, listing) {
-    const found = __nsLookup(k, follow);
-    if (found === "ELOOP") return found;
-    if (_leasedUncovered !== null && !readLeaseCovers(found.path, listing, _leasedUncovered)) _landedUncovered = true;
-    return found.row !== undefined ? found : null;
-  }
-
   /**
    * The key an operation that follows symlinks lands on: every link on `k`
    * followed, the last one too, as open(2) and chmod(2) follow them; null on
@@ -3388,7 +3362,7 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = _nsResolveViewed(renamed && renamed.alias !== undefined ? renamed.alias : k, follow, false);
+      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -3396,7 +3370,7 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = _nsResolveViewed(_nsMovedEntry(k, own), false, false);
+      const found = __nsResolve(_nsMovedEntry(k, own), false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -3404,7 +3378,7 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, follow, false);
+      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -3425,7 +3399,7 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, true, true);
+      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
       if (real && real !== "ELOOP") {
         for (const child of __nsChildren(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
@@ -4206,8 +4180,6 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
       barrierFailures: 0, lastBarrierFailure: "",
       // Barriers a trusted read lease answered, asking nothing (_acquireBarrier).
       leasedBarriers: 0,
-      // Async stats and listings the sync view answered under a trusted read lease (_leasedView).
-      leasedReads: 0,
       // Barriers that held their resumption on an own write's acknowledgement
       // (_awaitReportedOwnWrites).
       ownWriteWaits: 0,
@@ -5738,65 +5710,11 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
     return answer ? answer.value : null;
   }
 
-  /**
-   * Whether the sync view answers an async metadata call (a stat, a
-   * listing) in the session's place: under a trusted read lease nothing has
-   * changed since the barrier that confirmed it, and nothing of the
-   * process's own since (ProcessFsClient.readTrusted), so the namespace is
-   * what the session would answer. Where the process's own effects are over
-   * a path (its overlay, a write parked there), the session answers it.
-   */
-  function _leasedView() {
-    return !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted();
-  }
-  /** Whether the process's own effects are at `k` (or its landing, `follow`): what the session answers, not the view. */
-  function _ownAt(k, follow) {
-    if (_nsOwnView(k) !== null || (__vfsWrites && k in __vfsWrites) || _pendingModes.has(k)) return true;
-    if (!follow) return false;
-    const landing = _nsLandingKey(k);
-    return landing !== null && landing !== k && _ownAt(landing, false);
-  }
-  /** Whether the process's own effects are at `k` or anywhere under it. */
-  function _ownUnder(k) {
-    if (_ownAt(k, false)) return true;
-    const prefix = k ? k + "/" : "";
-    for (const own of _nsOwn.keys()) if (own.startsWith(prefix)) return true;
-    for (const local of Object.keys(__vfsWrites || {})) if (local.startsWith(prefix)) return true;
-    for (const local of Object.keys(__vfsDirs || {})) if (local === k || local.startsWith(prefix)) return true;
-    return false;
-  }
-  /**
-   * `read`, the sync view's answer under a lease that does not vouch for
-   * `uncovered`, counted; undefined when the view cannot say (EAGAIN: a
-   * mount it did not list) or it landed there (a link out of what is vouched for).
-   */
-  function _leasedRead(uncovered, read) {
-    _leasedUncovered = uncovered;
-    _landedUncovered = false;
-    try {
-      const value = read();
-      if (_landedUncovered) return undefined;
-      _stats.leasedReads++;
-      return value;
-    } catch (error) {
-      if ((error && error.code === "EAGAIN") || _landedUncovered) return undefined;
-      _stats.leasedReads++;
-      throw error;
-    } finally {
-      _leasedUncovered = null;
-    }
-  }
-
   async function _statAsync(p) { return _statAsyncAs("stat", p); }
   async function _lstatAsync(p) { return _statAsyncAs("lstat", p); }
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
-    if (uncovered !== null && readLeaseCovers(_strip(absPath), false, uncovered) && !_ownAt(_strip(absPath), syscall === "stat")) {
-      const local = _leasedRead(uncovered, () => (syscall === "stat" ? statSync(p) : lstatSync(p)));
-      if (local !== undefined) return local;
-    }
     if (supervisor && typeof supervisor[syscall] === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
@@ -5816,12 +5734,6 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
-    if (uncovered !== null && readLeaseCovers(_strip(absPath), true, uncovered) && !_ownUnder(_strip(absPath))) {
-      const local = _leasedRead(uncovered, () => readdirSync(p, opts));
-      // In the order the session's listing is given in.
-      if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
-    }
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
@@ -8665,7 +8577,7 @@ return { SESSION_KERNEL_ROOTS, readLeaseCovers };
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = _nsResolveViewed(key, true, false);
+          const found = __nsResolve(key, true);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };

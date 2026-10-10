@@ -145,6 +145,8 @@ export function residentFilesystem(session, resident, delegation) {
     const delegated = (name) => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
     /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
     let owed = false;
+    /** Owed for input that came with no I/O (inbound's `untimed`): the lease does not answer it. */
+    let untimed = false;
     /** Owed for a change, not only for input: no read lease answers for what the process itself changed. */
     let changed = false;
     if (delegation !== undefined) {
@@ -302,7 +304,7 @@ export function residentFilesystem(session, resident, delegation) {
     const asking = () => {
         if (!owed)
             return false;
-        if (changed || holder === null || !holder.client.readTrusted())
+        if (changed || untimed || holder === null || !holder.client.readTrusted())
             return true;
         owed = false;
         counts.leasedBarriers++;
@@ -322,6 +324,7 @@ export function residentFilesystem(session, resident, delegation) {
             if (ok && store.ready()) {
                 owed = false;
                 changed = false;
+                untimed = false;
             }
             return ok;
         });
@@ -416,7 +419,8 @@ export function residentFilesystem(session, resident, delegation) {
             : (...args) => { delegated(name); return call(...args); });
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
-    fs.inbound = () => { owed = true; };
+    fs.inbound = (noIo = false) => { owed = true; if (noIo)
+        untimed = true; };
     fs.holding = () => holder?.pending() ?? false;
     // What leaves the process is preceded by everything it logged.
     fs.flush = async () => { await holder?.flush(); };

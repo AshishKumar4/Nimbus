@@ -112,8 +112,13 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
      * the session's descriptor instead.
      */
     pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
-    /** Input from outside the process arrived: the barrier is owed before the next answer. */
-    inbound(): void;
+    /**
+     * Input from outside the process arrived: the barrier is owed before the
+     * next answer. `untimed`: it came with no I/O (another process's bytes
+     * in this isolate), so the clock the read lease's trust is measured on did
+     * not move, and the barrier asks the session whatever the lease says.
+     */
+    inbound(untimed?: boolean): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
     /**

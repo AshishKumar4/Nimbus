@@ -535,7 +535,8 @@ export function processHost(opts) {
                 view().setUint32(nread, moved, true);
                 wake(pipe);
                 // Bytes from another process: what follows may depend on what it did.
-                opts.inbound();
+                // They came with no I/O, so the session is asked whatever the lease says.
+                opts.inbound(true);
                 return E.SUCCESS;
             }
             if (pipe.failed)
