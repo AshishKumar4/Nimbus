@@ -20,7 +20,7 @@ import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
+import { READ_LEASE_HOLD_OFF_MAX_MS, READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
@@ -379,6 +379,49 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(decode(landed.readFile('home/user/d/a.txt')), 'held');
 }
 
+// ── A reader whose leases are recalled as soon as they are granted is leased less often; one that outlives its hold-off resets it ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  let saves = 0;
+  // A save: what it meets of the reader's is recalled and answered, and it is published.
+  const save = async () => {
+    const [owner] = s.files.delegations.holdsAt(7) ?? [];
+    const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', `save ${++saves}`));
+    if (owner !== undefined) {
+      assert.equal(await reader.awaitRecall(owner, 1000), 'revoke');
+      reader.recalled(owner, 'revoke');
+    }
+    await writing;
+    return owner !== undefined;
+  };
+  const leases = () => barrier(s, reader).readLease !== undefined;
+  // Holding one, kept confirmed.
+  const hold = async (ms) => {
+    for (const until = Date.now() + ms; Date.now() < until; await sleep(100)) assert.ok(leases(), 'a held lease was not confirmed');
+  };
+  assert.ok(leases());
+  await hold(READ_LEASE_TRUST_MS + 100);
+  assert.equal(await save(), true, 'the first save met no lease');
+  // Recalled after it outlived the first hold-off: the next one is the least.
+  assert.equal(leases(), false, 'leased again inside the hold-off');
+  await sleep(READ_LEASE_TRUST_MS + 20);
+  assert.ok(leases(), 'not leased past the least hold-off');
+  assert.equal(await save(), true);
+  // Recalled as soon as it was granted: the hold-off doubles.
+  await sleep(READ_LEASE_TRUST_MS + 20);
+  assert.equal(leases(), false, 'leased again past the least hold-off after a lease that did not outlive it');
+  await sleep(READ_LEASE_TRUST_MS);
+  assert.ok(leases(), 'not leased past the doubled hold-off');
+  // One that outlives the hold-off before it resets it.
+  await hold(2 * READ_LEASE_TRUST_MS + 100);
+  assert.equal(await save(), true);
+  await sleep(READ_LEASE_TRUST_MS + 20);
+  assert.ok(leases(), 'a lease that outlived its hold-off left it doubled');
+  assert.ok(READ_LEASE_HOLD_OFF_MAX_MS >= 8 * READ_LEASE_TRUST_MS);
+}
+
 // ── A gated writer continues at commit; its output and exit wait for the publication, and an ungated one waits at its write ──
 {
   const s = session();
@@ -406,7 +449,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(processes.getExit(pid), null, 'its exit went out before what it wrote was published');
   assert.equal(ungated, false, 'an ungated writer was answered before its publication');
   // Another process's output waits for nothing of this one's.
-  assert.equal(s.files.outputGate.before(9), null);
+  assert.equal(s.files.outputGate.before(7), null);
   reader.recalled(readLease.owner, 'revoke');
   await s.files.outputGate.before(pid);
   await waiting;

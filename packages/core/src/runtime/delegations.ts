@@ -61,6 +61,8 @@ export const DELEGATION_RECALL_POLL_MS = 25_000;
 export const READ_LEASE_TRUST_MS = 500;
 /** What a writer waits past a read lease's trust, for the holder's clock against the session's. */
 export const READ_LEASE_MARGIN_MS = 50;
+/** The longest a process is granted no read lease after its last was recalled (Delegations.readRecalled). */
+export const READ_LEASE_HOLD_OFF_MAX_MS = 16_000;
 
 
 /** What the host is told when it must stop a holder that did not answer a recall in time. */
@@ -83,8 +85,8 @@ interface Held {
   pending: { kind: RecallKind; done: () => void; cancel: () => void } | null;
   /** Lets the engine's lease go and forgets it (the scope's disposer). */
   end(): void;
-  /** A read lease's (readLease): when the session last confirmed it to its holder. */
-  read: { confirmedAt: number } | null;
+  /** A read lease's (readLease): when the session granted it, and last confirmed it to its holder. */
+  read: { readonly grantedAt: number; confirmedAt: number } | null;
   /** The holder's scope, which disposes of it when the process ends. */
   readonly scope: { readonly subscriptions: Set<() => void> };
 }
@@ -132,11 +134,16 @@ export class Delegations {
   /** Each holder's leases. */
   private readonly byPid = new Map<number, Set<string>>();
   /**
-   * When each process's read lease was last recalled: it is granted none
-   * for READ_LEASE_TRUST_MS after, so the writer's next change (a save is
-   * several) waits on no one, and the reader asks at each barrier meanwhile.
+   * When each process's read lease was last recalled, and how long it is
+   * granted none after, so the writer's next change (a save is several)
+   * waits on no one and the reader asks at each barrier meanwhile:
+   * READ_LEASE_TRUST_MS, doubled up to READ_LEASE_HOLD_OFF_MAX_MS for each
+   * lease recalled before it outlived the hold-off before it, and back once
+   * one does. A lease recalled soon after it is granted spares its reader
+   * little and costs a writer a round trip: while changes come faster than
+   * one lives, the reader asks at each barrier, as with none.
    */
-  private readonly readRecalled = new Map<number, number>();
+  private readonly readRecalled = new Map<number, { readonly at: number; readonly holdOff: number }>();
   private readonly recallTimeoutMs: number;
 
   constructor(private readonly options: DelegationsOptions) {
@@ -212,7 +219,8 @@ export class Delegations {
       held.read.confirmedAt = now;
       return { owner, trustMs: READ_LEASE_TRUST_MS };
     }
-    if (now - (this.readRecalled.get(pid) ?? -Infinity) < READ_LEASE_TRUST_MS) return null;
+    const recalled = this.readRecalled.get(pid);
+    if (recalled !== undefined && now - recalled.at < recalled.holdOff) return null;
     let held: Held | null = null;
     const terms: DelegationTerms = {
       reads: false,
@@ -239,7 +247,7 @@ export class Delegations {
       }
       this.options.release(lease.owner);
     };
-    held = { pid, owner: lease.owner, root: '', asked: [], waiter: null, pending: null, end, scope, read: { confirmedAt: now } };
+    held = { pid, owner: lease.owner, root: '', asked: [], waiter: null, pending: null, end, scope, read: { grantedAt: now, confirmedAt: now } };
     this.held.set(lease.owner, held);
     this.holdsOf(pid, scope).add(lease.owner);
     // Its holder decided nothing: ending with it loses nothing, and says nothing.
@@ -361,7 +369,10 @@ export class Delegations {
    * ran out already is not asked.
    */
   private recallRead(held: Held): Promise<void> {
-    this.readRecalled.set(held.pid, Date.now());
+    const now = Date.now();
+    const last = this.readRecalled.get(held.pid);
+    const outlived = last === undefined || now - held.read!.grantedAt >= last.holdOff;
+    this.readRecalled.set(held.pid, { at: now, holdOff: outlived ? READ_LEASE_TRUST_MS : Math.min(last.holdOff * 2, READ_LEASE_HOLD_OFF_MAX_MS) });
     const trustLeft = held.read!.confirmedAt + READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS - Date.now();
     if (trustLeft <= 0) {
       this.counts.readExpired++;
