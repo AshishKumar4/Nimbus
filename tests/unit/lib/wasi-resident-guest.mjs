@@ -19,6 +19,7 @@ import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { FILESYSTEM_RPC_METHODS } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { subtreeListing } from '../../../packages/core/src/runtime/fs-list-tree.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { SupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
@@ -40,7 +41,7 @@ export const canPark = typeof WebAssembly.Suspending === 'function' && typeof We
  */
 export async function residentGuest({ refuse = () => false, of } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 
@@ -96,6 +97,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
     } catch (error) { throw acrossRpc(error); }
   };
   supervisor.fsList = async (...args) => session.bridge.bridge(pid).list(...args);
+  supervisor.fsListTree = async (root, maxEntries) => subtreeListing(session.bridge.bridge(pid), root, maxEntries);
   supervisor.fsReadBatch = async (requests) => {
     const current = session.bridge.bridge(pid);
     const out = [];

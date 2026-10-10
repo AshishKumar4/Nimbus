@@ -523,6 +523,10 @@ export class SessionProcessSupervisor {
     setOutputGate(gate) {
         this.outputGate = gate;
     }
+    /** `pid`'s output leaves, from now on, by a way no gate sees (a socket an answer of its hands over): its gate is told. */
+    escapeOutput(pid) {
+        this.outputGate?.escaped?.(pid);
+    }
     /**
      * `deliver` once `pid`'s output may reach its observers: now, when the
      * gate holds nothing of pid's, else after the gate and after pid's output

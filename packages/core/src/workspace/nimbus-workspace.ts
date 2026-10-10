@@ -349,9 +349,11 @@ export class NimbusWorkspace {
     // Only a supervisor this workspace created gets its pid base set here; a
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
-    // Its processes bind to this filesystem, so a reap releases them here:
-    // the one place the table and the filesystem meet.
+    // Its processes bind to this filesystem, so a reap releases them here,
+    // and their output waits for what they wrote to be published: the one
+    // place the table and the filesystem meet.
     processes.setRelease((pid) => filesystem.releaseProcess(pid));
+    filesystem.holdOutput(processes);
 
     const env = { ...defaultEnv(home), ...options.env };
 

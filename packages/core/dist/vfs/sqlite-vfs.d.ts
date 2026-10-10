@@ -79,6 +79,12 @@ export interface DelegationTerms {
     /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
     admit?(root: string): void;
     /**
+     * A read lease's: whether its holder no longer trusts it (no barrier of
+     * its confirmed it within its trust), and if so it is ended here, at
+     * once: a mutation then waits for nothing, synchronous or not.
+     */
+    lapsed?(): boolean;
+    /**
      * How many inode numbers to reserve for what the holder makes: it numbers
      * them itself (a stat shows the number before the session has the file)
      * and sends each with its file (W7 v4 `ino`).
@@ -354,6 +360,14 @@ export interface WriteBatchStreamProgress {
     sequence?: WaveSequenceAnswer;
     /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
     mutations?: WaveMutation[];
+    /**
+     * Answered at its commit while a commit of its writer's is held for its
+     * publication (SqliteVFS.as's `continues`; its own, or, for a resend, the
+     * attempt's before it): what its writer's runtime waits for before an
+     * effect leaves by a way the session's gate does not see
+     * (RuntimeFsBridge.published).
+     */
+    held?: true;
 }
 /**
  * One op a wave committed (`index`, its place among the wave's ops, from 0):
@@ -594,6 +608,15 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
     };
 });
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
+/**
+ * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
+ * is not in every runtime this code ships to, so the combination is a small
+ * linked controller instead.
+ */
+export declare function linkedSignal(signals: readonly (AbortSignal | undefined)[]): {
+    signal: AbortSignal;
+    dispose(): void;
+};
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
@@ -746,7 +769,7 @@ export declare class SqliteVFS {
     private _totalDirs;
     private _usedBytes;
     private _revision;
-    private readonly pathRevisions;
+    private pathRevisions;
     private static readonly PATH_REVISIONS_MAX_BYTES;
     /**
      * What each transaction committed since the last publication wrote at each
@@ -788,7 +811,18 @@ export declare class SqliteVFS {
      * generations back under cursors facets still hold.
      */
     rotateIncarnation(): string;
+    /**
+     * A new clock epoch, stored, starting from the store's committed state:
+     * every cursor held against the old one poisons, the clock is the store's
+     * generation (what an operation left part-published committed included),
+     * and no path keeps a revision of the old epoch's.
+     */
+    private newIncarnation;
     private readonly exclusiveMutationLeases;
+    /** Read leases (acquireReadLease), by owner. */
+    private readonly readLeases;
+    /** Read leases ended without waiting for their holders (breakReadLease). */
+    private readLeasesBroken;
     private activeMutationOwner;
     /**
      * The delegations the running call is made by (callerView: a view bound
@@ -796,10 +830,22 @@ export declare class SqliteVFS {
      * its own lookups recall none of them.
      */
     private activeHolds;
+    /** The pipelined call running (pipelined): its commits run ahead of the read recalls it meets. */
+    private activePipeline;
+    /** Pipelines whose commits are held, not yet published: no read lease is granted until they are. */
+    private readonly heldPipelines;
+    /** Each wave being read now (writeStream), to cut (cancelStreams). */
+    private readonly streams;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
+    /** Whether the running call is a view's synchronous mutation, whose writes to the session's stores a read recall holds rather than refuses (readRecallAt). */
+    private activeStoreHolding;
     /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
     private activeLanded;
+    /** Whether the running call is the kernel's own (a uid-0 view bound to no process): the stores are its, held or not. */
+    private activeKernel;
+    /** Whether a wave of the running call's view answers at its commit (as's `continues`), asked as it is answered. */
+    private activeContinues;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -1131,12 +1177,16 @@ export declare class SqliteVFS {
      * none of them). `landed`: the view reads what has landed, never asking a
      * holder to send first (an observer that is told when a wave lands, the
      * editor's file tree, reads after it); its writes still recall.
+     * `continues`, asked as each of the view's waves is answered: whether it
+     * answers at its commit, ahead of its publication (its process's effects
+     * wait for that instead: ProcessFiles.continueAtCommit).
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
         actor?: string;
         holds?: () => ReadonlySet<string>;
         landed?: boolean;
+        continues?: () => boolean;
     }): CredentialedVfs;
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
@@ -1265,6 +1315,23 @@ export declare class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     private bumpRevision;
+    /**
+     * A publication a read lease covers, by a writer that did not recall it
+     * (one that skipped refusalAt): the lease is broken. Said.
+     */
+    private breakUnrecalledReadLeases;
+    /**
+     * End a read lease without waiting for its holder, which is told (its
+     * recall, asked now): until it hears, its copy is stale for what remains
+     * of its trust (Delegations). Counted.
+     */
+    private breakReadLease;
+    /**
+     * End every read lease, each told (breakReadLease): what they vouched for
+     * changed with no publication (a mount or an unmount moved what is the
+     * engine's).
+     */
+    breakReadLeases(): void;
     /** Commit a generation that writes nothing, so a publication has a tick of its own. */
     private advanceGeneration;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
@@ -1353,6 +1420,87 @@ export declare class SqliteVFS {
      */
     acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
+    /**
+     * A read lease of the whole namespace, granted at `at`: refused (ESTALE)
+     * when anything was published since, so its holder is current at the
+     * moment it holds it. Its holder reads its own copy, asking nothing, until
+     * it is recalled.
+     */
+    acquireReadLease(terms: DelegationTerms, at: {
+        readonly epoch: string;
+        readonly cursor: number;
+    }): {
+        owner: string;
+    };
+    /** What read leases did since the engine started (the diag route's). */
+    readLeaseStats(): {
+        held: number;
+        broken: number;
+    };
+    /**
+     * The read leases a mutation at `key` must recall first (every holder's
+     * but the caller's own), as one recall: each asked at once, all answered
+     * (or their trust run out) before the retry, so a writer meets each at most once.
+     * A write to the session's own stores (the kernel's, as it launches a
+     * process), or to a directory they are made in, which cannot wait, is
+     * never refused: the view's synchronous mutation making it is held
+     * instead, its own pipeline published once the recalls are over
+     * (callerView), and a check ahead of it asks nothing.
+     */
+    private readRecallAt;
+    /**
+     * `run`, a call that can wait (withRecall): the read recalls it meets were
+     * sent a turn before (its refusal), and it commits ahead of them. What it
+     * commits is held (held leases, refusing another caller as a delegation
+     * does) and published once they are over: `published`. Its own later calls
+     * pass what it holds.
+     */
+    private pipelined;
+    /** A pipeline for `writer`'s commits (pipelined, a wave's, or a `store` write's). */
+    private newPipeline;
+    /** `run`, its commits `pipeline`'s. */
+    private inPipeline;
+    /** No more commits of `pipeline`'s: what it holds is published once its recalls are over. */
+    private endPipeline;
+    /** What the pipelined call holds for its publication, when it holds anything. */
+    private heldPublication;
+    /** The pipelined call whose commits are held now, if any: one that ran ahead of a recall. */
+    private holding;
+    /**
+     * Hold `paths` for `pipeline` until it publishes: each by a lease at the
+     * path (a file's content), or at its directory (a name made, moved or
+     * removed), whose recall is the publication.
+     */
+    private hold;
+    /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
+    private publishHeld;
+    /**
+     * Settled once every commit `writer` (the delegations a process's views
+     * present; any writer, when none is named) holds for its publication is
+     * published, or failed to be and every reader started again; null while
+     * it holds none. What a process's output waits for (ProcessFiles.outputGate).
+     */
+    publishedFor(writer?: ReadonlySet<string>): Promise<void> | null;
+    /** `pipeline`'s holds end: what it holds is another caller's to read. */
+    private letGo;
+    /** The events of what `publication` changed, held with it, to the session's observers. */
+    private deliverHeld;
+    /**
+     * What `pipeline` committed cannot be published (its promotion failed): it
+     * stands in SQLite, and no reader would hear of it. Its holds end, every
+     * reader starts again (a new incarnation: each cursor poisons, each read
+     * lease ends), what it changed is told to the session's observers, and its
+     * writer is failed; one that continued at commit has its output let go,
+     * every reader now past it.
+     */
+    private unpublishable;
+    /**
+     * Rewrite the row (or tombstone) at each of `paths`, unchanged, at a new
+     * generation, in the engine's bounded plans (a transaction each, as many as
+     * its bounds take), and answer the last: each path then reports, from
+     * SQLite, a generation no cursor handed out before has reached.
+     */
+    private promote;
     /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
     private endLease;
     /**
@@ -1362,12 +1510,35 @@ export declare class SqliteVFS {
      * answer timed out) loses its authority before the work is redone.
      */
     rotateExclusiveMutation(owner: string): string;
+    /** Whether a holder's exclusive mutation is active: a lease taken for work, not a commit held for its publication. */
     hasExclusiveMutation(): boolean;
+    /** Cut every wave being read now: each ends as a refused one does, what it committed published once its recalls are answered. */
+    cancelStreams(reason: string): void;
     /**
      * Recall a read-covering delegation `key` lies in, for any caller but its
      * holder (the lease a mutation scope or a view presents).
      */
     private recallReads;
+    /**
+     * Whether an access at `key` meets `lease`: anything in its subtree; for a
+     * held directory's names (entries), a read of the directory itself, and
+     * never a mutation's, whose own walk reads it (mutationMeets).
+     */
+    private holdsKey;
+    /**
+     * Whether a mutation at `key`, or a lease of it, meets `lease`: anything
+     * at, under or above its root. A held directory's names (entries) meet
+     * none: the held name's own lease meets the directory and all above it,
+     * and a change beside that name reads none of the names.
+     */
+    private mutationMeets;
+    /**
+     * Another caller's access at `key` (null: anywhere, a listing's) to what a
+     * pipelined commit holds waits for its publication (RecallRequired), as
+     * for any held subtree: the one check the reads that skip resolvePath
+     * make (a description, a listing, a barrier's stats and pushed bytes).
+     */
+    private recallHeld;
     /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
     private inheritsPermissions;
     /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
@@ -1382,7 +1553,14 @@ export declare class SqliteVFS {
     private askedIno;
     /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
     private isHolder;
-    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
+    /**
+     * Give up every delegation of another holder that a write at `key`
+     * overlaps (each recalled, revoked); `holds`: the writer's own. A reader's
+     * recall the wave's `pipeline` runs ahead of: sent, and a turn given for it
+     * to leave before the write commits. Each wait ends with `signal` (a
+     * delegation recalled may be another wave's held commit, published only
+     * once that wave ends), and no recall is asked after it.
+     */
     private recallDelegationsAt;
     /**
      * The refusal for an access to `key` that `lease`'s holder must answer
@@ -2378,8 +2556,8 @@ export declare class SqliteVFS {
     /**
      * N18: a transaction that can grow the database is admitted by the
      * session's ledger before it runs (ENOSPC, nothing written, when it would
-     * cross the storage limit). Collection and pure removals only free, and are
-     * never refused.
+     * cross the storage limit). Collection and pure removals only free, and
+     * rows rewritten as they stand only keep: neither is ever refused.
      */
     private admitTransaction;
     /**

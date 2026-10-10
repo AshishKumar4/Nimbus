@@ -184,6 +184,8 @@ export async function initSession(self, ws, options = {}) {
         egress: self.egressForWorkspace(),
     });
     self.runtimeWorkspace = workspace;
+    // A process's answers leave as the rest of its output does: once what it wrote is published.
+    self.portRegistry.setOutput(workspace.processes);
     self.shellProcessPid = workspace.shellProcessPid;
     self.kernel = workspace.kernel;
     self.shell = workspace.shell;

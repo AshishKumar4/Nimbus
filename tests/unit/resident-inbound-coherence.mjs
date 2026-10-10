@@ -113,14 +113,14 @@ async function delivered(log, send) {
 await runScenarios(import.meta.path, {
   async 'an HTTP request after a peer write'() {
     const { authority, log, proc } = await boot();
-    authority.kfs.writeFile(F, 'v2');
+    await authority.peer.writeFile(F, 'v2');
     // The shared dispatch every resident's server goes through — the node
     // body's __nimbusDispatchHttp and the opencode runner's __ocDispatchHttp.
     // Handed a request with no answer on it, the barrier asks.
     const response = await globalThis.__nimbusServeHttp(request());
     assert.equal(await response.text(), 'v2', 'the handler must run behind a barrier');
 
-    authority.kfs.writeFile(F, 'v3');
+    await authority.peer.writeFile(F, 'v3');
     const { value: routed, made } = await callsDuring(log, () => proc.fetch(request()));
     assert.equal(await routed.text(), 'v3');
     assert.equal(made.fsAcquire, 1, 'a request with no answer on it costs exactly one barrier');
@@ -133,7 +133,7 @@ await runScenarios(import.meta.path, {
     assert.equal(quiet.value, 'v1');
     assert.equal(quiet.made.fsAcquire, undefined, 'nothing written since the process caught up: the request is its own answer');
 
-    authority.kfs.writeFile(F, 'v2');
+    await authority.peer.writeFile(F, 'v2');
     const after = await callsDuring(log, route);
     assert.equal(after.value, 'v2', '`echo v2 > f; curl` must serve v2');
     assert.equal(after.made.fsAcquire, 1, 'a request after a write asks, once');
@@ -153,7 +153,7 @@ await runScenarios(import.meta.path, {
       assert.deepEqual(Object.keys(made), ['cpReadStdin'], `a keystroke is one stdin delivery and no other call (made ${JSON.stringify(made)})`);
     }
 
-    authority.kfs.writeFile(F, 'v2');
+    await authority.peer.writeFile(F, 'v2');
     const { seen, made } = await delivered(log, () => host.processes.writeInput(pid, 'x'));
     assert.equal(seen, 'data:v2', 'a keystroke after a peer write reads the write');
     assert.equal(made.fsAcquire, undefined, 'and learns of it from the delivery, not from a round trip');
@@ -164,7 +164,7 @@ await runScenarios(import.meta.path, {
     // it carries the namespace entry and the pushed bytes: the handler sees
     // the new file exist and reads it with no call of its own.
     const { authority, log } = await boot({ attached: true });
-    authority.kfs.writeFile(F + '.new', 'fresh');
+    await authority.peer.writeFile(F + '.new', 'fresh');
     const { made } = await delivered(log, () => authority.host.processes.writeInput(log.pid, 'x'));
     assert.equal(globalThis.__seenNew.at(-1), 'true:fresh');
     assert.equal(made.fsAcquire, undefined, 'no barrier round trip');
@@ -173,7 +173,7 @@ await runScenarios(import.meta.path, {
 
   async 'a signal after a peer write'() {
     const { authority, log } = await boot({ attached: true });
-    authority.kfs.writeFile(F, 'v2');
+    await authority.peer.writeFile(F, 'v2');
     const { seen, made } = await delivered(log, () => authority.host.processes.signal(log.pid, 'SIGUSR2'));
     assert.equal(seen, 'signal:v2');
     assert.equal(made.fsAcquire, undefined);
@@ -185,7 +185,7 @@ await runScenarios(import.meta.path, {
     const { log } = await boot({
       children: (auth) => ({
         async spawn() {
-          auth.kfs.writeFile(F, 'CHILD');
+          await auth.peer.writeFile(F, 'CHILD');
           return { childPid: 42 };
         },
         async readOutput(_pid, fd, since) {

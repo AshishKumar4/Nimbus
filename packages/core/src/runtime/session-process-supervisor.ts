@@ -33,7 +33,7 @@ import {
   type SequencedLogChunk,
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
-import type { OutputGate } from './output-gate.js';
+import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
 
@@ -66,7 +66,7 @@ export interface ProcessTerminalDescriptor {
   rows: number;
 }
 
-export class SessionProcessSupervisor {
+export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
@@ -594,6 +594,11 @@ export class SessionProcessSupervisor {
    */
   setOutputGate(gate: OutputGate | null): void {
     this.outputGate = gate;
+  }
+
+  /** `pid`'s output leaves, from now on, by a way no gate sees (a socket an answer of its hands over): its gate is told. */
+  escapeOutput(pid: number): void {
+    this.outputGate?.escaped?.(pid);
   }
 
   /**

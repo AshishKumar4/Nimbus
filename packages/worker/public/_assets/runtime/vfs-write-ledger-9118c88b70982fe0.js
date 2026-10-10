@@ -1326,6 +1326,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let processGone = null;
     let logged = 0;
     let answered = 0;
+    let heldWaves = 0;
+    let publishedThrough = 0;
+    let escaped = null;
+    let escapeLanded = false;
     const marks = [];
     const counters = {
       ops: 0,
@@ -1341,7 +1345,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       released: 0,
       widened: 0,
       renewed: 0,
-      folded: 0
+      folded: 0,
+      readLeases: 0,
+      readConfirms: 0,
+      readRecalls: 0,
+      readReleased: 0
     };
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -1432,6 +1440,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const send = async (entries) => {
       let writer;
       try {
+        if (escaped !== null) await escaped;
         writer = await writerFor(entries);
       } catch (error2) {
         if (error2 instanceof Error && isProcessGone(error2)) {
@@ -1500,6 +1509,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       let receipt = 0;
       const back = [];
       const mutations2 = new Map((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+      if (answer.held === true) heldWaves++;
       for (const [index, entry] of entries.entries()) {
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
@@ -1637,6 +1647,49 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
       }
     };
+    let readLease = null;
+    const endedReadLeases =   new Set();
+    const endReadLease = (owner) => {
+      endedReadLeases.add(owner);
+      if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value);
+      if (readLease?.owner === owner) readLease = null;
+    };
+    const giveBackReadLease = async (owner) => {
+      endReadLease(owner);
+      counters.readReleased++;
+      await session.grants?.release(owner).catch(() => {
+      });
+    };
+    let runEnded = false;
+    const givingBack =   new Set();
+    const answerReadRecalls = async (owner) => {
+      const port = session.grants;
+      for (; ; ) {
+        const polled = now();
+        let kind;
+        try {
+          kind = await port.awaitRecall(owner, recallPollMs);
+        } catch {
+          endReadLease(owner);
+          return;
+        }
+        if (readLease?.owner !== owner) return;
+        if (kind === null) {
+          if (readLease.confirmedAt < polled) {
+            await giveBackReadLease(owner);
+            return;
+          }
+          continue;
+        }
+        endReadLease(owner);
+        counters.readRecalls++;
+        try {
+          await port.recalled(owner, kind);
+        } catch {
+        }
+        return;
+      }
+    };
     const armIdle = () => {
       if (idleTimer !== null || live().length === 0) return;
       idleTimer = timers.setTimeout(() => {
@@ -1707,7 +1760,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         schedule();
       });
     };
-    const heldGrant = (key) => grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
+    const heldGrant = (key) => escaped !== null ? void 0 : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
     const client = {
       holder(key) {
         const held = heldGrant(key);
@@ -1716,7 +1769,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           held.lastUsed = now();
           return held;
         }
-        if (session.grants === void 0 || settling) return void 0;
+        if (session.grants === void 0 || settling || escaped !== null) return void 0;
         if (grants.some((grant) => !grant.ended && within(key, grant.root))) return void 0;
         let deepest;
         for (let root = parentKey(key); allowedRoot(root); root = parentKey(root)) {
@@ -1838,8 +1891,35 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         options.drain?.();
         return answered >= logged ? null : client.flush();
       },
+      published() {
+        const ask = options.session.published;
+        if (processGone !== null || ask === void 0 || publishedThrough === heldWaves) return null;
+        const through = heldWaves;
+        return ask.call(options.session, false).then(() => {
+          if (publishedThrough < through) publishedThrough = through;
+        });
+      },
+      rawSocket() {
+        const ask = options.session.published;
+        if (processGone !== null || ask === void 0) return null;
+        if (escaped === null) {
+          const through = heldWaves;
+          escaped = ask.call(options.session, true).then(() => {
+            escapeLanded = true;
+            publishedThrough = Math.max(publishedThrough, through);
+          });
+          escaped.catch(() => {
+          });
+        }
+        const logged2 = client.effect();
+        if (escapeLanded && logged2 === null) return client.published();
+        return Promise.all([escaped, logged2]).then(() => client.published() ?? void 0);
+      },
       async settle() {
         settling = true;
+        runEnded = true;
+        if (readLease !== null) await giveBackReadLease(readLease.owner);
+        await Promise.all([...givingBack]);
         if (claiming !== null) await claiming;
         try {
           while (answered < logged) await client.flush();
@@ -1859,6 +1939,39 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       takeFailures() {
         return failures.splice(0, failures.length);
       },
+      readTrusted() {
+        return readLease !== null && readLease.logged === logged && now() < readLease.until;
+      },
+      readUncovered() {
+        return readLease?.uncovered ?? NOTHING_UNCOVERED;
+      },
+      readLeaseAsk() {
+        if (session.grants === void 0 || runEnded) return null;
+        return { at: now(), logged: answered === logged ? logged : -1 };
+      },
+      readLeaseAnswered(lease) {
+        if (session.grants === void 0 || endedReadLeases.has(lease.owner)) return;
+        if (readLease?.owner === lease.owner) {
+          readLease.confirmedAt = now();
+          return;
+        }
+        if (runEnded) {
+          const back = giveBackReadLease(lease.owner);
+          givingBack.add(back);
+          void back.finally(() => givingBack.delete(back));
+          return;
+        }
+        readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1, uncovered: lease.uncovered };
+        counters.readLeases++;
+        void answerReadRecalls(lease.owner);
+      },
+      readLeased(lease, ask) {
+        if (readLease?.owner !== lease.owner) return;
+        readLease.until = ask.at + lease.trustMs;
+        readLease.logged = ask.logged;
+        readLease.uncovered = lease.uncovered;
+        counters.readConfirms++;
+      },
       takeFailuresError() {
         const taken = failures.splice(0, failures.length);
         if (processGone !== null) return processGone;
@@ -1876,6 +1989,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     };
     return client;
   }
+  var NOTHING_UNCOVERED = Object.freeze([]);
   var DRAIN_WAVE_BASE = 2 ** 40;
   function failuresError(failures) {
     const gone = failures.find((failure) => failure.errno === "ESRCH");
@@ -2047,6 +2161,8 @@ function __nimbusVfsPathKey(path) {
 let __nimbusProcessUmaskOf = () => undefined;
 const __nimbusRawTimer = globalThis.setTimeout;
 const __nimbusRawClearTimer = globalThis.clearTimeout;
+// And its clock, before a run that can stop tapes Date (stop-replay.ts): a read lease's trust is real time.
+const __nimbusRawNow = Date.now;
 let __nimbusProcessFsInstance = null;
 function __nimbusProcessFs() {
   if (__nimbusProcessFsInstance !== null) return __nimbusProcessFsInstance;
@@ -2069,6 +2185,7 @@ function __nimbusProcessFs() {
         const bound = supervisor();
         if (typeof bound.retireWaveWriter === "function") await bound.retireWaveWriter(writer);
       },
+      published: (escape) => supervisor().fsPublished(escape ? { escape } : undefined),
       // The subtrees the process writes often enough: decided here
       // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
       grants: {
@@ -2081,6 +2198,7 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    now: __nimbusRawNow,
     // The process's umask as each create is logged (process.umask moves it;
     // its setUmask to the session is not ordered with the waves).
     umask: () => __nimbusProcessUmaskOf(),

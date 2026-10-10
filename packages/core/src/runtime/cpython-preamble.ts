@@ -72,6 +72,9 @@ async function __nimbusPyBoot(args) {
     stdoutBytes: __nimbusPyOutput.stdoutBytes,
     stderrBytes: __nimbusPyOutput.stderrBytes,
   });
+  if (typeof __wasiPrepareFilesystem === 'function') {
+    await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
+  }
   instance = new WebAssembly.Instance(__nimbusPyModule(), { wasi_snapshot_preview1: made.wasiImport });
 
   const exports = instance.exports;

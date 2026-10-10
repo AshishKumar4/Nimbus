@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
@@ -50,6 +51,7 @@ function session({ fenced = true } = {}) {
   const op = createSupervisorOpHandler({ vfs: engine, filesystem: files, deliveries });
   const calls = { waves: 0, epochs: 0, ops: [] };
   const s = {
+    engine,
     kernel,
     files,
     op,
@@ -74,6 +76,7 @@ function session({ fenced = true } = {}) {
         });
         return s.fault ? s.fault(deliver, fence) : deliver();
       },
+      published: (escape) => op({ op: 'fsPublished', args: escape ? [{ escape }] : [], pid: PID }),
       grants: {
         acquire: (path, delegate) => op({ op: 'fsAcquireExclusiveMutation', args: [path, { delegate }], pid: PID }),
         release: (owner) => op({ op: 'fsReleaseExclusiveMutation', args: [owner], pid: PID }),
@@ -99,6 +102,169 @@ const client = (s, extra = {}) => processFsClient({ session: s.port, retry: RETR
 const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: typeof text === 'string' ? enc.encode(text) : text } });
 const appendFile = (path, text) => ({ type: 'call', call: { call: 'appendFile', path, mode: 0o644, data: enc.encode(text) } });
 const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o755 } });
+
+// ── A read lease under a frozen clock: trusted while it shows the event before expiry, never after the next one ──
+{
+  const s = session();
+  let clock = 1_000;
+  const recalls = [];
+  const c = processFsClient({
+    session: { ...s.port, grants: {
+      acquire: async () => null, release: async () => {},
+      awaitRecall: () => new Promise((resolve) => recalls.push(resolve)), recalled: async () => {},
+    } },
+    retry: RETRY,
+    now: () => clock,
+  });
+  const ask = c.readLeaseAsk();
+  c.readLeaseAnswered({ owner: 'L', trustMs: 500, uncovered: [] });
+  c.readLeased({ owner: 'L', trustMs: 500, uncovered: [] }, ask);
+  // A stretch of answers with no event between them: the clock stands at the event's time.
+  for (let i = 0; i < 10_000; i++) assert.equal(c.readTrusted(), true);
+  // The next event shows the time past the trust: nothing is trusted from it on.
+  clock = 1_500;
+  assert.equal(c.readTrusted(), false, 'a lease past its trust was trusted at the next event');
+  await c.settle();
+  assert.equal(c.readTrusted(), false, 'a settled client trusted its lease');
+}
+
+// ── What a read lease does not vouch for is its terms, as admitted: a late answer for one recalled changes nothing ──
+{
+  const s = session();
+  const recalls = new Map();
+  const c = processFsClient({
+    session: { ...s.port, grants: {
+      acquire: async () => null, release: async () => {},
+      awaitRecall: (owner) => new Promise((resolve) => recalls.set(owner, resolve)), recalled: async () => {},
+    } },
+    retry: RETRY,
+  });
+  const first = { owner: 'L1', trustMs: 500, uncovered: ['dev', 'proc'] };
+  c.readLeaseAnswered(first);
+  c.readLeased(first, c.readLeaseAsk());
+  assert.deepEqual(c.readUncovered(), ['dev', 'proc']);
+  // Recalled (a mount moved what is the engine's), and a lease after it names the new mount.
+  recalls.get('L1')('revoke');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = { owner: 'L2', trustMs: 500, uncovered: ['dev', 'mnt', 'proc'] };
+  c.readLeaseAnswered(second);
+  c.readLeased(second, c.readLeaseAsk());
+  // The recalled lease's renewal, answered before its recall and delivered after.
+  c.readLeaseAnswered(first);
+  c.readLeased(first, c.readLeaseAsk());
+  assert.equal(c.readTrusted(), true);
+  assert.deepEqual(c.readUncovered(), ['dev', 'mnt', 'proc'], 'a late answer for a recalled lease changed what the held one vouches for');
+  await c.settle();
+}
+
+// ── A gated process's waves answer at commit: its effects past the session's gate wait for their publication (published), asked only while one is held ──
+{
+  const s = session();
+  s.files.holdOutput(new SessionProcessSupervisor());
+  s.files.continueAtCommit(PID);
+  const lease = (pid) => {
+    const view = s.files.bind({ pid, cred: CRED_SESSION_USER });
+    const { readLease } = view.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+    return () => view.recalled(readLease.owner, 'revoke');
+  };
+  const c = client(s);
+  assert.equal(c.published(), null, 'asked with nothing written');
+  const answer = lease(7);
+  c.submit(writeFile('home/user/g.txt', 'gated'));
+  await c.flush();
+  const published = c.published();
+  assert.notEqual(published, null, 'a wave answered ahead of its publication went unasked');
+  let settled = false;
+  void published.then(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(settled, false, 'published before the reader answered its recall');
+  answer();
+  await published;
+  assert.equal(c.published(), null, 'asked again with nothing held since');
+  // A raw socket opens once the session is told, and its writes wait for their publication from then on.
+  const opened = c.rawSocket();
+  assert.notEqual(opened, null, 'a raw socket opened before the session was told');
+  await opened;
+  assert.equal(c.rawSocket(), null, 'a later raw socket waited with nothing logged or held');
+  const later = lease(9);
+  c.submit(writeFile('home/user/g.txt', 'waits'));
+  let flushed = false;
+  const flushing = c.flush().then(() => { flushed = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(flushed, false, 'an escaped process\'s write was answered before its publication');
+  later();
+  await flushing;
+  assert.equal(c.published(), null);
+  await c.settle();
+}
+
+// ── A raw socket's escape reaches the session before any wave the process sends after it ──
+{
+  const s = session();
+  s.files.holdOutput(new SessionProcessSupervisor());
+  s.files.continueAtCommit(PID);
+  let land;
+  const landing = new Promise((resolve) => { land = resolve; });
+  let landed = false;
+  const sent = [];
+  const c = processFsClient({
+    session: {
+      ...s.port,
+      // The transport delivers the escape late.
+      published: (escape) => (escape ? landing.then(() => s.port.published(true)).then(() => { landed = true; }) : s.port.published(false)),
+      writeBatchStream: (...args) => { sent.push(landed); return s.port.writeBatchStream(...args); },
+    },
+    retry: RETRY,
+  });
+  const opened = c.rawSocket();
+  c.submit(writeFile('home/user/after.txt', 'after'));
+  const flushing = c.flush();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(sent, [], 'a wave left before the session was told of the raw socket');
+  land();
+  await Promise.all([opened, flushing]);
+  assert.deepEqual(sent, [true]);
+  await c.settle();
+}
+
+// ── An idle process's raw socket opens once the session answers its escape: after what the session holds of the process's that it never logged (its launch's image) is published ──
+{
+  const s = session();
+  s.files.holdOutput(new SessionProcessSupervisor());
+  s.files.continueAtCommit(PID);
+  const reader = s.files.bind({ pid: 7, cred: CRED_SESSION_USER });
+  const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+  // As a launch writes the process's boot image: the kernel, through its binding, held for the reader's recall.
+  const launching = s.files.bind({ pid: PID, cred: CRED_KERNEL }).synchronous;
+  launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
+  launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+  let land;
+  const landing = new Promise((resolve) => { land = resolve; });
+  // The transport delivers the escape late.
+  const c = processFsClient({ session: { ...s.port, published: (escape) => landing.then(() => s.port.published(escape)) }, retry: RETRY });
+  const gate = c.rawSocket();
+  assert.notEqual(gate, null, 'an idle process\'s raw socket opened before the session answered its escape');
+  let opened = false;
+  void gate.then(() => { opened = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(opened, false, 'a raw socket opened before the session answered its escape');
+  land();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(opened, false, 'a raw socket opened before what the session holds of its process was published');
+  reader.recalled(readLease.owner, 'revoke');
+  await gate;
+  assert.equal(c.rawSocket(), null, 'a later raw socket waited with nothing logged or held');
+  await c.settle();
+}
+
+// ── A raw socket the session was not told of is refused, and so is every later one ──
+{
+  const s = session();
+  const c = processFsClient({ session: { ...s.port, published: async () => { throw new Error('the escape was lost'); } }, retry: RETRY });
+  await assert.rejects(c.rawSocket(), /the escape was lost/, 'a raw socket opened, the session not told of it');
+  await assert.rejects(c.rawSocket(), /the escape was lost/, 'a later raw socket opened, the session never told');
+  await c.settle();
+}
 
 // ── A synchronous loop: program order across files, in as few waves as W7 allows ──
 {

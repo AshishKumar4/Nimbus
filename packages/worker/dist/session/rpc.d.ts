@@ -25,7 +25,7 @@ import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
@@ -169,6 +169,7 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
     begin: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
+        lease: z.ZodOptional<z.ZodBoolean>;
         push: z.ZodOptional<z.ZodObject<{
             roots: z.ZodArray<z.ZodString>;
             exclude: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -270,6 +271,8 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
  * — a process must not learn of a path it could not stat.
  */
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
+/** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
+export declare function _rpcFsListTree(self: RpcHost, root: string, maxEntries: number, pid?: number): Promise<VfsListTree>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /** A bounded range used only to prepare fd 0, never an ordinary file read. */
 export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{

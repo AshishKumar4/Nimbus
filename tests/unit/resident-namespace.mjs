@@ -47,7 +47,7 @@ await runScenarios(import.meta.path, {
   async 'a file a peer creates after launch exists at the next resumption'() {
     const { authority, probe } = await boot();
     const { fs } = probe;
-    authority.kfs.writeFile('home/user/app/new.txt', 'hello');
+    await authority.peer.writeFile('home/user/app/new.txt', 'hello');
     const seen = await probe.resume(() => [
       fs.existsSync('/home/user/app/new.txt'),
       fs.statSync('/home/user/app/new.txt').size,
@@ -60,7 +60,7 @@ await runScenarios(import.meta.path, {
     const { authority, probe } = await boot();
     const { fs } = probe;
     assert.equal(fs.existsSync('/opt/data/deep/x.json'), true);
-    authority.kfs.removeRecursive('opt/data');
+    await authority.peer.removeRecursive('opt/data');
     const seen = await probe.resume(() => [
       fs.existsSync('/opt/data/deep/x.json'),
       fs.existsSync('/opt/data'),
@@ -78,8 +78,8 @@ await runScenarios(import.meta.path, {
     const st = probe.fs.statSync('/opt/data/mode.sh');
     assert.equal(st.mtimeMs ?? st.mtime.getTime(), 2_000_000);
     assert.equal(st.mode & 0o777, 0o750);
-    authority.kfs.chmod('opt/data/mode.sh', 0o700);
-    authority.kfs.utimes('opt/data/mode.sh', 3_000_000, 4_000_000);
+    await authority.peer.chmod('opt/data/mode.sh', 0o700);
+    await authority.peer.utimes('opt/data/mode.sh', 3_000_000, 4_000_000);
     const after = await probe.resume(() => {
       const s = probe.fs.statSync('/opt/data/mode.sh');
       return (s.mode & 0o777).toString(8) + '|' + s.mtime.getTime();
@@ -111,7 +111,7 @@ await runScenarios(import.meta.path, {
     const { fs } = probe;
     assert.equal(fs.existsSync('/opt/locked'), true);
     assert.equal(fs.existsSync('/opt/locked/inside.txt'), false, 'hidden under a directory the process cannot search');
-    authority.rawVfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).chmod('opt/locked', 0o755);
+    await authority.peerAs({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).chmod('opt/locked', 0o755);
     const seen = await probe.resume(() => fs.existsSync('/opt/locked/inside.txt') + '|' + fs.readdirSync('/opt/locked').join(','));
     assert.equal(seen, 'true|inside.txt');
   },
@@ -142,7 +142,7 @@ await runScenarios(import.meta.path, {
     }
     // Landed at the authority, and a peer's later change is seen through.
     assert.equal(authority.kfs.exists('opt/data/moved/x.json'), true);
-    authority.kfs.writeFile('home/user/app/f.txt', 'again');
+    await authority.peer.writeFile('home/user/app/f.txt', 'again');
     assert.equal(await probe.resume(() => fs.existsSync('/home/user/app/f.txt')), true);
   },
 });

@@ -51,6 +51,10 @@ export const REPLAY_OPERATION_POLICY = {
             const v = omit(value, ['epoch', 'rev']);
             return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
         } },
+    fsListTree: { kind: 'observation', answer: (value) => {
+            const v = omit(value, ['epoch', 'rev']);
+            return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
+        } },
     // The cache's physical facet name is not exposed by Node; its grant is.
     fsStorageGrant: { kind: 'observation', args: (a) => a.slice(1) },
     wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
@@ -83,6 +87,8 @@ export const REPLAY_OPERATION_POLICY = {
     fsAcquireExclusiveMutation: mutation, fsReleaseExclusiveMutation: mutation,
     // A recall is the session asking; the answer to one changes what it holds.
     fsAwaitRecall: { kind: 'input' }, fsRecalled: mutation,
+    // Waits for the session's publication of what the process wrote, and implements that boundary itself.
+    fsPublished: control,
     innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
     hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
     routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,

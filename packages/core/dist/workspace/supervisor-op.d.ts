@@ -215,6 +215,7 @@ declare const NATIVE_OPS: {
     fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsAwaitRecall: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RecallKind | null>;
     fsRecalled: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsPublished: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;
     lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;

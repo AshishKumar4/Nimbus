@@ -16,31 +16,77 @@ export class RecallRequired extends Error {
     kind;
     path;
     recall;
+    pipeline;
     code = 'EAGAIN';
     recalling = true;
-    constructor(root, kind, path, recall) {
+    constructor(root, kind, path, recall, 
+    /**
+     * A recall a caller that can wait may run ahead of (readers': SqliteVFS
+     * read leases): what `run` changes is committed now, and published once
+     * the recall is over (`published`); until then it holds what it changed.
+     */
+    pipeline) {
         super(`EAGAIN: ${path}: delegated at /${root}; recalling it`);
         this.root = root;
         this.kind = kind;
         this.path = path;
         this.recall = recall;
+        this.pipeline = pipeline;
         this.name = 'RecallRequired';
     }
 }
 /**
+ * The caller's own timer, taken when this module is evaluated: a program
+ * that shares the realm (a resident body run in-process) wraps the global
+ * one as its own resumption.
+ */
+const callerSetTimeout = globalThis.setTimeout;
+/**
  * `run` again for as long as what it meets is a delegation to recall (at most
  * `attempts` times): the one way a caller that can wait passes a delegation.
+ * A recall it may run ahead of is sent first, one turn before `run` commits
+ * (so the recall leaves ahead of the commit's own storage), and what `run`
+ * changed is published once it is over: awaited here, or added to `held`
+ * for a caller that makes several calls and awaits them all at its end.
  */
-export async function withRecall(run, attempts = 8) {
+export async function withRecall(run, attempts = 8, held) {
+    const publications = [];
+    const settle = async () => {
+        if (held === undefined)
+            await Promise.all(publications);
+        else
+            for (const published of publications)
+                held.add(published);
+    };
+    let met = null;
+    // What a pipelined attempt runs ahead of is its synchronous part: a call
+    // whose commit comes after an await meets the recall again, and is made
+    // again once the recall is over.
+    let pipelined = false;
     for (let attempt = 1;; attempt++) {
         try {
-            return await run();
+            let value;
+            if (met?.pipeline !== undefined && !pipelined) {
+                pipelined = true;
+                await new Promise((resolve) => callerSetTimeout(resolve, 0));
+                const ran = met.pipeline(run);
+                publications.push(ran.published);
+                value = await ran.value;
+            }
+            else {
+                if (met !== null)
+                    await met.recall();
+                value = await run();
+            }
+            await settle();
+            return value;
         }
         catch (error) {
-            const recall = recallOf(error);
-            if (recall === null || attempt >= attempts)
+            met = recallOf(error);
+            if (met === null || attempt >= attempts) {
+                await settle().catch(() => { });
                 throw error;
-            await recall.recall();
+            }
         }
     }
 }
