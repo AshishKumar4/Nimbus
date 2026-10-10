@@ -391,24 +391,30 @@ export function decodeCommonJsPackBytes(pack: Uint8Array): Record<string, { cjs:
   return modules;
 }
 
-/**
- * Read one content-addressed facet image and verify it against the digest its
- * path claims. Content addressing is only a guarantee if the bytes are checked
- * against the name they arrived under: an image that was truncated, or
- * replaced by something the generator never wrote, would otherwise be loaded
- * as the program and fail somewhere inside it with no way back to the cause.
- */
+/** One content-addressed facet image, verified against the digest its path claims. */
 async function readFacetImageBytes(disk: ResidentDiskReader, path: string): Promise<Uint8Array> {
   const expected = facetImagePathDigest(path);
   if (!expected) {
     throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
   }
+  return readContentBlob(disk, path, expected);
+}
+
+/**
+ * Read a content-addressed blob (image-store.ts storeContentBlob) and verify
+ * it against `digest`, the one it is named by. Content addressing is only a
+ * guarantee if the bytes are checked against the name they arrived under: a
+ * blob that was truncated, or replaced by something the generator never
+ * wrote, would otherwise be loaded as the program and fail somewhere inside
+ * it with no way back to the cause.
+ */
+export async function readContentBlob(disk: ResidentDiskReader, path: string, digest: string): Promise<Uint8Array> {
   // Verified from the bytes read, and decoded by the caller: re-encoding the decoded string held a third copy of the largest member.
   const bytes = await disk.readFile(path);
   const actual = await facetImageDigest(bytes);
-  if (actual !== expected) {
+  if (actual !== digest) {
     throw new Error(
-      `Nimbus: facet image '${path}' does not match its digest (read ${actual}); `
+      `Nimbus: '${path}' does not match its digest (read ${actual}); `
         + 'the image store is corrupt and the process cannot boot from it',
     );
   }

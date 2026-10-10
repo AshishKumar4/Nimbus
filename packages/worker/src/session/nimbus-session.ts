@@ -118,7 +118,8 @@ import * as _rpc from './rpc.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
+import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
+import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 // The supervisor terminates a facet's outbound sockets so inbound frames
@@ -640,7 +641,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this.ctx,
       () => this._pumpResidentLaunches(),
       alarmInfo,
-      () => _rpc.hostingWatchFired(this),
+      () => this.peerHost.watchFired(),
     );
   }
 
@@ -686,11 +687,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
   private _scheduleLaunchTurn(notBefore = 0): Promise<void> {
     return timers(this, this.ctx).arm('resident-launch', Math.max(Date.now(), notBefore));
-  }
-
-  /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
-  scheduleHostingWatch(at: number): Promise<void> {
-    return timers(this, this.ctx).arm(_rpc.HOSTING_WATCH_REASON, at);
   }
 
   /**
@@ -955,39 +951,30 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcTransform(code: string, loader: string): Promise<{ code: string; map: string } | null> { return _rpc._rpcTransform(this as any, code, loader); }
 
   // two-tier-fanout: peer-DO execute leg of Fanout's peer-DO fanout topology.
-  async _rpcFanoutExecute(
-    fnSource: string,
-    args: unknown[],
-    poolOpts?: {
-      tag?: string;
-      timeoutMs?: number;
-      preamble?: string;
-      wasmModules?: Record<string, ArrayBuffer>;
-      extraBindings?: Record<string, unknown>;
-      omitSupervisor?: boolean;
-    },
-  ): Promise<{ results: unknown[] }> {
-    return _rpc._rpcFanoutExecute(this as any, fnSource, args, poolOpts);
+  async _rpcFanoutExecute(fnSource: string, args: unknown[], shardOpts?: FanoutShardOptions): Promise<{ results: unknown[] }> {
+    return _rpc._rpcFanoutExecute(this as any, fnSource, args, shardOpts);
   }
 
-  // process fabric: the peer host leg. Populated only while THIS DO is hosting
-  // a resident process for a sibling coordinator — see session/rpc.ts.
-  _hostedProcesses = new Map<string, _rpc.HostedProcessRecord>();
-  _hostedProcessWaiters = new Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>();
+  // process fabric: the peer host leg, for a sibling coordinator hosting a
+  // resident process on THIS object (fabric PeerHost).
+  private _peerHost: PeerHost | null = null;
+  get peerHost(): PeerHost {
+    return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env, (at) => timers(this, this.ctx).arm('hosting-watch', at));
+  }
   _rpcProcessHostProbe(): { isolateToken: string } {
-    return _rpc._rpcProcessHostProbe(this as any);
+    return _rpc._rpcProcessHostProbe(this);
   }
   async _rpcHostProcess(boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
-    return _rpc._rpcHostProcess(this as any, boot, opts);
+    return _rpc._rpcHostProcess(this, boot, opts);
   }
   async _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean }> {
-    return _rpc._rpcAwaitHostedOpen(this as any, workerKey);
+    return _rpc._rpcAwaitHostedOpen(this, workerKey);
   }
   async _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }> {
-    return _rpc._rpcAwaitHostedBoot(this as any, workerKey);
+    return _rpc._rpcAwaitHostedBoot(this, workerKey);
   }
   async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
-    return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
+    return _rpc._rpcRouteHostedHttp(this, workerKey, request);
   }
   async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
     // The host asks until it gets an answer; a session that cannot stand up
@@ -1001,7 +988,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _rpc._rpcHostLost(this as any, workerKey, capability);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
-    return _rpc._rpcCancelHostProcess(this as any, workerKey);
+    return _rpc._rpcCancelHostProcess(this, workerKey);
   }
 
   // W8 child_process RPC

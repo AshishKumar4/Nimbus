@@ -50,6 +50,7 @@ import {
   _rpcCancelHostProcess,
   _rpcHostProcess,
   _rpcRouteHostedHttp,
+  peerHostFor,
 } from '../../packages/worker/src/session/rpc.ts';
 
 // The staged (opencode) spec kind assembles its module map from ASSETS; that
@@ -497,15 +498,8 @@ for (const mode of PROCESS_HOST_MODES) {
   // The host leg is a trust boundary: a sibling accepts a boot spec and a pid
   // from whoever calls it, so both are parsed rather than believed.
   const world = createFacetWorld(makeProgram());
-  const peer = {
-    ctx: createFacetCtx(world, 'peer-do'),
-    env: { LOADER: world.loader },
-    _hostedProcesses: new Map(),
-    _hostedProcessWaiters: new Map(),
-  };
   // A host arms the alarm that reports its own reset before it hosts anything.
-  peer.ctx.storage.setAlarm = async () => {};
-  peer.scheduleHostingWatch = async () => {};
+  const peer = { peerHost: peerHostFor(createFacetCtx(world, 'peer-do'), { LOADER: world.loader }, async () => {}) };
   const goodOpts = {
     coordinatorDoId: 'coord-do-id', pid: 62, writerId: crypto.randomUUID(), workerKey: 'k62',
     webSocketCapability: crypto.randomUUID(),
@@ -517,7 +511,6 @@ for (const mode of PROCESS_HOST_MODES) {
     /writerId|Invalid|uuid/i, 'a writer identity that is not a uuid is refused');
   await assert.rejects(_rpcHostProcess(peer, { kind: 'nonsense' }, goodOpts),
     /Invalid|kind|expected/i, 'a boot spec of an unknown kind is refused');
-  assert.equal(peer._hostedProcesses.size, 0, 'a refused host call registers nothing');
 
   // A route leg may legitimately arrive BEFORE the host leg — RPC delivery
   // order is not a guarantee — so it parks. But a host runs exactly one
@@ -525,8 +518,8 @@ for (const mode of PROCESS_HOST_MODES) {
   // and without that anyone holding a sibling stub could pile up map entries
   // and 30-second timers here by the thousand.
   const route = _rpcRouteHostedHttp(peer, 'k62', { method: 'GET', url: 'http://x/', headers: [], body: null });
-  route.catch(() => {});
-  assert.equal(peer._hostedProcessWaiters.size, 1, 'the first key parks, waiting for its host leg');
+  let routeSettled = false;
+  route.then(() => { routeSettled = true; }, () => { routeSettled = true; });
   // Refused at once: settled before any timer can fire, the parked key's
   // 30-second wait included.
   const second = _rpcRouteHostedHttp(peer, 'other-key', { method: 'GET', url: 'http://x/', headers: [], body: null });
@@ -535,7 +528,8 @@ for (const mode of PROCESS_HOST_MODES) {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(refusedAtOnce, true, 'and refused immediately, not waited out');
   await assert.rejects(second, /hosts no process/, 'a second key is refused rather than parked');
-  assert.equal(peer._hostedProcessWaiters.size, 1, 'so the waiter map cannot grow past one key');
+  // The refused host calls registered nothing: the first key is still parked, waiting for its host leg.
+  assert.equal(routeSettled, false, 'the first key parks, waiting for its host leg');
 
   // The parked leg is then served by the host call it was racing, which is the
   // whole reason it waits.

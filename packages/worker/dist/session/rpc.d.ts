@@ -21,13 +21,11 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { HostRoute } from '@nimbus-sh/platform/composition.js';
-import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
+import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
@@ -171,7 +169,6 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
     begin: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
-        lease: z.ZodOptional<z.ZodBoolean>;
         push: z.ZodOptional<z.ZodObject<{
             roots: z.ZodArray<z.ZodString>;
             exclude: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -273,8 +270,6 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
  * — a process must not learn of a path it could not stat.
  */
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
-/** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
-export declare function _rpcFsListTree(self: RpcHost, root: string, maxEntries: number, pid?: number): Promise<VfsListTree>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /** A bounded range used only to prepare fd 0, never an ordinary file read. */
 export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{
@@ -445,126 +440,34 @@ export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: stri
  */
 export declare function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void>;
 export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
-/**
- * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
- *
- * Called by a coordinator NimbusSession DO via
- * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
- * THIS DO instance acts as a peer worker: it runs ONE IsolatePool
- * over its assigned shard and returns the per-task results.
- *
- * Budget
- * ──────
- * The coordinator's calls to its peers are Durable Object RPCs and spend
- * none of its Dynamic Worker budget; each peer spends its own. The shard
- * runs one IsolatePool as wide as this DO's headroom allows (at least one
- * slot — a peer has nowhere further to send it), claimed on the ledger
- * while it runs.
- *
- * Failure model
- * ─────────────
- * Throws bubble back to the coordinator's RPC promise (rejects on
- * the supervisor side). The coordinator's `submitMany` Promise.all
- * surfaces the first reject; the install path treats it as a hard
- * failure (matching today's single-facet `pool.submit` posture).
- *
- * Bytes-isolation
- * ───────────────
- * The fnSource string is forwarded verbatim into a fresh
- * IsolatePool, which serializes it into the loader's worker
- * code. No supervisor-side eval. Same trust posture as every other
- * IsolatePool dispatch.
- */
-export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args: unknown[], poolOpts?: {
-    tag?: string;
-    timeoutMs?: number;
-    preamble?: string;
-    wasmModules?: Record<string, ArrayBuffer>;
-    extraBindings?: Record<string, unknown>;
-    omitSupervisor?: boolean;
-    /**
-     * INSTALL-HONESTY: full doId of the COORDINATOR (the DO that
-     * called Fanout.submitMany). The peer's IsolatePool
-     * uses this to mint a SUPERVISOR binding that routes back to the
-     * coordinator instead of the peer (default behavior pre-fix).
-     * Without this, install-batch's writeBatchStream calls from inside
-     * a loader isolate land in the PEER's VFS, invisible to the user.
-     */
-    coordinatorDoId?: string;
-    /** The coordinator's route, minted into the binding with its doId. */
-    coordinatorRoute?: HostRoute;
-    /**
-     * Invoking process pid, forwarded into the peer-side SUPERVISOR
-     * binding so writeBatchStream is authorized under the caller's
-     * credential (see IsolatePoolOptions.supervisorPid).
-     */
-    supervisorPid?: number;
-    /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
-    network?: WorkspaceNetworkRef;
-}): Promise<{
+/** RPC: the peer end of Fanout's sharded submitMany (fabric executeFanoutShard). */
+export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args: unknown[], shardOpts?: FanoutShardOptions): Promise<{
     results: unknown[];
 }>;
 /**
- * One process this peer hosts for a coordinator sibling. Registered
- * synchronously by `_rpcHostProcess` before any await, so the boot-payload and
- * routed-HTTP legs — which the coordinator may issue concurrently — always
- * find the record and simply await it.
+ * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
+ * the hosting watch armed through the object's own scheduler.
  */
-export interface HostedProcessRecord {
-    facet: Promise<ResidentFacet>;
-    started: Promise<unknown>;
-    /** Unforgeable capability for the fetch-semantic WebSocket hop. */
-    webSocketCapability: string;
-    /** Settles when the coordinator cancels or the process is torn down. */
-    cancelled: Promise<void>;
-    cancel(): void;
+export declare function peerHostFor(ctx: DurableObjectState, env: unknown, scheduleWatch: (at: number) => Promise<void>): PeerHost;
+interface PeerHostRpcHost {
+    readonly peerHost: PeerHost;
 }
-/**
- * RPC: placement probe. Returns this peer's module-scope isolate token so the
- * coordinator can verify the peer landed in a distinct workerd process — the
- * same token means a shared process, which is the CPU sharing a peer exists to
- * escape.
- */
-export declare function _rpcProcessHostProbe(_self: RpcHost): {
+export declare function _rpcProcessHostProbe(self: PeerHostRpcHost): {
     isolateToken: string;
 };
-/**
- * RPC: host a resident process. Held open by the coordinator for the process's
- * whole life, and it is that held call which keeps this DO resident — nothing
- * arms an alarm to wake a host back up. Resolves when the coordinator releases
- * the process; rejects if it could not be opened at all.
- *
- * The runner's start CONTRACT never crosses. The coordinator's fabric decides
- * from it when the process is over and releases, which cancels this call — so
- * this leg holds uniformly and has no idea whether it is hosting a TUI or a
- * server.
- *
- * If the coordinator dies, workerd cancels this inbound call, the facet is
- * released in the `finally` below, and the process dies with it: a hosting
- * peer never outlives its parent session.
- */
-export declare function _rpcHostProcess(self: RpcHost, boot: unknown, opts: unknown): Promise<{
+export declare function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<{
     ok: boolean;
 }>;
-/** The timer reason a hosting peer's alarm carries (session/hibernation.ts AlarmReason). */
-export declare const HOSTING_WATCH_REASON = "hosting-watch";
-/**
- * How often a host holding a process looks for its own reset: the resident
- * keep-alive's cadence, so the session learns of it within one cadence.
- */
-export declare const HOSTING_WATCH_MS = 5000;
-/**
- * The hosting alarm. A row whose process this incarnation does not hold is
- * one the platform reset this object under (a new incarnation remembers
- * nothing of the processes it held, and the held leg that would have said so
- * may stay open, measured 2026-10-07): the session is told at once, and the
- * row is dropped once the session has answered, whatever it answered. A row
- * the session did not hear about is kept, and so is the watch: the next
- * alarm tells it again. A failure to read or drop the rows is retried the
- * same way, since the dispatcher forgets a reason whose handler throws.
- * Answers when to look again, or null when nothing is left to watch.
- */
-export declare function hostingWatchFired(self: RpcHost): Promise<number | null>;
+export declare function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<{
+    ok: boolean;
+}>;
+export declare function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<{
+    payload: unknown;
+}>;
+export declare function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
+export declare function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{
+    cancelled: boolean;
+}>;
 /**
  * RPC: the actor that hosted `workerKey` for this session reports, from a new
  * incarnation, that the platform reset it under the process. The capability
@@ -572,64 +475,5 @@ export declare function hostingWatchFired(self: RpcHost): Promise<number | null>
  * ended.
  */
 export declare function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean;
-/**
- * RPC: settle once the process is OPEN on this peer, or reject with whatever
- * stopped it from opening.
- *
- * This exists so a host failure surfaces at the same place on both substrates.
- * Opening a facet of your own DO either throws or does not, before the fabric
- * has a handle; opening one on a peer is a message, and without this the
- * coordinator would return a handle for a process that never existed and only
- * discover it later, through `done`. A caller must not have to know which
- * substrate it is on to know what a successful spawn means.
- */
-export declare function _rpcAwaitHostedOpen(self: RpcHost, workerKey: string): Promise<{
-    ok: boolean;
-}>;
-/**
- * RPC: read back the runner's startProcess payload. `_rpcHostProcess` started
- * it; this never starts anything, so a coordinator asking twice gets the same
- * answer a local facet would have returned inline — and for a `lifetime`
- * runner it settles at exit, exactly as the local one does.
- */
-export declare function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): Promise<{
-    payload: unknown;
-}>;
-/**
- * RPC: inbound HTTP for a port owned by a process this peer hosts.
- *
- * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
- * rejects it with "Entrypoints to dynamically-loaded workers cannot be
- * transferred to other Workers", because the object belongs to the
- * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
- * body is a plain ReadableStream, which RPC transfers with flow control. So
- * the leg carries the parts and rebuilds the object on each side: no
- * buffering, no size ceiling, and an SSE or chunked body still flows live.
- *
- * The response body is re-piped through an identity stream owned by THIS
- * isolate before it is returned, for the same reason the parts exist at all:
- * what leaves here must not be an object the loaded worker owns.
- */
-export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
-/**
- * The peer end of the upgrade hop. Reached by `fetch` rather than RPC, so the
- * 101 and its live socket travel back as themselves.
- *
- * The workerKey names a process and is derivable from a pid, so it does not
- * authorise on its own; the capability is minted by whoever opened the process
- * and never leaves the two sessions that hold it. A mismatch is a 404 and not
- * a 403, so the route reveals nothing about what this peer is hosting.
- */
-export declare function routeHostedWebSocket(self: RpcHost, workerKey: string, capability: string, request: Request): Promise<Response>;
-/**
- * RPC: deterministic kill of a hosted process — the same teardown a
- * coordinator applies to a facet of its own, and it does not answer until it
- * has happened. The facet is released HERE rather than left to the held call's
- * `finally`, because a caller that has to guess whether the process is really
- * gone cannot retire the writer identity behind it.
- */
-export declare function _rpcCancelHostProcess(self: RpcHost, workerKey: string): Promise<{
-    cancelled: boolean;
-}>;
 export {};
 //# sourceMappingURL=rpc.d.ts.map

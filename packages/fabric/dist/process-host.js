@@ -7,7 +7,9 @@
  *
  *   facet — the process is a named child actor of the user's own session DO.
  *   peer  — the process is a named child actor of a SIBLING session DO, and
- *           the coordinator reaches it over one held-open RPC.
+ *           the coordinator reaches it over one held-open RPC, which
+ *           `PeerProcessHost` here calls and `PeerHost` (peer-host.ts)
+ *           serves.
  *
  * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
@@ -70,6 +72,7 @@ import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import { ProcessHostLost, } from './process-fabric.js';
+import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, headerPairs, isolateToken, } from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
@@ -159,29 +162,6 @@ function describeImageDelivery(delivery) {
  * process already running. Measured: 1 shared pair in 24 fresh peers.
  */
 const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
-/**
- * This workerd process's identity. Module scope, so two Durable Objects
- * reporting the same token are in the same process — which is exactly the CPU
- * sharing a peer exists to avoid, and the only way to detect it.
- */
-let _isolateToken = null;
-export function isolateToken() {
-    if (!_isolateToken)
-        _isolateToken = crypto.randomUUID();
-    return _isolateToken;
-}
-/**
- * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
- * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
- * as headers on the peer fetch instead.
- *
- * The key alone is guessable from a pid, so it is not enough on its own; the
- * capability is minted per `open()` and known only to the coordinator that
- * opened the process and the peer that hosts it. The receiving session strips
- * both before the request reaches the process.
- */
-export const HOSTED_WEBSOCKET_KEY_HEADER = 'x-nimbus-hosted-websocket';
-export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-capability';
 /**
  * Peer stubs forward one supervisorOp entrypoint: every method the host-
  * process surface needs is an envelope op, not a private _rpc* method.
@@ -547,29 +527,4 @@ function routeWebSocketThroughPeer(stub, workerKey, capability, request) {
     headers.set(HOSTED_WEBSOCKET_KEY_HEADER, workerKey);
     headers.set(HOSTED_WEBSOCKET_CAPABILITY_HEADER, capability);
     return stub.fetch(new Request(request.url, { method: request.method, headers }));
-}
-/**
- * Headers as pairs, with every `Set-Cookie` kept separate.
- *
- * Iterating a `Headers` combines same-named fields into one comma-joined
- * value, and for `Set-Cookie` that is not reversible — `append` cannot split
- * `a=1; Path=/, b=2; Path=/` back into two cookies, and a browser reading the
- * merged form sets one malformed cookie instead of two. Every other field
- * combines by comma legally, so only this one needs the separate accessor.
- * A user's server setting two cookies must not depend on which substrate its
- * process happened to run on.
- */
-export function headerPairs(headers) {
-    const pairs = [];
-    headers.forEach((value, key) => {
-        if (key.toLowerCase() !== 'set-cookie')
-            pairs.push([key, value]);
-    });
-    const getSetCookie = headers.getSetCookie;
-    const cookies = typeof getSetCookie === 'function'
-        ? getSetCookie.call(headers)
-        : (headers.get('set-cookie') ? [headers.get('set-cookie')] : []);
-    for (const cookie of cookies)
-        pairs.push(['set-cookie', cookie]);
-    return pairs;
 }
