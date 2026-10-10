@@ -35,8 +35,6 @@ export declare class SessionFilesystem {
      * Made on first use.
      */
     supervisorOps(): SessionSupervisorOps;
-    /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
-    forget(pid: number): void;
     /** Close a live pid's descriptors for a run that starts in place of another. */
     rewind(pid: number): Promise<void>;
     /** Unsubscribe from the allocation budget and release every host lease the supervisor ops hold. */
