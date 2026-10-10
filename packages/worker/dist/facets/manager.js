@@ -5533,25 +5533,21 @@ export class FacetManager {
         };
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
         let revision = (await vfs.revision());
-        // An entry built at an older revision can never be SERVED again — the
-        // lookup below requires an exact match — so from the first write after it
-        // was admitted it is retained garbage, held in the isolate that is
-        // measurably memory-constrained. Dropped here, before the build that
-        // replaces it allocates, so the stale filesystem graph and the new one
-        // never co-reside.
-        let evictedStale = false;
-        for (const [staleKey, stale] of this.prefetchBundleCache) {
-            if (stale.revision === revision)
-                continue;
-            this.prefetchBundleCache.delete(staleKey);
-            this.prefetchCacheBytes -= stale.bytes;
-            evictedStale = true;
-        }
-        if (evictedStale)
-            setPrefetchCacheBytes(this.prefetchCacheBytes);
         // A report still being recorded may drop this entry: let it land first.
         await this.learning.settled();
         const takeCached = () => {
+            // Unservable generations are garbage. Reclaim them both before waiting
+            // and after admission, since the filesystem can change while queued.
+            let evictedStale = false;
+            for (const [staleKey, stale] of this.prefetchBundleCache) {
+                if (stale.revision === revision)
+                    continue;
+                this.prefetchBundleCache.delete(staleKey);
+                this.prefetchCacheBytes -= stale.bytes;
+                evictedStale = true;
+            }
+            if (evictedStale)
+                setPrefetchCacheBytes(this.prefetchCacheBytes);
             const cached = this.prefetchBundleCache.get(key);
             if (!cached || cached.revision !== revision || spec.maxBundleBytes !== undefined)
                 return null;
