@@ -44,8 +44,22 @@ export async function bundleRegistry({ start }) {
     stdin: { contents: `export { COMMONJS_CELL_RUNTIME_SOURCE } from ${JSON.stringify(entry)};`, resolveDir: start },
     bundle: true, format: 'esm', platform: 'node', target: 'esnext', write: false,
   });
-  const module = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString('base64')}`);
-  // Function#toString formatting differs even when Bun and Node load the same JS.
+  let text = output.outputFiles[0].text;
+  const program = parse(text, { ecmaVersion: 'latest', sourceType: 'module' });
+  const functions = new Map(program.body.filter((node) => node.type === 'FunctionDeclaration').map((node) => [node.id.name, node]));
+  const source = program.body.filter((node) => node.type === 'VariableDeclaration').flatMap((node) => node.declarations)
+    .find((node) => node.id.type === 'Identifier' && node.id.name === 'COMMONJS_CELL_RUNTIME_SOURCE');
+  if (source?.init?.type !== 'TemplateLiteral') throw new Error('registry source must be a template');
+  const captures = source.init.expressions.filter((node) => node.type === 'CallExpression'
+    && node.callee.type === 'MemberExpression' && node.callee.property.type === 'Identifier' && node.callee.property.name === 'toString');
+  if (captures.length !== 2) throw new Error('registry must capture its two self-contained functions');
+  for (const node of captures.sort((a, b) => b.start - a.start)) {
+    const declaration = node.callee.object.type === 'Identifier' && functions.get(node.callee.object.name);
+    if (!declaration || node.arguments.length) throw new Error('registry captured a non-declaration function');
+    text = text.slice(0, node.start) + JSON.stringify(output.outputFiles[0].text.slice(declaration.start, declaration.end)) + text.slice(node.end);
+  }
+  // Capture compiler source by its AST, never by an engine's Function#toString rendering.
+  const module = await import(`data:text/javascript;base64,${Buffer.from(text).toString('base64')}`);
   return (await transform(module.COMMONJS_CELL_RUNTIME_SOURCE, { minifyWhitespace: true, target: 'esnext', charset: 'utf8' })).code;
 }
 
