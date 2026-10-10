@@ -41,8 +41,10 @@ const args=process.argv.slice(2), cmd=path.basename(process.argv[1]);
 const s=JSON.parse(fs.readFileSync(process.env.PUBLISH_STATE,'utf8'));
 const f=JSON.parse(fs.readFileSync(process.env.PUBLISH_FIXTURE,'utf8'));
 const fd=fs.fstatSync(0);
-fs.appendFileSync(process.env.PUBLISH_LOG,JSON.stringify({cmd,args,stdin:{dev:fd.dev,ino:fd.ino,mode:fd.mode,rdev:fd.rdev}})+'\\n');
+fs.appendFileSync(process.env.PUBLISH_LOG,JSON.stringify({cmd,args,versionPending:s.versionPending||0,tagPending:s.tagPending||0,stdin:{dev:fd.dev,ino:fd.ino,mode:fd.mode,rdev:fd.rdev}})+'\\n');
 const save=()=>fs.writeFileSync(process.env.PUBLISH_STATE,JSON.stringify(s));
+if(cmd==='date') {console.log(s.clock||0);process.exit(0);}
+if(cmd==='sleep') {s.clock=(s.clock||0)+(s.clockStep||Number(args[0]));save();process.exit(0);}
 if(cmd==='bun') {
   if(s.failGate) {console.error('FAIL runtime-packages');process.exit(1);}
   const dir=path.join(process.env.NIMBUS_PUBLISH_ARTIFACTS,args[1]);fs.mkdirSync(dir,{recursive:true});
@@ -52,19 +54,26 @@ if(cmd==='bun') {
   fs.writeFileSync(path.join(dir,'publish.json'),JSON.stringify({commit:args[1],job:'fixture-job',rows:[{exitCode:0}],tarballs:rows}));process.exit(0);
 }
 if(args[0]==='view') {
-  if(args.includes('dist-tags.latest')) {console.log(s.latest||'3.13.14');process.exit(0);}
+  if(args.includes('dist-tags.latest')) {
+    const delayed=s.tagPending>0;
+    if(delayed) {s.tagPending--;save();}
+    console.log(delayed?'3.13.14':s.latest||'3.13.14');process.exit(0);
+  }
   const p=[f.runtime,...f.packages].find(p=>args.includes(p.name+'@'+p.version));
   if(!p||!s.done.includes(p.name)) {console.log(JSON.stringify({error:{code:'E404'}}));process.exit(1);}
+  if(p===f.runtime&&s.versionPending>0) {s.versionPending--;save();console.log(JSON.stringify({error:{code:'E404'}}));process.exit(1);}
   console.log(JSON.stringify({shasum:s.wrong?'0'.repeat(40):p.shasum,integrity:p.integrity}));process.exit(0);
 }
 if(args[0]==='publish') {
   const p=[f.runtime,...f.packages].find(p=>args.includes(path.join(process.env.NIMBUS_PUBLISH_ARTIFACTS,'${sha}',p.file)));
-  if(!p) throw new Error('unexpected publish');s.done.push(p.name);if(p===f.runtime)s.latest=p.version;save();process.exit(0);
+  if(!p) throw new Error('unexpected publish');s.done.push(p.name);
+  if(p===f.runtime) {s.latest=p.version;s.versionPending=s.versionDelay||0;s.tagPending=s.tagDelay||0;}
+  save();process.exit(0);
 }
-if(args[0]==='dist-tag') {s.latest=f.runtime.version;save();process.exit(0);}
+if(args[0]==='dist-tag') {s.latest=f.runtime.version;s.tagPending=s.tagDelay||0;save();process.exit(0);}
 throw new Error('unexpected npm command '+args.join(' '));
 `;
-  for (const command of ['bun', 'npm']) { writeFileSync(join(bin, command), program); chmodSync(join(bin, command), 0o700); }
+  for (const command of ['bun', 'npm', 'date', 'sleep']) { writeFileSync(join(bin, command), program); chmodSync(join(bin, command), 0o700); }
   const run = (override = true) => {
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, NIMBUS_PUBLISH_ARTIFACTS: join(root, 'artifacts'), PUBLISH_STATE: stateFile, PUBLISH_FIXTURE: fixture, PUBLISH_LOG: logFile, CALLER_STDIN: join(root, 'caller-stdin.json') };
     if (override) env.NIMBUS_PUBLISH_REPO = repo;
@@ -105,6 +114,44 @@ throw new Error('unexpected npm command '+args.join(' '));
   assert.equal(calls().filter((call) => call.cmd === 'bun').length, 0, 'a prepacked commit is signing only');
   const preparedCaller = JSON.parse(readFileSync(join(root, 'caller-stdin.json'), 'utf8'));
   for (const call of calls().filter((call) => call.cmd === 'npm')) assert.deepEqual(call.stdin, preparedCaller, 'prepacked metadata, tag and publish calls keep exactly caller stdin');
+
+  set({ versionDelay: 3, tagDelay: 3 }); prepared(); result = run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const delayed = calls();
+  assert.equal(delayed.filter(call => call.args[0] === 'dist-tag').length, 0, 'a fresh latest publish needs no second sign-in while its version or tag propagates');
+  const delayedSigning = delayed.filter(call => call.cmd === 'npm' && call.args[0] === 'publish');
+  const beforePhaseTwo = delayed.slice(delayed.indexOf(delayedSigning[0]) + 1, delayed.indexOf(delayedSigning[1]));
+  const latestReads = beforePhaseTwo.filter(call => call.args.includes('dist-tags.latest'));
+  assert.ok(latestReads.length >= 4, 'the fake registry delays the tag independently of the version');
+  assert.ok(latestReads.every(call => call.versionPending === 0), 'latest is checked only after the immutable version is visible and verified');
+  assert.equal(latestReads.at(-1).tagPending, 0, 'phase two waits for the tag to propagate as well');
+  assert.ok(beforePhaseTwo.some(call => call.versionPending > 0 && call.args.includes('dist')), 'the published version itself was delayed');
+  assert.ok(beforePhaseTwo.filter(call => call.cmd === 'sleep').every(call => call.args[0] === '5'), 'polling yields between registry reads');
+
+  set({ done: [runtime.name], tagDelay: 3 }); prepared(); result = run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const repaired = calls();
+  const tagging = repaired.filter(call => call.args[0] === 'dist-tag');
+  assert.equal(tagging.length, 1, 'an already-present identical version can need one latest repair, not one per stale read');
+  assert.ok(repaired.slice(0, repaired.indexOf(tagging[0])).some(call => call.args.includes(runtime.name + '@' + runtime.version) && call.args.includes('dist')),
+    'immutable bytes are verified before a needed tag repair');
+  assert.deepEqual(tagging[0].stdin, JSON.parse(readFileSync(join(root, 'caller-stdin.json'), 'utf8')), 'a necessary repair retains web sign-in stdin');
+
+  set({ versionDelay: 2, wrong: true }); prepared(); result = run();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /STOP: npm already holds different bytes/);
+  assert.equal(calls().filter(call => call.args[0] === 'dist-tag').length, 0, 'mismatched propagated bytes cannot be tagged');
+  assert.deepEqual(calls().filter(call => call.args[0] === 'publish').map(call => pathName(call.args[1])), [runtime.file],
+    'phase two stops if the propagated runtime differs from the verified artifact');
+
+  for (const delayedForever of [{ versionDelay: 9999 }, { tagDelay: 9999 }]) {
+    set({ ...delayedForever, clockStep: 150 }); prepared(); result = run();
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /STOP: the verified CPython build is not confirmed as npm latest; phase 2 will not run/);
+    assert.equal(calls().filter(call => call.cmd === 'sleep').length, 4, 'the 600-second elapsed deadline stops the wait, not an attempt count');
+    assert.equal(calls().filter(call => call.args[0] === 'dist-tag').length, 0, 'a propagation timeout cannot request a second signing');
+    assert.deepEqual(calls().filter(call => call.args[0] === 'publish').map(call => pathName(call.args[1])), [runtime.file], 'phase two never signs after timeout');
+  }
 
   set({ failGate: true });
   result = run();
