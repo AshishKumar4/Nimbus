@@ -248,6 +248,12 @@ export interface NimbusFilesystemAuthority {
    * alone.
    */
   nameLaunch?(binding: NimbusFilesystemBinding, names: () => Iterable<string>): void;
+  /**
+   * Process `pid`'s writes answer at their commit, its effects waiting for
+   * their publication instead (ProcessFiles.continueAtCommit): only for a process
+   * whose every way out does. Absent, every write waits for its publication.
+   */
+  continueAtCommit?(pid: number): void;
 }
 
 /**
@@ -455,6 +461,15 @@ export interface RuntimeFsBridge {
   awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;
   /** The process has sent what it decided under `owner`, and done what recall `kind` asked. */
   recalled(owner: string, kind: RecallKind): Awaitable<void>;
+  /**
+   * Settled once every write of the process's that a reader's recall holds
+   * is published (its writes answer at their commit while its output is
+   * gated: ProcessFiles.continueAtCommit): what its runtime waits for before an
+   * effect leaves by a way the session's gate does not see. `escape`: one
+   * no boundary sees opens now (a raw socket), and the process's writes wait
+   * for their publication from now on.
+   */
+  published(options?: { escape?: boolean }): Awaitable<void>;
 }
 
 /** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
@@ -542,6 +557,12 @@ export interface VfsInvalidatedPath {
 export interface VfsAcquireOptions {
   namespace?: boolean;
   /**
+   * The process's read lease, confirmed, or one taken at the revision this
+   * answer reports (VfsAcquireResult.readLease): until it is recalled, its
+   * barriers need not ask.
+   */
+  lease?: boolean;
+  /**
    * Carry the content of changed regular files under `roots` (caller path
    * space), skipping any path with a segment named in `exclude`. What a
    * process wrote after another launched is then readable synchronously by
@@ -558,6 +579,21 @@ export interface VfsAcquireResult {
   poison: boolean;
   /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
   namespace?: boolean;
+  /**
+   * The read lease asked for ({@link VfsAcquireOptions.lease}): its owner,
+   * and how long the process may trust it from the moment it asked.
+   * Absent when it was not asked, or its recall is pending.
+   */
+  readLease?: {
+    owner: string;
+    trustMs: number;
+    /**
+     * Engine keys of the subtrees it does not vouch for: the mount points of
+     * the process's namespace (readLeaseCovers), whose backends are not the
+     * engine's. A mount or an unmount ends it.
+     */
+    uncovered: readonly string[];
+  };
 }
 
 /**
@@ -611,6 +647,18 @@ export interface VfsListPage {
   rev: number;
   entries: VfsListEntry[];
   next: string | null;
+}
+
+/**
+ * Everything beneath a directory, as {@link VfsListPage} lists it, in one
+ * page read in one turn (fsListTree): every entry is current at `rev`, and
+ * the subtree is listed whole. A subtree with more entries than asked for is
+ * refused (E2BIG), never cut short.
+ */
+export interface VfsListTree {
+  epoch: string;
+  rev: number;
+  entries: VfsListEntry[];
 }
 
 export interface RuntimeProcessBridge {

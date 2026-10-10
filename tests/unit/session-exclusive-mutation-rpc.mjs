@@ -5,8 +5,12 @@ import { mock } from 'bun:test';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
@@ -93,7 +97,7 @@ for (const delivered of [false, true]) {
   await assert.rejects(
     rpcDestroy({
       ensureSqliteFs() {},
-      sqliteFs: { hasExclusiveMutation: () => true },
+      sqliteFs: { publishedFor: () => null, hasExclusiveMutation: () => true },
     }),
     /EBUSY: session has an active exclusive filesystem mutation/,
   );
@@ -107,7 +111,7 @@ for (const delivered of [false, true]) {
     ensureSqliteFs() {
       if (this.sqliteFs) return;
       this.sqliteFs = {
-        hasExclusiveMutation: () => false,
+        publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
         acquireGlobalExclusiveMutation() {
           guardActive = true;
           return { root: '', owner: 'destroy-owner' };
@@ -142,7 +146,7 @@ for (const delivered of [false, true]) {
   const self = {
     ensureSqliteFs() {},
     sqliteFs: {
-      hasExclusiveMutation: () => false,
+      publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
       acquireGlobalExclusiveMutation() {
         guardActive = true;
         return { root: '', owner: 'destroy-owner' };
@@ -162,6 +166,170 @@ for (const delivered of [false, true]) {
   await assert.rejects(rpcDestroy(self), /injected destroy failure/);
   assert.equal(guardActive, false);
   assert.equal(releases, 1, 'failed destroy did not release its reservation');
+}
+
+// A commit held for a reader's recall (a launch's image, the reader not yet
+// answered) holds leases at what it changed: a destroy waits for its
+// publication, which the reader's trust bounds, and is not refused EBUSY.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    const files = new ProcessFiles(sqliteFs);
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    const launching = files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
+    launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
+    launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+    assert.notEqual(sqliteFs.publishedFor(), null, 'nothing held for the destroy to meet');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    let settled = false;
+    const destroying = rpcDestroy(self).finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(settled, false, 'a destroy went ahead of a commit held for its publication');
+    reader.recalled(readLease.owner, 'revoke');
+    assert.equal((await destroying).ok, true, 'a destroy was refused for a commit held for its publication');
+  } finally { harness.db.close(); }
+}
+
+// A wave that commits a prefix ahead of a reader's recall and never ends,
+// the reader answered: the destroy cuts it, its prefix is published, and the
+// destroy completes.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    sqliteFs.as(CRED_KERNEL).mkdir('srv');
+    const files = new ProcessFiles(sqliteFs);
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    const encoded = new Uint8Array(await new Response(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
+      { type: 'call', call: { call: 'writeFile', path: 'srv/a.txt', mode: 0o644, data: new TextEncoder().encode('prefix') } },
+      { type: 'rename', from: 'srv/a.txt', to: 'srv/b.txt' },
+    ] })).arrayBuffer());
+    // All but its last record, the batch-end (each record a 5-byte header, then its length's bytes).
+    let last = 4;
+    for (let at = 4; at < encoded.length; at += 5 + new DataView(encoded.buffer, at + 1, 4).getUint32(0, true)) last = at;
+    const writing = files.bind({ pid: 8, cred: CRED_KERNEL }).writeStream(new ReadableStream({
+      type: 'bytes',
+      start(controller) { controller.enqueue(encoded.slice(0, last)); },
+    }));
+    for (let i = 0; i < 200 && sqliteFs.publishedFor() === null; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.notEqual(sqliteFs.publishedFor(), null, 'the wave committed nothing ahead of the recall');
+    reader.recalled(readLease.owner, 'revoke');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    const outcome = await Promise.race([rpcDestroy(self).then((result) => result.ok), new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000))]);
+    assert.equal(outcome, true, 'a destroy waited on a wave that never ends');
+    await writing.catch(() => {});
+  } finally { harness.db.close(); }
+}
+
+// A wave whose native part commits ahead of a reader's recall and whose
+// mounted part waits on a backend that never answers, the reader never
+// answering (its trust runs out): the destroy's cut ends that wait, the wave
+// ends refused, its native part is published, and the destroy completes.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    sqliteFs.as(CRED_KERNEL).mkdir('srv');
+    const files = new ProcessFiles(sqliteFs);
+    const hung = [];
+    files.vfs.mount('/m', asyncOnly(new MemoryVFS(), {
+      deep: true,
+      beforeCall: (method) => (method === 'writeFile' ? new Promise(() => { hung.push(method); }) : undefined),
+    }));
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    assert.ok(reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true }).readLease, 'no lease to meet');
+    const write = (path, text) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: new TextEncoder().encode(text) } });
+    const writing = files.bind({ pid: 8, cred: CRED_KERNEL }).writeStream(encodeWriteBatchStream({
+      inodes: [], chunks: [], ops: [write('srv/a.txt', 'native'), write('m/b.txt', 'mounted')],
+    }));
+    for (let i = 0; i < 400 && (hung.length === 0 || sqliteFs.publishedFor() === null); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(hung, ['writeFile'], 'the mounted part never reached its backend');
+    assert.notEqual(sqliteFs.publishedFor(), null, 'the native part committed nothing ahead of the recall');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    const outcome = await Promise.race([rpcDestroy(self).then((result) => result.ok), new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000))]);
+    assert.equal(outcome, true, 'a destroy waited on a wave its mounted backend never answers');
+    assert.equal((await writing).ok, false, 'a cut wave was answered as applied');
+  } finally { harness.db.close(); }
+}
+
+// Two waves, each holding a committed prefix ahead of a reader's recall, each
+// then writing the file the other holds: each waits for the other's
+// publication, which comes only once that wave ends. The destroy cuts both,
+// and completes.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    const kernel = sqliteFs.as(CRED_KERNEL);
+    for (const [dir, name] of [['da', 'a.txt'], ['db', 'b.txt']]) {
+      kernel.mkdir(dir);
+      kernel.writeFile(`${dir}/${name}`, name);
+    }
+    const files = new ProcessFiles(sqliteFs);
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    assert.ok(reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true }).readLease, 'no lease to meet');
+    const other = files.bind({ pid: 10, cred: CRED_KERNEL });
+    let open;
+    const opened = new Promise((resolve) => { open = resolve; });
+    /** Its own file truncated, held for the reader; then, once opened, the other's. */
+    const wave = async (pid, own, theirs) => {
+      const bytes = new Uint8Array(await new Response(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
+        { type: 'truncate', path: own, size: 0 },
+        { type: 'truncate', path: theirs, size: 0 },
+      ] })).arrayBuffer());
+      // Its magic, batch-begin and first truncate (each record a 5-byte header, then its length's bytes).
+      let at = 4;
+      for (let record = 0; record < 2; record++) at += 5 + new DataView(bytes.buffer, at + 1, 4).getUint32(0, true);
+      let settled = false;
+      const answer = files.bind({ pid, cred: CRED_KERNEL }).writeStream(new ReadableStream({
+        type: 'bytes',
+        start(controller) {
+          controller.enqueue(bytes.slice(0, at));
+          void opened.then(() => { controller.enqueue(bytes.slice(at)); controller.close(); });
+        },
+      })).finally(() => { settled = true; });
+      return { answer, settled: () => settled };
+    };
+    const a = await wave(8, 'da/a.txt', 'db/b.txt');
+    const b = await wave(9, 'db/b.txt', 'da/a.txt');
+    const held = (key) => { try { other.readFile(key); return false; } catch (error) { return error.code === 'EAGAIN'; } };
+    for (let i = 0; i < 200 && !(held('da/a.txt') && held('db/b.txt')); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(held('da/a.txt') && held('db/b.txt'), 'the waves held nothing ahead of the recall');
+    open();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual([a.settled(), b.settled()], [false, false], 'a wave writing the other\'s held file went on');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    const outcome = await Promise.race([rpcDestroy(self).then((result) => result.ok), new Promise((resolve) => setTimeout(() => resolve('waiting'), 3_000))]);
+    assert.equal(outcome, true, 'a destroy waited on two waves each waiting for the other\'s publication');
+    assert.deepEqual([(await a.answer).ok, (await b.answer).ok], [false, false], 'a cut wave was answered as applied');
+  } finally { harness.db.close(); }
 }
 
 console.log('session exclusive mutation RPC: ok');

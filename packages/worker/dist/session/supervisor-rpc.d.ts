@@ -55,6 +55,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         granted: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListPage>;
+    fsListTree(root: string, maxEntries: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListTree>;
     wsOpen(url: string, protocols: string[], headers?: import("./ws-relay.js").WsRelayHeaders, refusalBody?: boolean): Promise<import("./ws-relay.js").WsRelayOpened>;
     wsPoll(id: number, waitMs: number): Promise<unknown[]>;
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
@@ -88,6 +89,9 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["releaseExclusiveMutation"]>>>;
     fsAwaitRecall(owner: string, waitMs?: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").RecallKind | null>;
     fsRecalled(owner: string, kind: import("@nimbus-sh/core/runtime/os-contracts.js").RecallKind): Promise<void>;
+    fsPublished(options?: {
+        escape?: boolean;
+    } | undefined): Promise<void>;
     fsClose(handleId: number): Promise<void>;
     fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null>;

@@ -65,7 +65,7 @@ function session({ grantInos, journal, gate, refuse } = {}) {
     listTree: async () => false,
     content: (key) => { try { return bridge.readFile('/' + key) ?? undefined; } catch { return undefined; } },
     fill: async (key) => bridge.readFile('/' + key),
-    barrier: async () => true,
+    barrier: async () => ({ ok: true }),
     reserve: () => true,
     release: () => {},
   };

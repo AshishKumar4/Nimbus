@@ -188,7 +188,10 @@ Two limits follow from a program deciding by itself:
 - A caller that cannot wait (the workspace's synchronous face, `vfs.sync`
   and a credentialed view of the engine) is refused with `EAGAIN` while the
   program sends, and the sending has started: the same call made again a
-  moment later finds the subtree current.
+  moment later finds the subtree current. A change is refused the same way
+  for the moment a program that is reading is told of it, but one to the
+  session's own stores, which is made at once and published once the
+  program has heard.
 - A program that makes no filesystem call for a long time (a long
   computation) cannot send what it decided when asked. It has
   `DELEGATION_RECALL_TIMEOUT_MS` (5 s) to answer; after that it loses the

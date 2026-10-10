@@ -1480,13 +1480,15 @@ export class Interpreter {
         try {
             // Each call is made again once a delegation it meets is recalled
             // (withRecall): a redirection into a subtree a process holds waits for
-            // it, as any caller that can wait does.
+            // it, as any caller that can wait does. What it changes ahead of a
+            // reader's recall is published by the time the command ends (`held`).
             const bridge = vfs.process;
-            const handle = await withRecall(() => bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' }));
+            const held = new Set();
+            const handle = await withRecall(() => bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' }), undefined, held);
             const push = async (bytes) => {
                 let offset = 0;
                 while (offset < bytes.length) {
-                    const written = await withRecall(() => bridge.write(handle.id, null, bytes.subarray(offset)));
+                    const written = await withRecall(() => bridge.write(handle.id, null, bytes.subarray(offset)), undefined, held);
                     if (written <= 0 || written > bytes.length - offset)
                         throw new Error('EIO: invalid redirection write length');
                     offset += written;
@@ -1497,8 +1499,14 @@ export class Interpreter {
                 stream,
                 // What the VFS still holds for the file is written as the command
                 // whose redirection opened it ends (flushFds), and a failure is its.
-                flush: async () => { await withRecall(() => bridge.fsync(handle.id)); },
-                close: async () => { await bridge.close(handle.id); },
+                flush: async () => {
+                    await withRecall(() => bridge.fsync(handle.id), undefined, held);
+                    await Promise.all(held);
+                },
+                close: async () => {
+                    await bridge.close(handle.id);
+                    await Promise.all(held);
+                },
                 refs: 1,
             });
             return { stream, terminal: false };

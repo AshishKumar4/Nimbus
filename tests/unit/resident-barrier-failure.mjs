@@ -68,8 +68,15 @@ async function boot() {
   const fault = { fsAcquire: null, fsList: null, fsReadBatch: null };
   const overrides = {};
   let forward;
+  // Every barrier here asks: the session grants no read lease (a barrier's
+  // failures are what this file is about, not the lease that skips one).
+  const asked = (op, args) => {
+    if (op !== 'fsAcquire' || args[2]?.lease !== true) return args;
+    const { lease: _lease, ...options } = args[2];
+    return [args[0], args[1], options];
+  };
   for (const op of Object.keys(fault)) {
-    overrides[op] = (...args) => (fault[op] ? fault[op](...args) : forward(op, args));
+    overrides[op] = (...args) => (fault[op] ? fault[op](...args) : forward(op, asked(op, args)));
   }
   const handle = facetSupervisor(authority, overrides);
   forward = handle.forward;
@@ -92,7 +99,7 @@ async function boot() {
 await runScenarios(import.meta.path, {
   async 'a barrier whose ACQUIRE is dropped'() {
     const { authority, fault, probe } = await boot();
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     fault.fsAcquire = DROPPED;
     assert.equal(
       await probe.resume(F),
@@ -104,7 +111,7 @@ await runScenarios(import.meta.path, {
 
   async 'a repair owed within one epoch asks a delta from the store\'s floor, never a listing'() {
     const { authority, fault, probe, log } = await boot();
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     // One barrier's ACQUIRE is lost; the authority's log is intact.
     fault.fsAcquire = (...args) => { fault.fsAcquire = null; return DROPPED(); };
     const lists = log.calls.fsList ?? 0;
@@ -120,9 +127,9 @@ await runScenarios(import.meta.path, {
     // listing saying the peer's new name is free: statSync ENOENT, and a
     // write would pass as a creation owned by the writer.
     const { authority, fault, probe } = await boot();
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.writeFile('home/user/app/peer.txt', 'theirs');
-    root.chmod('home/user/app/peer.txt', 0o644);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.writeFile('home/user/app/peer.txt', 'theirs');
+    await root.chmod('home/user/app/peer.txt', 0o644);
     fault.fsAcquire = DROPPED;
     const seen = await probe.resumeWith(() => probe.own('/home/user/app/peer.txt'));
     fault.fsAcquire = null;
@@ -136,7 +143,7 @@ await runScenarios(import.meta.path, {
 
   async 'a barrier whose ACQUIRE answers with no cursor'() {
     const { authority, fault, probe } = await boot();
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     fault.fsAcquire = async () => ({ poison: false, paths: [] });
     assert.equal(await probe.resume(F), 'v2', 'an answer with no cursor dates nothing and is not an empty delta');
   },
@@ -146,7 +153,7 @@ await runScenarios(import.meta.path, {
     fault.fsAcquire = DROPPED;
     fault.fsList = DROPPED;
     fault.fsReadBatch = DROPPED;
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     const during = await probe.resume(F);
     assert.notEqual(during, 'v1', 'with nothing to validate it against, the old row must not be served');
     assert.match(during, /^ERR:/, 'the read fails instead');
@@ -161,7 +168,7 @@ await runScenarios(import.meta.path, {
     fault.fsAcquire = null;
     fault.fsList = null;
     fault.fsReadBatch = null;
-    authority.kfs.writeFile('home/user/app/f.txt', 'v3');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v3');
     assert.equal(await probe.resume(F, G), 'v3,g1', 'the next barrier restores what the failed one dropped');
   },
 
@@ -191,7 +198,7 @@ await runScenarios(import.meta.path, {
     };
     const a = probe.resume(F);
     await served.promise;
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     const acquired = log.calls.fsAcquire ?? 0;
     const b = probe.resume(F);
     await until(() => (log.calls.fsAcquire ?? 0) > acquired, "B's ACQUIRE");
@@ -212,7 +219,7 @@ await runScenarios(import.meta.path, {
     // of x2 with nothing to evict. E asks after B and is answered after the
     // repair lands, so its delta never names x2 again.
     const { authority, fault, probe, log, forward } = await boot();
-    authority.kfs.writeFile('home/user/app/f.txt', 'x1');
+    await authority.peer.writeFile('home/user/app/f.txt', 'x1');
     fault.fsAcquire = () => { fault.fsAcquire = null; return DROPPED(); };
     const batch = { served: Promise.withResolvers(), gate: Promise.withResolvers() };
     fault.fsReadBatch = async (requests) => {
@@ -224,7 +231,7 @@ await runScenarios(import.meta.path, {
     };
     const a = probe.resume(F);
     await batch.served.promise;
-    authority.kfs.writeFile('home/user/app/f.txt', 'x2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'x2');
 
     const acquired = log.calls.fsAcquire ?? 0;
     const b = probe.resume(F);
@@ -259,7 +266,7 @@ await runScenarios(import.meta.path, {
     // was spoiled, must wait for it rather than resume onto a miss.
     const { authority, fault, probe, forward } = await boot();
     const reads = holdReadsOf(fault, forward, '/f.txt');
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     const a = probe.resume(F);
     await until(() => reads.length === 1, "A's refetch of f.txt");
 
@@ -283,7 +290,7 @@ await runScenarios(import.meta.path, {
     // resumes once f.txt is held again, not onto the gap in between.
     const { authority, fault, probe, forward } = await boot();
     const reads = holdReadsOf(fault, forward, '/f.txt');
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     const a = probe.resume(F);
     await until(() => reads.length === 1, "A's refetch of f.txt");
 

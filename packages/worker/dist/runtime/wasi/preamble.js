@@ -160,13 +160,14 @@ function __wasiStartResident(sup, cred) {
     store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
     store.__residentSetStorage(undefined, supervisor);
     let view = null;
-    void (async () => {
+    const ready = (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
         if (root === null || !(await store.__residentBootLazy(supervisor)))
-            return;
+            return null;
         view = store.__residentNamespaceView(supervisor, root.dev, cred);
-    })().catch(() => { view = null; });
+        return view;
+    })().catch(() => { view = null; return null; });
     const booting = {
         get device() { return view === null ? -1 : view.device; },
         cred,
@@ -178,7 +179,7 @@ function __wasiStartResident(sup, cred) {
         listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
-        barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+        barrier: (lease) => (view === null ? Promise.resolve({ ok: false }) : view.barrier(lease)),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
     };
@@ -201,11 +202,12 @@ function __wasiStartResident(sup, cred) {
     // A resident's facet keeps the log of what it sends in its own store
     // (process-fs-journal.ts), drained by the session once the process is gone.
     const journalSql = Reflect.get(globalThis, '__nimbusFsJournalSql');
-    return residentFilesystem(authority, booting, {
+    const fs = residentFilesystem(authority, booting, {
         session,
         isHomeRoot: isHomeDirectory,
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
     });
+    return { fs, ready };
 }
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
 function isHomeDirectory(key) {
@@ -226,8 +228,24 @@ function __wasiFilesystem(parking) {
     if (cred === null || !canPark)
         return supervisorFilesystem(sup);
     if (__wasiResident === null || __wasiResident.sup !== sup)
-        __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };
+        __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
     return __wasiResident.fs;
+}
+export async function __wasiPrepareFilesystem(roots) {
+    __wasiFilesystem('jspi');
+    const view = await __wasiResident?.ready;
+    if (!view)
+        return;
+    const paths = roots.map(__wasiCanonicalize);
+    const ancestors = new Set();
+    for (const root of paths) {
+        const parts = root.split('/');
+        for (let depth = 1; depth <= parts.length; depth++)
+            ancestors.add(parts.slice(0, depth).join('/'));
+    }
+    await view.lookup([...ancestors], false);
+    for (const root of paths)
+        await view.listTree(root);
 }
 /** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
 export function __wasiFsStats() {

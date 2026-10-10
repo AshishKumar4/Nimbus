@@ -330,22 +330,55 @@ const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopR
 let __nimbusCarrierOpening = false;
 let __nimbusCarrierGate = null;
 let __nimbusCarrierFailure = null;
-if (__nimbusReplay && typeof __real_net !== "undefined") {
-  const __NativeSocket = (__real_net.default ?? __real_net).Socket;
+// What leaves by the platform's own network, which no gate of the session's
+// sees, goes once what the process wrote is published (ProcessFsClient.published).
+function __nimbusNetworkGate() {
+  const client = globalThis.__nimbusProcessFs;
+  return client ? client.published() : null;
+}
+// A raw socket (one a connect opens, or a response upgrades to) carries
+// whatever the process sends on it from then on: the session is told, whether
+// or not the process wrote anything yet, and the socket opens once the session
+// answered and what the process wrote before it is published
+// (ProcessFsClient.rawSocket); refused when the session was not told.
+function __nimbusRawSocket() {
+  let bound = null;
+  try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
+  return bound && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs().rawSocket() : null;
+}
+if (typeof __real_net !== "undefined") {
+  const __realNet = __real_net.default ?? __real_net;
+  const __NativeSocket = __realNet.Socket;
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
+  // What a connect refuses before it opens anything (a bad port, a missing
+  // one, a lookup that is no function), thrown from connect as Node throws
+  // it: the native connect's own checks, made on a socket that opens
+  // nothing, its host one to look up by a lookup that never answers.
+  const __nativeConnectChecks = (options) => {
+    const probe = new __NativeSocket();
+    probe.on("error", () => {});
+    const lookup = options.lookup == null || typeof options.lookup === "function" ? () => {} : options.lookup;
+    try { Reflect.apply(__nativeConnect, probe, [{ ...options, host: "nimbus-checks.invalid", lookup }]); }
+    finally { probe.destroy(); }
+  };
   if (typeof __nativeConnect === "function") {
     Object.defineProperty(__NativeSocket.prototype, "connect", { configurable: true, writable: true, value: function connect(...args) {
-      if (!__nimbusCarrierOpening) {
+      if (__nimbusReplay && !__nimbusCarrierOpening) {
         const first = args[0];
         const where = first !== null && typeof first === "object"
           ? String(first.host ?? "") + ":" + String(first.port ?? first.path ?? "")
           : String(typeof args[1] === "string" ? args[1] : "") + ":" + String(first ?? "");
         __nimbusReplay.effect("net.connect " + where);
       }
+      // Already connecting: the native connect refuses it, opening nothing.
+      if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
+      __nativeConnectChecks((Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args))[0]);
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
-      const ready = __nimbusCarrierOpening ? __nimbusCarrierGate : __nimbusReplay.afterBoundary();
+      const replayed = !__nimbusReplay ? null : __nimbusCarrierOpening ? __nimbusCarrierGate : __nimbusReplay.afterBoundary();
+      const raw = __nimbusRawSocket();
+      const ready = replayed && raw ? Promise.all([replayed, raw]) : replayed || raw;
       if (ready) {
         const socket = this;
         const fail = __nimbusCarrierFailure || ((error) => socket.destroy(error));
@@ -357,6 +390,11 @@ if (__nimbusReplay && typeof __real_net !== "undefined") {
           // The native implementation owns its own false -> true transition
           // and refuses a second connect while already connecting.
           socket.connecting = false;
+          // workerd's connect undestroys every stream it opens, Node's only a
+          // destroyed one: what the program did to this one while it waited
+          // (its end) stands.
+          const undestroy = socket._undestroy;
+          socket._undestroy = function () { if (this.destroyed) Reflect.apply(undestroy, this, arguments); };
           try { Reflect.apply(__nativeConnect, socket, args); }
           catch (error) { fail(error); }
         }, fail));
@@ -2733,7 +2771,11 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const pending = __resumeCoherent(__dispatch(input, init)).then((response) => {
+    const published = __nimbusNetworkGate();
+    if (published !== null) await published;
+    const pending = __resumeCoherent(__dispatch(input, init)).then(async (response) => {
+      const raw = response && response.webSocket ? __nimbusRawSocket() : null;
+      if (raw !== null) await raw;
       if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
       return response;
     });
@@ -3224,6 +3266,28 @@ const __fsMod = (() => {
     return null;
   }
 
+  // What the view answers for under a trusted read lease, compiled from
+  // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
+  // declares readLeaseCovers (and SESSION_KERNEL_ROOTS).
+var SESSION_KERNEL_ROOTS = [".nimbus", "var/lib/nimbus"];
+function readLeaseCovers(key, listing, roots) {
+  for (const root of roots) {
+    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;
+    if (listing && (key === "" || root.startsWith(key) && root.charCodeAt(key.length) === 47)) return false;
+  }
+  return true;
+}
+  /** While a leased answer is made (_leasedRead): what its lease does not vouch for, and whether a lookup landed on any of it. */
+  let _leasedUncovered = null;
+  let _landedUncovered = false;
+  /** `__nsResolve`, where it landed noted: `k`'s entry, or with `listing` its names, through any link. */
+  function _nsResolveViewed(k, follow, listing) {
+    const found = __nsLookup(k, follow);
+    if (found === "ELOOP") return found;
+    if (_leasedUncovered !== null && !readLeaseCovers(found.path, listing, _leasedUncovered)) _landedUncovered = true;
+    return found.row !== undefined ? found : null;
+  }
+
   /**
    * The key an operation that follows symlinks lands on: every link on `k`
    * followed, the last one too, as open(2) and chmod(2) follow them; null on
@@ -3316,7 +3380,7 @@ const __fsMod = (() => {
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
+      const found = _nsResolveViewed(renamed && renamed.alias !== undefined ? renamed.alias : k, follow, false);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -3324,7 +3388,7 @@ const __fsMod = (() => {
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = __nsResolve(_nsMovedEntry(k, own), false);
+      const found = _nsResolveViewed(_nsMovedEntry(k, own), false, false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -3332,7 +3396,7 @@ const __fsMod = (() => {
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
+      const found = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, follow, false);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -3353,7 +3417,7 @@ const __fsMod = (() => {
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
+      const real = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, true, true);
       if (real && real !== "ELOOP") {
         for (const child of __nsChildren(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
@@ -4132,6 +4196,10 @@ const __fsMod = (() => {
       reconciles: 0, selfWrites: 0, misses: 0,
       // ACQUIREs that got no answer (see _acquireBarrier), and the last reason.
       barrierFailures: 0, lastBarrierFailure: "",
+      // Barriers a trusted read lease answered, asking nothing (_acquireBarrier).
+      leasedBarriers: 0,
+      // Async stats and listings the sync view answered under a trusted read lease (_leasedView).
+      leasedReads: 0,
       // Barriers that held their resumption on an own write's acknowledgement
       // (_awaitReportedOwnWrites).
       ownWriteWaits: 0,
@@ -4554,6 +4622,14 @@ const __fsMod = (() => {
    */
   async function _acquireBarrier(supervisor, delivered) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
+    // Under a trusted read lease nothing this process holds has changed: a
+    // change waits for the lease's recall, and the recall untrusts it first
+    // (ProcessFsClient.readTrusted). A delivered answer is still applied,
+    // and a store owed a repair still asks.
+    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+      _stats.leasedBarriers++;
+      return [];
+    }
     const fromDelivery = _deliveredAnswer(delivered);
     // The overlay of this facet's own structural effects retires what settled
     // before the answer was asked for: a delivered answer was asked for when
@@ -4626,6 +4702,11 @@ const __fsMod = (() => {
       // A directory that became searchable has descendants no delta names.
       for (const dir of applied.relist) await __nsRelist(supervisor, dir);
       _nsRetire(begin);
+      // The read lease this answer carried, from the moment it was asked:
+      // what it vouches for is this answer, applied now.
+      if (!fromDelivery && result.readLease && result.ask) {
+        __nimbusProcessFs().readLeased(result.readLease, result.ask);
+      }
       _stats.invalidations += applied.dropped.length;
       _stats.selfWrites += applied.kept;
       _stats.pushes += applied.pushed || 0;
@@ -4699,14 +4780,22 @@ const __fsMod = (() => {
     // pending timer happened to hold the program open.
     try {
       const args = _acquireArgs();
+      // Asked of this barrier only, never of a long poll's delivery: its
+      // trust runs from the moment this asks. A run that can stop and run
+      // again takes none: when it asks, and what it is answered, are the
+      // run before's (stop-replay.ts).
+      const ask = __nimbusReplay && !__nimbusReplay.final ? null : __nimbusProcessFs().readLeaseAsk();
+      const options = ask ? { ...(args.options || {}), lease: true } : args.options;
       const result = await __nimbusUseRpcResult(
-        args.options ? supervisor.fsAcquire(args.epoch, args.cursor, args.options) : supervisor.fsAcquire(args.epoch, args.cursor),
+        options ? supervisor.fsAcquire(args.epoch, args.cursor, options) : supervisor.fsAcquire(args.epoch, args.cursor),
         (r) => r,
       );
       if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
         throw new Error("fsAcquire answered without a cursor");
       }
-      return _currentAnswer(result);
+      // Held from now, whatever this barrier does with the answer: its recalls are this process's to answer.
+      if (ask && result.readLease) __nimbusProcessFs().readLeaseAnswered(result.readLease);
+      return { ..._currentAnswer(result), ask };
     } catch (error) {
       _stats.barrierFailures++;
       _stats.lastBarrierFailure = (error && error.message) || String(error);
@@ -5638,11 +5727,65 @@ const __fsMod = (() => {
     return answer ? answer.value : null;
   }
 
+  /**
+   * Whether the sync view answers an async metadata call (a stat, a
+   * listing) in the session's place: under a trusted read lease nothing has
+   * changed since the barrier that confirmed it, and nothing of the
+   * process's own since (ProcessFsClient.readTrusted), so the namespace is
+   * what the session would answer. Where the process's own effects are over
+   * a path (its overlay, a write parked there), the session answers it.
+   */
+  function _leasedView() {
+    return !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted();
+  }
+  /** Whether the process's own effects are at `k` (or its landing, `follow`): what the session answers, not the view. */
+  function _ownAt(k, follow) {
+    if (_nsOwnView(k) !== null || (__vfsWrites && k in __vfsWrites) || _pendingModes.has(k)) return true;
+    if (!follow) return false;
+    const landing = _nsLandingKey(k);
+    return landing !== null && landing !== k && _ownAt(landing, false);
+  }
+  /** Whether the process's own effects are at `k` or anywhere under it. */
+  function _ownUnder(k) {
+    if (_ownAt(k, false)) return true;
+    const prefix = k ? k + "/" : "";
+    for (const own of _nsOwn.keys()) if (own.startsWith(prefix)) return true;
+    for (const local of Object.keys(__vfsWrites || {})) if (local.startsWith(prefix)) return true;
+    for (const local of Object.keys(__vfsDirs || {})) if (local === k || local.startsWith(prefix)) return true;
+    return false;
+  }
+  /**
+   * `read`, the sync view's answer under a lease that does not vouch for
+   * `uncovered`, counted; undefined when the view cannot say (EAGAIN: a
+   * mount it did not list) or it landed there (a link out of what is vouched for).
+   */
+  function _leasedRead(uncovered, read) {
+    _leasedUncovered = uncovered;
+    _landedUncovered = false;
+    try {
+      const value = read();
+      if (_landedUncovered) return undefined;
+      _stats.leasedReads++;
+      return value;
+    } catch (error) {
+      if ((error && error.code === "EAGAIN") || _landedUncovered) return undefined;
+      _stats.leasedReads++;
+      throw error;
+    } finally {
+      _leasedUncovered = null;
+    }
+  }
+
   async function _statAsync(p) { return _statAsyncAs("stat", p); }
   async function _lstatAsync(p) { return _statAsyncAs("lstat", p); }
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
+    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
+    if (uncovered !== null && readLeaseCovers(_strip(absPath), false, uncovered) && !_ownAt(_strip(absPath), syscall === "stat")) {
+      const local = _leasedRead(uncovered, () => (syscall === "stat" ? statSync(p) : lstatSync(p)));
+      if (local !== undefined) return local;
+    }
     if (supervisor && typeof supervisor[syscall] === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
@@ -5662,6 +5805,12 @@ const __fsMod = (() => {
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
+    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
+    if (uncovered !== null && readLeaseCovers(_strip(absPath), true, uncovered) && !_ownUnder(_strip(absPath))) {
+      const local = _leasedRead(uncovered, () => readdirSync(p, opts));
+      // In the order the session's listing is given in.
+      if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
+    }
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
@@ -8505,7 +8654,7 @@ const __fsMod = (() => {
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = __nsResolve(key, true);
+          const found = _nsResolveViewed(key, true, false);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
@@ -8722,6 +8871,9 @@ const __NimbusRelayedWebSocket = (() => {
 
     async _connect(supervisor, protocols, headers, refusalBody) {
       try {
+        // Its handshake is as outward a frame as any (its URL, its headers).
+        const release = globalThis.__nimbusVfsReleaseBarrier;
+        if (typeof release === "function") await release();
         const opened = await __nimbusUseRpcResultUnref(
           supervisor.wsOpen(this.url, protocols, headers, refusalBody),
           (result) => result,
@@ -8873,6 +9025,9 @@ const __NimbusRelayedWebSocket = (() => {
       const closing = (async () => {
         await this._ready.catch(() => {});
         if (this._id === null || !supervisor) return;
+        // So is its close (its code, its reason).
+        const release = globalThis.__nimbusVfsReleaseBarrier;
+        if (typeof release === "function") await release();
         await __nimbusUseRpcResultUnref(
           supervisor.wsClose(this._id, code, reason),
           () => undefined,
@@ -12154,19 +12309,21 @@ const __tlsMod = (() => {
       __nimbusCarrierGate = null;
       __nimbusCarrierFailure = null;
     }
+    // The carrier's connect waits at a gate (the replay boundary's notice, a raw socket's): it has no handle yet.
+    const deferred = raw.connecting && !raw._handle;
     const name = () => {
       // workerd's empty-parent _start listener adopts raw._handle on this
       // same event. Its TLS socket must leave the placeholder connecting
       // state first; native TLS then emits its own connect after upgrading,
       // which releases the native Socket's existing write/end buffers.
-      if (notice && socket && !socket.destroyed) socket.connecting = false;
+      if (deferred && socket && !socket.destroyed) socket.connecting = false;
       const native = raw._handle && raw._handle.socket;
       if (native) { tokens.set(native, token); carriers.set(native, raw); if (note) notes.set(native, note); patchStartTls(native); }
     };
     name();
     raw.once('connect', name);
     socket = real.connect({ ...options, host, port, socket: raw, servername: options.servername ?? host }, cb);
-    if (notice && raw.connecting && !socket.destroyed) socket.connecting = true;
+    if (deferred && raw.connecting && !socket.destroyed) socket.connecting = true;
     // The returned TLS socket owns the carrier, including while its native
     // handle has not been created. Cancelling it cancels that pending work.
     const destroy = socket.destroy;

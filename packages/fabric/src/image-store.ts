@@ -73,14 +73,15 @@ export class ImageStore {
   private dirReady = false;
 
   /**
-   * @param blobs The disk the images land on, resolved per use — the embedder
-   *   may not have a filesystem yet when the store is constructed, and throws
-   *   from here when a write is asked for without one.
+   * @param blobs The disk the images of process `pid` land on, as written on
+   *   its behalf (the process reads them as their writer), resolved per use —
+   *   the embedder may not have a filesystem yet when the store is
+   *   constructed, and throws from here when a write is asked for without one.
    * @param isLive Whether a pid still names a running process. The root set
    *   is the process table, reached through this one predicate.
    */
   constructor(
-    private readonly blobs: () => ImageBlobStore,
+    private readonly blobs: (pid: number) => ImageBlobStore,
     private readonly isLive: (pid: number) => boolean,
   ) {}
 
@@ -101,10 +102,10 @@ export class ImageStore {
    * accepting terminal connections at all, while the same build without it
    * served them.
    */
-  ensureDir(): void {
+  ensureDir(pid: number): void {
     if (this.dirReady) return;
     this.dirReady = true;
-    try { this.blobs().mkdirp(FACET_IMAGE_DIR); }
+    try { this.blobs(pid).mkdirp(FACET_IMAGE_DIR); }
     catch { /* a session whose disk is not writable has no images to store */ }
   }
 
@@ -133,7 +134,7 @@ export class ImageStore {
     images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>,
     pacer: TurnBudget,
   ): Promise<Record<string, string>> {
-    const fs = this.blobs();
+    const fs = this.blobs(pid);
     const paths: Record<string, string> = {};
     // The root set is this ARRAY, held by the sweep's map from before the
     // first byte and appended to as each image is named. Rooting an image

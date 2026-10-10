@@ -76,23 +76,36 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  * answer's length describes the GET it stands for, not the body it has none
  * of, so it is not held to it.
  */
-function relayRpcBody(response, method) {
+function relayRpcBody(response, method, gated) {
     if (response.body === null)
         return response;
     const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
     // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    const pipe = Number.isSafeInteger(length) ? new FixedLengthStream(length) : new TransformStream();
-    return new Response(response.body.pipeThrough(pipe), {
+    const body = Number.isSafeInteger(length)
+        ? (gated === null ? response.body : response.body.pipeThrough(gated)).pipeThrough(new FixedLengthStream(length))
+        : response.body.pipeThrough(gated ?? new TransformStream());
+    return new Response(body, {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
     });
 }
-function decodeContentCoding(response, port, method) {
+/**
+ * A process's answer body, each piece and its end let out as the rest of
+ * its output is (ProcessOutput.releaseOutput): what it wrote while answering
+ * is published before the piece after it, or its end, is seen.
+ */
+function releasedBody(output, pid) {
+    return new TransformStream({
+        transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
+        flush: () => output.releaseOutput(pid, () => { }),
+    });
+}
+function decodeContentCoding(response, port, method, gated) {
     const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
     if (!coding || coding === 'identity' || response.body === null)
-        return relayRpcBody(response, method);
+        return relayRpcBody(response, method, gated);
     const format = DECODABLE_CONTENT_CODINGS.get(coding);
     if (!format) {
         void response.body.cancel().catch(() => { });
@@ -105,7 +118,8 @@ function decodeContentCoding(response, port, method) {
     headers.delete('Content-Encoding');
     // The decoded body has a different length; the Response re-derives it.
     headers.delete('Content-Length');
-    return new Response(response.body.pipeThrough(new DecompressionStream(format)), {
+    const body = gated === null ? response.body : response.body.pipeThrough(gated);
+    return new Response(body.pipeThrough(new DecompressionStream(format)), {
         status: response.status,
         statusText: response.statusText,
         headers,
@@ -132,6 +146,8 @@ export class PortRegistry {
     /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
     acquireDeliveredPids = new Set();
     portWaitersByPid = new Map();
+    /** Where a process's answers leave (setOutput). */
+    output = null;
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -142,6 +158,15 @@ export class PortRegistry {
      */
     constructor(deliveredAcquire = null) {
         this.deliveredAcquire = deliveredAcquire;
+    }
+    /**
+     * Let each process's answers out through `output` (its status and headers,
+     * each piece of its body, and the body's end), as the rest of what it makes
+     * visible: once what it wrote before is published. A socket an upgrade
+     * hands it is one nothing there sees, which `output` is told. One slot.
+     */
+    setOutput(output) {
+        this.output = output;
     }
     /**
      * Remember the available facet capabilities for a running process.
@@ -399,6 +424,14 @@ export class PortRegistry {
                 return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
             }
             const response = await handler(forwarded);
+            const output = this.output;
+            // What it wrote before answering is published before anyone sees the
+            // answer; a socket the answer hands over carries what nothing sees.
+            if (output !== null) {
+                if (response instanceof Response && response.webSocket)
+                    output.escapeOutput(entry.pid);
+                await output.releaseOutput(entry.pid, () => { });
+            }
             if (!(response instanceof Response)) {
                 // Defensive: if a facet ever returns something else (JSON
                 // envelope, string, etc.), treat it as a 502 so the client
@@ -421,7 +454,7 @@ export class PortRegistry {
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
             // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            return decodeContentCoding(response, port, request.method);
+            return decodeContentCoding(response, port, request.method, output === null || response.body === null ? null : releasedBody(output, entry.pid));
         }
         catch (error) {
             // Server-side triage — users see only the 502 body, operators

@@ -642,7 +642,8 @@ return globalThis.Go;
     "fsAcquireExclusiveMutation",
     "fsReleaseExclusiveMutation",
     "fsAwaitRecall",
-    "fsRecalled"
+    "fsRecalled",
+    "fsPublished"
   ];
   function bridgeOverSupervisor(supervisor, local) {
     return {
@@ -692,7 +693,8 @@ return globalThis.Go;
       acquireExclusiveMutation: (...args) => answerValue(supervisor.fsAcquireExclusiveMutation(...args)),
       releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args)),
       awaitRecall: (...args) => answerValue(supervisor.fsAwaitRecall(...args)),
-      recalled: (...args) => answerValue(supervisor.fsRecalled(...args))
+      recalled: (...args) => answerValue(supervisor.fsRecalled(...args)),
+      published: (...args) => answerValue(supervisor.fsPublished(...args))
     };
   }
 
@@ -706,7 +708,8 @@ return globalThis.Go;
     "fsAcquired",
     "fsStorageGrant",
     "fsReadRangeUncached",
-    "fsReadBatch"
+    "fsReadBatch",
+    "fsListTree"
   ];
   var SUPERVISOR_ANSWERED_METHODS = [
     ...FILESYSTEM_ANSWERED_RPC_METHODS,

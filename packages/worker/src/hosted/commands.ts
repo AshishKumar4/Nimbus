@@ -1443,8 +1443,9 @@ registry.register('logs', async (ctx: any) => {
     return 0;
   }
 
-  // Follow mode: subscribe to live appends, poll for exit.
-  const entry = self.processes.get(pid);
+  // Follow mode: subscribe to live appends, poll for exit. Ended as its
+  // observers are told it: an end still held behind its output is followed.
+  const entry = self.processes.published(pid);
   const alreadyExited =
     !entry || entry.state !== 'running' || self.processes.getExit(pid);
   if (alreadyExited) {

@@ -105,6 +105,12 @@ export declare const REPLAY_OPERATION_POLICY: {
             entries?: unknown[];
         } | null;
     };
+    fsListTree: {
+        kind: "observation";
+        answer: (value: unknown) => {
+            entries?: unknown[];
+        } | null;
+    };
     fsStorageGrant: {
         kind: "observation";
         args: (a: readonly unknown[]) => unknown[];
@@ -297,6 +303,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     };
     fsRecalled: {
         readonly kind: "mutation";
+    };
+    fsPublished: {
+        readonly kind: "control";
     };
     innerDoFetch: {
         readonly kind: "effect";

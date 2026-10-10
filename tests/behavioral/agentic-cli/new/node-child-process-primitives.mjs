@@ -83,6 +83,22 @@ if (sync && sync.__deferred) {
 } else {
   console.log('SPAWNSYNC_DEFERRED_STATUS=missing');
 }
+
+// A child spawnSync starts writes what its parent reads: the parent, reading
+// under its read lease, answers the recall the child's write meets while it
+// waits, and reads the child's bytes after.
+{
+  const fs = await import('node:fs');
+  fs.writeFileSync('spawnsync-lease.txt', 'one');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const before = fs.readFileSync('spawnsync-lease.txt', 'utf8');
+  const started = Date.now();
+  const wrote = spawnSync('node', ['-e', "require('fs').writeFileSync('spawnsync-lease.txt', 'two')"]);
+  if (wrote && wrote.__deferred) await wrote.__deferred;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  console.log('SPAWNSYNC_LEASE=' + before + '>' + fs.readFileSync('spawnsync-lease.txt', 'utf8') + ' ms=' + (Date.now() - started));
+}
 `;
 
 const sid = await mintSession();
@@ -115,6 +131,10 @@ a.check('child_process.spawn resolves virtual absolute node path',
 a.check('child_process.exec uses shell path successfully', /EXEC_OUT=EXEC_OK\|\/home\/user/.test(out), JSON.stringify(out.slice(-1200)));
 a.check('child_process.execFile callback receives stdout', /EXECFILE_OUT=EXECFILE_OK/.test(out), JSON.stringify(out.slice(-800)));
 a.check('spawnSync deferred completion resolves', /SPAWNSYNC_DEFERRED_STATUS=0/.test(out), JSON.stringify(out.slice(-800)));
+{
+  const m = /SPAWNSYNC_LEASE=one>(\w+) ms=(\d+)/.exec(out);
+  a.check('a spawnSync child\'s write to what its parent reads lands, and the parent reads it', m !== null && m[1] === 'two' && Number(m[2]) < 10_000, JSON.stringify(out.slice(-800)));
+}
 a.check('spawnSync deferred stdout includes node version', /SPAWNSYNC_DEFERRED_OUT=v?\d+\.\d+\.\d+/.test(out), JSON.stringify(out.slice(-800)));
 
 await t.close();

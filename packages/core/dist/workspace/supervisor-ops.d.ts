@@ -43,6 +43,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fsAcquired: "joined";
     readonly fsRevision: "joined";
     readonly fsList: "joined";
+    readonly fsListTree: "joined";
     readonly fsStorageGrant: null;
     readonly wsOpen: null;
     readonly wsPoll: null;
@@ -99,6 +100,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fsReleaseExclusiveMutation: "once";
     readonly fsAwaitRecall: null;
     readonly fsRecalled: "once";
+    readonly fsPublished: null;
     readonly innerDoFetch: null;
     readonly innerDoCall: null;
     readonly fanoutExecute: null;
@@ -131,5 +133,7 @@ export type SupervisorJoinedReadOpName = OpsResent<'joined'>;
 export declare const SUPERVISOR_OPS: readonly SupervisorOpName[];
 export declare const SUPERVISOR_DELIVERED_OPS: readonly SupervisorDeliveredOpName[];
 export declare const SUPERVISOR_JOINED_READ_OPS: readonly SupervisorJoinedReadOpName[];
+/** Whether `op` makes something of its process's visible outside the session (SUPERVISOR_OPS_WITHIN). */
+export declare function supervisorOpLeaves(op: SupervisorOpName): boolean;
 export {};
 //# sourceMappingURL=supervisor-ops.d.ts.map

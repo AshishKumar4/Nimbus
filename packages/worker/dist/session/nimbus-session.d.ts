@@ -24,7 +24,7 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -371,6 +371,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         granted: number;
     }>;
     _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
+    _rpcFsListTree(root: string, maxEntries: number, pid?: number): Promise<VfsListTree>;
     _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, refusalBody?: boolean | null, pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;

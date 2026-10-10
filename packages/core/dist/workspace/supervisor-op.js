@@ -1,6 +1,6 @@
 import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
 import { withRecall } from '../vfs/recall.js';
-import { SUPERVISOR_OPS } from './supervisor-ops.js';
+import { SUPERVISOR_OPS, supervisorOpLeaves } from './supervisor-ops.js';
 import { z } from 'zod';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -141,6 +141,7 @@ export const SUPERVISOR_OP_ROUTES = {
     fsAcquire: { method: '_rpcFsAcquire', args: [0, 1, 2, 'pid'] },
     fsAcquired: { method: '_rpcFsAcquired', args: [0, 1, 2, 'pid'] },
     fsList: { method: '_rpcFsList', args: [0, 1, 'pid'] },
+    fsListTree: { method: '_rpcFsListTree', args: [0, 1, 'pid'] },
     fsStorageGrant: { method: '_rpcFsStorageGrant', args: [0, 1, 2, 'pid'] },
     wsOpen: { method: '_rpcWsOpen', args: [0, 1, 2, 3, 'pid'] },
     wsPoll: { method: '_rpcWsPoll', args: [0, 1, 'pid'] },
@@ -257,6 +258,8 @@ const NATIVE_OPS = {
     // A delegation's holder: its next recall (a long poll), and its answer to one.
     fsAwaitRecall: (e, t) => fsFor(e, t).awaitRecall(stringArg(e, 0), z.number().int().nonnegative().optional().parse(e.args?.[1])),
     fsRecalled: (e, t) => fsFor(e, t).recalled(stringArg(e, 0), z.enum(['share', 'revoke']).parse(e.args?.[1])),
+    // Its held writes published, before an effect of its goes out past the session's gate.
+    fsPublished: (e, t) => fsFor(e, t).published(z.object({ escape: z.boolean().optional() }).optional().parse(e.args?.[0])),
     readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
     stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
     lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
@@ -449,8 +452,17 @@ export function createSupervisorOpHandler(deps) {
     // A process's call that meets another holder's delegation waits for its
     // recall and runs again (withRecall): this dispatch is asynchronous, so no
     // process call is refused for one.
-    const serve = (op, envelope) => deps.observe
+    const answer = (op, envelope) => deps.observe
         ? deps.observe(envelope, () => withRecall(() => perform(op, envelope))) : withRecall(() => perform(op, envelope));
+    // What a process makes visible outside the session leaves at its output
+    // gate, as the rest of its output does: in the order it made it, once what
+    // it wrote is published (supervisorOpLeaves).
+    const serve = (op, envelope) => {
+        const pid = envelope.pid;
+        return deps.processes !== undefined && pid !== undefined && supervisorOpLeaves(op)
+            ? deps.processes.releaseOutput(pid, () => answer(op, envelope))
+            : answer(op, envelope);
+    };
     /**
      * A mutation delivered exactly once (supervisor-delivery.ts). Refuse a
      * missing process before its stale binding. A live process's delivery must

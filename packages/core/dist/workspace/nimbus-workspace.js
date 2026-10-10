@@ -164,9 +164,11 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
-        // Its processes bind to this filesystem, so a reap releases them here:
-        // the one place the table and the filesystem meet.
+        // Its processes bind to this filesystem, so a reap releases them here,
+        // and their output waits for what they wrote to be published: the one
+        // place the table and the filesystem meet.
         processes.setRelease((pid) => filesystem.releaseProcess(pid));
+        filesystem.holdOutput(processes);
         const env = { ...defaultEnv(home), ...options.env };
         // The identity every shell command runs as. A host that supplied one keeps
         // it verbatim — its pid is already alive in ITS process table. Otherwise
