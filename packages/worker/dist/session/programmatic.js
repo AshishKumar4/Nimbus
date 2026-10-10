@@ -1214,7 +1214,9 @@ async function resetInMemorySessionState(self) {
         self.terminal?.close?.();
     }
     catch { }
-    self.sqliteFs = null;
+    const filesystem = self.filesystem;
+    self.filesystem = null;
+    await filesystem?.close();
     self.kernel = null;
     self.shell = null;
     self.shellProcessPid = null;
@@ -1234,7 +1236,6 @@ async function resetInMemorySessionState(self) {
     self._cirrusHmrWsClients = null;
     self.nimbusWrangler = null;
     self.npmInstaller = null;
-    self._supervisorOps = null;
     self._cpRegistry = null;
     self._viteShimPid = null;
     self._viteShimPort = null;

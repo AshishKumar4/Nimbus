@@ -43,9 +43,12 @@
 import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
+import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import type { WriteStreamReceipt } from '../vfs/sqlite-vfs.js';
 import { type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
 export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
+/** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
+export { SYSCALL_VERDICTS };
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp = {
     type: 'call';

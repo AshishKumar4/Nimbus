@@ -28,6 +28,7 @@ var __nimbusProcessFsModule = (() => {
     PROCESS_FS_HEAP_SYNC_CAP_BYTES: () => PROCESS_FS_HEAP_SYNC_CAP_BYTES,
     PROCESS_FS_HEAP_WINDOW_BYTES: () => PROCESS_FS_HEAP_WINDOW_BYTES,
     PROCESS_FS_SYNC_CAP_BYTES: () => PROCESS_FS_SYNC_CAP_BYTES,
+    SYSCALL_VERDICTS: () => SYSCALL_VERDICTS,
     UNSETTLED_END_NOTE: () => UNSETTLED_END_NOTE,
     drainProcessFsJournal: () => drainProcessFsJournal,
     failuresError: () => failuresError,
@@ -2302,33 +2303,22 @@ function __nimbusVfsCellBytes(content) {
 }
 
 /**
- * Errno values that are the filesystem ANSWERING the syscall: the path is not
- * there, it is a directory, the descriptor is closed. The operation did not
- * apply, no bytes were in flight, and nothing the program believes is saved
- * has been lost. Node hands these to the caller and lets it decide — which is
- * why `fs.truncate(missing).catch(() => {})` is ordinary, correct code.
- *
- * ENOSPC is one of them: the session's storage ledger (N18) refuses a write
- * before any of it is made. So are EROFS (a read-only mount) and EBUSY (an
- * exclusive-mutation lease): the namespace refuses those before the backend
- * is called.
- *
- * Everything else — EIO, a dropped RPC, an authority that died, an
- * error carrying no errno at all — is not an answer. It means the outcome of
- * a write is UNKNOWN, and that is a durability event no matter what the
- * program caught. Unrecognised is treated as durability-class on purpose: the
- * safe direction is to surface.
+ * Whether a caught failure leaves a write's outcome UNKNOWN: a durability
+ * event no matter what the program caught. An errno among the syscall
+ * verdicts (vfs-error.ts SYSCALL_VERDICTS, carried by the client spliced
+ * ahead) is the filesystem ANSWERING the call: it did not apply, and Node
+ * hands those to the caller to decide — which is why
+ * `fs.truncate(missing).catch(() => {})` is ordinary, correct code.
+ * Everything else — EIO, a dropped RPC, an authority that died, an error
+ * carrying no errno at all — is not an answer, and unrecognised is treated
+ * as durability-class on purpose: the safe direction is to surface. A
+ * write-back the session refused (nimbusRefusedWriteBack) is one whatever
+ * its errno: the bytes the program believes saved were not.
  */
-const __NIMBUS_SYSCALL_VERDICT_CODES = new Set([
-  "ENOENT", "EEXIST", "EISDIR", "ENOTDIR", "ENOTEMPTY",
-  "EBADF", "EINVAL", "EPERM", "EACCES", "ELOOP", "ENAMETOOLONG", "ENOSPC",
-  "EROFS", "EBUSY",
-]);
-
 function __nimbusIsDurabilityFailure(error) {
   if (error && typeof error === "object" && error.nimbusRefusedWriteBack === true) return true;
   const code = error && typeof error === "object" ? error.code : undefined;
-  return typeof code !== "string" || !__NIMBUS_SYSCALL_VERDICT_CODES.has(code);
+  return typeof code !== "string" || !__nimbusProcessFsModule.SYSCALL_VERDICTS.has(code);
 }
 
 /**

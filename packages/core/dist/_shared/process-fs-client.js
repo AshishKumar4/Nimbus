@@ -46,6 +46,8 @@ import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import { memoryJournal } from './process-fs-journal.js';
 export { journalSource, memoryJournal, sqlJournal } from './process-fs-journal.js';
+/** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
+export { SYSCALL_VERDICTS };
 /**
  * A synchronous loop's bytes held unanswered at once, at most
  * (ProcessFsClientOptions.syncCapBytes): in a journal that outlives the
