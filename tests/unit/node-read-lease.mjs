@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
-// A resident node process's resumption barriers under its read lease: a
-// timer asks the session nothing while the lease is trusted, and still sees
-// every change another made before it (the change waited for the lease's
-// recall, which the process answered first). Red before: every timer's
-// callback waited on an fsAcquire round trip (astro: ~2,460 per edit).
+// A resident node process's resumption barriers under its read lease: one
+// that arrives by I/O (a response from the network) asks the session nothing
+// while the lease is trusted, and still sees every change another made
+// before it (the change waited for the lease's recall, which the process
+// answered first). A timer asks: its turn carries no I/O, so workerd's clock,
+// which the program reads and the lease's trust is measured on, stands still
+// there (perf-regression/own-http, agentic-cli opencode-tui-render).
 
 import assert from 'node:assert/strict';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
@@ -26,8 +28,10 @@ const F = '/home/user/app/f.txt';
 const PROGRAM = `
 const fs = require("fs");
 const read = (p) => { try { return fs.readFileSync(p, "utf8"); } catch (e) { return "ERR:" + e.code; } };
-const resume = () => new Promise((resolve) => setTimeout(resolve, 0));
-globalThis.__probe = { fs, read, resume };
+// A resumption that arrives by I/O: a response from the network, with no body to read.
+const resume = () => fetch("http://localhost:4321/").then(() => {});
+const timer = () => new Promise((resolve) => setTimeout(resolve, 0));
+globalThis.__probe = { fs, read, resume, timer };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
@@ -36,7 +40,7 @@ async function boot(prepare, overrides, program = PROGRAM) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
-  const handle = facetSupervisor(authority, overrides);
+  const handle = facetSupervisor(authority, { routeLoopback: async () => new Response(null, { status: 204 }), ...overrides });
   await prepare?.(authority, handle.log.pid);
   await launchResident({
     authority,
@@ -65,16 +69,24 @@ const asked = (log) => log.calls.fsAcquire ?? 0;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 await runScenarios(import.meta.path, {
-  async 'timers ask nothing while the read lease is trusted'() {
+  async 'responses ask nothing while the read lease is trusted'() {
     const { probe, log } = await boot();
     await probe.resume();
     const before = asked(log);
     for (let i = 0; i < 50; i++) await probe.resume();
-    assert.ok(asked(log) - before <= 2, `50 timers asked ${asked(log) - before} times under a trusted lease`);
+    assert.ok(asked(log) - before <= 2, `50 responses asked ${asked(log) - before} times under a trusted lease`);
     assert.ok(globalThis.__nimbusVfsCoherence.leasedBarriers >= 45, `${globalThis.__nimbusVfsCoherence.leasedBarriers} barriers answered by the lease`);
   },
 
-  async "another's change is seen by the next timer, and waited for the process's answer"() {
+  async 'a timer asks the session under a trusted read lease too: its turn carries no I/O, so neither the clock nor the trust moves there'() {
+    const { probe, log } = await bootTrusted();
+    const before = asked(log);
+    for (let i = 0; i < 5; i++) await probe.timer();
+    assert.equal(asked(log), before + 5, 'a timer under a trusted lease asked nothing');
+    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'a timer\'s answer did not confirm the lease');
+  },
+
+  async "another's change is seen by the next response, and waited for the process's answer"() {
     const { authority, probe, log } = await boot();
     await probe.resume();
     assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
@@ -85,11 +97,11 @@ await runScenarios(import.meta.path, {
     assert.equal(globalThis.__nimbusProcessFs.readTrusted(), false);
     const before = asked(log);
     await probe.resume();
-    assert.equal(asked(log), before + 1, 'the timer after a recall did not ask');
-    assert.equal(probe.read(F), 'v2', 'the timer after another\'s change read the old bytes');
+    assert.equal(asked(log), before + 1, 'the response after a recall did not ask');
+    assert.equal(probe.read(F), 'v2', 'the response after another\'s change read the old bytes');
   },
 
-  async 'after its own write, the next timer asks'() {
+  async 'after its own write, the next response asks'() {
     const { probe, log } = await boot();
     await probe.resume();
     await probe.resume();
@@ -98,7 +110,7 @@ await runScenarios(import.meta.path, {
     assert.equal(globalThis.__nimbusProcessFs.readTrusted(), false, 'its own write left the lease trusted');
     const before = asked(log);
     await probe.resume();
-    assert.equal(asked(log), before + 1, 'the timer after its own write asked nothing');
+    assert.equal(asked(log), before + 1, 'the response after its own write asked nothing');
   },
 
   async 'async stats and listings are the view\'s under a trusted lease, and the session\'s after a change'() {
@@ -232,16 +244,16 @@ await runScenarios(import.meta.path, {
     assert.equal(new TextDecoder().decode(await withRecall(() => reader.readFile('/home/user/app/out/saved'))), 'saved');
   },
 
-  async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {
+  async 'a look at the kernel\'s mounts, which no barrier reports, leaves responses to the lease'() {
     const { probe, log } = await bootTrusted();
     probe.fs.existsSync('/dev/null');
     probe.fs.existsSync('/proc/self');
     const before = asked(log);
     for (let i = 0; i < 10; i++) await probe.resume();
-    assert.ok(asked(log) - before <= 1, `10 timers asked ${asked(log) - before} times after a look at /dev and /proc`);
+    assert.ok(asked(log) - before <= 1, `10 responses asked ${asked(log) - before} times after a look at /dev and /proc`);
   },
 
-  async 'a synchronous write to the session\'s stores after skipped barriers is in the next timer\'s reads, of / and under /.nimbus'() {
+  async 'a synchronous write to the session\'s stores after skipped barriers is in the next response\'s reads, of / and under /.nimbus'() {
     const { authority, probe, log } = await bootTrusted();
     const before = asked(log);
     for (let i = 0; i < 3; i++) await probe.resume();
@@ -258,13 +270,13 @@ await runScenarios(import.meta.path, {
     assert.deepEqual(await probe.fs.promises.readdir('/.nimbus/images'), ['x']);
   },
 
-  async 'past its trust, the next timer asks again'() {
+  async 'past its trust, the next response asks again'() {
     const { probe, log } = await boot();
     await probe.resume();
     const before = asked(log);
-    // Its own timer, past the trust (this realm's timers are the process's: barriered too).
-    await sleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS);
-    assert.equal(asked(log), before + 1, 'a timer past the lease\'s trust asked nothing');
+    await rawSleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS);
+    await probe.resume();
+    assert.equal(asked(log), before + 1, 'a response past the lease\'s trust asked nothing');
     assert.ok(globalThis.__nimbusProcessFs.stats().readConfirms >= 1, 'the barrier did not confirm the lease');
   },
 });

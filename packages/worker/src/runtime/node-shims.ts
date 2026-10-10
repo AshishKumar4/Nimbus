@@ -2506,13 +2506,16 @@ ${READ_LEASE_COVER_PREAMBLE}
    * before a peer overwrote them. Nothing is waited on unless such a report
    * exists.
    */
-  async function _acquireBarrier(supervisor, delivered) {
+  async function _acquireBarrier(supervisor, delivered, untimed = false) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
     // Under a trusted read lease nothing this process holds has changed: a
     // change waits for the lease's recall, and the recall untrusts it first
     // (ProcessFsClient.readTrusted). A delivered answer is still applied,
-    // and a store owed a repair still asks.
-    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    // and a store owed a repair still asks. So does an \`untimed\`
+    // resumption, a timer's: its turn carries no I/O, so workerd's clock
+    // stands at the time the timer was set for, which the lease's trust is
+    // measured on and the program reads; asking is I/O, and real time.
+    if (!delivered && !untimed && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
@@ -2761,8 +2764,8 @@ ${READ_LEASE_COVER_PREAMBLE}
    * server 50 reads per request while a peer's refetch of 50 files ran: 500
    * reads over ten resumptions, and under steady load the set never drained.
    */
-  async function _acquireAndRefetch(supervisor, delivered) {
-    const stale = await _acquireBarrier(supervisor, delivered);
+  async function _acquireAndRefetch(supervisor, delivered, untimed) {
+    const stale = await _acquireBarrier(supervisor, delivered, untimed);
     // Plus what an own-mutation lease dropped since the last resumption:
     // the same debt this function exists to settle, owed by an eviction
     // that had no barrier to report it (see _owedRefetch).
@@ -2838,10 +2841,10 @@ ${READ_LEASE_COVER_PREAMBLE}
    * delivers (\`__nimbusInboundBarrier\`, with the answer it delivered) — are
    * handed to the program by code outside this closure.
    */
-  async function _resumptionAcquire(delivered) {
+  async function _resumptionAcquire(delivered, untimed) {
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
-    await _acquireAndRefetch(supervisor, delivered);
+    await _acquireAndRefetch(supervisor, delivered, untimed);
   }
 
   /**
@@ -2897,7 +2900,7 @@ ${READ_LEASE_COVER_PREAMBLE}
     // What the callback throws is an uncaught exception, as a timer's is in
     // Node, not the rejection of the chain it runs on.
     const _barriered = (cb, args) => {
-      __nimbusTrackOp(_resumptionAcquire()).then(() => {
+      __nimbusTrackOp(_resumptionAcquire(undefined, true)).then(() => {
         try {
           cb(...args);
         } catch (error) {
