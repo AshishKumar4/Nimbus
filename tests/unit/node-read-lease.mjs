@@ -171,8 +171,10 @@ await runScenarios(import.meta.path, {
     // Another process reads under its lease, which the process's write meets.
     const reader = authority.files.bind({ pid: 99, cred: CRED });
     const leased = () => reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true }).readLease;
+    const flushed = () => Promise.race([globalThis.__nimbusProcessFs.flush().then(() => 'answered'), sleep(200).then(() => 'waiting')]);
     let lease = leased();
     probe.fs.writeFileSync(F, 'v2');
+    assert.equal(await flushed(), 'answered', 'a gated write was not answered at its commit');
     const sent = fetch('http://localhost:4321/');
     await sleep(50);
     assert.deepEqual(out, [], 'its request left before what it wrote was published');
@@ -183,12 +185,10 @@ await runScenarios(import.meta.path, {
     await rawSleep(READ_LEASE_TRUST_MS + 20);
     lease = leased();
     assert.ok(lease, 'no lease to meet');
-    let answered = false;
-    const writing = probe.fs.promises.writeFile(F, 'v3').then(() => { answered = true; });
-    await sleep(50);
-    assert.equal(answered, false, 'a process handed a raw socket was answered before its publication');
+    probe.fs.writeFileSync(F, 'v3');
+    assert.equal(await flushed(), 'waiting', 'a process handed a raw socket was answered before its publication');
     reader.recalled(lease.owner, 'revoke');
-    await writing;
+    await globalThis.__nimbusProcessFs.flush();
   },
 
   async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {
