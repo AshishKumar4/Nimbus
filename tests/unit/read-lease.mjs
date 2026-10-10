@@ -63,11 +63,11 @@ function wave(bridge, path, text) {
   }));
 }
 
-/** A sequenced wave of process `pid`'s writing a file named `name`, its one op numbered `first`. */
-function sequenced(bridge, pid, name, first) {
+/** A sequenced wave of process `pid`'s writing the file at `key`, its one op numbered `first`. */
+function sequenced(bridge, pid, key, first) {
   return bridge.writeStream(encodeWriteBatchStream({
     inodes: [], chunks: [],
-    ops: [{ type: 'call', call: { call: 'writeFile', path: `home/user/d/${name}`, mode: 0o644, data: new TextEncoder().encode(name) } }],
+    ops: [{ type: 'call', call: { call: 'writeFile', path: key, mode: 0o644, data: new TextEncoder().encode(key) } }],
   }), { sequence: { writer: `${pid}:w`, first, ack: first - 1, pid } });
 }
 
@@ -678,22 +678,24 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const ungated = s.files.bind({ pid: 9, cred: USER });
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { readLease } = barrier(s, reader);
-  assert.equal((await sequenced(gated, pid, 'g', 1)).held, true);
+  const answered = await sequenced(gated, pid, 'home/user/d/g', 1);
+  assert.equal(answered.ok, true, JSON.stringify(answered.error));
+  assert.equal(answered.held, true);
   // Its answer lost: the resend's record is the first attempt's, which is held.
-  const resent = await sequenced(gated, pid, 'g', 1);
+  const resent = await sequenced(gated, pid, 'home/user/d/g', 1);
   assert.equal(resent.ok, true, JSON.stringify(resent.error));
   assert.equal(resent.held, true, 'a resend of a held wave said nothing of it');
+  // Beside what the gated writer holds (its directory's names are held too).
   let first = false;
-  const original = sequenced(ungated, 9, 'u', 1).then(() => { first = true; });
+  const original = sequenced(ungated, 9, 'home/user/u', 1).then((answer) => { first = true; return answer; });
   await sleep(10);
-  assert.equal(first, false);
+  assert.equal(first, false, 'an ungated wave was answered before its publication');
   let again = false;
-  const resend = sequenced(ungated, 9, 'u', 1).then((answer) => { again = true; return answer; });
+  const resend = sequenced(ungated, 9, 'home/user/u', 1).then((answer) => { again = true; return answer; });
   await sleep(10);
   assert.equal(again, false, 'a resend of a wave held for its publication was answered before it was published');
   reader.recalled(readLease.owner, 'revoke');
-  await original;
-  assert.equal((await resend).ok, true);
+  for (const answer of [await original, await resend]) assert.equal(answer.ok, true, JSON.stringify(answer.error));
 }
 
 // ── What a process makes visible through the session's supervisor leaves once what it wrote is published, in the order it made it: a socket's handshake and its close among it ──
