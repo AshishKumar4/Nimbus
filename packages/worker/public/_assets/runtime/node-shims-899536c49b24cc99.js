@@ -15430,6 +15430,8 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed || this.#signal?.aborted) return Promise.resolve(false);
       let request;
       try {
+        this.#context.queued();
+        this.#counted = true;
         const headers = [];
         for (const name of this.getRawHeaderNames()) {
           const value = this.getHeader(name);
@@ -15467,7 +15469,6 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         }
       }
       this.#context.started(this);
-      this.#counted = true;
       this.#started = true;
       this.#touch();
       const response = fetch(address, { method: request.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
@@ -15484,9 +15485,8 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       }, (error) => { if (!this.destroyed) this.destroy(error); });
     }
     _write(chunk, encoding, callback) {
-      const bytes = Buffer.from(chunk);
       this.#start().then((admitted) => {
-        if (admitted && this.#writer) this.#writer.write(bytes).then(() => { this.#touch(); callback(); }, callback);
+        if (admitted && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
         else callback();
       });
     }
@@ -15604,12 +15604,14 @@ Object.defineProperty(builtins, "http", {
     const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
     __nimbusInstallFetchHttpClient(http, https, url, buffer.Buffer, {
+      queued() {
+        globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
+      },
       started(request) {
         if (typeof __nimbusReplay !== "undefined" && __nimbusReplay
           && (!__nimbusReplay.outbound || !/^(GET|HEAD)$/i.test(request.method))) {
           __nimbusReplay.effect("http " + request.method + " " + request.host + request.path);
         }
-        globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
       },
       finished() {
         globalThis.__nimbusPendingOps--;
