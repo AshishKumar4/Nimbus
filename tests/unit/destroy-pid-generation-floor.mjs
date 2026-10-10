@@ -53,7 +53,7 @@ function makeHost() {
     shellProcessPid: null,
     // rpcDestroy only needs the exclusive-mutation lease surface.
     sqliteFs: {
-      publishedFor: () => null, hasExclusiveMutation: () => false,
+      publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
       acquireGlobalExclusiveMutation: () => ({ owner: Symbol('destroy') }),
       releaseExclusiveMutation: () => {},
     },
