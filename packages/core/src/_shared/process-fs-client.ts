@@ -238,6 +238,12 @@ export interface ProcessFsClient {
    * ask the session.
    */
   readTrusted(): boolean;
+  /**
+   * What the read lease the process holds does not vouch for (its terms,
+   * VfsAcquireResult.readLease's `uncovered`), as the answer that last
+   * confirmed it said; none while it holds none.
+   */
+  readUncovered(): readonly string[];
   /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
   readLeaseAsk(): ReadLeaseAsk | null;
   /**
@@ -245,13 +251,20 @@ export interface ProcessFsClient {
    * whether or not the barrier applies it: the process holds it, answers its
    * recalls from now on, and gives it back. Trusted only once applied (readLeased).
    */
-  readLeaseAnswered(lease: { owner: string }): void;
+  readLeaseAnswered(lease: ReadLeaseTerms): void;
   /**
    * The barrier that asked with `ask` applied the answer carrying `lease`:
    * trusted until `ask.at + lease.trustMs` while the process logs nothing more.
    */
-  readLeased(lease: { owner: string; trustMs: number }, ask: ReadLeaseAsk): void;
+  readLeased(lease: ReadLeaseTerms, ask: ReadLeaseAsk): void;
   stats(): ProcessFsStats;
+}
+
+/** A read lease as an answer carries it (VfsAcquireResult.readLease). */
+export interface ReadLeaseTerms {
+  readonly owner: string;
+  readonly trustMs: number;
+  readonly uncovered: readonly string[];
 }
 
 /**
@@ -908,7 +921,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * Untrusted the moment its recall arrives, before the session is told
    * (answerReadRecalls), and while the process has logged since.
    */
-  let readLease: { owner: string; until: number; confirmedAt: number; logged: number } | null = null;
+  let readLease: { owner: string; until: number; confirmedAt: number; logged: number; uncovered: readonly string[] } | null = null;
   /**
    * Read leases recalled or given back: never trusted again. A barrier's
    * answer that confirmed one can arrive after its recall was answered (the
@@ -1223,6 +1236,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // unanswered only after confirmed + trust + margin (confirmed >= asked).
       return readLease !== null && readLease.logged === logged && now() < readLease.until;
     },
+    readUncovered() {
+      return readLease?.uncovered ?? NOTHING_UNCOVERED;
+    },
     readLeaseAsk() {
       if (session.grants === undefined || runEnded) return null;
       return { at: now(), logged: answered === logged ? logged : -1 };
@@ -1240,7 +1256,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         void back.finally(() => givingBack.delete(back));
         return;
       }
-      readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
+      readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1, uncovered: lease.uncovered };
       counters.readLeases++;
       void answerReadRecalls(lease.owner);
     },
@@ -1248,6 +1264,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (readLease?.owner !== lease.owner) return;
       readLease.until = ask.at + lease.trustMs;
       readLease.logged = ask.logged;
+      readLease.uncovered = lease.uncovered;
       counters.readConfirms++;
     },
     takeFailuresError() {
@@ -1264,6 +1281,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
   return client;
 }
+
+const NOTHING_UNCOVERED: readonly string[] = Object.freeze([]);
 
 /** Where a drain's wave numbers start: past any a process sends (2^40 waves). */
 const DRAIN_WAVE_BASE = 2 ** 40;

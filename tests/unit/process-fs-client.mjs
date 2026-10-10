@@ -114,8 +114,8 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
     now: () => clock,
   });
   const ask = c.readLeaseAsk();
-  c.readLeaseAnswered({ owner: 'L' });
-  c.readLeased({ owner: 'L', trustMs: 500 }, ask);
+  c.readLeaseAnswered({ owner: 'L', trustMs: 500, uncovered: [] });
+  c.readLeased({ owner: 'L', trustMs: 500, uncovered: [] }, ask);
   // A stretch of answers with no event between them: the clock stands at the event's time.
   for (let i = 0; i < 10_000; i++) assert.equal(c.readTrusted(), true);
   // The next event shows the time past the trust: nothing is trusted from it on.
@@ -123,6 +123,35 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(c.readTrusted(), false, 'a lease past its trust was trusted at the next event');
   await c.settle();
   assert.equal(c.readTrusted(), false, 'a settled client trusted its lease');
+}
+
+// ── What a read lease does not vouch for is its terms, as admitted: a late answer for one recalled changes nothing ──
+{
+  const s = session();
+  const recalls = new Map();
+  const c = processFsClient({
+    session: { ...s.port, grants: {
+      acquire: async () => null, release: async () => {},
+      awaitRecall: (owner) => new Promise((resolve) => recalls.set(owner, resolve)), recalled: async () => {},
+    } },
+    retry: RETRY,
+  });
+  const first = { owner: 'L1', trustMs: 500, uncovered: ['dev', 'proc'] };
+  c.readLeaseAnswered(first);
+  c.readLeased(first, c.readLeaseAsk());
+  assert.deepEqual(c.readUncovered(), ['dev', 'proc']);
+  // Recalled (a mount moved what is the engine's), and a lease after it names the new mount.
+  recalls.get('L1')('revoke');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = { owner: 'L2', trustMs: 500, uncovered: ['dev', 'mnt', 'proc'] };
+  c.readLeaseAnswered(second);
+  c.readLeased(second, c.readLeaseAsk());
+  // The recalled lease's renewal, answered before its recall and delivered after.
+  c.readLeaseAnswered(first);
+  c.readLeased(first, c.readLeaseAsk());
+  assert.equal(c.readTrusted(), true);
+  assert.deepEqual(c.readUncovered(), ['dev', 'mnt', 'proc'], 'a late answer for a recalled lease changed what the held one vouches for');
+  await c.settle();
 }
 
 // ── A synchronous loop: program order across files, in as few waves as W7 allows ──

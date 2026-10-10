@@ -3753,24 +3753,19 @@ export class SqliteVFS {
       return;
     }
     if (this.readLeases.size > 0) this.breakUnrecalledReadLeases(paths);
-    const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
-    // A held commit's publication is at the generation it committed, while
-    // nothing published since passed it: a later commit still held is not in
-    // it, and it needs no generation (no write) of its own. One passed it
-    // (its generation is below a cursor handed out since) is published at a
-    // generation of its own, its rows rewritten at it: what the log says, and
-    // what each path reports from SQLite from then on.
-    const own = committed !== undefined && committed > this._revision ? committed : null;
-    const passed = committed !== undefined && own === null;
-    if (passed) this.advanceGeneration(keys);
-    else if (own === null && this._gen <= this._revision) this.advanceGeneration();
-    const rev = own ?? this._gen;
+    // A held commit is published at the generation it last committed, past
+    // every cursor handed out since (publishHeld promotes one another's
+    // publication passed): a later commit still held is not in it, and it
+    // needs no generation (no write) of its own.
+    if (committed === undefined && this._gen <= this._revision) this.advanceGeneration();
+    const rev = committed ?? this._gen;
     this._revision = rev;
+    const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
     this.pathRevisions.stamp(keys, rev);
     for (const key of keys) {
       // A path no transaction of this publication wrote a row for is at the
       // generation advanceGeneration committed, the clock.
-      const committed = passed ? undefined : this.committedRows.get(key);
+      const committed = this.committedRows.get(key);
       this._record(this.pathRevisions.report(key, committed?.gen ?? rev, committed?.file ?? false, rev), key, structural.get(key));
       // A directory above a mutated path is stamped at the clock, and one
       // whose stamp was dropped since is at the floor, which the drop raised
@@ -3827,24 +3822,12 @@ export class SqliteVFS {
     for (const [owner, lease] of [...this.readLeases]) this.breakReadLease(owner, lease);
   }
 
-  /**
-   * Commit a generation of a publication's own, so it has a tick: one that
-   * writes nothing, or that rewrites the row (or tombstone) at each of
-   * `moved` at it.
-   */
-  private advanceGeneration(moved: readonly string[] = []): void {
+  /** Commit a generation that writes nothing, so a publication has a tick of its own. */
+  private advanceGeneration(): void {
     let gen = 0;
     this.transactionSync(() => {
       gen = Number([...this.sql.exec('UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen')][0]!.gen);
-      for (const key of moved) {
-        this.sql.exec('UPDATE vfs_inodes SET gen = ? WHERE path = ?', gen, key);
-        this.sql.exec('UPDATE vfs_tombstones SET gen = ? WHERE path = ?', gen, key);
-      }
     });
-    for (const key of moved) {
-      const inode = this.inodes.peek(key);
-      if (inode !== undefined) inode.gen = gen;
-    }
     this._gen = gen;
   }
 
@@ -4299,11 +4282,15 @@ export class SqliteVFS {
   /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
   private publishHeld(pipeline: Pipeline): void {
     const publication = pipeline.publication!;
-    for (const owner of pipeline.roots.values()) this.endLease(owner);
-    this.heldPipelines--;
-    // Logged at its publication's revision: a cursor handed out since its
-    // commit (another's publication) is below it, so every reader hears of it.
     try {
+      try {
+        // Passed by another's publication (a cursor handed out since is at or
+        // past its commit): promoted past it first, while still held.
+        if (publication.paths.size > 0 && pipeline.committed <= this._revision) pipeline.committed = this.promote(publication.paths);
+      } finally {
+        for (const owner of pipeline.roots.values()) this.endLease(owner);
+        this.heldPipelines--;
+      }
       // As its writer: a read lease of the writer's own is not another's, and stays.
       if (publication.paths.size > 0) this.withHolds(pipeline.writer, () => this.bumpRevision([...publication.paths], publication.structural, pipeline.committed));
       this.deliverEvents(publication.removedDirectories, () => {
@@ -4312,6 +4299,44 @@ export class SqliteVFS {
     } finally {
       pipeline.settle();
     }
+  }
+
+  /**
+   * Rewrite the row (or tombstone) at each of `paths`, unchanged, at a new
+   * generation, in the engine's bounded plans (a transaction each, as many as
+   * its bounds take), and answer the last: each path then reports, from
+   * SQLite, a generation no cursor handed out before has reached.
+   */
+  private promote(paths: Iterable<string>): number {
+    let builder = this.newPlan();
+    const commit = (): void => {
+      if (builder.empty) return;
+      const plan = builder.build();
+      this.executeTransactionPlan(plan, { source: 'range-mutation', limitMode: 'bounded' });
+      // Rewritten as it stood: the inode a description or the cache holds takes its new generation.
+      for (const entry of plan.inodes) {
+        const inode = this.inodes.peek(entry.path);
+        if (inode !== undefined) inode.gen = entry.gen!;
+      }
+      builder = this.newPlan();
+    };
+    for (const path of paths) {
+      const key = normalizeVfsPath(path);
+      if (key === '') continue;
+      const inode = this.inodes.get(key);
+      if ((inode === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null) commit();
+      if (inode === undefined) {
+        builder.addDeletedPath(key, undefined, false, true);
+        continue;
+      }
+      builder.addInode({
+        path: key, parentPath: inode.parentPath, kind: inode.kind, isDir: inode.isDir, size: inode.size,
+        atime: inode.atime, mtime: inode.mtime, ctime: inode.ctime, mode: inode.mode, uid: inode.uid, gid: inode.gid, ino: inode.ino,
+        content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
+      });
+    }
+    commit();
+    return this._gen;
   }
 
   /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */

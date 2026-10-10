@@ -1072,15 +1072,13 @@ const __fsMod = (() => {
   // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
   // declares readLeaseCovers (and SESSION_KERNEL_ROOTS).
 ${READ_LEASE_COVER_PREAMBLE}
-  /** What the read lease the view answers under does not vouch for: its namespace's mount points (VfsAcquireResult.readLease). */
-  let _leaseUncovered = [];
   /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
   let _uncoveredLandings = 0;
   /** \`__nsResolve\`, where it landed counted: \`k\`'s entry, or with \`listing\` its names, through any link. */
   function _nsResolveViewed(k, follow, listing) {
     const found = __nsLookup(k, follow);
     if (found === "ELOOP") return found;
-    if (!readLeaseCovers(found.path, listing, _leaseUncovered)) _uncoveredLandings++;
+    if (!readLeaseCovers(found.path, listing, __nimbusProcessFs().readUncovered())) _uncoveredLandings++;
     return found.row !== undefined ? found : null;
   }
 
@@ -2501,7 +2499,6 @@ ${READ_LEASE_COVER_PREAMBLE}
       // The read lease this answer carried, from the moment it was asked:
       // what it vouches for is this answer, applied now.
       if (!fromDelivery && result.readLease && result.ask) {
-        _leaseUncovered = result.readLease.uncovered;
         __nimbusProcessFs().readLeased(result.readLease, result.ask);
       }
       _stats.invalidations += applied.dropped.length;
@@ -3572,7 +3569,7 @@ ${READ_LEASE_COVER_PREAMBLE}
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), false, _leaseUncovered) && !_ownAt(_strip(absPath), syscall === "stat")) {
+    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), false, __nimbusProcessFs().readUncovered()) && !_ownAt(_strip(absPath), syscall === "stat")) {
       const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
       if (local !== undefined) return local;
     }
@@ -3595,7 +3592,7 @@ ${READ_LEASE_COVER_PREAMBLE}
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), true, _leaseUncovered) && !_ownUnder(_strip(absPath))) {
+    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), true, __nimbusProcessFs().readUncovered()) && !_ownUnder(_strip(absPath))) {
       const local = _leasedRead(() => readdirSync(p, opts));
       // In the order the session's listing is given in.
       if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;

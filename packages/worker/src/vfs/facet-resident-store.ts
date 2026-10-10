@@ -2268,7 +2268,7 @@ async function __residentLazyBarrier(supervisor, lease) {
     catch { answer = null; }
   }
   // The process's read lease, held once answered, applied or not (resident-filesystem.ts).
-  const readLease = answer && answer.readLease ? { owner: String(answer.readLease.owner), trustMs: Number(answer.readLease.trustMs) } : undefined;
+  const readLease = answer?.readLease;
   const landed = (ok) => (readLease === undefined ? { ok } : { ok, readLease });
   if (answer && !answer.poison && typeof answer.epoch === "string" && typeof answer.rev === "number") {
     await __residentApplyAcquire(supervisor, answer);

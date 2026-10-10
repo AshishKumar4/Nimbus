@@ -16,6 +16,7 @@
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
@@ -51,9 +52,13 @@ function barrier(s, bridge, from) {
 {
   const s = session();
   s.files.vfs.mount('/mnt/drive', new MemoryVFS());
+  // A source that answers no one yet, and can later, with no mount or unmount.
+  let laptop = null;
+  s.files.vfs.mount('/pc/laptop', () => laptop);
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { readLease } = barrier(s, reader);
-  assert.deepEqual([...readLease.uncovered].sort(), ['dev', 'mnt/drive', 'proc']);
+  assert.deepEqual([...readLease.uncovered].sort(), ['dev', 'mnt/drive', 'pc/laptop', 'proc']);
+  laptop = new MemoryVFS();
   // A mount moves what is the engine's: the lease ends, its holder told.
   s.files.vfs.mount('/mnt/other', new MemoryVFS());
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
@@ -247,6 +252,34 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const fetched = other.readRange('/home/user/d/a.txt', 0, 64, { expectedEpoch: s.engine.epoch, expectedRevision: reported.rev });
   assert.equal(new TextDecoder().decode(fetched), 'held', `budget ${pathRevisionBytes}`);
   assert.equal(new SqliteVFS(s.harness.sql, s.harness.ctx).revision('home/user/d/a.txt'), reported.rev, 'the revision it was published at was not stored');
+}
+
+// ── A held removal of many names, passed by another's publication, is promoted past it in bounded transactions ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/d/many');
+  s.kernel.chown('home/user/d/many', USER.uid, USER.gid);
+  for (let i = 0; i < 300; i++) s.kernel.writeFile(`home/user/d/many/f${i}`, `${i}`);
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const removing = withRecall(() => writer.remove('/home/user/d/many', { recursive: true }));
+  await sleep(10);
+  reader.writeFile('/home/user/elsewhere', 'x');
+  const later = other.acquire(s.engine.epoch, s.engine.revision());
+  const from = s.harness.statements.length;
+  reader.recalled(readLease.owner, 'revoke');
+  await removing;
+  const perTransaction = new Map();
+  for (const statement of s.harness.statements.slice(from)) {
+    if (statement.transaction !== null) perTransaction.set(statement.transaction, (perTransaction.get(statement.transaction) ?? 0) + 1);
+  }
+  const largest = Math.max(...perTransaction.values());
+  assert.ok(largest <= MAX_TX_SQL_EXECS, `a publication's transaction ran ${largest} statements`);
+  const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/many/f0');
+  assert.ok(reported !== undefined && reported.rev > later.rev, 'a removal passed by a later publication was reported below it');
+  assert.equal(other.revision('/home/user/d/many/f0'), reported.rev);
 }
 
 // ── Held for publication: a barrier's stats and pushed bytes, and a landed view's reads, wait for it; its writer's barrier sees its own ──
