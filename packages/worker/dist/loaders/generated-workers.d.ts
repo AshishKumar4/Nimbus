@@ -9,6 +9,7 @@
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)
+ *   - @nimbus-sh/core src/_shared/read-lease-cover.ts (what a read lease vouches for, for the node shims)
  *
  * Consumed by fabric/isolate-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
