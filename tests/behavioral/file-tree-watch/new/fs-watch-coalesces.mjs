@@ -17,7 +17,7 @@ console.log(`file-tree-watch/fs-watch-coalesces — ${BASE}`);
 
 const sid = await mintSession();
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders(sid));
 const received = [];
 let opened = false;
 let subResult = null;
@@ -34,7 +34,7 @@ subWs.send(JSON.stringify({ type: 'fs-watch-subscribe', reqId: 93_000, paths: ['
 { const t0 = Date.now(); while (!subResult && Date.now() - t0 < 5_000) await sleep(25); }
 a.check('subscribed ok', subResult && subResult.ok === true, `subResult=${JSON.stringify(subResult)}`);
 
-const driverWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const driverWs = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const driverResponses = new Map();
 let driverOpened = false;
 driverWs.on('open', () => { driverOpened = true; });

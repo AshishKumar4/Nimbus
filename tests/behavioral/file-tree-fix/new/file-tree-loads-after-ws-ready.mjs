@@ -13,7 +13,7 @@ const a = makeAsserter('file-tree-fix/new/file-tree-loads-after-ws-ready');
 console.log(`file-tree-fix/new/file-tree-loads-after-ws-ready — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => {

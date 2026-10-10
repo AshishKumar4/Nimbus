@@ -1,7 +1,5 @@
 import { type RuntimeFunctionKind } from './runtime-function-source.js';
 export type { RuntimeFunctionKind } from './runtime-function-source.js';
-/** Why V8's constructor would refuse these arguments, or null when it would build the function. */
-export declare function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null;
 /** The Worker Loader module name for the cell at VFS key `key` (a path without its leading slash). */
 export declare function commonJsCellModuleName(key: string): string;
 /** The module name of a process's entry code, `filename` being the script's path or `[eval]`. */
@@ -77,12 +75,6 @@ export declare const RUNTIME_CODE_MAX_ENTRIES = 1024;
  * are named when refused, not learned: an image a package ships is a file.
  */
 export declare const RUNTIME_WASM_MAX_BYTES: number;
-/**
- * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
- * its key, its bookkeeping, and the module it becomes. Without it a flood of
- * tiny pieces is nearly free by text and not at all by heap.
- */
-export declare const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
 /** Code a launch could not compile, as its ledger reports it. */
 export type RuntimeCodeEntry = {
     kind: RuntimeFunctionKind;
@@ -114,12 +106,7 @@ export type RuntimeCodeEntry = {
 export declare function runtimeModuleScope(path: string): [dir: string, ext: string];
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export declare function runtimeCodeKey(entry: RuntimeCodeEntry): string;
-/**
- * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES:
- * everything it holds. A module keeps its path beside its text, and a data:
- * URL's path is the whole module again, so it is charged for both. The guest
- * ledger charges the same (__nimbusRuntimeCodeCompile).
- */
+/** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */
 export declare function runtimeCodeCharge(entry: RuntimeCodeEntry): number;
 /**
  * The module names, in every node launch's map, of the interpreter, the host

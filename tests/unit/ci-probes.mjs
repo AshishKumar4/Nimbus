@@ -14,6 +14,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeScreenshots } from '../../scripts/ci/lib/probe-screenshots.mjs';
+import { gradeMatrix } from '../../scripts/ci/lib/matrix.mjs';
 
 const REPO = join(import.meta.dirname, '..', '..');
 const TOKEN = `probe-token-${process.pid}-not-a-jwt`;
@@ -27,7 +28,7 @@ try {
   const behavioral = join(root, 'tests', 'behavioral');
   mkdirSync(behavioral, { recursive: true });
   mkdirSync(join(root, 'scripts', 'ci', 'lib'), { recursive: true });
-  for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
+  for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs', '_session-transport.mjs', '_assertions.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
   copyFileSync(join(REPO, 'scripts', 'ci', 'probes.mjs'), join(root, 'scripts', 'ci', 'probes.mjs'));
   copyFileSync(join(REPO, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'), join(root, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'));
   const capture = `if (process.env.NIMBUS_PROBE_SCREENSHOTS) require('fs').writeFileSync(require('path').join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'capture.png'), Buffer.from('${PNG.toString('base64')}', 'base64'));\n`;
@@ -110,6 +111,26 @@ try {
     assert.deepEqual(rows(late), [['probes', 2]]);
     assert.match(late.rows[0].output, /the token could expire before its limit/);
     console.log('  ok  no token, a target that does not answer, or a task that starts too late for its token is not graded (2), with a row saying why');
+  }
+  {
+    mkdirSync(join(behavioral, 'frameworks'));
+    const path = join(behavioral, 'frameworks', 'remix-real.mjs');
+    const entry = { probe: 'frameworks/remix-real', assertion: 'launch', failure: { detail: 'approved failure' },
+      reason: 'fixture', approved: 'user, 2026-10-10', owner: 'fixture', tracking: 'fixture' };
+    const run = async complete => {
+      writeFileSync(path, `import {makeAsserter} from '../_assertions.mjs';\nconst a=makeAsserter('frameworks/remix-real');\na.check('setup',true);a.check('launch',false,'approved failure: Bearer '+process.env.NIMBUS_PROBE_TOKEN);a.check('cleanup',true);\n${complete ? 'a.summary();' : ''}\nprocess.exit(1);`);
+      return probes(['--base', base, '--only', entry.probe]);
+    };
+    const complete = await run(true);
+    const checked = complete.rows.find(row => row.name.endsWith('remix-real.mjs')).assertions;
+    assert.equal(checked[0].complete, true);
+    assert.equal(checked[0].checks.length, 3);
+    assert.doesNotMatch(JSON.stringify(checked), new RegExp(TOKEN));
+    assert.equal(gradeMatrix([{ tasks: [{ task: 'fixture', rows: complete.rows }] }], [entry]).exitCode, 0,
+      'real producer → runner IPC → probes JSON → release grading covers the exact completed failure');
+    const partial = await run(false);
+    assert.equal(gradeMatrix([{ tasks: [{ task: 'fixture', rows: partial.rows }] }], [entry]).exitCode, 1,
+      'the same failure without producer completion stays red, independent of printed output');
   }
 } finally {
   server.close();

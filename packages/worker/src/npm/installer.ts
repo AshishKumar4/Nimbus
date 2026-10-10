@@ -40,7 +40,7 @@ import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, still
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
   hoistPlacements,
-  type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
+  type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
@@ -193,14 +193,6 @@ export class NpmInstaller {
   private ctx: DurableObjectState | undefined;
   private env: any;
   private onProgress: ((msg: string) => void) | undefined;
-  /**
-   * Injectable fetch function. Required because DO fetch() hangs in
-   * wrangler local dev. The caller (NimbusSession) provides a function
-   * that routes fetches through a facet worker. Used only by the resolve
-   * path (packument JSON) — tarball fetches happen inside the facet pool
-   * when the feature flag is on, using the facet's own global fetch.
-   */
-  private fetchFn: FetchFn | undefined;
   /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
   private readonly network: WorkspaceNetwork;
   /**
@@ -219,7 +211,6 @@ export class NpmInstaller {
       ctx?: DurableObjectState;
       env?: any;
       onProgress?: (msg: string) => void;
-      fetchFn?: FetchFn;
       /** The workspace's network (`workspace.network`). */
       network: WorkspaceNetwork;
     },
@@ -232,7 +223,6 @@ export class NpmInstaller {
     this.ctx = opts?.ctx;
     this.env = opts?.env;
     this.onProgress = opts?.onProgress;
-    this.fetchFn = opts?.fetchFn;
     this.network = opts?.network ?? ISOLATE_NETWORK;
   }
 
@@ -395,7 +385,7 @@ export class NpmInstaller {
       // wide-layer submitMany.
       phaseStart = Date.now();
       setInstallPhase('resolve');
-      log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
+      log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout)...`);
       const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry });
       resolved = tree.resolved;
       nested = tree.nested;

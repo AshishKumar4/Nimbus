@@ -383,8 +383,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    */
   appDocuments: Record<AppDoor, DocumentPolicy | null> = { vite: null, worker: null };
   npmInstaller: NpmInstaller | null = null;
-  /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
-  fetchProxyEntrypoint: any = null;
   /**
    * The session's single process owner: PID authority, controlling-
    * terminal input, output rings, and exit records, behind one facade.
@@ -1277,29 +1275,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   _cpRegistry: CommandRegistry | null = null;
   _setCpRegistry(r: CommandRegistry) { this._cpRegistry = r; }
 
-  /**
-   * Get or create the singleton fetch proxy entrypoint.
-   * ONE dynamic worker is created via LOADER.load() and reused for ALL npm
-   * fetch calls across the lifetime of this DO instance. This prevents
-   * ephemeral port exhaustion from creating a new worker per fetch.
-   */
-  ensureFetchProxy(log?: (msg: string) => void): any | null { return this.#runtimeServices.ensureFetchProxy( log); }
-
-  /**
-   * Build a FetchFn that routes through the singleton proxy entrypoint.
-   * All concurrent fetches share ONE worker — no port exhaustion.
-   */
-  buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined { return this.#runtimeServices.buildFetchFn( log); }
   async ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller> { return this.#runtimeServices.ensureNpmInstaller( onProgress); }
-
-  /**
-   * Read an environment flag with default-on semantics. Mirrors the
-   * shouldUseFacetPool / shouldUseFacetResolver / shouldUseBatchFacet
-   * gates inside NpmInstaller — kept here as a private helper so the
-   * lazy-proxy decision uses identical semantics without leaking that
-   * private API across modules.
-   */
-  _envFlagDefaultOn(name: string): boolean { return this.#runtimeServices._envFlagDefaultOn( name); }
 
   // ── Session initialization ────────────────────────────────────────────
 

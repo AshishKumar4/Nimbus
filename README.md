@@ -54,38 +54,40 @@ A VM-backed cloud dev environment is slow to start and expensive to idle. A brow
 
 A behavioral probe suite in `tests/behavioral/` covers this table. Run it against a live deployment; see [Tests](#tests).
 
+<!-- capabilities:start -->
 | Capability | Status |
 |---|:---:|
 | Real shell, 60+ Unix commands, persistent 10 GB filesystem | ✅ |
-| `node`, `bun` via Cloudflare workerd `nodejs_compat` (V8 + Node-API shim, not the upstream binaries) | ✅ |
-| `python` / `python3` — CPython 3.13 on `wasm32-wasi` (script + `-c` + `-m` + stdlib) | ✅ |
-| `ruby` / `ruby3` — ruby.wasm-based Ruby 3.3 (script + `-e` + `-r` + stdlib) | ✅ |
-| `clang` — LLVM 8 → `wasm32-wasi-nimbus`, modern wasi-libc sysroot default, multi-TU + user headers + `fopen` | ✅ |
-| Interactive REPLs — `python`, `ruby`, `node`, `bun` (see [REPL](#repl) for state semantics) | ✅ |
-| `npm install` against the live registry, with cross-session L2 cache | ✅ |
-| npm alias dependencies such as `alias: "npm:<pkg>@<version>"` | ✅ |
-| `git clone` over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation | ✅ |
-| In-session loopback networking — `curl http://127.0.0.1:<port>` reaches servers in other isolates; `node server.js` auto-promotes to a routeable resident process | ✅ |
-| Durable app URLs — a private preview URL per port that restarts the server on the next request after an eviction; `nimbus expose <port> --public` for a shareable link bound to the program; `nimbus app list / url / rotate / remove`; the same verbs in the SDK as `box.apps` | ✅ |
+| node, bun via Cloudflare workerd nodejs_compat (V8 + Node-API shim, not the upstream binaries) | ✅ |
+| python / python3 — CPython 3.13 on wasm32-wasi (script + -c + -m + stdlib) | ✅ |
+| ruby / ruby3 — ruby.wasm-based Ruby 3.3 (script + -e + -r + stdlib) | ✅ |
+| clang — LLVM 8 → wasm32-wasi-nimbus, modern wasi-libc sysroot default, multi-TU + user headers + fopen | ✅ |
+| Interactive REPLs — python, ruby, node, bun (see REPL for state semantics) | ✅ |
+| npm install against the live registry, with cross-session L2 cache | ✅ |
+| npm alias dependencies such as alias: "npm:&lt;pkg&gt;@&lt;version&gt;" | ✅ |
+| git clone over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation | ✅ |
+| In-session loopback networking — curl http://127.0.0.1:&lt;port&gt; reaches servers in other isolates; node server.js auto-promotes to a routeable resident process | ✅ |
+| Durable app URLs — a private preview URL per port that restarts the server on the next request after an eviction; nimbus expose &lt;port&gt; --public for a shareable link bound to the program; nimbus app list / url / rotate / remove; the same verbs in the SDK as box.apps | ✅ |
 | Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike | ✅ |
 | Large files and HTTP Range through port previews — Range, If-Range, If-None-Match, If-Match, If-Modified-Since, If-Unmodified-Since and User-Agent reach the server whole; 206 and 304 come back with Content-Range, Content-Length, Accept-Ranges and ETag; a 210 MiB VFS file served by a Node static server downloads byte-exact, whole and by range, with the session's memory bounded | ✅ |
-| Cross-origin isolated previews — an app that sends COEP (Emscripten `-pthread`: SharedArrayBuffer + Workers + Atomics) is isolated in its own tab, and in the preview pane after an isolated workspace reload when its CORP admits the workspace origin (path previews always; host previews with CORP `cross-origin`/`same-site`) | ✅ |
-| Unix permissions — real uid/gid ownership with `EACCES` enforced on read/write (including inside `bash`), durable `st_mode`, persisted `chmod` (octal + symbolic) + `chown`, exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
+| Cross-origin isolated previews — an app that sends COEP (Emscripten -pthread: SharedArrayBuffer + Workers + Atomics) is isolated in its own tab, and in the preview pane after an isolated workspace reload when its CORP admits the workspace origin (path previews always; host previews with CORP cross-origin/same-site) | ✅ |
+| Unix permissions — real uid/gid ownership with EACCES enforced on read/write (including inside bash), durable st_mode, persisted chmod (octal + symbolic) + chown, exec-bit enforcement: ./binary runs only if executable (Permission denied, exit 126 otherwise), generic #! shebang dispatch | ✅ |
 | Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate) | Alpha |
 | Vite SPA dev server — full HMR to the preview iframe | ✅ |
-| `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
+| wrangler dev for single-file Workers; Workers + Static Assets | ✅ |
 | Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools | ✅ |
-| JS agent CLI primitives — env/home, npm/npx, `child_process.spawn`/`exec`/`execFile`, piped stdio, streams, logs | ✅ |
+| JS agent CLI primitives — env/home, npm/npx, child_process.spawn/exec/execFile, piped stdio, streams, logs | ✅ |
 | Foreground attached npm-bin TTY tabs — stdin, resize, ANSI output, clean exit; Pi official installer and npm path probed | Alpha |
-| Python package workflows — `pip`, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, `python -m flask run`, `python -m http.server` preview | Alpha |
-| Ruby package workflows — `gem`, `bundle`, pure gems, Rack/WEBrick preview | Alpha |
+| Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, python -m flask run, python -m http.server preview | Alpha |
+| Ruby package workflows — gem, bundle, pure gems, Rack/WEBrick preview | Alpha |
 | Session Agent — editor-workspace chat with Cloudflare OAuth / Workers AI and sandbox tools | ✅ |
-| `npx <pkg>` — first-class shebang + auto-install fallback | ✅ |
-| `node_modules/.bin/*` resolves and executes | ✅ |
-| Binary file round-trip via `fs.writeFileSync` / `readFileSync` | ✅ |
+| npx &lt;pkg&gt; — first-class shebang + auto-install fallback | ✅ |
+| node_modules/.bin/* resolves and executes | ✅ |
+| Binary file round-trip via fs.writeFileSync / readFileSync | ✅ |
 | Session recovery — WebSocket drop → reconnect preserves cwd, env, files | ✅ |
-| WASI preview1 — all 46 spec functions; outbound TCP via `path_open('/dev/tcp/<host>/<port>')` (JSPI); full `poll_oneoff` (fd / clock / socket subscriptions) | ✅ |
-| `wasi-threads` / pthreads — mutex, condvar, `pthread_join`, TLS, barriers, semaphores; cooperative, never parallel | ✅ ([how](docs/wasi-threads.md)) |
+| WASI preview1 — all 46 spec functions; outbound TCP via path_open('/dev/tcp/&lt;host&gt;/&lt;port&gt;') (JSPI); full poll_oneoff (fd / clock / socket subscriptions) | ✅ |
+| wasi-threads / pthreads — mutex, condvar, pthread_join, TLS, barriers, semaphores; cooperative, never parallel | ✅ |
+<!-- capabilities:end -->
 
 ### Status: alpha
 

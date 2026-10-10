@@ -34,7 +34,7 @@ const box = Nimbus.connect({ endpoint: BASE, ...(AUTH_TOKEN ? { token: AUTH_TOKE
 try {
   const r = await fetch(`${BASE}/api/embedder/${encodeURIComponent(sid)}/spawn-worker`, {
     method: 'POST',
-    headers: requestHeaders({ 'content-type': 'application/json' }),
+    headers: requestHeaders({ 'content-type': 'application/json' }, sid),
     body: '{}',
   });
   const text = await r.text();

@@ -139,8 +139,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     appDocuments: Record<AppDoor, DocumentPolicy | null>;
     npmInstaller: NpmInstaller | null;
-    /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
-    fetchProxyEntrypoint: any;
     /**
      * The session's single process owner: PID authority, controlling-
      * terminal input, output rings, and exit records, behind one facade.
@@ -689,27 +687,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     _cpRegistry: CommandRegistry | null;
     _setCpRegistry(r: CommandRegistry): void;
-    /**
-     * Get or create the singleton fetch proxy entrypoint.
-     * ONE dynamic worker is created via LOADER.load() and reused for ALL npm
-     * fetch calls across the lifetime of this DO instance. This prevents
-     * ephemeral port exhaustion from creating a new worker per fetch.
-     */
-    ensureFetchProxy(log?: (msg: string) => void): any | null;
-    /**
-     * Build a FetchFn that routes through the singleton proxy entrypoint.
-     * All concurrent fetches share ONE worker — no port exhaustion.
-     */
-    buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
     ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
-    /**
-     * Read an environment flag with default-on semantics. Mirrors the
-     * shouldUseFacetPool / shouldUseFacetResolver / shouldUseBatchFacet
-     * gates inside NpmInstaller — kept here as a private helper so the
-     * lazy-proxy decision uses identical semantics without leaking that
-     * private API across modules.
-     */
-    _envFlagDefaultOn(name: string): boolean;
     initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
     /**
      * The rebuild in flight for a shell socket that woke this instance from

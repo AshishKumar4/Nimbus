@@ -104,7 +104,7 @@ if (import.meta.main) {
     repo = git(process.cwd(), ['rev-parse', '--show-toplevel']);
     sha = git(repo, ['rev-parse', '--verify', `${positional[0] ?? 'HEAD'}^{commit}`]);
     const mapped = await mapOnArmada({
-      repo, sha, files: ['scripts/ci/build.mjs'], items: [1], label: `remote-build ${sha.slice(0, 12)}`,
+      repo, sha, files: ['scripts/ci/build.mjs', 'scripts/ci/lib/step.mjs'], items: [1], label: `remote-build ${sha.slice(0, 12)}`,
       command: ['bun', 'scripts/ci/build.mjs', '--out', '{out}', ...args],
     });
     const [outcome] = mapped.outcomes;

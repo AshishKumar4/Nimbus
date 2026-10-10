@@ -21,6 +21,7 @@ import { BASH_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
  */
 export const SPECS = {
   'clang/binji-2020': {
+    cliDefaultSync: true,
     license: 'Apache-2.0-with-LLVM-exception',
     wasi_namespace: 'wasi_unstable',
     upstream_base: 'https://raw.githubusercontent.com/binji/wasm-clang/master',
@@ -57,6 +58,7 @@ export const SPECS = {
   // See /workspace/.seal-internal/2026-05-11-ruby-v1/audit.md for
   // the full artifact audit + import/export breakdown.
   'ruby/3.3.4': {
+    cliDefaultSync: true,
     license: 'Ruby+BSD-2-Clause',
     wasi_namespace: 'wasi_snapshot_preview1',
     upstream_base: 'https://registry.npmjs.org/@ruby/3.3-wasm-wasi/-/3.3-wasm-wasi-2.9.3-2.9.4.tgz',
@@ -135,6 +137,7 @@ export const SPECS = {
     license_text: GPL_3_LICENSE_NOTICE(),
   },
   'python/0.29.4': {
+    cliDefaultSync: true,
     license: 'MPL-2.0',
     wasi_namespace: null,        // Pyodide is Emscripten, not WASI
     upstream_base: 'https://cdn.jsdelivr.net/pyodide/v0.29.4/full',

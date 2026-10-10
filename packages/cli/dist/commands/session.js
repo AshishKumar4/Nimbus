@@ -7,13 +7,21 @@
  * token (never the caller's long-lived token); on unauthenticated
  * deployments it is the plain `/s/<id>/` URL.
  */
+import { parseArgs } from 'node:util';
 /** Mint a fresh session and print its attach URL. */
 export async function newSession(args) {
-    const parsed = parseFlags(args);
-    const endpoint = parsed['--endpoint']
+    let parsed;
+    try {
+        parsed = parseArgs({ args, options: { endpoint: { type: 'string' }, token: { type: 'string' } } }).values;
+    }
+    catch (error) {
+        process.stderr.write(`nimbus session new: ${error instanceof Error ? error.message : error}\n`);
+        return 64;
+    }
+    const endpoint = parsed.endpoint
         ?? process.env.NIMBUS_ENDPOINT
         ?? 'http://127.0.0.1:8787';
-    const token = parsed['--token'] ?? process.env.NIMBUS_TOKEN ?? '';
+    const token = parsed.token ?? process.env.NIMBUS_TOKEN ?? '';
     try {
         const baseUrl = new URL(endpoint);
         const r = await fetch(new URL('/new', baseUrl), {
@@ -39,17 +47,6 @@ export async function newSession(args) {
         process.stderr.write(`nimbus session new: ${e?.message || e}\n`);
         return 70;
     }
-}
-function parseFlags(args) {
-    const out = {};
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (!a.startsWith('--'))
-            continue;
-        out[a] = args[i + 1] ?? '';
-        i++;
-    }
-    return out;
 }
 function sessionIdFromLocation(location, baseUrl) {
     let url;

@@ -82,7 +82,7 @@ try {
   a.check('Agent status resolves from Checking', ui.status !== 'Checking...', JSON.stringify(ui));
 
   const statusResponse = await fetch(`${BASE}/s/${sid}/api/agent/status`, {
-    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }, sid),
   });
   const status = await statusResponse.json();
   a.check('Agent status API returns ok JSON',
@@ -94,7 +94,7 @@ try {
     JSON.stringify(status.capabilities));
 
   const messagesResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
-    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }, sid),
   });
   const messages = await messagesResponse.json();
   a.check('Agent messages API starts empty',
@@ -103,7 +103,7 @@ try {
 
   const startResponse = await fetch(`${BASE}/s/${sid}/api/agent/oauth/start`, {
     method: 'POST',
-    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }, sid),
   });
   const start = await startResponse.json();
   if (status.oauth?.configured) {
@@ -125,7 +125,7 @@ try {
   if (!status.connected) {
     const chatResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
       method: 'POST',
-      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }, sid),
       body: JSON.stringify({ message: 'hello' }),
     });
     const chat = await chatResponse.json();

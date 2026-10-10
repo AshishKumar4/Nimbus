@@ -26,7 +26,7 @@ import { issueNimbusToken } from '@nimbus-sh/worker/auth';
  * ```
  */
 export function sessionAttachUrl(endpoint, sessionId, token) {
-    const url = new URL(`/s/${encodeURIComponent(sessionId)}/`, endpoint);
+    const url = new URL(sessionId ? `/s/${encodeURIComponent(sessionId)}/` : '/new', endpoint);
     url.searchParams.set('nimbus_token', token);
     return url.toString();
 }

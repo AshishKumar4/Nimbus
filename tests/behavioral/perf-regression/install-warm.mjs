@@ -67,7 +67,7 @@ function parsePhaseTotal(output) {
  * share it, and share the counters). Null when the target does not answer.
  */
 async function cacheCounters(sid) {
-  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, { headers: requestHeaders(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(10_000) }).catch(() => null);
   if (!r?.ok) return null;
   const snapshot = await r.json();
   const counts = {};

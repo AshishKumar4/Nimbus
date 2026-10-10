@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { holdLease } from '../../scripts/ci/lib/lease.mjs';
@@ -22,6 +22,22 @@ import { redactCredentials } from '../behavioral/_driver.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'ci-release-'));
 try {
+  {
+    const paths = ['scripts/ci/lib/state-dir.mjs', 'scripts/ci/lib/release.mjs', 'scripts/ci/lib/lease.mjs', 'tests/behavioral/_deploy-target.mjs'];
+    for (const xdg of [null, join(root, 'xdg-state')]) {
+      const env = { ...process.env };
+      if (xdg) env.XDG_STATE_HOME = xdg;
+      else delete env.XDG_STATE_HOME;
+      delete env.NIMBUS_PUBLISH_ARTIFACTS;
+      const queried = spawnSync(process.execPath, ['-e', `
+        const [state,release,lease,target]=await Promise.all(${JSON.stringify(paths.map(path => new URL('../../' + path, import.meta.url).href))}.map(path=>import(path)));
+        console.log(JSON.stringify([state.NIMBUS_STATE,release.RELEASES,lease.LEASES,target.MACHINE_STATE_DIR,state.PUBLISH_ARTIFACTS]));
+      `], { encoding: 'utf8', env });
+      assert.equal(queried.status, 0, queried.stderr);
+      const base = join(xdg || join(homedir(), '.local', 'state'), 'nimbus');
+      assert.deepEqual(JSON.parse(queried.stdout), [base, join(base, 'releases'), join(base, 'leases'), base, join(base, 'publish')]);
+    }
+  }
   {
     // Run the real release entrypoint. Only its external upload/build/lease
     // seams are replaced; no staging credentials or network are involved.

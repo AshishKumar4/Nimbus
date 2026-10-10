@@ -56,7 +56,7 @@ export async function bundleRegistry({ start }) {
     if (node.callee.object.type !== 'Identifier' || node.arguments.length) throw new Error('registry captured a non-declaration function');
     return [{ start: node.start, end: node.end, name: node.callee.object.name }];
   });
-  if (captures.length !== 2) throw new Error('registry must capture its two self-contained functions');
+  if (captures.length !== 4) throw new Error('registry must capture its four embedded functions');
   for (const node of captures.sort((a, b) => b.start - a.start)) {
     const declaration = functions.get(node.name);
     if (!declaration) throw new Error('registry captured a non-declaration function');

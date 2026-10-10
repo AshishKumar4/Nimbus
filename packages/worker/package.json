@@ -104,6 +104,11 @@
       "import": "./dist/runtime/package-manager.js"
     },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
+    "./runtime/catalog": {
+      "workspace": "./src/runtime/runtime-catalog.ts",
+      "types": "./dist/runtime/runtime-catalog.d.ts",
+      "import": "./dist/runtime/runtime-catalog.js"
+    },
     "./public/*": "./public/*",
     "./package.json": "./package.json"
   },

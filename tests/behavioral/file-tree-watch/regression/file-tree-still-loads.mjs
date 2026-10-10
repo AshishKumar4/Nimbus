@@ -13,7 +13,7 @@ const a = makeAsserter('file-tree-watch/regression/file-tree-still-loads');
 console.log(`file-tree-watch/regression/file-tree-still-loads — ${BASE}`);
 
 const sid = await mintSession();
-const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 let opened = false;
 let result = null;
 w.on('open', () => { opened = true; });

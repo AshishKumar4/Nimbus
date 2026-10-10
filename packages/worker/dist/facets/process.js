@@ -367,28 +367,6 @@ export class FacetProcessManager {
             return null;
         return parseShellCommandArgs(req.command, args);
     }
-    async _dispatchShell(child, req, hooks) {
-        const plan = this._shellPlanFor(req);
-        if (!plan) {
-            this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
-            this._stampExit(child, 127, null);
-            return;
-        }
-        try {
-            const stdin = this._stdinOf(child);
-            const commandLine = await this._shellCommandLineForPlan(plan, req.cwd, stdin, hooks, shellNameForCommand(req.command), child.pid);
-            if (commandLine === null) {
-                this._stampExit(child, 127, null);
-                return;
-            }
-            const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
-            this._stampExit(child, typeof code === 'number' ? code : 0, null);
-        }
-        catch (e) {
-            this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
-            this._stampExit(child, 1, null);
-        }
-    }
     /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
     async _shellCommandLineForPlan(plan, cwd, stdin, hooks, shellName, processPid) {
         if (plan.kind === 'command')

@@ -85,7 +85,6 @@ export interface ProgrammaticHost extends TimerHost {
     } | null;
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
-    fetchProxyEntrypoint?: unknown;
     _supervisorOps?: {
         forget(pid: number): void;
     } | null;
