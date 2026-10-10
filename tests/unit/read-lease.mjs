@@ -457,14 +457,14 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const { readLease } = barrier(s, reader);
   assert.equal(s.files.outputGate.before(pid), null, 'output was held with nothing of its held');
   // Answered at commit: the reader has not answered its recall.
-  assert.equal((await wave(writer, '/home/user/d/a.txt', 'held')).held, true);
+  assert.equal((await wave(writer, '/home/user/d/a.txt', 'held')).held, true, 'a wave answered ahead of its publication said nothing of it');
   assert.equal(new TextDecoder().decode(writer.readFile('/home/user/d/a.txt')), 'held', 'its writer reads its own');
   assert.throws(() => other.readFile('/home/user/d/a.txt'), (error) => error.code === 'EAGAIN', 'another read it before its publication');
   processes.appendOutput(pid, 'stdout', 'written\n');
   processes.markExit(pid, 0);
-  // A process the session does not gate waits at its write, as before.
+  // A process the session does not gate waits at its wave, as before (beside the names the gated one holds).
   let ungated = false;
-  const waiting = withRecall(() => other.writeFile('/home/user/d/b.txt', 'waits')).then(() => { ungated = true; });
+  const waiting = wave(other, '/home/user/b.txt', 'waits').then((answer) => { ungated = true; return answer; });
   await sleep(10);
   assert.equal(logged(), '', 'its output went out before what it wrote was published');
   assert.equal(processes.getExit(pid), null, 'its exit went out before what it wrote was published');
@@ -473,7 +473,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(s.files.outputGate.before(7), null);
   reader.recalled(readLease.owner, 'revoke');
   await s.files.outputGate.before(pid);
-  await waiting;
+  assert.equal((await waiting).ok, true);
   await sleep(0);
   assert.equal(logged(), 'written\n');
   assert.equal(processes.getExit(pid)?.code, 0);
