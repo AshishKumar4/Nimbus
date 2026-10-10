@@ -8059,17 +8059,23 @@ export class SqliteVFS {
         const caller = this.activeHolds;
         const owner = options.mutationOwner;
         const holds = owner !== undefined && caller?.has(owner) !== true ? new Set([owner, ...(caller ?? [])]) : caller;
-        // Its records commit ahead of the read recalls they meet; its answer waits for their publication.
+        // Its records commit ahead of the read recalls they meet; its answer
+        // waits for their publication, unless its writer continues (as itself:
+        // under a lease not its own, it waits).
         const pipeline = this.newPipeline(holds, false);
+        if (holds !== caller)
+            pipeline.continues = false;
         return this.spanning(async () => {
+            let result;
             try {
-                return await this.consumeStream(stream, options, cred, origin, holds, pipeline);
+                result = await this.consumeStream(stream, options, cred, origin, holds, pipeline);
             }
             finally {
                 const published = this.endPipeline(pipeline);
                 if (!pipeline.continues)
                     await published;
             }
+            return this.heldPipelines.has(pipeline) ? { ...result, held: true } : result;
         }, options.mutationOwner);
     }
     /**

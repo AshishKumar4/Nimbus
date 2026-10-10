@@ -86,6 +86,8 @@ export const REPLAY_OPERATION_POLICY = {
     fsAcquireExclusiveMutation: effect, fsReleaseExclusiveMutation: effect,
     // A recall is the session asking; the answer to one changes what it holds.
     fsAwaitRecall: { kind: 'input' }, fsRecalled: effect,
+    // Waits for the session's publication of what the process wrote, and implements that boundary itself.
+    fsPublished: control,
     innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
     hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
     routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,

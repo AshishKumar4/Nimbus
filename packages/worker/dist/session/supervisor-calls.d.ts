@@ -283,6 +283,10 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     fsAwaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null>;
     /** The holder has answered recall `kind`: delivered once. */
     fsRecalled(owner: string, kind: RecallKind): Promise<void>;
+    /** Settled once the process's held writes are published (RuntimeFsBridge.published). */
+    fsPublished(options?: {
+        escape?: boolean;
+    }): Promise<void>;
     fsClose(handleId: number): Promise<void>;
     /**
      * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no

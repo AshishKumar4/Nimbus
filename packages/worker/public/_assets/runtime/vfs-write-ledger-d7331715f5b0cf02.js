@@ -1326,6 +1326,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let processGone = null;
     let logged = 0;
     let answered = 0;
+    let heldWaves = 0;
+    let publishedThrough = 0;
     const marks = [];
     const counters = {
       ops: 0,
@@ -1504,6 +1506,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       let receipt = 0;
       const back = [];
       const mutations2 = new Map((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+      if (answer.held === true) heldWaves++;
       for (const [index, entry] of entries.entries()) {
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
@@ -1885,6 +1888,14 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         options.drain?.();
         return answered >= logged ? null : client.flush();
       },
+      published(escape = false) {
+        const ask = options.session.published;
+        if (processGone !== null || ask === void 0 || !escape && publishedThrough === heldWaves) return null;
+        const through = heldWaves;
+        return ask.call(options.session, escape).then(() => {
+          if (publishedThrough < through) publishedThrough = through;
+        });
+      },
       async settle() {
         settling = true;
         runEnded = true;
@@ -2155,6 +2166,7 @@ function __nimbusProcessFs() {
         const bound = supervisor();
         if (typeof bound.retireWaveWriter === "function") await bound.retireWaveWriter(writer);
       },
+      published: (escape) => supervisor().fsPublished(escape ? { escape } : undefined),
       // The subtrees the process writes often enough: decided here
       // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
       grants: {

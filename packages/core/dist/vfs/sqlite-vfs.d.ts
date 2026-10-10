@@ -360,6 +360,13 @@ export interface WriteBatchStreamProgress {
     sequence?: WaveSequenceAnswer;
     /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
     mutations?: WaveMutation[];
+    /**
+     * Answered at its commit, ahead of its publication (its writer continues:
+     * SqliteVFS.as's `continues`): what its writer's runtime waits for before
+     * an effect leaves by a way the session's gate does not see
+     * (RuntimeFsBridge.published).
+     */
+    held?: true;
 }
 /**
  * One op a wave committed (`index`, its place among the wave's ops, from 0):

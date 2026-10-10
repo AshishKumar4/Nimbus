@@ -122,12 +122,27 @@ const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopR
 let __nimbusCarrierOpening = false;
 let __nimbusCarrierGate = null;
 let __nimbusCarrierFailure = null;
-if (__nimbusReplay && typeof __real_net !== "undefined") {
+// A raw socket (one a connect opens, or a response upgrades to) carries what
+// no gate of the session's sees: from the first, the process's writes wait
+// for their publication, and it opens once every one before it is published
+// (ProcessFsClient.published).
+let __nimbusRawSocketGate;
+function __nimbusRawSocket() {
+  if (__nimbusRawSocketGate === undefined) {
+    const asked = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.published(true) : null;
+    __nimbusRawSocketGate = asked === null ? null : asked.then(
+      () => { __nimbusRawSocketGate = null; },
+      (error) => { __nimbusRawSocketGate = undefined; throw error; },
+    );
+  }
+  return __nimbusRawSocketGate;
+}
+if (typeof __real_net !== "undefined") {
   const __NativeSocket = (__real_net.default ?? __real_net).Socket;
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
   if (typeof __nativeConnect === "function") {
     Object.defineProperty(__NativeSocket.prototype, "connect", { configurable: true, writable: true, value: function connect(...args) {
-      if (!__nimbusCarrierOpening) {
+      if (__nimbusReplay && !__nimbusCarrierOpening) {
         const first = args[0];
         const where = first !== null && typeof first === "object"
           ? String(first.host ?? "") + ":" + String(first.port ?? first.path ?? "")
@@ -137,7 +152,9 @@ if (__nimbusReplay && typeof __real_net !== "undefined") {
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
-      const ready = __nimbusCarrierOpening ? __nimbusCarrierGate : __nimbusReplay.afterBoundary();
+      const replayed = !__nimbusReplay ? null : __nimbusCarrierOpening ? __nimbusCarrierGate : __nimbusReplay.afterBoundary();
+      const raw = __nimbusRawSocket();
+      const ready = replayed && raw ? Promise.all([replayed, raw]) : replayed || raw;
       if (ready) {
         const socket = this;
         const fail = __nimbusCarrierFailure || ((error) => socket.destroy(error));
@@ -625,7 +642,8 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const pending = __resumeCoherent(__dispatch(input, init)).then((response) => {
+    const pending = __resumeCoherent(__dispatch(input, init)).then(async (response) => {
+      if (response && response.webSocket) await __nimbusRawSocket();
       if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
       return response;
     });
@@ -2791,9 +2809,15 @@ ${READ_LEASE_COVER_PREAMBLE}
    * than merely linearizability.
    */
   async function _resumptionRelease() {
+    const client = globalThis.__nimbusProcessFs;
+    if (!client) return;
     // Everything logged before the effect (the structural changes, the
     // descriptor writes), marked now: what is logged after it is not waited for.
-    await globalThis.__nimbusProcessFs?.flush();
+    await client.flush();
+    // And published, what the session answered ahead of its publication: the
+    // effect leaves by a way the session's gate does not see.
+    const published = client.published();
+    if (published !== null) await published;
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch

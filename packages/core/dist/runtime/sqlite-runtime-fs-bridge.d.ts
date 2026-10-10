@@ -177,6 +177,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
     awaitRecall(owner: string): never;
     recalled(owner: string): never;
+    /** No process: its writes wait for their publication, so none is held. */
+    published(): void;
     private pathArgument;
     private resolveDataPath;
     /**

@@ -17,7 +17,7 @@
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
-import type { OutputGate } from './output-gate.js';
+import type { OutputGate, ProcessOutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -115,20 +115,29 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * its that another reader's recall holds (SqliteVFS.publishedFor). None
      * held, nothing waits.
      */
-    readonly outputGate: OutputGate;
-    /** Whether every external channel of a process waits at `outputGate` (holdOutput): its writes continue at commit. */
+    readonly outputGate: ProcessOutputGate;
+    /** Whether the session's process output waits at `outputGate` (holdOutput). */
     private outputHeld;
+    /** The processes whose writes answer at their commit (gateOutput), until one escapes the gate. */
+    private readonly gated;
     /**
-     * From now on each process's output waits for what it wrote to be
-     * published (`outputGate`, installed on `processes`), so its writes
-     * answer at commit rather than at their publication: the writer
-     * continues, and what it makes visible after a write is held instead. The
-     * host gates every other channel a process's effects leave by (its ports'
-     * answers) with the same gate.
+     * From now on each process's output (its log, pipes, terminal and exit)
+     * waits at `outputGate` for what it wrote to be published. The host gates
+     * the answers its ports give with the same gate.
      */
     holdOutput(processes: {
         setOutputGate(gate: OutputGate | null): void;
     }): void;
+    /**
+     * Process `pid`'s writes answer at their commit from now on, ahead of
+     * their publication: the writer continues, and whatever it makes visible
+     * waits for the publication instead. Only for a process whose every way
+     * out does: its output and its ports' answers at `outputGate` (holdOutput),
+     * a request or a frame it sends at its runtime's own boundary
+     * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
+     * ending this (`escaped`).
+     */
+    gateOutput(pid: number): void;
     releaseProcess(pid: number): Promise<void>;
     /** See NimbusFilesystemAuthority.rewindProcess. */
     rewindProcess(pid: number): Promise<void>;

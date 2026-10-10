@@ -461,6 +461,10 @@ export function supervisorCalls(base) {
         async fsRecalled(owner, kind) {
             return this._call(this._fsMutation('fsRecalled', [owner, kind]));
         }
+        /** Settled once the process's held writes are published (RuntimeFsBridge.published). */
+        async fsPublished(options) {
+            return this._call(this._fsOp('fsPublished', options === undefined ? [] : [options]));
+        }
         async fsClose(handleId) {
             return this._call(this._fsMutation('fsClose', [handleId]));
         }

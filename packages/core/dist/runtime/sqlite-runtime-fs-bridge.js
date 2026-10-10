@@ -874,6 +874,8 @@ export class SqliteRuntimeFsBridge {
     recalled(owner) {
         throw fsError('ESTALE', 'recalled', owner, undefined, { detail: 'no delegation of this process under that lease' });
     }
+    /** No process: its writes wait for their publication, so none is held. */
+    published() { }
     pathArgument(path) {
         if (typeof path === 'string')
             return path;

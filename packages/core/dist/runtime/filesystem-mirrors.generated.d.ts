@@ -53,9 +53,10 @@ export declare const FILESYSTEM_RPC_METHODS: {
     readonly releaseExclusiveMutation: "fsReleaseExclusiveMutation";
     readonly awaitRecall: "fsAwaitRecall";
     readonly recalled: "fsRecalled";
+    readonly published: "fsPublished";
 };
 /** The RPC names a facet calls through `answer`: every method but a streamed one. */
-export declare const FILESYSTEM_ANSWERED_RPC_METHODS: readonly ["stat", "readFileBytes", "writeFile", "fsReadRange", "fsWriteRange", "fsTruncate", "utimes", "chmod", "access", "chown", "fsOpen", "fsRead", "fsWrite", "fsClose", "readdir", "mkdir", "unlink", "rmdir", "rename", "readlink", "fsLinkLeadsTo", "symlink", "fsSync", "fsRevision", "fsAcquire", "fsList", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "writeBatch", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "fsAwaitRecall", "fsRecalled"];
+export declare const FILESYSTEM_ANSWERED_RPC_METHODS: readonly ["stat", "readFileBytes", "writeFile", "fsReadRange", "fsWriteRange", "fsTruncate", "utimes", "chmod", "access", "chown", "fsOpen", "fsRead", "fsWrite", "fsClose", "readdir", "mkdir", "unlink", "rmdir", "rename", "readlink", "fsLinkLeadsTo", "symlink", "fsSync", "fsRevision", "fsAcquire", "fsList", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "writeBatch", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "fsAwaitRecall", "fsRecalled", "fsPublished"];
 /** Local facets retain the process-bound bridge and its synchronous capability. */
 export declare function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor;
 /**

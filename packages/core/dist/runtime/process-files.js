@@ -79,13 +79,16 @@ class GuardedProcessBridge {
     hydrator;
     delegations;
     mounted;
+    gate;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
     hydrator, 
     /** The session's delegations: a process's own are granted, recalled and released here. */
     delegations, 
     /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
-    mounted) {
+    mounted, 
+    /** The session's gate on the process's output (ProcessFiles.outputGate). */
+    gate) {
         this.target = target;
         this.scope = scope;
         this.signal = signal;
@@ -93,6 +96,7 @@ class GuardedProcessBridge {
         this.hydrator = hydrator;
         this.delegations = delegations;
         this.mounted = mounted;
+        this.gate = gate;
     }
     gateLaunch(named) {
         return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
@@ -266,6 +270,14 @@ class GuardedProcessBridge {
             this.target.recalled(owner);
         else
             this.delegations.recalled(this.pid, owner, kind);
+    }
+    published(options) {
+        this.guard();
+        if (this.pid === undefined)
+            return this.target.published();
+        if (options?.escape === true)
+            this.gate.escaped(this.pid);
+        return this.gate.before(this.pid) ?? undefined;
     }
 }
 /** The session's namespace and the processes bound to it. */
@@ -448,23 +460,37 @@ export class ProcessFiles {
             const holds = this.delegations.holdsAt(pid);
             return holds === undefined ? null : this.engine.publishedFor(holds);
         },
+        escaped: (pid) => { this.gated.delete(pid); },
     };
-    /** Whether every external channel of a process waits at `outputGate` (holdOutput): its writes continue at commit. */
+    /** Whether the session's process output waits at `outputGate` (holdOutput). */
     outputHeld = false;
+    /** The processes whose writes answer at their commit (gateOutput), until one escapes the gate. */
+    gated = new Set();
     /**
-     * From now on each process's output waits for what it wrote to be
-     * published (`outputGate`, installed on `processes`), so its writes
-     * answer at commit rather than at their publication: the writer
-     * continues, and what it makes visible after a write is held instead. The
-     * host gates every other channel a process's effects leave by (its ports'
-     * answers) with the same gate.
+     * From now on each process's output (its log, pipes, terminal and exit)
+     * waits at `outputGate` for what it wrote to be published. The host gates
+     * the answers its ports give with the same gate.
      */
     holdOutput(processes) {
         processes.setOutputGate(this.outputGate);
         this.outputHeld = true;
     }
+    /**
+     * Process `pid`'s writes answer at their commit from now on, ahead of
+     * their publication: the writer continues, and whatever it makes visible
+     * waits for the publication instead. Only for a process whose every way
+     * out does: its output and its ports' answers at `outputGate` (holdOutput),
+     * a request or a frame it sends at its runtime's own boundary
+     * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
+     * ending this (`escaped`).
+     */
+    gateOutput(pid) {
+        if (this.outputHeld)
+            this.gated.add(pid);
+    }
     async releaseProcess(pid) {
         this.retired.add(pid);
+        this.gated.delete(pid);
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
         try {
@@ -563,9 +589,9 @@ export class ProcessFiles {
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
         const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
-        const continues = pid === undefined ? undefined : () => this.outputHeld;
+        const continues = pid === undefined ? undefined : () => this.gated.has(pid);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
-        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view));
+        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);
         if (!awaited) {
@@ -642,6 +668,7 @@ class AwaitingProcessBridge {
     releaseExclusiveMutation(owner) { return this.bridge.releaseExclusiveMutation(owner); }
     awaitRecall(owner, waitMs) { return this.bridge.awaitRecall(owner, waitMs); }
     recalled(owner, kind) { return this.bridge.recalled(owner, kind); }
+    published(options) { return this.bridge.published(options); }
     /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
     live() {
         assertScopeLive(this.scope, this.signal);

@@ -29,7 +29,7 @@
  */
 import { type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
-import type { OutputGate } from './output-gate.js';
+import type { ProcessOutputGate } from './output-gate.js';
 export interface PortEntry {
     port: number;
     pid: number;
@@ -85,9 +85,10 @@ export declare class PortRegistry {
     /**
      * Hold each process's answers (status and headers, and each piece of its
      * body as it comes) until `gate` lets them through: what a process makes
-     * visible after a write waits for the write's publication. One slot.
+     * visible after a write waits for the write's publication. A socket an
+     * upgrade hands it is one no gate sees, which `gate` is told. One slot.
      */
-    setOutputGate(gate: OutputGate | null): void;
+    setOutputGate(gate: ProcessOutputGate | null): void;
     /**
      * Remember the available facet capabilities for a running process.
      * `deliversAcquire`: the target strips DELIVERED_ACQUIRE_HEADER before user

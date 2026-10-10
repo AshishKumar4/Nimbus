@@ -81,6 +81,12 @@ export interface ProcessFsSession {
     retireWriter?(writer: string): Promise<void>;
     /** Delegations; absent, the process holds none and the session decides every op. */
     readonly grants?: ProcessFsGrantSession;
+    /**
+     * Settled once every write of the process's the session answered ahead of
+     * its publication is published (SupervisorRPC.fsPublished); `escape`, see
+     * RuntimeFsBridge.published. Absent, the session answers none so.
+     */
+    published?(escape: boolean): Promise<void>;
 }
 /** The session's delegation calls (fsAcquireExclusiveMutation with `delegate`, fsAwaitRecall, fsRecalled, fsReleaseExclusiveMutation). */
 export interface ProcessFsGrantSession {
@@ -214,6 +220,15 @@ export interface ProcessFsClient {
      * nothing an effect it released claimed.
      */
     effect(): Promise<void> | null;
+    /**
+     * The gate an effect leaving by a way the session's gate does not see (a
+     * request out, a frame out) is released at, after `effect`: once every
+     * write of the process's the session answered ahead of its publication
+     * (WriteBatchStreamResult.held) is published, or null when none is.
+     * `escape` (a raw socket opens): asked whatever is known, and the
+     * process's writes wait for their publication from now on.
+     */
+    published(escape?: boolean): Promise<void> | null;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */
     settle(): Promise<void>;
     /** The failures not yet reported, taken (the next effect reports them). */
