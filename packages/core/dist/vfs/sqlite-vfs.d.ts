@@ -1556,8 +1556,10 @@ export declare class SqliteVFS {
     /**
      * Give up every delegation of another holder that a write at `key`
      * overlaps (each recalled, revoked); `holds`: the writer's own. A reader's
-     * recall a `pipeline` runs ahead of: sent, and a turn given for it to leave
-     * before the write commits.
+     * recall the wave's `pipeline` runs ahead of: sent, and a turn given for it
+     * to leave before the write commits. Each wait ends with `signal` (a
+     * delegation recalled may be another wave's held commit, published only
+     * once that wave ends), and no recall is asked after it.
      */
     private recallDelegationsAt;
     /**
