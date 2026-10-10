@@ -833,15 +833,14 @@
       function attach(sock) {
         if (socket) disconnect();
         socket = sock;
-        sock.addEventListener('open', () => {
-          if (sock !== socket) return;
-          drain();
-          emit('open');
-        });
-        sock.addEventListener('close', () => {
-          if (sock !== socket) return;
-          disconnect();
-        });
+      }
+      function opened(sock) {
+        if (sock !== socket) return;
+        drain();
+        emit('open');
+      }
+      function closed(sock) {
+        if (sock === socket) disconnect();
       }
       function receive(message) {
         if (typeof message?.type !== 'string') return false;
@@ -853,7 +852,7 @@
         emit(message.type, message);
         return true;
       }
-      return { request, subscribe, attach, receive, isOpen };
+      return { request, subscribe, attach, opened, closed, receive, isOpen };
     })();
 
     // ── Editor module ──
@@ -2758,6 +2757,7 @@
       SessionTransport.attach(sock);
       ws.onopen = () => {
         if (sock !== ws) return;
+        SessionTransport.opened(sock);
         clearNimbusDisconnectError();
         Conn.onOpen();
         setStatus('connected'); rd = 1000;
@@ -2831,6 +2831,7 @@
         } catch {}
       };
       ws.onclose = () => {
+        SessionTransport.closed(sock);
         if (sock !== ws) return;
         Conn.onClose();
         if (!Conn.isGone()) setStatus('disconnected');
