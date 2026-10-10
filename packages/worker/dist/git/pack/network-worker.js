@@ -451,7 +451,7 @@ export const networkWorker = {
                 // reads the repository's packs, writes its commit-graph only.
                 const root = normalizeVfsPath(opts.dir);
                 const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
-                const step = opts.graphFilters ?? { step: 'plan' };
+                const step = opts.graphFilters;
                 const graphFilters = step.step === 'plan'
                     ? await graphFiltersPlan(context)
                     : step.step === 'piece'

@@ -26,6 +26,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
+import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep = {
@@ -136,31 +137,6 @@ export interface GitNetworkOpts {
     /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
     batchConcurrency?: number;
 }
-export interface GitSupervisorRpcCounters {
-    stat: number;
-    lstat: number;
-    readdir: number;
-    readFile: number;
-    fsReadRange: number;
-    /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
-    fsWriteRange: number;
-    rename: number;
-    /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
-    lock: number;
-    writeBatchStream: number;
-    readlink: number;
-    symlink: number;
-    legacySymlinkSubtree: number;
-    stdout: number;
-    /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
-    fileApi: number;
-}
-export interface GitMetadataOverlayStats {
-    entries: number;
-    accountedBytes: number;
-    maxEntries: number;
-    maxAccountedBytes: number;
-}
 export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
@@ -178,7 +154,7 @@ export interface GitNetworkPhaseDiagnostic {
         total?: number;
     };
     w7Waves: number;
-    supervisorRpc: GitSupervisorRpcCounters;
+    supervisorRpc: SupervisorRpcCounters;
     /** The invocation's wave writer: what it published and how long it waited. */
     waves?: WaveStats;
 }
@@ -189,8 +165,8 @@ export interface GitNetworkResult {
     elapsed: number;
     filesWritten: number;
     bytesWritten: number;
-    supervisorRpc: GitSupervisorRpcCounters;
-    metadataOverlay: GitMetadataOverlayStats;
+    supervisorRpc: SupervisorRpcCounters;
+    metadataOverlay: MetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
