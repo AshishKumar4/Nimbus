@@ -91,4 +91,5 @@ assert.equal(typeof ended.listed[2], 'number');
 assert.deepEqual(ended.api, ['killed', 137]);
 assert.equal(ended.ps, 'killed(137)');
 
+await runtime.close();
 console.log('process-published-status: views show an end once it is published; what it held goes at the decision');
