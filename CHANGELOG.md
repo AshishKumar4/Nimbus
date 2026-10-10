@@ -34,6 +34,20 @@ published independently in the `@nimbus-sh` npm scope.
   string. Opencode's explicit one-shot text-result capture is bounded to
   1 MiB per stream; an oversized result fails with EFBIG and a nonzero exit
   instead of silently truncating it or exhausting the facet's memory.
+- Changed: `zlib`, `buffer` and `crypto` in node programs check their
+  arguments as Node does and throw Node's errors (`ERR_INVALID_ARG_TYPE`,
+  `ERR_MISSING_ARGS`, `ERR_OUT_OF_RANGE` and the rest, in Node's words).
+  They used to throw workerd's uncoded `Failed to execute …` errors, which a
+  program's `e.code` checks missed.
+  - `btoa` now refuses characters past U+00FF, as Node's does.
+  - `atob` reports Node's two errors.
+  - `crypto.createECDH` and `getDiffieHellman` name an unknown curve or
+    group as Node does.
+  - `crypto.setEngine` reports that no engine is found.
+- Fixed: `crypto.randomBytes`, `randomFillSync` and `randomFill` in node
+  programs threw `QuotaExceededError` past 65536 bytes. They fill up to
+  2^31-1 bytes, as Node's do. `crypto.getRandomValues` keeps the Web
+  Crypto quota, as in Node.
 - Fixed: `fs.stat(path, options, callback)` treated the options object as
   the callback. `{ bigint: true }` was ignored by every stat call; it now
   returns `BigIntStats` in nanoseconds.
