@@ -170,7 +170,8 @@ for (const [what, end] of [
   const destroyed = await rpcDestroy(sessionHost(s), { reason: 'test' });
   assert.equal(destroyed.ok, true, 'the destroy goes ahead');
   assert.equal(destroyed.killed, 1, 'having stopped the holder');
-  assert.equal(s.engine.hasExclusiveMutation(), false);
+  assert.equal(s.filesystem.delegations.size, 0, 'whose end gave its subtree back');
+  assert.deepEqual(s.orphaned, [{ pid, root: 'home/user/repo' }]);
   console.log('  a destroy stops a live holder and goes ahead');
 }
 
