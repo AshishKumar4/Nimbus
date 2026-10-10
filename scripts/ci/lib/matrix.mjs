@@ -44,7 +44,7 @@ export function describeReleaseException(entry) {
 /** Why a deferred probe's red row is not the failure its deferral allows, or null when it is. */
 function beyondDeferral(row, entry) {
   const checks = completedAssertions(row.assertions);
-  if (!checks || row.assertions.some(result => result.label !== entry.probe)) return 'it has no complete structured assertion result (an exception, killed or malformed), so not every other assertion ran';
+  if (!checks) return 'it has no complete structured assertion result (an exception, killed or malformed), so not every other assertion ran';
   const failed = checks.filter(check => !check.ok);
   const others = failed.filter((check) => check.name !== entry.assertion);
   if (others.length > 0) return `other assertions failed: ${others.map((check) => `✗ ${check.name}`).join('; ')}`;

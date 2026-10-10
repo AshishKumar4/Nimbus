@@ -52,7 +52,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 try {
   for (const dir of ['tests/behavioral', 'apps/probe', 'apps/hosted-demo', '.wrangler/throwaway-targets', 'tmp']) mkdirSync(join(root, dir), { recursive: true });
   for (const file of ['_throwaway-target.mjs', '_deploy-target.mjs']) copyFileSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
-  for (const file of ['_driver.mjs', '_mint-probe-token.mjs', '_ledger.mjs']) symlinkSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
+  for (const file of ['_driver.mjs', '_mint-probe-token.mjs', '_ledger.mjs', '_session-transport.mjs']) symlinkSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
   for (const dir of ['scripts', 'packages', 'node_modules', 'apps/probe/node_modules', 'apps/hosted-demo/node_modules']) symlinkSync(join(REPO, dir), join(root, dir));
   copyFileSync(join(REPO, 'apps/probe/wrangler.jsonc'), join(root, 'apps/probe/wrangler.jsonc'));
   writeFileSync(join(root, 'drive.mjs'), `

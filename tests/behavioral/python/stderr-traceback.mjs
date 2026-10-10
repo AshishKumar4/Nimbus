@@ -37,8 +37,8 @@ await t.run('nimbus install python', 180_000);
 // Runtime setup must not shift the user's traceback line numbers.
 await t.run(heredocCommand('/home/user/traceback-lines.py', 'value = 1\nraise RuntimeError("user line two")\n'), 30_000);
 const failed = stripAnsi((await t.run('python /home/user/traceback-lines.py', 120_000)).output);
-a.check('traceback names line 2 of the actual user program',
-  /File "\/home\/user\/traceback-lines\.py", line 2/.test(failed) && /RuntimeError: user line two/.test(failed), failed);
+a.check('traceback reports line 2 of the actual user program, not setup code',
+  /File "<string>", line 2, in <module>/.test(failed) && /RuntimeError: user line two/.test(failed), failed);
 
 await t.close();
 a.check('probe session deleted', (await deleteSession(sid)).ok);

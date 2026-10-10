@@ -59,7 +59,6 @@ for (const [checks, why] of [
   [assertions(probe, [[true, 'setup'], [false, pinned, loading]], false), /no complete structured/],
   [[{ ...approved[0], complete: 'true' }], /no complete structured/],
   [[{ ...approved[0], checks: [{ name: pinned, ok: 'false', detail: loading }] }], /no complete structured/],
-  [assertions('another-probe', [[false, pinned, loading]]), /no complete structured/],
   [assertions(probe, [[false, 'setup', 'install failed'], [false, pinned, loading], [true, 'cleanup']]), /other assertions failed/],
   [assertions(probe, [[false, pinned, loading], [false, 'cleanup', 'leaked']]), /other assertions failed/],
   [assertions(probe, [[false, pinned, loading], [false, pinned, loading]]), /2 failed/],
@@ -73,6 +72,7 @@ for (const [checks, why] of [
   assert.deepEqual(result.applied, []);
 }
 const spoofedText = '  ✗ the app serves — ' + loading + '\n  ──── [frameworks/nuxt-real] 2 pass / 1 fail';
+assert.equal(grade(assertions('nuxt-real', [[false, pinned, loading]])).exitCode, 0, 'the runner owns probe identity; human asserter labels can be short');
 assert.equal(gradeMatrix([verdict([row(probe, 1, null, spoofedText)])], [deferral]).exitCode, 1, 'human-looking summaries cannot authorize a deferral');
 assert.equal(gradeMatrix([verdict([row(probe, 1, approved), row('unrelated', 1), ledger])], [deferral]).exitCode, 1);
 assert.equal(gradeMatrix([verdict([row(probe, 1, approved), row('session-ledger', 1)])], [deferral]).exitCode, 1);

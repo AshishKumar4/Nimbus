@@ -63,8 +63,8 @@ export function createProbeTarget({ base, token = '', cookie = '', request = glo
         } else {
           const detail = redactCredentials(text.trim().split('\n')[0].slice(0, 200));
           const why = response.status === 401 || response.status === 403
-            ? token ? 'the target rejected this probe\'s bearer token (expired or its secret changed); re-mint for this BASE'
-              : 'no accepted probe credential; supply NIMBUS_PROBE_TOKEN or NIMBUS_PROBE_COOKIE'
+            ? token ? 'the target rejected this probe\'s bearer token: JWT_SECRET rotated or the token expired; re-mint for this BASE with bun tests/behavioral/_staging-target.mjs token or bun tests/behavioral/_throwaway-target.mjs token --name <name>'
+              : 'no probe credential was sent; supply NIMBUS_PROBE_TOKEN or NIMBUS_PROBE_COOKIE'
             : location ? `unexpected Location: ${redactCredentials(location)}` : `no Location${detail ? ': ' + detail : ''}`;
           throw new Error(`POST ${base}/new → ${response.status}: ${why}`);
         }
