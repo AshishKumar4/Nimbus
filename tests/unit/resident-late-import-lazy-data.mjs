@@ -4,7 +4,8 @@
 // lazy-read plan must still be applied before that config evaluates it.
 import assert from 'node:assert/strict';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
-import { createAuthority, facetSupervisor, launchResident, runScenarios, until } from './lib/resident-body.mjs';
+import { StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
+import { createAuthority, facetSql, facetSupervisor, launchResident, runScenarios, until } from './lib/resident-body.mjs';
 
 await runScenarios(import.meta.filename, {
   async generatedConfigLoadsStagedLazyModuleData() {
@@ -51,6 +52,46 @@ import("./late-config.cjs").then((config) => {
     assert.equal(log.stdout, 'loaded 8\n');
     assert.equal(log.stderr, '');
     assert.equal(log.exit, null);
+  },
+
+  // Lazy data the process's store has no room for is not read ahead, and the
+  // import() goes on: the module's own read is refused, naming the file.
+  async lazyDataTheStoreCannotHoldIsTheModulesOwnRead() {
+    const root = 'home/user/app';
+    const lazy = `${root}/node_modules/lazy/index.cjs`;
+    const data = `${root}/node_modules/lazy/seed.wasm`;
+    const source = 'exports.ready = "ready"; exports.load = () => require("fs").readFileSync(__dirname + "/seed.wasm").length;';
+    const authority = createAuthority({ storageKernelReserve: 0 });
+    authority.kfs.mkdir(`${root}/node_modules/lazy`, { recursive: true, mode: 0o755 });
+    authority.kfs.writeFile(lazy, source);
+    authority.kfs.writeFile(data, new Uint8Array(4 * 1024 * 1024));
+    // The session has no room past what it holds: no grant can be made.
+    const raw = authority.rawVfs;
+    raw.ledger = new StorageLedger(raw.sql, { limit: raw.databaseBytes() + 512 * 1024, kernelReserve: 0 });
+    const FACET = 'proc-slot-0';
+    raw.ledger.fill(FACET, 256 * 1024);
+    const { supervisor, log } = facetSupervisor(authority, { reportRuntimeCode: async () => {} });
+    const program = `
+require("fs").writeFileSync("./late-config.cjs", "module.exports = require('./node_modules/lazy/index.cjs');");
+import("./late-config.cjs").then((config) => {
+  console.log(config.default.ready);
+  try { config.default.load(); } catch (error) { console.log(error.code); }
+  require("http").createServer((req, res) => res.end("up")).listen(5173);
+}, (error) => console.error(String(error)));
+`;
+    await launchResident({
+      authority,
+      sql: facetSql(),
+      cursor: authority.cursor(),
+      env: { SUPERVISOR: supervisor },
+      bundle: { [lazy]: source },
+      dataPlan: [],
+      startArgs: { lazyReads: { [lazy]: [data] }, storage: { facet: FACET, grant: 256 * 1024 } },
+      program: rewriteDynamicImports(program, `file:///${root}/main.js`),
+    });
+    await until(() => log.ports.has(5173) || log.stderr !== '' || log.exit !== null, 'the listener after the generated config', 10_000);
+    assert.equal(log.stderr, '', 'the import() is not failed by its read-ahead');
+    assert.equal(log.stdout, 'ready\nEAGAIN\n', "the module's own read is refused, naming the file");
   },
 });
 console.log('resident-late-import-lazy-data: ok');
