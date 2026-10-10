@@ -29,6 +29,7 @@
 
 import {
   METADATA_CANDIDATE_WORK,
+  heldCellText,
   packageJsonVisible,
   resolveRequireEx,
   type PkgJsonSink,
@@ -353,8 +354,9 @@ export async function prefetchForRequire(
     if (bundle[path] !== undefined) return bundle[path];
     if (progress) await progress(METADATA_CANDIDATE_WORK + path.length);
     const held = policy?.held[path];
+    const heldText = held === undefined ? undefined : heldCellText(held);
     const authorize = vfs.assertReadable;
-    const reuseHeld = typeof held === 'string' && authorize !== undefined;
+    const reuseHeld = heldText !== undefined && authorize !== undefined;
     if (reuseHeld) {
       try { await authorize.call(vfs, path); }
       catch { declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' }; return null; }
@@ -371,12 +373,12 @@ export async function prefetchForRequire(
       }
     }
     let content: string;
-    try { content = reuseHeld ? held : await vfs.readFileString(path); }
+    try { content = reuseHeld ? heldText : await vfs.readFileString(path); }
     catch {
       if (policy) declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
-    if (held !== undefined && content !== held) {
+    if (heldText !== undefined && content !== heldText) {
       declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
@@ -602,10 +604,24 @@ export async function prefetchForRequire(
     }
     for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
     // What a require wrapper's calls name (@vitejs/plugin-vue's
-    // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
-    // wrapper's try says, so phase 2's, resolved as require() resolves them.
+    // `tryRequire("vue/compiler-sfc", root)`), resolved as require() resolves
+    // them: loads the module makes synchronously when the wrapper runs. In
+    // the launch's required closure they are optional, as the wrapper's try
+    // says, so phase 2's. A module staged on its own (a dependency closure,
+    // or phase 2's) carries them, whole or not at all: it runs as the map's
+    // own, and no import() prefetch fetches for it (node-shims.ts
+    // __nimbusImportStager), so a load the map lacks fails its synchronous
+    // read ("Failed to resolve vue/compiler-sfc", a learned plugin-vue).
     const loads = (await requireWrapperCalls(code)).filter((specifier) => !isFacetProvided(specifier));
-    for (const specifier of loads) defer({ specifier, fromDir, alternatives: loads.length, require: true });
+    if (policy || lazy) {
+      for (const specifier of loads) {
+        if (closureExceeded || declined) break;
+        const staged = await resolveStaticDependency(specifier, fromDir);
+        if (staged) await addFile(staged.resolved);
+      }
+    } else {
+      for (const specifier of loads) defer({ specifier, fromDir, alternatives: loads.length, require: true });
+    }
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
