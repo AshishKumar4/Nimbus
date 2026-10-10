@@ -15361,6 +15361,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #context;
     #controller = new AbortController();
     #writer;
+    #admission;
     #started = false;
     #timer;
     #incoming;
@@ -15425,25 +15426,40 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       }
     }
     #start() {
-      if (this.#started || this.destroyed || this.#signal?.aborted) return;
-      checkPath(this.path);
-      const target = new URL(this.protocol + "//" + (this.host.includes(":") && !this.host.startsWith("[") ? "[" + this.host + "]" : this.host));
-      target.port = this.port;
-      const address = this.path && this.path !== "/" ? new URL(this.path, target) : target;
-      const headers = [];
-      for (const name of this.getRawHeaderNames()) {
-        const value = this.getHeader(name);
-        if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
-        else headers.push([name, String(value)]);
+      if (this.#admission) return this.#admission;
+      if (this.destroyed || this.#signal?.aborted) return Promise.resolve(false);
+      let request;
+      try {
+        const headers = [];
+        for (const name of this.getRawHeaderNames()) {
+          const value = this.getHeader(name);
+          if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
+          else headers.push([name, String(value)]);
+        }
+        request = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
+          headers, contentLength: this.#contentLength, body: this.#completeBody };
+        this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
+        this._headerSent = true;
+      } catch (error) { this.destroy(error); return Promise.resolve(false); }
+      this.#admission = new Promise((resolve) => queueMicrotask(() => {
+        if (this.destroyed || this.#signal?.aborted) { resolve(false); return; }
+        try { this.#open(request); resolve(true); }
+        catch (error) { this.destroy(error); resolve(false); }
+      }));
+      return this.#admission;
+    }
+    #open(request) {
+      checkPath(request.path);
+      const target = new URL(request.protocol + "//" + (request.host.includes(":") && !request.host.startsWith("[") ? "[" + request.host + "]" : request.host));
+      target.port = request.port;
+      const address = request.path && request.path !== "/" ? new URL(request.path, target) : target;
+      const headers = request.headers;
+      if (request.method !== "GET" && request.method !== "HEAD" && !headers.some(([name]) => /^(?:content-length|transfer-encoding)$/i.test(name))) {
+        headers.push(request.contentLength === undefined ? ["transfer-encoding", "chunked"] : ["content-length", String(request.contentLength)]);
       }
-      if (this.method !== "GET" && this.method !== "HEAD" && !this.hasHeader("content-length") && !this.hasHeader("transfer-encoding")) {
-        headers.push(this.#contentLength === undefined ? ["transfer-encoding", "chunked"] : ["content-length", String(this.#contentLength)]);
-      }
-      this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
-      this._headerSent = true;
       let body;
-      if (this.method !== "GET" && this.method !== "HEAD") {
-        if (this.#completeBody !== undefined) body = this.#completeBody;
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        if (request.body !== undefined) body = request.body;
         else {
           const stream = new TransformStream();
           this.#writer = stream.writable.getWriter();
@@ -15454,10 +15470,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       this.#counted = true;
       this.#started = true;
       this.#touch();
-      let response;
-      try {
-        response = fetch(address, { method: this.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
-      } catch (error) { this.destroy(error); return; }
+      const response = fetch(address, { method: request.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
       this.#completeBody = undefined;
       Promise.resolve(response).then((response) => {
         if (this.destroyed) { response.body?.cancel().catch(() => {}); return; }
@@ -15471,21 +15484,24 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       }, (error) => { if (!this.destroyed) this.destroy(error); });
     }
     _write(chunk, encoding, callback) {
-      this.#start();
-      if (this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
-      else callback();
+      const bytes = Buffer.from(chunk);
+      this.#start().then((admitted) => {
+        if (admitted && this.#writer) this.#writer.write(bytes).then(() => { this.#touch(); callback(); }, callback);
+        else callback();
+      });
     }
     _final(callback) {
-      this.#start();
-      if (this.#writer) this.#writer.close().then(() => callback(), callback);
-      else callback();
+      this.#start().then((admitted) => {
+        if (admitted && this.#writer) this.#writer.close().then(() => callback(), callback);
+        else callback();
+      });
     }
     write(...args) { return Writable.prototype.write.apply(this, args); }
     end(chunk, encoding, callback) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
-      if (!this.#started && this.writableLength === 0) {
+      if (!this.#admission && this.writableLength === 0) {
         if (chunk == null) this.#completeBody = Buffer.alloc(0);
         else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
         else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
@@ -15525,6 +15541,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     destroy(error) { this.destroyed = true; return Writable.prototype.destroy.call(this, error); }
     _destroy(error, callback) {
       clearTimeout(this.#timer);
+      this.#completeBody = undefined;
       this.#controller.abort(error);
       if (this.#incoming && !this.#incoming.complete) this.#incoming.destroy(reset("aborted"));
       if (!this.#incoming && error == null && (!this.aborted || this.#started)) error = reset("socket hang up");
@@ -15649,6 +15666,15 @@ Object.defineProperty(builtins, "http", {
       // when an isolate is reused, without revealing its current value.
       let activeContext = context;
       const owners = new WeakMap();
+      const normalizeAddress = (host) => {
+        if (net.isIP(host) !== 6) return host;
+        host = new URL("http://[" + host + "]").hostname.slice(1, -1);
+        // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
+        const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(host);
+        if (!mapped) return host;
+        const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+        return "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
+      };
       proto.address = function () {
         const bound = Reflect.apply(address, this, []);
         const owner = owners.get(this);
@@ -15663,15 +15689,7 @@ Object.defineProperty(builtins, "http", {
         }
         const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
         const family = net.isIP(state.host);
-        if (family === 6) {
-          state.host = new URL("http://[" + state.host + "]").hostname.slice(1, -1);
-          // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
-          const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(state.host);
-          if (mapped) {
-            const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
-            state.host = "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
-          }
-        }
+        if (family) state.host = normalizeAddress(state.host);
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const allocationSettled = () => {
@@ -15697,7 +15715,7 @@ Object.defineProperty(builtins, "http", {
           try {
             // Native listen validates the arguments and binds the native port.
             // An EADDRINUSE from workerd is synchronous; Node emits it instead.
-            Reflect.apply(listen, this, [{ ...options, port }, ...(callback ? [callback] : [])]);
+            Reflect.apply(listen, this, [{ ...options, port, host: state.host }, ...(callback ? [callback] : [])]);
             state.port = Number(this.address()?.port ?? port);
             ctx.ports.set(state.port, this);
             ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
@@ -15707,14 +15725,27 @@ Object.defineProperty(builtins, "http", {
             throw e;
           }
         };
-        if (requested === 0) {
+        if (requested === 0 || !family) {
           state.pending = true;
           pendingListeners.add(this);
           let allocation;
-          try { allocation = ctx.supervisor.allocatePort(); }
+          try {
+            allocation = family ? ctx.supervisor.allocatePort() : new Promise((resolve, reject) => {
+              builtins.dns.lookup(state.host, { all: true }, (error, addresses) => {
+                if (error) { reject(error); return; }
+                try {
+                  // lib/net.js lookupAndListen selects the first non-link-local result.
+                  const selected = addresses.find((ip) => ip.family !== 6 || !/^fe[89ab][0-9a-f]:/i.test(ip.address)) ?? addresses[0];
+                  state.host = normalizeAddress(selected.address);
+                  resolve();
+                } catch (error) { reject(error); }
+              });
+            }).then(() => state.cancelled ? null : requested === 0 ? ctx.supervisor.allocatePort() : options.port);
+          }
           catch (error) { allocationSettled(); throw error; }
           const task = Promise.resolve(allocation).then(port => {
-            state.port = port;
+            if (port === null) { allocationSettled(); return; }
+            if (requested === 0) state.port = port;
             start(port);
           }, error => { allocationSettled(); if (!state.cancelled) this.emit("error", error); });
           ctx.pending.push(task);

@@ -108,6 +108,15 @@ Object.defineProperty(builtins, "http", {
       // when an isolate is reused, without revealing its current value.
       let activeContext = context;
       const owners = new WeakMap();
+      const normalizeAddress = (host) => {
+        if (net.isIP(host) !== 6) return host;
+        host = new URL("http://[" + host + "]").hostname.slice(1, -1);
+        // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
+        const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(host);
+        if (!mapped) return host;
+        const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+        return "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
+      };
       proto.address = function () {
         const bound = Reflect.apply(address, this, []);
         const owner = owners.get(this);
@@ -122,15 +131,7 @@ Object.defineProperty(builtins, "http", {
         }
         const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
         const family = net.isIP(state.host);
-        if (family === 6) {
-          state.host = new URL("http://[" + state.host + "]").hostname.slice(1, -1);
-          // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
-          const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(state.host);
-          if (mapped) {
-            const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
-            state.host = "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
-          }
-        }
+        if (family) state.host = normalizeAddress(state.host);
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const allocationSettled = () => {
@@ -156,7 +157,7 @@ Object.defineProperty(builtins, "http", {
           try {
             // Native listen validates the arguments and binds the native port.
             // An EADDRINUSE from workerd is synchronous; Node emits it instead.
-            Reflect.apply(listen, this, [{ ...options, port }, ...(callback ? [callback] : [])]);
+            Reflect.apply(listen, this, [{ ...options, port, host: state.host }, ...(callback ? [callback] : [])]);
             state.port = Number(this.address()?.port ?? port);
             ctx.ports.set(state.port, this);
             ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
@@ -166,14 +167,27 @@ Object.defineProperty(builtins, "http", {
             throw e;
           }
         };
-        if (requested === 0) {
+        if (requested === 0 || !family) {
           state.pending = true;
           pendingListeners.add(this);
           let allocation;
-          try { allocation = ctx.supervisor.allocatePort(); }
+          try {
+            allocation = family ? ctx.supervisor.allocatePort() : new Promise((resolve, reject) => {
+              builtins.dns.lookup(state.host, { all: true }, (error, addresses) => {
+                if (error) { reject(error); return; }
+                try {
+                  // lib/net.js lookupAndListen selects the first non-link-local result.
+                  const selected = addresses.find((ip) => ip.family !== 6 || !/^fe[89ab][0-9a-f]:/i.test(ip.address)) ?? addresses[0];
+                  state.host = normalizeAddress(selected.address);
+                  resolve();
+                } catch (error) { reject(error); }
+              });
+            }).then(() => state.cancelled ? null : requested === 0 ? ctx.supervisor.allocatePort() : options.port);
+          }
           catch (error) { allocationSettled(); throw error; }
           const task = Promise.resolve(allocation).then(port => {
-            state.port = port;
+            if (port === null) { allocationSettled(); return; }
+            if (requested === 0) state.port = port;
             start(port);
           }, error => { allocationSettled(); if (!state.cancelled) this.emit("error", error); });
           ctx.pending.push(task);
