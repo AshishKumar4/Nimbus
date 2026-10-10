@@ -1065,6 +1065,12 @@ class VirtualListener {
     return this.queue.shift() ?? null;
   }
 
+  /** `conn` leaves the queue, unaccepted: its request is over. */
+  withdraw(conn: VirtualConnection): void {
+    const at = this.queue.indexOf(conn);
+    if (at >= 0) this.queue.splice(at, 1);
+  }
+
   pending(): number {
     return this.queue.length;
   }
@@ -1334,6 +1340,8 @@ export class VirtualSocketKernel {
       return await conn.response(this.limits.responseTimeoutMs);
     } finally {
       signal?.removeEventListener('abort', onAbort);
+      // A request that is over, refused or answered, is accepted by no one later.
+      listener.withdraw(conn);
       conn.close();
       this.connections.delete(id);
     }

@@ -14,7 +14,7 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
-import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, linkedSignal, listPageBudget } from '../vfs/sqlite-vfs.js';
 import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator } from './hydration.js';
 import { Delegations } from './delegations.js';
@@ -33,28 +33,6 @@ import { closeDescriptions, createSqliteDescriptorScope, fsError, modeAllows, re
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
-}
-/**
- * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
- * is not in every runtime this code ships to, so the combination is a small
- * linked controller instead.
- */
-function linkedSignal(signals) {
-    const controller = new AbortController();
-    const listeners = [];
-    for (const signal of signals) {
-        if (!signal)
-            continue;
-        if (signal.aborted) {
-            controller.abort(signal.reason);
-            break;
-        }
-        const onAbort = () => controller.abort(signal.reason);
-        signal.addEventListener('abort', onAbort, { once: true });
-        listeners.push(() => signal.removeEventListener('abort', onAbort));
-    }
-    return { signal: controller.signal, dispose: () => { for (const remove of listeners)
-            remove(); } };
 }
 /**
  * A scope still held: its caller's signal not aborted (that abort's reason),
@@ -78,17 +56,25 @@ class GuardedProcessBridge {
     pid;
     hydrator;
     delegations;
+    mounted;
+    gate;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
     hydrator, 
     /** The session's delegations: a process's own are granted, recalled and released here. */
-    delegations) {
+    delegations, 
+    /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
+    mounted, 
+    /** The session's gate on the process's output (ProcessFiles.outputGate). */
+    gate) {
         this.target = target;
         this.scope = scope;
         this.signal = signal;
         this.pid = pid;
         this.hydrator = hydrator;
         this.delegations = delegations;
+        this.mounted = mounted;
+        this.gate = gate;
     }
     gateLaunch(named) {
         return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
@@ -173,7 +159,30 @@ class GuardedProcessBridge {
     symlink(target, path) { this.guard(); return this.target.symlink(target, path); }
     fsync(handleId) { this.guard(); return this.target.fsync(handleId); }
     revision(path) { this.guard(); return this.target.revision(path); }
-    acquire(epoch, cursor, options) { this.guard(); return this.target.acquire(epoch, cursor, options); }
+    acquire(epoch, cursor, options) {
+        this.guard();
+        return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
+    }
+    /**
+     * `answer`, with the process's read lease when it asked for one: in the
+     * turn the answer was made in, so it is granted at the revision the answer
+     * reports (Delegations.readLease).
+     */
+    withReadLease(answer, options) {
+        if (options?.lease !== true || this.pid === undefined || answer.poison)
+            return answer;
+        let lease;
+        try {
+            lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+        }
+        catch (error) {
+            // A change being published (EAGAIN): this barrier is answered without one.
+            if (error?.code !== 'EAGAIN')
+                throw error;
+            lease = null;
+        }
+        return lease === null ? answer : { ...answer, readLease: { ...lease, uncovered: this.mounted() } };
+    }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
     subscribe(path, listener) {
         this.guard();
@@ -240,6 +249,14 @@ class GuardedProcessBridge {
         else
             this.delegations.recalled(this.pid, owner, kind);
     }
+    published(options) {
+        this.guard();
+        if (this.pid === undefined)
+            return this.target.published();
+        if (options?.escape === true)
+            this.gate.escaped(this.pid);
+        return this.gate.before(this.pid) ?? undefined;
+    }
 }
 /** The session's namespace and the processes bound to it. */
 export class ProcessFiles {
@@ -283,6 +300,8 @@ export class ProcessFiles {
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
         this.vfs.mount('/dev', new DevVFS());
+        // A read lease vouches for what is the engine's, which a mount or an unmount moves.
+        this.vfs.watchMounts(() => engine.breakReadLeases());
         // Every wave's records, whoever streams it (a process's binding, or a
         // command holding the engine), are placed by this namespace's mutation
         // lookup, and those it places on a mount are applied there by its own
@@ -409,6 +428,62 @@ export class ProcessFiles {
             await lease.dispose();
         }
     }
+    /**
+     * What holds a process's output back: the publication of every commit of
+     * its that another reader's recall holds (SqliteVFS.publishedFor). None
+     * held, nothing waits.
+     */
+    outputGate = {
+        before: (pid) => {
+            const holds = this.delegations.holdsAt(pid);
+            return holds === undefined ? null : this.engine.publishedFor(holds);
+        },
+        escaped: (pid) => { this.continuing.delete(pid); },
+    };
+    /** Whether the session's process output waits at `outputGate` (holdOutput). */
+    outputHeld = false;
+    /** The processes whose waves answer at their commit (continueAtCommit), until one escapes the gate. */
+    continuing = new Set();
+    /**
+     * Released `pid` writes nothing more: the set its calls were made by
+     * (Delegations.holdsOf), by which the engine holds what it wrote for its
+     * publication, goes once that is published. Until then the output its end
+     * leaves still waits for it, whenever that is let out.
+     */
+    retireWriter(pid) {
+        this.continuing.delete(pid);
+        const holds = this.delegations.holdsAt(pid);
+        if (holds === undefined)
+            return;
+        const held = this.engine.publishedFor(holds);
+        if (held === null)
+            this.delegations.retire(pid);
+        else
+            void held.then(() => this.delegations.retire(pid));
+    }
+    /**
+     * From now on whatever `processes` lets out for a process (its log, pipes,
+     * terminal and exit, the supervisor ops that leave the session, its ports'
+     * answers: SessionProcessSupervisor.releaseOutput) waits at `outputGate`
+     * for what it wrote to be published.
+     */
+    holdOutput(processes) {
+        processes.setOutputGate(this.outputGate);
+        this.outputHeld = true;
+    }
+    /**
+     * Process `pid`'s waves answer at their commit from now on, ahead of
+     * their publication: the writer continues, and whatever it makes visible
+     * waits for the publication instead. Only for a process whose every way
+     * out does: what the session lets out for it at `outputGate` (holdOutput),
+     * what leaves by its runtime's own network at that runtime's boundary
+     * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
+     * ending this (`escaped`).
+     */
+    continueAtCommit(pid) {
+        if (this.outputHeld)
+            this.continuing.add(pid);
+    }
     async releaseProcess(pid) {
         this.retired.add(pid);
         this.listings.delete(pid);
@@ -421,6 +496,7 @@ export class ProcessFiles {
         }
         finally {
             this.processes.delete(pid);
+            this.retireWriter(pid);
         }
     }
     /** See NimbusFilesystemAuthority.rewindProcess. */
@@ -447,6 +523,7 @@ export class ProcessFiles {
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
         this.processes.delete(pid);
+        this.retireWriter(pid);
         if (!scope || scope.closed)
             return { lost: [] };
         const lost = [];
@@ -507,10 +584,11 @@ export class ProcessFiles {
         // disposed, does not land.
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
-        const holds = pid === undefined ? undefined : () => this.delegations.heldBy(pid);
+        const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
         const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds }), this.engine, scope, view, this.bufferedWriteBytes);
-        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations);
+        const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
+        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
+        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);
         if (!awaited) {
@@ -531,6 +609,14 @@ function isEmbedderMount(point) {
 function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
+}
+/**
+ * The engine keys of `view`'s mount points, a source absent now included
+ * (one can answer later, with no mount or unmount): none of what is at or
+ * under one is the engine's.
+ */
+function mountedKeys(view) {
+    return view.mountPoints().flatMap((point) => (point === '/' ? [] : [point.slice(1)]));
 }
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {
@@ -579,6 +665,7 @@ class AwaitingProcessBridge {
     releaseExclusiveMutation(owner) { return this.bridge.releaseExclusiveMutation(owner); }
     awaitRecall(owner, waitMs) { return this.bridge.awaitRecall(owner, waitMs); }
     recalled(owner, kind) { return this.bridge.recalled(owner, kind); }
+    published(options) { return this.bridge.published(options); }
     /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
     live() {
         assertScopeLive(this.scope, this.signal);
@@ -661,10 +748,10 @@ class AwaitingProcessBridge {
                 continue;
             paths.push({ ...entry, path: entry.path.slice(1) });
         }
-        return {
+        return this.bridge.withReadLease({
             epoch: root.epoch, rev: root.cursor, paths, poison: answer.poison,
             ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
-        };
+        }, options);
     }
     /**
      * The guarded bridge's answer, as it gives it (synchronously when it can),

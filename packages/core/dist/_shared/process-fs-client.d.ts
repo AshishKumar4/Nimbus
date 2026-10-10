@@ -81,6 +81,12 @@ export interface ProcessFsSession {
     retireWriter?(writer: string): Promise<void>;
     /** Delegations; absent, the process holds none and the session decides every op. */
     readonly grants?: ProcessFsGrantSession;
+    /**
+     * Settled once every write of the process's the session answered ahead of
+     * its publication is published (SupervisorRPC.fsPublished); `escape`, see
+     * RuntimeFsBridge.published. Absent, the session answers none so.
+     */
+    published?(escape: boolean): Promise<void>;
 }
 /** The session's delegation calls (fsAcquireExclusiveMutation with `delegate`, fsAwaitRecall, fsRecalled, fsReleaseExclusiveMutation). */
 export interface ProcessFsGrantSession {
@@ -214,6 +220,24 @@ export interface ProcessFsClient {
      * nothing an effect it released claimed.
      */
     effect(): Promise<void> | null;
+    /**
+     * The gate an effect leaving by a way the session's gate does not see (a
+     * request out by the runtime's own network) is released at, after
+     * `effect`: once every write of the process's the session answered ahead
+     * of its publication (WriteBatchStreamResult.held) is published, or null
+     * when none is.
+     */
+    published(): Promise<void> | null;
+    /**
+     * A raw socket opens, which carries whatever the process sends on it from
+     * now on, past every gate of the session's. The session is told (once),
+     * every wave sent from now on goes after that, so each is answered once
+     * published, and no mutation is decided here (holder) any more. The
+     * socket opens at the gate this answers: once the session answered that,
+     * and what was logged before it is answered and published; rejected when
+     * the session was not told. Null when nothing waits (told already).
+     */
+    rawSocket(): Promise<void> | null;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */
     settle(): Promise<void>;
     /** The failures not yet reported, taken (the next effect reports them). */
@@ -246,7 +270,49 @@ export interface ProcessFsClient {
     holds(key: string): boolean;
     /** Whether any op is logged and not yet answered. */
     pending(): boolean;
+    /**
+     * Whether the process's read lease is held and trusted now: nothing it
+     * covers has changed since the barrier that last confirmed it (another's
+     * change waits for this process to have answered its recall, and it has
+     * logged nothing of its own since), so a resumption's barrier need not
+     * ask the session.
+     */
+    readTrusted(): boolean;
+    /**
+     * What the read lease the process holds does not vouch for (its terms,
+     * VfsAcquireResult.readLease's `uncovered`), as the answer that last
+     * confirmed it said; none while it holds none.
+     */
+    readUncovered(): readonly string[];
+    /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
+    readLeaseAsk(): ReadLeaseAsk | null;
+    /**
+     * An answer to such an ACQUIRE carried `lease` (VfsAcquireResult.readLease),
+     * whether or not the barrier applies it: the process holds it, answers its
+     * recalls from now on, and gives it back. Trusted only once applied (readLeased).
+     */
+    readLeaseAnswered(lease: ReadLeaseTerms): void;
+    /**
+     * The barrier that asked with `ask` applied the answer carrying `lease`:
+     * trusted until `ask.at + lease.trustMs` while the process logs nothing more.
+     */
+    readLeased(lease: ReadLeaseTerms, ask: ReadLeaseAsk): void;
     stats(): ProcessFsStats;
+}
+/** A read lease as an answer carries it (VfsAcquireResult.readLease). */
+export interface ReadLeaseTerms {
+    readonly owner: string;
+    readonly trustMs: number;
+    readonly uncovered: readonly string[];
+}
+/**
+ * When a barrier asked for the read lease (the client's clock), and the log
+ * then: what it logged, when every change of its was answered by that ask
+ * (its own changes are in what the answer brings), or -1.
+ */
+export interface ReadLeaseAsk {
+    readonly at: number;
+    readonly logged: number;
 }
 export interface ProcessFsStats {
     ops: number;
@@ -264,6 +330,11 @@ export interface ProcessFsStats {
     renewed: number;
     /** Changes folded into the unsent change before them (the same file's next bytes). */
     folded: number;
+    /** Read leases taken (a new owner), confirmed (a barrier renewed one), recalled, and given back idle. */
+    readLeases: number;
+    readConfirms: number;
+    readRecalls: number;
+    readReleased: number;
 }
 /**
  * A synchronous loop's bytes held unanswered at once, at most

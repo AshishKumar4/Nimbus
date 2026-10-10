@@ -47,8 +47,9 @@ import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/platform/diag-counte
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
+import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { registerServingPort } from './serving-port.js';
+import { subtreeListing } from '@nimbus-sh/core/runtime/fs-list-tree.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 // Cache I/O stays in SupervisorRPC's realm, at its original subrequest depth.
@@ -395,6 +396,7 @@ const FsAcquireArgsSchema = z.object({
     begin: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
+        lease: z.boolean().optional(),
         push: z.object({
             roots: z.array(z.string().max(4096)).max(64),
             exclude: z.array(z.string().max(255)).max(64).optional(),
@@ -409,6 +411,10 @@ const FsAcquireArgsSchema = z.object({
 const FsListArgsSchema = z.object({
     after: z.string().max(4096).nullable(),
     limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+});
+const FsListTreeArgsSchema = z.object({
+    root: z.string().max(4096),
+    maxEntries: z.number().int().min(1).max(FS_LIST_TREE_MAX_ENTRIES),
 });
 /**
  * The facet's WebSocket relay. A facet does not open its own sockets: the
@@ -460,7 +466,8 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
  */
 export async function _rpcFsAcquire(self, epoch, cursor, options, pid) {
     const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
-    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+    // What it reports another's held commit made waits for its publication, as a list does.
+    return withRecall(() => self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options));
 }
 /** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
 export const FS_ACQUIRED_READ_OPS = ['stat', 'lstat', 'fsReadBatch'];
@@ -553,11 +560,14 @@ export async function _acquireOnDelivery(self, args, pid) {
     if (!parsed.success)
         return undefined;
     const caller = pid !== undefined && pid > 0 ? pid : undefined;
+    // A delivery never takes a read lease: its process cannot time the trust
+    // of an answer it did not ask for (the barrier that asks does).
+    const { lease: _lease, ...options } = parsed.data.options ?? {};
+    // Computed now, or not carried: one that would wait for another's held
+    // commit to publish holds no delivery back (the process asks, and waits).
     try {
-        return {
-            args: parsed.data,
-            answer: await _rpcFsAcquire(self, parsed.data.epoch, parsed.data.cursor, parsed.data.options, caller),
-        };
+        const { epoch, cursor } = parsed.data;
+        return { args: parsed.data, answer: await self.supervisorBridge(caller).acquire(epoch, cursor, parsed.data.options === undefined ? undefined : options) };
     }
     catch {
         return undefined;
@@ -589,6 +599,12 @@ export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
     // A page that reaches another holder's delegation waits for its recall, and is read again.
     return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
+}
+/** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
+export async function _rpcFsListTree(self, root, maxEntries, pid) {
+    const args = FsListTreeArgsSchema.parse({ root, maxEntries });
+    // A page that reaches another holder's delegation waits for its recall, and the subtree is walked again.
+    return withRecall(() => subtreeListing(self.supervisorBridge(pid), args.root, args.maxEntries));
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
@@ -978,15 +994,23 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.closeInput(pid);
     }
     catch { }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
+    self.supervisorForgetBridge?.(pid);
+    await self.processes.releaseOutput(pid, () => {
+        closeRelayedSockets(self, pid);
+        reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules);
+    });
+}
+/**
+ * A relayed socket is held open by the supervisor on the process's behalf,
+ * so it does not die when the facet does. Nothing else would ever close it,
+ * and a live one keeps buffering into the supervisor's heap. Its peer sees
+ * the close as the rest of the process's end: let out with it.
+ */
+function closeRelayedSockets(self, pid) {
     try {
         self.webSocketRelay?.closeForPid(pid);
     }
     catch { }
-    self.supervisorForgetBridge?.(pid);
-    await self.processes.releaseOutput(pid, () => reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules));
 }
 /** A process's own exit report, to everything that observes it. */
 function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) {
@@ -1082,15 +1106,11 @@ export function _reportExternalExit(self, pid, code, reason) {
         self.processes.closeInput(pid);
     }
     catch { }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
-    try {
-        self.webSocketRelay?.closeForPid(pid);
-    }
-    catch { }
     self.supervisorForgetBridge?.(pid);
-    void self.processes.releaseOutput(pid, () => reportExternalExit(self, pid, code, reason));
+    void self.processes.releaseOutput(pid, () => {
+        closeRelayedSockets(self, pid);
+        reportExternalExit(self, pid, code, reason);
+    });
 }
 /** An exit the process did not report itself, to everything that observes it. */
 function reportExternalExit(self, pid, code, reason) {

@@ -53,10 +53,10 @@ function session() {
   return authority;
 }
 
-/** Each revocation, done by whoever may do it: the owner's chmod, the kernel's chown. */
+/** Each revocation, done by whoever may do it: the owner's chmod, the kernel's chown, as a peer (it waits for a reader's recall). */
 const REVOKE = {
-  chmod: (authority) => authority.kfs.chmod(KEY, 0o000),
-  chown: (authority) => authority.rawVfs.as(CRED_KERNEL).chown(KEY, 0, 0),
+  chmod: (authority) => authority.peer.chmod(KEY, 0o000),
+  chown: (authority) => authority.peerAs(CRED_KERNEL).chown(KEY, 0, 0),
 };
 
 /** A running process holding the file is refused it once a barrier reports the revocation. */
@@ -70,12 +70,12 @@ async function running(revoke) {
   const probe = globalThis.__probe;
   assert.deepEqual(globalThis.__first, { read: 'secret', open: 'opened' }, 'the premise: the boot fill holds the file');
   // A change that leaves it readable keeps serving it.
-  authority.kfs.chmod(KEY, 0o600);
+  await authority.peer.chmod(KEY, 0o600);
   let changed = authority.rawVfs.revision();
   await probe.resume();
   await until(() => globalThis.__nimbusVfsCursor.rev >= changed, 'the barrier reported the chmod');
   assert.equal(probe.read(SECRET), 'secret', 'a chmod that keeps the owner reading is no refusal');
-  revoke(authority);
+  await revoke(authority);
   changed = authority.rawVfs.revision();
   await probe.resume();
   await until(() => globalThis.__nimbusVfsCursor.rev >= changed, 'the barrier reported the revocation');
@@ -117,7 +117,7 @@ async function kept(revoke) {
   previous.__residentAdoptModuleBundle({}, authority.cursor());
   const filled = await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
   assert.ok(filled.filled >= 2, 'the premise: the earlier launch held the file');
-  revoke(authority);
+  await revoke(authority);
   authority.kfs.chmod('home/user/app/f.txt', 0o600);
   const { supervisor, reads } = counting(authority);
   await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, cursor: authority.cursor() });

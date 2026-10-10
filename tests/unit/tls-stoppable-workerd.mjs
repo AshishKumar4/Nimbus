@@ -182,6 +182,8 @@ const CASES = {
   afterStdin: 'console.log("STDIN READY"); require("fs").readFileSync(0); (async () => done(await talk({ host: HOST, port: PORTS.good }, "INFO")))();',
   earlyWrite: 'console.log("STDIN READY"); require("fs").readFileSync(0); (() => { const s = tls.connect({ host: HOST, port: PORTS.good }); let data = ""; s.on("data", (d) => data += d); s.on("error", (e) => done({ error: e.code || e.message })); s.on("end", () => { s.destroy(); done({ data }); }); s.write("INFO\\n"); })();',
   earlyEnd: 'console.log("STDIN READY"); require("fs").readFileSync(0); (() => { const s = tls.connect({ host: HOST, port: PORTS.good }); let data = ""; s.on("data", (d) => data += d); s.on("error", (e) => done({ error: e.code || e.message })); s.on("end", () => { s.destroy(); done({ data }); }); s.end("HALF\\n"); })();',
+  // The same with nothing read: the process's first raw socket waits for the session's answer to its escape alone.
+  firstEnd: '(() => { const s = tls.connect({ host: HOST, port: PORTS.good }); let data = ""; s.on("data", (d) => data += d); s.on("error", (e) => done({ error: e.code || e.message })); s.on("end", () => { s.destroy(); done({ data }); }); s.end("HALF\\n"); })();',
   destroyBeforeAck: 'console.log("STDIN READY"); require("fs").readFileSync(0); (() => { const s = tls.connect({ host: HOST, port: PORTS.cancelled }); let connects = 0; s.on("secureConnect", () => connects++); s.on("error", () => {}); s.destroy(); setTimeout(() => done({ connects, destroyed: s.destroyed }), 250); })();',
   sni: '(async () => done(await talk({ host: HOST, port: PORTS.good, servername: "fixture.nimbus.test" }, "INFO")))();',
   alpn: '(async () => done(await talk({ host: HOST, port: PORTS.good, ALPNProtocols: ["x-test"] }, "INFO")))();',
@@ -365,7 +367,7 @@ try {
   const named = (name, way, option) => nimbus[name]?.[way]?.error === 'ERR_OPTION_NOT_IMPLEMENTED' && nimbus[name][way].message.includes(option);
   const show = (name) => `\n  node:      ${JSON.stringify(node[name].plain)}\n  stoppable: ${JSON.stringify(nimbus[name]?.stoppable)}\n  plain:     ${JSON.stringify(nimbus[name]?.plain)}`;
   // As under Node, both ways.
-  for (const name of ['halfClose', 'backpressure', ...(ports.redis ? ['redis'] : [])]) {
+  for (const name of ['halfClose', 'backpressure', 'firstEnd', ...(ports.redis ? ['redis'] : [])]) {
     check(same(name, 'stoppable') && same(name, 'plain'), `${name}: as under node, stdin open or not${show(name)}`);
   }
   // workerd sends the host as the server name even when it is an address,

@@ -39,10 +39,10 @@ async function boot(overrides) {
 await runScenarios(import.meta.path, {
   async 'a file a peer creates in the working tree is readable at the next resumption'() {
     const { authority, probe, log } = await boot();
-    authority.kfs.mkdir('home/user/app/.next/server', { recursive: true, mode: 0o755 });
-    authority.kfs.writeFile('home/user/app/.next/server/manifest.json', '{"pages":1}');
-    authority.kfs.mkdir('tmp/vitest', { recursive: true, mode: 0o777 });
-    authority.kfs.writeFile('tmp/vitest/ssr-1', 'chunk');
+    await authority.peer.mkdir('home/user/app/.next/server', { recursive: true, mode: 0o755 });
+    await authority.peer.writeFile('home/user/app/.next/server/manifest.json', '{"pages":1}');
+    await authority.peer.mkdir('tmp/vitest', { recursive: true, mode: 0o777 });
+    await authority.peer.writeFile('tmp/vitest/ssr-1', 'chunk');
     const reads = log.calls.fsReadBatch ?? 0;
     assert.equal(
       await probe.resume('/home/user/app/.next/server/manifest.json', '/tmp/vitest/ssr-1'),
@@ -55,7 +55,7 @@ await runScenarios(import.meta.path, {
   async 'a held file a peer rewrites is replaced in place, with no refetch'() {
     const { authority, probe, log } = await boot();
     assert.equal(probe.read('/home/user/app/f.txt'), 'v1');
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     const before = (log.calls.fsReadRange ?? 0) + (log.calls.fsReadBatch ?? 0) + (log.calls.readFile ?? 0);
     assert.equal(await probe.resume('/home/user/app/f.txt'), 'v2');
     assert.equal((log.calls.fsReadRange ?? 0) + (log.calls.fsReadBatch ?? 0) + (log.calls.readFile ?? 0), before);
@@ -65,9 +65,9 @@ await runScenarios(import.meta.path, {
     const { authority, probe } = await boot();
     const big = 'B'.repeat(5 * 1024 * 1024);
     // Held and rewritten past the answer's size: dropped, then refetched whole.
-    authority.kfs.writeFile('home/user/app/f.txt', big);
+    await authority.peer.writeFile('home/user/app/f.txt', big);
     // New and past the answer's size: named, not held.
-    authority.kfs.writeFile('home/user/app/new-big.txt', big);
+    await authority.peer.writeFile('home/user/app/new-big.txt', big);
     const seen = await probe.resume('/home/user/app/f.txt', '/home/user/app/new-big.txt');
     const [held, fresh] = seen.split('|');
     assert.equal(held.length, big.length, 'the held file comes back whole');
@@ -91,11 +91,11 @@ await runScenarios(import.meta.path, {
         return answer;
       },
     }));
-    authority.kfs.writeFile('home/user/app/n.txt', 'stale');
+    await authority.peer.writeFile('home/user/app/n.txt', 'stale');
     gate.armed = true;
     const a = probe.resume('/home/user/app/n.txt');
     await gate.served.promise;
-    authority.kfs.unlink('home/user/app/n.txt');
+    await authority.peer.unlink('home/user/app/n.txt');
     assert.equal(await probe.resume('/home/user/app/n.txt'), 'ERR:ENOENT', 'B sees the removal');
     gate.release.resolve();
     assert.equal(await a, 'ERR:ENOENT', 'A resumes on the newer state, not its own stale answer');
@@ -104,7 +104,7 @@ await runScenarios(import.meta.path, {
 
   async 'a dependency written after launch is not pushed, and misses by name'() {
     const { authority, probe } = await boot();
-    authority.kfs.writeFile('home/user/app/node_modules/dep/late.js', 'module.exports = 1');
+    await authority.peer.writeFile('home/user/app/node_modules/dep/late.js', 'module.exports = 1');
     assert.equal(await probe.resume('/home/user/app/node_modules/dep/late.js'), 'ERR:EAGAIN');
   },
 });

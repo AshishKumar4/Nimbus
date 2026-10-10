@@ -1054,7 +1054,12 @@ export class Shell {
         this.terminal.write(COMMAND_START);
         let status = null;
         try {
-            await this.historyManager.add(actualLine);
+            // Saved beside the line, which does not wait for it: a reader's recall
+            // the save meets (core README, process model) costs the line nothing.
+            // A save that fails loses that line's history, not the line.
+            this.historyManager.add(actualLine).catch((error) => {
+                console.warn('[nimbus] shell history not saved:', error instanceof Error ? error.message : String(error));
+            });
             status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
                 commandIdentity: this.resolveCommandIdentity(undefined),

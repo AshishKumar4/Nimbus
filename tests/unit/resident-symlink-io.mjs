@@ -52,7 +52,7 @@ function assertLink(probe, when) {
 
 /** A peer writes the target, and a barrier reports it. */
 async function peerWrites(authority, probe, content) {
-  authority.kfs.writeFile('home/user/app/target.txt', content);
+  await authority.peer.writeFile('home/user/app/target.txt', content);
   const written = authority.rawVfs.revision();
   await probe.resume();
   await until(() => globalThis.__nimbusVfsCursor.rev >= written, 'the barrier applied the peer write');
@@ -129,8 +129,8 @@ await runScenarios(import.meta.path, {
 
   async 'an async read through a link a peer retargeted reads the new target'() {
     const { authority, probe } = await boot((seeded) => seeded.kfs.writeFile('home/user/app/other.txt', 'other'));
-    authority.kfs.unlink('home/user/app/link.txt');
-    authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
+    await authority.peer.unlink('home/user/app/link.txt');
+    await authority.peer.symlink('other.txt', 'home/user/app/link.txt');
     assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other', 'the authority resolves the link as it is now');
     assert.equal(probe.read(LINK), 'other');
     assert.equal(probe.read(TARGET), 'old', 'the old target keeps its own bytes');
@@ -140,15 +140,15 @@ await runScenarios(import.meta.path, {
     let retarget = null;
     const { authority, probe } = await boot((seeded) => seeded.kfs.writeFile('home/user/app/other.txt', 'other'), (forward) => ({
       fsReadBatch: async (...args) => {
-        retarget?.();
+        await retarget?.();
         retarget = null;
         return forward('fsReadBatch', args);
       },
     }));
     assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
-    retarget = () => {
-      authority.kfs.unlink('home/user/app/link.txt');
-      authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
+    retarget = async () => {
+      await authority.peer.unlink('home/user/app/link.txt');
+      await authority.peer.symlink('other.txt', 'home/user/app/link.txt');
     };
     assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other', 'the read is the authority\'s');
     assert.equal(probe.read(LINK), 'other', 'the sync view through the link is as new as the read');
@@ -162,15 +162,15 @@ await runScenarios(import.meta.path, {
     let retarget = null;
     const { authority, probe } = await boot((seeded) => seeded.kfs.writeFile('home/user/app/other.txt', 'other'), (forward) => ({
       fsReadBatch: async (...args) => {
-        retarget?.();
+        await retarget?.();
         retarget = null;
         return (await forward('fsReadBatch', args)).map(({ path, ...entry }) => entry);
       },
     }));
     assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
-    retarget = () => {
-      authority.kfs.unlink('home/user/app/link.txt');
-      authority.kfs.symlink('other.txt', 'home/user/app/link.txt');
+    retarget = async () => {
+      await authority.peer.unlink('home/user/app/link.txt');
+      await authority.peer.symlink('other.txt', 'home/user/app/link.txt');
     };
     assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'other');
     assert.equal(probe.read(TARGET), 'old', 'the old target keeps its own bytes');
@@ -195,14 +195,14 @@ await runScenarios(import.meta.path, {
       },
     }));
     const BIG = '/home/user/elsewhere/big.txt';
-    authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
-    authority.kfs.writeFile('home/user/elsewhere/big.txt', 'a'.repeat(65536));
-    authority.kfs.symlink('../elsewhere/big.txt', 'home/user/app/big-link.txt');
+    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/elsewhere/big.txt', 'a'.repeat(65536));
+    await authority.peer.symlink('../elsewhere/big.txt', 'home/user/app/big-link.txt');
     assert.equal((await probe.fs.promises.readFile(BIG, 'utf8')).length, 65536, 'the target is resident');
     armed = true;
     const reading = probe.fs.promises.readFile(`${APP}/big-link.txt`, 'utf8');
     await held.promise;
-    authority.kfs.writeFile('home/user/elsewhere/big.txt', 'b'.repeat(65536));
+    await authority.peer.writeFile('home/user/elsewhere/big.txt', 'b'.repeat(65536));
     const rewritten = authority.rawVfs.revision();
     await probe.fs.promises.stat(`${APP}/f.txt`);
     await until(() => globalThis.__nimbusVfsCursor.rev >= rewritten, 'a barrier reported the rewrite');
@@ -215,13 +215,13 @@ await runScenarios(import.meta.path, {
     let write = null;
     const { authority, probe } = await boot(undefined, (forward) => ({
       fsReadBatch: async (...args) => {
-        write?.();
+        await write?.();
         write = null;
         return forward('fsReadBatch', args);
       },
     }));
     assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
-    write = () => authority.kfs.writeFile('home/user/app/target.txt', 'new');
+    write = () => authority.peer.writeFile('home/user/app/target.txt', 'new');
     assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'new');
     assert.equal(probe.read(LINK), 'new', 'the sync view does not go back to the older bytes');
     assert.equal(probe.read(TARGET), 'new');
@@ -229,16 +229,16 @@ await runScenarios(import.meta.path, {
 
   async 'a miss through a link is answered by a read of the link after the link changed'() {
     const { authority, probe } = await boot();
-    authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
-    authority.kfs.writeFile('home/user/elsewhere/a.txt', 'a');
-    authority.kfs.writeFile('home/user/elsewhere/b.txt', 'b');
-    authority.kfs.symlink('../elsewhere/a.txt', 'home/user/app/moving.txt');
+    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/elsewhere/a.txt', 'a');
+    await authority.peer.writeFile('home/user/elsewhere/b.txt', 'b');
+    await authority.peer.symlink('../elsewhere/a.txt', 'home/user/app/moving.txt');
     let made = authority.rawVfs.revision();
     await probe.resume();
     await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier listed the link');
     assert.equal(probe.read(`${APP}/moving.txt`), 'ERR:EAGAIN', 'a.txt is not resident');
-    authority.kfs.unlink('home/user/app/moving.txt');
-    authority.kfs.symlink('../elsewhere/b.txt', 'home/user/app/moving.txt');
+    await authority.peer.unlink('home/user/app/moving.txt');
+    await authority.peer.symlink('../elsewhere/b.txt', 'home/user/app/moving.txt');
     made = authority.rawVfs.revision();
     await probe.resume();
     await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier reported the new link');
@@ -256,6 +256,9 @@ await runScenarios(import.meta.path, {
 
   async 'an lstat of a link does not send the write parked under its target'() {
     const { authority, probe } = await boot();
+    // Recalled by a change elsewhere, the process holds no read lease for a
+    // while: the peer's mode change below is made in the write's own turn.
+    await authority.peer.writeFile('home/user/app/f.txt', 'elsewhere');
     probe.fs.writeFileSync(LINK, 'parked');
     authority.kfs.chmod('home/user/app/target.txt', 0o444);
     assert.equal((await probe.fs.promises.lstat(LINK)).isSymbolicLink(), true);
@@ -306,9 +309,9 @@ await runScenarios(import.meta.path, {
     assert.throws(() => probe.fs.realpathSync(moved), { code: 'ENOENT' });
     // The rename is still unanswered: a write through the new name waits for
     // it and goes as that name, so the authority follows the link as it is.
-    authority.kfs.writeFile('home/user/app/b.txt', 'b');
-    authority.kfs.unlink('home/user/app/moved-self.txt');
-    authority.kfs.symlink('b.txt', 'home/user/app/moved-self.txt');
+    await authority.peer.writeFile('home/user/app/b.txt', 'b');
+    await authority.peer.unlink('home/user/app/moved-self.txt');
+    await authority.peer.symlink('b.txt', 'home/user/app/moved-self.txt');
     const writing = probe.fs.promises.writeFile(moved, 'through');
     release.resolve();
     await writing;
@@ -351,9 +354,9 @@ await runScenarios(import.meta.path, {
   async 'a descriptor\'s miss through a link is answered by a read of the link'() {
     // The target is outside the process's tree, whose files a barrier brings.
     const { authority, probe } = await boot();
-    authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
-    authority.kfs.writeFile('home/user/elsewhere/late.txt', 'late');
-    authority.kfs.symlink('../elsewhere/late.txt', 'home/user/app/late-link.txt');
+    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/elsewhere/late.txt', 'late');
+    await authority.peer.symlink('../elsewhere/late.txt', 'home/user/app/late-link.txt');
     const made = authority.rawVfs.revision();
     await probe.resume();
     await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier listed the late file and link');

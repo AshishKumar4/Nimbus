@@ -77,13 +77,24 @@ await assertThrows('verify 4 parts',
 
 // 6. Bad signature → NimbusTokenSignatureError.
 const t = await issueNimbusToken(env, { tn: 'acme' });
-const tampered = t.slice(0, -2) + 'XX';
+const [header, payload, signature] = t.split('.');
+const middle = Math.floor(signature.length / 2);
+const tamperedSignature = signature.slice(0, middle) + (signature[middle] === 'a' ? 'b' : 'a') + signature.slice(middle + 1);
+const tampered = `${header}.${payload}.${tamperedSignature}`;
 await assertThrows('signature tampered',
   () => verifyNimbusToken(env, tampered),
   NimbusTokenSignatureError, 'E_TOKEN_SIGNATURE');
 await assertThrows('signed with different secret',
   () => verifyNimbusToken({ JWT_SECRET: 'other-secret' }, t),
   NimbusTokenSignatureError, 'E_TOKEN_SIGNATURE');
+
+const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const nonCanonical = signature.slice(0, -1) + alphabet[alphabet.indexOf(signature.at(-1)) + 1];
+a.check('non-canonical signature names the same MAC bytes',
+  Buffer.from(nonCanonical, 'base64url').equals(Buffer.from(signature, 'base64url')));
+await assertThrows('non-canonical signature encoding',
+  () => verifyNimbusToken(env, `${header}.${payload}.${nonCanonical}`),
+  NimbusTokenMalformedError, 'E_TOKEN_MALFORMED');
 
 // 7. Bad scope discriminator → NimbusTokenClaimsError.
 // Forge a token whose payload has scope:"vfs" but is signed by our secret.

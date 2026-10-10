@@ -67,13 +67,14 @@ export declare class ImageStore {
     private residentImages;
     private dirReady;
     /**
-     * @param blobs The disk the images land on, resolved per use — the embedder
-     *   may not have a filesystem yet when the store is constructed, and throws
-     *   from here when a write is asked for without one.
+     * @param blobs The disk the images of process `pid` land on, as written on
+     *   its behalf (the process reads them as their writer), resolved per use —
+     *   the embedder may not have a filesystem yet when the store is
+     *   constructed, and throws from here when a write is asked for without one.
      * @param isLive Whether a pid still names a running process. The root set
      *   is the process table, reached through this one predicate.
      */
-    constructor(blobs: () => ImageBlobStore, isLive: (pid: number) => boolean);
+    constructor(blobs: (pid: number) => ImageBlobStore, isLive: (pid: number) => boolean);
     /**
      * The image store's directory, created before the first filesystem view is
      * built rather than on the first image write.
@@ -91,7 +92,7 @@ export declare class ImageStore {
      * accepting terminal connections at all, while the same build without it
      * served them.
      */
-    ensureDir(): void;
+    ensureDir(pid: number): void;
     /**
      * Materialize generated module sources in the content-addressed image store
      * and return the module-name → path map naming them.

@@ -226,9 +226,27 @@ export function shellTerminalTee(self: WsHost): (frame: string) => void {
   // `ctx` is `protected` on the DO base class and so cannot sit on the
   // host interface (DEFECT-D1); scrollback is the one thing here needing it.
   const ctx = 'ctx' in self ? self.ctx : undefined;
+  // Frames already shown, recorded a turn later, in order: a storage write
+  // holds every message the object sends until it is durable, and display
+  // history is not worth holding the line's own messages for (the echo of
+  // what was typed, a reader's recall). A crash in that turn loses what it
+  // had shown since the last one from the replayed scrollback; the socket
+  // had it.
+  let shown: { frame: string; at: number }[] | null = null;
+  const record = (): void => {
+    const frames = shown ?? [];
+    shown = null;
+    for (const { frame, at } of frames) {
+      try { appendScrollback(ctx, frame, at); }
+      catch (e) { console.warn("[B'.3] appendScrollback failed:", errorText(e)); }
+    }
+  };
   return (frame: string) => {
-    try { appendScrollback(ctx, frame, Date.now()); }
-    catch (e) { console.warn("[B'.3] appendScrollback failed:", errorText(e)); }
+    if (shown === null) {
+      shown = [];
+      setTimeout(record, 0);
+    }
+    shown.push({ frame, at: Date.now() });
     snapshotShellState(self);
   };
 }

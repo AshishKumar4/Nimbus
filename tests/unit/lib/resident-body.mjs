@@ -11,8 +11,10 @@
  * invalidation log, served through the session's real supervisor-op handler,
  * with the session's routed surface built the way hosted/runtime.ts builds it.
  * A peer is anything that writes it from outside the facet —
- * `authority.kfs.writeFile` — which is exactly what a shell command or another
- * process is to the supervisor.
+ * `authority.peer.writeFile` — which is exactly what a shell command or
+ * another process is to the supervisor: its change waits for the read lease
+ * of a process that is reading to be recalled (withRecall), which the
+ * synchronous `authority.kfs` cannot.
  *
  * ONE LAUNCH PER PROCESS. The body installs process-wide state it never takes
  * down — the resumption barriers on globalThis.setTimeout, globalThis.console,
@@ -37,7 +39,9 @@ import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shi
 import { nodeFacetSources } from './node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './module-map-bundle.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SUPERVISOR_OP_ROUTES } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import * as rpc from '../../../packages/worker/src/session/rpc.ts';
@@ -109,7 +113,9 @@ export function createAuthority(vfsOptions) {
     root.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   }
   const kfs = rawVfs.as(CRED_SESSION_USER);
-  const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} };
+  // The session's filesystem authority, as the session holds it: where an embedder mounts.
+  const files = new ProcessFiles(rawVfs);
+  const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {}, getFilesystemAuthority: () => files };
   const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
     const handler = Reflect.get(rpc, method);
     if (typeof handler !== 'function') throw new Error(`no rpc.ts implementation of the routed ${method}`);
@@ -117,9 +123,19 @@ export function createAuthority(vfsOptions) {
   }));
   // The host double carries what the session supervisor ops read of a session.
   attachSupervisorOps(host, buildSessionSupervisorOps(/** @type {any} */ (host), undefined, routed));
+  // `view`, each call made again once what it meets is recalled: a peer's change.
+  const peerOf = (view) => new Proxy(view, {
+    get: (target, name) => (typeof target[name] === 'function'
+      ? (...args) => withRecall(() => target[name](...args))
+      : target[name]),
+  });
   return {
     rawVfs,
+    files,
     kfs,
+    peer: peerOf(kfs),
+    /** A peer with credential `cred` (root's, for a change the session user may not make). */
+    peerAs: (cred) => peerOf(rawVfs.as(cred)),
     host,
     cursor: () => ({ epoch: rawVfs.epoch, rev: rawVfs.revision() }),
     read: (path) => dec.decode(kfs.readFile(path)),
