@@ -27,7 +27,7 @@
  */
 
 import { parse } from 'acorn';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -45,7 +45,8 @@ export async function bundleRegistry({ start }) {
     bundle: true, format: 'esm', platform: 'node', target: 'esnext', write: false,
   });
   const module = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString('base64')}`);
-  return module.COMMONJS_CELL_RUNTIME_SOURCE;
+  // Function#toString formatting differs even when Bun and Node load the same JS.
+  return (await transform(module.COMMONJS_CELL_RUNTIME_SOURCE, { minifyWhitespace: true, target: 'esnext', charset: 'utf8' })).code;
 }
 
 /**
