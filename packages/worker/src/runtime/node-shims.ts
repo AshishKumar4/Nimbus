@@ -8290,9 +8290,11 @@ const __childProcessMod = (() => {
     const _trackCloseInterest = (event) => {
       if ((event === "close" || event === "exit") && !child._closeTracked) {
         child._closeTracked = true;
-        // Keeps this process until the child closes, or until it exits:
-        // Node's process.exit() does not wait for its children.
-        __pendingIO.push(Promise.race([child._closePromise, __nimbusProcessExitPromise]).catch(() => {}));
+        // Holds this process, as the child's handle does in Node, until the
+        // child closes or this process exits (process.exit() does not wait
+        // for children). A handle, not output to flush: a resident's boot,
+        // which flushes what it wrote, does not wait for its children.
+        void _childPoll(Promise.race([child._closePromise, __nimbusProcessExitPromise]), () => undefined).catch(() => {});
       }
     };
     const _childOn = child.on.bind(child);
