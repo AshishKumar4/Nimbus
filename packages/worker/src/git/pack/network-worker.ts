@@ -8,6 +8,7 @@
  */
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { createGitFs } from '../git-fs.js';
 import type { GitNetworkOp, GraphFiltersStep } from '../network-facet.js';
@@ -71,7 +72,8 @@ interface FacetRequest {
   capabilities: readonly string[];
   partial?: boolean;
   local?: boolean;
-  history?: HistoryRequest;
+  /** For clone-history: the step to run. */
+  history: HistoryRequest;
   historyBudgetUnits?: number;
   historyBlobsPerBatch?: number;
   blobsPerBatch?: number;
@@ -326,7 +328,7 @@ export const networkWorker = {
     const log = (msg: string) => {
       if (opts.quiet) return;
       stats.supervisorRpc.stdout++;
-      try { useRpcResource(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch { /* the line is best-effort */ }
+      try { useRpcResource(supervisor.stdout(enc.encode(msg)), () => undefined).catch(() => {}); } catch { /* the line is best-effort */ }
     };
 
     let bundle: typeof GitBundle;
@@ -390,7 +392,7 @@ export const networkWorker = {
           return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
         }
         if (phase === 'clone-history') {
-          const history = opts.history ?? ({} as HistoryRequest);
+          const history = opts.history;
           let step;
           if (history.step === 'checkout-plan') {
             step = await clonePlanFromStore(context, {

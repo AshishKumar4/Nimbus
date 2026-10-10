@@ -11,6 +11,7 @@
  * result straight to `ignore().add()`, which silently accepts only strings,
  * so every .gitignore rule became a no-op.
  */
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 /** An inode as a backend reports it. */
@@ -93,7 +94,6 @@ function nodeStats(st: GitFsStat) {
   };
 }
 
-const decoder = new TextDecoder();
 
 /**
  * cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam.
@@ -110,7 +110,7 @@ export function createGitFs<P>(backend: GitFsBackend, packs: P) {
     promises: {
       readFile: (filepath: string, options?: unknown): Promise<Uint8Array | string> => backend.readFile(normalizeVfsPath(filepath)).then((data) => {
         if (data === null) throw fsError('ENOENT', 'open', filepath);
-        return wantsUtf8(options) ? decoder.decode(data) : data;
+        return wantsUtf8(options) ? dec.decode(data) : data;
       }),
       writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: { mode?: unknown }): Promise<void> {
         const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);

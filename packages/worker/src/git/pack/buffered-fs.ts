@@ -15,6 +15,7 @@
  */
 import { createWaveWriter, type WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { fsError, type GitFsBackend, type GitFsStat } from '../git-fs.js';
 import {
@@ -35,7 +36,6 @@ export interface OverlayEntry {
 }
 
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
-const textEncoder = new TextEncoder();
 
 function parentOf(path: string): string {
   return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
@@ -178,8 +178,8 @@ export function createBufferedFs(
   }
 
   function metadataCost(path: string, entry: OverlayEntry): number {
-    const targetBytes = entry.kind === 'symlink' ? textEncoder.encode(entry.target).byteLength : 0;
-    return METADATA_ENTRY_OVERHEAD_BYTES + textEncoder.encode(path).byteLength + targetBytes;
+    const targetBytes = entry.kind === 'symlink' ? enc.encode(entry.target).byteLength : 0;
+    return METADATA_ENTRY_OVERHEAD_BYTES + enc.encode(path).byteLength + targetBytes;
   }
 
   function addChild(path: string): void {
@@ -389,7 +389,7 @@ export function createBufferedFs(
       // bytes are copied here, once, unconditionally.
       let buf: Uint8Array;
       if (typeof data === 'string') {
-        buf = textEncoder.encode(data);
+        buf = enc.encode(data);
       } else {
         // One copy, by set(): the wave's encoder slices chunk views of it (tests/unit/git-network-facet-wave-memory.mjs).
         buf = new Uint8Array(data.length);
@@ -490,7 +490,7 @@ export function createBufferedFs(
         const now = Date.now();
         ensureMetadataParents(p, now);
         const linkMetadata: OverlayEntry = {
-          kind: 'symlink', target, size: textEncoder.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
+          kind: 'symlink', target, size: enc.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
         };
         setMetadata(p, linkMetadata);
         await writer.symlink(p, target, linkMetadata);
