@@ -18,6 +18,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import {
   HOSTED_WEBSOCKET_CAPABILITY_HEADER,
   HOSTED_WEBSOCKET_KEY_HEADER,
+  isHostedWebSocket,
 } from '../../packages/fabric/src/peer-host.ts';
 import { createFacetWorld, createProcessHost } from './facet-host-harness.mjs';
 
@@ -132,7 +133,8 @@ const UPGRADE = { upgrade: 'websocket', connection: 'Upgrade' };
   assert.equal((await forged({ ...UPGRADE, ...key })).status, 404, 'and so is none');
   assert.equal((await forged({ ...key, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: crypto.randomUUID() })).status, 426, 'a hop that is no upgrade is refused');
   assert.deepEqual(served, [[]], 'and none of them reaches the process');
-  assert.equal(forged(UPGRADE), null, 'an upgrade that is not a hop is left to the object\'s own routes');
+  assert.equal(isHostedWebSocket(new Request('https://x/ws', { headers: UPGRADE })), false, 'an upgrade that is not a hop is left to the object\'s own routes');
+  assert.equal(isHostedWebSocket(new Request('https://x/ws', { headers: key })), true, 'and one that names a process is the hop');
 
   handle.kill();
   await handle.done.catch(() => {});

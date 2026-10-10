@@ -395,7 +395,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // to the same real handler the production entrypoint calls first.
         async fetch(request) {
           if (peer.resetBy) throw peer.resetBy;
-          return peer.peerHost.routeWebSocket(request) ?? new Response('peer stub: not a hosted upgrade', { status: 500 });
+          return peer.peerHost.routeWebSocket(request);
         },
         // The host forwards one envelope op; the arm still exercises the
         // REAL _rpc* implementations — routing just went through

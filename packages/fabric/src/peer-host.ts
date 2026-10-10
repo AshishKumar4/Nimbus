@@ -107,6 +107,15 @@ export interface HostedHttpResponse {
 export const HOSTED_WEBSOCKET_KEY_HEADER = 'x-nimbus-hosted-websocket';
 export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-capability';
 
+/**
+ * Whether a fetch is the upgrade hop (PeerHost.routeWebSocket): a sibling
+ * coordinator's request, not a browser's, and so answered before any route of
+ * the object's own.
+ */
+export function isHostedWebSocket(request: Request): boolean {
+  return Boolean(request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER));
+}
+
 /** What the object hosting processes supplies: the two things the fabric cannot know. */
 export interface PeerHostOptions {
   /**
@@ -407,34 +416,28 @@ export class PeerHost {
   }
 
   /**
-   * The peer end of the upgrade hop, or null for a request that is not one.
-   * Reached by `fetch` rather than RPC, so the 101 and its live socket travel
-   * back as themselves. This request is a sibling coordinator's, not a
-   * browser's, so it is answered before any route of the object's own, and
-   * both headers are stripped so the process never sees the transport that
-   * carried it.
+   * The peer end of the upgrade hop (isHostedWebSocket). Reached by `fetch`
+   * rather than RPC, so the 101 and its live socket travel back as
+   * themselves. Both headers are stripped so the process never sees the
+   * transport that carried it.
    *
    * The workerKey names a process and is derivable from a pid, so it does not
    * authorise on its own; the capability is minted by whoever opened the process
    * and never leaves the two objects that hold it. A mismatch is a 404 and not
    * a 403, so the route reveals nothing about what this peer is hosting.
    */
-  routeWebSocket(request: Request): Promise<Response> | null {
-    const workerKey = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
-    if (!workerKey) return null;
-    if (!isWebSocketUpgradeRequest(request.headers)) {
-      return Promise.resolve(new Response('Expected WebSocket', { status: 426 }));
-    }
+  async routeWebSocket(request: Request): Promise<Response> {
+    if (!isWebSocketUpgradeRequest(request.headers)) return new Response('Expected WebSocket', { status: 426 });
+    const workerKey = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER) ?? '';
     const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-    if (!capability) return Promise.resolve(new Response('Not found', { status: 404 }));
+    if (!capability) return new Response('Not found', { status: 404 });
     const headers = new Headers(request.headers);
     headers.delete(HOSTED_WEBSOCKET_KEY_HEADER);
     headers.delete(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-    return this.awaitRecord(workerKey).then(async (record) => {
-      if (record.webSocketCapability !== capability) return new Response('Not found', { status: 404 });
-      const facet = await record.facet;
-      return facet.handleWebSocketRequest(new Request(request.url, { method: request.method, headers }));
-    });
+    const record = await this.awaitRecord(workerKey);
+    if (record.webSocketCapability !== capability) return new Response('Not found', { status: 404 });
+    const facet = await record.facet;
+    return facet.handleWebSocketRequest(new Request(request.url, { method: request.method, headers }));
   }
 
   /**
