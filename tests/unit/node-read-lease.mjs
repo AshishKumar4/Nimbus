@@ -171,12 +171,13 @@ await runScenarios(import.meta.path, {
     // Another process reads under its lease, which the process's write meets.
     const reader = authority.files.bind({ pid: 99, cred: CRED });
     const leased = () => reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true }).readLease;
-    const flushed = () => Promise.race([globalThis.__nimbusProcessFs.flush().then(() => 'answered'), sleep(200).then(() => 'waiting')]);
+    // Raw timers: a program's timer takes a barrier first, which waits for the process's own writes in flight.
+    const flushed = () => Promise.race([globalThis.__nimbusProcessFs.flush().then(() => 'answered'), rawSleep(200).then(() => 'waiting')]);
     let lease = leased();
     probe.fs.writeFileSync(F, 'v2');
     assert.equal(await flushed(), 'answered', 'a gated write was not answered at its commit');
     const sent = fetch('http://localhost:4321/');
-    await sleep(50);
+    await rawSleep(50);
     assert.deepEqual(out, [], 'its request left before what it wrote was published');
     reader.recalled(lease.owner, 'revoke');
     assert.equal(await (await sent).text(), 'ok');
