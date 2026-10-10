@@ -1091,7 +1091,8 @@ class PathOwnership {
         return path;
     }
 }
-function normalizePath(path) {
+/** A W7 path as the frame owns it: slashes collapsed, `.` and `..` resolved, no leading `/` (the git network facet's paths too). */
+export function normalizePath(path) {
     const out = [];
     for (const segment of path.split('/')) {
         if (segment === '..') {
