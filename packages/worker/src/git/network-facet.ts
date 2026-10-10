@@ -36,6 +36,7 @@ import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
+import { createSupervisorRpcCounters, type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
@@ -125,33 +126,6 @@ export interface GitNetworkOpts {
   batchConcurrency?: number;
 }
 
-export interface GitSupervisorRpcCounters {
-  stat: number;
-  lstat: number;
-  readdir: number;
-  readFile: number;
-  fsReadRange: number;
-  /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
-  fsWriteRange: number;
-  rename: number;
-  /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
-  lock: number;
-  writeBatchStream: number;
-  readlink: number;
-  symlink: number;
-  legacySymlinkSubtree: number;
-  stdout: number;
-  /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
-  fileApi: number;
-}
-
-export interface GitMetadataOverlayStats {
-  entries: number;
-  accountedBytes: number;
-  maxEntries: number;
-  maxAccountedBytes: number;
-}
-
 export type GitCloneInvocationPhase =
   | 'clone-prepare'
   | 'clone-batch'
@@ -170,7 +144,7 @@ export interface GitNetworkPhaseDiagnostic {
   error?: string;
   lastProgress?: { phase: string; loaded: number; total?: number };
   w7Waves: number;
-  supervisorRpc: GitSupervisorRpcCounters;
+  supervisorRpc: SupervisorRpcCounters;
   /** The invocation's wave writer: what it published and how long it waited. */
   waves?: WaveStats;
 }
@@ -201,8 +175,8 @@ export interface GitNetworkResult {
   elapsed: number;
   filesWritten: number;
   bytesWritten: number;
-  supervisorRpc: GitSupervisorRpcCounters;
-  metadataOverlay: GitMetadataOverlayStats;
+  supervisorRpc: SupervisorRpcCounters;
+  metadataOverlay: MetadataOverlayStats;
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
@@ -255,24 +229,7 @@ const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 
-const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
-  stat: 0,
-  lstat: 0,
-  readdir: 0,
-  readFile: 0,
-  fsReadRange: 0,
-  fsWriteRange: 0,
-  rename: 0,
-  lock: 0,
-  writeBatchStream: 0,
-  readlink: 0,
-  symlink: 0,
-  legacySymlinkSubtree: 0,
-  stdout: 0,
-  fileApi: 0,
-};
-
-const EMPTY_METADATA_OVERLAY_STATS: GitMetadataOverlayStats = {
+const EMPTY_METADATA_OVERLAY_STATS: MetadataOverlayStats = {
   entries: 0,
   accountedBytes: 0,
   maxEntries: 0,
@@ -296,31 +253,18 @@ function parseGitNetworkErrorCode(value: unknown): GitNetworkErrorCode | undefin
   return value === 'GitCloneBudgetExceeded' ? value : undefined;
 }
 
-function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
-  const counters = value && typeof value === 'object'
-    ? value as Partial<Record<keyof GitSupervisorRpcCounters, unknown>>
+function parseSupervisorRpcCounters(value: unknown): SupervisorRpcCounters {
+  const reported = value && typeof value === 'object'
+    ? value as Partial<Record<keyof SupervisorRpcCounters, unknown>>
     : {};
-  return {
-    stat: nonNegativeCounter(counters.stat),
-    lstat: nonNegativeCounter(counters.lstat),
-    readdir: nonNegativeCounter(counters.readdir),
-    readFile: nonNegativeCounter(counters.readFile),
-    fsReadRange: nonNegativeCounter(counters.fsReadRange),
-    fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
-    rename: nonNegativeCounter(counters.rename),
-    lock: nonNegativeCounter(counters.lock),
-    writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
-    readlink: nonNegativeCounter(counters.readlink),
-    symlink: nonNegativeCounter(counters.symlink),
-    legacySymlinkSubtree: nonNegativeCounter(counters.legacySymlinkSubtree),
-    stdout: nonNegativeCounter(counters.stdout),
-    fileApi: nonNegativeCounter(counters.fileApi),
-  };
+  const counters = createSupervisorRpcCounters();
+  for (const key of Object.keys(counters) as (keyof SupervisorRpcCounters)[]) counters[key] = nonNegativeCounter(reported[key]);
+  return counters;
 }
 
-function parseMetadataOverlayStats(value: unknown): GitMetadataOverlayStats {
+function parseMetadataOverlayStats(value: unknown): MetadataOverlayStats {
   const stats = value && typeof value === 'object'
-    ? value as Partial<Record<keyof GitMetadataOverlayStats, unknown>>
+    ? value as Partial<Record<keyof MetadataOverlayStats, unknown>>
     : {};
   return {
     entries: nonNegativeCounter(stats.entries),
@@ -331,11 +275,11 @@ function parseMetadataOverlayStats(value: unknown): GitMetadataOverlayStats {
 }
 
 function addSupervisorRpcCounters(
-  total: GitSupervisorRpcCounters,
+  total: SupervisorRpcCounters,
   value: unknown,
 ): void {
   const counters = parseSupervisorRpcCounters(value);
-  for (const key of Object.keys(total) as (keyof GitSupervisorRpcCounters)[]) {
+  for (const key of Object.keys(total) as (keyof SupervisorRpcCounters)[]) {
     total[key] += counters[key];
   }
 }
@@ -508,7 +452,7 @@ async function invokeFacet(
       outcome: 'timeout',
       error: `git clone budget exhausted before ${phase}`,
       w7Waves: 0,
-      supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+      supervisorRpc: createSupervisorRpcCounters(),
     };
     if (budgetContext) {
       throw new GitCloneBudgetExceededError(
@@ -541,7 +485,7 @@ async function invokeFacet(
           outcome: 'timeout',
           error: message,
           w7Waves: 0,
-          supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+          supervisorRpc: createSupervisorRpcCounters(),
         };
         reject(new GitCloneBudgetExceededError(
           phase,
@@ -597,7 +541,7 @@ async function invokeFacet(
       outcome: controller.signal.aborted ? 'timeout' : 'error',
       error: message,
       w7Waves: 0,
-      supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+      supervisorRpc: createSupervisorRpcCounters(),
     };
     throw new GitClonePhaseError(phase, message, diagnostic);
   } finally {
@@ -1060,7 +1004,7 @@ export async function execGitNetwork(
         elapsed: Date.now() - start,
         filesWritten: 0,
         bytesWritten: 0,
-        supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+        supervisorRpc: createSupervisorRpcCounters(),
         metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
       };
     }
@@ -1081,7 +1025,7 @@ export async function execGitNetwork(
         elapsed: Date.now() - start,
         filesWritten: 0,
         bytesWritten: 0,
-        supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+        supervisorRpc: createSupervisorRpcCounters(),
         metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
       };
     }
@@ -1125,7 +1069,7 @@ export async function execGitNetwork(
         const jobId = opts.cloneJobId ?? crypto.randomUUID();
         const optionsHash = await hashCloneOptions(opts);
         const phases: GitNetworkPhaseDiagnostic[] = [];
-        const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
+        const supervisorRpc = createSupervisorRpcCounters();
         let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
         let filesWritten = 0;
         let bytesWritten = 0;
@@ -1269,7 +1213,7 @@ export async function execGitNetwork(
                   outcome: 'error',
                   error: phaseErrorMessage(error),
                   w7Waves: 0,
-                  supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+                  supervisorRpc: createSupervisorRpcCounters(),
                 },
               );
           if (!phases.some(phase => phase.invocationId === phaseError.diagnostic.invocationId)) {
@@ -1336,7 +1280,7 @@ export async function execGitNetwork(
           elapsed: Date.now() - start,
           filesWritten: 0,
           bytesWritten: 0,
-          supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+          supervisorRpc: createSupervisorRpcCounters(),
           metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
           graphFilters,
         };
@@ -1423,7 +1367,7 @@ export async function execGitNetwork(
       elapsed: Date.now() - start,
       filesWritten: 0,
       bytesWritten: 0,
-      supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+      supervisorRpc: createSupervisorRpcCounters(),
       metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
     };
   }

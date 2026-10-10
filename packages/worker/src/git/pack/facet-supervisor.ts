@@ -54,11 +54,25 @@ export const READ_RANGE_BYTES = 4 * 1024 * 1024;
 export const METADATA_MAX_ENTRIES = 100_000;
 export const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 
-/** The supervisor calls an invocation made, by kind. */
+/** The supervisor calls an invocation made, by kind: what it reports, and network-facet.ts totals. */
 export interface SupervisorRpcCounters {
-  stat: number; lstat: number; readdir: number; readFile: number;
-  fsReadRange: number; fsWriteRange: number; rename: number; lock: number; writeBatchStream: number; readlink: number; symlink: number;
-  legacySymlinkSubtree: number; stdout: number; fileApi: number;
+  stat: number;
+  lstat: number;
+  readdir: number;
+  readFile: number;
+  fsReadRange: number;
+  /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
+  fsWriteRange: number;
+  rename: number;
+  /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
+  lock: number;
+  writeBatchStream: number;
+  readlink: number;
+  symlink: number;
+  legacySymlinkSubtree: number;
+  stdout: number;
+  /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
+  fileApi: number;
 }
 
 export function createSupervisorRpcCounters(): SupervisorRpcCounters {
