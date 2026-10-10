@@ -25,9 +25,9 @@ export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-b4d8e74a569fef10.js";
-export const JS_INTERPRETER_BUILD_ID = "b4d8e74a569fef10";
-export const JS_INTERPRETER_SHA256 = "b4d8e74a569fef1031015b14c4527bd473d46cc25c418d113bf3852c45908f26";
+export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-2641c480d2fd443d.js";
+export const JS_INTERPRETER_BUILD_ID = "2641c480d2fd443d";
+export const JS_INTERPRETER_SHA256 = "2641c480d2fd443d19300a9fa9f073287c43ea67562d846d8c47251c4242ddef";
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
 export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";
 export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";
@@ -41,6 +41,6 @@ export const NODE_DNS_ENTRY = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
 export const NODE_DNS_BUILD_ID = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256 = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-1acd001fa59c30fb.js";
-export const NODE_REGISTRY_BUILD_ID = "1acd001fa59c30fb";
-export const NODE_REGISTRY_SHA256 = "1acd001fa59c30fb75f403b7fbe1d242b6f3bffe2ab2a1a467e1e44fe0656169";
+export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-954023ad9a6ed6a3.js";
+export const NODE_REGISTRY_BUILD_ID = "954023ad9a6ed6a3";
+export const NODE_REGISTRY_SHA256 = "954023ad9a6ed6a3957af881344fe07b3b98f9f5a18baa93749662730af6c6d1";

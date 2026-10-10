@@ -27,9 +27,9 @@ import {
   scriptExpression,
 } from '../_shared/runtime-function-source.js';
 import { Compiler, type UnitContext, type UnitHost } from './compile.js';
-import { type ModuleCell, moduleCell } from './modules.js';
+import { type ModuleCell, type ModuleHelpers, moduleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
-import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
+import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
@@ -56,6 +56,8 @@ export interface InterpreterHost {
    * evaluation of it, which would capture what the program has replaced.
    */
   readonly primordials: object;
+  /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
+  readonly moduleHelpers: ModuleHelpers;
 }
 
 /**
@@ -77,7 +79,8 @@ export interface Interpreter {
   /**
    * The module cell for a file's text: Node's wrapper function of
    * (exports, require, module, __filename, __dirname). CommonJS text runs as
-   * that function's body; an ES module as esbuild lowers it to one.
+   * that function's body; an ES module linked as the next launch's lowering
+   * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
    */
   compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
   /**
@@ -308,6 +311,27 @@ function hasModuleSyntax(program: Program): boolean {
     || s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
 }
 
+/**
+ * A module file's text as Node detects its format: an ES module when it has
+ * import or export declarations, or when it parses only as one (top-level
+ * await, import.meta); else CommonJS, a script whose top level may return.
+ */
+function moduleProgram(text: string): { readonly module: boolean; readonly program: Owned<Program> } {
+  let module: Owned<Program> | null = null;
+  try {
+    module = ownProgram(parseQuick(text, MODULE_OPTIONS));
+  } catch {
+    // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
+  }
+  if (module !== null && hasModuleSyntax(module)) return { module: true, program: module };
+  try {
+    return { module: false, program: ownProgram(parseQuick(text, COMMONJS_OPTIONS)) };
+  } catch (error) {
+    if (module === null) throw error;
+    return { module: true, program: module };
+  }
+}
+
 /** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
 const REALM: SourceRealm = {
   SyntaxError,
@@ -318,10 +342,8 @@ const REALM: SourceRealm = {
   },
 };
 
-let installed: HostOps | null = null;
-
-function unitContext(source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
-  return { source, module, host, imports: new SafeMap(), moduleScope };
+function unitContext(runtime: InterpreterRuntime, source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
+  return { source, module, host, runtime, imports: new SafeMap(), moduleScope };
 }
 
 /** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
@@ -339,10 +361,7 @@ function unitHost(host: InterpreterHost, origin: CodeOrigin | undefined, parentU
 
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
   if (host.primordials !== LAUNCH_PRIMORDIALS) throw new Error('interpreter: its built-ins were not captured at the launch start');
-  if (installed !== hostOps) {
-    installHost(hostOps);
-    installed = hostOps;
-  }
+  const runtime = new InterpreterRuntime(hostOps);
   const interpreter: Interpreter = {
     compileFunction(kind, params, body, origin) {
       // A trailing source map is parsed only when the shortened body fails.
@@ -358,44 +377,32 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const node = ownFunctionExpression(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const unit = unitContext(text, false, unitHost(host, origin, undefined), null);
+      const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null);
       const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
       releaseScopes(root);
-      return makeFunction(fi, ROOT_ENV, undefined);
+      return runtime.makeFunction(fi, ROOT_ENV, undefined);
     },
 
     compileModule(path, text, origin) {
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
       const moduleHost = unitHost(host, origin, parentUrl);
-      const compileCell = (program: Owned<Program>): ModuleCell => {
+      const parsed = moduleProgram(text);
+      if (parsed.module) {
+        const program = parsed.program;
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
-        const cell = moduleCell(new Compiler(analysis, unitContext(text, true, moduleHost, root), text, 0, root).modulePlan(program, root));
+        const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root), text, 0, root).modulePlan(program, root);
         releaseScopes(root);
-        return cell;
-      };
-      let module: Owned<Program> | null = null;
-      try {
-        module = ownProgram(parseQuick(text, MODULE_OPTIONS));
-      } catch {
-        // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
+        return moduleCell(plan, runtime.ops, host.moduleHelpers);
       }
-      if (module !== null && hasModuleSyntax(module)) return compileCell(module);
-      let script: Owned<Program>;
-      try {
-        script = ownProgram(parseQuick(text, COMMONJS_OPTIONS));
-      } catch (error) {
-        // Top-level await or import.meta without imports or exports: still a module.
-        if (module === null) throw error;
-        return compileCell(module);
-      }
+      const script = parsed.program;
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);
-      const fi = new Compiler(analysis, unitContext(text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
       releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
-      return makeFunction(fi, ROOT_ENV, undefined);
+      return runtime.makeFunction(fi, ROOT_ENV, undefined);
     },
 
     compileExpression(code, origin) {
@@ -409,7 +416,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const program = ownProgram(parse(text, SCRIPT_OPTIONS));
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
-      const unit = unitContext(text, false, unitHost(host, undefined, undefined), null);
+      const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null);
       const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
       releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');

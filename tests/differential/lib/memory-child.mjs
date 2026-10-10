@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getHeapStatistics } from 'node:v8';
 
+import { MODULE_HELPERS_FILE } from '../../unit/lib/interpreter-build.mjs';
 import { loadPrimordials } from '../../unit/lib/interpreter-load.mjs';
 
 const [, , mode, captureDir, interpreterFile, opsFile] = process.argv;
@@ -36,7 +37,11 @@ const result = { mode, primordialsLoad };
 function loadInterpreter() {
   const before = used();
   const { createInterpreter } = require(interpreterFile);
-  const interp = createInterpreter(require(opsFile), { dynamicImport: (parent, specifier) => import(String(specifier)), primordials: launchPrimordials });
+  const interp = createInterpreter(require(opsFile), {
+    dynamicImport: (parent, specifier) => import(String(specifier)),
+    primordials: launchPrimordials,
+    moduleHelpers: require(join(dirname(interpreterFile), MODULE_HELPERS_FILE)),
+  });
   // A first function and module warm the interpreter's own code; that is part of loading it.
   interp.compileFunction('function', ['a'], 'return a + 1')(1);
   const warm = { exports: {} };
