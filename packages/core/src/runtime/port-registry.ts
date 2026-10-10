@@ -185,6 +185,8 @@ export class PortRegistry {
   /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
   private acquireDeliveredPids = new Set<number>();
   private portWaitersByPid = new Map<number, Set<() => void>>();
+  /** Holds a process's answers until what it wrote is published (setOutputGate). */
+  private outputGate: ProcessOutputGate | null = null;
 
   /**
    * @param deliveredAcquire What the owner of the filesystem attaches to a
@@ -194,9 +196,6 @@ export class PortRegistry {
    *   `_acquireOnDelivery`). Undefined attaches nothing, and without it every
    *   request is forwarded bare; either way the process then asks.
    */
-  /** Holds a process's answers until what it wrote is published (setOutputGate). */
-  private outputGate: ProcessOutputGate | null = null;
-
   constructor(
     private readonly deliveredAcquire: ((pid: number) => Promise<unknown>) | null = null,
   ) {}
@@ -521,7 +520,7 @@ export class PortRegistry {
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
       // forwards whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
-      return decodeContentCoding(response, port, request.method, gate === null ? null : gatedBody(gate, entry.pid));
+      return decodeContentCoding(response, port, request.method, gate === null || response.body === null ? null : gatedBody(gate, entry.pid));
     } catch (error: unknown) {
       // Server-side triage — users see only the 502 body, operators
       // see the full error + stack in Worker logs.
