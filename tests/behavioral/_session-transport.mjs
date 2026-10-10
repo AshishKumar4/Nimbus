@@ -54,7 +54,8 @@ export function createProbeTarget({ base, token = '', cookie = '', request = glo
           const ws = body.wsUrl ? new URL(body.wsUrl, base) : null;
           const attachToken = ws?.searchParams.get('nimbus_token');
           const expectedWsOrigin = new URL(base).origin.replace(/^http/, 'ws');
-          if (!body.sessionId || !attachToken || ws.origin !== expectedWsOrigin || !ws.pathname.startsWith(`/s/${encodeURIComponent(body.sessionId)}/`)) {
+          if (!body.sessionId || !attachToken || ![expectedWsOrigin, new URL(base).origin].includes(ws.origin)
+            || !ws.pathname.startsWith(`/s/${encodeURIComponent(body.sessionId)}/`)) {
             throw new Error(`anon session gave no target/session-matching sid/token: ${redactCredentials(JSON.stringify(body))}`);
           }
           created = { sessionId: body.sessionId, base, headers: Object.freeze({ Authorization: `Bearer ${attachToken}` }),
