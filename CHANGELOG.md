@@ -5,6 +5,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the shared base64url decoder requires canonical unpadded encodings,
+  rejecting nonzero unused padding bits. JWT, signed OAuth state and sealed
+  JSON verification therefore reject alternate strings for the same bytes;
+  generated canonical tokens and cookies are unchanged.
+
+- Changed: colocated SDK `runCode` enforces the sandbox profile's `node`
+  and `shell` allow rules for JavaScript, TypeScript and shell code, as the
+  remote API already did. Sandbox profiles and runtime-policy decisions now
+  come from `@nimbus-sh/config/sandbox`.
+- Breaking: execution `NimbusConfig` no longer accepts the unused
+  `runtimeCache` field. Configure runtime bucket bindings through
+  `BuildWranglerOptions.runtimeCache` instead.
+- Breaking: OAuth, cookie and crypto helper exports have moved out of
+  `@nimbus-sh/sdk/worker` and the `@nimbus-sh/worker` root. Import them from
+  the workerd-independent `@nimbus-sh/sdk/oauth` entrypoint. This includes
+  the Cloudflare provider functions/constants, PKCE/sealing/base64 helpers,
+  agent OAuth cookie helpers and their types; no compatibility re-exports
+  remain. The next affected-package publish requires a minor version bump.
+
 - Changed: a program that listens serves, however it was started.
   - `node app.js`, an npm bin or a `child_process` child whose server Nimbus could not see in its code used to run as a one-shot. Its port answered 501, or 502 once it was gone.
   - Now its first `listen()` stops it, and Nimbus runs it on as a server (the same pid), replaying it up to that listen. What it printed before is shown once.

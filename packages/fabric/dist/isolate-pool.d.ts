@@ -122,7 +122,7 @@ export interface IsolatePoolOptions {
      *
      * Used by Fanout's peer-DO branch (peer-DO fanout): peer DOs
      * construct their per-task IsolatePool from inside
-     * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
+     * `executeFanoutShard`, where `ctx` is the PEER DO's ctx. Without this
      * override the peer's auto-injected SUPERVISOR routes back to the
      * peer DO itself — so writes (e.g. install-batch-facet's
      * writeBatchStream) land in the peer's VFS instead of the

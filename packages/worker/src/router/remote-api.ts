@@ -18,43 +18,8 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
-
-export type NimbusRuntimeName =
-  | 'node'
-  | 'bun'
-  | 'npm'
-  | 'git'
-  | 'python'
-  | 'ruby'
-  | 'clang'
-  | 'shell'
-  | (string & {});
-
-export interface NimbusRuntimePolicy {
-  preinstall?: string[];
-  onDemand?: boolean;
-  allow?: NimbusRuntimeName[];
-}
-
-export interface NimbusSandboxProfile {
-  root?: string;
-  runtimes?: NimbusRuntimePolicy;
-  tools?: {
-    namespace?: string;
-    kind?: string;
-  };
-  preview?: {
-    baseUrl?: string;
-    pathStyle?: boolean;
-  };
-}
-
-export interface NimbusConfig {
-  endpoint?: string;
-  /** Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`. See the SDK's `NimbusConfig`. */
-  previewHostSuffix?: string;
-  sandboxes?: Record<string, NimbusSandboxProfile>;
-}
+import { codeRuntimeRequirement, runtimePolicyError, type NimbusConfig, type NimbusSandboxProfile, type NimbusRuntimeAction } from '@nimbus-sh/config/sandbox';
+export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, NimbusRuntimeName } from '@nimbus-sh/config/sandbox';
 
 export interface NimbusRemoteApiConfig {
   /** Enable the remote programmatic sandbox API. */
@@ -566,42 +531,17 @@ function assertRuntimeForLanguage(
   language: string,
   install: unknown,
 ): void {
-  if (language === 'python' || language === 'ruby') {
-    assertRuntimeAllowed(ctx, language, install === 'ifMissing' ? 'onDemand' : 'use');
-  } else if (language === 'shell') {
-    assertRuntimeAllowed(ctx, 'shell', 'use');
-  } else if (language === 'javascript' || language === 'typescript') {
-    assertRuntimeAllowed(ctx, 'node', 'use');
-  }
+  const requirement = codeRuntimeRequirement(language, install);
+  if (requirement) assertRuntimeAllowed(ctx, requirement.spec, requirement.action);
 }
 
 function assertRuntimeAllowed(
   ctx: RemoteContext,
   spec: string,
-  action: 'preinstall' | 'onDemand' | 'use',
+  action: NimbusRuntimeAction,
 ): void {
-  const policy = ctx.profile.runtimes;
-  const name = runtimeName(spec);
-  if (policy?.allow && !policy.allow.includes(name)) {
-    throw apiError(
-      `Nimbus runtime '${name}' is not allowed by sandbox profile '${ctx.profileName}'`,
-      'E_RUNTIME_NOT_ALLOWED',
-      403,
-    );
-  }
-  if (action !== 'onDemand' || policy?.onDemand !== false) return;
-  const preinstalled = new Set((policy.preinstall ?? []).map(runtimeName));
-  if (!preinstalled.has(name)) {
-    throw apiError(
-      `Nimbus runtime '${name}' is not preinstalled and on-demand runtime installs are disabled by sandbox profile '${ctx.profileName}'`,
-      'E_RUNTIME_ON_DEMAND_DISABLED',
-      403,
-    );
-  }
-}
-
-function runtimeName(spec: string): NimbusRuntimeName {
-  return String(spec).split('@')[0] as NimbusRuntimeName;
+  const failure = runtimePolicyError(ctx.profile.runtimes, spec, action, ctx.profileName);
+  if (failure) throw apiError(failure.message, failure.code, 403);
 }
 
 function objectArg(value: unknown): Record<string, unknown> {

@@ -1,0 +1,62 @@
+{
+  "runtimeCatalogSha256": "11b4b6b174e87c044734207d7c8cd40a412a670e477cc99299e347559f8756fb",
+  "r2BucketPrefix": "nimbus",
+  "runtimeCache": { "mode": "byoa", "bucket": "nimbus-runtime-cache" },
+  "agent": {
+    "model": "@cf/zai-org/glm-5.2",
+    "gatewayId": "default",
+    "oauth": {
+      "clientId": "d83b17ca04594b7860f66ab64c9e1ffc",
+      "scopes": ["user-details.read", "account-settings.read", "ai.write", "aig.run"]
+    }
+  },
+  "vars": {
+    "NIMBUS_PROCESS_HOST": "facet",
+    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1"
+  },
+  "hostedDemo": {
+    "vars": {
+      "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+      "DEMO_SESSION_IDLE_TTL_DAYS": "3",
+      "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
+      "DEMO_AUTH_COOKIE_DAYS": "30",
+      "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
+      "DEMO_CLEANUP_BATCH_SIZE": "100",
+      "DEMO_ANON_TTL_SECONDS": "600",
+      "DEMO_ANON_MAX_ACTIVE": "100"
+    },
+    "rateLimit": { "limit": 6, "period": 60 },
+    "crons": ["*/10 * * * *"],
+    "development": {
+      "name": "nimbus-dev",
+      "databaseName": "nimbus-demo-dev",
+      "databaseId": "72d98818-359a-4c30-ba59-e3f4418bfa74",
+      "rateLimitNamespace": "1002"
+    },
+    "staging": {
+      "name": "nimbus-staging",
+      "databaseName": "nimbus-demo-staging",
+      "databaseId": "5589ddb3-96bc-4a73-b939-5431553b63d7",
+      "rateLimitNamespace": "1003",
+      "workers_dev": true,
+      "vars": { "NIMBUS_DEBUG": "1" }
+    },
+    "production": {
+      "name": "nimbus",
+      "databaseName": "nimbus-demo",
+      "databaseId": "8e2ecc37-d975-49d8-96b7-885d45734a53",
+      "rateLimitNamespace": "1001",
+      "vars": { "NIMBUS_PREVIEW_HOST_SUFFIX": "nimbus-os.dev" },
+      "observability": {
+        "enabled": true, "head_sampling_rate": 1,
+        "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+      },
+      "routes": [
+        { "pattern": "nimbus-os.dev", "custom_domain": true },
+        { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true },
+        { "pattern": "*.nimbus-os.dev/*", "zone_name": "nimbus-os.dev" }
+      ]
+    }
+  },
+  "probe": { "name": "nimbus-probe" }
+}

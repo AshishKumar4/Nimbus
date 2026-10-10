@@ -27,49 +27,7 @@
  */
 import { MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS } from './facet-limits.generated.js';
 
-export type NimbusRuntimeName =
-  | 'node'
-  | 'bun'
-  | 'npm'
-  | 'git'
-  | 'python'
-  | 'ruby'
-  | 'clang'
-  | 'shell'
-  | (string & {});
-
-export interface NimbusSandboxProfile {
-  root?: string;
-  runtimes?: {
-    preinstall?: string[];
-    onDemand?: boolean;
-    allow?: NimbusRuntimeName[];
-  };
-  tools?: {
-    namespace?: string;
-    kind?: string;
-  };
-  preview?: {
-    baseUrl?: string;
-    pathStyle?: boolean;
-  };
-}
-
-export interface NimbusConfig {
-  endpoint?: string;
-  /**
-   * Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling `<port>--<sid>.<suffix>`
-   * preview origins. Only remote clients need to state it — `Nimbus.fromEnv`
-   * reads it straight off the bindings.
-   */
-  previewHostSuffix?: string;
-  runtimeCache?: 'shared' | 'byoa' | { mode: 'shared' | 'byoa'; bucket?: string };
-  sandboxes?: Record<string, NimbusSandboxProfile>;
-}
-
-export function defineNimbusConfig<T extends NimbusConfig>(config: T): T {
-  return config;
-}
+export * from './sandbox.js';
 
 export interface BuildWranglerOptions {
   /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
@@ -86,7 +44,9 @@ export interface BuildWranglerOptions {
    */
   compatibilityDate?: string;
   /** Smart placement on/off. Default `true`. */
-  placement?: 'smart' | undefined;
+  placement?: 'smart' | false;
+  /** Existing deployments can retain their migration tag namespace. Default `nimbus-`. */
+  migrationTagPrefix?: string;
   /** Prefix for R2 buckets (npm tarball + packument caches). Default = `name`. */
   r2BucketPrefix?: string;
   /**
@@ -156,7 +116,7 @@ export interface WranglerConfig {
   assets: {
     directory: string;
     binding: string;
-    run_worker_first?: string[];
+    run_worker_first?: boolean | string[];
   };
   alias: Record<string, string>;
   durable_objects: {
@@ -223,6 +183,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
     throw new Error(`@nimbus-sh/config: hosting Worker limits.subrequests=${subrequests} is below facet policy maximum subRequests=${MAX_FACET_SUBREQUESTS}`);
   }
   const prefix = opts.r2BucketPrefix ?? opts.name;
+  const migrationTagPrefix = opts.migrationTagPrefix ?? 'nimbus-';
   const runtimeCache = opts.runtimeCache ?? 'shared';
   const runtimeCacheMode = typeof runtimeCache === 'string' ? runtimeCache : runtimeCache.mode;
   const runtimeCacheBucket = typeof runtimeCache === 'object' && runtimeCache.bucket
@@ -249,7 +210,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
       bindings: [{ name: 'NIMBUS_SESSION', class_name: 'NimbusSession' }],
     },
     migrations: [
-      { tag: 'nimbus-v1', new_sqlite_classes: ['NimbusSession'] },
+      { tag: `${migrationTagPrefix}v1`, new_sqlite_classes: ['NimbusSession'] },
     ],
     worker_loaders: [{ binding: 'LOADER' }],
     r2_buckets: [
@@ -264,7 +225,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
       name: 'NIMBUS_PUBLIC_DIRECTORY',
       class_name: 'NimbusPublicDirectory',
     });
-    config.migrations.push({ tag: 'nimbus-v2', new_sqlite_classes: ['NimbusPublicDirectory'] });
+    config.migrations.push({ tag: `${migrationTagPrefix}v2`, new_sqlite_classes: ['NimbusPublicDirectory'] });
   }
   if (opts.placement === 'smart' || opts.placement === undefined) {
     config.placement = { mode: 'smart' };
