@@ -8,6 +8,7 @@ class __ProcessExit extends Error {
 // preambles below and the code they load make them by name, and the cell
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
+var { determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect } = (() => {
 var nodeErrorClasses =   new Map();
 var classCodes =   new WeakMap();
 function nodeError(Base, code, message, props, above = nodeError) {
@@ -300,6 +301,9 @@ function captureStack(error, above) {
   const capture = Reflect.get(Error, "captureStackTrace");
   if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
 }
+return { determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect };
+})();
+
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -3269,6 +3273,7 @@ const __fsMod = (() => {
   // What the view answers for under a trusted read lease, compiled from
   // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
   // declares readLeaseCovers (and SESSION_KERNEL_ROOTS).
+var { SESSION_KERNEL_ROOTS, readLeaseCovers } = (() => {
 var SESSION_KERNEL_ROOTS = [".nimbus", "var/lib/nimbus"];
 function readLeaseCovers(key, listing, roots) {
   for (const root of roots) {
@@ -3277,6 +3282,9 @@ function readLeaseCovers(key, listing, roots) {
   }
   return true;
 }
+return { SESSION_KERNEL_ROOTS, readLeaseCovers };
+})();
+
   /** While a leased answer is made (_leasedRead): what its lease does not vouch for, and whether a lookup landed on any of it. */
   let _leasedUncovered = null;
   let _landedUncovered = false;
@@ -11625,6 +11633,7 @@ const __vmMod = (() => {
 // core/_shared/http2-module.ts, compiled once by
 // scripts/bundle-facet-workers.mjs, declares createHttp2Module; the
 // substrate's node-compat imports the same function.
+var { createHttp2Module } = (() => {
 function createHttp2Module(host) {
   const notSupported = (op) => nodeError(Error, "ERR_HTTP2_NOT_SUPPORTED", `http2.${op}: not implemented in Nimbus. Use fetch() or HTTP/1.1.`);
   const invalidSetting = (Base, name, actual, min, max) => nodeError(
@@ -12112,6 +12121,9 @@ function createHttp2Module(host) {
     Http2ServerResponse
   };
 }
+return { createHttp2Module };
+})();
+
 const __http2Mod = createHttp2Module({
   EventEmitter: __eventsMod,
   Readable: __streamMod.Readable,
@@ -18193,6 +18205,7 @@ function __resolveFile(base) {
 // DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
 // TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
 // (function declarations, so the fetch patch above can call them).
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, TYPESCRIPT_INDEX_CANDIDATES, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, resolveExports, resolvePackageEntry, stripsTypeScript, typescriptFallbackCandidates } = (() => {
 var DEFAULT_ESM_CONDITIONS = ["import", "module", "browser", "default"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "default"];
 function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
@@ -18314,6 +18327,9 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, TYPESCRIPT_INDEX_CANDIDATES, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, resolveExports, resolvePackageEntry, stripsTypeScript, typescriptFallbackCandidates };
+})();
+
 
 /** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
 const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default", ...__nimbusConditions];
@@ -18797,6 +18813,7 @@ function __resolveFrom(id, fromDir) {
 // module cache require uses, shaped as the namespace Node would give.
 // Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
 // scripts/bundle-facet-workers.mjs): declares createEsmResolver.
+var { createEsmResolver, unknownFileExtensionMessage } = (() => {
 function unknownFileExtensionMessage(path) {
   const base = path.slice(path.lastIndexOf("/") + 1);
   const dot = base.lastIndexOf(".");
@@ -19306,6 +19323,9 @@ Did you mean to import ${JSON.stringify(found)}?`;
     }
   };
 }
+return { createEsmResolver, unknownFileExtensionMessage };
+})();
+
 const __esmResolver = createEsmResolver({
   kind(path) {
     const st = __fsMod.statSync(path, { throwIfNoEntry: false });
@@ -19593,6 +19613,7 @@ function __nimbusRequestTarget(kind, specifier, importer) {
 
 // core/_shared/relative-wasm-paths.ts, compiled once by the build (a
 // function's own text differs between compilers, so it is never spliced).
+var { relativeWasmPaths } = (() => {
 function relativeWasmPaths(source, filename) {
   const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
   const dir = filename.replace(/^\/+/, "").split("/").slice(0, -1);
@@ -19607,6 +19628,9 @@ function relativeWasmPaths(source, filename) {
   }
   return [...paths];
 }
+return { relativeWasmPaths };
+})();
+
 const __nimbusRelativeWasmPaths = relativeWasmPaths;
 function __nimbusImportStager(quota) {
   // The fill a synchronous read's miss starts (the fs's residency fault-in),

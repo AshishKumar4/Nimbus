@@ -22,10 +22,6 @@
  */
 export declare const MAX_FILE_BYTES = 20000000;
 /**
- * Read one tar header (USTAR) out of `block`. Returns parsed fields or
- * `null` for an end-of-archive block (all zeros).
- */
-/**
  * Collapse "."/".." segments in a tar entry's package-relative path.
  * Returns the canonical relative path, or '' when the entry escapes its
  * package root (a leading ".." that pops above the root) — the caller
@@ -33,11 +29,23 @@ export declare const MAX_FILE_BYTES = 20000000;
  * w7-frame's canonicalPath so joined write paths are always accepted.
  */
 export declare function canonicalTarName(name: string): string;
-export declare function parseTarHeader(block: Uint8Array): {
+/** One tar (USTAR) header. */
+export interface TarHeader {
+    /** The entry's path, its prefix field joined on, canonical (canonicalTarName): '' when it escapes the archive's root. */
     name: string;
     size: number;
     typeFlag: number;
-} | null;
+    mode: number;
+    /** Modification time, in seconds since the epoch. */
+    mtime: number;
+    /** Whether the entry is a directory: type '5', or a name ending in '/'. */
+    directory: boolean;
+}
+/**
+ * Read one tar header (USTAR) out of `block`, or null for an end-of-archive
+ * block. Names are UTF-8, as tar writes them today.
+ */
+export declare function parseTarHeader(block: Uint8Array): TarHeader | null;
 /**
  * Wrap a `ReadableStream<Uint8Array>` as an async iterable. Workerd and
  * Node both support `Symbol.asyncIterator` on ReadableStream, but we
@@ -68,23 +76,34 @@ export type TarSkipReason = 'too-large' | 'non-regular' | 'no-name';
  * best-effort.
  */
 export type TarSkipCallback = (name: string, size: number, reason: TarSkipReason) => void;
+/** An archive held whole in memory, as the stream streamTarRecords reads. */
+export declare function tarBytes(bytes: Uint8Array): AsyncGenerator<Uint8Array, void, undefined>;
+/** Whether `header` is a regular file's: type '0', or NUL as old tars wrote it. */
+export declare function isRegularTarFile(header: TarHeader): boolean;
 /**
- * Streaming tar extractor.
+ * Every entry of a tar stream, in order, each as its data completes: its
+ * header, and its data when `read(header)` asks for it, else null (the data
+ * is passed over unread). An extraction's policy is its `read`.
  *
  * Consumes an async iterable of Uint8Array chunks (the decompressed tar
- * byte stream) and yields one `{ name, data }` entry per regular file,
- * as each file completes.
- *
- * Memory invariant: holds at most one pending file's bytes (≤ MAX_FILE_BYTES)
+ * byte stream). Memory invariant: holds at most one pending entry's bytes
  * plus a small carry buffer for the tar header being assembled.
+ */
+export declare function streamTarRecords(source: AsyncIterable<Uint8Array>, read: (header: TarHeader) => boolean): AsyncGenerator<{
+    header: TarHeader;
+    data: Uint8Array | null;
+}, void, undefined>;
+/**
+ * The regular files of a tar stream, `{ name, data }`, as each completes:
+ * npm's policy over streamTarRecords.
  *
  * Skips: symlinks, directories, hardlinks, long-name extensions (PaxHeader),
  * and any file whose declared size exceeds MAX_FILE_BYTES.
  *
- * If `onSkip` is provided, it is invoked for each skipped entry with the
- * name, declared size, and reason code. Callers that need to surface
- * dropped-file warnings to users should pass one; legacy callers that
- * omit the arg still behave exactly as before (silent skip).
+ * If `onSkip` is provided, it is invoked for each skipped entry that
+ * carries bytes with the name, declared size, and reason code. Callers that
+ * need to surface dropped-file warnings to users should pass one; legacy
+ * callers that omit the arg still behave exactly as before (silent skip).
  */
 export declare function streamTarEntries(source: AsyncIterable<Uint8Array>, onSkip?: TarSkipCallback): AsyncGenerator<{
     name: string;

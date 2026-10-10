@@ -32,6 +32,7 @@ import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
+import { isRegularTarFile, streamTarRecords, tarBytes } from '../_shared/tarball-stream.js';
 import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
@@ -453,51 +454,6 @@ function parseUserArgv(argv) {
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
-// ── ustar parser (supervisor-side) ───────────────────────────────────
-/**
- * Parse a POSIX ustar archive into a path→bytes map. Trims the
- * leading "/" from paths so they are seen as "include/stdio.h"
- * (not "/include/stdio.h"). Directories are NOT recorded — only
- * regular file entries.
- */
-function parseUstar(tarBytes) {
-    const files = new Map();
-    let off = 0;
-    while (off + 512 <= tarBytes.length) {
-        let nameEnd = off;
-        while (nameEnd < off + 100 && tarBytes[nameEnd] !== 0)
-            nameEnd++;
-        let name = '';
-        for (let i = off; i < nameEnd; i++)
-            name += String.fromCharCode(tarBytes[i]);
-        if (!name)
-            break;
-        const typeflag = tarBytes[off + 156];
-        let sizeStr = '';
-        for (let i = off + 124; i < off + 124 + 11; i++) {
-            const c = tarBytes[i];
-            if (c >= 0x30 && c <= 0x37)
-                sizeStr += String.fromCharCode(c);
-        }
-        const size = parseInt(sizeStr || '0', 8);
-        let prefixEnd = off + 345;
-        while (prefixEnd < off + 345 + 155 && tarBytes[prefixEnd] !== 0)
-            prefixEnd++;
-        let prefix = '';
-        for (let i = off + 345; i < prefixEnd; i++)
-            prefix += String.fromCharCode(tarBytes[i]);
-        const fullName = prefix ? `${prefix}/${name}` : name;
-        off += 512;
-        const isRegular = typeflag === 0 || typeflag === 0x30; // '0'
-        const isDir = typeflag === 0x35 || fullName.endsWith('/'); // '5'
-        if (isRegular && !isDir) {
-            const bytes = tarBytes.slice(off, off + size);
-            files.set(fullName.replace(/\/$/, ''), bytes);
-        }
-        off += Math.ceil(size / 512) * 512;
-    }
-    return files;
-}
 // ── Sysroot unpack (supervisor-side) ─────────────────────────────────
 /** Where the unpacked sysroot lives, relative to the install root. */
 const SYSROOT_DIR_REL = 'share/clang/sysroot';
@@ -549,9 +505,18 @@ async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
         if (stamp && stamp.tarSize === tarSize)
             return;
     }
-    const entries = parseUstar(await vfs.readFileUncached(tarVfsPath));
+    const tar = await vfs.readFileUncached(tarVfsPath);
+    // Its regular files (tarball-stream.ts): their paths read first and
+    // checked, then their bytes, each written as it is read.
+    // An entry that claims more bytes than the archive holds is never read (its buffer would be the claim's size).
+    const isFile = (header) => isRegularTarFile(header) && !header.directory && header.name !== '' && header.size <= tar.length;
+    const records = (read) => streamTarRecords(tarBytes(tar), (header) => read && isFile(header));
+    const paths = new Set();
+    for await (const { header } of records(false))
+        if (isFile(header))
+            paths.add(header.name);
     for (const required of SYSROOT_REQUIRED) {
-        if (!entries.has(required))
+        if (!paths.has(required))
             throw new Error(`sysroot.tar is missing ${required}`);
     }
     await vfs.remove(dir, { recursive: true, force: true });
@@ -564,14 +529,15 @@ async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
         mtimeMs: Date.now(),
     });
     try {
-        for (const [rel, data] of entries)
-            await writer.file(rel, 0o644, data);
+        for await (const { header, data } of records(true))
+            if (data)
+                await writer.file(header.name, 0o644, data);
         await writer.flush();
     }
     catch (error) {
         throw new Error(`sysroot unpack failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
-    const stamp = { tarSize, files: entries.size };
+    const stamp = { tarSize, files: paths.size };
     await vfs.writeFile(stampPath, JSON.stringify(stamp));
 }
 async function loadClangToolchain(args) {

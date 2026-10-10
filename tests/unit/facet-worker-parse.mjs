@@ -48,9 +48,11 @@ for (const facet of facetWorkers) {
 }
 
 assert.throws(
-  () => parseJavaScriptModule(facetWorkers[0].source + '\nconst CHUNK_SIZE = 1;'),
-  /Identifier 'CHUNK_SIZE' has already been declared/,
-  'the parse guard must detect a facet declaration that collides with its preamble',
+  () => parseJavaScriptModule(facetWorkers[0].source + '\nconst normalizePath = 1;'),
+  /Identifier 'normalizePath' has already been declared/,
+  'the parse guard must detect a facet declaration that collides with a preamble\'s export',
 );
+// A preamble's private names are its own: W7's CHUNK_SIZE is no name of the facet's.
+assert.doesNotThrow(() => parseJavaScriptModule(facetWorkers[0].source + '\nconst CHUNK_SIZE = 1;'));
 
 console.log(`facet worker parse guard: ok (${facetWorkers.length} assemblies)`);
