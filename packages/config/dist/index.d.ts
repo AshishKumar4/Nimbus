@@ -37,7 +37,9 @@ export interface BuildWranglerOptions {
      */
     compatibilityDate?: string;
     /** Smart placement on/off. Default `true`. */
-    placement?: 'smart' | undefined;
+    placement?: 'smart' | false;
+    /** Existing deployments can retain their migration tag namespace. Default `nimbus-`. */
+    migrationTagPrefix?: string;
     /** Prefix for R2 buckets (npm tarball + packument caches). Default = `name`. */
     r2BucketPrefix?: string;
     /**
@@ -114,7 +116,7 @@ export interface WranglerConfig {
     assets: {
         directory: string;
         binding: string;
-        run_worker_first?: string[];
+        run_worker_first?: boolean | string[];
     };
     alias: Record<string, string>;
     durable_objects: {

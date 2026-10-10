@@ -503,12 +503,10 @@ function bucketIsReadable() {
  *
  * For the production bucket that is also Nimbus's own configs: the value of
  * NIMBUS_RUNTIME_CATALOG_SHA256 through Nimbus's deployment specification
- * (wrangler vars do not inherit, so each environment and each Preview states
- * its own). Each block must already carry the var: one that does not is an
- * environment this script does not know, and is refused rather than guessed
- * at, with no config changed, and false comes back (the caller's exit
- * status says so; the line is not printed). For any other bucket the line
- * is for the embedder's own config.
+ * (wrangler vars do not inherit, so its projection repeats the pin under
+ * every environment and Preview). An invalid specification is refused
+ * before writing any config. For any other bucket the line is for the
+ * embedder's own config.
  */
 async function writeCatalogPin(sha256) {
   if (BUCKET === PRODUCTION_BUCKET) {
