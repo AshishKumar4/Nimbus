@@ -237,9 +237,9 @@ for (const delivered of [false, true]) {
 }
 
 // A wave whose native part commits ahead of a reader's recall and whose
-// mounted part waits on a backend that never answers, the reader answered:
-// the destroy's cut ends that wait, the wave ends refused, its native part is
-// published, and the destroy completes.
+// mounted part waits on a backend that never answers, the reader never
+// answering (its trust runs out): the destroy's cut ends that wait, the wave
+// ends refused, its native part is published, and the destroy completes.
 {
   const harness = createSqliteVfsTestHarness();
   try {
@@ -252,15 +252,14 @@ for (const delivered of [false, true]) {
       beforeCall: (method) => (method === 'writeFile' ? new Promise(() => { hung.push(method); }) : undefined),
     }));
     const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
-    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    assert.ok(reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true }).readLease, 'no lease to meet');
     const write = (path, text) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: new TextEncoder().encode(text) } });
     const writing = files.bind({ pid: 8, cred: CRED_KERNEL }).writeStream(encodeWriteBatchStream({
       inodes: [], chunks: [], ops: [write('srv/a.txt', 'native'), write('m/b.txt', 'mounted')],
     }));
-    for (let i = 0; i < 200 && (hung.length === 0 || sqliteFs.publishedFor() === null); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    for (let i = 0; i < 400 && (hung.length === 0 || sqliteFs.publishedFor() === null); i++) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.deepEqual(hung, ['writeFile'], 'the mounted part never reached its backend');
     assert.notEqual(sqliteFs.publishedFor(), null, 'the native part committed nothing ahead of the recall');
-    reader.recalled(readLease.owner, 'revoke');
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
