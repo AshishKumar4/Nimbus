@@ -190,7 +190,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           body = stream.readable;
         }
       }
-      this.#context.started(this);
+      this.#context.started(request);
       this.#started = true;
       this.#touch();
       const response = fetch(address, { method: request.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
@@ -234,13 +234,13 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
-      if (!this.#queued && this.writableLength === 0) {
+      if (!this.#queued && this.writableLength === 0 && this.method !== "GET" && this.method !== "HEAD") {
         if (chunk == null) this.#completeBody = Buffer.alloc(0);
         else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
         else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
         this.#contentLength = this.#completeBody?.byteLength;
       }
-      if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+      if (chunk !== undefined && chunk !== null) Writable.prototype.write.call(this, this.#completeBody ?? chunk, encoding);
       this.#start();
       Writable.prototype.end.call(this, callback);
       this.finished = true;
