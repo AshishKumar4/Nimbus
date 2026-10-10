@@ -57,7 +57,7 @@ function archive(entries) {
   return out;
 }
 
-const deep = `${'d'.repeat(90)}/${'e'.repeat(90)}`;
+const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 100, within a prefix's 155
 
 // ── the header ──
 {
