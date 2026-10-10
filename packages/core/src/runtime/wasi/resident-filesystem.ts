@@ -125,8 +125,13 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
    * the session's descriptor instead.
    */
   pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
-  /** Input from outside the process arrived: the barrier is owed before the next answer. */
-  inbound(): void;
+  /**
+   * Input from outside the process arrived: the barrier is owed before the
+   * next answer. `untimed`: it came with no I/O (another process's bytes
+   * in this isolate), so the clock the read lease's trust is measured on did
+   * not move, and the barrier asks the session whatever the lease says.
+   */
+  inbound(untimed?: boolean): void;
   /** Whether writes are held that the session does not have yet. */
   holding(): boolean;
   /**
@@ -338,6 +343,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
   /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
   let owed = false;
+  /** Owed for input that came with no I/O (inbound's `untimed`): the lease does not answer it. */
+  let untimed = false;
   /** Owed for a change, not only for input: no read lease answers for what the process itself changed. */
   let changed = false;
   if (delegation !== undefined) {
@@ -480,7 +487,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const asking = (): boolean => {
     if (!owed) return false;
-    if (changed || holder === null || !holder.client.readTrusted()) return true;
+    if (changed || untimed || holder === null || !holder.client.readTrusted()) return true;
     owed = false;
     counts.leasedBarriers++;
     return false;
@@ -495,7 +502,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         client.readLeaseAnswered(readLease);
         if (ok && store.ready()) client.readLeased(readLease, ask!);
       }
-      if (ok && store.ready()) { owed = false; changed = false; }
+      if (ok && store.ready()) { owed = false; changed = false; untimed = false; }
       return ok;
     });
   };
@@ -579,7 +586,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }
   Reflect.set(fs, 'synchronous', authority.synchronous);
 
-  fs.inbound = () => { owed = true; };
+  fs.inbound = (noIo = false) => { owed = true; if (noIo) untimed = true; };
   fs.holding = () => holder?.pending() ?? false;
   // What leaves the process is preceded by everything it logged.
   fs.flush = async () => { await holder?.flush(); };

@@ -922,16 +922,6 @@ async function main() {
     throw new Error('[bundle-facet-workers/relative-wasm-paths] the bundle no longer declares function relativeWasmPaths');
   }
 
-  // 7. What a read lease vouches for, which the node shims embed as source
-  //    in the fs scope that answers by it.
-  const readLeaseCover = await bundleAsPreamble(
-    join(coreRoot, 'src', '_shared', 'read-lease-cover.ts'),
-    'read-lease-cover',
-  );
-  if (!/^function readLeaseCovers\(/m.test(readLeaseCover)) {
-    throw new Error('[bundle-facet-workers/read-lease-cover] the bundle no longer declares function readLeaseCovers');
-  }
-
   const waveWriter = await bundleWaveWriter();
   const rpcDisposal = await bundleAsPreamble(join(platformRoot, 'src', 'rpc-dispose.ts'), 'rpc-dispose');
 
@@ -951,7 +941,6 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)',
-    ' *   - @nimbus-sh/core src/_shared/read-lease-cover.ts (what a read lease vouches for, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -1001,12 +990,6 @@ async function main() {
     '',
     '/** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */',
     `export const RELATIVE_WASM_PATHS_PREAMBLE: string = ${JSON.stringify(relativeWasm)};`,
-    '',
-    '/**',
-    ' * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);',
-    ' * the node shims splice it into their fs scope.',
-    ' */',
-    `export const READ_LEASE_COVER_PREAMBLE: string = ${JSON.stringify(readLeaseCover)};`,
     '',
   ].join('\n');
 

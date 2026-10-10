@@ -87,20 +87,24 @@ fs.inbound();
 assert.equal((await fs.stat(A)).size, 3);
 assert.equal(asked, 1, 'input under a trusted lease asked the session');
 assert.equal(fs.stats().leasedBarriers, 1);
+// Input with no I/O behind it (another process's bytes in this isolate): asked whatever the lease says.
+fs.inbound(true);
+assert.equal((await fs.stat(A)).size, 3);
+assert.equal(asked, 2, 'input with no I/O behind it was answered by the lease');
 // Another's change recalls it, and waits for the process's answer.
 await withRecall(() => peer.writeFile(A, 'three'));
 fs.inbound();
 assert.equal((await fs.stat(A)).size, 5);
-assert.equal(asked, 2, 'input after a recall asked nothing');
+assert.equal(asked, 3, 'input after a recall asked nothing');
 // Leased again past the hold-off, then a change of its own: the next input asks.
 await new Promise((resolve) => setTimeout(resolve, 520));
 fs.inbound();
 await fs.stat(A);
-assert.equal(asked, 3);
+assert.equal(asked, 4);
 await fs.mkdir('/home/user/proj/made', { mode: 0o755 });
 fs.inbound();
 await fs.stat(A);
-assert.equal(asked, 4, 'input after its own change was answered by the lease');
+assert.equal(asked, 5, 'input after its own change was answered by the lease');
 // Its change answered, and confirmed by the next barrier: trusted from here.
 await fs.flush();
 fs.inbound();

@@ -3,9 +3,10 @@
 // that arrives by I/O (a response from the network) asks the session nothing
 // while the lease is trusted, and still sees every change another made
 // before it (the change waited for the lease's recall, which the process
-// answered first). A timer asks: its turn carries no I/O, so workerd's clock,
-// which the program reads and the lease's trust is measured on, stands still
-// there (perf-regression/own-http, agentic-cli opencode-tui-render).
+// answered first). A timer asks, and so does an async stat or listing: an
+// answer made with no I/O leaves workerd's clock, which the program reads and
+// the lease's trust is measured on, where it was (perf-regression/own-http,
+// agentic-cli opencode-tui-render).
 
 import assert from 'node:assert/strict';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
@@ -113,7 +114,7 @@ await runScenarios(import.meta.path, {
     assert.equal(asked(log), before + 1, 'the response after its own write asked nothing');
   },
 
-  async 'async stats and listings are the view\'s under a trusted lease, and the session\'s after a change'() {
+  async 'async stats and listings ask the session under a trusted lease too: an answer from the view is no I/O, and the program\'s clock would not move'() {
     const { authority, probe, log } = await boot();
     await authority.peer.mkdir('home/user/app/sub', { mode: 0o755 });
     await authority.peer.writeFile('home/user/app/sub/a.txt', 'aa');
@@ -130,8 +131,7 @@ await runScenarios(import.meta.path, {
     const lstat = await probe.fs.promises.lstat('/home/user/app/sub');
     await assert.rejects(probe.fs.promises.stat('/home/user/app/missing'), { code: 'ENOENT', syscall: 'stat' });
     await assert.rejects(probe.fs.promises.readdir('/home/user/app/f.txt'), { code: 'ENOTDIR', syscall: 'scandir' });
-    assert.equal(calls() - before, 0, `the session was asked ${JSON.stringify(log.calls)}`);
-    assert.ok(globalThis.__nimbusVfsCoherence.leasedReads >= 6);
+    assert.ok(calls() - before >= 6, `the session was asked ${JSON.stringify(log.calls)}`);
     // As the session lists and stats them.
     const session = authority.rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
     assert.deepEqual(names, session.readdir('home/user/app').map((entry) => entry.name).sort());

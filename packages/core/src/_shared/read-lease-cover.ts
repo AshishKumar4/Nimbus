@@ -1,10 +1,6 @@
 /**
  * _shared/read-lease-cover.ts — what a process's read lease vouches for, as
- * the session grants it and as a process's view answers by it.
- * scripts/bundle-facet-workers.mjs compiles this module once into
- * READ_LEASE_COVER_PREAMBLE (worker loaders/generated-workers.ts), so the
- * node shims carry it as the same text whatever toolchain evaluates them. It
- * imports nothing, so nothing else comes with it.
+ * the session grants it.
  */
 
 /**

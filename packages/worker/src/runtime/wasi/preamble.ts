@@ -832,7 +832,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     pid: __wasiFS.pid,
     output: (fd, bytes) => appendStream(fd === 1 ? 'stdout' : 'stderr', bytes),
     release: async () => { if (__wasiResident?.fs.holding()) await __wasiResident.fs.flush(); },
-    inbound: () => { __wasiResident?.fs.inbound(); },
+    inbound: (untimed) => { __wasiResident?.fs.inbound(untimed); },
     news: __wasiChildNews(),
     cred: () => __wasiFS.cred ?? null,
   });
