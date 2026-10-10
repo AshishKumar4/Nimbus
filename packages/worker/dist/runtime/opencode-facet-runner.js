@@ -626,7 +626,7 @@ export function generateOpencodeRunnerCode(opts) {
 // extends DurableObject and its startProcess() holds the process open. A
 // one-shot run is a single fetch into a stateless entrypoint, which cannot be a
 // Durable Object; it keeps the WorkerEntrypoint default export.
-import { DurableObject as __NimbusDurableObject, WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject as __NimbusDurableObject } from "cloudflare:workers";
 ${getRealNodeSharedImportsCode()}
 ${runtime.imports}
 ${runtime.code}
@@ -717,15 +717,6 @@ __pendingIO.push = (p) => {
   });
   return __pendingIO.length;
 };
-
-// The shim (node-shims.ts) throws/catches this sentinel for process.exit and
-// the SIGINT stdin-pump teardown; the host runner must provide the class (same
-// contract as the long-running node entrypoint). Only exercised when the shim
-// process is authoritative (attachedTty), but defined unconditionally so the
-// shim's references always resolve.
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
-}
 
 ${nodeFacetSource(opts.sources, 'shims')}
 
@@ -1257,9 +1248,7 @@ export class NimbusProcess extends __NimbusDurableObject {
   async handleHttpRequest(request) { return __ocDispatchHttp(request); }
 }
 
-export default class NimbusOpencodeOneShot extends __NimbusWorkerEntrypoint {
-  async fetch(request) { return __ocOneShotFetch(request, this.env); }
-}
+export default { fetch: (request, env) => __ocOneShotFetch(request, env) };
 
 // Headless resident lifecycle for the opencode serve command. Boots the
 // bundle's serve command (nimbusMain), whose http server binds via listen() → it

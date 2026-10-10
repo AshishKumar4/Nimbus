@@ -132,6 +132,8 @@ Object.defineProperty(builtins, "http", {
         if (this.listening || owners.get(this)?.pending) {
           throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
+        // Stop a one-shot before either lookup, reservation or bind can escape.
+        __nimbusReplay?.listen();
         const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
         const family = net.isIP(state.host);
         if (family) state.host = normalizeAddress(state.host);

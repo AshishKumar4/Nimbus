@@ -23,8 +23,8 @@
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
- *   - supportsBinSpawn: true for node and bun (a .bin handler, the
- *     child_process broker or a background job propagates a callerPid);
+ *   - supportsBinSpawn: true for node and bun (the child_process broker
+ *     or a background job propagates a callerPid);
  *     other runtimes use a plain spawn flow.
  *
  * Anti-requirements observed
@@ -43,6 +43,7 @@ import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { type ModuleScope } from './module-format.js';
+import { type ServerIdentity } from './server-launch.js';
 import { type NodeLaunch } from './node-cli.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -53,6 +54,17 @@ export interface RuntimeRunResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+}
+/**
+ * A program run as an npm bin (worker shell/npm-bin-entrypoints.ts): how its
+ * process is shown, and hints to start it as a resident.
+ */
+export interface BinLaunch {
+    command: string;
+    attachedTty: boolean;
+    /** A server by the hints (worker facets/server-hints.ts): resident without its code's analysis. */
+    serves: boolean;
+    server: ServerIdentity;
 }
 /**
  * Options the handler passes to the runner. Mirrors RunFreshOpts.
@@ -77,6 +89,8 @@ export interface RuntimeRunOpts {
     captureOutput?: boolean;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /** The bin it runs, learned a server when it runs on as one (worker facets/server-hints.ts). */
+    server?: ServerIdentity;
     /**
      * A resident whose stdin its launcher writes and ends without waiting for
      * the boot: a synchronous read of stdin while it boots waits for that

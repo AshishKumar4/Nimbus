@@ -23,8 +23,8 @@
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
- *   - supportsBinSpawn: true for node and bun (a .bin handler, the
- *     child_process broker or a background job propagates a callerPid);
+ *   - supportsBinSpawn: true for node and bun (the child_process broker
+ *     or a background job propagates a callerPid);
  *     other runtimes use a plain spawn flow.
  *
  * Anti-requirements observed
@@ -52,7 +52,7 @@ import type { TypeScriptStripOptions } from './typescript-strip.js';
 import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
-import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
+import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerIdentity, type ServerLaunchHost } from './server-launch.js';
 import { parseNodeCommandLine, typeScriptStripOptions, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
 import { nodeEvalProgram, nodeStdinPrintProgram, type NodeEvalMode } from './node-eval.js';
 
@@ -65,6 +65,18 @@ export interface RuntimeRunResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+/**
+ * A program run as an npm bin (worker shell/npm-bin-entrypoints.ts): how its
+ * process is shown, and hints to start it as a resident.
+ */
+export interface BinLaunch {
+  command: string;
+  attachedTty: boolean;
+  /** A server by the hints (worker facets/server-hints.ts): resident without its code's analysis. */
+  serves: boolean;
+  server: ServerIdentity;
 }
 
 /**
@@ -90,6 +102,8 @@ export interface RuntimeRunOpts {
   captureOutput?: boolean;
   forceLongRunning?: boolean;
   attachedTty?: boolean;
+  /** The bin it runs, learned a server when it runs on as one (worker facets/server-hints.ts). */
+  server?: ServerIdentity;
   /**
    * A resident whose stdin its launcher writes and ends without waiting for
    * the boot: a synchronous read of stdin while it boots waits for that
@@ -351,11 +365,11 @@ export function buildRuntimeHandler(
     const nimbusCtx = ctx as {
       __nimbusCaptureOutput?: unknown;
       __nimbusBundleProfile?: unknown;
+      __nimbusBin?: BinLaunch;
       __nimbusBinSpawn?: {
         callerPid?: number;
         command?: string;
         forceLongRunning?: boolean;
-        attachedTty?: boolean;
         /**
          * Whoever started the reserved process writes its stdin and ends it,
          * and does not wait for it to boot (the SDK's startProcess): its boot
@@ -385,9 +399,11 @@ export function buildRuntimeHandler(
     const captureOutput = typeof nimbusCtx.__nimbusCaptureOutput === 'boolean'
       ? nimbusCtx.__nimbusCaptureOutput
       : ctx.isFdTerminal?.(1) === false || ctx.isFdTerminal?.(2) === false;
-    // A bin wrapper or child-process broker may already own the process
+    // A child-process broker or a launch wrapper may already own the process
     // entry; preserve it for eval/stdin programs as well as script files.
     const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
+    const bin = nimbusCtx.__nimbusBin;
+    const command = binSpawn?.command || bin?.command;
     // fd 0 the same way: a pipe or redirect is the program's stdin. It used
     // to be dropped, so `echo hi | node x.js` read nothing. A process whose
     // live input channel already is that stdin reads the channel.
@@ -395,7 +411,8 @@ export function buildRuntimeHandler(
       ? ctx.stdin : undefined;
     const reservedProcess = binSpawn ? {
       skipSpawn: true, callerPid: binSpawn.callerPid,
-      forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
+      // A bin's hints judge it, its launcher's reservation or not.
+      forceLongRunning: binSpawn.forceLongRunning === true || bin?.serves === true,
       ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
     } : {};
     const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
@@ -413,9 +430,12 @@ export function buildRuntimeHandler(
       },
     };
     // Whether the program starts a server, so the runner can give it a
-    // resident process; a .bin wrapper has already decided that by its own rule.
+    // resident process: a bin by its hints, a program by its code. A process
+    // a launcher reserved is its launcher's to judge. One that listens
+    // unforeseen runs on as a resident once it does.
     const launches = async (code: string, path: string | null, dir: string, programArgs: string[]): Promise<boolean> => {
       if (spec.routesServers !== true || binSpawn !== undefined) return false;
+      if (bin) return bin.serves;
       const key = normalizeVfsPath(dir);
       return programLaunchesServer({
         source: code,
@@ -501,6 +521,7 @@ export function buildRuntimeHandler(
             : {}),
           ...program.stdin,
           ...(program.reserved === false ? {} : reservedProcess),
+          ...(bin ? { attachedTty: bin.attachedTty, server: bin.server } : {}),
           ...(captureOutput ? { captureOutput: true } : {}),
           ...(bundleProfile ? { bundleProfile } : {}),
           ...(program.launchesServer ? { launchesServer: true } : {}),
@@ -617,7 +638,7 @@ export function buildRuntimeHandler(
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
-        command: binSpawn?.command || `${name} -e ...`,
+        command: command || `${name} -e ...`,
         stdin: programStdin,
         launchesServer: await launches(written, null, ctx.cwd || '/home/user', programArgs),
       });
@@ -638,7 +659,7 @@ export function buildRuntimeHandler(
           argv: leadingFlags,
           filename: '<repl>',
           dirname: ctx.cwd || '/home/user',
-          command: binSpawn?.command || name,
+          command: command || name,
           stdin: { stdin: terminal },
         });
       } finally {
@@ -673,7 +694,7 @@ export function buildRuntimeHandler(
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
-        command: binSpawn?.command || `${name} -`,
+        command: command || `${name} -`,
         stdin: { output: programStdin.output },
         launchesServer: await launches(written, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
       });
@@ -808,7 +829,7 @@ export function buildRuntimeHandler(
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,
-      command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+      command: command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
       stdin: programStdin,
       launchesServer: await launches(esm ? written : code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
     });

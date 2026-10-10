@@ -2101,9 +2101,9 @@ function __nimbusProcessFs() {
  */
 function __nimbusSubmitVfs(op, acknowledged = false) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
-  // The program's own change, named as it made it: what a run that waits for
-  // stdin cannot do twice (the runner's stop-replay, where it has one).
-  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(op.type === "call" ? op.call.call : op.type);
+  // The program's own change, as it made it: what a run made again (the
+  // runner's stop-replay, where it has one) has to make the same way.
+  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.mutation(op);
   const answer = __nimbusProcessFs().submit(op, { acknowledged });
   globalThis.__nimbusPendingOps++;
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };

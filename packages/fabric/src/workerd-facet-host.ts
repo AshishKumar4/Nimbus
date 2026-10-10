@@ -23,14 +23,13 @@ import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   getCtxExports,
   stagedBootAssembler,
-  supervisorEntrypoint,
-  supervisorEntrypointName,
 } from './composition.js';
 import {
   assertModuleMapWithinCodeLimit,
   beginLoaderFetch,
   beginLoaderFetchWhenFree,
   claimAdmission,
+  launchWorkerKey,
   readmitRefused,
   withDynamicWorkerCapNamed,
 } from './budgets.js';
@@ -38,7 +37,7 @@ import {
   RESIDENT_PROCESS_CLASS,
   residentLoaderConfig,
   type HostedProcess,
-  type OneShotCodeSpec,
+  type OneShotCode,
   type OneShotParams,
   type ProcessHostParams,
   type ResidentBootSpec,
@@ -46,13 +45,14 @@ import {
   type ResidentSupervisorProps,
   type Supervise,
 } from './process-fabric.js';
-import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
+import { bindingSupervisor, supervisorLoaderKey, type SupervisorBindingProps } from './supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import type { ProcessFsJournalSource, ProcessFsNumbering } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ProcessFsOp } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
+import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -62,52 +62,24 @@ export interface LoadedWorkerEntrypointStub {
   fetch?(request: Request): Promise<Response>;
 }
 
-export interface NimbusCtxExports {
+interface NimbusCtxExports {
   NimbusLoadedEntrypoint?: (options: {
-    props: {
-      key: string;
-      name: string | null;
-      depth: number;
-      supervisor: ResidentSupervisorProps;
-      stage?: unknown;
-    };
+    props: { key: string; name: null; depth: number; stage: unknown; supervisor: SupervisorBindingProps };
   }) => LoadedWorkerEntrypointStub;
 }
 
-export function getNimbusCtxExports(): NimbusCtxExports {
-  const ctxExports = getCtxExports();
-  if (!ctxExports || typeof ctxExports !== 'object') {
-    throw new Error('Nimbus: ctx.exports unavailable');
-  }
-  return ctxExports as NimbusCtxExports;
-}
-
 /**
- * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. Used by the
- * one-shot runtime paths, which run a program to completion inside a single
- * request rather than leaving it resident: their module map is assembled in
- * that stateless entrypoint's own isolate, never in a session DO.
+ * A staged one-shot's entrypoint (OneShotCode `stage`): a NimbusLoadedEntrypoint
+ * that assembles the program on its loader's miss, in that stateless isolate,
+ * never in the host, with a SUPERVISOR binding minted there. Keyed by the
+ * run: its program's module state is one run's.
  */
-export async function createLoadedWorkerEntrypoint(
-  ctxExports: NimbusCtxExports,
-  supervisor: ResidentSupervisorProps,
-  stage: unknown,
-  name: string | null = null,
-): Promise<LoadedWorkerEntrypointStub> {
-  if (!ctxExports.NimbusLoadedEntrypoint) {
+async function stagedOneShot(key: string, stage: unknown, supervisor: SupervisorBindingProps): Promise<LoadedWorkerEntrypointStub> {
+  const ctxExports = getCtxExports() as NimbusCtxExports | undefined;
+  if (!ctxExports?.NimbusLoadedEntrypoint) {
     throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
   }
-  return await ctxExports.NimbusLoadedEntrypoint({
-    props: {
-      // The entrypoint's loader outlives this instance, and a warm worker keeps
-      // the SUPERVISOR binding it was built with.
-      key: supervisorLoaderKey(`nimbus-process:${supervisor.doId}:${supervisor.pid}`, supervisor),
-      name,
-      depth: 0,
-      supervisor,
-      stage,
-    },
-  });
+  return await ctxExports.NimbusLoadedEntrypoint({ props: { key, name: null, depth: 0, stage, supervisor } });
 }
 
 // ── Facet plumbing ──────────────────────────────────────────────────────────
@@ -522,8 +494,9 @@ function spawnResident(
   // process is resident, not only while a call is open: its WebSockets and
   // streamed responses outlive the calls the ledger could bracket, and a
   // request can reach it at any moment. Held from here to `release`, so no
-  // fan-out spends the slot a running process needs.
-  const endResidency = beginLoaderFetch(ctx, loaderKey, undefined, params.pid);
+  // fan-out spends the slot a running process needs: its launch's worker,
+  // when it was let in as one (withLaunchAdmission), else the process's own.
+  const endResidency = claimAdmission(ctx, params.pid) ?? beginLoaderFetch(ctx, launchWorkerKey(params.pid), undefined, params.pid);
   facetOfPid(ctx).set(params.pid, name);
 
   let disposed = false;
@@ -668,7 +641,6 @@ async function runOneShot<T>(
         + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
     );
   }
-  const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
   // The unkeyed worker is one distinct dynamic worker in flight until its
   // response is consumed (the body streams from it), keyed by this run's
   // writer id. It is let in by the ledger: while this Durable Object has its
@@ -684,7 +656,7 @@ async function runOneShot<T>(
   // the pipelined-`fetch.call` note below for its sibling.
   // A run inside an admitted launch (withLaunchAdmission) is that launch's
   // worker, already let in (claimAdmission), whatever pid it runs as.
-  let endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
+  let endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, launchWorkerKey(params.pid), {
     signal: params.request.signal,
     process: { pid: params.pid },
   });
@@ -696,37 +668,48 @@ async function runOneShot<T>(
     // Built before the capability is minted: nothing can write as this writer
     // until there is a program to do the writing, and a map that fails to
     // assemble should not have granted append authority on its way out.
-    let spec: OneShotCodeSpec | undefined = await params.code();
-    assertModuleMapWithinCodeLimit(spec.modules);
+    let code: OneShotCode | undefined = await params.code();
+    if (!('stage' in code)) assertModuleMapWithinCodeLimit(code.modules);
     params.onWriterActivated(params.writerId);
-    capability = supervise(supervisor);
-    // A network the session answers (SupervisorRPC.fetch/connect) is the
-    // binding's: a globalOutbound is a service binding, never a capability.
-    if (supervisorRpc && params.outbound) supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
-    worker = loader.load(applyFacetLimits('process', {
-      compatibilityDate: spec.compatibilityDate,
-      compatibilityFlags: spec.compatibilityFlags,
-      mainModule: ONE_SHOT_ENTRY,
-      modules: { ...spec.modules, [ONE_SHOT_ENTRY]: oneShotEntry(spec.mainModule) },
-      env: egressMarker(supervisor),
-      // Else out through the workspace's egress, when there is one.
-      ...(supervisorBinding
-        ? { globalOutbound: supervisorBinding }
-        : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-    }));
+    // How the run is entered: a call on the stub, never an extracted method —
+    // that builds a pipelined `fetch.call` path workerd refuses for
+    // dynamically-loaded workers.
+    let enter: (request: Request, ended: () => Promise<string | null>) => Promise<Response>;
+    if ('stage' in code) {
+      // Assembled and loaded in a stateless isolate, on its loader's miss,
+      // never here, and entered by fetch with a binding minted there: a stub
+      // of this object's carried through that hop into the program reset
+      // this object, mid-run (NimbusLoadedEntrypoint).
+      const staged = await stagedOneShot(`nimbus-run:${supervisor.doId}:${params.pid}:${params.writerId}`, code.stage, supervisor);
+      entrypoint = staged;
+      if (typeof staged.fetch !== 'function') throw new Error('Nimbus: staged one-shot entrypoint has no fetch method');
+      // A fetch is cancelled as a fetch is: the run's end reaches the program
+      // through the hop as its request's (NimbusLoadedEntrypoint.fetch).
+      enter = (request) => staged.fetch!(new Request(request, { signal: params.request.signal }));
+    } else {
+      capability = supervise(supervisor);
+      // A network the session answers (SupervisorRPC.fetch/connect) is the
+      // binding's: a globalOutbound is a service binding, never a capability.
+      if (params.outbound) supervisorBinding = bindingSupervisor(supervisor);
+      worker = loader.load(applyFacetLimits('process', {
+        ...enteredByRun(code),
+        env: egressMarker(supervisor),
+        // Else out through the workspace's egress, when there is one.
+        ...(supervisorBinding
+          ? { globalOutbound: supervisorBinding }
+          : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
+      }));
+      const ep = worker.getEntrypoint(undefined, { limits: facetLimits('process') }) as LoadedWorkerEntrypointStub & {
+        run(request: Request, supervisor: unknown, ended: () => Promise<string | null>): Promise<Response>;
+      };
+      entrypoint = ep;
+      if (typeof ep.run !== 'function') throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
+      const handed = capability;
+      enter = (request, ended) => ep.run(request, handed, ended);
+    }
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
-    spec = undefined;
-    entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
-    // Narrowed by the runtime check; kept as a property call on the stub —
-    // extracting the method builds a pipelined `fetch.call` path workerd
-    // refuses for dynamically-loaded workers.
-    const ep = entrypoint as LoadedWorkerEntrypointStub & {
-      run(request: Request, supervisor: unknown, ended: () => Promise<string | null>): Promise<Response>;
-    };
-    if (typeof ep.run !== 'function') {
-      throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
-    }
+    code = undefined;
     params.onLoaded?.();
     let firstRefusal: number | undefined;
     for (;;) {
@@ -737,7 +720,7 @@ async function runOneShot<T>(
         // A clone each time: a refused run is sent again with the same body.
         const request = new Request(params.request.clone(), { signal: null });
         return await untilEnded(params.request.signal, async (ended) => {
-          const response = await ep.run(request, capability, ended);
+          const response = await enter(request, ended);
           started = true;
           try {
             return await consume(response);
@@ -767,35 +750,6 @@ async function runOneShot<T>(
     disposeRpcResource(supervisorBinding);
     endFetch();
   }
-}
-
-const ONE_SHOT_ENTRY = 'nimbus-one-shot.js';
-
-/**
- * Set on whatever a one-shot's program throws, once its run was entered
- * (carried across by enhanced_error_serialization): the platform refuses a
- * run before entering it, so only an error without it can be a refusal.
- */
-const RUN_ENTERED = 'nimbusRunEntered';
-
-/**
- * A one-shot, entered by `run`: its SUPERVISOR is the call's capability, and
- * a run its host ended (untilEnded) aborts itself where it stands.
- */
-function oneShotEntry(mainModule: string): string {
-  return `import { WorkerEntrypoint } from "cloudflare:workers";
-import program from ${JSON.stringify(`./${mainModule}`)};
-export default class extends WorkerEntrypoint {
-  async run(request, supervisor, ended) {
-    ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
-    try {
-      return await program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
-    } catch (error) {
-      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { ${RUN_ENTERED}: true });
-    }
-  }
-}
-`;
 }
 
 /**
@@ -894,12 +848,8 @@ export async function residentWorkerConfig(
     ? await stagedBootAssembler()(env, boot.stage)
     : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
   assertModuleMapWithinCodeLimit(configModules(config));
-  const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
-  if (!supervisorRpc) {
-    throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
-  }
   // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
-  return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: mintProcessSupervisor(supervisorRpc, supervisor), ...egressMarker(supervisor) } };
+  return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
 }
 
 /**

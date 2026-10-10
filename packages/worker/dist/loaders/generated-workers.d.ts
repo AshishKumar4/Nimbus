@@ -47,4 +47,6 @@ export declare const HTTP2_MODULE_PREAMBLE: string;
  * TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest; the node shims call them.
  */
 export declare const NODE_SHIM_RESOLUTION_PREAMBLE: string;
+/** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */
+export declare const RELATIVE_WASM_PATHS_PREAMBLE: string;
 //# sourceMappingURL=generated-workers.d.ts.map

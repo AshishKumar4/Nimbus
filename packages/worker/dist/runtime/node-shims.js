@@ -47,7 +47,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
@@ -87,6 +87,11 @@ const LOOPBACK_HOSTNAMES_LITERAL = JSON.stringify(LOOPBACK_HOSTNAMES);
 const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map((r) => [r.from, r.suggest ? `${r.reason} … try: ${r.suggest}` : r.reason]));
 export function generateShimsCode() {
     return `
+// What process.exit throws to end the program where it stands; its host
+// catches it as the exit.
+class __ProcessExit extends Error {
+  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+}
 // Node's internal errors (core _shared/node-error.ts), first: the shims, the
 // preambles below and the code they load make them by name, and the cell
 // runtime and generated code reach them as __nimbusNodeError and
@@ -8277,9 +8282,11 @@ const __childProcessMod = (() => {
     const _trackCloseInterest = (event) => {
       if ((event === "close" || event === "exit") && !child._closeTracked) {
         child._closeTracked = true;
-        // Keeps this process until the child closes, or until it exits:
-        // Node's process.exit() does not wait for its children.
-        __pendingIO.push(Promise.race([child._closePromise, __nimbusProcessExitPromise]).catch(() => {}));
+        // Holds this process, as the child's handle does in Node, until the
+        // child closes or this process exits (process.exit() does not wait
+        // for children). A handle, not output to flush: a resident's boot,
+        // which flushes what it wrote, does not wait for its children.
+        void _childPoll(Promise.race([child._closePromise, __nimbusProcessExitPromise]), () => undefined).catch(() => {});
       }
     };
     const _childOn = child.on.bind(child);
@@ -8603,6 +8610,9 @@ const __childProcessMod = (() => {
       return child;
     }
 
+    // A child is started as spawn() returns, whenever its cpSpawn is sent: a
+    // run started again would start it again.
+    __nimbusReplay?.effect("cpSpawn " + cmd);
     // Issue cpSpawn asynchronously. Return the emitter immediately so
     // callers can attach 'data' listeners before any chunk arrives.
     __pendingIO.push((async () => {
@@ -12913,6 +12923,21 @@ async function __nimbusHydrated(step, quota) {
   }
 }
 
+// Read data files ahead of the modules that will read them synchronously,
+// under the import()'s quota, and wait for the fills that issues. Nothing
+// rests on these reads: one that does not land (a file the store has no room
+// for) is left to the module's own read, which reports it as any refused read.
+async function __nimbusReadAhead(paths, quota) {
+  const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
+  const outer = globalThis.__nimbusVfsSpeculation;
+  globalThis.__nimbusVfsSpeculation = speculation;
+  try {
+    for (const path of paths) { try { __fsMod.readFileSync("/" + path); } catch {} }
+  } finally { globalThis.__nimbusVfsSpeculation = outer; }
+  await Promise.allSettled(speculation.repairs);
+  if (quota.error) throw quota.error;
+}
+
 // What a module's text requests (import and export-from sources, import()
 // and require() of a string), as the runtime-code interpreter's parser reads
 // it (core/interpreter moduleRequests): a request in a comment is none, one
@@ -12939,6 +12964,10 @@ function __nimbusRequestTarget(kind, specifier, importer) {
   return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
 }
 
+// core/_shared/relative-wasm-paths.ts, compiled once by the build (a
+// function's own text differs between compilers, so it is never spliced).
+${RELATIVE_WASM_PATHS_PREAMBLE}
+const __nimbusRelativeWasmPaths = relativeWasmPaths;
 function __nimbusImportStager(quota) {
   // The fill a synchronous read's miss starts (the fs's residency fault-in),
   // which only a process with a supervisor has.
@@ -12959,17 +12988,24 @@ function __nimbusImportStager(quota) {
       const visited = new Set();
       let frontier = [strip(root)];
       while (frontier.length > 0) {
-        const round = frontier.filter((k) => !visited.has(k) && !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
-        for (const k of round) visited.add(k);
+        const unseen = frontier.filter((k) => !visited.has(k));
+        for (const k of unseen) visited.add(k);
+        const round = unseen.filter((k) => !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
         const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), quota);
         const wanted = [];
+        const images = new Set();
         for (let i = 0; i < round.length; i++) {
           const text = texts[i];
           if (typeof text !== "string") continue;
           if (!/\\.[cm]?js$/.test(round[i])) continue;
+          // A late module's image was not in the launch's data-read table.
+          // Read it ahead by the same relative-path rule the image collector
+          // uses; the file/byte quota applies before any fill is issued.
+          for (const image of __nimbusRelativeWasmPaths(text, round[i])) images.add(image);
           // An import() in the closure is its own: it prefetches when it runs.
           for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
+        if (images.size > 0) await __nimbusReadAhead(images, quota);
         const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
         const next = new Set();
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
@@ -13000,14 +13036,8 @@ async function __nimbusStageImport(specifier, parentUrl) {
         if (reads) for (const read of reads) lazyReads.push(read);
       }
     }
-    if (lazyReads.length > 0) {
-      await __nimbusHydrated(() => {
-        for (const k of lazyReads) {
-          if (k in __vfsBundle || (__vfsWrites && k in __vfsWrites)) continue;
-          try { __fsMod.readFileSync("/" + k); } catch {}
-        }
-      }, quota);
-    }
+    const unheld = lazyReads.filter((k) => !(k in __vfsBundle || (__vfsWrites && k in __vfsWrites)));
+    if (unheld.length > 0) await __nimbusReadAhead(unheld, quota);
   }
   return resolution;
 }
