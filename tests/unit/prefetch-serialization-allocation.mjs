@@ -8,12 +8,18 @@ import { heapStats } from 'bun:jsc';
 import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
-const cells = await import('@nimbus-sh/core/_shared/commonjs-cell.js');
+adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }), NimbusLoadedEntrypoint: () => ({
+  async startProcess() { return { ok: true }; }, async handleHttpRequest() { return new Response('ok'); },
+}) });
+
+const cellsPath = new URL('../../packages/core/src/_shared/commonjs-cell.ts', import.meta.url).pathname;
+const cells = await import(cellsPath);
 const wrap = cells.wrapCommonJsCell;
 const reservations = [];
 let peak = 0;
-mock.module('@nimbus-sh/core/_shared/commonjs-cell.js', () => ({ ...cells,
+mock.module(cellsPath, () => ({ ...cells,
   wrapCommonJsCell(...args) {
     if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
       reservations.push(readSupervisorAllocationBudget().current);
@@ -25,6 +31,7 @@ mock.module('@nimbus-sh/core/_shared/commonjs-cell.js', () => ({ ...cells,
 const { launchManager } = await import('./lib/facet-launch-harness.mjs');
 const env = { LOADER: {
   load() { return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) }; },
+  get() { throw new Error('one-shot fixture uses load, not named resident get'); },
 } };
 const { manager, vfs } = launchManager('prefetch-serialization-credit', { env });
 const fs = vfs.as(CRED_KERNEL);
@@ -42,8 +49,8 @@ try {
     filename: `/home/user/tree${i}/run.js`, cwd: `/home/user/tree${i}`, captureOutput: true,
   })));
   console.log('PREFETCH_SERIALIZATION ' + JSON.stringify({ callers: 3, elapsedMs: performance.now() - started,
-    peakOverBase: peak - baseHeap, reservations }));
-  assert.ok(results.every(result => result.exitCode === 0));
+    peakOverBase: peak - baseHeap, reservations, results: results.map(({ exitCode, stderr }) => ({ exitCode, stderr })) }));
+  assert.ok(results.every(result => result.exitCode === 0), JSON.stringify(results));
   assert.ok(reservations.length >= 3, 'every distinct launch actually serialized its large cell');
   assert.ok(reservations.every(bytes => bytes >= VFS_BUNDLE_MAX_BYTES), 'no source serialization is outside supervisor admission');
   assert.equal(readSupervisorAllocationBudget().current, 0, 'completed builds release their allocation');
