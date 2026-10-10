@@ -1365,8 +1365,8 @@ export declare class FacetManager {
     private _watchLifetime;
     /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
-     * that the platform reset it under the process (session/rpc.ts
-     * hostingWatchFired). True when it was this session's open process, which
+     * that the platform reset it under the process (fabric
+     * PeerHost.watchFired). True when it was this session's open process, which
      * is now lost (ProcessHost.hostLost).
      */
     hostLost(workerKey: string, capability: string): boolean;

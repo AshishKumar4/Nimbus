@@ -7,7 +7,8 @@
  *
  *   facet — the process is a named child actor of the user's own session DO.
  *   peer  — the process is a named child actor of a SIBLING session DO, and
- *           the coordinator reaches it over one held-open RPC.
+ *           the coordinator reaches it over one held-open RPC. Both ends of
+ *           that RPC are here: `PeerProcessHost` calls it, `PeerHost` serves it.
  *
  * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
@@ -63,13 +64,16 @@
  * {@link HOSTED_WEBSOCKET_KEY_HEADER} — and a per-process capability makes
  * that pair unforgeable by anything that did not open the process.
  */
-import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { ISOLATE_NETWORK, networkRef, workspaceNetwork, } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
-import { ProcessHostLost, } from './process-fabric.js';
+import { ProcessHostLost, residentBootSpecSchema, } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
@@ -170,6 +174,38 @@ export function isolateToken() {
         _isolateToken = crypto.randomUUID();
     return _isolateToken;
 }
+/**
+ * Options the coordinator hands a hosting peer. Parsed on the peer, because a
+ * sibling accepts them from whoever calls it.
+ */
+const HostProcessOptsSchema = z.object({
+    /** Full doId of the coordinator session (SUPERVISOR routing target). */
+    coordinatorDoId: z.string().min(1),
+    /** The coordinator's route, minted into the process's SUPERVISOR binding. */
+    route: z.object({
+        supervisorEntrypoint: z.string().min(1),
+        hostNamespace: z.string().min(1),
+        hostDispatchMethod: z.string().min(1),
+    }).optional(),
+    /** Supervisor-assigned pid of the process entry on the coordinator. */
+    pid: z.number().int().positive(),
+    /** Trusted identity of this concrete resident-host incarnation. */
+    writerId: z.string().uuid(),
+    /** The coordinator instance's delivery incarnation, minted into the SUPERVISOR binding (ResidentSupervisorProps). */
+    hostIncarnation: z.string().uuid().optional(),
+    /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
+    network: z.object({
+        egress: z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
+            && 'fetch' in value && typeof value.fetch === 'function' && 'connect' in value && typeof value.connect === 'function'),
+        id: z.string().min(1),
+    }).optional(),
+    /** Keyed dynamic-worker identity on the peer's loader. */
+    workerKey: z.string().min(1),
+    /** Unforgeable capability for the fetch-semantic WebSocket hop. */
+    webSocketCapability: z.string().uuid(),
+    /** Opaque arguments forwarded to the runner's startProcess. */
+    startArgs: z.unknown().optional(),
+});
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
  * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
@@ -471,6 +507,397 @@ class PeerProcessHost {
             .finally(() => disposeRpcResource(stub));
         this.ctx.waitUntil(cancelled);
         return cancelled;
+    }
+}
+/**
+ * How long a boot-payload or routed-HTTP leg waits for its process's host
+ * record. Normally zero: the coordinator issues `hostProcess` first and it
+ * registers before its first await. The wait exists so neither leg can lose a
+ * race with RPC delivery order.
+ */
+const HOSTED_RECORD_WAIT_MS = 30_000;
+/**
+ * Live production DO storage keys: one row per process this host holds for a
+ * coordinator, while it holds it. Never rename (a migration).
+ */
+const HOSTING_KEY_PREFIX = 'hosting:';
+/**
+ * How often a host holding a process looks for its own reset: the resident
+ * keep-alive's cadence, so the session learns of it within one cadence.
+ */
+export const HOSTING_WATCH_MS = RESIDENT_KEEPALIVE_MS;
+/**
+ * Whole-file reads for a boot spec's by-path members, in ranges. This is the
+ * one thing a peer does differently from a coordinator, and it is a PARAMETER
+ * of `processes().spawn` rather than a branch inside it: the coordinator reads
+ * its own disk synchronously, a peer reads the same disk over the supervisor.
+ *
+ * Ranged because these are the session's largest files — a ruby
+ * interpreter+stdlib image is 34.3 MiB — and workerd's 32 MiB ceiling applies
+ * to each returned VALUE, not to the call. UNCACHED for the same reason the
+ * coordinator's own reader is: caching a 34 MiB blob in a 32 MiB LRU evicts
+ * everything the session was using and holds the blob for the session's life.
+ *
+ * The credential is the PROCESS's, not the kernel's, because that is what a
+ * supervisor RPC carries and no substrate should be able to read more than the
+ * process it hosts. Boot-spec members are reachable under it by construction:
+ * the image store is kernel-owned mode 0644 precisely so any process can read
+ * it, and the installed runtime images are world-readable too.
+ */
+const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
+function peerDiskReader(supervisor) {
+    const fs = bindingSupervisor(supervisor);
+    return { readFile: (path) => readSupervisorFile(fs, path) };
+}
+async function readSupervisorFile(fs, path) {
+    const stat = await fs.stat(path);
+    const size = Number(stat?.size);
+    if (!Number.isSafeInteger(size) || size < 0) {
+        throw new Error(`Nimbus: cannot size '${path}' for a resident process's module map`);
+    }
+    const out = new Uint8Array(size);
+    for (let offset = 0; offset < size;) {
+        const chunk = await fs.fsReadRangeUncached(path, offset, Math.min(RESIDENT_READ_RANGE_BYTES, size - offset));
+        if (!chunk || chunk.byteLength === 0) {
+            throw new Error(`Nimbus: '${path}' returned no bytes at offset ${offset}`);
+        }
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return out;
+}
+/**
+ * The processes this Durable Object hosts for its siblings, and every leg a
+ * coordinator's {@link PeerProcessHost} calls on it. One per object: its
+ * records are this instance's memory, and its hosting rows are the storage a
+ * next incarnation reads to report what the platform reset under it.
+ */
+export class PeerHost {
+    ctx;
+    options;
+    records = new Map();
+    waiters = new Map();
+    env;
+    bootSpec;
+    constructor(ctx, env, options) {
+        this.ctx = ctx;
+        this.options = options;
+        this.env = (env ?? {});
+        this.bootSpec = residentBootSpecSchema(options.stage);
+    }
+    /**
+     * Placement probe: this peer's module-scope isolate token, so the
+     * coordinator can verify the peer landed in a distinct workerd process — the
+     * same token means a shared process, which is the CPU sharing a peer exists
+     * to escape.
+     */
+    probe() {
+        return { isolateToken: isolateToken() };
+    }
+    /**
+     * Host a resident process. Held open by the coordinator for the process's
+     * whole life, and it is that held call which keeps this object resident —
+     * the hosting watch is armed to report a reset, never to wake a host back
+     * up. Resolves when the coordinator releases the process; rejects if it
+     * could not be opened at all.
+     *
+     * The runner's start CONTRACT never crosses. The coordinator's fabric decides
+     * from it when the process is over and releases, which cancels this call — so
+     * this leg holds uniformly and has no idea whether it is hosting a TUI or a
+     * server.
+     *
+     * If the coordinator dies, workerd cancels this inbound call, the facet is
+     * released in the `finally` below, and the process dies with it: a hosting
+     * peer never outlives its parent session.
+     */
+    async host(boot, opts) {
+        const hostOpts = HostProcessOptsSchema.parse(opts);
+        const spec = this.bootSpec.parse(boot);
+        const { workerKey } = hostOpts;
+        const supervisor = {
+            ...supervisorBindingProps(this.ctx, hostOpts.pid, {
+                writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
+                network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
+            }),
+            ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
+        };
+        let cancel = () => { };
+        const cancelled = new Promise((resolve) => { cancel = resolve; });
+        let settleFacet = () => { };
+        let failFacet = () => { };
+        const facetPromise = new Promise((resolve, reject) => {
+            settleFacet = resolve;
+            failFacet = reject;
+        });
+        let settleStarted = () => { };
+        let failStarted = () => { };
+        const startedPromise = new Promise((resolve, reject) => {
+            settleStarted = resolve;
+            failStarted = reject;
+        });
+        // Nothing awaits these unless a leg asks for them; keep the runtime from
+        // reporting them as unhandled while the process is healthy.
+        facetPromise.catch(() => { });
+        startedPromise.catch(() => { });
+        this.register(workerKey, {
+            facet: facetPromise,
+            started: startedPromise,
+            webSocketCapability: hostOpts.webSocketCapability,
+            cancel,
+        });
+        // What this host's next incarnation needs to tell the session it lost the
+        // process: kept while it hosts, with the alarm that will look
+        // (watchFired). Both are in place before the process exists; a host that
+        // cannot keep them does not host it.
+        const hostingKey = `${HOSTING_KEY_PREFIX}${workerKey}`;
+        const hosting = {
+            coordinatorDoId: hostOpts.coordinatorDoId,
+            ...(hostOpts.route === undefined ? {} : { route: hostOpts.route }),
+            workerKey,
+            capability: hostOpts.webSocketCapability,
+        };
+        let facet;
+        try {
+            await this.ctx.storage.put(hostingKey, hosting);
+            await this.armWatch();
+            facet = processes(this.ctx, this.env).spawn(() => peerDiskReader(supervisor), supervisor, {
+                pid: hostOpts.pid,
+                workerKey,
+                boot: spec,
+                writerId: hostOpts.writerId,
+                startArgs: hostOpts.startArgs,
+            });
+            settleFacet(facet);
+            facet.started.then(settleStarted, failStarted);
+            // The facet lost here fails the held leg, which is how the session hears of it.
+            await Promise.race([cancelled, facet.lost]);
+            return { ok: true };
+        }
+        catch (e) {
+            failFacet(e);
+            failStarted(e);
+            throw e;
+        }
+        finally {
+            // The record OUTLIVES the process on purpose, and a peer hosts exactly one
+            // (its name carries the pid), so this is one entry per host for the life of
+            // the instance. Dropping it would make a request that arrives after a kill
+            // wait out `HOSTED_RECORD_WAIT_MS` and then blame the wrong thing; keeping
+            // it routes that request into the released facet, which is exactly what a
+            // coordinator-hosted one does — it says the process is no longer running.
+            await facet?.release();
+            await this.ctx.storage.delete(hostingKey);
+        }
+    }
+    /**
+     * Settle once the process is OPEN on this peer, or reject with whatever
+     * stopped it from opening.
+     *
+     * This exists so a host failure surfaces at the same place on both substrates.
+     * Opening a facet of your own DO either throws or does not, before the fabric
+     * has a handle; opening one on a peer is a message, and without this the
+     * coordinator would return a handle for a process that never existed and only
+     * discover it later, through `done`.
+     */
+    async awaitOpen(workerKey) {
+        const record = await this.awaitRecord(workerKey);
+        await record.facet;
+        return { ok: true };
+    }
+    /**
+     * Read back the runner's startProcess payload. `host` started it; this
+     * never starts anything, so a coordinator asking twice gets the same answer
+     * a local facet would have returned inline — and for a `lifetime` runner it
+     * settles at exit, exactly as the local one does.
+     */
+    async awaitBoot(workerKey) {
+        const record = await this.awaitRecord(workerKey);
+        return { payload: await record.started };
+    }
+    /**
+     * Inbound HTTP for a port owned by a process this peer hosts.
+     *
+     * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
+     * rejects it with "Entrypoints to dynamically-loaded workers cannot be
+     * transferred to other Workers", because the object belongs to the
+     * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
+     * body is a plain ReadableStream, which RPC transfers with flow control. So
+     * the leg carries the parts and rebuilds the object on each side: no
+     * buffering, no size ceiling, and an SSE or chunked body still flows live.
+     *
+     * The response body is re-piped through an identity stream owned by THIS
+     * isolate before it is returned, for the same reason the parts exist at all:
+     * what leaves here must not be an object the loaded worker owns.
+     */
+    async routeHttp(workerKey, wire) {
+        const record = await this.awaitRecord(workerKey);
+        const facet = await record.facet;
+        const headers = new Headers();
+        for (const [k, v] of wire.headers)
+            headers.append(k, v);
+        const init = { method: wire.method, headers };
+        if (wire.body) {
+            init.body = wire.body;
+            init.duplex = 'half';
+        }
+        const response = await facet.handleHttpRequest(new Request(wire.url, init));
+        let body = null;
+        if (response.body) {
+            const { readable, writable } = new IdentityTransformStream();
+            this.ctx.waitUntil(response.body.pipeTo(writable).catch(() => { }));
+            body = readable;
+        }
+        return {
+            status: response.status,
+            statusText: response.statusText,
+            headers: headerPairs(response.headers),
+            body,
+        };
+    }
+    /**
+     * The peer end of the upgrade hop, or null for a request that is not one.
+     * Reached by `fetch` rather than RPC, so the 101 and its live socket travel
+     * back as themselves. This request is a sibling coordinator's, not a
+     * browser's, so it is answered before any route of the object's own, and
+     * both headers are stripped so the process never sees the transport that
+     * carried it.
+     *
+     * The workerKey names a process and is derivable from a pid, so it does not
+     * authorise on its own; the capability is minted by whoever opened the process
+     * and never leaves the two objects that hold it. A mismatch is a 404 and not
+     * a 403, so the route reveals nothing about what this peer is hosting.
+     */
+    routeWebSocket(request) {
+        const workerKey = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
+        if (!workerKey)
+            return null;
+        if (!isWebSocketUpgradeRequest(request.headers)) {
+            return Promise.resolve(new Response('Expected WebSocket', { status: 426 }));
+        }
+        const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+        if (!capability)
+            return Promise.resolve(new Response('Not found', { status: 404 }));
+        const headers = new Headers(request.headers);
+        headers.delete(HOSTED_WEBSOCKET_KEY_HEADER);
+        headers.delete(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+        return this.awaitRecord(workerKey).then(async (record) => {
+            if (record.webSocketCapability !== capability)
+                return new Response('Not found', { status: 404 });
+            const facet = await record.facet;
+            return facet.handleWebSocketRequest(new Request(request.url, { method: request.method, headers }));
+        });
+    }
+    /**
+     * Deterministic kill of a hosted process — the same teardown a coordinator
+     * applies to a facet of its own, and it does not answer until it has
+     * happened. The facet is released HERE rather than left to the held call's
+     * `finally`, because a caller that has to guess whether the process is really
+     * gone cannot retire the writer identity behind it.
+     */
+    async cancel(workerKey) {
+        const record = this.records.get(workerKey);
+        if (!record)
+            return { cancelled: false };
+        const facet = await record.facet.catch(() => null);
+        await facet?.release();
+        try {
+            record.cancel();
+        }
+        catch { /* best-effort */ }
+        return { cancelled: true };
+    }
+    /**
+     * The hosting alarm. A row whose process this incarnation does not hold is
+     * one the platform reset this object under (a new incarnation remembers
+     * nothing of the processes it held, and the held leg that would have said so
+     * may stay open, measured 2026-10-07): the session is told at once, and the
+     * row is dropped once the session has answered, whatever it answered. A row
+     * the session did not hear about is kept, and so is the watch: the next
+     * alarm tells it again. A failure to read or drop the rows is retried the
+     * same way, since the dispatcher forgets a reason whose handler throws.
+     * Answers when to look again, or null when nothing is left to watch.
+     */
+    async watchFired() {
+        const again = Date.now() + HOSTING_WATCH_MS;
+        try {
+            const rows = await this.ctx.storage.list({ prefix: HOSTING_KEY_PREFIX });
+            let watching = false;
+            for (const [key, row] of rows) {
+                if (this.records.has(row.workerKey)) {
+                    watching = true;
+                    continue;
+                }
+                try {
+                    const ns = hostNamespaceBinding(this.env, 'ProcessFabric host', row.route);
+                    await hostOpDispatch(ns.get(ns.idFromString(row.coordinatorDoId)), 'ProcessFabric host', row.route)({
+                        op: 'hostLost',
+                        args: [row.workerKey, row.capability],
+                    });
+                }
+                catch (error) {
+                    console.warn(`[process-host] could not tell session ${row.coordinatorDoId.slice(-12)} that its process ${row.workerKey} was lost; trying again:`, errorText(error));
+                    watching = true;
+                    continue;
+                }
+                await this.ctx.storage.delete(key);
+            }
+            return watching ? again : null;
+        }
+        catch (error) {
+            console.warn('[process-host] the hosting watch could not read or drop its records; trying again:', errorText(error));
+            return again;
+        }
+    }
+    /** One that cannot be armed throws, and the host refuses the process rather than hold one nothing would report the loss of. */
+    async armWatch() {
+        try {
+            await this.options.scheduleWatch(Date.now() + HOSTING_WATCH_MS);
+        }
+        catch (error) {
+            throw new Error(`Nimbus: this host could not arm the alarm that reports its own reset, so it does not host the process: ${errorText(error)}`);
+        }
+    }
+    register(workerKey, record) {
+        this.records.set(workerKey, record);
+        const pending = this.waiters.get(workerKey);
+        if (!pending)
+            return;
+        this.waiters.delete(workerKey);
+        for (const notify of pending)
+            notify(record);
+    }
+    /**
+     * The record for `workerKey`, waiting briefly if the host leg has not landed
+     * yet — the coordinator issues it first and it registers before its first
+     * await, so normally there is nothing to wait for, but RPC delivery order is
+     * not a guarantee.
+     *
+     * A host runs exactly ONE process: its Durable Object name carries the pid
+     * (`<doId>:proc:<pid>:<attempt>`) and pids never repeat, being strided by
+     * generation. So a key this host is not hosting is a key it never will host,
+     * and parking a waiter for it would let anyone holding a stub to this object
+     * accumulate map entries and 30-second timers here by the thousand. Once
+     * something is known, an unknown key is refused immediately instead.
+     */
+    awaitRecord(workerKey) {
+        const existing = this.records.get(workerKey);
+        if (existing)
+            return Promise.resolve(existing);
+        if (this.records.size > 0 || (this.waiters.size > 0 && !this.waiters.has(workerKey))) {
+            return Promise.reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
+        }
+        return new Promise((resolve, reject) => {
+            const pending = this.waiters.get(workerKey) ?? new Set();
+            const notify = (record) => { clearTimeout(timer); resolve(record); };
+            const timer = setTimeout(() => {
+                pending.delete(notify);
+                if (pending.size === 0)
+                    this.waiters.delete(workerKey);
+                reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
+            }, HOSTED_RECORD_WAIT_MS);
+            pending.add(notify);
+            this.waiters.set(workerKey, pending);
+        });
     }
 }
 /**

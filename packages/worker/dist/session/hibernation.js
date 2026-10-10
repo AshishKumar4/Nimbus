@@ -435,7 +435,7 @@ export function scheduleHibFlush(host, ctx) {
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
- *   - `'hosting-watch'` → hostingWatch (session/rpc.ts hostingWatchFired):
+ *   - `'hosting-watch'` → hostingWatch (fabric PeerHost.watchFired):
  *     a host holding processes for other sessions tells them of its own
  *     reset; re-arms while it holds one.
  */
