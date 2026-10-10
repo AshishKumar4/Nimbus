@@ -15,6 +15,7 @@ import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-htt
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
 import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
 import { httpFetchCases } from './lib/http-fetch-cases.mjs';
+import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
 import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 async function exercise(http, serve) {
@@ -126,16 +127,19 @@ async function exercise(http, serve) {
 
 const node = spawnSync('node', ['--input-type=module', '-e', `
   import http from 'node:http';
+  import dns from 'node:dns';
+  import net from 'node:net';
   const exercise = ${exercise.toString()};
   const httpFetchCases = ${httpFetchCases.toString()};
+  const httpFetchReviewCases = ${httpFetchReviewCases.toString()};
   const result = await exercise(http, (port, request) => {
     const url = new URL(request.url); url.hostname = '127.0.0.1'; url.port = String(port);
     return fetch(url, { method: request.method, headers: request.headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, duplex: 'half' });
   });
-  console.log(JSON.stringify({ result, client: await httpFetchCases(http) }));
+  console.log(JSON.stringify({ result, client: await httpFetchCases(http), review: await httpFetchReviewCases(http, dns, net) }));
 `], { encoding: 'utf8', timeout: 30000 });
 assert.equal(node.status, 0, node.stderr);
-const { result: expected, client: expectedClient } = JSON.parse(node.stdout);
+const { result: expected, client: expectedClient, review: expectedReview } = JSON.parse(node.stdout);
 assert.equal(expected.duplicateCode, 'EADDRINUSE');
 assert.equal(expected.allocated, true);
 assert.deepEqual(expected.stream, ['first', 'second']);
@@ -203,6 +207,7 @@ writeFileSync(join(dir, 'main.js'), `
 import * as __real_http from 'node:http';
 import * as __real_https from 'node:https';
 import * as __real_net from 'node:net';
+import * as __real_dns from 'node:dns';
 import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
 const builtins = {}, __pendingIO = [], registered = new Map();
 let nextPort = 49152;
@@ -214,11 +219,14 @@ const __supervisor = {
 const __nimbusInboundBarrier = async () => {};
 const __nimbusProcessExitPromise = Promise.withResolvers().promise;
 globalThis.__nimbusRawSetTimeout = setTimeout;
+const previousHttp = { ...__real_http.default, request: __real_http.default.request };
+const previousAddress = __real_http.default.Server.prototype.address;
 ${NODE_ERROR_PREAMBLE}
 ${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
 const exercise = ${exercise.toString()};
 const httpFetchCases = ${httpFetchCases.toString()};
+const httpFetchReviewCases = ${httpFetchReviewCases.toString()};
 const clientLifetime = ${clientLifetime.toString()};
 const pendingListenLifetime = ${pendingListenLifetime.toString()};
 const pendingCloseLifetime = ${pendingCloseLifetime.toString()};
@@ -228,7 +236,7 @@ export default { async fetch(request) {
   if (new URL(request.url).pathname === '/ready') return new Response('ready');
   const http = builtins.http;
   const mode = new URL(request.url).searchParams.get('case');
-  if (mode === 'client-parity') {
+  if (mode === 'client-parity' || mode === 'review-parity' || mode === 'review-previous') {
     const nativeFetch = globalThis.fetch;
     globalThis.fetch = (url, init) => {
       const incoming = new Request(url, init);
@@ -236,7 +244,11 @@ export default { async fetch(request) {
       headers.set('X-Nimbus-Port', new URL(incoming.url).port);
       return globalThis.__nimbusServeHttp(new Request(incoming, { headers }));
     };
-    try { return Response.json(await httpFetchCases(http)); }
+    try {
+      if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, __real_dns.default, __real_net.default, (server) => previousAddress.call(server)));
+      if (mode === 'review-parity') return Response.json(await httpFetchReviewCases(http, builtins.dns ?? __real_dns.default, __real_net.default));
+      return Response.json(await httpFetchCases(http));
+    }
     finally { globalThis.fetch = nativeFetch; }
   }
   if (mode === 'client' || mode === 'error' || mode === 'cancel') return Response.json(await clientLifetime(builtins.https, __nimbusRunEntrypointToExit, mode));
@@ -276,6 +288,10 @@ try {
   assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
   const gaps = JSON.parse(readFileSync(new URL('../fixtures/node-http-fetch-gaps.json', import.meta.url), 'utf8'));
   assert.deepEqual({ node: expectedClient.gaps, nimbus: actualClient.gaps }, gaps, 'physical socket gaps stay pinned until Outbound TCP');
+  const previous = await (await fetch(`http://127.0.0.1:${port}/run?case=review-previous`, { signal: AbortSignal.timeout(10000) })).json();
+  const review = await (await fetch(`http://127.0.0.1:${port}/run?case=review-parity`, { signal: AbortSignal.timeout(10000) })).json();
+  console.log('HTTP_REVIEW_PARITY ' + JSON.stringify({ node: expectedReview, previous, nimbus: review }));
+  assert.deepEqual(review, expectedReview, 'review regressions match host Node and are compared with the previous native shim');
   const snapshots = {};
   for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {
     const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
