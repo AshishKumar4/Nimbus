@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
-import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats, ReadLeaseTerms } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -96,10 +96,7 @@ export interface ResidentNamespace {
 /** What a barrier did (ResidentNamespace.barrier). */
 export interface ResidentBarrier {
     readonly ok: boolean;
-    readonly readLease?: {
-        readonly owner: string;
-        readonly trustMs: number;
-    };
+    readonly readLease?: ReadLeaseTerms;
 }
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
 export interface PinnedContent {

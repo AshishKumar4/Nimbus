@@ -561,9 +561,13 @@ function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
-/** The engine keys of `view`'s mount points: none of what is at or under one is the engine's. */
+/**
+ * The engine keys of `view`'s mount points, a source absent now included
+ * (one can answer later, with no mount or unmount): none of what is at or
+ * under one is the engine's.
+ */
 function mountedKeys(view) {
-    return view.mounts().flatMap((mount) => (mount.point === '/' ? [] : [mount.point.slice(1)]));
+    return view.mountPoints().flatMap((point) => (point === '/' ? [] : [point.slice(1)]));
 }
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {

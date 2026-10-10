@@ -1300,11 +1300,7 @@ export declare class SqliteVFS {
      * engine's).
      */
     breakReadLeases(): void;
-    /**
-     * Commit a generation of a publication's own, so it has a tick: one that
-     * writes nothing, or that rewrites the row (or tombstone) at each of
-     * `moved` at it.
-     */
+    /** Commit a generation that writes nothing, so a publication has a tick of its own. */
     private advanceGeneration;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     private static entryBytes;
@@ -1446,6 +1442,13 @@ export declare class SqliteVFS {
     private hold;
     /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
     private publishHeld;
+    /**
+     * Rewrite the row (or tombstone) at each of `paths`, unchanged, at a new
+     * generation, in the engine's bounded plans (a transaction each, as many as
+     * its bounds take), and answer the last: each path then reports, from
+     * SQLite, a generation no cursor handed out before has reached.
+     */
+    private promote;
     /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
     private endLease;
     /**

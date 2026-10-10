@@ -254,6 +254,12 @@ export interface ProcessFsClient {
      * ask the session.
      */
     readTrusted(): boolean;
+    /**
+     * What the read lease the process holds does not vouch for (its terms,
+     * VfsAcquireResult.readLease's `uncovered`), as the answer that last
+     * confirmed it said; none while it holds none.
+     */
+    readUncovered(): readonly string[];
     /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
     readLeaseAsk(): ReadLeaseAsk | null;
     /**
@@ -261,18 +267,19 @@ export interface ProcessFsClient {
      * whether or not the barrier applies it: the process holds it, answers its
      * recalls from now on, and gives it back. Trusted only once applied (readLeased).
      */
-    readLeaseAnswered(lease: {
-        owner: string;
-    }): void;
+    readLeaseAnswered(lease: ReadLeaseTerms): void;
     /**
      * The barrier that asked with `ask` applied the answer carrying `lease`:
      * trusted until `ask.at + lease.trustMs` while the process logs nothing more.
      */
-    readLeased(lease: {
-        owner: string;
-        trustMs: number;
-    }, ask: ReadLeaseAsk): void;
+    readLeased(lease: ReadLeaseTerms, ask: ReadLeaseAsk): void;
     stats(): ProcessFsStats;
+}
+/** A read lease as an answer carries it (VfsAcquireResult.readLease). */
+export interface ReadLeaseTerms {
+    readonly owner: string;
+    readonly trustMs: number;
+    readonly uncovered: readonly string[];
 }
 /**
  * When a barrier asked for the read lease (the client's clock), and the log
