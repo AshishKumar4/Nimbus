@@ -363,7 +363,15 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
             // of a pack-sized parent, and pako's pooled output as whole views of
             // a shared buffer (both detached a later wave in production). So the
             // bytes are copied here, once, unconditionally.
-            const buf = typeof data === 'string' ? textEncoder.encode(data) : data.slice();
+            let buf;
+            if (typeof data === 'string') {
+                buf = textEncoder.encode(data);
+            }
+            else {
+                // One copy, by set(): the wave's encoder slices chunk views of it (tests/unit/git-network-facet-wave-memory.mjs).
+                buf = new Uint8Array(data.length);
+                buf.set(data);
+            }
             return bufferMutation(async () => {
                 const now = Date.now();
                 ensureMetadataParents(p, now);

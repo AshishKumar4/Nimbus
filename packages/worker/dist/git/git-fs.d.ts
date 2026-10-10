@@ -53,7 +53,6 @@ export declare function createGitFs<P>(backend: GitFsBackend, packs: P): {
         rmdir: (filepath: string, options?: {
             recursive?: boolean;
         }) => Promise<void>;
-        rm: (filepath: string) => Promise<void>;
         stat: (filepath: string) => Promise<{
             isFile: () => boolean;
             isDirectory: () => boolean;
