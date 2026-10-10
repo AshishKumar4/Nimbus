@@ -2590,8 +2590,6 @@ async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
         await ctx.stderr.write(unmergedRefusal('Merging'));
         return 128;
     }
-    if (await sparseMergeRefused(ctx, wrepo))
-        return 128;
     const idents = await commitIdents(ctx, git, fs, dir);
     if ('error' in idents) {
         await ctx.stderr.write(idents.error);
@@ -2616,17 +2614,6 @@ async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
     if (!quiet)
         await ctx.stdout.write(`Merged ${theirs}\n`);
     return 0;
-}
-/**
- * A merge in a sparse checkout, refused (true) before anything is touched or
- * fetched: the merge (isomorphic-git's) reads neither skip-worktree entries
- * nor the index version they need, until it does.
- */
-async function sparseMergeRefused(ctx, wrepo) {
-    if (!await wrepo.isSparse())
-        return false;
-    await ctx.stderr.write('fatal: merging in a sparse checkout is not supported yet; nothing was changed\n');
-    return true;
 }
 /** What git's remove_junk says of a clone whose checkout failed after its objects were in (builtin/clone.c junk_leave_repo_msg). */
 const JUNK_LEAVE_REPO_WARNING = "warning: Clone succeeded, but checkout failed.\nYou can inspect what was checked out with 'git status'\nand retry with 'git restore --source=HEAD :/'\n\n";
@@ -3453,10 +3440,6 @@ filesystem) {
                     await ctx.stderr.write(pullIdents.error);
                     return 128;
                 }
-                // Its merge would be refused: nothing is fetched either.
-                const pullRepo = await discoverRepo(repoVfs, dir);
-                if (pullRepo?.worktree && await sparseMergeRefused(ctx, worktreeRepo(ctx, git, repoVfs, fs, pullRepo.gitdir, pullRepo.worktree)))
-                    return 128;
                 if (!quiet)
                     ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
                 const started = Date.now();

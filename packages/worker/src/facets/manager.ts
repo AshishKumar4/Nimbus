@@ -5678,8 +5678,8 @@ export class FacetManager {
 
   /**
    * The actor hosting `workerKey` reports, from its own next incarnation,
-   * that the platform reset it under the process (session/rpc.ts
-   * hostingWatchFired). True when it was this session's open process, which
+   * that the platform reset it under the process (fabric
+   * PeerHost.watchFired). True when it was this session's open process, which
    * is now lost (ProcessHost.hostLost).
    */
   hostLost(workerKey: string, capability: string): boolean {
@@ -5893,19 +5893,6 @@ export class FacetManager {
     };
   }
 
-  /**
-   * The kernel-scoped VFS the durable image store reads and writes through —
-   * `.nimbus/images/<sha256>` is session kernel data, not user content.
-   */
-  private _imageVfs(): SqliteVFS {
-    const vfs = this.vfs;
-    if (!vfs) {
-      throw new Error(
-        'Nimbus: a durable spawn needs a session filesystem to persist its launch image',
-      );
-    }
-    return vfs;
-  }
   /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
@@ -9303,7 +9290,7 @@ export class FacetManager {
         // of what was written, never placeholder strings. An embedder-owned
         // spawn is given digests by its own bookkeeping instead.
         const image = opts.durable.image
-          ?? await persistDurableWorkerImage(this._imageVfs(), workerCode, {
+          ?? await persistDurableWorkerImage(this._imageBlobs(), workerCode, {
             modules: opts.modules ?? {},
             ...(opts.env !== undefined ? { env: opts.env } : {}),
             vfsWasmModules: opts.vfsWasmModules,

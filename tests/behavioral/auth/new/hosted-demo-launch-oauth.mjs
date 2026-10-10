@@ -6,7 +6,6 @@
 import { readFileSync } from 'node:fs';
 import { makeAsserter } from '../../_driver.mjs';
 import { launchBrowser } from '../../_runtime-behavioral-template.mjs';
-import { mock } from 'bun:test';
 
 const a = makeAsserter('auth/new/hosted-demo-launch-oauth');
 const {
@@ -17,10 +16,6 @@ const {
 const {
   loadNimbusAgentOAuthFromRequest,
 } = await import('../../../../packages/worker/src/session/agent-oauth.ts');
-// The SDK worker barrel loads cloudflare: builtins unavailable in this runner.
-// Its cookie export is the production pure implementation, never a fake.
-const cookieExports = await import('../../../../packages/worker/src/session/agent-oauth.ts');
-mock.module('@nimbus-sh/sdk/worker', () => cookieExports);
 const { createDemoAgentAuthCookie } = await import('../../../../apps/hosted-demo/src/demo-agent-auth.ts');
 
 const origin = 'https://nimbus.example.com';

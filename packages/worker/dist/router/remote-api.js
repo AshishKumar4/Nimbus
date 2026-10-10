@@ -10,6 +10,7 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
+import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 const RemoteRpcBodySchema = z.object({
     profile: z.string().optional(),
@@ -399,31 +400,14 @@ function configuredPreinstall(profile, requested) {
     return Array.isArray(requested) ? requested.map((s) => String(s)) : [];
 }
 function assertRuntimeForLanguage(ctx, language, install) {
-    if (language === 'python' || language === 'ruby') {
-        assertRuntimeAllowed(ctx, language, install === 'ifMissing' ? 'onDemand' : 'use');
-    }
-    else if (language === 'shell') {
-        assertRuntimeAllowed(ctx, 'shell', 'use');
-    }
-    else if (language === 'javascript' || language === 'typescript') {
-        assertRuntimeAllowed(ctx, 'node', 'use');
-    }
+    const requirement = codeRuntimeRequirement(language, install);
+    if (requirement)
+        assertRuntimeAllowed(ctx, requirement.spec, requirement.action);
 }
 function assertRuntimeAllowed(ctx, spec, action) {
-    const policy = ctx.profile.runtimes;
-    const name = runtimeName(spec);
-    if (policy?.allow && !policy.allow.includes(name)) {
-        throw apiError(`Nimbus runtime '${name}' is not allowed by sandbox profile '${ctx.profileName}'`, 'E_RUNTIME_NOT_ALLOWED', 403);
-    }
-    if (action !== 'onDemand' || policy?.onDemand !== false)
-        return;
-    const preinstalled = new Set((policy.preinstall ?? []).map(runtimeName));
-    if (!preinstalled.has(name)) {
-        throw apiError(`Nimbus runtime '${name}' is not preinstalled and on-demand runtime installs are disabled by sandbox profile '${ctx.profileName}'`, 'E_RUNTIME_ON_DEMAND_DISABLED', 403);
-    }
-}
-function runtimeName(spec) {
-    return String(spec).split('@')[0];
+    const failure = runtimePolicyError(ctx.profile.runtimes, spec, action, ctx.profileName);
+    if (failure)
+        throw apiError(failure.message, failure.code, 403);
 }
 function objectArg(value) {
     return value && typeof value === 'object' && !Array.isArray(value)

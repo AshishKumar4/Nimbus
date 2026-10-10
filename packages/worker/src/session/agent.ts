@@ -24,23 +24,18 @@ import {
   base64UrlDecode,
   decodeJsonBase64Url,
   encodeJsonBase64Url,
-  pkceChallenge,
-  randomBase64Url,
-  sealJson,
-  unsealJson,
 } from '@nimbus-sh/core/_shared/crypto.js';
 import {
   clearNimbusAgentOAuthCookie,
-  fetchNimbusCloudflareAccounts,
-  isNimbusCloudflareAccountId,
   isNimbusTenantSegment,
-  NIMBUS_CF_OAUTH_AUTH_URL,
-  readNimbusCookie,
   readNimbusAgentCookieSecret,
   readNimbusAgentOAuthConfig,
-  requestNimbusCloudflareOAuthToken,
-  serializeNimbusCookie,
 } from './agent-oauth.js';
+import {
+  beginNimbusCloudflareOAuth, exchangeNimbusCloudflareOAuthCode,
+  createNimbusOAuthStateCookie, loadNimbusOAuthStateCookie,
+  fetchNimbusCloudflareAccounts, isNimbusCloudflareAccountId, serializeNimbusCookie,
+} from '@nimbus-sh/core/_shared/oauth.js';
 import {
   clearSessionAiCredential,
   createSessionAiModel,
@@ -110,7 +105,6 @@ interface OAuthStateCookie extends OAuthStatePayload {
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_STORED_MESSAGES = 80;
 const MAX_TOOL_RESULT_CHARS = 8000;
 const STREAMING_TEXT_FLUSH_MS = 500;
@@ -251,12 +245,10 @@ async function oauthStart(self: Host, request: Request, url: URL): Promise<Respo
     return json({ error: 'invalid session route', code: 'E_AGENT_SESSION' }, 400);
   }
 
-  const nonce = randomBase64Url(24);
-  const codeVerifier = randomBase64Url(48);
-  const codeChallenge = await pkceChallenge(codeVerifier);
-  const redirectUri = config.redirectUri;
-  const now = Date.now();
-  const payload: OAuthStatePayload = { v: 1, nonce, sessionId, tenantSegment, exp: now + OAUTH_STATE_TTL_MS };
+  const { transaction, authUrl } = await beginNimbusCloudflareOAuth({
+    clientId: config.oauthClientId, redirectUri: config.redirectUri, scopes: config.oauthScopes,
+  });
+  const payload: OAuthStatePayload = { v: 1, nonce: transaction.nonce, sessionId, tenantSegment, exp: transaction.expiresAt };
   let state: string;
   try {
     state = await signAgentOAuthState(payload, self.env);
@@ -266,18 +258,10 @@ async function oauthStart(self: Host, request: Request, url: URL): Promise<Respo
       code: 'E_AGENT_COOKIE_SECRET',
     }, 409);
   }
-  const stored: OAuthStateCookie = { ...payload, codeVerifier, redirectUri, createdAt: now };
-
-  const authUrl = new URL(NIMBUS_CF_OAUTH_AUTH_URL);
-  authUrl.searchParams.set('client_id', config.oauthClientId);
-  authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('redirect_uri', redirectUri);
+  const stored: OAuthStateCookie = {
+    ...payload, codeVerifier: transaction.codeVerifier, redirectUri: transaction.redirectUri, createdAt: transaction.createdAt,
+  };
   authUrl.searchParams.set('state', state);
-  authUrl.searchParams.set('code_challenge', codeChallenge);
-  authUrl.searchParams.set('code_challenge_method', 'S256');
-  if (config.oauthScopes.length > 0) {
-    authUrl.searchParams.set('scope', config.oauthScopes.join(' '));
-  }
 
   const headers = new Headers();
   try {
@@ -311,18 +295,18 @@ async function oauthCallback(self: Host, request: Request, url: URL): Promise<Re
   }
 
   try {
-    const token = await exchangeCode(self, code, stored.codeVerifier, stored.redirectUri);
-    const accessToken = String(token.access_token || '');
-    if (!accessToken) throw new Error('Cloudflare did not return an access token');
+    const config = readNimbusAgentOAuthConfig(self.env, new URL(stored.redirectUri).origin);
+    const token = await exchangeNimbusCloudflareOAuthCode({ clientId: config.oauthClientId, clientSecret: config.oauthClientSecret }, stored, code);
+    const accessToken = token.accessToken;
     const accounts = await fetchNimbusCloudflareAccounts(accessToken).catch(() => []);
     // Straight into the session, not into a cookie: this callback is already
     // being served by the session itself, and the session is what needs the
     // credential in order to answer in-session inference.
     await storeSessionAiCredential(self, {
       accessToken,
-      refreshToken: token.refresh_token ? String(token.refresh_token) : undefined,
+      refreshToken: token.refreshToken,
       accountId: accounts[0]?.id ?? null,
-      expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
+      expiresAt: token.expiresAt,
     });
     const headers = new Headers();
     headers.append('Set-Cookie', clearStateCookie());
@@ -991,20 +975,10 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
   }
 }
 
-async function exchangeCode(self: Host, code: string, codeVerifier: string, redirectUri: string): Promise<any> {
-  const config = readNimbusAgentOAuthConfig(self.env, new URL(redirectUri).origin);
-  return requestNimbusCloudflareOAuthToken(config, {
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: redirectUri,
-    code_verifier: codeVerifier,
-  });
-}
-
 async function loadStateCookie(self: Host, request: Request): Promise<OAuthStateCookie | null> {
-  const value = readNimbusCookie(request, STATE_COOKIE);
-  if (!value) return null;
-  const state = await unsealCookie<OAuthStateCookie>(self, value, STATE_COOKIE_PURPOSE).catch(() => null);
+  const state = await loadNimbusOAuthStateCookie<OAuthStateCookie>(request, {
+    name: STATE_COOKIE, purpose: STATE_COOKIE_PURPOSE, secret: cookieSecret(self),
+  });
   if (!state || state.v !== 1 || !isNonce(state.nonce)) return null;
   if (!isValidSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment)) return null;
   if (!state.codeVerifier || !state.redirectUri) return null;
@@ -1012,9 +986,8 @@ async function loadStateCookie(self: Host, request: Request): Promise<OAuthState
 }
 
 async function sealStateCookie(self: Host, state: OAuthStateCookie): Promise<string> {
-  return serializeNimbusCookie(STATE_COOKIE, await sealCookie(self, state, STATE_COOKIE_PURPOSE), {
-    path: '/',
-    maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
+  return createNimbusOAuthStateCookie(state, {
+    name: STATE_COOKIE, purpose: STATE_COOKIE_PURPOSE, secret: cookieSecret(self),
   });
 }
 
@@ -1024,14 +997,6 @@ function clearStateCookie(): string {
 
 function clearAuthCookie(request: Request): string {
   return clearNimbusAgentOAuthCookie(request);
-}
-
-async function sealCookie(self: Host, value: unknown, purpose: string): Promise<string> {
-  return sealJson(value, cookieSecret(self), { purpose });
-}
-
-async function unsealCookie<T>(self: Host, value: string, purpose: string): Promise<T | null> {
-  return unsealJson<T>(value, cookieSecret(self), { purpose });
 }
 
 function cookieSecret(self: Host): string {

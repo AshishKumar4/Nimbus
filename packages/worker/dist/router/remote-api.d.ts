@@ -1,28 +1,6 @@
 import { type NimbusAuthEnv } from '../auth/index.js';
-export type NimbusRuntimeName = 'node' | 'bun' | 'npm' | 'git' | 'python' | 'ruby' | 'clang' | 'shell' | (string & {});
-export interface NimbusRuntimePolicy {
-    preinstall?: string[];
-    onDemand?: boolean;
-    allow?: NimbusRuntimeName[];
-}
-export interface NimbusSandboxProfile {
-    root?: string;
-    runtimes?: NimbusRuntimePolicy;
-    tools?: {
-        namespace?: string;
-        kind?: string;
-    };
-    preview?: {
-        baseUrl?: string;
-        pathStyle?: boolean;
-    };
-}
-export interface NimbusConfig {
-    endpoint?: string;
-    /** Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`. See the SDK's `NimbusConfig`. */
-    previewHostSuffix?: string;
-    sandboxes?: Record<string, NimbusSandboxProfile>;
-}
+import { type NimbusConfig } from '@nimbus-sh/config/sandbox';
+export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, NimbusRuntimeName } from '@nimbus-sh/config/sandbox';
 export interface NimbusRemoteApiConfig {
     /** Enable the remote programmatic sandbox API. */
     enabled?: boolean;
@@ -121,5 +99,4 @@ interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
 export declare function handleNimbusRemoteApi(request: Request, env: NimbusRemoteEnv, sdk: NimbusSdkRouterConfig | undefined): Promise<Response | null>;
 /** Whether the remote API (and with it `DELETE /s/<id>/`) is served. */
 export declare function remoteApiEnabled(sdk: NimbusSdkRouterConfig | undefined): boolean;
-export {};
 //# sourceMappingURL=remote-api.d.ts.map

@@ -27,6 +27,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./sandbox": {
+      "workspace": "./src/sandbox.ts",
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

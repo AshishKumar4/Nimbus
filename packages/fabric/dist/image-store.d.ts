@@ -5,11 +5,12 @@
  * A resident process's module map is sized by the user's disk, so it does not
  * ride inside the boot spec — the store writes it once and the session keeps
  * only a path (see process-fabric.ts, ResidentCodeSpec.vfsTextModules). This
- * module owns the write protocol: paced slicing so no one turn holds a
- * transaction the platform resets the object over, register-roots-before-
- * first-byte so the sweep can never observe an unrooted image, size-equality
- * as the completeness test, and a mark-sweep rooted off the live process
- * table.
+ * module owns the write protocol, for these images and every other
+ * content-addressed blob a session keeps (storeContentBlob): paced slicing so
+ * no one turn holds a transaction the platform resets the object over,
+ * register-roots-before-first-byte so the sweep can never observe an unrooted
+ * image, size-equality as the completeness test, and a mark-sweep rooted off
+ * the live process table.
  *
  * The filesystem itself stays the embedder's, reached through the
  * {@link ImageBlobStore} port — the store decides what is written where
@@ -108,26 +109,10 @@ export declare class ImageStore {
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
      *
-     * An image given as parts (a code pack: process-fabric.ts
-     * encodeCommonJsPack) is never encoded whole: it is digested a part at a
-     * time, and written a part at a time only if no complete image is stored
-     * at that digest, each part released (emptied in place) as it is written.
-     * Encoded whole, an astro project's second launch held its pack's 33.6 MiB
-     * of strings and their 25 MiB of UTF-8 at once, and reset the session's
-     * isolate.
+     * Each image is written by {@link storeContentBlob}: rooted here before its
+     * first byte, so a sweep that runs while this launch is suspended sees it.
      */
     materialize(pid: number, images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
-    /**
-     * One image given as parts: its digest read a slice at a time, then, unless
-     * a complete image is already stored there, its bytes written a slice at a
-     * time, each part emptied once it is written. Both passes encode the parts
-     * into one slice-sized buffer (encodeInto: no part's encoding is made on
-     * its own) and hand it on whole, so the digest is fed and the disk written
-     * a slice at a time. The root is claimed before the first byte, as every
-     * image's is. What it holds at once is that buffer, whatever the image's
-     * size.
-     */
-    private materializeParts;
     /**
      * Drop every image no running process boots from.
      *
@@ -141,4 +126,38 @@ export declare class ImageStore {
      */
     private sweep;
 }
+/**
+ * Store `source` at its content address in `fs` (`pathOf` its digest), unless
+ * a complete copy is already there; the one write protocol for every
+ * content-addressed blob a session keeps, whatever keeps it alive.
+ *
+ * The source is never encoded whole: it is digested a slice at a time, then,
+ * unless a complete blob is already stored at that digest, written a slice at
+ * a time, both passes encoding into one slice-sized buffer (encodeInto: no
+ * part's encoding is made on its own), each part released (emptied in place)
+ * as it is written. Encoded whole, an astro project's second launch held its
+ * pack's 33.6 MiB of strings and their 25 MiB of UTF-8 at once, and reset the
+ * session's isolate. What it holds at once is that buffer, whatever the
+ * blob's size.
+ *
+ * `root` is told the path before the first byte. A blob at its full size is
+ * a COMPLETE one: a write only ever grows the file from offset zero, so a
+ * write cut short by a reset leaves a strictly shorter file and fails this
+ * test. Size is enough of a check because every reader verifies the digest
+ * (process-fabric.ts readContentBlob).
+ *
+ * Sliced because the platform resets the object over what ONE TURN has
+ * outstanding, not over what it eventually writes — pi's 22.9 MB map went in
+ * as a single write and took the session down with it ~25% of the time.
+ * Spending each slice on `pacer` is what puts the rest on later turns; the
+ * slice bound is what keeps any one of them small.
+ */
+export declare function storeContentBlob(fs: ImageBlobStore, source: string | string[], pathOf: (digest: string) => string, { pacer, root }?: {
+    pacer?: TurnBudget;
+    root?: (path: string) => void;
+}): Promise<{
+    digest: string;
+    path: string;
+    bytes: number;
+}>;
 //# sourceMappingURL=image-store.d.ts.map

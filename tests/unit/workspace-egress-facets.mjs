@@ -24,6 +24,8 @@ mock.module('cloudflare:workers', () => ({
 
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
+import { executeFanoutShard } from '../../packages/fabric/src/fanout.ts';
+import { DO_DYNAMIC_WORKER_LIMIT, dynamicWorkerHeadroom } from '../../packages/fabric/src/budgets.ts';
 import { supervisorBindingProps } from '../../packages/fabric/src/supervisor-props.ts';
 import {
   EGRESS_TLS_REFUSAL, ISOLATE_NETWORK, networkRef, workspaceNetwork,
@@ -90,7 +92,12 @@ function recordingEgress() {
   const network = workspaceNetwork(egress);
   const configs = [];
   const loaderIds = [];
-  const fakeWorker = { getEntrypoint: () => ({ async fetch() { return Response.json({ ok: true, value: 1 }); } }) };
+  const fakeWorker = {
+    getEntrypoint: () => ({
+      async fetch() { return Response.json({ ok: true, value: 1 }); },
+      async execute(arg) { return arg * 10; },
+    }),
+  };
   const env = {
     LOADER: {
       get(id, configCallback) { loaderIds.push(id); configs.push(configCallback); return fakeWorker; },
@@ -111,11 +118,21 @@ function recordingEgress() {
     }
     if (poolNetwork.egress) assert.ok(loaderIds.every((id) => id.endsWith(':' + network.id)), 'a pool loader id is not the egress\'s own: ' + loaderIds);
   }
-  // A peer rebuilds the coordinator's network with its identity.
+  // A peer rebuilds the coordinator's network with its identity: the shard it
+  // runs loads every facet under the coordinator's egress and loader id.
   const ref = networkRef(network);
-  assert.equal(ref.egress, egress);
-  assert.equal(workspaceNetwork(ref.egress, ref.id).id, network.id);
   assert.equal(networkRef(ISOLATE_NETWORK), undefined);
+  configs.length = 0;
+  loaderIds.length = 0;
+  const peerCtx = { id: { toString: () => 'egress-pool-peer' }, exports: {} };
+  const shard = await executeFanoutShard(env, peerCtx, String(async (n) => n), [1, 2], {
+    tag: 'egress-test', omitSupervisor: true, network: ref, coordinatorDoId: 'egress-pool-do',
+  });
+  assert.deepEqual(shard.results, [10, 20], 'the shard answers each task, in order');
+  const shardConfigs = await Promise.all(configs.map((make) => make()));
+  assert.ok(shardConfigs.length > 0 && shardConfigs.every((config) => config.globalOutbound === egress), 'a peer facet was loaded without the coordinator\'s egress');
+  assert.ok(loaderIds.length > 0 && loaderIds.every((id) => id.endsWith(':' + network.id)), 'a peer loader id is not the coordinator network\'s own: ' + loaderIds);
+  assert.equal(dynamicWorkerHeadroom(peerCtx), DO_DYNAMIC_WORKER_LIMIT, 'the shard released the workers it claimed');
 }
 
 // ── A process binding's network ──────────────────────────────────────────

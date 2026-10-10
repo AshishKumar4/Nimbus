@@ -44,7 +44,8 @@ import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
+import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
+import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
 import { ServedReads } from '../facets/read-profile.js';
@@ -283,8 +284,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
     private _scheduleLaunchTurn;
-    /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
-    scheduleHostingWatch(at: number): Promise<void>;
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
      * session (e.g. `/s/nimble-otter-4271/preview`). Falls back to the
@@ -429,18 +428,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         code: string;
         map: string;
     } | null>;
-    _rpcFanoutExecute(fnSource: string, args: unknown[], poolOpts?: {
-        tag?: string;
-        timeoutMs?: number;
-        preamble?: string;
-        wasmModules?: Record<string, ArrayBuffer>;
-        extraBindings?: Record<string, unknown>;
-        omitSupervisor?: boolean;
-    }): Promise<{
+    _rpcFanoutExecute(fnSource: string, args: unknown[], shardOpts?: FanoutShardOptions): Promise<{
         results: unknown[];
     }>;
-    _hostedProcesses: Map<string, _rpc.HostedProcessRecord>;
-    _hostedProcessWaiters: Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>;
+    private _peerHost;
+    get peerHost(): PeerHost;
     _rpcProcessHostProbe(): {
         isolateToken: string;
     };

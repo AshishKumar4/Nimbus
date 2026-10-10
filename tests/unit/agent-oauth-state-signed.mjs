@@ -52,11 +52,15 @@ assert.deepEqual(sdkRouted.names, ['acme:alice:Build_7.a']);
 // Anything else never names a DO.
 const unsigned = encodeJsonBase64Url({ ...payload, tenantSegment: 'victim:bob' });
 const [body, signature] = signed.split('.');
+const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const alias = signature.slice(0, -1) + alphabet[alphabet.indexOf(signature.at(-1)) + 1];
+assert.deepEqual(Buffer.from(alias, 'base64url'), Buffer.from(signature, 'base64url'));
 const forged = [
   ['an unsigned payload', unsigned],
   ['another payload under a real signature', `${unsigned}.${signature}`],
   ['a signature from another secret', await signAgentOAuthState({ ...payload, tenantSegment: 'victim:bob' }, { JWT_SECRET: 'x'.repeat(40) })],
   ['a truncated signature', `${body}.${signature.slice(0, -4)}`],
+  ['a non-canonical spelling of the same MAC bytes', `${body}.${alias}`],
   ['two dots', `${body}.${signature}.x`],
   ['an expired state', await signAgentOAuthState({ ...payload, exp: NOW - 1 }, { JWT_SECRET: secret })],
   ['a state expiring now', await signAgentOAuthState({ ...payload, exp: NOW }, { JWT_SECRET: secret })],

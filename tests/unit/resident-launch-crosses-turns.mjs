@@ -16,7 +16,6 @@
 // NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES for its chunked checkout.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -127,72 +126,68 @@ async function settle(world) {
     'every process-owned chunk and immutable source reached the module map');
 }
 
-// ── 2. the root set is claimed before anything is written ────────────────
+// ── 2. an image is claimed before the launch can be suspended on it ──────
 //
-// The invariant that makes chunking safe: every image this launch will write
-// is in the sweep's root set before the first byte of any of them exists, so a
-// sweep running while the launch is suspended can never see a file it has
-// written but not yet claimed. The old loop achieved this by taking no awaits
-// at all, which reads as "the writes must not be interrupted" — they may be;
-// what must not be interrupted is the gap between writing and rooting.
-//
-// Asserted on the order of the source, the way the sibling release invariant
-// is asserted in resident-launch-releases-module-map. The interleaving test
-// below exercises two chunked launches against each other, but the window in
-// which a concurrent sweep would actually collect is not reachable on demand
-// through the public interface, so it cannot be what pins this.
+// The invariant that makes chunking safe: every image this launch writes is
+// in the sweep's root set before the launch can yield with any of its bytes
+// on disk, so a sweep running while the launch is suspended never sees a file
+// it has written but not yet claimed. The old loop achieved this by taking no
+// awaits at all, which reads as "the writes must not be interrupted" — they
+// may be; what must not be interrupted is the gap between writing and
+// rooting. Here a launch is suspended part-way through its second image, a
+// whole image and a slice of the next on disk, and another launch sweeps;
+// both are left alone (an orphan is not), whether given whole or as a pack.
 {
-  const source = readFileSync(
-    new URL('../../packages/fabric/src/image-store.ts', import.meta.url), 'utf8',
-  );
-  const start = source.indexOf('  async materialize(');
-  assert.ok(start > 0, 'the image store is written by ImageStore.materialize');
-  const body = source.slice(start, source.indexOf('\n  /**', start + 10));
-
-  // The images arrive as a SEQUENCE, so the root set cannot be known up
-  // front: each image is rooted as it is named, before its own first byte.
-  // That is the same guarantee — a sweep sees every written image rooted, and
-  // an image not yet written is not yet a file — and the array identity is
-  // what makes an append visible to the sweep.
-  const setRoots = body.indexOf('this.residentImages.set(');
-  const pushRoot = body.indexOf('rooted.push(');
-  const wrote = body.indexOf('fs.writeFile(');
-  const swept = body.indexOf('this.sweep(');
-  assert.ok(setRoots > 0, 'the launch holds a root set for its pid');
-  assert.ok(pushRoot > 0, 'each image is claimed as it is named');
-  assert.ok(wrote > 0, 'the launch writes its images');
-  assert.ok(swept > 0, 'the launch sweeps once its images are written');
-  assert.ok(
-    setRoots < pushRoot && pushRoot < wrote,
-    'an image is rooted before its own first write — a file written before it is '
-    + 'rooted can be collected by a sweep that runs while this launch is suspended, and '
-    + 'the facet then boots against a map with holes in it',
-  );
-  assert.ok(
-    wrote < swept,
-    'the sweep runs after the writes it is meant to leave alone',
-  );
-  assert.ok(
-    !/this\.residentImages\.set\(pid, \[/.test(body),
-    'the root array is appended to, never replaced: a replacement drops the images '
-    + 'a suspended launch has already written',
-  );
-
-  // Rooting must also precede every suspension point in the write loop, or a
-  // launch could yield the turn with images written and unclaimed.
-  const firstYield = body.indexOf('pacer.spend(');
-  assert.ok(firstYield > 0, 'the write loop is paced');
-  assert.ok(pushRoot < firstYield, 'nothing is yielded on before the image is claimed');
-
-  // An image given as parts (a code pack) is written by materializeParts,
-  // under the same order: claimed before its first write and its first yield.
-  const partsStart = source.indexOf('  private async materializeParts(');
-  assert.ok(partsStart > 0, 'a pack is written by ImageStore.materializeParts');
-  const parts = source.slice(partsStart, source.indexOf('\n  /**', partsStart + 10));
-  const partsRoot = parts.indexOf('rooted.push(');
-  assert.ok(partsRoot > 0, 'a pack is claimed as it is named');
-  assert.ok(partsRoot < parts.indexOf('fs.writeFile('), 'a pack is rooted before its first write');
-  assert.ok(partsRoot < parts.indexOf('pacer.spend('), 'nothing is yielded on before a pack is claimed');
+  const { ImageStore, FACET_IMAGE_WRITE_SLICE_BYTES } = await import('../../packages/fabric/src/image-store.ts');
+  const { encodeCommonJsPack } = await import('../../packages/fabric/src/process-fabric.ts');
+  for (const shape of ['whole', 'pack']) {
+    const files = new Map();
+    const dir = FACET_IMAGE_DIR;
+    const orphan = `${dir}/${'0'.repeat(64)}.js`;
+    files.set(orphan, new Uint8Array(3));
+    const append = (path, bytes) => {
+      const prior = files.get(path);
+      const next = new Uint8Array(prior.byteLength + bytes.byteLength);
+      next.set(prior);
+      next.set(bytes, prior.byteLength);
+      files.set(path, next);
+    };
+    const store = new ImageStore(() => ({
+      mkdirp() {},
+      sizeOf: (path) => files.get(path)?.byteLength ?? null,
+      writeFile: (path, bytes) => files.set(path, bytes.slice()),
+      writeRange: (path, offset, bytes) => { assert.equal(offset, files.get(path).byteLength); append(path, bytes); },
+      list: (at) => [...files.keys()].filter((path) => path.startsWith(`${at}/`)).map((path) => path.slice(at.length + 1)),
+      unlink: (path) => files.delete(path),
+    }), () => true);
+    const big = 'module.exports = 1;\n'.repeat(Math.ceil((2.5 * FACET_IMAGE_WRITE_SLICE_BYTES) / 20));
+    let spends = 0;
+    let suspended;
+    const resume = new Promise((resolve) => { suspended = resolve; });
+    let release;
+    const released = new Promise((resolve) => { release = resolve; });
+    const pacer = {
+      chunks: 0,
+      async spend() {
+        // The second image's first slice is on disk: suspend the launch there.
+        if (++spends === 2) { suspended(); await released; }
+      },
+    };
+    const source = shape === 'whole' ? big : encodeCommonJsPack({ 'big.js': big });
+    const length = new TextEncoder().encode(shape === 'whole' ? source : source.join('')).byteLength;
+    const launch = store.materialize(1, [['small.js', 'module.exports = 0;'], ['big.js', source]], pacer);
+    await resume;
+    const written = [...files.keys()].filter((path) => path !== orphan);
+    assert.equal(written.length, 2, `${shape}: one whole image and one slice of the next are on disk`);
+    await store.materialize(2, [], { chunks: 0, async spend() {} });
+    assert.ok(!files.has(orphan), `${shape}: the sweep ran, and collected what nothing roots`);
+    for (const path of written) assert.ok(files.has(path), `${shape}: a suspended launch's ${path} survives the sweep`);
+    release();
+    const paths = await launch;
+    assert.equal(paths['big.js'].replace(/^\/+/, ''), written[1], `${shape}: the image it was writing`);
+    assert.equal(files.get(written[1]).byteLength, length, `${shape}: is completed once the launch resumes`);
+  }
+  console.log('  a suspended launch\'s images are claimed before it yields');
 }
 
 // ── 2b. materialize holds ONE image's text, not every image's ─────────────

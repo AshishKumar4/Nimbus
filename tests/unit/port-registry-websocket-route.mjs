@@ -13,7 +13,14 @@
 
 import assert from 'node:assert/strict';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { routeHostedWebSocket } from '../../packages/worker/src/session/rpc.ts';
+import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import {
+  HOSTED_WEBSOCKET_CAPABILITY_HEADER,
+  HOSTED_WEBSOCKET_KEY_HEADER,
+  isHostedWebSocket,
+} from '../../packages/fabric/src/peer-host.ts';
+import { createFacetWorld, createProcessHost } from './facet-host-harness.mjs';
 
 const UPGRADE = { upgrade: 'websocket', connection: 'Upgrade' };
 
@@ -88,34 +95,49 @@ const UPGRADE = { upgrade: 'websocket', connection: 'Upgrade' };
 
 // ── The peer hop is authorised by a capability, not by the process key ──────
 //
-// The workerKey is derivable from a pid, so on its own it authorises nothing.
-// A mismatch answers 404 rather than 403: the route must not confirm what this
-// peer happens to be hosting.
+// Through the real coordinator → sibling → facet path. The workerKey is
+// derivable from a pid, so on its own it authorises nothing. A mismatch
+// answers 404 rather than 403: the route must not confirm what this peer
+// happens to be hosting. And the process never sees the transport.
 {
+  adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
   const served = [];
-  const host = {
-    _hostedProcesses: new Map([['k1', {
-      facet: Promise.resolve({
-        async handleWebSocketRequest(request) {
-          served.push(request.url);
-          return new Response(null, { status: 101 });
-        },
-      }),
-      started: Promise.resolve(null),
-      webSocketCapability: 'cap-right',
-      cancelled: new Promise(() => {}),
-      cancel() {},
-    }]]),
-    _hostedProcessWaiters: new Map(),
-  };
+  const world = createFacetWorld(() => ({
+    async startProcess() { return { ok: true }; },
+    async handleHttpRequest() { return new Response('http'); },
+    async fetch(request) {
+      served.push([...request.headers.keys()].filter((name) => name.startsWith('x-nimbus-hosted')));
+      return new Response(null, { status: 101 });
+    },
+  }), { resolveConfig: false });
+  const host = createProcessHost('peer', world, { readFile() { throw new Error('no disk'); } });
+  const handle = await new ProcessFabric(host).startResidentProcess({
+    onWriterActivated() {},
+    onWriterRetired() {},
+    startContract: 'boot',
+    pid: 70,
+    workerKey: 'k70',
+    boot: { kind: 'code', code: { compatibilityDate: '2025-01-01', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': 'export default {}' } } },
+  });
+  await handle.booted();
 
-  const wrong = await routeHostedWebSocket(host, 'k1', 'cap-wrong', new Request('https://x/ws'));
+  const upgraded = await handle.routeTarget.handleWebSocketRequest(new Request('https://x/ws', { headers: UPGRADE }));
+  assert.equal(upgraded.status, 101, 'the 101 comes back as itself, across the sibling hop');
+  assert.deepEqual(served, [[]], 'the process never sees the transport that carried it');
+
+  const [peer] = host.peers.values();
+  const forged = (headers) => peer.peerHost.routeWebSocket(new Request('https://x/ws', { headers }));
+  const key = { [HOSTED_WEBSOCKET_KEY_HEADER]: 'k70' };
+  const wrong = await forged({ ...UPGRADE, ...key, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: crypto.randomUUID() });
   assert.equal(wrong.status, 404, 'a wrong capability is indistinguishable from no such process');
-  assert.deepEqual(served, [], 'and never reaches the process');
+  assert.equal((await forged({ ...UPGRADE, ...key })).status, 404, 'and so is none');
+  assert.equal((await forged({ ...key, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: crypto.randomUUID() })).status, 426, 'a hop that is no upgrade is refused');
+  assert.deepEqual(served, [[]], 'and none of them reaches the process');
+  assert.equal(isHostedWebSocket(new Request('https://x/ws', { headers: UPGRADE })), false, 'an upgrade that is not a hop is left to the object\'s own routes');
+  assert.equal(isHostedWebSocket(new Request('https://x/ws', { headers: key })), true, 'and one that names a process is the hop');
 
-  const right = await routeHostedWebSocket(host, 'k1', 'cap-right', new Request('https://x/ws'));
-  assert.equal(right.status, 101);
-  assert.deepEqual(served, ['https://x/ws']);
+  handle.kill();
+  await handle.done.catch(() => {});
 }
 
 console.log('port registry websocket route: ok');
