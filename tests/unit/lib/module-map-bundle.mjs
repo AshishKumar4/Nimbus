@@ -10,6 +10,9 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { residentLoaderConfig } from '../../../packages/fabric/src/process-fabric.ts';
+import { readImmutableModuleSource } from '../../../packages/core/src/_shared/staged-source.ts';
+import { stagedAssets } from './staged-assets.mjs';
 import { createRequire as nativeCreateRequire, isBuiltin } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,6 +60,15 @@ export function moduleMapCodeCells(modules, entry = modules['worker.js'] ? 'work
 /** Every module source in the set: what a test searches for a program's text. */
 export function moduleMapText(modules) {
   return Object.values(modules).map((m) => (typeof m === 'string' ? m : cjsText(m))).filter((m) => m !== undefined).join('\n');
+}
+
+/** Reconstruct a captured boot using only its images and pinned shared assets. */
+export async function storedBootModules(world, fs) {
+  const boot = world.bootSpecs.at(-1);
+  if (boot?.kind !== 'vfs') throw new Error('expected a by-path boot');
+  const config = await residentLoaderConfig(boot.code, { readFile: (path) => fs.readFileUncached(path) },
+    (source) => readImmutableModuleSource({ ASSETS: stagedAssets }, source));
+  return config.modules;
 }
 
 /**
