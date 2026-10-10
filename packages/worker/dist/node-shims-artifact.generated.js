@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-2bf830a2ee644bac.js";
-export const NODE_SHIMS_BUILD_ID = "2bf830a2ee644bac";
-export const NODE_SHIMS_SHA256 = "2bf830a2ee644bac03fc99cafa8d9e947c4f337a158c32fba24f4aad6d86dbe3";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-5e82cd21b68b752b.js";
+export const NODE_SHIMS_BUILD_ID = "5e82cd21b68b752b";
+export const NODE_SHIMS_SHA256 = "5e82cd21b68b752b8d6d8d132ce4cd6d9486216e9d8ad50deac7a6b3663b16c8";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-f7f72f7127fdc31f.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "f7f72f7127fdc31f";
@@ -33,6 +33,14 @@ export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4
 export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256 = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-be6ead1028137c33.js";
-export const NODE_LIB_BUILD_ID = "be6ead1028137c33";
-export const NODE_LIB_SHA256 = "be6ead1028137c33491c487cc1b2433460501363d1679fe732d6946d65bc9af5";
+export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-12b4803c53369862.js";
+export const NODE_LIB_BUILD_ID = "12b4803c53369862";
+export const NODE_LIB_SHA256 = "12b4803c53369862d37495c3536de93f5e660c736443e099452a6cebf8fb7629";
+/** dist/runtime/node-lib-module.js generateNodeDnsModule() */
+export const NODE_DNS_ENTRY = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
+export const NODE_DNS_BUILD_ID = "cb7f3315fd57bcc8";
+export const NODE_DNS_SHA256 = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
+/** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
+export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-3e3742667a5de548.js";
+export const NODE_REGISTRY_BUILD_ID = "3e3742667a5de548";
+export const NODE_REGISTRY_SHA256 = "3e3742667a5de5482c871751ed2d652674298e0bfd913c807384f31d84c3329a";
