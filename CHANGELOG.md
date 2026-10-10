@@ -3,6 +3,21 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Changed: a program that listens serves, however it was started.
+  - `node app.js`, an npm bin or a `child_process` child whose server Nimbus could not see in its code used to run as a one-shot. Its port answered 501, or 502 once it was gone.
+  - Now its first `listen()` stops it, and Nimbus runs it on as a server (the same pid), replaying it up to that listen. What it printed before is shown once.
+  - Files it changed before it listened are checked against the first run, one by one, as the replay makes them again.
+  - A program that appended to a file, started a child, opened a connection or made a request before it listened cannot be run again. Its `listen()` throws an error naming what it did.
+- Changed: a bin that served once in a workspace starts as a server directly next time.
+  - Learned by its package's name and version, the bin, and its first argument.
+  - The known server CLIs (vite, next, astro, and the others) still start that way from their first launch.
+- Changed: an npm bin runs as `node <its file>` does: one process, shown under the bin's command line, whose start, output and exit are reported once. A bin no longer has a process entry and a `[bin started]` line of its own.
+- Fixed: a `kill` sent while a process's earlier end was still waiting for its writes to drain was acknowledged but did nothing; the process kept running until the drain finished. The kill now takes effect at once, and its status is the one recorded.
+- Fixed: `opencode` run once (`opencode --version`, `opencode run …`) could reset the session; repeated runs reset it within a few dozen. Killing such a run now also ends the program, which used to run on after the session had let it go.
+- Fixed: a resident process whose filesystem could not be listed at boot reported a stale cause ("a change reported without the stat every name needs"). It now names the listing's own failure.
+
 ## 2026-10-10: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
 - Fixed: process stdin is one bounded byte channel for Node, WASI and registry

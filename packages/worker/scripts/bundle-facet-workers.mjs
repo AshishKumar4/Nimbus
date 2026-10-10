@@ -903,6 +903,14 @@ async function main() {
     }
   }
 
+  const relativeWasm = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'relative-wasm-paths.ts'),
+    'relative-wasm-paths',
+  );
+  if (!/^function relativeWasmPaths\(/m.test(relativeWasm)) {
+    throw new Error('[bundle-facet-workers/relative-wasm-paths] the bundle no longer declares function relativeWasmPaths');
+  }
+
   // 7. What a read lease vouches for, which the node shims embed as source
   //    in the fs scope that answers by it.
   const readLeaseCover = await bundleAsPreamble(
@@ -977,6 +985,9 @@ async function main() {
     ' * TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
+    '',
+    '/** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */',
+    `export const RELATIVE_WASM_PATHS_PREAMBLE: string = ${JSON.stringify(relativeWasm)};`,
     '',
     '/**',
     ' * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);',

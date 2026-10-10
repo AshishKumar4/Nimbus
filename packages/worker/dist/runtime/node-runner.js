@@ -64,11 +64,13 @@ export async function runFresh(facetMgr, code, opts) {
     // A program that starts a server runs in the keyed long-running facet even
     // without --watch: only its route stub is re-resolvable across requests
     // (the one-shot facet is LOADER.load, unkeyed), so only there is the port it
-    // binds reachable. The runtime handler judges that from the code this
-    // invocation runs (server-launch.ts), its arguments included. .bin wrapper
-    // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
-    // their PID accounting assumes a single foreground exec.
+    // binds reachable. The runtime handler judges that from a bin's hints or the
+    // code this invocation runs (server-launch.ts), its arguments included; one
+    // it misses runs on as a resident once it listens (FacetManager._promote).
+    // A process a launcher reserved (skipSpawn) is its launcher's to judge. A
+    // program attached to the terminal holds it until it exits.
     const wantsLongRunning = opts.forceLongRunning ||
+        opts.attachedTty === true ||
         // Node's options are its execArgv now, not its argv (node-cli.ts).
         isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
         (!opts.skipSpawn && opts.launchesServer === true);
@@ -89,6 +91,9 @@ export async function runFresh(facetMgr, code, opts) {
         const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts,
             ...(opts.output ? { captureOutput: false, foreground: { signal: opts.signal ?? new AbortController().signal, write: opts.output } } : {}),
         });
+        // It listened, and runs on as a resident, whose start was said (FacetManager._promote).
+        if (r.promotedPid !== undefined)
+            return residentStarted(facetMgr, r.promotedPid, '');
         return {
             exitCode: r.exitCode,
             stdout: r.stdout,
@@ -144,21 +149,20 @@ export async function runFresh(facetMgr, code, opts) {
             longRunning: true,
         };
     }
-    // A server-shaped program that finished during its boot (`--version`,
-    // `--help`, a one-shot run of a CLI that also serves) is an ordinary
-    // completed command: its own exit code, no "started" notice.
-    const finished = facetMgr.processExitCode?.(spawned.pid) ?? null;
-    if (finished !== null) {
+    // A process a launcher reserved is its to announce; one attached to the
+    // terminal has it already.
+    return residentStarted(facetMgr, spawned.pid, opts.skipSpawn || opts.attachedTty
+        ? '' : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`);
+}
+/**
+ * Resident `pid` started, said by `notice`. A server-shaped program that
+ * finished during its boot (`--version`, `--help`, a one-shot run of a CLI
+ * that also serves) is an ordinary completed command: its own exit code, no
+ * notice.
+ */
+function residentStarted(facetMgr, pid, notice) {
+    const finished = facetMgr.processExitCode?.(pid) ?? null;
+    if (finished !== null)
         return { exitCode: finished, stdout: '', stderr: '', longRunning: false };
-    }
-    const noticeLine = opts.skipSpawn
-        ? ''
-        : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`;
-    return {
-        exitCode: 0,
-        stdout: noticeLine,
-        stderr: '',
-        spawnedPid: spawned.pid,
-        longRunning: true,
-    };
+    return { exitCode: 0, stdout: notice, stderr: '', spawnedPid: pid, longRunning: true };
 }

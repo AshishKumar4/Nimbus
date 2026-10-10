@@ -34,7 +34,10 @@ import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { LearnedServers } from './server-hints.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
+import { type ReplayLaunch } from '../runtime/stop-replay-contracts.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
@@ -58,11 +61,41 @@ export interface StdinChannel {
     /** Put packets taken from it back in front of it, in order. */
     unread(packets: readonly ProcessInputPacket[]): void;
 }
+/**
+ * One run of a one-shot: what `exec` was asked, and for a run after a stop
+ * (runtime/stop-replay.ts), what it replays of the run before and whether
+ * its channel has ended, so it takes all of it before it starts.
+ */
+type ExecLaunchOpts = Parameters<FacetManager['exec']>[1] & {
+    replay?: ReplayLaunch;
+    stdinWhole?: boolean;
+    /** The stdin a run after a stop is handed back, which it takes whole before it starts. */
+    stdinAtLeast?: number;
+    /** This run's stop nonce: a stop record counts only with it (stop-replay.ts stopRecordOf). */
+    stopNonce?: string;
+    /** Its first listen stops it, to be run again as a resident that serves (FacetManager._promote). */
+    promote?: boolean;
+    /** Its network goes through the session (SupervisorRPC as its globalOutbound). */
+    outbound?: boolean;
+    /**
+     * A digest of the module map the first run loaded: a run after a stop
+     * whose map differs (its code or data changed while it waited) does not run.
+     */
+    codeDigest?: {
+        value: string | undefined;
+    };
+};
+/** How a process stopped at a read of stdin runs again. */
+type StoppedRunNext = Pick<ExecLaunchOpts, 'stdinWhole' | 'stdinFile' | 'stdinAtLeast'> & {
+    replay: ReplayLaunch;
+};
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+    /** It listened, and runs on as this resident (FacetManager._promote): no exit yet. */
+    promotedPid?: number;
     /**
      * VFS paths whose content the process read synchronously and did not have.
      *
@@ -1040,11 +1073,20 @@ export interface ResidentSpawnOptions {
     dirname?: string;
     /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
     esModule?: boolean;
+    esModuleMap?: string;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     command?: string;
     port?: number;
     attachedTty?: boolean;
+    /**
+     * A one-shot that stopped at its first listen (FacetManager._promote): its
+     * run, which this boot replays up to that listen before it serves, and the
+     * stdin that run took, handed back: its pipe's bytes, or its `< file`.
+     */
+    resume?: StoppedRunNext;
+    /** Its stdin, given whole (exec's `stdin`): a promoted one-shot's, given again. */
+    stdin?: string;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -1249,6 +1291,8 @@ export declare class FacetManager {
      * same file again (Vite's node_modules/ms/index.js on every launch).
      */
     private learning;
+    /** The bins this workspace learned are servers (server-hints.ts). */
+    readonly learnedServers: LearnedServers;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
@@ -1306,12 +1350,19 @@ export declare class FacetManager {
      */
     private _endBySignal;
     /**
-     * End a running process from outside it (a signal, a lost host): its ports,
-     * RPC resources and writers go, it exits with `code` and `reason`, and the
-     * host hears of it. `portEnding` is what a request to one of its ports is
-     * told from then on (PortRegistry.ended).
+     * The process is over: its ports, writers and RPC resources go, and its
+     * end is recorded, once. Every way a process ends comes here: its own exit
+     * (reportExit, a run's answer), a signal, a kill, a lost host, a launch or
+     * boot that failed.
      */
-    private _endFromOutside;
+    private _end;
+    /**
+     * A lifetime run (its start call held open for its life): when that call
+     * ends, so do its resources; one that fails while the process still runs
+     * ends it, as `what` failing. One already over (its own exit, a kill)
+     * rejects the call as an echo of that end, which records nothing again.
+     */
+    private _watchLifetime;
     /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
      * that the platform reset it under the process (session/rpc.ts
@@ -1732,7 +1783,22 @@ export declare class FacetManager {
         };
         /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
         node?: NodeLaunch;
+        /** The bin it runs: learned a server when it runs on as one (_promote). */
+        server?: ServerIdentity;
     }): Promise<FacetExecResult>;
+    /**
+     * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
+     * on as a resident, the same process: the resident replays the run up to
+     * that listen, checked against it, then listens and serves. What the
+     * one-shot printed is shown once; the resident prints it again only to be
+     * checked (the prefix).
+     */
+    /**
+     * A file's identity as the process sees it: which file, and its version;
+     * null when it has none to see (gone, or refused, synchronously or not).
+     */
+    private _stdinFileIdentity;
+    private _promote;
     /**
      * A process stopped at a synchronous read of stdin that needs input not
      * there yet (runtime/stop-replay.ts): deliver what its record carries of
@@ -1855,15 +1921,6 @@ export declare class FacetManager {
      */
     private _stageOpencodeFacet;
     /**
-     * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
-     * the runner's startProcess() — which holds the facet open via ctx.waitUntil
-     * while opencode's createCliRenderer loop streams ANSI frames to the terminal
-     * RPC and the live stdin pump feeds keystrokes — and returns immediately with
-     * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
-     * release on report-exit, the same contract the long-running node path uses.
-     */
-    private _execStagedArtifactAttached;
-    /**
      * Run a headless `opencode serve` as a resident, routeable server facet. The
      * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,
      * else an allocated free port injected into argv) so the in-session loopback
@@ -1894,7 +1951,14 @@ export declare class FacetManager {
         command?: string;
         invokerPid?: number;
     }): Promise<StagedArtifactExecResult>;
-    private _runOpencodeServerFacet;
+    /**
+     * A staged opencode resident: the attached TUI, or with `port` a headless
+     * serve routed on it. Its runner holds startProcess open for the process's
+     * whole life, so that one call is the lifecycle; it reports its own exit.
+     * The module map is assembled on the Worker-Loader cache-miss path, so the
+     * artifact sources exist only while this facet is loading.
+     */
+    private _startStagedResident;
     /**
      * NIMBUS_DEBUG live evidence (log-tail channel) of where a resident process
      * was scheduled. The manager logs an opaque description; only the fabric
@@ -1977,14 +2041,6 @@ export declare class FacetManager {
     private _warmOpencodeServer;
     /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
     private _processLogTail;
-    /**
-     * A launch that fails before its process is running reports the same way
-     * regardless of which phase failed: the pid is exited, the terminal event
-     * recorded, and the session notified. Callers do their phase-specific
-     * cleanup (ports, tracked RPC resources) first and pass a reason that names
-     * the phase.
-     */
-    private _failLaunch;
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe, and who the launch ran as (its credential and

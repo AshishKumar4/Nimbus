@@ -7,12 +7,15 @@
  *                        read fails where the program can catch it. The
  *                        session counts them too, and is what decides.
  *   begin(launch)        per run: { replay, abort, captured, capturedText,
- *                        nonce, boundary, outbound }.
+ *                        nonce, boundary, outbound, promote }.
  *   arm(canStop, whyNot) before the entry: records the run's draws when it can
  *                        stop, replays the stopped run's.
  *   write / acked        each streamed chunk of output on its way out.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
+ *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
+ *   listen()             a server's first listen: a promotable run stops there,
+ *                        to be run again as a resident that serves.
  *   effect(what) / unreplayable(why)  why a stop could not be replayed.
  *   finish() / booted()  at exit, or when a resident is up: a replay that
  *                        never reached the read it stopped at.

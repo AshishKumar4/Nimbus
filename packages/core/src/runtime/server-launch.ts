@@ -78,6 +78,16 @@ const MODULE_LIMIT = 24;
 const SOURCE_BYTE_BUDGET = 4 * 1024 * 1024;
 /** How large a module may be to be walked: parsing costs about 50 ms a MiB. */
 export const SERVER_LAUNCH_MODULE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * What a bin is, for what its runs teach about it (worker facets/server-hints.ts):
+ * its package as name@version, the bin, and its first positional argument.
+ */
+export interface ServerIdentity {
+  package: string;
+  bin: string;
+  arg0: string;
+}
 /** How many of its own modules deep the program is followed from the entry. */
 const HOP_LIMIT = 3;
 /** Extensions of modules that carry no code to walk. */

@@ -66,6 +66,7 @@ export declare class SessionProcessSupervisor {
     private readonly isLogOrphan;
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     private onTerminalCb;
+    private readonly endWaiters;
     /** Releases an ended process's filesystem binding; see setRelease. */
     private release;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
@@ -169,6 +170,12 @@ export declare class SessionProcessSupervisor {
      * genuine owner exists.
      */
     setOnTerminal(cb: (pid: number) => void): void;
+    /**
+     * `pid`'s exit status once it leaves `running`, however it leaves: what a
+     * caller whose program ran on as a resident (FacetManager._promote) waits
+     * on for that program's exit.
+     */
+    whenEnded(pid: number): Promise<number>;
     /** A decided end is told to observers (published) once the output before it is. */
     private publishEnd;
     private fireTerminal;

@@ -38,7 +38,7 @@ import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
+import { bindingSupervisor, supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import {
   residentBootSpecSchema,
@@ -50,7 +50,6 @@ import {
   processes,
   type ResidentFacet,
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
@@ -1749,11 +1748,7 @@ interface SupervisorFileReader {
 }
 
 function peerDiskReader(supervisor: ResidentSupervisorProps): ResidentDiskReader {
-  const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
-  if (!supervisorRpc) {
-    throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? 'SupervisorRPC'} unavailable`);
-  }
-  const fs = supervisorRpc({ props: supervisor }) as unknown as SupervisorFileReader;
+  const fs = bindingSupervisor(supervisor) as SupervisorFileReader;
   return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 

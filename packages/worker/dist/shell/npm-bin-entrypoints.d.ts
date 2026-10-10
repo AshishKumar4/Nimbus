@@ -1,10 +1,9 @@
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager } from '../facets/manager.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 type Output = {
-    write(data: string): void | Promise<void>;
-    writeBytes?(data: Uint8Array): void | Promise<void>;
+    write(data: string): void;
 };
 /** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
 export declare function isRuntimeInstallHint(command: object): boolean;
@@ -18,8 +17,9 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
     /** The session's namespace: bins are found in it, as the running command when one runs. */
     filesystem: ProcessFiles;
     getCwd(): string;
-    processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
+    /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */
+    learnedServer(server: ServerIdentity): Promise<boolean>;
     terminal?: Output | null;
     notifyTerminalEvent(event: {
         type: 'spawn' | 'exit';
@@ -50,24 +50,5 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
  */
 export type StagedArtifactDisposition = 'dual' | 'server' | 'attached' | 'oneshot';
 export declare function classifyStagedArtifact(artifact: string, argv: string[]): StagedArtifactDisposition;
-/**
- * Whether this invocation stays resident. Only the keyed long-running facet
- * exposes a re-resolvable route stub, so getting this wrong for a server means
- * its port is never reachable — it runs in the one-shot facet until the facet
- * lifetime expires and reports the limit it hit.
- *
- * A server-shaped CLI serves by default; the exception is the subcommand that
- * ends. `build` is that verb, and it means the same thing in every one of
- * these CLIs: produce an artifact, exit. `preview` does not end — it binds a
- * port and serves the built output, exactly as `dev` binds one and serves the
- * source.
- *
- * The exclusion stays narrow because the two errors are not symmetric. A
- * missed server costs a dead port for one facet lifetime; a resident process
- * that exits 0 is never reaped (`handedOffToLongRunningFacet` above), so it
- * stays `running` in `ps` for the life of the session. Only verbs that
- * certainly terminate belong here.
- */
-export declare function looksLongRunningNpmBin(binName: string, argv: string[]): boolean;
 export {};
 //# sourceMappingURL=npm-bin-entrypoints.d.ts.map

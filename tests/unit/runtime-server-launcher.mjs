@@ -156,7 +156,16 @@ for (const [what, source] of [
   }
   assert.equal(await invoke(STATIC_SERVER, [bin, 'build']), 'resident', 'static-server build serves a directory named build');
   assert.equal(await invoke(STATIC_SERVER, [bin], { __nimbusBinSpawn: { callerPid: 9, command: 'static-server' } }),
-    'one-shot', 'a .bin wrapper decided residency by its own rule');
+    'one-shot', 'a process a launcher reserved is its launcher\'s to judge');
+  // An npm bin is judged by its hints, not its code: a CLI's code imports
+  // the servers its subcommands start. One that listens is promoted then.
+  const launch = (serves) => ({ command: 'static-server', attachedTty: false, serves, server: { package: 'static-server@1.0.0', bin: 'static-server', arg0: '' } });
+  assert.equal(await invoke(STATIC_SERVER, [bin], { __nimbusBin: launch(false) }), 'one-shot', 'a bin its hints do not call a server');
+  assert.equal(await invoke(STATIC_SERVER, [bin, '--version'], { __nimbusBin: launch(true) }), 'resident', 'a bin its hints call a server');
+  // Its hints judge a bin a launcher reserved too: a child_process child that runs `vite`.
+  const reserved = { __nimbusBinSpawn: { callerPid: 9, command: 'static-server' } };
+  assert.equal(await invoke(STATIC_SERVER, [bin, '--version'], { ...reserved, __nimbusBin: launch(true) }), 'resident', 'a reserved bin its hints call a server');
+  assert.equal(await invoke(STATIC_SERVER, [bin], { ...reserved, __nimbusBin: launch(false) }), 'one-shot', 'a reserved bin they do not');
 }
 assert.equal(await invoke({
   'home/user/node_modules/sirv-esm/package.json': '{"name":"sirv-esm","type":"module"}',

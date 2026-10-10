@@ -1,4 +1,4 @@
-import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX } from './stop-replay-contracts.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, REPLAY_TAPE_MAX_WRITES, REPLAY_WRITE_ENTRY_MAX_CHARS, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX } from './stop-replay-contracts.js';
 export function decodeBase64(text) {
     if (!text)
         return new Uint8Array(0);
@@ -26,7 +26,9 @@ function isTape(value) {
     return Array.isArray(tape.seed) && tape.seed.length === 4 && tape.seed.every((word) => isCount(word, 0xffffffff))
         && isReadings(tape.now) && isReadings(tape.perf)
         && isBase64Within(tape.random, REPLAY_TAPE_MAX_RANDOM_BYTES)
-        && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER));
+        && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER))
+        && Array.isArray(tape.writes) && tape.writes.length <= REPLAY_TAPE_MAX_WRITES
+        && tape.writes.every((entry) => typeof entry === 'string' && entry.length <= REPLAY_WRITE_ENTRY_MAX_CHARS);
 }
 function isOutput(value) {
     if (!Array.isArray(value) || value.length > 4096)
@@ -79,6 +81,10 @@ export function stopRecordOf(error, nonce, run) {
     }
     if (r.kind === 'stdin') {
         if ((r.until !== 'end' && r.until !== 'data') || !isCount(r.stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(r.tape))
+            return null;
+    }
+    else if (r.kind === 'listen') {
+        if (!isTape(r.tape))
             return null;
     }
     else if (r.kind === 'diverged') {

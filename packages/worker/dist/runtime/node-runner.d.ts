@@ -41,6 +41,7 @@
  */
 import type { FacetManager } from '../facets/manager.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 /**
@@ -81,12 +82,9 @@ export interface RunFreshOpts {
      *  notice + /api/processes listing. */
     command?: string;
     /**
-     * G4 (runtime-pkg wave): caller has already allocated a
-     * process supervisor PID for this invocation; runFresh / facetMgr.exec
-     * should reuse it instead of spawning a duplicate. Used by the
-     * .bin handler in src/session/init.ts to keep `ps` showing ONE
-     * row per bin invocation instead of two (the wrapper + the inner
-     * node script).
+     * The caller has already allocated the process supervisor PID for this
+     * invocation (a child_process broker's child, a launch wrapper's process);
+     * runFresh / facetMgr.exec reuse it instead of spawning another.
      */
     skipSpawn?: boolean;
     callerPid?: number;
@@ -94,6 +92,8 @@ export interface RunFreshOpts {
     invokerPid?: number;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /** RuntimeRunOpts.server. */
+    server?: ServerIdentity;
     /** Its launcher writes and ends its stdin (RuntimeRunOpts.stdinWriter). */
     stdinWriter?: boolean;
     bundleProfile?: FacetBundleProfile;

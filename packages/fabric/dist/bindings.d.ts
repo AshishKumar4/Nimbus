@@ -26,6 +26,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
 import { type FacetCodePolicy } from './facet-limits.js';
+import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -119,18 +120,8 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
             subRequests: z.ZodOptional<z.ZodNumber>;
         }, z.core.$strip>>;
     }, z.core.$loose>>;
-    supervisor: z.ZodOptional<z.ZodObject<{
-        doId: z.ZodString;
-        pid: z.ZodNumber;
-        writerId: z.ZodString;
-        route: z.ZodOptional<z.ZodObject<{
-            supervisorEntrypoint: z.ZodString;
-            hostNamespace: z.ZodString;
-            hostDispatchMethod: z.ZodString;
-        }, z.core.$strip>>;
-        hostIncarnation: z.ZodOptional<z.ZodString>;
-    }, z.core.$strip>>;
     stage: z.ZodOptional<z.ZodUnknown>;
+    supervisor: z.ZodOptional<z.ZodCustom<SupervisorBindingProps, SupervisorBindingProps>>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
@@ -195,7 +186,6 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShi
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
 export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
     _props(): NimbusLoadedEntrypointProps;
-    _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown>;
     _resolveEntrypoint(): Promise<LoadedEntrypoint>;
     /**
      * Relay the inner entrypoint's Response to the caller with a LIVE body.

@@ -138,7 +138,7 @@ try {
 
   const launch = await t.run('attached-agent', 30_000);
   const terminalOut = stripAnsi(launch.output);
-  const pidMatch = terminalOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="attached-agent"\]/);
+  const pidMatch = terminalOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="attached-agent"\]/);
   const pid = pidMatch ? Number(pidMatch[1]) : 0;
   a.check('npm bin launches as a long-running attached process', pid > 0, JSON.stringify(terminalOut.slice(-800)));
 
@@ -208,7 +208,7 @@ try {
 
   const asyncLaunch = await t.run('async-attached-agent', 30_000);
   const asyncTerminalOut = stripAnsi(asyncLaunch.output);
-  const asyncPidMatch = asyncTerminalOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="async-attached-agent"\]/);
+  const asyncPidMatch = asyncTerminalOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="async-attached-agent"\]/);
   const asyncPid = asyncPidMatch ? Number(asyncPidMatch[1]) : 0;
   a.check('unawaited async npm-bin TUI launches as a long-running attached process',
     asyncPid > 0,
@@ -245,7 +245,7 @@ try {
   t.cmd('async-attached-crash');
   await t.waitFor((body) => /ASYNC_ATTACHED_CRASH/.test(body), 30_000, 'async TUI crash stack');
   const crashTerminalOut = stripAnsi(t.buf);
-  const crashPidMatch = crashTerminalOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="async-attached-crash"\]/);
+  const crashPidMatch = crashTerminalOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="async-attached-crash"\]/);
   const crashPid = crashPidMatch ? Number(crashPidMatch[1]) : 0;
   a.check('unawaited async npm-bin crash launches as a long-running attached process',
     crashPid > 0,

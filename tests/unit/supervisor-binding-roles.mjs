@@ -36,11 +36,14 @@ for (const badProps of [{ doId: 's', pid: 7 }, { doId: 's', pid: 7, bindingKind:
   await assert.rejects(bad.cpReadStdin(7,8000,undefined,1), /run|guest-originated/, 'a wrong-role fd0 read refuses, never enters its long poll');
   assert.equal(received.length,before,'the refusal is at the caller, before a host request or timeout');
 }
-// All SUPERVISOR and globalOutbound capabilities of resident/one-shot
-// processes use the checked mint; the infrastructure constructor stays local.
+// Every SUPERVISOR and globalOutbound binding of a resident or one-shot
+// process comes from the one checked mint (bindingSupervisor); the
+// infrastructure constructor stays local.
 const hostSource = readFileSync(new URL('../../packages/fabric/src/workerd-facet-host.ts', import.meta.url), 'utf8');
-assert.equal((hostSource.match(/mintProcessSupervisor\(supervisorRpc, supervisor\)/g) || []).length, 2);
-assert.doesNotMatch(hostSource, /supervisorRpc\(\{ props/);
+assert.equal((hostSource.match(/bindingSupervisor\(supervisor\)/g) || []).length, 2);
+assert.doesNotMatch(hostSource, /mintProcessSupervisor|supervisorRpc\(\{ props/);
+const propsSource = readFileSync(new URL('../../packages/fabric/src/supervisor-props.ts', import.meta.url), 'utf8');
+assert.match(propsSource, /export function bindingSupervisor[\s\S]*?return mintProcessSupervisor<object>\(mint, props\);/);
 const poolSource = readFileSync(new URL('../../packages/fabric/src/isolate-pool.ts', import.meta.url), 'utf8');
 assert.match(poolSource, /function infrastructureSupervisorProps/);
 assert.doesNotMatch(poolSource, /export function infrastructureSupervisorProps/);
