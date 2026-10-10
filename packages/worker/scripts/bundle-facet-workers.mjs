@@ -884,14 +884,15 @@ async function main() {
     throw new Error('[bundle-facet-workers/http2-module] the bundle no longer declares function createHttp2Module');
   }
 
-  // 6. Exports/imports resolution, the TypeScript specifier fallbacks and
-  //    the AI credential rule, which the node shims embed as source: one
-  //    compile of the core code, so the shims carry no copy of it.
+  // 6. Exports/imports resolution, the TypeScript specifier fallbacks, the
+  //    AI credential rule and the WebSocket upgrade rule, which the node
+  //    shims embed as source: one compile of the core code, so the shims
+  //    carry no copy of it.
   const shimResolution = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
   );
-  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential']) {
+  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
       throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
     }
@@ -919,7 +920,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/node-error.ts (Node\'s internal errors, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
-    ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution and credential rules, for the node shims)',
+    ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -962,7 +963,7 @@ async function main() {
     '/**',
     ' * Declares resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,',
     ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript,',
-    ' * TYPESCRIPT_INDEX_CANDIDATES and presentedCredential; the node shims call them.',
+    ' * TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
     '',

@@ -25,6 +25,7 @@
  */
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
+import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -385,7 +386,7 @@ async function routeFetch(self, request) {
     // stripped so the process never sees the transport that carried it.
     const hostedWebSocket = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
     if (hostedWebSocket) {
-        if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+        if (!isWebSocketUpgradeRequest(request.headers)) {
             return new Response('Expected WebSocket', { status: 426 });
         }
         const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
