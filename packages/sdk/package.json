@@ -89,6 +89,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@nimbus-sh/config": "^0.2.4",
     "@nimbus-sh/platform": "^0.8.0",
     "zod": "^4.4.3",
     "@nimbus-sh/core": "^0.16.0"

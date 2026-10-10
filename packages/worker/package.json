@@ -146,6 +146,7 @@
     "typecheck": "tsc --noEmit && tsc -p frontend --noEmit"
   },
   "dependencies": {
+    "@nimbus-sh/config": "^0.2.4",
     "@ai-sdk/openai-compatible": "^2.0.41",
     "@nimbus-sh/core": "^0.16.0",
     "@nimbus-sh/fabric": "^0.11.0",

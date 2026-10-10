@@ -27,49 +27,7 @@
  */
 import { MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS } from './facet-limits.generated.js';
 
-export type NimbusRuntimeName =
-  | 'node'
-  | 'bun'
-  | 'npm'
-  | 'git'
-  | 'python'
-  | 'ruby'
-  | 'clang'
-  | 'shell'
-  | (string & {});
-
-export interface NimbusSandboxProfile {
-  root?: string;
-  runtimes?: {
-    preinstall?: string[];
-    onDemand?: boolean;
-    allow?: NimbusRuntimeName[];
-  };
-  tools?: {
-    namespace?: string;
-    kind?: string;
-  };
-  preview?: {
-    baseUrl?: string;
-    pathStyle?: boolean;
-  };
-}
-
-export interface NimbusConfig {
-  endpoint?: string;
-  /**
-   * Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling `<port>--<sid>.<suffix>`
-   * preview origins. Only remote clients need to state it — `Nimbus.fromEnv`
-   * reads it straight off the bindings.
-   */
-  previewHostSuffix?: string;
-  runtimeCache?: 'shared' | 'byoa' | { mode: 'shared' | 'byoa'; bucket?: string };
-  sandboxes?: Record<string, NimbusSandboxProfile>;
-}
-
-export function defineNimbusConfig<T extends NimbusConfig>(config: T): T {
-  return config;
-}
+export * from './sandbox.js';
 
 export interface BuildWranglerOptions {
   /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
