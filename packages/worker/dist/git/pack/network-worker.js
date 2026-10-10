@@ -8,6 +8,7 @@
  */
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { createGitFs } from '../git-fs.js';
 import { GIT_CLONE_JOB_MARKER } from '../clone-job.js';
@@ -271,7 +272,7 @@ export const networkWorker = {
                 return;
             stats.supervisorRpc.stdout++;
             try {
-                useRpcResource(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => { });
+                useRpcResource(supervisor.stdout(enc.encode(msg)), () => undefined).catch(() => { });
             }
             catch { /* the line is best-effort */ }
         };
@@ -340,7 +341,7 @@ export const networkWorker = {
                     return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
                 }
                 if (phase === 'clone-history') {
-                    const history = opts.history ?? {};
+                    const history = opts.history;
                     let step;
                     if (history.step === 'checkout-plan') {
                         step = await clonePlanFromStore(context, {
