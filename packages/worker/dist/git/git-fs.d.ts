@@ -39,11 +39,15 @@ export declare function fsError(code: FsErrorCode, syscall: string, filepath: st
     code: string;
     errno: number;
 };
-/** cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam. */
+/**
+ * cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam.
+ * Each call is the backend's promise, shaped by one `then` where it needs
+ * shaping: the adapter adds no await of its own to cf-git's many small calls.
+ */
 export declare function createGitFs<P>(backend: GitFsBackend, packs: P): {
     packs: P;
     promises: {
-        readFile(filepath: string, options?: unknown): Promise<Uint8Array | string>;
+        readFile: (filepath: string, options?: unknown) => Promise<Uint8Array | string>;
         writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: {
             mode?: unknown;
         }): Promise<void>;

@@ -49,26 +49,28 @@ function nodeStats(st) {
     };
 }
 const decoder = new TextDecoder();
-/** cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam. */
+/**
+ * cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam.
+ * Each call is the backend's promise, shaped by one `then` where it needs
+ * shaping: the adapter adds no await of its own to cf-git's many small calls.
+ */
 export function createGitFs(backend, packs) {
-    const statOf = async (filepath, follow) => {
-        const st = await backend.stat(normalizeVfsPath(filepath), follow);
+    const statOf = (filepath, follow) => backend.stat(normalizeVfsPath(filepath), follow).then((st) => {
         if (st === null)
             throw fsError('ENOENT', follow ? 'stat' : 'lstat', filepath);
         return nodeStats(st);
-    };
+    });
     return {
         packs,
         promises: {
-            async readFile(filepath, options) {
-                const data = await backend.readFile(normalizeVfsPath(filepath));
+            readFile: (filepath, options) => backend.readFile(normalizeVfsPath(filepath)).then((data) => {
                 if (data === null)
                     throw fsError('ENOENT', 'open', filepath);
                 return wantsUtf8(options) ? decoder.decode(data) : data;
-            },
-            async writeFile(filepath, data, options) {
+            }),
+            writeFile(filepath, data, options) {
                 const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
-                await backend.writeFile(normalizeVfsPath(filepath), bytes, (Number(options?.mode) & 0o111) !== 0);
+                return backend.writeFile(normalizeVfsPath(filepath), bytes, (Number(options?.mode) & 0o111) !== 0);
             },
             unlink: (filepath) => backend.unlink(normalizeVfsPath(filepath), filepath),
             readdir: (filepath) => backend.readdir(normalizeVfsPath(filepath), filepath),

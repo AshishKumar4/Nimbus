@@ -95,33 +95,36 @@ function sessionGitFs(vfs, worktree = null, promisor) {
         }
     }
     const backend = {
-        async stat(p, follow) {
+        stat(p, follow) {
             if (!p) {
                 const now = Date.now();
-                return { type: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now, uid: 0, gid: 0, dev: 0, ino: 0, nlink: 1 };
+                return Promise.resolve({ type: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now, uid: 0, gid: 0, dev: 0, ino: 0, nlink: 1 });
             }
+            // The engine answers some paths at once, its view the rest by promise; either may fail.
             let st;
             try {
-                st = await (follow ? vfs.stat(p) : vfs.lstat(p));
+                st = follow ? vfs.stat(p) : vfs.lstat(p);
             }
             catch {
-                return null;
+                return Promise.resolve(null);
             }
-            return {
+            return Promise.resolve(st).then((st) => ({
                 type: st.type === 'directory' ? 'dir' : st.type === 'symlink' ? 'symlink' : 'file',
                 size: st.size,
                 mode: st.mode,
                 mtimeMs: st.mtime, ctimeMs: st.ctime, atimeMs: st.atime,
                 uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
-            };
+            }), () => null);
         },
-        async readFile(p) {
+        readFile(p) {
+            let data;
             try {
-                return await vfs.readFile(p);
+                data = vfs.readFile(p);
             }
             catch {
-                return null;
+                return Promise.resolve(null);
             }
+            return Promise.resolve(data).then((bytes) => bytes, () => null);
         },
         // A checkout's file modes are the index's: the session writes none here.
         async writeFile(p, data) {
