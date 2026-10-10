@@ -3,37 +3,8 @@
  */
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ExecChunk, type ExecExit, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
-export type RuntimeSpec = string;
-export type RuntimeName = 'node' | 'bun' | 'npm' | 'git' | 'python' | 'ruby' | 'clang' | 'shell' | (string & {});
-export interface NimbusRuntimePolicy {
-    preinstall?: RuntimeSpec[];
-    onDemand?: boolean;
-    allow?: RuntimeName[];
-}
-export interface NimbusSandboxProfile {
-    root?: string;
-    runtimes?: NimbusRuntimePolicy;
-    tools?: {
-        namespace?: string;
-        kind?: string;
-    };
-    preview?: {
-        baseUrl?: string;
-        pathStyle?: boolean;
-    };
-}
-export interface NimbusConfig {
-    endpoint?: string;
-    /**
-     * The deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling the
-     * `<port>--<sid>.<suffix>` preview origin. `Nimbus.fromEnv` reads it off
-     * the bindings, so in-Worker callers never restate it; remote clients
-     * (`Nimbus.connect`) have no bindings and must supply it to get host-form
-     * preview URLs.
-     */
-    previewHostSuffix?: string;
-    sandboxes?: Record<string, NimbusSandboxProfile>;
-}
+import { type NimbusConfig, type NimbusCodeLanguage, type RuntimeSpec } from '@nimbus-sh/config/sandbox';
+export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, RuntimeSpec, NimbusRuntimeName as RuntimeName } from '@nimbus-sh/config/sandbox';
 export interface NimbusFromEnvOptions {
     binding?: string;
     endpoint?: string;
@@ -485,7 +456,7 @@ export declare class NimbusSandbox {
      */
     startProcess(command: string, options?: NimbusExecOptions): Promise<NimbusStartResult>;
     runCode(code: string, options?: NimbusExecOptions & {
-        language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
+        language?: NimbusCodeLanguage;
         install?: 'never' | 'ifMissing';
     }): Promise<NimbusExecResult>;
     destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
@@ -809,5 +780,4 @@ export declare class NimbusProcessAttachment implements AsyncIterable<NimbusProc
     stream(options?: NimbusProcessAttachOptions): AsyncIterable<NimbusProcessLogChunk>;
     [Symbol.asyncIterator](): AsyncIterator<NimbusProcessLogChunk>;
 }
-export {};
 //# sourceMappingURL=sandbox.d.ts.map

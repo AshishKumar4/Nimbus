@@ -53,6 +53,11 @@
       "types": "./dist/worker.d.ts",
       "import": "./dist/worker.js"
     },
+    "./oauth": {
+      "workspace": "./src/oauth.ts",
+      "types": "./dist/oauth.d.ts",
+      "import": "./dist/oauth.js"
+    },
     "./errors": {
       "workspace": "./src/errors.ts",
       "types": "./dist/errors.d.ts",
@@ -89,6 +94,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@nimbus-sh/config": "^0.2.4",
     "@nimbus-sh/platform": "^0.8.0",
     "zod": "^4.4.3",
     "@nimbus-sh/core": "^0.16.0"
