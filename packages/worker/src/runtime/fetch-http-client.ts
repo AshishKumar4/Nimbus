@@ -30,14 +30,14 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
   class IncomingMessage extends NativeIncomingMessage {
     #reader;
     #reading = false;
-    #request;
-    constructor(response, request) {
+    #idle;
+    constructor(response, idle, joinDuplicateHeaders) {
       super();
-      this.#request = request;
+      this.#idle = idle;
       this.statusCode = response.status;
       this.statusMessage = response.statusText;
       this.url = response.url;
-      this.joinDuplicateHeaders = request.joinDuplicateHeaders;
+      this.joinDuplicateHeaders = joinDuplicateHeaders;
       const headers = [];
       for (const [name, value] of response.headers) {
         if (name === "set-cookie") continue;
@@ -57,7 +57,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
             const next = await this.#reader.read();
             if (this.destroyed) return;
             if (next.done) { this.complete = true; this.push(null); return; }
-            this.#request.touch();
+            this.#idle.touch();
             if (!this.push(Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength))) return;
           }
         } catch (error) { this.destroy(error); }
@@ -72,7 +72,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       else finish();
     }
     setTimeout(msecs, callback) {
-      this.#request.setTimeout(msecs);
+      this.#idle.setTimeout(msecs);
       if (callback) this.once("timeout", callback);
       return this;
     }
@@ -173,7 +173,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       this.#context.started(this);
       this.#counted = true;
       this.#started = true;
-      this.touch();
+      this.#touch();
       let response;
       try {
         response = fetch(address, { method: this.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
@@ -181,8 +181,10 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       this.#completeBody = undefined;
       Promise.resolve(response).then((response) => {
         if (this.destroyed) { response.body?.cancel().catch(() => {}); return; }
-        const incoming = this.#incoming = this.res = new IncomingMessage(response, this);
-        this.touch();
+        const incoming = this.#incoming = this.res = new IncomingMessage(response, {
+          touch: () => this.#touch(), setTimeout: (msecs) => this.setTimeout(msecs),
+        }, this.joinDuplicateHeaders);
+        this.#touch();
         incoming.on("error", (error) => { if (!this.destroyed) this.emit("error", error); });
         incoming.once("close", () => this.destroy());
         if (!this.emit("response", incoming)) incoming._dump();
@@ -190,7 +192,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     }
     _write(chunk, encoding, callback) {
       this.#start();
-      if (this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.touch(); callback(); }, callback);
+      if (this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
       else callback();
     }
     _final(callback) {
@@ -252,11 +254,11 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     setTimeout(msecs, callback) {
       this.timeout = duration(msecs);
       if (callback) this.once("timeout", callback);
-      this.touch();
+      this.#touch();
       return this;
     }
     clearTimeout(callback) { return this.setTimeout(0, callback); }
-    touch() {
+    #touch() {
       clearTimeout(this.#timer);
       if (!this.timeout || !this.#started || this.destroyed) return;
       this.#timer = setTimeout(() => { this.emit("timeout"); this.#incoming?.emit("timeout"); this.destroy(abortError()); }, this.timeout);
