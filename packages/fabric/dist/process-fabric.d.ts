@@ -267,6 +267,15 @@ export declare function decodeCommonJsPackBytes(pack: Uint8Array): Record<string
     cjs: string;
 }>;
 /**
+ * Read a content-addressed blob (image-store.ts storeContentBlob) and verify
+ * it against `digest`, the one it is named by. Content addressing is only a
+ * guarantee if the bytes are checked against the name they arrived under: a
+ * blob that was truncated, or replaced by something the generator never
+ * wrote, would otherwise be loaded as the program and fail somewhere inside
+ * it with no way back to the cause.
+ */
+export declare function readContentBlob(disk: ResidentDiskReader, path: string, digest: string): Promise<Uint8Array>;
+/**
  * The identity a resident process's SUPERVISOR binding is minted for. Always
  * the COORDINATOR's — a process hosted somewhere else still reads and writes
  * the user's disk, and still reports to the user's process table. Minted by

@@ -43,6 +43,11 @@
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
     },
+    "./oauth": {
+      "workspace": "./src/session/agent-oauth.ts",
+      "types": "./dist/session/agent-oauth.d.ts",
+      "import": "./dist/session/agent-oauth.js"
+    },
     "./session-id": {
       "workspace": "./src/_shared/session-id.ts",
       "types": "./dist/_shared/session-id.d.ts",
@@ -104,6 +109,11 @@
       "import": "./dist/runtime/package-manager.js"
     },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
+    "./runtime/catalog": {
+      "workspace": "./src/runtime/runtime-catalog.ts",
+      "types": "./dist/runtime/runtime-catalog.d.ts",
+      "import": "./dist/runtime/runtime-catalog.js"
+    },
     "./public/*": "./public/*",
     "./package.json": "./package.json"
   },
@@ -141,6 +151,7 @@
     "typecheck": "tsc --noEmit && tsc -p frontend --noEmit"
   },
   "dependencies": {
+    "@nimbus-sh/config": "^0.2.4",
     "@ai-sdk/openai-compatible": "^2.0.41",
     "@nimbus-sh/core": "^0.16.0",
     "@nimbus-sh/fabric": "^0.11.0",

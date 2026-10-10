@@ -310,7 +310,7 @@ try {
   // ── Phase 2: real backend, model-auth boundary honored honestly ─────
   interceptAgentApis = false;
   const statusResponse = await fetch(`${BASE}/s/${sid}/api/agent/status`, {
-    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
+    headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }, sid),
   });
   const status = await statusResponse.json();
   a.check('agent status API returns ok', statusResponse.status === 200 && status.ok === true, JSON.stringify(status));
@@ -351,7 +351,7 @@ try {
     // credentials the endpoint must refuse cleanly instead.
     const chatResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
       method: 'POST',
-      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }, sid),
       body: JSON.stringify({ message: 'hello' }),
     });
     const chat = await chatResponse.json();
@@ -360,7 +360,7 @@ try {
       `status=${chatResponse.status} body=${JSON.stringify(chat)}`);
     const retryResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
       method: 'POST',
-      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      headers: requestHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }, sid),
       body: JSON.stringify({ retry: true }),
     });
     a.check('unauthenticated retry also refuses cleanly', retryResponse.status === 409, `status=${retryResponse.status}`);
@@ -390,7 +390,7 @@ try {
     await page.waitForFunction(() => (document.getElementById('agentSend')?.textContent || '') === 'Send', { timeout: 30_000 });
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const messagesResponse = await fetch(`${BASE}/s/${sid}/api/agent/messages`, {
-      headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }),
+      headers: requestHeaders({ Accept: 'application/json', 'Cache-Control': 'no-store' }, sid),
     });
     const persisted = await messagesResponse.json();
     const last = persisted.messages[persisted.messages.length - 1];

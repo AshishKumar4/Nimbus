@@ -284,6 +284,18 @@ for (const [status, statusText] of [[204, 'No Content'], [205, 'Reset Content'],
     await rejected.text(),
     'Nimbus virtual socket: runtime handler did not accept the request: handler exploded',
   );
+  // A refused request is over: its connection is not left queued, where the
+  // next request's pump would accept it and answer the wrong client.
+  assert.equal(kernel.pending(3098), 0, 'the refused request\'s connection is still queued');
+  host.__nimbusVirtualSocketRequestQueued = async (port) => {
+    const accepted = kernel.acceptNow(port);
+    const path = drainRequestBytes(kernel, accepted.id).split(' ')[1];
+    kernel.send(accepted.id, `HTTP/1.1 200 OK\r\nContent-Length: ${path.length}\r\n\r\n${path}`);
+    kernel.close(accepted.id);
+    return true;
+  };
+  const next = await withTimeout(kernel.handleHttpRequest(3098, new Request('https://nimbus.local/next')), 'GET after a refusal');
+  assert.equal(await next.text(), '/next', 'the request after a refusal was answered with another\'s response');
 
   const unlistened = await withTimeout(
     new VirtualSocketKernel({}).handleHttpRequest(9999, new Request('https://nimbus.local/')),

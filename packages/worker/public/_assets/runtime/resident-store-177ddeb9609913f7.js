@@ -39,6 +39,7 @@ const __RESIDENT_BATCH_ROWS = 512;
 const __RESIDENT_BATCH_PATHS = 1024;
 const __RESIDENT_BATCH_BYTES = 4194304;
 const __RESIDENT_LIST_PAGE = 8192;
+const __RESIDENT_TREE_ENTRIES = 16384;
 /**
  * Pages one enumeration may take before it gives up.
  *
@@ -2028,29 +2029,31 @@ async function __residentBootLazy(supervisor) {
  * again from nothing at the authority's cursor: names are listed again on
  * demand, never served from a state the cursor has left.
  */
-async function __residentLazyBarrier(supervisor) {
+async function __residentLazyBarrier(supervisor, lease) {
   if (!__residentReady) throw new Error("Nimbus: __residentLazyBarrier before __residentBind");
   const t = __residentT;
   const cursor = __residentCursor();
   let answer = null;
   if (cursor !== null) {
-    try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true }); }
+    try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, lease ? { namespace: true, lease: true } : { namespace: true }); }
     catch { answer = null; }
   }
+  // The process's read lease, held once answered, applied or not (resident-filesystem.ts).
+  const readLease = answer?.readLease;
+  const landed = (ok) => (readLease === undefined ? { ok } : { ok, readLease });
   if (answer && !answer.poison && typeof answer.epoch === "string" && typeof answer.rev === "number") {
     await __residentApplyAcquire(supervisor, answer);
-    if (__nsReady()) return true;
+    if (__nsReady()) return landed(true);
     answer = { epoch: __residentCursor().epoch, rev: __residentCursor().rev };
   }
   if (answer && typeof answer.epoch === "string" && typeof answer.rev === "number") {
     __nsBeginLazy(t, { epoch: answer.epoch, rev: answer.rev });
-    return true;
+    return landed(true);
   }
-  return __residentBootLazy(supervisor);
+  // A namespace started again holds nothing a lease vouched for.
+  return { ok: await __residentBootLazy(supervisor), ...(readLease === undefined ? {} : { readLease }) };
 }
 
-/** Listing pages a tree walk is given before it lists one directory at a time instead. */
-const __RESIDENT_TREE_PAGES = 2;
 
 /**
  * The store as a WASI process's filesystem adapter reads it (core
@@ -2082,7 +2085,7 @@ function __residentNamespaceView(supervisor, device, cred) {
     },
     list: (k) => __nsListDirectory(supervisor, k),
     lookup: (keys, content) => __nsLookupKeys(supervisor, keys, content ? __RESIDENT_LOOKUP_CONTENT_BYTES : 0),
-    listTree: (k) => __nsListSubtree(supervisor, k, __RESIDENT_TREE_PAGES),
+    listTree: (k) => __nsListSubtree(supervisor, k),
     content(k) {
       const cell = __residentGet(k);
       if (cell === undefined || (cell && typeof cell === "object" && cell.error)) return undefined;
@@ -2095,7 +2098,7 @@ function __residentNamespaceView(supervisor, device, cred) {
       const bytes = view.content(k);
       return bytes === undefined ? null : bytes;
     },
-    barrier: () => __residentLazyBarrier(supervisor),
+    barrier: (lease) => __residentLazyBarrier(supervisor, lease === true),
     reserve: (bytes) => __residentPin(bytes),
     release: (bytes) => __residentUnpin(bytes),
   };
@@ -2221,59 +2224,37 @@ async function __nsListDirectory(supervisor, dir) {
 }
 
 /**
- * List everything beneath `dir` in at most `maxPages` listing pages: what a
- * walker of the tree (git status, a build) is about to look at, in a few
- * round trips instead of two per directory. The listing is in path order, so
- * a directory whose last descendant the pages passed is complete, and is
- * marked listed; a directory the pages stopped inside is not (its rows stay,
- * as rows). True when `dir` itself was listed whole.
+ * List everything beneath `dir` in one answer (fsListTree): what a walker
+ * of the tree (git status, a build, an interpreter's startup) is about to
+ * look at, in one round trip instead of two per directory, every entry
+ * current at one revision. A subtree larger than the listing's bound is
+ * refused there (E2BIG), and listed one directory at a time instead.
+ * True when `dir` was listed whole.
  */
-async function __nsListSubtree(supervisor, dir, maxPages) {
-  if (!supervisor || typeof supervisor.fsList !== "function") return false;
+async function __nsListSubtree(supervisor, dir) {
+  if (!supervisor || typeof supervisor.fsListTree !== "function") return false;
   const t = __residentRequire();
-  const prefix = dir === "" ? "" : dir + "/";
-  // Directories entered and not yet passed, innermost last.
-  const open = [dir];
-  const seen = [];
-  let after = dir === "" ? null : prefix;
-  let complete = false;
-  const close = (path) => {
-    // Every open directory that `path` is not under has been passed.
-    while (open.length > 1) {
-      const top = open[open.length - 1];
-      if (path.startsWith(top + "/")) break;
-      __nsListed.add(open.pop());
-    }
-  };
+  let tree;
+  try { tree = await supervisor.fsListTree("/" + dir, __RESIDENT_TREE_ENTRIES); }
+  catch { return false; }
+  if (!tree || !Array.isArray(tree.entries)) return false;
+  const listed = [dir];
   const written = new Set();
-  pages: for (let page = 0; page < maxPages; page++) {
-    let listed;
-    try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
-    catch { break; }
-    if (!listed || !Array.isArray(listed.entries)) break;
-    for (const entry of listed.entries) {
-      const k = String(entry.path).replace(/^\/+/, "");
-      if (k === dir) continue;
-      if (prefix !== "" && !k.startsWith(prefix)) { complete = true; break pages; }
-      if (!entry.stat || !__nsDescribes(entry.stat)) break pages;
-      close(k);
-      if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) break pages;
-      written.add(k);
-      seen.push(k);
-      if (entry.kind === "directory" && !entry.unlisted) open.push(k);
-    }
-    if (listed.next === null || listed.next === undefined) { complete = true; break; }
-    after = listed.next;
+  for (const entry of tree.entries) {
+    const k = String(entry.path).replace(/^\/+/, "");
+    if (!entry.stat || !__nsDescribes(entry.stat)) return false;
+    if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) return false;
+    written.add(k);
+    if (entry.kind === "directory" && !entry.unlisted) listed.push(k);
   }
-  if (!complete) return false;
-  // A name the listing no longer shows under a directory it passed whole goes.
-  for (const listed of [...open.slice(1), dir]) {
-    for (const child of __nsChildren(listed)) {
-      const k = (listed === "" ? "" : listed + "/") + child.name;
+  // A name the listing no longer shows under a directory it listed goes.
+  for (const directory of listed) {
+    for (const child of __nsChildren(directory)) {
+      const k = (directory === "" ? "" : directory + "/") + child.name;
       if (!written.has(k)) __nsDeleteTree(t, k, true);
     }
   }
-  while (open.length > 0) __nsListed.add(open.pop());
+  for (const directory of listed) __nsListed.add(directory);
   return true;
 }
 

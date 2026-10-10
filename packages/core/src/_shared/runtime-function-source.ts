@@ -72,35 +72,16 @@ function functionLiteral(text: string, bodyStart: number, emptyBody: boolean, re
 }
 
 /**
- * Why V8's constructor would refuse these arguments, or null when it would
- * build the function. V8 parses the parameters alone and requires them to end
- * where the list ends ("Arg string terminates parameters early"), the body
- * alone, and then the whole source, which must be exactly one function
- * literal ("Single function literal required"). Splicing unchecked text into
+ * The function literal a constructor call builds, checked as V8 checks it.
+ * V8 parses the parameters alone and requires them to end where the list
+ * ends ("Arg string terminates parameters early"), the body alone, and then
+ * the whole source, which must be exactly one function literal ("Single
+ * function literal required"). Splicing unchecked text into
  * `(<head> anonymous(<params>\n) {\n<body>\n})` would otherwise let a body
- * such as `}, globalThis.x = 1, function () {` run code at module
- * evaluation that the constructor never would.
- */
-export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string, realm: SourceRealm): string | null {
-  const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
-  const paramText = parameterList(params);
-  const checks: Array<[text: string, bodyStart: number, emptyBody: boolean]> = [
-    [`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true],
-    [`${head}\n) {\n${body}\n})`, `${head}\n) `.length, false],
-    [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
-  ];
-  for (let i = 0; i < checks.length; i++) {
-    const checked = functionLiteral(checks[i][0], checks[i][1], checks[i][2], realm);
-    if (typeof checked === 'string') return checked;
-  }
-  return null;
-}
-
-/**
- * The function literal a constructor call builds, parsed with the checks of
- * runtimeFunctionSyntaxError but the body parsed once: the parameters alone,
- * then the whole literal. V8's body-alone parse refuses nothing those two
- * accept, since with the parameters complete on their own the literal's
+ * such as `}, globalThis.x = 1, function () {` run code at module evaluation
+ * that the constructor never would. The body is parsed once: the parameters
+ * alone, then the whole literal. V8's body-alone parse refuses nothing those
+ * two accept, since with the parameters complete on their own the literal's
  * body is parsed as the body alone would be, in the parameters' context.
  * Throws the SyntaxError V8 would. `text` is what `node`'s offsets index.
  */

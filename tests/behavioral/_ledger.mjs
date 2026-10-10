@@ -4,29 +4,8 @@
  * And the exit hook's DELETEs, which a child process runs (deleteSessions).
  */
 
-/**
- * Whether a `DELETE /s/<id>/` response proves the session was destroyed.
- *
- * A 2xx alone does not: a router that serves the session shell for any
- * method answers a DELETE with 200 HTML and destroys nothing. Only the
- * destroy result does — JSON `{ ok: true, result: { ok: true, killed,
- * destroyedAt, reason } }`, what `box.destroy()` answers.
- *
- * @param {Response} response
- * @returns {Promise<{ ok: boolean, status: number, body: string }>}
- */
-export async function deletionResult(response) {
-  const body = await response.text().catch(() => '');
-  let document;
-  try { document = JSON.parse(body); } catch { /* not the destroy result */ }
-  const result = document?.result;
-  const json = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() === 'application/json';
-  const confirmed = response.ok && json && document?.ok === true && result?.ok === true
-    && Number.isSafeInteger(result.killed) && result.killed >= 0
-    && Number.isSafeInteger(result.destroyedAt) && result.destroyedAt >= 0
-    && (result.reason === null || typeof result.reason === 'string');
-  return { ok: Boolean(confirmed), status: response.status, body };
-}
+import { deleteProbeSession } from './_session-transport.mjs';
+export { deletionResult } from './_session-transport.mjs';
 
 /** IMF-fixdate, the HTTP-date form senders generate (RFC 9110 §5.6.7). */
 const IMF_FIXDATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
@@ -58,22 +37,22 @@ export function retryAfterMs(header, now = Date.now()) {
  * install refused its DELETE once and was counted a leak while it lived. Any
  * other answer is the verdict. The destroy is idempotent.
  *
- * @param {{ base: string, sessions: [string, Record<string, string>][], tries: number, budgetMs: number }} run
+ * @param {{ base?: string, sessions: Array<object | [string, Record<string, string>]>, tries: number, budgetMs: number }} run
  * @returns {Promise<{ status: number | string, confirmed: boolean, attempts: number }[]>}
  */
 export async function deleteSessions({ base, sessions, tries, budgetMs }) {
-  return Promise.all(sessions.map(async ([sid, headers]) => {
+  return Promise.all(sessions.map(async (record) => {
+    const session = Array.isArray(record) ? { base, sessionId: record[0], headers: record[1] } : record;
     const deadline = Date.now() + budgetMs;
     for (let attempt = 1; ; attempt++) {
       let last, waitMs = 1000;
       try {
-        const response = await fetch(`${base}/s/${encodeURIComponent(sid)}/`, {
-          method: 'DELETE', headers, signal: AbortSignal.timeout(Math.max(0, deadline - Date.now())),
+        const result = await deleteProbeSession(session, {
+          reason: 'probe-exit', signal: AbortSignal.timeout(Math.max(0, deadline - Date.now())),
         });
-        const result = await deletionResult(response);
         last = { status: result.status, confirmed: result.ok, attempts: attempt };
-        if (response.status !== 503) return last;
-        waitMs = retryAfterMs(response.headers.get('retry-after')) ?? waitMs;
+        if (result.status !== 503) return last;
+        waitMs = retryAfterMs(result.retryAfter) ?? waitMs;
       } catch (error) {
         last = { status: `error: ${error.message}`, confirmed: false, attempts: attempt };
       }

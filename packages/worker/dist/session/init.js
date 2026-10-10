@@ -184,6 +184,8 @@ export async function initSession(self, ws, options = {}) {
         egress: self.egressForWorkspace(),
     });
     self.runtimeWorkspace = workspace;
+    // A process's answers leave as the rest of its output does: once what it wrote is published.
+    self.portRegistry.setOutput(workspace.processes);
     self.shellProcessPid = workspace.shellProcessPid;
     self.kernel = workspace.kernel;
     self.shell = workspace.shell;
@@ -218,17 +220,11 @@ export async function initSession(self, ws, options = {}) {
     // shell does.
     const sessionIdFromBase = (self.sessionBasePath || '').replace(/^\/s\//, '');
     if (sessionIdFromBase) {
-        // Shell.env is declared private but mutable at runtime — there's
-        // no public setter. We `any`-cast deliberately; the alternative
-        // (replacing the whole Shell after construction) would lose the
-        // kernel + registry wiring. Anti-req note: this is NOT a defensive
-        // cast, it's a deliberate single-write operation to plug the
-        // contract gap that env-construction couldn't fill (sessionBasePath
-        // wasn't yet hydrated when the workspace was composed).
-        const shellAny = self.shell;
-        if (!shellAny.env.NIMBUS_SESSION_ID) {
-            shellAny.env.NIMBUS_SESSION_ID = sessionIdFromBase;
-        }
+        // The shell's own variables (getEnv): sessionBasePath was not yet
+        // hydrated when the workspace was composed.
+        const env = self.shell.getEnv();
+        if (!env.NIMBUS_SESSION_ID)
+            env.NIMBUS_SESSION_ID = sessionIdFromBase;
     }
     if (persisted.cwd) {
         try {

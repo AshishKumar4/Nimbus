@@ -76,6 +76,12 @@ export interface ProcessFsSession {
   retireWriter?(writer: string): Promise<void>;
   /** Delegations; absent, the process holds none and the session decides every op. */
   readonly grants?: ProcessFsGrantSession;
+  /**
+   * Settled once every write of the process's the session answered ahead of
+   * its publication is published (SupervisorRPC.fsPublished); `escape`, see
+   * RuntimeFsBridge.published. Absent, the session answers none so.
+   */
+  published?(escape: boolean): Promise<void>;
 }
 
 /** The session's delegation calls (fsAcquireExclusiveMutation with `delegate`, fsAwaitRecall, fsRecalled, fsReleaseExclusiveMutation). */
@@ -200,6 +206,24 @@ export interface ProcessFsClient {
    * nothing an effect it released claimed.
    */
   effect(): Promise<void> | null;
+  /**
+   * The gate an effect leaving by a way the session's gate does not see (a
+   * request out by the runtime's own network) is released at, after
+   * `effect`: once every write of the process's the session answered ahead
+   * of its publication (WriteBatchStreamResult.held) is published, or null
+   * when none is.
+   */
+  published(): Promise<void> | null;
+  /**
+   * A raw socket opens, which carries whatever the process sends on it from
+   * now on, past every gate of the session's. The session is told (once),
+   * every wave sent from now on goes after that, so each is answered once
+   * published, and no mutation is decided here (holder) any more. The
+   * socket opens at the gate this answers: once the session answered that,
+   * and what was logged before it is answered and published; rejected when
+   * the session was not told. Null when nothing waits (told already).
+   */
+  rawSocket(): Promise<void> | null;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
   settle(): Promise<void>;
   /** The failures not yet reported, taken (the next effect reports them). */
@@ -230,7 +254,51 @@ export interface ProcessFsClient {
   holds(key: string): boolean;
   /** Whether any op is logged and not yet answered. */
   pending(): boolean;
+  /**
+   * Whether the process's read lease is held and trusted now: nothing it
+   * covers has changed since the barrier that last confirmed it (another's
+   * change waits for this process to have answered its recall, and it has
+   * logged nothing of its own since), so a resumption's barrier need not
+   * ask the session.
+   */
+  readTrusted(): boolean;
+  /**
+   * What the read lease the process holds does not vouch for (its terms,
+   * VfsAcquireResult.readLease's `uncovered`), as the answer that last
+   * confirmed it said; none while it holds none.
+   */
+  readUncovered(): readonly string[];
+  /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
+  readLeaseAsk(): ReadLeaseAsk | null;
+  /**
+   * An answer to such an ACQUIRE carried `lease` (VfsAcquireResult.readLease),
+   * whether or not the barrier applies it: the process holds it, answers its
+   * recalls from now on, and gives it back. Trusted only once applied (readLeased).
+   */
+  readLeaseAnswered(lease: ReadLeaseTerms): void;
+  /**
+   * The barrier that asked with `ask` applied the answer carrying `lease`:
+   * trusted until `ask.at + lease.trustMs` while the process logs nothing more.
+   */
+  readLeased(lease: ReadLeaseTerms, ask: ReadLeaseAsk): void;
   stats(): ProcessFsStats;
+}
+
+/** A read lease as an answer carries it (VfsAcquireResult.readLease). */
+export interface ReadLeaseTerms {
+  readonly owner: string;
+  readonly trustMs: number;
+  readonly uncovered: readonly string[];
+}
+
+/**
+ * When a barrier asked for the read lease (the client's clock), and the log
+ * then: what it logged, when every change of its was answered by that ask
+ * (its own changes are in what the answer brings), or -1.
+ */
+export interface ReadLeaseAsk {
+  readonly at: number;
+  readonly logged: number;
 }
 
 export interface ProcessFsStats {
@@ -249,6 +317,11 @@ export interface ProcessFsStats {
   renewed: number;
   /** Changes folded into the unsent change before them (the same file's next bytes). */
   folded: number;
+  /** Read leases taken (a new owner), confirmed (a barrier renewed one), recalled, and given back idle. */
+  readLeases: number;
+  readConfirms: number;
+  readRecalls: number;
+  readReleased: number;
 }
 
 /**
@@ -498,10 +571,21 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Entries logged, the last one answered (every one before it is), and the flushes waiting for a place in the log. */
   let logged = 0;
   let answered = 0;
+  /** Waves the session answered ahead of their publication, and how many of them it has since said are published (`published`). */
+  let heldWaves = 0;
+  let publishedThrough = 0;
+  /**
+   * The session told of a raw socket (rawSocket): every wave after it is
+   * sent once it lands, and nothing is decided here from then on. Landed:
+   * the session answered it, everything it held of the process's published.
+   */
+  let escaped: Promise<void> | null = null;
+  let escapeLanded = false;
   const marks: { mark: number; resolve(): void }[] = [];
   const counters: ProcessFsStats = {
     ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
     grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0, renewed: 0, folded: 0,
+    readLeases: 0, readConfirms: 0, readRecalls: 0, readReleased: 0,
   };
   const grantAfter = options.grantAfter ?? GRANT_AFTER;
   const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -618,6 +702,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const send = async (entries: Entry[]): Promise<void> => {
     let writer: string | null;
     try {
+      if (escaped !== null) await escaped;
       writer = await writerFor(entries);
     } catch (error) {
       if (error instanceof Error && isProcessGone(error)) {
@@ -694,6 +779,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     let receipt = 0;
     const back: Entry[] = [];
     const mutations = new Map<number, WaveMutation>((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+    if (answer.held === true) heldWaves++;
     for (const [index, entry] of entries.entries()) {
       if (refused !== null && entry.seq === refused.seq) {
         counters.refused++;
@@ -864,6 +950,78 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
   };
 
+  /**
+   * The read lease (readLeaseAnswered): its owner, until when it is trusted
+   * (readLeased), when an answer last confirmed it, and the log the barrier
+   * that applied one asked at.
+   * Untrusted the moment its recall arrives, before the session is told
+   * (answerReadRecalls), and while the process has logged since.
+   */
+  let readLease: { owner: string; until: number; confirmedAt: number; logged: number; uncovered: readonly string[] } | null = null;
+  /**
+   * Read leases recalled or given back: never trusted again. A barrier's
+   * answer that confirmed one can arrive after its recall was answered (the
+   * session confirmed it, then a writer recalled it), and trusting it then
+   * would read past a change published since.
+   */
+  const endedReadLeases = new Set<string>();
+  const endReadLease = (owner: string): void => {
+    endedReadLeases.add(owner);
+    // Owners are never reused; the oldest are forgotten past a bound.
+    if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value!);
+    if (readLease?.owner === owner) readLease = null;
+  };
+
+  /** Give read lease `owner` back (idle, or the run ending): the session's recall of it waits on no one. */
+  const giveBackReadLease = async (owner: string): Promise<void> => {
+    endReadLease(owner);
+    counters.readReleased++;
+    await session.grants?.release(owner).catch(() => {});
+  };
+  /** The run ended (settle): it takes no read lease again. */
+  let runEnded = false;
+  /** Read leases granted to a barrier asked before the run ended, on their way back: settle waits for them. */
+  const givingBack = new Set<Promise<void>>();
+
+  /**
+   * The read lease's recalls, for as long as it is the process's: each poll
+   * that comes back empty while no barrier confirmed it gives it back (it is
+   * idle, and holds a poll open for nothing).
+   */
+  const answerReadRecalls = async (owner: string): Promise<void> => {
+    const port = session.grants!;
+    for (;;) {
+      const polled = now();
+      let kind: RecallKind | null;
+      try {
+        kind = await port.awaitRecall(owner, recallPollMs);
+      } catch {
+        // Ended by the session (released, or the process is ending).
+        endReadLease(owner);
+        return;
+      }
+      if (readLease?.owner !== owner) return;
+      if (kind === null) {
+        if (readLease.confirmedAt < polled) {
+          await giveBackReadLease(owner);
+          return;
+        }
+        continue;
+      }
+      // Untrusted first: a barrier from now on asks, and only then is the
+      // session told, so the change it waits to publish is one every later
+      // barrier of this process sees.
+      endReadLease(owner);
+      counters.readRecalls++;
+      try {
+        await port.recalled(owner, kind);
+      } catch {
+        // Ended meanwhile.
+      }
+      return;
+    }
+  };
+
   /** Give back every grant unused for the idle period; armed while any is held. */
   const armIdle = (): void => {
     if (idleTimer !== null || live().length === 0) return;
@@ -945,8 +1103,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     });
   };
 
-  const heldGrant = (key: string): Grant | undefined =>
-    grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
+  // A process with a raw socket decides nothing here: what it awaits is the
+  // session's answer, which comes once it is published.
+  const heldGrant = (key: string): Grant | undefined => (escaped !== null ? undefined
+    : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
 
   const client: ProcessFsClient = {
     holder(key) {
@@ -959,7 +1119,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         held.lastUsed = now();
         return held;
       }
-      if (session.grants === undefined || settling) return undefined;
+      if (session.grants === undefined || settling || escaped !== null) return undefined;
       // Shared, or another's: the session decides; a subtree it refused is not asked for again.
       if (grants.some((grant) => !grant.ended && within(key, grant.root))) return undefined;
       // Counted at each directory above it: the deepest one that has had
@@ -1086,8 +1246,38 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       options.drain?.();
       return answered >= logged ? null : client.flush();
     },
+    published() {
+      const ask = options.session.published;
+      if (processGone !== null || ask === undefined || publishedThrough === heldWaves) return null;
+      const through = heldWaves;
+      return ask.call(options.session, false).then(() => {
+        if (publishedThrough < through) publishedThrough = through;
+      });
+    },
+    rawSocket() {
+      const ask = options.session.published;
+      if (processGone !== null || ask === undefined) return null;
+      if (escaped === null) {
+        // Its answer is the session's word on what it holds of the process's,
+        // this client's waves and what it never saw (its launch's writes) alike.
+        const through = heldWaves;
+        escaped = ask.call(options.session, true).then(() => {
+          escapeLanded = true;
+          publishedThrough = Math.max(publishedThrough, through);
+        });
+        // Not told, no socket opens, and every write after it fails (send) rather than be answered ahead of its publication.
+        escaped.catch(() => {});
+      }
+      const logged = client.effect();
+      if (escapeLanded && logged === null) return client.published();
+      return Promise.all([escaped, logged]).then(() => client.published() ?? undefined);
+    },
     async settle() {
       settling = true;
+      runEnded = true;
+      // Given back before the run is over: a writer after it never waits on its trust.
+      if (readLease !== null) await giveBackReadLease(readLease.owner);
+      await Promise.all([...givingBack]);
       if (claiming !== null) await claiming;
       try {
         // Until nothing more is logged (a flush's drain may log more).
@@ -1104,6 +1294,43 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     takeFailures() {
       return failures.splice(0, failures.length);
     },
+    readTrusted() {
+      // A Worker's clock stands still between events: trusted at one, it is
+      // before asked + trust, and the session publishes past this lease
+      // unanswered only after confirmed + trust + margin (confirmed >= asked).
+      return readLease !== null && readLease.logged === logged && now() < readLease.until;
+    },
+    readUncovered() {
+      return readLease?.uncovered ?? NOTHING_UNCOVERED;
+    },
+    readLeaseAsk() {
+      if (session.grants === undefined || runEnded) return null;
+      return { at: now(), logged: answered === logged ? logged : -1 };
+    },
+    readLeaseAnswered(lease) {
+      if (session.grants === undefined || endedReadLeases.has(lease.owner)) return;
+      if (readLease?.owner === lease.owner) {
+        readLease.confirmedAt = now();
+        return;
+      }
+      // Granted to a barrier asked before the run ended: given back too.
+      if (runEnded) {
+        const back = giveBackReadLease(lease.owner);
+        givingBack.add(back);
+        void back.finally(() => givingBack.delete(back));
+        return;
+      }
+      readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1, uncovered: lease.uncovered };
+      counters.readLeases++;
+      void answerReadRecalls(lease.owner);
+    },
+    readLeased(lease, ask) {
+      if (readLease?.owner !== lease.owner) return;
+      readLease.until = ask.at + lease.trustMs;
+      readLease.logged = ask.logged;
+      readLease.uncovered = lease.uncovered;
+      counters.readConfirms++;
+    },
     takeFailuresError() {
       const taken = failures.splice(0, failures.length);
       // A missing process is terminal even after its recorded ops were taken.
@@ -1118,6 +1345,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
   return client;
 }
+
+const NOTHING_UNCOVERED: readonly string[] = Object.freeze([]);
 
 /** Where a drain's wave numbers start: past any a process sends (2^40 waves). */
 const DRAIN_WAVE_BASE = 2 ** 40;

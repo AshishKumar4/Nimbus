@@ -36,7 +36,7 @@ const sid = await mintSession();
 }
 
 // Now fetch via fs-read protocol.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => {
   try { messages.push(JSON.parse(data.toString('utf8'))); } catch {}

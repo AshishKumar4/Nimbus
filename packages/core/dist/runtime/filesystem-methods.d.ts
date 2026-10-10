@@ -202,6 +202,10 @@ export declare const FILESYSTEM_METHODS: {
         readonly rpc: "fsRecalled";
         readonly answer: "value";
     };
+    readonly published: {
+        readonly rpc: "fsPublished";
+        readonly answer: "value";
+    };
 };
 export type FilesystemMethod = keyof typeof FILESYSTEM_METHODS;
 /** The supervisor RPC capability's filesystem: each bridge method under its RPC name, with its type. */

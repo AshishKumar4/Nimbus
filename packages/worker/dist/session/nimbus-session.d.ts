@@ -24,7 +24,7 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -44,7 +44,8 @@ import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
+import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
+import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
 import { ServedReads } from '../facets/read-profile.js';
@@ -139,8 +140,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     appDocuments: Record<AppDoor, DocumentPolicy | null>;
     npmInstaller: NpmInstaller | null;
-    /** Singleton fetch proxy entrypoint — created once, reused for all npm fetches. */
-    fetchProxyEntrypoint: any;
     /**
      * The session's single process owner: PID authority, controlling-
      * terminal input, output rings, and exit records, behind one facade.
@@ -285,8 +284,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
     private _scheduleLaunchTurn;
-    /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
-    scheduleHostingWatch(at: number): Promise<void>;
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
      * session (e.g. `/s/nimble-otter-4271/preview`). Falls back to the
@@ -374,6 +371,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         granted: number;
     }>;
     _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
+    _rpcFsListTree(root: string, maxEntries: number, pid?: number): Promise<VfsListTree>;
     _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, refusalBody?: boolean | null, pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
@@ -431,18 +429,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         code: string;
         map: string;
     } | null>;
-    _rpcFanoutExecute(fnSource: string, args: unknown[], poolOpts?: {
-        tag?: string;
-        timeoutMs?: number;
-        preamble?: string;
-        wasmModules?: Record<string, ArrayBuffer>;
-        extraBindings?: Record<string, unknown>;
-        omitSupervisor?: boolean;
-    }): Promise<{
+    _rpcFanoutExecute(fnSource: string, args: unknown[], shardOpts?: FanoutShardOptions): Promise<{
         results: unknown[];
     }>;
-    _hostedProcesses: Map<string, _rpc.HostedProcessRecord>;
-    _hostedProcessWaiters: Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>;
+    private _peerHost;
+    get peerHost(): PeerHost;
     _rpcProcessHostProbe(): {
         isolateToken: string;
     };
@@ -688,27 +679,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     _cpRegistry: CommandRegistry | null;
     _setCpRegistry(r: CommandRegistry): void;
-    /**
-     * Get or create the singleton fetch proxy entrypoint.
-     * ONE dynamic worker is created via LOADER.load() and reused for ALL npm
-     * fetch calls across the lifetime of this DO instance. This prevents
-     * ephemeral port exhaustion from creating a new worker per fetch.
-     */
-    ensureFetchProxy(log?: (msg: string) => void): any | null;
-    /**
-     * Build a FetchFn that routes through the singleton proxy entrypoint.
-     * All concurrent fetches share ONE worker — no port exhaustion.
-     */
-    buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
     ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
-    /**
-     * Read an environment flag with default-on semantics. Mirrors the
-     * shouldUseFacetPool / shouldUseFacetResolver / shouldUseBatchFacet
-     * gates inside NpmInstaller — kept here as a private helper so the
-     * lazy-proxy decision uses identical semantics without leaking that
-     * private API across modules.
-     */
-    _envFlagDefaultOn(name: string): boolean;
     initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
     /**
      * The rebuild in flight for a shell socket that woke this instance from

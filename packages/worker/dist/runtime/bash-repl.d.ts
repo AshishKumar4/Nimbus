@@ -17,7 +17,7 @@ export interface BashReplDeps {
     filesystem: RuntimeFsBridge;
     env: Record<string, string>;
     cwd: string;
-    shell?: Pick<Shell, 'env' | 'cwd' | 'takeQueuedInput'>;
+    shell?: Pick<Shell, 'getEnv' | 'getCwd' | 'takeQueuedInput'>;
 }
 export declare function runBashRepl(deps: BashReplDeps): Promise<number>;
 //# sourceMappingURL=bash-repl.d.ts.map

@@ -67,7 +67,7 @@ http.createServer((req, res) => {
   a.check('the server reports a boot nonce', bootBefore !== '', warm.last.body?.slice(0, 120));
 
   // The reset.
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders() });
+  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
   a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
 
   // The same scoped URL answers again — re-driven on request, no reservation.

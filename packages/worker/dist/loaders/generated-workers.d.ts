@@ -9,6 +9,7 @@
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)
+ *   - @nimbus-sh/core src/_shared/read-lease-cover.ts (what a read lease vouches for, for the node shims)
  *
  * Consumed by fabric/isolate-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -20,13 +21,14 @@
  * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
- * Tar size: 4.58 KiB
- * W7 size:  49.43 KiB
+ * Tar size: 5.20 KiB
+ * W7 size:  49.82 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
 /** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */
 export declare const WAVE_WRITER_PREAMBLE: string;
+export declare const RPC_DISPOSE_PREAMBLE: string;
 /**
  * Declares `function nodeError(Base, code, message, props)`,
  * `function nodeSystemError(code, prefix, context)`,
@@ -49,4 +51,9 @@ export declare const HTTP2_MODULE_PREAMBLE: string;
 export declare const NODE_SHIM_RESOLUTION_PREAMBLE: string;
 /** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */
 export declare const RELATIVE_WASM_PATHS_PREAMBLE: string;
+/**
+ * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);
+ * the node shims splice it into their fs scope.
+ */
+export declare const READ_LEASE_COVER_PREAMBLE: string;
 //# sourceMappingURL=generated-workers.d.ts.map

@@ -368,6 +368,10 @@ export function supervisorCalls(base) {
         async fsList(after, limit) {
             return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
         }
+        /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
+        async fsListTree(root, maxEntries) {
+            return this._call(this._fsRead('fsListTree', [root, maxEntries]));
+        }
         /**
          * WebSocket relay. A facet does not open its own sockets: the supervisor
          * terminates them and hands frames back through `wsPoll`, so an inbound
@@ -456,6 +460,10 @@ export function supervisorCalls(base) {
         /** The holder has answered recall `kind`: delivered once. */
         async fsRecalled(owner, kind) {
             return this._call(this._fsMutation('fsRecalled', [owner, kind]));
+        }
+        /** Settled once the process's held writes are published (RuntimeFsBridge.published). */
+        async fsPublished(options) {
+            return this._call(this._fsOp('fsPublished', options === undefined ? [] : [options]));
         }
         async fsClose(handleId) {
             return this._call(this._fsMutation('fsClose', [handleId]));

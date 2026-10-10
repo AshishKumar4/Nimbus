@@ -62,7 +62,7 @@ try {
   console.log(started.output.slice(-600));
 
   const get = async (path) => {
-    const response = await fetch(url + path, { headers: requestHeaders(), signal: AbortSignal.timeout(60_000) });
+    const response = await fetch(url + path, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(60_000) });
     return { status: response.status, body: await response.text() };
   };
 
@@ -103,7 +103,7 @@ try {
 
   const messages = [];
   let error = '';
-  socket = new WebSocket(url.replace(/^http/, 'ws') + '__nimbus_hmr', ['vite-hmr'], wsHeaders());
+  socket = new WebSocket(url.replace(/^http/, 'ws') + '__nimbus_hmr', ['vite-hmr'], wsHeaders(sid));
   socket.on('message', (data) => {
     try { messages.push(JSON.parse(String(data))); } catch { /* not a Vite payload */ }
   });

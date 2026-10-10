@@ -73,6 +73,7 @@
 
 import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
 import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
@@ -336,8 +337,8 @@ function previewName(name) {
 }
 
 /** The latest deployment of `preview`, or null when there is no such Preview. */
-async function latestDeployment({ account, token, preview }) {
-  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}/deployments/latest`, { account, token });
+async function latestDeployment({ account, token, preview, signal = undefined }) {
+  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}/deployments/latest`, { account, token, signal });
   return got.ok ? got.result : null;
 }
 
@@ -383,7 +384,13 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  const latest = await latestDeployment({ account, token, preview });
+  const settleBy = Date.now() + 30_000;
+  const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
+  let latest = await latestDeployment({ account, token, preview, signal });
+  while (deploymentId && latest?.id !== deploymentId && Date.now() < settleBy) {
+    await delay(Math.min(500, Math.max(1, settleBy - Date.now())), undefined, { signal });
+    latest = await latestDeployment({ account, token, preview, signal });
+  }
   const after = latest?.id ?? null;
   if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);

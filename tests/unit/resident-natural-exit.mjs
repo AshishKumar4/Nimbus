@@ -290,6 +290,7 @@ child.on('exit', (code) => process.exit(code ?? 0));`, {
       '  ["timer", () => setTimeout(() => {}, Symbol("delay"))],',
       '  ["interval", () => setInterval(() => {}, Symbol("delay"))],',
       '  ["tls", () => require("tls").connect({ host: "127.0.0.1", port: -1 })],',
+      '  ["tlsLookup", () => require("tls").connect({ host: "localhost", port: 443, lookup: 0 })],',
       '  ["http", () => require("http").request({ host: "127.0.0.1", port: 1, method: "BAD METHOD" })],',
       ']) {',
       '  try { make(); console.log(name + ":created"); } catch (error) { console.log(name + ":" + error.name); }',

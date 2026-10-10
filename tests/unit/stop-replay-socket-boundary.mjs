@@ -4,6 +4,7 @@
 // behind the same replay-boundary acknowledgement as supervisor/fetch I/O.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { _normalizeArgs } from 'node:net';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; };
@@ -15,12 +16,20 @@ function fixture(proxied) {
   let registered = false;
   class Socket extends EventEmitter {
     constructor() { super(); this.destroyed = false; this.connecting = false; }
-    connect(options) { if (this.connecting) throw Object.assign(new Error('Socket is already connecting'), { code: 'ERR_SOCKET_CONNECTING' }); calls.push({ options, registered }); this.connecting = true; return this; }
+    connect(options) {
+      if (this.connecting) throw Object.assign(new Error('Socket is already connecting'), { code: 'ERR_SOCKET_CONNECTING' });
+      // As workerd's connect checks it, whatever the host.
+      if (options.lookup != null && typeof options.lookup !== 'function') throw Object.assign(new TypeError('The "options.lookup" property must be of type function'), { code: 'ERR_INVALID_ARG_TYPE' });
+      this.connecting = true;
+      // A host looked up by the caller's lookup opens once it answers (none here does).
+      if (typeof options.lookup !== 'function') calls.push({ options, registered });
+      return this;
+    }
     destroy(error) { if (this.destroyed) return this; this.destroyed = true; this.connecting = false; queueMicrotask(() => { if (error) this.emit('error', error); this.emit('close'); }); return this; }
     ref() { return this; }
     unref() { return this; }
   }
-  const net = { Socket, connect(options) { const socket = new Socket(); carriers.push(socket); return socket.connect(options); } };
+  const net = { Socket, _normalizeArgs, connect(options) { const socket = new Socket(); carriers.push(socket); return socket.connect(options); } };
   const tls = { connect(options) {
     const socket = new Socket();
     socket.carrier = options.socket;
@@ -50,7 +59,11 @@ for (const kind of ['plain', 'tls']) {
     const socket = kind === 'plain' ? new f.Socket() : f.tls.connect({ host: 'example.test', port: 443 });
     const errors = [];
     socket.on('error', (error) => errors.push(error));
-    if (kind === 'plain') assert.equal(socket.connect({ host: 'example.test', port: 80 }), socket, 'connect returns its Socket at once');
+    if (kind === 'plain') {
+      assert.equal(socket.connect({ host: 'example.test', port: 80 }), socket, 'connect returns its Socket at once');
+      assert.throws(() => socket.connect({ host: 'example.test', port: 80 }), { code: 'ERR_SOCKET_CONNECTING' }, 'a second connect while the first waits is refused, as the native connect refuses it');
+      assert.throws(() => new f.Socket().connect({ host: 'example.test', port: 80, lookup: 0 }), { code: 'ERR_INVALID_ARG_TYPE' }, 'a connect the native one refuses (a lookup that is no function) threw later, while another waited at the gate');
+    }
     await tick();
     assert.equal(f.calls.length, 0, `${name}: no native connect before the boundary acknowledgement`);
     if (state.startsWith('cancel-')) {

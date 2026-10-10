@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join, basename, relative } from 'node:path';
 import { buildNimbusWranglerConfig } from '@nimbus-sh/config';
 import manifest from '@nimbus-sh/cli/package.json' with { type: 'json' };
+import { parseArgs } from 'node:util';
 /**
  * Scaffold a new Nimbus project at the given directory.
  *
@@ -28,7 +29,18 @@ import manifest from '@nimbus-sh/cli/package.json' with { type: 'json' };
  *               `--force` overwrite existing files.
  */
 export async function scaffold(args) {
-    if (args[0] === '--help' || args[0] === '-h') {
+    let parsed;
+    try {
+        parsed = parseArgs({ args, allowPositionals: true, options: {
+                name: { type: 'string' }, template: { type: 'string' },
+                force: { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h' },
+            } });
+    }
+    catch (error) {
+        process.stderr.write(`create-nimbus-app: ${error instanceof Error ? error.message : error}\n`);
+        return 64;
+    }
+    if (parsed.values.help) {
         process.stdout.write(`create-nimbus-app
 
 Usage:
@@ -42,20 +54,19 @@ Options:
 `);
         return 0;
     }
-    const rawProjectName = args[0];
-    if (!rawProjectName || rawProjectName.startsWith('-')) {
+    const [rawProjectName] = parsed.positionals;
+    if (!rawProjectName || parsed.positionals.length !== 1) {
         process.stderr.write('create-nimbus-app: <project-name> required\n');
         process.stderr.write('Usage: create-nimbus-app my-app [--name my-worker] [--force]\n');
         return 64;
     }
-    const parsed = parseFlags(args.slice(1));
     const target = rawProjectName === '.'
         ? process.cwd()
         : resolve(process.cwd(), rawProjectName);
     const projectName = basename(target);
-    const wranglerName = parsed['--name'] || projectName;
-    const force = '--force' in parsed;
-    const template = parsed['--template'] || 'worker-only';
+    const wranglerName = parsed.values.name || projectName;
+    const force = parsed.values.force;
+    const template = parsed.values.template || 'worker-only';
     if (template !== 'worker-only') {
         process.stderr.write(`create-nimbus-app: unknown template "${template}". Only "worker-only" ships in v0.1.\n`);
         return 64;
@@ -148,36 +159,10 @@ function renderWranglerJsonc(name) {
     return JSON.stringify(config, null, 2) + '\n';
 }
 function renderIndexTs() {
-    return `import {
-  NimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-  createNimbusHandler,
-} from '@nimbus-sh/sdk/worker';
+    return `import { createNimbusHandler } from '@nimbus-sh/sdk/worker';
 import { defineNimbusConfig } from '@nimbus-sh/config';
 
-// Re-export the DO class + every RPC class so wrangler's
-// \`durable_objects.bindings[].class_name\` lookup + \`enable_ctx_exports\`
-// auto-populate loopback bindings (env.SUPERVISOR, etc.).
-export {
-  NimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-};
+export * from '@nimbus-sh/sdk/entrypoints';
 
 const nimbusConfig = defineNimbusConfig({
   sandboxes: {
@@ -344,20 +329,4 @@ export default createNimbusHandler({
 
 Docs: https://github.com/AshishKumar4/Nimbus
 `;
-}
-function parseFlags(args) {
-    const out = {};
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (!a.startsWith('--'))
-            continue;
-        if (args[i + 1] && !args[i + 1].startsWith('--')) {
-            out[a] = args[i + 1];
-            i++;
-        }
-        else {
-            out[a] = '';
-        }
-    }
-    return out;
 }

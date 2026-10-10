@@ -63,7 +63,7 @@ await t.waitFor((b) => /Nimbus Vite Dev Server|Preview:|Local:|started \(long-ru
 
 async function fetchModule() {
   const url = `${BASE}/s/${sid}/preview/@modules/lucide-react`;
-  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
+  const r = await fetch(url, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const code = await r.text();
   return { status: r.status, code };
 }

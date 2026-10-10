@@ -56,7 +56,7 @@ const target = Bun.serve({
 async function probe(name, body, { status = 200, token = 'probe-token', shape = 'destroy', plan = [], retryAfter = '0' } = {}) {
   const file = join(SCRATCH, `${name}.mjs`);
   const ledger = join(SCRATCH, `${name}.jsonl`);
-  writeFileSync(file, `import { mintSession, deleteSession, sleep } from ${JSON.stringify(DRIVER)};\n${body}\n`);
+  writeFileSync(file, `import { mintSession, deleteSession, requestHeaders, wsHeaders, sleep } from ${JSON.stringify(DRIVER)};\n${body}\n`);
   minted = 0;
   deletes = [];
   deleteStatus = status;
@@ -126,6 +126,17 @@ async function probe(name, body, { status = 200, token = 'probe-token', shape = 
   const deleted = await probe('anon-deleted', 'await mintSession();', { status: 200, token: '' });
   assert.deepEqual(deleted.outcomes.ttlReaped, []);
   assert.equal(deleted.outcomes.deleted, 1);
+  const scoped = await probe('two-anonymous', `
+    const a = await mintSession(), b = await mintSession();
+    if(requestHeaders({},a).Authorization!=='Bearer pinned-'+a)throw Error('first HTTP scope lost');
+    if(wsHeaders(a).headers.Authorization!=='Bearer pinned-'+a)throw Error('first WS scope lost');
+    if(requestHeaders({},b).Authorization!=='Bearer pinned-'+b)throw Error('second HTTP scope lost');
+    if(wsHeaders(b).headers.Authorization!=='Bearer pinned-'+b)throw Error('second WS scope lost');
+    if(requestHeaders().Authorization!==undefined)throw Error('anonymous bearer polluted target defaults');
+  `, { status: 401, token: '' });
+  assert.equal(scoped.code, 0, scoped.stderr);
+  assert.deepEqual(scoped.outcomes.leaks, []);
+  assert.deepEqual(scoped.outcomes.ttlReaped.map(([sid]) => sid), ['anon-1', 'anon-2']);
   console.log('  [5] an anonymous session is TTL-reaped, not leaked');
 }
 

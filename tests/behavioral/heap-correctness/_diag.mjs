@@ -8,7 +8,7 @@
 import { BASE, requestHeaders } from '../_driver.mjs';
 
 export async function diagMemory(sid) {
-  const r = await fetch(`${BASE}/s/${sid}/api/_diag/memory`, { cache: 'no-store', headers: requestHeaders() });
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/memory`, { cache: 'no-store', headers: requestHeaders({}, sid) });
   if (!r.ok) throw new Error(`diagMemory ${sid}: HTTP ${r.status}`);
   return r.json();
 }

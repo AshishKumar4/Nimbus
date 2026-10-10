@@ -31,7 +31,7 @@ const TW_FILES = {
 };
 function tail(s, n = 20) { return stripAnsi(s).split(/\r?\n/).filter(Boolean).slice(-n).join('\n'); }
 async function get(sid, path) {
-  const r = await fetch(`${BASE}/s/${sid}/port/${PORT}/${path}`, { headers: requestHeaders(), signal: AbortSignal.timeout(60_000) });
+  const r = await fetch(`${BASE}/s/${sid}/port/${PORT}/${path}`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(60_000) });
   return { status: r.status, body: await r.text() };
 }
 const sid = await mintSession(); console.log(`[vite4-tailwind3-real] sid=${sid} BASE=${BASE}`);

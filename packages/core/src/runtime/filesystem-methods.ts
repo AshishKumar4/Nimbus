@@ -73,6 +73,7 @@ export const FILESYSTEM_METHODS = {
   releaseExclusiveMutation: { rpc: 'fsReleaseExclusiveMutation', answer: 'value' },
   awaitRecall: { rpc: 'fsAwaitRecall', answer: 'value' },
   recalled: { rpc: 'fsRecalled', answer: 'value' },
+  published: { rpc: 'fsPublished', answer: 'value' },
 } as const satisfies Record<BridgeMethod, { readonly rpc: string; readonly answer: FilesystemAnswer }>;
 
 export type FilesystemMethod = keyof typeof FILESYSTEM_METHODS;

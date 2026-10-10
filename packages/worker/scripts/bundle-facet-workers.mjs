@@ -122,10 +122,11 @@ function withoutComments(text) {
 }
 
 /**
- * Bundle one TS source into a self-contained ESM string suitable for
- * inlining as a facet preamble. Strips the leading `export` on
- * declarations and the aggregate `export { ... };` block so the
- * blob is inlinable into another module without re-export errors.
+ * Bundle one TS source into a self-contained string suitable for inlining
+ * as a facet preamble: its exports become the scope's names, and everything
+ * else stays inside a function of its own, so preambles concatenated into
+ * one module never shadow one another's private names (the tar decoder's
+ * and W7's decoders were both a module-level `UTF8`).
  */
 async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
   const result = await build({
@@ -158,9 +159,19 @@ async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
     stripped = stripped.replace(new RegExp(`^import \\{[^}]*\\} from "\\./${name}\\.js";\\n`, 'm'), '');
     if (stripped === before) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
   }
-  stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
+  // Its exports, exported name to local: declared exported, and listed in the closing clause.
+  const exported = new Map();
+  for (const match of stripped.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)) exported.set(match[1], match[1]);
+  const clause = /\n?export\s*\{([^}]*)\}\s*;\s*$/.exec(stripped);
+  for (const specifier of clause ? clause[1].split(',') : []) {
+    const [local, name = local] = specifier.trim().split(/\s+as\s+/);
+    if (local) exported.set(name, local);
+  }
+  stripped = stripped.replace(/^export\s+(async\s+function|function|const|let|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
-  return stripped;
+  const names = [...exported.keys()];
+  const returned = [...exported].map(([name, local]) => (name === local ? name : `${name}: ${local}`));
+  return `var { ${names.join(', ')} } = (() => {\n${stripped}\nreturn { ${returned.join(', ')} };\n})();\n`;
 }
 
 /**
@@ -911,7 +922,18 @@ async function main() {
     throw new Error('[bundle-facet-workers/relative-wasm-paths] the bundle no longer declares function relativeWasmPaths');
   }
 
+  // 7. What a read lease vouches for, which the node shims embed as source
+  //    in the fs scope that answers by it.
+  const readLeaseCover = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'read-lease-cover.ts'),
+    'read-lease-cover',
+  );
+  if (!/^function readLeaseCovers\(/m.test(readLeaseCover)) {
+    throw new Error('[bundle-facet-workers/read-lease-cover] the bundle no longer declares function readLeaseCovers');
+  }
+
   const waveWriter = await bundleWaveWriter();
+  const rpcDisposal = await bundleAsPreamble(join(platformRoot, 'src', 'rpc-dispose.ts'), 'rpc-dispose');
 
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
@@ -929,6 +951,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)',
+    ' *   - @nimbus-sh/core src/_shared/read-lease-cover.ts (what a read lease vouches for, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -950,6 +973,7 @@ async function main() {
     '',
     '/** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */',
     `export const WAVE_WRITER_PREAMBLE: string = ${JSON.stringify(waveWriter)};`,
+    `export const RPC_DISPOSE_PREAMBLE: string = ${JSON.stringify(rpcDisposal)};`,
     '',
     '/**',
     ' * Declares `function nodeError(Base, code, message, props)`,',
@@ -977,6 +1001,12 @@ async function main() {
     '',
     '/** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */',
     `export const RELATIVE_WASM_PATHS_PREAMBLE: string = ${JSON.stringify(relativeWasm)};`,
+    '',
+    '/**',
+    ' * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);',
+    ' * the node shims splice it into their fs scope.',
+    ' */',
+    `export const READ_LEASE_COVER_PREAMBLE: string = ${JSON.stringify(readLeaseCover)};`,
     '',
   ].join('\n');
 

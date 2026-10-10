@@ -1041,7 +1041,7 @@ const shellExecuteTracked = async (
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
   filesystem: workspace.filesystem,
-  getCwd: () => (shell as any)?.cwd || '/home/user',
+  getCwd: () => shell?.getCwd() || '/home/user',
   getFacetManager: () => {
     self.ensureFacetManager();
     return facetMgr!;
@@ -1443,8 +1443,9 @@ registry.register('logs', async (ctx: any) => {
     return 0;
   }
 
-  // Follow mode: subscribe to live appends, poll for exit.
-  const entry = self.processes.get(pid);
+  // Follow mode: subscribe to live appends, poll for exit. Ended as its
+  // observers are told it: an end still held behind its output is followed.
+  const entry = self.processes.published(pid);
   const alreadyExited =
     !entry || entry.state !== 'running' || self.processes.getExit(pid);
   if (alreadyExited) {

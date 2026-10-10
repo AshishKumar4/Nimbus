@@ -13,25 +13,10 @@
  * env.ASSETS-via-RPC, etc.). Without the re-export, the runtime can't
  * find them and child facets get `env.SUPERVISOR === undefined`.
  *
- * The convenience: `@nimbus-sh/sdk/worker` re-exports every required
- * class by name, so an `export { ... } from '@nimbus-sh/sdk/worker'`
- * does the whole job.
+ * `@nimbus-sh/sdk/entrypoints` exports the required host classes.
  */
 
-import {
-  NimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-  createNimbusHandler,
-  isPreviewHostRequest,
-} from '@nimbus-sh/sdk/worker';
+import { createNimbusHandler, isPreviewHostRequest } from '@nimbus-sh/sdk/worker';
 import { Nimbus, type NimbusConfig } from '@nimbus-sh/sdk';
 import {
   completeDemoLogin,
@@ -61,21 +46,7 @@ import {
   type DemoSession,
 } from './demo-sessions.js';
 
-// Re-export the DO class + every RPC class so wrangler discovers them
-// for `durable_objects.bindings[].class_name` and `enable_ctx_exports`
-// auto-populates loopback bindings.
-export {
-  NimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-};
+export * from '@nimbus-sh/sdk/entrypoints';
 
 const sandboxConfig = {
   sandboxes: {

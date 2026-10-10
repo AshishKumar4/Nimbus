@@ -38,7 +38,7 @@ try {
     60_000,
   );
   const answer = async () => {
-    const response = await fetch(`${process.env.BASE}/s/${sid}/worker/`, { headers: requestHeaders() });
+    const response = await fetch(`${process.env.BASE}/s/${sid}/worker/`, { headers: requestHeaders({}, sid) });
     const body = await response.text();
     try { return { status: response.status, json: JSON.parse(body) }; } catch { return { status: response.status, body: body.slice(0, 600) }; }
   };

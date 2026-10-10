@@ -65,7 +65,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   isSupervisorAnsweredMethod,
   supervisorAnswer,
@@ -470,6 +470,11 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
     }
 
+    /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
+    async fsListTree(root: string, maxEntries: number): Promise<VfsListTree> {
+      return this._call(this._fsRead('fsListTree', [root, maxEntries]));
+    }
+
     /**
      * WebSocket relay. A facet does not open its own sockets: the supervisor
      * terminates them and hands frames back through `wsPoll`, so an inbound
@@ -565,6 +570,10 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     /** The holder has answered recall `kind`: delivered once. */
     async fsRecalled(owner: string, kind: RecallKind): Promise<void> {
       return this._call(this._fsMutation('fsRecalled', [owner, kind]));
+    }
+    /** Settled once the process's held writes are published (RuntimeFsBridge.published). */
+    async fsPublished(options?: { escape?: boolean }): Promise<void> {
+      return this._call(this._fsOp('fsPublished', options === undefined ? [] : [options]));
     }
 
     async fsClose(handleId: number): Promise<void> {

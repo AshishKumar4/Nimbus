@@ -87,4 +87,24 @@ const cwdWrites = (h) => h.store.writes.filter((w) => w.k === 'cwd').map((w) => 
   console.log('  [2] a chatty command costs one write, and an export costs one more');
 }
 
+{
+  // Scrollback is recorded a turn after a frame is shown, in order: a write
+  // in the frame's own turn would hold every message the object sends in it
+  // until durable (a reader's recall among them).
+  const h = host();
+  const rows = [];
+  const exec = h.store.sql.exec;
+  h.store.sql.exec = (query, ...args) => {
+    if (/INSERT INTO nimbus_terminal_scrollback/.test(query)) rows.push(args[1]);
+    return exec(query, ...args);
+  };
+  const tee = shellTerminalTee(h);
+  tee('$ cat > f\r\n');
+  tee('more\r\n');
+  assert.deepEqual(rows, [], 'scrollback was written in the turn the frame was shown');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(rows, ['$ cat > f\r\n', 'more\r\n'], 'every frame is recorded, in order');
+  console.log('  [3] scrollback follows the frames it records, a turn later');
+}
+
 console.log('session-shell-state-on-flush OK: the persisted shell state keeps up with the shell');

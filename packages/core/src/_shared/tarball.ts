@@ -16,6 +16,7 @@ import {
   streamPackageEntries,
   readableStreamToAsyncIterable,
   streamTarEntries,
+  tarBytes,
 } from './tarball-stream.js';
 
 export interface TarballWriteTarget {
@@ -91,7 +92,7 @@ export async function extractTarball(
     const rs = new Blob([tarball]).stream().pipeThrough(new DecompressionStream('gzip'));
     source = readableStreamToAsyncIterable(rs);
   } else {
-    source = (async function* () { yield raw; })();
+    source = tarBytes(raw);
   }
 
   try {

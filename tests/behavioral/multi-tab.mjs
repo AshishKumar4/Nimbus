@@ -37,12 +37,12 @@ await tab1.close();
 {
   const sid2 = await mintSession();
   // Open WS A, then attempt WS B — observe close code 1002 if gated.
-  const wsA = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders());
+  const wsA = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders(sid2));
   await new Promise((res) => { wsA.on('open', res); wsA.on('error', () => res()); });
   await sleep(500);
   let secondClosed = false;
   let secondOpen = false;
-  const wsB = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders());
+  const wsB = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders(sid2));
   wsB.on('open', () => { secondOpen = true; });
   wsB.on('close', () => { secondClosed = true; });
   wsB.on('error', () => { /* eaten */ });

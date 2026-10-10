@@ -44,10 +44,10 @@ await t.waitForPrompt(15_000);
 // Reset + verify schema completeness.
 await fetch(`${BASE}/s/${sid}/api/_diag/cache/reset`, {
   method: 'POST',
-  headers: requestHeaders(),
+  headers: requestHeaders({}, sid),
 });
 const baseline = await (await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
-  headers: requestHeaders(),
+  headers: requestHeaders({}, sid),
 })).json();
 
 A.check('snapshot.byTier has L1/L2/L3/L4',
@@ -85,7 +85,7 @@ await t.run(
 await t.run('npm install clsx', 60_000);
 
 const after = await (await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
-  headers: requestHeaders(),
+  headers: requestHeaders({}, sid),
 })).json();
 const l2Total =
   (after.byTier.L2.tarball.hits + after.byTier.L2.tarball.misses) +

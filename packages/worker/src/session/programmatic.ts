@@ -43,7 +43,6 @@ import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 export interface ProgrammaticShell {
-  env?: Record<string, string>;
   getEnv(): Record<string, string>;
 }
 
@@ -109,7 +108,6 @@ export interface ProgrammaticHost extends TimerHost {
   bundlePool?: { dispose(): void } | null;
   nimbusWrangler?: unknown;
   npmInstaller?: unknown;
-  fetchProxyEntrypoint?: unknown;
   _supervisorOps?: { forget(pid: number): void } | null;
   sessionBasePath?: string;
   sessionBasePathHydrated?: boolean;
@@ -278,10 +276,6 @@ const ProcessLogsOptionsSchema = z.object({
 }).strict();
 
 function getHome(self: ProgrammaticHost): string {
-  try {
-    const envHome = self.shell?.env?.HOME;
-    if (envHome) return String(envHome);
-  } catch {}
   try {
     const shellEnv = self.shell?.getEnv?.();
     if (shellEnv?.HOME) return String(shellEnv.HOME);
@@ -1314,51 +1308,62 @@ export async function rpcDestroy(
   options: ProgrammaticDestroyOptions = {},
 ): Promise<ProgrammaticDestroyResult> {
   self.ensureSqliteFs();
-  if (self.sqliteFs!.hasExclusiveMutation()) {
-    throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
-  }
   const guardedVfs = self.sqliteFs!;
+  const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
+  // A holder's exclusive mutation refuses the destroy before anything is stopped.
+  if (guardedVfs.hasExclusiveMutation()) throw busy();
+  const reason = typeof options.reason === 'string' && options.reason.trim()
+    ? options.reason.trim().slice(0, 200)
+    : null;
+  const destroyedAt = Date.now();
+  let killed = 0;
+
+  const running: ProcessEntry[] = self.processes.getAll()
+    .filter((p: ProcessEntry) => p.state === 'running');
+
+  for (const entry of running) {
+    const pid = Number(entry.pid);
+    try {
+      if (self._viteShimPid === pid) {
+        if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
+        self.cirrusReal = null;
+        if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
+        self.viteDevServer = null;
+        try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
+        self._viteShimPid = null;
+        self._viteShimPort = null;
+      } else if (self.facetManager?.kill?.(pid)) {
+        // facetManager.kill already marks process state and unregisters ports.
+      } else {
+        try { self.processes.kill(pid); } catch {}
+      }
+      try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
+      try {
+        if (!self.processes.getExit(pid)) {
+          self.processes.markExit(pid, 137, reason ?? 'destroyed');
+        }
+      } catch {}
+      killed++;
+    } catch {
+      try { self.processes.kill(pid); } catch {}
+      try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
+    }
+  }
+
+  // Its processes stopped, every wave still being read is cut, which ends
+  // the commits it held open: each is then published once its reader
+  // answers, or its trust runs out. The check and the take after the last
+  // are one turn.
+  for (;;) {
+    guardedVfs.cancelStreams('the session is being destroyed');
+    const held = guardedVfs.publishedFor();
+    if (held === null) break;
+    await held;
+  }
+  if (guardedVfs.hasExclusiveMutation()) throw busy();
   const destroyLease = guardedVfs.acquireGlobalExclusiveMutation();
   let destroyed = false;
   try {
-    const reason = typeof options.reason === 'string' && options.reason.trim()
-      ? options.reason.trim().slice(0, 200)
-      : null;
-    const destroyedAt = Date.now();
-    let killed = 0;
-
-    const running: ProcessEntry[] = self.processes.getAll()
-      .filter((p: ProcessEntry) => p.state === 'running');
-
-    for (const entry of running) {
-      const pid = Number(entry.pid);
-      try {
-        if (self._viteShimPid === pid) {
-          if (self.cirrusReal?.isRunning) self.cirrusReal.stop(self.ctx);
-          self.cirrusReal = null;
-          if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
-          self.viteDevServer = null;
-          try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
-          self._viteShimPid = null;
-          self._viteShimPort = null;
-        } else if (self.facetManager?.kill?.(pid)) {
-          // facetManager.kill already marks process state and unregisters ports.
-        } else {
-          try { self.processes.kill(pid); } catch {}
-        }
-        try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
-        try {
-          if (!self.processes.getExit(pid)) {
-            self.processes.markExit(pid, 137, reason ?? 'destroyed');
-          }
-        } catch {}
-        killed++;
-      } catch {
-        try { self.processes.kill(pid); } catch {}
-        try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
-      }
-    }
-
     try { self.processes.flushLogs(); } catch {}
     await quiesceInMemorySessionState(self);
     // Void the multiplexer's timers in the same turn as the wipe below: an
@@ -1500,7 +1505,6 @@ async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> 
   self._cirrusHmrWsClients = null;
   self.nimbusWrangler = null;
   self.npmInstaller = null;
-  self.fetchProxyEntrypoint = null;
   self._supervisorOps = null;
   self._cpRegistry = null;
   self._viteShimPid = null;

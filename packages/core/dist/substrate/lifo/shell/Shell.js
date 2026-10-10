@@ -1,28 +1,19 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
-import { resolveContext } from '../commands/registry.js';
 import { isVfsCred } from '../../../runtime/os-contracts.js';
-import { resolve } from '../utils/path.js';
-import { echoOutput } from '../utils/backslash-escapes.js';
-import { singleQuote } from '../../../_shared/shell-quote.js';
-import { isDecimalInteger, isShellIdentifier } from './names.js';
-import { assignArray, assignVariable, cloneArrays } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
-import { ExitSignal, Interpreter, } from './interpreter.js';
-import { continuationState, lex } from './lexer.js';
-import { TokenKind } from './types.js';
+import { Interpreter } from './interpreter.js';
+import { createShellState, restoreShellState, snapshotShellState } from './state.js';
+import { shellBuiltins } from './builtins.js';
+import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
-import { JobTable, resolveJobSpec } from './jobs.js';
+import { JobTable } from './jobs.js';
 import { signalAbortReason } from './signals.js';
 import { complete } from './completer.js';
-import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
 import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
-import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
-import { statOrThrow } from '../../../vfs/vfs.js';
-import { runKill } from '../commands/system/kill.js';
 import { ShellInputSubmission, ShellInputExecution } from '../../../shell/input-submission.js';
 function shellPromptParts(env, cwd) {
     const home = env['HOME'] ?? DEFAULT_HOME;
@@ -67,10 +58,8 @@ export class Shell {
         return bindProcessView(this.filesystem, { pid: this.commandIdentity.pid, cred: this.commandIdentity.cred });
     }
     registry;
-    cwd;
-    env;
-    // Alias map
-    aliases = new Map();
+    /** The shell's own state (state.ts): what its builtins act on, and its child shells copy. */
+    state;
     // Line editing state
     lineBuffer = '';
     cursorPos = 0;
@@ -86,26 +75,11 @@ export class Shell {
     stdinCursorPos = 0;
     // New Sprint 2 components
     interpreter;
-    interpreterConfig;
     historyManager;
-    jobTable;
     processRegistry;
     /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
     hostProcessSignals;
     builtins;
-    /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
-    ownBuiltins = new Map();
-    /** A child shell's view of this Shell, one per forked state. */
-    forkViews = new WeakMap();
-    shellOptions = {
-        errexit: false,
-        nounset: false,
-        pipefail: false,
-    };
-    traps = new Map();
-    readonlyNames = new Set();
-    /** Indexed arrays; `env` holds the scalars. A name lives in exactly one. */
-    arrays = new Map();
     commandIdentity;
     // Tab completion state
     tabCount = 0;
@@ -137,79 +111,42 @@ export class Shell {
         this.filesystem = filesystem;
         this.terminal = terminal;
         this.registry = registry;
-        this.cwd = env['HOME'] ?? DEFAULT_HOME;
-        this.env = { ...env };
-        this.env.PWD = this.cwd;
-        if (!this.env['0'])
-            this.env['0'] = 'nimbus-sh';
-        if (!this.env['$'])
-            this.env['$'] = String(processRegistry.registerShell(this.cwd, this.env));
+        this.state = createShellState(env, env['HOME'] ?? DEFAULT_HOME, new JobTable(processRegistry));
+        const shellEnv = this.state.env;
+        if (!shellEnv['0'])
+            shellEnv['0'] = 'nimbus-sh';
+        if (!shellEnv['$'])
+            shellEnv['$'] = String(processRegistry.registerShell(this.state.getCwd(), shellEnv));
         let defaultCred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
         this.commandIdentity = commandIdentity ?? {
-            pid: Number(this.env['$']),
+            pid: Number(shellEnv['$']),
             get cred() { return defaultCred; },
             setUmask: (mask) => {
                 defaultCred = { ...defaultCred, umask: mask };
             },
         };
-        this.builtins = new Map();
-        this.registerBuiltins();
-        for (const name of this.ownBuiltins.keys()) {
-            this.builtins.set(name, async (args, stdout, stderr, stdin, context) => (await this.forContext(context).ownBuiltins.get(name)(args, stdout, stderr, stdin, context)));
-        }
-        // Initialize job table (legacy - still used for backward compat)
-        this.jobTable = new JobTable(processRegistry);
         // Use shared process registry from Kernel
         this.processRegistry = processRegistry;
         // Initialize history manager
-        this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? DEFAULT_HOME);
-        // Initialize interpreter
-        this.interpreterConfig = {
-            env: this.env,
-            arrays: this.arrays,
-            getCwd: () => this.cwd,
-            setCwd: (cwd) => this.setCwd(cwd),
+        this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HOME ?? DEFAULT_HOME);
+        this.builtins = shellBuiltins({
+            vfs: () => this.vfs,
+            registry,
+            processRegistry,
+            hostProcessSignals: () => this.hostProcessSignals,
+            clearTerminal: () => this.terminal.clear(),
+            history: () => this.historyManager.getAll(),
+        });
+        this.interpreter = new Interpreter({
+            ...this.state,
             vfs: this.vfs,
             filesystem,
             registry: this.registry,
             builtins: this.builtins,
-            jobTable: this.jobTable,
             processRegistry: this.processRegistry,
             writeToTerminal: (text) => this.writeToTerminal(text),
-            aliases: this.aliases,
             getAbortSignal: () => this.abortController?.signal ?? new AbortController().signal,
-            options: this.shellOptions,
-            traps: this.traps,
-            readonlyNames: this.readonlyNames,
-        };
-        this.interpreter = new Interpreter(this.interpreterConfig);
-    }
-    /**
-     * The Shell a builtin acts on: this one, or for a child shell (a subshell,
-     * pipeline element, `$( )` or background job) a view whose variables, cwd,
-     * options, traps, readonly names and aliases are that child's.
-     */
-    forContext(context) {
-        const state = context?.shell;
-        if (state === undefined || state === this.interpreterConfig)
-            return this;
-        const cached = this.forkViews.get(state);
-        if (cached !== undefined)
-            return cached;
-        const view = Object.create(this, {
-            env: { value: state.env },
-            arrays: { value: state.arrays },
-            jobTable: { value: state.jobTable },
-            cwd: { get: () => state.getCwd(), set: (cwd) => { state.setCwd(cwd); } },
-            shellOptions: { value: state.options },
-            traps: { value: state.traps },
-            readonlyNames: { value: state.readonlyNames },
-            aliases: { value: state.aliases ?? new Map() },
-            ownBuiltins: { value: new Map() },
         });
-        view.registerBuiltins();
-        this.forkViews.set(state, view);
-        return view;
     }
     /**
      * The command history, oldest first: the one store (HistoryManager, kept
@@ -223,41 +160,8 @@ export class Shell {
     builtinNames() {
         return [...this.builtins.keys()];
     }
-    registerBuiltins() {
-        this.ownBuiltins.set('cd', async (args, _stdout, stderr) => (await this.builtinCd(args, stderr)));
-        this.ownBuiltins.set('pwd', async (_args, stdout) => (await this.builtinPwd(stdout)));
-        this.ownBuiltins.set('echo', async (args, stdout) => (await this.builtinEcho(args, stdout)));
-        this.ownBuiltins.set('clear', async () => (await this.builtinClear()));
-        this.ownBuiltins.set('export', async (args, _stdout, stderr) => (await this.builtinExport(args, stderr)));
-        this.ownBuiltins.set('exit', async (args, _stdout, stderr, _stdin, context) => (await this.builtinExit(args, stderr, context)));
-        this.ownBuiltins.set('true', () => Promise.resolve(0));
-        this.ownBuiltins.set('false', () => Promise.resolve(1));
-        this.ownBuiltins.set(':', () => Promise.resolve(0));
-        this.ownBuiltins.set('set', async (args, stdout, stderr, _stdin, context) => (await this.builtinSet(args, stdout, stderr, context)));
-        this.ownBuiltins.set('shift', async (args, _stdout, stderr, _stdin, context) => (await this.builtinShift(args, stderr, context)));
-        this.ownBuiltins.set('trap', async (args, stdout, stderr) => (await this.builtinTrap(args, stdout, stderr)));
-        this.ownBuiltins.set('hash', async (args, stdout, stderr) => (await this.builtinHash(args, stdout, stderr)));
-        this.ownBuiltins.set('readonly', async (args, stdout, stderr) => (await this.builtinReadonly(args, stdout, stderr)));
-        this.ownBuiltins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
-        this.ownBuiltins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
-        this.ownBuiltins.set('kill', async (args, stdout, stderr) => (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list(), this.hostProcessSignals)));
-        this.ownBuiltins.set('unset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinUnset(args, stderr, context)));
-        this.ownBuiltins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
-        this.ownBuiltins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
-        this.ownBuiltins.set('typeset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('typeset', args, stderr, context)));
-        this.ownBuiltins.set('jobs', async (args, stdout, stderr) => (await this.builtinJobs(args, stdout, stderr)));
-        this.ownBuiltins.set('fg', async (args, stdout, stderr, _stdin, context) => (await this.builtinFg(args, stdout, stderr, context)));
-        this.ownBuiltins.set('bg', async (args, stdout, stderr, _stdin, context) => (await this.builtinBg(args, stdout, stderr, context)));
-        this.ownBuiltins.set('history', async (_args, stdout) => (await this.builtinHistory(stdout)));
-        this.ownBuiltins.set('source', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
-        this.ownBuiltins.set('.', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
-        this.ownBuiltins.set('alias', async (args, stdout) => (await this.builtinAlias(args, stdout)));
-        this.ownBuiltins.set('unalias', async (args, _stdout, stderr) => (await this.builtinUnalias(args, stderr)));
-        this.ownBuiltins.set('test', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
-        this.ownBuiltins.set('[', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context, true)));
-    }
     getJobTable() {
-        return this.jobTable;
+        return this.state.jobTable;
     }
     /**
      * Let `kill` signal the host's processes: a numeric pid this shell's own
@@ -275,14 +179,13 @@ export class Shell {
         return this.processRegistry;
     }
     getCwd() {
-        return this.cwd;
+        return this.state.getCwd();
     }
     setCwd(cwd) {
-        this.cwd = cwd;
-        this.env.PWD = cwd;
+        this.state.setCwd(cwd);
     }
     getEnv() {
-        return this.env;
+        return this.state.env;
     }
     getVfs() {
         return this.vfs;
@@ -402,12 +305,14 @@ export class Shell {
             },
         };
         // Save current state
-        const prevCwd = options?.cwd ? this.cwd : undefined;
-        const savedShellState = options?.isolateShellState ? this.snapshotShellState() : null;
-        const envOverrideSnapshot = !savedShellState && options?.env
-            ? snapshotEnvKeys(this.env, Object.keys(options.env))
+        const prevCwd = options?.cwd ? this.state.getCwd() : undefined;
+        const savedShellState = options?.isolateShellState
+            ? { state: snapshotShellState(this.state), functions: this.interpreter.saveFunctions() }
             : null;
-        const optionSnapshot = !savedShellState && options?.shellOptions ? { ...this.shellOptions } : null;
+        const envOverrideSnapshot = !savedShellState && options?.env
+            ? snapshotEnvKeys(this.state.env, Object.keys(options.env))
+            : null;
+        const optionSnapshot = !savedShellState && options?.shellOptions ? { ...this.state.options } : null;
         const abortController = new AbortController();
         const abortFromCaller = () => abortController.abort(options?.signal?.reason);
         if (options?.signal) {
@@ -426,10 +331,10 @@ export class Shell {
             this.setCwd(options.cwd);
         }
         if (options?.env) {
-            Object.assign(this.env, options.env);
+            Object.assign(this.state.env, options.env);
         }
         if (options?.shellOptions) {
-            Object.assign(this.shellOptions, options.shellOptions);
+            Object.assign(this.state.options, options.shellOptions);
         }
         let stdinStream;
         if (typeof options?.stdin === 'string') {
@@ -469,13 +374,14 @@ export class Shell {
                 options.signal.removeEventListener('abort', abortFromCaller);
             }
             if (savedShellState) {
-                this.restoreShellState(savedShellState);
+                restoreShellState(this.state, savedShellState.state);
+                this.interpreter.restoreFunctions(savedShellState.functions);
             }
             else {
                 if (envOverrideSnapshot)
-                    restoreEnvKeys(this.env, envOverrideSnapshot);
+                    restoreEnvKeys(this.state.env, envOverrideSnapshot);
                 if (optionSnapshot)
-                    restoreShellOptions(this.shellOptions, optionSnapshot);
+                    Object.assign(this.state.options, optionSnapshot);
             }
             if (prevCwd !== undefined) {
                 this.setCwd(prevCwd);
@@ -517,8 +423,8 @@ export class Shell {
     async start() {
         // Register this shell instance as a process
         // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
-        const pid = this.processRegistry.registerShell(this.cwd, this.env);
-        this.env['$'] = String(pid);
+        const pid = this.processRegistry.registerShell(this.state.getCwd(), this.state.env);
+        this.state.env['$'] = String(pid);
         this.bindTerminalInput();
         // The saved history, so Up recalls the last session's commands, as bash's does.
         await this.historyManager.load();
@@ -527,7 +433,7 @@ export class Shell {
         // The bash launch is deliberately not part of the returned promise: an
         // interactive bash runs until the user exits it.
         return sourced.then(async () => {
-            const home = this.env['HOME'] ?? DEFAULT_HOME;
+            const home = this.state.env['HOME'] ?? DEFAULT_HOME;
             if ((await readDefaultShell(this.vfs, home)) === 'bash') {
                 void this.executeLine('bash -i').catch(error => {
                     this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -540,7 +446,7 @@ export class Shell {
         });
     }
     async sourceRcFiles() {
-        const home = this.env['HOME'] ?? DEFAULT_HOME;
+        const home = this.state.env['HOME'] ?? DEFAULT_HOME;
         // Source system-wide profile first
         await this.sourceFile('/etc/profile');
         // Then user rc files (first one found wins, like bash)
@@ -562,7 +468,7 @@ export class Shell {
             return;
         }
         // Report the jobs that finished, then reap their processes (and any other zombie).
-        for (const job of this.jobTable.collectDone()) {
+        for (const job of this.state.jobTable.collectDone()) {
             this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
         }
         this.processRegistry.collectZombies();
@@ -574,7 +480,7 @@ export class Shell {
             }
         }
         this.exitNotices.clear();
-        this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
+        this.terminal.write(PROMPT_START + formatShellPrompt(this.state.env, this.state.getCwd()) + PROMPT_END);
         this.promptMode = 'primary';
         this.announcePrompt();
         const submission = this.lineSubmission;
@@ -800,8 +706,8 @@ export class Shell {
         const completionCtx = {
             line: this.lineBuffer,
             cursorPos: this.cursorPos,
-            cwd: this.cwd,
-            env: this.env,
+            cwd: this.state.getCwd(),
+            env: this.state.env,
             vfs: this.vfs,
             registry: this.registry,
             builtinNames: this.builtinNames(),
@@ -934,7 +840,7 @@ export class Shell {
     getPromptWidth() {
         if (this.promptMode === 'continuation')
             return CONTINUATION_PROMPT.length;
-        const { displayPath, user, host } = shellPromptParts(this.env, this.cwd);
+        const { displayPath, user, host } = shellPromptParts(this.state.env, this.state.getCwd());
         // "user@host:path$ " — count visible chars only (no ANSI codes)
         return user.length + 1 + host.length + 1 + displayPath.length + 2;
     }
@@ -967,7 +873,7 @@ export class Shell {
         // Clear from here to end of screen
         this.terminal.write('\x1b[J');
         // Rewrite prompt + buffer
-        this.terminal.write(this.promptMode === 'continuation' ? CONTINUATION_PROMPT : formatShellPrompt(this.env, this.cwd));
+        this.terminal.write(this.promptMode === 'continuation' ? CONTINUATION_PROMPT : formatShellPrompt(this.state.env, this.state.getCwd()));
         this.terminal.write(this.lineBuffer);
         // After writing all content, figure out which row the cursor is on.
         // If content exactly fills N rows, the terminal auto-wraps cursor to the next row.
@@ -1148,7 +1054,12 @@ export class Shell {
         this.terminal.write(COMMAND_START);
         let status = null;
         try {
-            await this.historyManager.add(actualLine);
+            // Saved beside the line, which does not wait for it: a reader's recall
+            // the save meets (core README, process model) costs the line nothing.
+            // A save that fails loses that line's history, not the line.
+            this.historyManager.add(actualLine).catch((error) => {
+                console.warn('[nimbus] shell history not saved:', error instanceof Error ? error.message : String(error));
+            });
             status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
                 commandIdentity: this.resolveCommandIdentity(undefined),
@@ -1194,635 +1105,6 @@ export class Shell {
         if (eof >= 0)
             stdin.close();
     }
-    // ─── Builtins (now with stdout/stderr params for pipe support) ───
-    async builtinCd(args, stderr) {
-        const target = args[0] ?? this.env['HOME'] ?? DEFAULT_HOME;
-        let newPath;
-        if (target === '-') {
-            newPath = this.env['OLDPWD'] ?? this.cwd;
-        }
-        else if (target === '~' || target.startsWith('~/')) {
-            const home = this.env['HOME'] ?? DEFAULT_HOME;
-            newPath = target === '~' ? home : resolve(home, target.slice(2));
-        }
-        else {
-            newPath = resolve(this.cwd, target);
-        }
-        try {
-            const stat = (await statOrThrow(this.vfs, newPath));
-            if (stat.type !== 'directory') {
-                (await stderr.write(`cd: ${target}: Not a directory\n`));
-                return 1;
-            }
-            this.env['OLDPWD'] = this.cwd;
-            this.setCwd(newPath);
-            return 0;
-        }
-        catch (e) {
-            if (isVfsError(e)) {
-                (await stderr.write(`cd: ${target}: ${strerror(e)}\n`));
-                return 1;
-            }
-            throw e;
-        }
-    }
-    async builtinPwd(stdout) {
-        (await stdout.write(this.cwd + '\n'));
-        return 0;
-    }
-    async builtinEcho(args, stdout) {
-        (await stdout.write(echoOutput(args)));
-        return 0;
-    }
-    async builtinClear() {
-        this.terminal.clear();
-        return 0;
-    }
-    async builtinExport(args, stderr) {
-        let exitCode = 0;
-        for (const arg of args) {
-            const eqIdx = arg.indexOf('=');
-            if (eqIdx !== -1) {
-                const key = arg.slice(0, eqIdx);
-                const value = arg.slice(eqIdx + 1);
-                if (!(await this.assignEnv(key, value, stderr)))
-                    exitCode = 1;
-            }
-        }
-        return exitCode;
-    }
-    async builtinSet(args, stdout, stderr, context) {
-        if (args.length === 0) {
-            for (const key of Object.keys(this.env).sort()) {
-                (await stdout.write(`${key}=${quoteSetValue(this.env[key] ?? '')}\n`));
-            }
-            return 0;
-        }
-        let positionalsStart = -1;
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-            if (arg === '--') {
-                positionalsStart = i + 1;
-                break;
-            }
-            if (arg === '-') {
-                continue;
-            }
-            if (arg === '-o' || arg === '+o') {
-                const option = args[i + 1];
-                if (!option) {
-                    (await this.printShellOptions(stdout));
-                    return 0;
-                }
-                if (!this.setShellOptionByName(option, arg[0] === '-')) {
-                    (await stderr.write(`set: ${option}: invalid option name\n`));
-                    return 2;
-                }
-                i++;
-                continue;
-            }
-            if (isSetOptionCluster(arg)) {
-                const enabled = arg[0] === '-';
-                for (let j = 1; j < arg.length; j++) {
-                    const flag = arg[j];
-                    if (flag === 'o') {
-                        const option = j === arg.length - 1 ? args[i + 1] : arg.slice(j + 1);
-                        if (!option) {
-                            (await this.printShellOptions(stdout));
-                            return 0;
-                        }
-                        if (!this.setShellOptionByName(option, enabled)) {
-                            (await stderr.write(`set: ${option}: invalid option name\n`));
-                            return 2;
-                        }
-                        if (j === arg.length - 1)
-                            i++;
-                        break;
-                    }
-                    if (!this.setShellOptionByFlag(flag, enabled)) {
-                        (await stderr.write(`set: -${flag}: invalid option\n`));
-                        return 2;
-                    }
-                }
-                continue;
-            }
-            positionalsStart = i;
-            break;
-        }
-        if (positionalsStart >= 0) {
-            this.setPositionals(args.slice(positionalsStart), context);
-        }
-        return 0;
-    }
-    async builtinShift(args, stderr, context) {
-        if (args.length > 1) {
-            (await stderr.write('shift: too many arguments\n'));
-            return 1;
-        }
-        const raw = args[0] ?? '1';
-        if (!isDecimalInteger(raw)) {
-            (await stderr.write(`shift: ${raw}: numeric argument required\n`));
-            return 1;
-        }
-        const count = Number.parseInt(raw, 10);
-        const positionals = this.currentPositionals(context);
-        if (count > positionals.length) {
-            (await stderr.write('shift: shift count out of range\n'));
-            return 1;
-        }
-        this.setPositionals(positionals.slice(count), context);
-        return 0;
-    }
-    async builtinTrap(args, stdout, stderr) {
-        if (args.length === 0) {
-            for (const [signal, action] of this.traps.entries()) {
-                (await stdout.write(`trap -- ${quoteSetValue(action)} ${signal}\n`));
-            }
-            return 0;
-        }
-        let index = 0;
-        if (args[index] === '--')
-            index++;
-        const action = args[index];
-        if (action === undefined) {
-            (await stderr.write('trap: missing action\n'));
-            return 2;
-        }
-        index++;
-        if (index >= args.length) {
-            (await stderr.write('trap: missing signal\n'));
-            return 2;
-        }
-        for (; index < args.length; index++) {
-            const signal = normalizeTrapSignal(args[index]);
-            if (!signal) {
-                (await stderr.write(`trap: ${args[index]}: invalid signal\n`));
-                return 2;
-            }
-            if (action === '-')
-                this.traps.delete(signal);
-            else
-                this.traps.set(signal, action);
-        }
-        return 0;
-    }
-    async builtinHash(args, stdout, stderr) {
-        if (args.length === 0 || (args.length === 1 && args[0] === '-r'))
-            return 0;
-        let exitCode = 0;
-        for (const arg of args) {
-            if (arg.startsWith('-')) {
-                (await stderr.write(`hash: ${arg}: invalid option\n`));
-                exitCode = 2;
-                continue;
-            }
-            const command = await this.registry.resolve(arg, resolveContext(this.getCwd(), this.env, this.vfs));
-            if (!command) {
-                (await stderr.write(`hash: ${arg}: not found\n`));
-                exitCode = 1;
-            }
-            else {
-                (await stdout.write(`${arg}\n`));
-            }
-        }
-        return exitCode;
-    }
-    async printShellOptions(stdout) {
-        (await stdout.write(`errexit         ${this.shellOptions.errexit ? 'on' : 'off'}\n`));
-        (await stdout.write(`nounset         ${this.shellOptions.nounset ? 'on' : 'off'}\n`));
-        (await stdout.write(`pipefail        ${this.shellOptions.pipefail ? 'on' : 'off'}\n`));
-    }
-    setShellOptionByName(option, enabled) {
-        switch (option) {
-            case 'errexit':
-                this.shellOptions.errexit = enabled;
-                return true;
-            case 'nounset':
-                this.shellOptions.nounset = enabled;
-                return true;
-            case 'pipefail':
-                this.shellOptions.pipefail = enabled;
-                return true;
-            default:
-                return false;
-        }
-    }
-    setShellOptionByFlag(flag, enabled) {
-        switch (flag) {
-            case 'e':
-                this.shellOptions.errexit = enabled;
-                return true;
-            case 'u':
-                this.shellOptions.nounset = enabled;
-                return true;
-            default:
-                return false;
-        }
-    }
-    setPositionals(args, context) {
-        if (context) {
-            context.setPositionals(args);
-            return;
-        }
-        for (const key of Object.keys(this.env)) {
-            if (key === '@' || key === '#' || isDecimalInteger(key))
-                delete this.env[key];
-        }
-        this.env['#'] = String(args.length);
-        this.env['@'] = args.join(' ');
-        for (let i = 0; i < args.length; i++) {
-            this.env[String(i + 1)] = args[i];
-        }
-    }
-    currentPositionals(context) {
-        if (context)
-            return [...context.getPositionals()];
-        const count = Number.parseInt(this.env['#'] ?? '0', 10);
-        const args = [];
-        for (let i = 1; i <= count; i++)
-            args.push(this.env[String(i)] ?? '');
-        return args;
-    }
-    async builtinReadonly(args, stdout, stderr) {
-        if (args.length === 0 || (args.length === 1 && args[0] === '-p')) {
-            for (const name of Array.from(this.readonlyNames).sort()) {
-                const value = this.env[name];
-                (await stdout.write(value === undefined
-                    ? `readonly ${name}\n`
-                    : `readonly ${name}=${quoteSetValue(value)}\n`));
-            }
-            return 0;
-        }
-        let exitCode = 0;
-        for (const arg of args) {
-            if (arg.startsWith('-')) {
-                (await stderr.write(`readonly: ${arg}: invalid option\n`));
-                exitCode = 2;
-                continue;
-            }
-            const eqIdx = arg.indexOf('=');
-            if (eqIdx > 0) {
-                const name = arg.slice(0, eqIdx);
-                if (!isShellIdentifier(name)) {
-                    (await stderr.write(`readonly: ${name}: not a valid identifier\n`));
-                    exitCode = 1;
-                    continue;
-                }
-                if ((await this.assignEnv(name, arg.slice(eqIdx + 1), stderr))) {
-                    this.readonlyNames.add(name);
-                }
-                else {
-                    exitCode = 1;
-                }
-                continue;
-            }
-            if (!isShellIdentifier(arg)) {
-                (await stderr.write(`readonly: ${arg}: not a valid identifier\n`));
-                exitCode = 1;
-                continue;
-            }
-            this.readonlyNames.add(arg);
-        }
-        return exitCode;
-    }
-    async builtinRead(args, stdin, stderr, context) {
-        const options = parseReadArgs(args);
-        if (!options.ok) {
-            (await stderr.write(`read: ${options.error}\n`));
-            return 1;
-        }
-        if (options.prompt && context?.isFdTerminal(0)) {
-            (await stderr.write(options.prompt));
-        }
-        const line = await readLineStdin(stdin);
-        if (line === null) {
-            // EOF: bash clears every named variable before returning non-zero.
-            for (const name of options.names) {
-                if (!(await this.assignEnv(name, '', stderr)))
-                    return 1;
-            }
-            return 1;
-        }
-        const assignments = splitReadAssignments(line, options.names);
-        for (const [name, value] of assignments) {
-            if (!(await this.assignEnv(name, value, stderr)))
-                return 1;
-        }
-        return 0;
-    }
-    async builtinWait(args, stderr) {
-        if (args[0] === '--')
-            args = args.slice(1);
-        if (args.length === 0) {
-            const jobs = this.jobTable.list();
-            await Promise.all(jobs.map((job) => job.promise.catch(() => undefined)));
-            for (const job of jobs)
-                this.jobTable.remove(job.id);
-            this.jobTable.clearWaited();
-            return 0;
-        }
-        let last = 0;
-        for (const arg of args) {
-            const byJob = arg.startsWith('%');
-            if (!byJob && !/^\d+$/.test(arg)) {
-                await stderr.write(`wait: \`${arg}': not a pid or valid job spec\n`);
-                last = 1;
-                continue;
-            }
-            const job = byJob ? this.jobTable.waitTarget(arg) : this.jobTable.byPid(Number(arg));
-            if (job === 'ambiguous') {
-                await stderr.write(`wait: ${arg.slice(1)}: ambiguous job spec\n`);
-                last = 127;
-                continue;
-            }
-            const promise = job?.promise ?? (byJob ? undefined : this.processRegistry.get(Number(arg))?.promise);
-            if (!promise) {
-                await stderr.write(byJob ? `wait: ${arg}: no such job\n` : `wait: pid ${arg} is not a child of this shell\n`);
-                last = 127;
-                continue;
-            }
-            try {
-                last = await promise;
-            }
-            catch {
-                last = 1;
-            }
-            if (job)
-                this.jobTable.reap(job);
-        }
-        return last;
-    }
-    /**
-     * `unset [-f] [-v] [-n] [name ...]`, as bash: -f removes functions, -v
-     * (and -n, as this shell has no namerefs) variables, and with neither a
-     * name is a variable, or a function when no variable has that name.
-     */
-    async builtinUnset(args, stderr, context) {
-        let functions = false;
-        let variables = false;
-        let first = 0;
-        for (; first < args.length && args[first].startsWith('-') && args[first] !== '-'; first++) {
-            if (args[first] === '--') {
-                first++;
-                break;
-            }
-            for (const flag of args[first].slice(1)) {
-                if (flag === 'f')
-                    functions = true;
-                else if (flag === 'v' || flag === 'n')
-                    variables = true;
-                else {
-                    (await stderr.write(`unset: -${flag}: invalid option\nunset: usage: unset [-f] [-v] [-n] [name ...]\n`));
-                    return 2;
-                }
-            }
-        }
-        if (functions && variables) {
-            (await stderr.write('unset: cannot simultaneously unset a function and a variable\n'));
-            return 1;
-        }
-        let exitCode = 0;
-        for (const arg of args.slice(first)) {
-            if (functions) {
-                context?.unsetFunction(arg);
-                continue;
-            }
-            if (!variables && !Object.hasOwn(this.env, arg) && !this.arrays.has(arg) && context?.unsetFunction(arg))
-                continue;
-            // `unset arr[2]` clears one element; `unset arr` removes the variable.
-            const element = /^([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]*)\]$/.exec(arg);
-            const name = element === null ? arg : element[1];
-            if (!isShellIdentifier(name))
-                continue;
-            if (this.readonlyNames.has(name)) {
-                (await stderr.write(`${name}: readonly variable\n`));
-                exitCode = 1;
-                continue;
-            }
-            if (element === null) {
-                delete this.env[name];
-                this.arrays.delete(name);
-                continue;
-            }
-            const array = this.arrays.get(name);
-            if (array === undefined)
-                continue;
-            const index = Number.parseInt(element[2], 10);
-            if (Number.isNaN(index))
-                continue;
-            delete array[index < 0 ? array.length + index : index];
-        }
-        return exitCode;
-    }
-    /**
-     * `local name`, `local name=value`, `local name=(word …)` and the `declare` /
-     * `typeset` spellings. `local` binds each name to the running function, so
-     * the value it had outside comes back when the function returns; `declare`
-     * only does so when it is itself inside a function, matching bash.
-     *
-     * Attribute flags (-a -A -i -r -x -g) are accepted. Only -r has an effect —
-     * the rest describe types this shell does not distinguish.
-     */
-    async builtinDeclare(verb, args, stderr, context) {
-        let readonlyFlag = false;
-        let global = false;
-        let exitCode = 0;
-        for (const arg of args) {
-            if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
-                for (const flag of arg.slice(1)) {
-                    if (flag === 'r')
-                        readonlyFlag = true;
-                    else if (flag === 'g')
-                        global = true;
-                    else if (!'aAixlunft'.includes(flag)) {
-                        (await stderr.write(`${verb}: -${flag}: invalid option\n`));
-                        return 2;
-                    }
-                }
-                continue;
-            }
-            const eq = arg.indexOf('=');
-            const name = eq === -1 ? arg : arg.slice(0, eq);
-            if (!isShellIdentifier(name)) {
-                (await stderr.write(`${verb}: \`${arg}': not a valid identifier\n`));
-                exitCode = 1;
-                continue;
-            }
-            const scope = verb === 'local' || !global;
-            if (scope && context?.declareLocal(name) !== true && verb === 'local') {
-                (await stderr.write(`${verb}: can only be used in a function\n`));
-                return 1;
-            }
-            if (eq !== -1 && !(await this.assignDeclared(name, arg.slice(eq + 1), stderr)))
-                exitCode = 1;
-            if (readonlyFlag)
-                this.readonlyNames.add(name);
-        }
-        return exitCode;
-    }
-    /** The right-hand side of a declaration: `(word …)` is an array literal. */
-    async assignDeclared(name, text, stderr) {
-        if (this.readonlyNames.has(name)) {
-            (await stderr.write(`${name}: readonly variable\n`));
-            return false;
-        }
-        if (text.startsWith('(') && text.endsWith(')')) {
-            const elements = [];
-            for (const token of lex(text.slice(1, -1))) {
-                if (token.kind === TokenKind.Word)
-                    elements.push(unquoteWord(token));
-            }
-            return assignArray(this.variableStore(), name, elements);
-        }
-        return assignVariable(this.variableStore(), name, text);
-    }
-    async assignEnv(name, value, stderr) {
-        if (assignVariable(this.variableStore(), name, value))
-            return true;
-        (await stderr.write(`${name}: readonly variable\n`));
-        return false;
-    }
-    variableStore() {
-        return { env: this.env, arrays: this.arrays, readonlyNames: this.readonlyNames };
-    }
-    snapshotShellState() {
-        return {
-            cwd: this.cwd,
-            env: { ...this.env },
-            arrays: cloneArrays(this.arrays),
-            shellOptions: { ...this.shellOptions },
-            traps: new Map(this.traps),
-            readonlyNames: new Set(this.readonlyNames),
-            aliases: new Map(this.aliases),
-            functions: this.interpreter.saveFunctions(),
-        };
-    }
-    restoreShellState(frame) {
-        replaceRecord(this.env, frame.env);
-        this.setCwd(frame.cwd);
-        replaceMap(this.arrays, frame.arrays);
-        restoreShellOptions(this.shellOptions, frame.shellOptions);
-        replaceMap(this.traps, frame.traps);
-        replaceSet(this.readonlyNames, frame.readonlyNames);
-        replaceMap(this.aliases, frame.aliases);
-        this.interpreter.restoreFunctions(frame.functions);
-    }
-    async builtinExit(args, stderr, context) {
-        if (args.length > 1) {
-            (await stderr.write('exit: too many arguments\n'));
-            return 1;
-        }
-        if (args.length === 0) {
-            throw new ExitSignal(context?.getLastExitCode() ?? this.interpreter.getLastExitCode());
-        }
-        const status = parseShellExitStatus(args[0] ?? '');
-        if (status === null) {
-            (await stderr.write(`exit: ${args[0]}: numeric argument required\n`));
-            throw new ExitSignal(2);
-        }
-        throw new ExitSignal(status);
-    }
-    async builtinJobs(args, stdout, stderr) {
-        const jobs = this.jobTable.list();
-        let format = '';
-        let filter = '';
-        let index = 0;
-        for (; index < args.length; index++) {
-            const arg = args[index];
-            if (arg === '--') {
-                index++;
-                break;
-            }
-            if (!arg.startsWith('-'))
-                break;
-            for (const flag of arg.slice(1)) {
-                if (flag === 'l' || flag === 'p')
-                    format = flag;
-                else if (flag === 'r' || flag === 's')
-                    filter = flag;
-                else {
-                    await stderr.write(`jobs: -${flag}: invalid option\n`);
-                    return 2;
-                }
-            }
-        }
-        const current = resolveJobSpec('%+', jobs);
-        const previous = resolveJobSpec('%-', jobs);
-        let status = 0;
-        const selected = index === args.length ? jobs : args.slice(index).map((arg) => resolveJobSpec(arg, jobs));
-        for (let n = 0; n < selected.length; n++) {
-            const job = selected[n];
-            if (!job || job === 'ambiguous') {
-                const spec = args[index + n];
-                await stderr.write(`jobs: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
-                status = 1;
-                continue;
-            }
-            if (filter === 'r' && job.status !== 'running' || filter === 's' && job.status !== 'stopped')
-                continue;
-            if (format === 'p')
-                await stdout.write(`${job.pid}\n`);
-            else {
-                const marker = job === current ? '+' : job === previous ? '-' : ' ';
-                const state = job.status === 'running' ? 'Running' : job.status === 'stopped' ? 'Stopped'
-                    : job.exitCode === 0 ? 'Done' : job.exitCode === 143 ? 'Terminated' : job.exitCode === 137 ? 'Killed' : `Exit ${job.exitCode}`;
-                await stdout.write(`[${job.id}]${marker} ${format === 'l' ? `${job.pid} ` : ' '}${state.padEnd(27)}${job.command}${job.status === 'running' ? ' &' : ''}\n`);
-            }
-            if (job.status === 'done')
-                this.jobTable.remove(job.id);
-        }
-        return status;
-    }
-    async builtinFg(args, stdout, stderr, context) {
-        if (!context?.interactive) {
-            await stderr.write('fg: no job control\n');
-            return 1;
-        }
-        const jobs = this.jobTable.list();
-        if (jobs.length === 0) {
-            await stderr.write('fg: no current job\n');
-            return 1;
-        }
-        const spec = args[0] ?? '%+';
-        const job = resolveJobSpec(spec, jobs);
-        if (!job || job === 'ambiguous') {
-            await stderr.write(`fg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
-            return 1;
-        }
-        await stdout.write(`${job.command}\n`);
-        if (this.processRegistry.get(job.pid)?.status === 'stopped')
-            this.processRegistry.kill(job.pid, 'CONT');
-        const exitCode = await job.promise;
-        this.jobTable.reap(job);
-        return exitCode;
-    }
-    async builtinBg(args, stdout, stderr, context) {
-        if (!context?.interactive) {
-            await stderr.write('bg: no job control\n');
-            return 1;
-        }
-        const jobs = this.jobTable.list();
-        if (jobs.length === 0) {
-            await stderr.write('bg: no current job\n');
-            return 1;
-        }
-        const spec = args[0] ?? '%+';
-        const job = resolveJobSpec(spec, jobs);
-        if (!job || job === 'ambiguous') {
-            await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
-            return 1;
-        }
-        this.processRegistry.kill(job.pid, 'CONT');
-        await stdout.write(`[${job.id}]+ ${job.command} &\n`);
-        return 0;
-    }
-    async builtinHistory(stdout) {
-        const entries = this.historyManager.getAll();
-        for (let i = 0; i < entries.length; i++) {
-            (await stdout.write(`  ${i + 1}  ${entries[i]}\n`));
-        }
-        return 0;
-    }
     async sourceFile(path) {
         try {
             const content = (await this.vfs.readFileString(path));
@@ -1832,220 +1114,12 @@ export class Shell {
             // Silently ignore missing config files
         }
     }
-    async builtinSource(args, stdout, stderr, context) {
-        if (args.length === 0) {
-            (await stderr.write('source: missing filename\n'));
-            return 1;
-        }
-        const path = resolve(this.cwd, args[0]);
-        let content;
-        try {
-            content = (await this.vfs.readFileString(path));
-        }
-        catch {
-            (await stderr.write(`source: ${args[0]}: No such file\n`));
-            return 1;
-        }
-        if (!context) {
-            (await stderr.write('source: execution context unavailable\n'));
-            return 1;
-        }
-        const sourceArgs = args.slice(1);
-        return (await context.executeInline(content, sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined));
-    }
-    async builtinAlias(args, stdout) {
-        if (args.length === 0) {
-            for (const [name, value] of this.aliases) {
-                (await stdout.write(`alias ${name}='${value}'\n`));
-            }
-            return 0;
-        }
-        for (const arg of args) {
-            const eqIdx = arg.indexOf('=');
-            if (eqIdx !== -1) {
-                const name = arg.slice(0, eqIdx);
-                const value = arg.slice(eqIdx + 1);
-                this.aliases.set(name, value);
-            }
-            else {
-                const value = this.aliases.get(arg);
-                if (value !== undefined) {
-                    (await stdout.write(`alias ${arg}='${value}'\n`));
-                }
-                else {
-                    (await stdout.write(`alias: ${arg}: not found\n`));
-                }
-            }
-        }
-        return 0;
-    }
-    async builtinUnalias(args, stderr) {
-        if (args.length === 0) {
-            (await stderr.write('unalias: usage: unalias name ...\n'));
-            return 1;
-        }
-        for (const name of args) {
-            if (!this.aliases.delete(name)) {
-                (await stderr.write(`unalias: ${name}: not found\n`));
-            }
-        }
-        return 0;
-    }
     writeToTerminal(text) {
         this.terminal.write(normalizeTerminalNewlines(text));
     }
 }
-function parseReadArgs(args) {
-    const names = [];
-    let prompt;
-    let parsingOptions = true;
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (parsingOptions && arg === '--') {
-            parsingOptions = false;
-            continue;
-        }
-        if (parsingOptions && arg.startsWith('-') && arg !== '-') {
-            if (arg === '-r')
-                continue;
-            if (arg === '-p' || arg === '-rp' || arg === '-pr') {
-                const next = args[++i];
-                if (next === undefined)
-                    return { ok: false, error: `${arg}: option requires an argument` };
-                prompt = next;
-                continue;
-            }
-            if (arg.startsWith('-p') && arg.length > 2) {
-                prompt = arg.slice(2);
-                continue;
-            }
-            return { ok: false, error: `${arg}: unsupported option` };
-        }
-        parsingOptions = false;
-        names.push(arg);
-    }
-    const resolvedNames = names.length > 0 ? names : ['REPLY'];
-    for (const name of resolvedNames) {
-        if (!isShellIdentifier(name))
-            return { ok: false, error: `${name}: not a valid identifier` };
-    }
-    return prompt === undefined
-        ? { ok: true, names: resolvedNames }
-        : { ok: true, names: resolvedNames, prompt };
-}
-async function readLineStdin(stdin) {
-    if (!stdin)
-        return null;
-    if (stdin.readLine)
-        return (await stdin.readLine());
-    let line = '';
-    let readChunk = false;
-    while (true) {
-        const chunk = await stdin.read();
-        if (chunk === null)
-            break;
-        readChunk = true;
-        const newline = chunk.indexOf('\n');
-        if (newline >= 0)
-            return line + chunk.slice(0, newline);
-        line += chunk;
-    }
-    if (readChunk)
-        return line;
-    const content = await stdin.readAll();
-    if (content.length === 0)
-        return null;
-    const newline = content.indexOf('\n');
-    return newline >= 0 ? content.slice(0, newline) : content;
-}
-function splitReadAssignments(line, names) {
-    if (names.length === 1)
-        return [[names[0], line]];
-    const fields = splitWhitespaceFields(line);
-    const assignments = [];
-    for (let i = 0; i < names.length; i++) {
-        if (i === names.length - 1) {
-            assignments.push([names[i], fields.slice(i).join(' ')]);
-        }
-        else {
-            assignments.push([names[i], fields[i] ?? '']);
-        }
-    }
-    return assignments;
-}
-function splitWhitespaceFields(line) {
-    const fields = [];
-    let current = '';
-    for (let i = 0; i < line.length; i++) {
-        const code = line.charCodeAt(i);
-        const whitespace = code === 32 || code === 9;
-        if (whitespace) {
-            if (current.length > 0) {
-                fields.push(current);
-                current = '';
-            }
-        }
-        else {
-            current += line[i];
-        }
-    }
-    if (current.length > 0)
-        fields.push(current);
-    return fields;
-}
 function isTerminalControlSequence(data) {
     return data.startsWith('\x1b[') || data.startsWith('\x1b(') || data.startsWith('\x1b)');
-}
-/** A lexed word's text with its quoting removed, the way expansion leaves it. */
-function unquoteWord(token) {
-    return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
-}
-function isSetOptionCluster(arg) {
-    if (arg.length < 2)
-        return false;
-    if (arg[0] !== '-' && arg[0] !== '+')
-        return false;
-    return arg !== '--' && arg !== '++';
-}
-function normalizeTrapSignal(raw) {
-    const signal = raw.toUpperCase();
-    if (signal === '0' || signal === 'EXIT')
-        return 'EXIT';
-    if (signal.startsWith('SIG') && signal.length > 3)
-        return signal.slice(3);
-    if (isShellIdentifier(signal))
-        return signal;
-    return null;
-}
-function quoteSetValue(value) {
-    return value.length > 0 && isPlainSetValue(value) ? value : singleQuote(value);
-}
-function isPlainSetValue(value) {
-    for (let i = 0; i < value.length; i++) {
-        const code = value.charCodeAt(i);
-        const ok = (code >= 48 && code <= 57) ||
-            (code >= 65 && code <= 90) ||
-            (code >= 97 && code <= 122) ||
-            code === 95 ||
-            code === 45 ||
-            code === 46 ||
-            code === 47 ||
-            code === 58;
-        if (!ok)
-            return false;
-    }
-    return true;
-}
-function parseShellExitStatus(raw) {
-    if (raw.length === 0)
-        return null;
-    const sign = raw[0] === '-' ? -1n : 1n;
-    const digits = raw[0] === '-' || raw[0] === '+' ? raw.slice(1) : raw;
-    if (!isDecimalInteger(digits))
-        return null;
-    const value = BigInt(digits) * sign;
-    const normalized = ((value % 256n) + 256n) % 256n;
-    return Number(normalized);
 }
 function snapshotEnvKeys(env, keys) {
     const snapshot = new Map();
@@ -2060,25 +1134,4 @@ function restoreEnvKeys(env, snapshot) {
         else
             env[key] = value;
     }
-}
-function replaceRecord(target, source) {
-    for (const key of Object.keys(target))
-        delete target[key];
-    Object.assign(target, source);
-}
-function restoreShellOptions(target, source) {
-    target.errexit = source.errexit;
-    target.nounset = source.nounset;
-    target.pipefail = source.pipefail;
-}
-/** Arrays are mutated in place, so a snapshot has to copy each one. */
-function replaceMap(target, source) {
-    target.clear();
-    for (const [key, value] of source.entries())
-        target.set(key, value);
-}
-function replaceSet(target, source) {
-    target.clear();
-    for (const value of source.values())
-        target.add(value);
 }

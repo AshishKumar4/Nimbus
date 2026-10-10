@@ -23,7 +23,8 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
-import { _rpcHostLost, hostingWatchFired, HOSTING_WATCH_MS } from '../../packages/worker/src/session/rpc.ts';
+import { _rpcHostLost, peerHostFor } from '../../packages/worker/src/session/rpc.ts';
+import { HOSTING_WATCH_MS } from '../../packages/fabric/src/peer-host.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -83,6 +84,8 @@ async function waitFor(predicate, budgetMs, what) {
 
 /** The sibling hosting `pid`: its name carries the coordinator's id and the pid. */
 const peerOf = (peers, pid) => peers.get(`${SID}:proc:${pid}:0`);
+/** The sibling's next incarnation: its storage, and none of its memory. */
+const nextIncarnation = (peer, ctx = peer.ctx) => peerHostFor(ctx, peer.env, async () => {});
 const route = (host, port) => routeToSessionPort(host, port, new Request(`https://app.test/`), '/', '');
 const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-launch:' })).values()];
 
@@ -165,14 +168,13 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   assert.ok(peer.ctx.storage.alarmAt <= armedAt + HOSTING_WATCH_MS, `armed within ${HOSTING_WATCH_MS} ms: ${peer.ctx.storage.alarmAt - armedAt}`);
 
   // A live process: the alarm finds it, says nothing, and re-arms.
-  assert.equal(typeof await hostingWatchFired(peer), 'number', 'a sibling still hosting re-arms');
+  assert.equal(typeof await peer.peerHost.watchFired(), 'number', 'a sibling still hosting re-arms');
   assert.equal(processes.get(pid).state, 'running');
 
   // The platform resets the sibling; nothing calls it. Its next incarnation
   // has the storage and none of the memory, and its alarm runs.
   peer.reset(new Error(RESET));
-  const next = { ...peer, _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
-  assert.equal(await hostingWatchFired(next), null, 'nothing left to watch');
+  assert.equal(await nextIncarnation(peer).watchFired(), null, 'nothing left to watch');
   await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end when its host reports its reset');
   assert.equal(processes.get(pid).exitCode, 137);
   assert.match(exits.find((e) => e.pid === pid)?.reason ?? '', /its host was reset by the platform/);
@@ -187,15 +189,15 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   await waitFor(() => processes.get(pid)?.state === 'running', 5_000, 'the server running');
   const peer = peerOf(peers, pid);
   peer.reset(new Error(RESET));
-  const next = { ...peer, _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
-  assert.equal(typeof await hostingWatchFired(next), 'number', 'the report failed: the sibling looks again');
+  const next = nextIncarnation(peer);
+  assert.equal(typeof await next.watchFired(), 'number', 'the report failed: the sibling looks again');
   assert.equal(processes.get(pid).state, 'running', 'the session has not heard yet');
-  assert.equal((await next.ctx.storage.list({ prefix: 'hosting:' })).size, 1, 'the hosting record is kept');
-  assert.equal(await hostingWatchFired(next), null, 'the report reached the session: nothing left to watch');
+  assert.equal((await peer.ctx.storage.list({ prefix: 'hosting:' })).size, 1, 'the hosting record is kept');
+  assert.equal(await next.watchFired(), null, 'the report reached the session: nothing left to watch');
   await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end on the second report');
 
-  const failing = { ...next, ctx: { ...next.ctx, storage: { ...next.ctx.storage, list: async () => { throw new Error('storage read failed'); } } } };
-  assert.equal(typeof await hostingWatchFired(failing), 'number', 'a failure to read the records is retried');
+  const failing = nextIncarnation(peer, { ...peer.ctx, storage: { ...peer.ctx.storage, list: async () => { throw new Error('storage read failed'); } } });
+  assert.equal(typeof await failing.watchFired(), 'number', 'a failure to read the records is retried');
 }
 
 // ── 7. a host arms its watch even when the first arm fails ──────────────────

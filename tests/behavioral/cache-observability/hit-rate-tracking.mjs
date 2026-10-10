@@ -35,7 +35,7 @@ import { mintSession, Terminal, sleep, makeAsserter, BASE, requestHeaders } from
 
 async function getCacheSnapshot(sid) {
   const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
-    headers: requestHeaders(),
+    headers: requestHeaders({}, sid),
   });
   if (!r.ok) throw new Error(`GET /api/_diag/cache failed: ${r.status}`);
   return r.json();
@@ -44,7 +44,7 @@ async function getCacheSnapshot(sid) {
 async function resetCache(sid) {
   const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache/reset`, {
     method: 'POST',
-    headers: requestHeaders(),
+    headers: requestHeaders({}, sid),
   });
   if (r.status !== 204) throw new Error(`reset returned ${r.status}`);
 }

@@ -34,13 +34,20 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFERRED } from '../../tests/behavioral/_deferred.mjs';
 import { HOSTED_DEMO_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
-import { describeReleaseException, gradeMatrix, matrixProbeArgs } from './lib/matrix.mjs';
+import { describeReleaseException, gradeVerdictFiles, matrixProbeArgs } from './lib/matrix.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 
 /** Write-heavy probes repeated beside the suite: their failure mode is intermittent. */
 const REPEATED = ['python/flask-markupsafe-fallback', 'python/numpy-flask-startup-modules', 'node/entry-pending-work'];
 
 const argv = process.argv.slice(2);
+if (argv[0] === 'grade') {
+  if (argv.length !== 2) { console.error('usage: bun scripts/ci/release.mjs grade <staged.json>'); process.exit(2); }
+  const staged = JSON.parse(readFileSync(argv[1], 'utf8'));
+  const graded = gradeVerdictFiles([staged.matrix?.suite?.verdict, staged.matrix?.hosted?.verdict], DEFERRED);
+  console.log(JSON.stringify(graded, null, 2));
+  process.exit(graded.exitCode);
+}
 const flags = {};
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -138,8 +145,7 @@ if (!flags['no-matrix']) {
   // only if every red row is a deferred probe's, and every deferred probe
   // ran and failed. Exclusions and a deferred probe's rows, output included,
   // are kept in the same record here for promotion.
-  const read = (path) => { try { return path ? JSON.parse(readFileSync(path, 'utf8')) : null; } catch { return null; } };
-  const graded = gradeMatrix([read(suite.verdict), read(hosted.verdict)], DEFERRED);
+  const graded = gradeVerdictFiles([suite.verdict, hosted.verdict], DEFERRED);
   staged.matrix = { exitCode: graded.exitCode, suite, hosted, deferrals: graded.applied, problems: graded.problems };
   for (const entry of graded.applied) {
     console.log(`release: ${describeReleaseException(entry)}`);

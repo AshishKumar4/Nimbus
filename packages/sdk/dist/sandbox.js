@@ -6,6 +6,9 @@ import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { codeRuntimeRequirement, runtimePolicyError, } from '@nimbus-sh/config/sandbox';
 /** The trailing wire argument a credentialed file op carries, or nothing. */
 function fileWireOptions(cred) {
     return cred === undefined ? [] : [{ cred }];
@@ -442,9 +445,9 @@ export class NimbusSandbox {
     }
     async runCode(code, options = {}) {
         const language = options.language ?? 'javascript';
-        if (language === 'python' || language === 'ruby') {
-            this.assertRuntimeAllowed(language, options.install === 'ifMissing' ? 'onDemand' : 'use');
-        }
+        const requirement = codeRuntimeRequirement(language, options.install);
+        if (requirement)
+            this.assertRuntimeAllowed(requirement.spec, requirement.action);
         await this.ready();
         return this.rpc(this.stub()._rpcRunCode(code, {
             ...this.execOptions(options),
@@ -738,8 +741,7 @@ export class NimbusSandbox {
         };
     }
     capabilities() {
-        const allow = this.profile.runtimes?.allow;
-        const hasRuntime = (name) => !allow || allow.includes(name);
+        const hasRuntime = (name) => !runtimePolicyError(this.profile.runtimes, name, 'use', this.profileName);
         const caps = [
             'javascript',
             'typescript',
@@ -784,18 +786,9 @@ export class NimbusSandbox {
         return normalized;
     }
     assertRuntimeAllowed(spec, action) {
-        const policy = this.profile.runtimes;
-        const allow = policy?.allow;
-        const name = String(spec).split('@')[0];
-        if (allow && !allow.includes(name)) {
-            throw new Error(`Nimbus runtime '${name}' is not allowed by sandbox profile '${this.profileName}'`);
-        }
-        if (action !== 'onDemand' || policy?.onDemand !== false)
-            return;
-        const preinstalled = new Set((policy.preinstall ?? []).map((s) => String(s).split('@')[0]));
-        if (!preinstalled.has(name)) {
-            throw new Error(`Nimbus runtime '${name}' is not preinstalled and on-demand runtime installs are disabled by sandbox profile '${this.profileName}'`);
-        }
+        const failure = runtimePolicyError(this.profile.runtimes, spec, action, this.profileName);
+        if (failure)
+            throw new Error(failure.message);
     }
     /**
      * Browser-facing URL for an exposed port, or undefined when the deployment
@@ -824,7 +817,7 @@ export class NimbusSandbox {
     }
     async rpc(promise) {
         const value = await promise;
-        disposeSdkRpcResult(value);
+        disposeRpcResource(value);
         return value;
     }
 }
@@ -900,24 +893,10 @@ export class NimbusProcessAttachment {
 }
 function idComponent(value, field) {
     const text = String(value);
-    if (!isIdComponent(text)) {
+    if (!isNimbusIdComponent(text)) {
         throw new Error(`Nimbus ${field} must be 1-128 ASCII letters, digits, dot, underscore, or hyphen`);
     }
     return text;
-}
-function isIdComponent(value) {
-    if (value.length < 1 || value.length > 128)
-        return false;
-    for (let i = 0; i < value.length; i++) {
-        const code = value.charCodeAt(i);
-        const isDigit = code >= 48 && code <= 57;
-        const isUpper = code >= 65 && code <= 90;
-        const isLower = code >= 97 && code <= 122;
-        const isPunctuation = code === 45 || code === 46 || code === 95;
-        if (!isDigit && !isUpper && !isLower && !isPunctuation)
-            return false;
-    }
-    return true;
 }
 function boundedPollInterval(value) {
     if (!Number.isFinite(value))
@@ -987,22 +966,6 @@ function resolveSandboxCwd(root, cwd) {
         }
     }
     return '/' + segments.join('/');
-}
-function disposeSdkRpcResult(value) {
-    if ((typeof value !== 'object' && typeof value !== 'function') || value === null)
-        return;
-    const disposerKey = Symbol.dispose;
-    if (!disposerKey)
-        return;
-    const disposer = Reflect.get(value, disposerKey);
-    if (typeof disposer !== 'function')
-        return;
-    try {
-        Reflect.apply(disposer, value, []);
-    }
-    catch {
-        // Disposal only releases Worker RPC bookkeeping. Preserve SDK behavior.
-    }
 }
 async function resolveHeaders(input) {
     if (!input)

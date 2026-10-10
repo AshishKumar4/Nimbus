@@ -28,8 +28,6 @@ class RuntimeOwner {
     terminal;
     _cpRegistry;
     _storedShellsAdopted;
-    _hostedProcesses = new Map();
-    _hostedProcessWaiters = new Map();
     _cirrusHmrWsClients = new Map();
     closing = null;
     _w9PersistWired = false;
@@ -45,7 +43,6 @@ class RuntimeOwner {
     esbuildService = null;
     bundlePool = null;
     npmInstaller = null;
-    fetchProxyEntrypoint = null;
     viteDevServer = null;
     cirrusReal = null;
     nimbusWrangler = null;
@@ -58,6 +55,7 @@ class RuntimeOwner {
     scheduling = new Set();
     fileLeases = new Map();
     services;
+    _peerHost = null;
     /** The workspace's namespace and process bindings. */
     getFilesystemAuthority() { return this.options.workspace.filesystem; }
     /** This instance's receipts for its processes' mutations delivered exactly once (see NimbusSession). */
@@ -72,6 +70,8 @@ class RuntimeOwner {
         }
         adoptCtxExports(exports);
         ensureSessionStateSchema(options.ctx);
+        // A process's answers leave as the rest of its output does: once what it wrote is published.
+        options.ports.setOutput(options.workspace.processes);
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
             persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
@@ -134,11 +134,8 @@ class RuntimeOwner {
     }
     ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
     ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
-    ensureFetchProxy(log) { return this.services.ensureFetchProxy(log); }
-    buildFetchFn(log) { return this.services.buildFetchFn(log); }
     ensureNpmInstaller(onProgress) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
     ensureGlobalPrefixDirs(prefix) { return this.services.ensureGlobalPrefixDirs(prefix); }
-    _envFlagDefaultOn(name) { return this.services._envFlagDefaultOn(name); }
     _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
     _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
     _setCpRegistry(registry) {
@@ -147,10 +144,13 @@ class RuntimeOwner {
     }
     _notifySession(line) { this.terminal.write(`${line}\r\n`); }
     /**
-     * The hosting alarm (session/rpc.ts armHostingWatch), through the
-     * embedder's lifecycle: the embedder owns this object's alarm, and its
-     * `onScheduled('hosting-watch')` hands the watch back.
+     * What this object serves a sibling coordinator hosting a process on it. Its
+     * hosting watch goes through the embedder's lifecycle: the embedder owns
+     * this object's alarm, and its `onScheduled('hosting-watch')` hands it back.
      */
+    get peerHost() {
+        return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env, (at) => this.scheduleHostingWatch(at));
+    }
     scheduleHostingWatch(at) {
         const pending = this.schedule('hosting-watch', at);
         this.options.lifecycle.waitUntil(pending);
@@ -252,7 +252,7 @@ class RuntimeOwner {
         }
         else if (task === 'hosting-watch') {
             // A failure to look again throws to the embedder's alarm, which retries it.
-            const next = await rpc.hostingWatchFired(this);
+            const next = await this.peerHost.watchFired();
             if (next !== null)
                 await this.scheduleHostingWatch(next);
         }

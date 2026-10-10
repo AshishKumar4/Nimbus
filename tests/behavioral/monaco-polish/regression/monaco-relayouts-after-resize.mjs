@@ -9,7 +9,7 @@ const a = makeAsserter('monaco-polish/regression/monaco-relayouts-after-resize')
 console.log(`monaco-polish/regression/monaco-relayouts-after-resize — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 a.check('applyMonacoLayout helper calls editor.layout()',

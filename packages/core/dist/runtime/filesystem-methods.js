@@ -59,6 +59,7 @@ export const FILESYSTEM_METHODS = {
     releaseExclusiveMutation: { rpc: 'fsReleaseExclusiveMutation', answer: 'value' },
     awaitRecall: { rpc: 'fsAwaitRecall', answer: 'value' },
     recalled: { rpc: 'fsRecalled', answer: 'value' },
+    published: { rpc: 'fsPublished', answer: 'value' },
 };
 // ── Answers across a hop ─────────────────────────────────────────────────
 //

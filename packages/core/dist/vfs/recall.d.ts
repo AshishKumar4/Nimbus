@@ -16,15 +16,36 @@ export declare class RecallRequired extends Error {
     readonly kind: 'share' | 'revoke';
     readonly path: string;
     readonly recall: () => Promise<void>;
+    /**
+     * A recall a caller that can wait may run ahead of (readers': SqliteVFS
+     * read leases): what `run` changes is committed now, and published once
+     * the recall is over (`published`); until then it holds what it changed.
+     */
+    readonly pipeline?: Pipelining | undefined;
     readonly code = "EAGAIN";
     readonly recalling = true;
-    constructor(root: string, kind: 'share' | 'revoke', path: string, recall: () => Promise<void>);
+    constructor(root: string, kind: 'share' | 'revoke', path: string, recall: () => Promise<void>, 
+    /**
+     * A recall a caller that can wait may run ahead of (readers': SqliteVFS
+     * read leases): what `run` changes is committed now, and published once
+     * the recall is over (`published`); until then it holds what it changed.
+     */
+    pipeline?: Pipelining | undefined);
 }
+/** `run`, its changes committed now and published once the recalls it ran ahead of are over. */
+export type Pipelining = <T>(run: () => T) => {
+    value: T;
+    published: Promise<void>;
+};
 /**
  * `run` again for as long as what it meets is a delegation to recall (at most
  * `attempts` times): the one way a caller that can wait passes a delegation.
+ * A recall it may run ahead of is sent first, one turn before `run` commits
+ * (so the recall leaves ahead of the commit's own storage), and what `run`
+ * changed is published once it is over: awaited here, or added to `held`
+ * for a caller that makes several calls and awaits them all at its end.
  */
-export declare function withRecall<T>(run: () => T | Promise<T>, attempts?: number): Promise<T>;
+export declare function withRecall<T>(run: () => T | Promise<T>, attempts?: number, held?: Set<Promise<void>>): Promise<T>;
 /**
  * The recall `error` reports, itself or as the cause a layer kept when it
  * reported the refusal as its own call's (toVfsError, a namespace's

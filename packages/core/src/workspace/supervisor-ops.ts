@@ -43,6 +43,7 @@ export const SUPERVISOR_OP_TABLE = {
   fsAcquired: 'joined',
   fsRevision: 'joined',
   fsList: 'joined',
+  fsListTree: 'joined',
   fsStorageGrant: null,
   wsOpen: null,
   wsPoll: null,
@@ -99,6 +100,7 @@ export const SUPERVISOR_OP_TABLE = {
   fsReleaseExclusiveMutation: 'once',
   fsAwaitRecall: null,
   fsRecalled: 'once',
+  fsPublished: null,
   innerDoFetch: null,
   innerDoCall: null,
   fanoutExecute: null,
@@ -134,3 +136,27 @@ export const SUPERVISOR_DELIVERED_OPS: readonly SupervisorDeliveredOpName[] = SU
   .filter((op): op is SupervisorDeliveredOpName => SUPERVISOR_OP_TABLE[op] === 'once');
 export const SUPERVISOR_JOINED_READ_OPS: readonly SupervisorJoinedReadOpName[] = SUPERVISOR_OPS
   .filter((op): op is SupervisorJoinedReadOpName => SUPERVISOR_OP_TABLE[op] === 'joined');
+
+/**
+ * The ops whose effect stays within the session: its filesystem (every
+ * 'once' and 'joined' op, and these), the delegations and publications a
+ * process's writes are made under, its caches, and what a process reads or
+ * waits for. Every other op makes something of its process's visible
+ * outside it, so it leaves at the process's output gate, in the order the
+ * process made it (SessionProcessSupervisor.releaseOutput): an op added
+ * without a place here is one. So does an op whose answer the binding acts
+ * on outside (getPackument's registry fetch on a miss, putCachedTarball's
+ * write to the shared bucket): what it does there follows that answer.
+ */
+const SUPERVISOR_OPS_WITHIN: ReadonlySet<SupervisorOpName> = new Set<SupervisorOpName>([
+  ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
+  'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
+  'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedOpen', 'awaitHostedBoot',
+  'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'hostLost',
+  'transform', 'allocatePort', 'putRegistryEntries', 'getCachedTarball',
+]);
+
+/** Whether `op` makes something of its process's visible outside the session (SUPERVISOR_OPS_WITHIN). */
+export function supervisorOpLeaves(op: SupervisorOpName): boolean {
+  return !SUPERVISOR_OPS_WITHIN.has(op);
+}

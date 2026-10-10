@@ -22,7 +22,6 @@ import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
-    env?: Record<string, string>;
     getEnv(): Record<string, string>;
 }
 type ProgrammaticContext = DurableObjectState;
@@ -85,7 +84,6 @@ export interface ProgrammaticHost extends TimerHost {
     } | null;
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
-    fetchProxyEntrypoint?: unknown;
     _supervisorOps?: {
         forget(pid: number): void;
     } | null;

@@ -16,7 +16,7 @@ import type { NpmInstaller } from '../npm/installer.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
-import type { ServiceStub } from '@nimbus-sh/fabric/vendor/types.js';
+import type { PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
@@ -67,8 +67,6 @@ class RuntimeOwner {
   readonly terminal: WebSocketTerminal;
   readonly _cpRegistry: CommandRegistry;
   _storedShellsAdopted?: Promise<void>;
-  readonly _hostedProcesses = new Map<string, rpc.HostedProcessRecord>();
-  readonly _hostedProcessWaiters = new Map<string, Set<(record: rpc.HostedProcessRecord) => void>>();
   readonly _cirrusHmrWsClients = new Map<WebSocket, string>();
   private closing: Promise<void> | null = null;
   _w9PersistWired = false;
@@ -84,7 +82,6 @@ class RuntimeOwner {
   esbuildService: EsbuildService | null = null;
   bundlePool: PrebundlePool | null = null;
   npmInstaller: NpmInstaller | null = null;
-  fetchProxyEntrypoint: ServiceStub | null = null;
   viteDevServer: ViteDevServer | null = null;
   cirrusReal: CirrusReal | null = null;
   nimbusWrangler: NimbusWrangler | null = null;
@@ -97,6 +94,7 @@ class RuntimeOwner {
   private readonly scheduling = new Set<Promise<void>>();
   private readonly fileLeases = new Map<string, NimbusHostFilesystemLease>();
   private readonly services: ReturnType<typeof services.bindRuntimeServices>;
+  private _peerHost: PeerHost | null = null;
 
   /** The workspace's namespace and process bindings. */
   getFilesystemAuthority(): ProcessFiles { return this.options.workspace.filesystem; }
@@ -113,6 +111,8 @@ class RuntimeOwner {
     }
     adoptCtxExports(exports);
     ensureSessionStateSchema(options.ctx);
+    // A process's answers leave as the rest of its output does: once what it wrote is published.
+    options.ports.setOutput(options.workspace.processes);
     this.terminal = new WebSocketTerminal(null, (data) => {
       appendScrollback(options.ctx, data, Date.now());
       persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
@@ -176,23 +176,25 @@ class RuntimeOwner {
   }
   ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
   ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
-  ensureFetchProxy(log?: (message: string) => void) { return this.services.ensureFetchProxy(log); }
-  buildFetchFn(log?: (message: string) => void) { return this.services.buildFetchFn(log); }
   ensureNpmInstaller(onProgress?: (message: string) => void) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
   ensureGlobalPrefixDirs(prefix: string) { return this.services.ensureGlobalPrefixDirs(prefix); }
-  _envFlagDefaultOn(name: string) { return this.services._envFlagDefaultOn(name); }
   _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
   _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
   _setCpRegistry(registry: CommandRegistry) {
     if (registry !== this._cpRegistry) throw new Error('Nimbus runtime cannot replace the workspace registry');
   }
   _notifySession(line: string) { this.terminal.write(`${line}\r\n`); }
+
   /**
-   * The hosting alarm (session/rpc.ts armHostingWatch), through the
-   * embedder's lifecycle: the embedder owns this object's alarm, and its
-   * `onScheduled('hosting-watch')` hands the watch back.
+   * What this object serves a sibling coordinator hosting a process on it. Its
+   * hosting watch goes through the embedder's lifecycle: the embedder owns
+   * this object's alarm, and its `onScheduled('hosting-watch')` hands it back.
    */
-  scheduleHostingWatch(at: number): Promise<void> {
+  get peerHost(): PeerHost {
+    return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env, (at) => this.scheduleHostingWatch(at));
+  }
+
+  private scheduleHostingWatch(at: number): Promise<void> {
     const pending = this.schedule('hosting-watch', at);
     this.options.lifecycle.waitUntil(pending);
     return pending;
@@ -294,7 +296,7 @@ class RuntimeOwner {
       this.processes.flushLogs();
     } else if (task === 'hosting-watch') {
       // A failure to look again throws to the embedder's alarm, which retries it.
-      const next = await rpc.hostingWatchFired(this);
+      const next = await this.peerHost.watchFired();
       if (next !== null) await this.scheduleHostingWatch(next);
     } else {
       const next = logJanitorFired(this);

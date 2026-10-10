@@ -17,8 +17,8 @@
 // run scripts/ci/remote-build.mjs for the dist fixpoint.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 
 const git = (args) => {
@@ -65,7 +65,7 @@ if (!files.trim()) {
   process.exit(1);
 }
 console.log(provenance.trim());
-const dir = join(homedir(), '.local', 'state', 'nimbus', 'remote-napi-loader');
+const dir = join(NIMBUS_STATE, 'remote-napi-loader');
 mkdirSync(dir, { recursive: true });
 const archive = join(dir, `${new Date().toISOString().replace(/[:.]/g, '')}-${sha.slice(0, 12)}.tar.xz`);
 writeFileSync(archive, Buffer.from(files.trim(), 'base64'));

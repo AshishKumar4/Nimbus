@@ -23,7 +23,8 @@
  * }
  * ```
  */
-import { type NimbusSessionState } from './types.js';
+import { type RefObject } from 'react';
+import { type NimbusSessionState, NimbusTerminalError } from './types.js';
 export interface UseNimbusSessionOptions {
     endpoint: string;
     token: string;
@@ -31,6 +32,10 @@ export interface UseNimbusSessionOptions {
     sub?: string;
     /** Existing session ID. Absent = new session via `/new`. */
     sessionId?: string;
+    iframeRef?: RefObject<HTMLIFrameElement | null>;
+    reloadKey?: number;
+    onReady?: () => void;
+    onError?: (error: NimbusTerminalError) => void;
 }
 /**
  * Headless hook returning the same state `<NimbusTerminal />` exposes.
