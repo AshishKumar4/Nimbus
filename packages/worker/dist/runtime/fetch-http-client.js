@@ -162,6 +162,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         }
         this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
           headers, framed: this.hasHeader("content-length") || this.hasHeader("transfer-encoding"), contentLength: this.#contentLength, body: this.#completeBody };
+        if (this.hasHeader("content-length")) this._contentLength = Number(this.getHeader("content-length"));
         this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
         this._headerSent = true;
       } catch (error) { this.destroy(error); this.#resume(); return; }
@@ -244,8 +245,8 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) return;
       const length = chunk == null ? 0 : typeof chunk === "string" ? Buffer.byteLength(chunk, typeof encoding === "string" ? encoding : undefined) : chunk.byteLength;
       const actual = this.#bytesWritten + length;
-      if (this._hasBody && !this._removedContLen && !this.chunkedEncoding && this.hasHeader("content-length") && !this.hasHeader("transfer-encoding")) {
-        const expected = Number(this.getHeader("content-length"));
+      const expected = this._contentLength ?? (ending && this.hasHeader("content-length") ? Number(this.getHeader("content-length")) : null);
+      if (expected !== null && this._hasBody && !this._removedContLen && !this.chunkedEncoding && !this.hasHeader("transfer-encoding")) {
         if (actual > expected || (ending && actual !== expected)) throw fail("ERR_HTTP_CONTENT_LENGTH_MISMATCH", "Response body's content-length of " + actual + " byte(s) does not match the content-length of " + expected + " byte(s) set in header");
       }
       return actual;
