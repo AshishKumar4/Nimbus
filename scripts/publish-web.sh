@@ -45,6 +45,7 @@ published() {
 
 sign() {
     local name="$1" version="$2" file="$3" sha256="$4" shasum="$5" integrity="$6"
+    latest_requested=false
     [[ "$(sha256sum "$dir/$file" | awk '{print $1}')" = "$sha256" ]] || { echo "STOP: sha256 mismatch for $file" >&2; exit 1; }
     local state=0
     published "$name" "$version" "$shasum" "$integrity" || state=$?
@@ -53,6 +54,7 @@ sign() {
       4)
         echo "Signing verified tarball: $name@$version ($sha256)"
         npm publish "$dir/$file" --registry "$registry" --ignore-scripts --auth-type=web --tag latest --access public
+        latest_requested=true
         ;;
       *) cat "$work/view.err" >&2; echo "STOP: unable to verify npm state for $name@$version" >&2; exit 1 ;;
     esac
@@ -62,13 +64,25 @@ IFS=$'\t' read -r -u 3 runtime_name runtime_version runtime_file runtime_sha run
 [[ "$runtime_name" = '@nimbus-sh/runtime-cpython' && "$runtime_version" = '3.13.14-1' ]] || { echo 'STOP: phase 1 runtime identity is not the approved build' >&2; exit 1; }
 sign "$runtime_name" "$runtime_version" "$runtime_file" "$runtime_sha" "$runtime_shasum" "$runtime_integrity"
 confirmed=false
-for attempt in {1..60}; do
-  latest="$(npm view --registry "$registry" --prefer-online "$runtime_name" dist-tags.latest)" || { echo 'STOP: npm latest confirmation failed; phase 2 will not run' >&2; exit 1; }
-  if [[ "$latest" = "$runtime_version" ]] && published "$runtime_name" "$runtime_version" "$runtime_shasum" "$runtime_integrity"; then confirmed=true; break; fi
-  if [[ "$latest" != "$runtime_version" && "$attempt" = 1 ]]; then
-    npm dist-tag add "$runtime_name@$runtime_version" latest --registry "$registry" --auth-type=web
-  fi
-  sleep 2
+confirm_deadline=$(( $(date +%s) + 600 ))
+while (( $(date +%s) < confirm_deadline )); do
+  state=0
+  published "$runtime_name" "$runtime_version" "$runtime_shasum" "$runtime_integrity" || state=$?
+  case "$state" in
+    0)
+      latest="$(npm view --registry "$registry" --prefer-online "$runtime_name" dist-tags.latest)" || { echo 'STOP: npm latest confirmation failed; phase 2 will not run' >&2; exit 1; }
+      if [[ "$latest" = "$runtime_version" ]]; then confirmed=true; break; fi
+      # A new publish already requested latest. Let both reads propagate without
+      # another signing; only an identical version found before this run needs a tag.
+      if [[ "$latest_requested" = false ]]; then
+        npm dist-tag add "$runtime_name@$runtime_version" latest --registry "$registry" --auth-type=web
+        latest_requested=true
+      fi
+      ;;
+    4) ;; # The version is not visible yet; do not inspect or change its tag.
+    *) cat "$work/view.err" >&2; echo 'STOP: unable to verify npm runtime bytes; phase 2 will not run' >&2; exit 1 ;;
+  esac
+  sleep 5
 done
 [[ "$confirmed" = true ]] || { echo 'STOP: the verified CPython build is not confirmed as npm latest; phase 2 will not run' >&2; exit 1; }
 while IFS=$'\t' read -r -u 3 name version file sha256 shasum integrity; do
