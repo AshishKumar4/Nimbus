@@ -361,9 +361,10 @@ export interface WriteBatchStreamProgress {
     /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
     mutations?: WaveMutation[];
     /**
-     * Answered at its commit, ahead of its publication (its writer continues:
-     * SqliteVFS.as's `continues`): what its writer's runtime waits for before
-     * an effect leaves by a way the session's gate does not see
+     * Answered at its commit while a commit of its writer's is held for its
+     * publication (SqliteVFS.as's `continues`; its own, or, for a resend, the
+     * attempt's before it): what its writer's runtime waits for before an
+     * effect leaves by a way the session's gate does not see
      * (RuntimeFsBridge.published).
      */
     held?: true;
@@ -832,7 +833,7 @@ export declare class SqliteVFS {
     private activeLanded;
     /** Whether the running call is the kernel's own (a uid-0 view bound to no process): the stores are its, held or not. */
     private activeKernel;
-    /** Whether the running call's writer continues at commit: its output waits for the publication instead (as's `continues`). */
+    /** Whether a wave of the running call's view answers at its commit (as's `continues`), asked as it is answered. */
     private activeContinues;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
@@ -1165,9 +1166,9 @@ export declare class SqliteVFS {
      * none of them). `landed`: the view reads what has landed, never asking a
      * holder to send first (an observer that is told when a wave lands, the
      * editor's file tree, reads after it); its writes still recall.
-     * `continues`, asked at each call: whether a write of the view's that a
-     * read recall holds answers at its commit, ahead of its publication (its
-     * writer's effects wait for it instead: ProcessFiles.continueAtCommit).
+     * `continues`, asked as each of the view's waves is answered: whether it
+     * answers at its commit, ahead of its publication (its process's effects
+     * wait for that instead: ProcessFiles.continueAtCommit).
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
@@ -1463,8 +1464,8 @@ export declare class SqliteVFS {
     /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
     private publishHeld;
     /**
-     * Settled once every commit `writer` (the delegations a process's view
-     * presents) holds for its publication is published, or failed to be and
+     * Settled once every commit `writer` (the delegations a process's views
+     * present) holds for its publication is published, or failed to be and
      * every reader started again; null while it holds none. What a process's
      * output waits for (ProcessFiles.outputGate).
      */

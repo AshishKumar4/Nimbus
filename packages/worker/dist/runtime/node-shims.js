@@ -127,15 +127,24 @@ const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopR
 let __nimbusCarrierOpening = false;
 let __nimbusCarrierGate = null;
 let __nimbusCarrierFailure = null;
-// A raw socket (one a connect opens, or a response upgrades to) carries what
-// no gate of the session's sees: from the first, the process's writes wait
-// for their publication, and it opens once every one before it is published
-// (ProcessFsClient.published).
+// What leaves by the platform's own network, which no gate of the session's
+// sees, goes once what the process wrote is published (ProcessFsClient.published).
+function __nimbusEgress() {
+  const client = globalThis.__nimbusProcessFs;
+  return client ? client.published() : null;
+}
+// A raw socket (one a connect opens, or a response upgrades to) carries
+// whatever the process sends on it from then on. The first is told to the
+// session, whether or not the process wrote anything yet, before what it
+// logged until then is answered: from then on each of its writes waits for
+// its publication, and the socket opens once every one before it is published.
 let __nimbusRawSocketGate;
 function __nimbusRawSocket() {
   if (__nimbusRawSocketGate === undefined) {
-    const asked = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.published(true) : null;
-    __nimbusRawSocketGate = asked === null ? null : asked.then(
+    let bound = null;
+    try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
+    const client = bound && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs() : null;
+    __nimbusRawSocketGate = client === null ? null : client.published(true).then(() => client.flush()).then(
       () => { __nimbusRawSocketGate = null; },
       (error) => { __nimbusRawSocketGate = undefined; throw error; },
     );
@@ -647,6 +656,8 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
+    const published = __nimbusEgress();
+    if (published !== null) await published;
     const pending = __resumeCoherent(__dispatch(input, init)).then(async (response) => {
       if (response && response.webSocket) await __nimbusRawSocket();
       if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
@@ -2814,15 +2825,9 @@ ${READ_LEASE_COVER_PREAMBLE}
    * than merely linearizability.
    */
   async function _resumptionRelease() {
-    const client = globalThis.__nimbusProcessFs;
-    if (!client) return;
     // Everything logged before the effect (the structural changes, the
     // descriptor writes), marked now: what is logged after it is not waited for.
-    await client.flush();
-    // And published, what the session answered ahead of its publication: the
-    // effect leaves by a way the session's gate does not see.
-    const published = client.published();
-    if (published !== null) await published;
+    await globalThis.__nimbusProcessFs?.flush();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch
@@ -6722,6 +6727,9 @@ const __NimbusRelayedWebSocket = (() => {
 
     async _connect(supervisor, protocols, headers, refusalBody) {
       try {
+        // Its handshake is as outward a frame as any (its URL, its headers).
+        const release = globalThis.__nimbusVfsReleaseBarrier;
+        if (typeof release === "function") await release();
         const opened = await __nimbusUseRpcResultUnref(
           supervisor.wsOpen(this.url, protocols, headers, refusalBody),
           (result) => result,
@@ -6873,6 +6881,9 @@ const __NimbusRelayedWebSocket = (() => {
       const closing = (async () => {
         await this._ready.catch(() => {});
         if (this._id === null || !supervisor) return;
+        // So is its close (its code, its reason).
+        const release = globalThis.__nimbusVfsReleaseBarrier;
+        if (typeof release === "function") await release();
         await __nimbusUseRpcResultUnref(
           supervisor.wsClose(this._id, code, reason),
           () => undefined,

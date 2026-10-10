@@ -150,15 +150,17 @@ export declare class Delegations {
     /** The leases of every delegation `pid` holds: what its own calls are made by. */
     heldBy(pid: number): ReadonlySet<string>;
     /**
-     * The leases process `pid` holds, as one set for as long as its `scope`
-     * lives: a call that began before it took one (a wave in flight when its
-     * read lease is granted) is made by that one too.
+     * The leases process `pid` holds, as one set from its first call until it
+     * is retired: a call that began before it took one (a wave in flight when
+     * its read lease is granted) is made by that one too, and what the engine
+     * holds of its writes for their publication is found by it
+     * (SqliteVFS.publishedFor).
      */
-    holdsOf(pid: number, scope: {
-        readonly subscriptions: Set<() => void>;
-    }): Set<string>;
-    /** The leases process `pid` holds, while a scope of its lives (holdsOf); undefined otherwise. */
+    holdsOf(pid: number): Set<string>;
+    /** Process `pid`'s set (holdsOf), until it is retired; undefined otherwise. */
     holdsAt(pid: number): ReadonlySet<string> | undefined;
+    /** Process `pid` is over, and nothing it wrote is held: what is kept of it here goes. */
+    retire(pid: number): void;
     get size(): number;
     stats(): DelegationStats;
     private recall;

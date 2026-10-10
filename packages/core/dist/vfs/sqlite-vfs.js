@@ -986,8 +986,8 @@ export class SqliteVFS {
     activeLanded = false;
     /** Whether the running call is the kernel's own (a uid-0 view bound to no process): the stores are its, held or not. */
     activeKernel = false;
-    /** Whether the running call's writer continues at commit: its output waits for the publication instead (as's `continues`). */
-    activeContinues = false;
+    /** Whether a wave of the running call's view answers at its commit (as's `continues`), asked as it is answered. */
+    activeContinues = null;
     /** Shared by every concurrent stream targeting this session's VFS. */
     writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
     _stagedStreamBytes = 0;
@@ -2175,9 +2175,9 @@ export class SqliteVFS {
      * none of them). `landed`: the view reads what has landed, never asking a
      * holder to send first (an observer that is told when a wave lands, the
      * editor's file tree, reads after it); its writes still recall.
-     * `continues`, asked at each call: whether a write of the view's that a
-     * read recall holds answers at its commit, ahead of its publication (its
-     * writer's effects wait for it instead: ProcessFiles.continueAtCommit).
+     * `continues`, asked as each of the view's waves is answered: whether it
+     * answers at its commit, ahead of its publication (its process's effects
+     * wait for that instead: ProcessFiles.continueAtCommit).
      */
     as(cred, options) {
         const engine = this;
@@ -2251,7 +2251,7 @@ export class SqliteVFS {
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
         };
-        return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds, landed: options?.landed === true, continues: options?.continues });
+        return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds, landed: options?.landed === true, continues: options?.continues ?? null });
     }
     /** `run` as `origin`'s call: the principal its write events name. */
     asOrigin(origin, run) {
@@ -2280,7 +2280,7 @@ export class SqliteVFS {
      * synchronous part; work it defers re-enters it (asCaller).
      */
     callerView(view, caller) {
-        const { origin, privileged, mutationOwner, landed, continues } = caller;
+        const { origin, privileged, mutationOwner, landed } = caller;
         const leased = mutationOwner === undefined ? null : new Set([mutationOwner]);
         const holds = leased !== null ? () => leased : caller.holds ?? null;
         const kernel = privileged && holds === null;
@@ -2308,7 +2308,7 @@ export class SqliteVFS {
                     this.activeHolds = holds();
                 this.activeLanded = landed;
                 this.activeKernel = kernel;
-                this.activeContinues = continues?.() === true;
+                this.activeContinues = caller.continues;
                 this.activeWrite = writes;
                 this.activeStoreHolding = synchronous;
                 try {
@@ -3096,7 +3096,7 @@ export class SqliteVFS {
         if (this.activePipeline === null && !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS)) {
             if (!this.activeStoreHolding)
                 return null;
-            this.activePipeline = this.newPipeline(this.activeHolds, true, this.activeContinues);
+            this.activePipeline = this.newPipeline(this.activeHolds, true);
         }
         const recallOne = ([owner, lease]) => {
             lease.recalling ??= (async () => {
@@ -3127,7 +3127,7 @@ export class SqliteVFS {
      * pass what it holds.
      */
     pipelined(run) {
-        const pipeline = this.newPipeline(this.activeHolds, false, null);
+        const pipeline = this.newPipeline(this.activeHolds, false);
         let value;
         try {
             value = this.inPipeline(pipeline, run);
@@ -3135,15 +3135,14 @@ export class SqliteVFS {
         catch (error) {
             value = Promise.reject(error);
         }
-        const published = this.endPipeline(pipeline);
-        return { value, published: pipeline.continues === true ? Promise.resolve() : published };
+        return { value, published: this.endPipeline(pipeline) };
     }
     /** A pipeline for `writer`'s commits (pipelined, a wave's, or a `store` write's). */
-    newPipeline(writer, store, continues) {
+    newPipeline(writer, store) {
         let settle;
         let fail;
         const published = new Promise((resolve, reject) => { settle = resolve; fail = reject; });
-        return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, store, continues, published, settle, fail };
+        return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, store, continues: false, published, settle, fail };
     }
     /** `run`, its commits `pipeline`'s. */
     inPipeline(pipeline, run) {
@@ -3183,7 +3182,6 @@ export class SqliteVFS {
         if (pipeline.publication === null) {
             pipeline.publication = { paths: new Set(), events: [], structural: new Map(), removedDirectories: [] };
             pipeline.writer ??= this.activeHolds;
-            pipeline.continues ??= this.activeContinues;
             this.heldPipelines.add(pipeline);
         }
         pipeline.committed = this._gen;
@@ -3240,8 +3238,8 @@ export class SqliteVFS {
         }
     }
     /**
-     * Settled once every commit `writer` (the delegations a process's view
-     * presents) holds for its publication is published, or failed to be and
+     * Settled once every commit `writer` (the delegations a process's views
+     * present) holds for its publication is published, or failed to be and
      * every reader started again; null while it holds none. What a process's
      * output waits for (ProcessFiles.outputGate).
      */
@@ -3283,7 +3281,7 @@ export class SqliteVFS {
             this.deliverHeld(publication);
         }
         finally {
-            if (pipeline.continues === true)
+            if (pipeline.continues)
                 pipeline.settle();
             else
                 pipeline.fail(error);
@@ -8063,20 +8061,30 @@ export class SqliteVFS {
         const owner = options.mutationOwner;
         const holds = owner !== undefined && caller?.has(owner) !== true ? new Set([owner, ...(caller ?? [])]) : caller;
         // Its records commit ahead of the read recalls they meet; its answer
-        // waits for their publication, unless its writer continues (as itself:
-        // under a lease not its own, it waits).
-        const pipeline = this.newPipeline(holds, false, holds === caller && this.activeContinues);
+        // waits for their publication, unless its view continues as it is
+        // answered (as itself: under a lease not its own, it waits).
+        const continues = holds === caller ? this.activeContinues : null;
+        const pipeline = this.newPipeline(holds, false);
         return this.spanning(async () => {
             let result;
             try {
                 result = await this.consumeStream(stream, options, cred, origin, holds, pipeline);
             }
             finally {
+                pipeline.continues = continues?.() === true;
                 const published = this.endPipeline(pipeline);
                 if (!pipeline.continues)
                     await published;
             }
-            return this.heldPipelines.has(pipeline) ? { ...result, held: true } : result;
+            // Whatever else its writer holds: a resend's own records are the
+            // attempt's before it, which may still be held.
+            const held = holds === null ? null : this.publishedFor(holds);
+            if (held === null)
+                return result;
+            if (pipeline.continues)
+                return { ...result, held: true };
+            await held;
+            return result;
         }, options.mutationOwner);
     }
     /**

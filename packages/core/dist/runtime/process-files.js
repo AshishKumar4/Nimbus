@@ -464,23 +464,41 @@ export class ProcessFiles {
     };
     /** Whether the session's process output waits at `outputGate` (holdOutput). */
     outputHeld = false;
-    /** The processes whose writes answer at their commit (continueAtCommit), until one escapes the gate. */
+    /** The processes whose waves answer at their commit (continueAtCommit), until one escapes the gate. */
     continuing = new Set();
     /**
-     * From now on each process's output (its log, pipes, terminal and exit)
-     * waits at `outputGate` for what it wrote to be published. The host gates
-     * the answers its ports give with the same gate.
+     * Released `pid` writes nothing more: the set its calls were made by
+     * (Delegations.holdsOf), by which the engine holds what it wrote for its
+     * publication, goes once that is published. Until then the output its end
+     * leaves still waits for it, whenever that is let out.
+     */
+    retireWriter(pid) {
+        this.continuing.delete(pid);
+        const holds = this.delegations.holdsAt(pid);
+        if (holds === undefined)
+            return;
+        const held = this.engine.publishedFor(holds);
+        if (held === null)
+            this.delegations.retire(pid);
+        else
+            void held.then(() => this.delegations.retire(pid));
+    }
+    /**
+     * From now on whatever `processes` lets out for a process (its log, pipes,
+     * terminal and exit, the supervisor ops that leave the session, its ports'
+     * answers: SessionProcessSupervisor.releaseOutput) waits at `outputGate`
+     * for what it wrote to be published.
      */
     holdOutput(processes) {
         processes.setOutputGate(this.outputGate);
         this.outputHeld = true;
     }
     /**
-     * Process `pid`'s writes answer at their commit from now on, ahead of
+     * Process `pid`'s waves answer at their commit from now on, ahead of
      * their publication: the writer continues, and whatever it makes visible
      * waits for the publication instead. Only for a process whose every way
-     * out does: its output and its ports' answers at `outputGate` (holdOutput),
-     * a request or a frame it sends at its runtime's own boundary
+     * out does: what the session lets out for it at `outputGate` (holdOutput),
+     * what leaves by its runtime's own network at that runtime's boundary
      * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
      * ending this (`escaped`).
      */
@@ -490,7 +508,6 @@ export class ProcessFiles {
     }
     async releaseProcess(pid) {
         this.retired.add(pid);
-        this.continuing.delete(pid);
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
         try {
@@ -501,6 +518,7 @@ export class ProcessFiles {
         }
         finally {
             this.processes.delete(pid);
+            this.retireWriter(pid);
         }
     }
     /** See NimbusFilesystemAuthority.rewindProcess. */
@@ -527,6 +545,7 @@ export class ProcessFiles {
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
         this.processes.delete(pid);
+        this.retireWriter(pid);
         if (!scope || scope.closed)
             return { lost: [] };
         const lost = [];
@@ -587,7 +606,7 @@ export class ProcessFiles {
         // disposed, does not land.
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
-        const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
+        const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
         const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);

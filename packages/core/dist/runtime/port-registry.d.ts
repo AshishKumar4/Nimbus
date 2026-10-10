@@ -29,7 +29,7 @@
  */
 import { type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
-import type { ProcessOutputGate } from './output-gate.js';
+import type { ProcessOutput } from './output-gate.js';
 export interface PortEntry {
     port: number;
     pid: number;
@@ -71,8 +71,8 @@ export declare class PortRegistry {
     /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
     private acquireDeliveredPids;
     private portWaitersByPid;
-    /** Holds a process's answers until what it wrote is published (setOutputGate). */
-    private outputGate;
+    /** Where a process's answers leave (setOutput). */
+    private output;
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -83,12 +83,12 @@ export declare class PortRegistry {
      */
     constructor(deliveredAcquire?: ((pid: number) => Promise<unknown>) | null);
     /**
-     * Hold each process's answers (status and headers, and each piece of its
-     * body as it comes) until `gate` lets them through: what a process makes
-     * visible after a write waits for the write's publication. A socket an
-     * upgrade hands it is one no gate sees, which `gate` is told. One slot.
+     * Let each process's answers out through `output` (its status and headers,
+     * each piece of its body, and the body's end), as the rest of what it makes
+     * visible: once what it wrote before is published. A socket an upgrade
+     * hands it is one nothing there sees, which `output` is told. One slot.
      */
-    setOutputGate(gate: ProcessOutputGate | null): void;
+    setOutput(output: ProcessOutput | null): void;
     /**
      * Remember the available facet capabilities for a running process.
      * `deliversAcquire`: the target strips DELIVERED_ACQUIRE_HEADER before user

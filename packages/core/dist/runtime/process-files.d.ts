@@ -17,7 +17,7 @@
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
-import type { OutputGate, ProcessOutputGate } from './output-gate.js';
+import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -115,25 +115,33 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * its that another reader's recall holds (SqliteVFS.publishedFor). None
      * held, nothing waits.
      */
-    readonly outputGate: ProcessOutputGate;
+    readonly outputGate: Required<OutputGate>;
     /** Whether the session's process output waits at `outputGate` (holdOutput). */
     private outputHeld;
-    /** The processes whose writes answer at their commit (continueAtCommit), until one escapes the gate. */
+    /** The processes whose waves answer at their commit (continueAtCommit), until one escapes the gate. */
     private readonly continuing;
     /**
-     * From now on each process's output (its log, pipes, terminal and exit)
-     * waits at `outputGate` for what it wrote to be published. The host gates
-     * the answers its ports give with the same gate.
+     * Released `pid` writes nothing more: the set its calls were made by
+     * (Delegations.holdsOf), by which the engine holds what it wrote for its
+     * publication, goes once that is published. Until then the output its end
+     * leaves still waits for it, whenever that is let out.
+     */
+    private retireWriter;
+    /**
+     * From now on whatever `processes` lets out for a process (its log, pipes,
+     * terminal and exit, the supervisor ops that leave the session, its ports'
+     * answers: SessionProcessSupervisor.releaseOutput) waits at `outputGate`
+     * for what it wrote to be published.
      */
     holdOutput(processes: {
         setOutputGate(gate: OutputGate | null): void;
     }): void;
     /**
-     * Process `pid`'s writes answer at their commit from now on, ahead of
+     * Process `pid`'s waves answer at their commit from now on, ahead of
      * their publication: the writer continues, and whatever it makes visible
      * waits for the publication instead. Only for a process whose every way
-     * out does: its output and its ports' answers at `outputGate` (holdOutput),
-     * a request or a frame it sends at its runtime's own boundary
+     * out does: what the session lets out for it at `outputGate` (holdOutput),
+     * what leaves by its runtime's own network at that runtime's boundary
      * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
      * ending this (`escaped`).
      */

@@ -92,19 +92,14 @@ function relayRpcBody(response, method, gated) {
     });
 }
 /**
- * A process's answer body, each piece let through once `gate` lets its
- * process's output go on: what it wrote while answering is published before
- * the piece after it is seen.
+ * A process's answer body, each piece and its end let out as the rest of
+ * its output is (ProcessOutput.releaseOutput): what it wrote while answering
+ * is published before the piece after it, or its end, is seen.
  */
-function gatedBody(gate, pid) {
+function releasedBody(output, pid) {
     return new TransformStream({
-        transform(chunk, controller) {
-            const held = gate.before(pid);
-            if (held === null)
-                controller.enqueue(chunk);
-            else
-                return held.then(() => controller.enqueue(chunk));
-        },
+        transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
+        flush: () => output.releaseOutput(pid, () => { }),
     });
 }
 function decodeContentCoding(response, port, method, gated) {
@@ -151,8 +146,8 @@ export class PortRegistry {
     /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
     acquireDeliveredPids = new Set();
     portWaitersByPid = new Map();
-    /** Holds a process's answers until what it wrote is published (setOutputGate). */
-    outputGate = null;
+    /** Where a process's answers leave (setOutput). */
+    output = null;
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -165,13 +160,13 @@ export class PortRegistry {
         this.deliveredAcquire = deliveredAcquire;
     }
     /**
-     * Hold each process's answers (status and headers, and each piece of its
-     * body as it comes) until `gate` lets them through: what a process makes
-     * visible after a write waits for the write's publication. A socket an
-     * upgrade hands it is one no gate sees, which `gate` is told. One slot.
+     * Let each process's answers out through `output` (its status and headers,
+     * each piece of its body, and the body's end), as the rest of what it makes
+     * visible: once what it wrote before is published. A socket an upgrade
+     * hands it is one nothing there sees, which `output` is told. One slot.
      */
-    setOutputGate(gate) {
-        this.outputGate = gate;
+    setOutput(output) {
+        this.output = output;
     }
     /**
      * Remember the available facet capabilities for a running process.
@@ -429,13 +424,13 @@ export class PortRegistry {
                 return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
             }
             const response = await handler(forwarded);
-            const gate = this.outputGate;
+            const output = this.output;
             // What it wrote before answering is published before anyone sees the
-            // answer; a socket the answer hands over carries what no gate sees.
-            if (gate !== null) {
+            // answer; a socket the answer hands over carries what nothing sees.
+            if (output !== null) {
                 if (response instanceof Response && response.webSocket)
-                    gate.escaped(entry.pid);
-                await gate.before(entry.pid);
+                    output.escapeOutput(entry.pid);
+                await output.releaseOutput(entry.pid, () => { });
             }
             if (!(response instanceof Response)) {
                 // Defensive: if a facet ever returns something else (JSON
@@ -459,7 +454,7 @@ export class PortRegistry {
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
             // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            return decodeContentCoding(response, port, request.method, gate === null || response.body === null ? null : gatedBody(gate, entry.pid));
+            return decodeContentCoding(response, port, request.method, output === null || response.body === null ? null : releasedBody(output, entry.pid));
         }
         catch (error) {
             // Server-side triage — users see only the 502 body, operators

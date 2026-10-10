@@ -222,7 +222,8 @@ export interface ProcessFsClient {
     effect(): Promise<void> | null;
     /**
      * The gate an effect leaving by a way the session's gate does not see (a
-     * request out, a frame out) is released at, after `effect`: once every
+     * request out by the runtime's own network, a raw socket) is released at,
+     * after `effect`: once every
      * write of the process's the session answered ahead of its publication
      * (WriteBatchStreamResult.held) is published, or null when none is.
      * `escape` (a raw socket opens): asked whatever is known, and the

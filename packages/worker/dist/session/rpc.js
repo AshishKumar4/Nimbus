@@ -998,15 +998,23 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.closeInput(pid);
     }
     catch { }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
+    self.supervisorForgetBridge?.(pid);
+    await self.processes.releaseOutput(pid, () => {
+        closeRelayedSockets(self, pid);
+        reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules);
+    });
+}
+/**
+ * A relayed socket is held open by the supervisor on the process's behalf,
+ * so it does not die when the facet does. Nothing else would ever close it,
+ * and a live one keeps buffering into the supervisor's heap. Its peer sees
+ * the close as the rest of the process's end: let out with it.
+ */
+function closeRelayedSockets(self, pid) {
     try {
         self.webSocketRelay?.closeForPid(pid);
     }
     catch { }
-    self.supervisorForgetBridge?.(pid);
-    await self.processes.releaseOutput(pid, () => reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules));
 }
 /** A process's own exit report, to everything that observes it. */
 function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) {
@@ -1102,15 +1110,11 @@ export function _reportExternalExit(self, pid, code, reason) {
         self.processes.closeInput(pid);
     }
     catch { }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
-    try {
-        self.webSocketRelay?.closeForPid(pid);
-    }
-    catch { }
     self.supervisorForgetBridge?.(pid);
-    void self.processes.releaseOutput(pid, () => reportExternalExit(self, pid, code, reason));
+    void self.processes.releaseOutput(pid, () => {
+        closeRelayedSockets(self, pid);
+        reportExternalExit(self, pid, code, reason);
+    });
 }
 /** An exit the process did not report itself, to everything that observes it. */
 function reportExternalExit(self, pid, code, reason) {

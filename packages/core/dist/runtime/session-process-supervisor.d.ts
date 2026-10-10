@@ -23,7 +23,7 @@ import { ProcessTable, type ProcessEntry, type ProcessRestart } from './process-
 import { type ProcessInputPacket } from './process-input.js';
 import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
-import type { OutputGate } from './output-gate.js';
+import type { OutputGate, ProcessOutput } from './output-gate.js';
 import type { VfsCred } from './os-contracts.js';
 export interface ProcessSpawnOptions {
     /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -52,7 +52,7 @@ export interface ProcessTerminalDescriptor {
     columns: number;
     rows: number;
 }
-export declare class SessionProcessSupervisor {
+export declare class SessionProcessSupervisor implements ProcessOutput {
     private readonly table;
     private readonly input;
     private logs;
@@ -289,6 +289,8 @@ export declare class SessionProcessSupervisor {
      * process, the terminal, its exit) until `gate` lets it through. One slot.
      */
     setOutputGate(gate: OutputGate | null): void;
+    /** `pid`'s output leaves, from now on, by a way no gate sees (a socket an answer of its hands over): its gate is told. */
+    escapeOutput(pid: number): void;
     /**
      * `deliver` once `pid`'s output may reach its observers: now, when the
      * gate holds nothing of pid's, else after the gate and after pid's output

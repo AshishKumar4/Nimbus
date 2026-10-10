@@ -128,3 +128,23 @@ export const SUPERVISOR_DELIVERED_OPS = SUPERVISOR_OPS
     .filter((op) => SUPERVISOR_OP_TABLE[op] === 'once');
 export const SUPERVISOR_JOINED_READ_OPS = SUPERVISOR_OPS
     .filter((op) => SUPERVISOR_OP_TABLE[op] === 'joined');
+/**
+ * The ops whose effect stays within the session: its filesystem (every
+ * 'once' and 'joined' op, and these), the delegations and publications a
+ * process's writes are made under, its caches, and what a process reads or
+ * waits for. Every other op makes something of its process's visible
+ * outside it, so it leaves at the process's output gate, in the order the
+ * process made it (SessionProcessSupervisor.releaseOutput): an op added
+ * without a place here is one.
+ */
+const SUPERVISOR_OPS_WITHIN = new Set([
+    ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
+    'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
+    'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedOpen', 'awaitHostedBoot',
+    'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'hostLost',
+    'transform', 'allocatePort', 'putRegistryEntries', 'getCachedTarball', 'putCachedTarball', 'getPackument',
+]);
+/** Whether `op` makes something of its process's visible outside the session (SUPERVISOR_OPS_WITHIN). */
+export function supervisorOpLeaves(op) {
+    return !SUPERVISOR_OPS_WITHIN.has(op);
+}
