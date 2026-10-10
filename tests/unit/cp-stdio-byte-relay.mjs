@@ -172,7 +172,7 @@ console.log('  the child\'s reported text decodes split characters as one');
   const sources = nodeFacetSources(generateShimsCode());
   const oneShot = (await generateEntrypointCode('', state, false, sources)).code;
   const resident = (await generateLongRunningNodeCode('', state, { cred }, false, sources)).code;
-  const opencode = generateOpencodeRunnerCode({
+  const { code: opencode } = generateOpencodeRunnerCode({
     argv: [], env: {}, cred, cwd: '/home/user', stdin: '', mode: 'attached',
     sources, vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
   });

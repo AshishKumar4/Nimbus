@@ -35,7 +35,7 @@
  * map (see SQLITE_WASM_MODULE_NAME) and is booted before opencode opens the
  * DB at ~/.local/share/opencode/*.db.
  */
-import type { NodeFacetSources } from './node-shims-artifact.js';
+import { type NodeFacetSources } from './node-shims-artifact.js';
 /** Map-module specifier for the opencode ESM bundle. */
 export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
 /**
@@ -180,5 +180,8 @@ export declare const WORKER_POLYFILL_SRC: string;
  * One-shot mode buffers stdout/stderr into the JSON response; attachedTty mode
  * streams them live and keeps the facet alive for the interactive TUI.
  */
-export declare function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string;
+export declare function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): {
+    code: string;
+    codeModules: Record<string, string>;
+};
 //# sourceMappingURL=opencode-facet-runner.d.ts.map

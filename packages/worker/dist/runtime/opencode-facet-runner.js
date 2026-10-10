@@ -39,6 +39,7 @@ import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { getRealNodeSharedImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
+import { createNodeFacetRuntime } from './node-shims-artifact.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_BACKEND_GLOBAL, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
@@ -617,7 +618,8 @@ export function generateOpencodeRunnerCode(opts) {
     const mode = opts.mode;
     const attachedTty = mode === 'attached';
     const resident = mode === 'attached' || mode === 'server';
-    return `
+    const runtime = createNodeFacetRuntime(opts.sources);
+    return { codeModules: runtime.modules, code: `
 // Two bases for two lifecycles, over one module scope. A resident run (the
 // attached TUI, opencode serve) is a DO Facet of the session, so NimbusProcess
 // extends DurableObject and its startProcess() holds the process open. A
@@ -625,6 +627,8 @@ export function generateOpencodeRunnerCode(opts) {
 // Durable Object; it keeps the WorkerEntrypoint default export.
 import { DurableObject as __NimbusDurableObject, WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
 ${getRealNodeSharedImportsCode()}
+${runtime.imports}
+${runtime.code}
 
 // ── sql.js wasm + glue factory (module-init scope) ─────────────────────────
 // The pre-compiled WebAssembly.Module rides in via the module map; the glue
@@ -1352,5 +1356,5 @@ async function __ocOneShotFetch(request, workerEnv) {
     await __ocDrainVfsWrites();
     return __ocHostResponse.json({ exitCode, stdout, stderr });
 }
-`;
+` };
 }
