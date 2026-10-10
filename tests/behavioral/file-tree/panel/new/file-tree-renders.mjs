@@ -1,62 +1,47 @@
-#!/usr/bin/env bun
-// file-tree/panel/new/file-tree-renders — file-tree panel + module wired.
-//
-// HTML-shape assertions: the .panel-tree DOM, the FileTree IIFE,
-// the toolbar buttons, the search input, and the WS handler hookup
-// must all be present in the served page.
+import { mintSession, deleteSession, BASE, makeAsserter } from '../../../_driver.mjs';
+import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
 
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
-
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-renders');
-console.log(`file-tree/panel/new/file-tree-renders — ${process.env.BASE}`);
-
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
-
-// DOM.
-a.check('panel-tree DOM element present',
-  /id=["']treePanel["']/.test(html) && /class=["']panel-tree["']/.test(html),
-  `treePanel missing`);
-a.check('tree-body container present',
-  /id=["']treeBody["']/.test(html),
-  `treeBody missing`);
-a.check('tree-search input present',
-  /id=["']treeSearch["']/.test(html),
-  `treeSearch missing`);
-a.check('tree-resize-handle present',
-  /id=["']treeResizeHandle["']/.test(html),
-  `treeResizeHandle missing`);
-// Toolbar buttons.
-a.check('New File button present',
-  /id=["']btnTreeNewFile["']/.test(html),
-  `btnTreeNewFile missing`);
-a.check('New Folder button present',
-  /id=["']btnTreeNewDir["']/.test(html),
-  `btnTreeNewDir missing`);
-a.check('Refresh button present',
-  /id=["']btnTreeRefresh["']/.test(html),
-  `btnTreeRefresh missing`);
-
-// JS module.
-a.check('FileTree IIFE module declared',
-  /const FileTree\s*=\s*\(function\(\)/.test(html),
-  `FileTree module not declared`);
-a.check('FileTree.tryHandleFsResult wired into WS onmessage',
-  /FileTree\.tryHandleFsResult\(msg\)/.test(html),
-  `FileTree WS hook missing`);
-a.check('FileTree.ensureLoaded called when entering editor mode',
-  /wantEditor[\s\S]{0,200}FileTree\.ensureLoaded\(\)/.test(html),
-  `FileTree lazy-load wiring missing`);
-
-// CSS — tree visible only in editor mode.
-a.check('CSS .main.editor .panel-tree { display:flex }',
-  /\.main\.editor\s+\.panel-tree\s*\{[^}]*display:\s*flex/.test(html),
-  `tree shown rule missing`);
-a.check('CSS panel-tree default display:none',
-  /\.panel-tree\s*\{[^}]*display:\s*none/.test(html),
-  `tree default-hide rule missing`);
-
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+const browser = await launchBrowser();
+try {
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForSelector('#treeBody .tree-node', { visible: true, timeout: 30_000 });
+  for (const selector of ['#treePanel', '#treeBody', '#treeSearch', '#treeResizeHandle', '#btnTreeNewFile', '#btnTreeNewDir', '#btnTreeRefresh']) {
+    a.check(`${selector} is rendered and visible`, await page.$eval(selector, (element) => {
+      const box = element.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden';
+    }));
+  }
+  await page.type('#treeSearch', 'welcome.md');
+  await page.waitForFunction(() => [...document.querySelectorAll('#treeBody .tree-node')].every((row) => row.dataset.path.endsWith('/welcome.md')), { timeout: 10_000 });
+  a.check('search filters actual file rows', await page.$$eval('#treeBody .tree-node', (rows) => rows.length === 1));
+  await page.click('#treeSearch', { clickCount: 3 });
+  await page.keyboard.press('Backspace');
+  await page.waitForFunction(() => document.querySelectorAll('#treeBody .tree-node').length > 1, { timeout: 10_000 });
+  page.once('dialog', (dialog) => dialog.accept('rendered-new.txt'));
+  await page.click('#btnTreeNewFile');
+  await page.waitForSelector('.tree-node[data-path="/home/user/rendered-new.txt"]', { visible: true, timeout: 30_000 });
+  await page.waitForFunction(() => document.getElementById('editorTab').textContent === 'rendered-new.txt', { timeout: 30_000 });
+  a.check('New File renders and opens its completed filesystem write', true);
+  page.once('dialog', (dialog) => dialog.accept('rendered-folder'));
+  await page.click('#btnTreeNewDir');
+  await page.waitForSelector('.tree-node[data-path="/home/user/rendered-folder"]', { visible: true, timeout: 30_000 });
+  a.check('New Folder renders its completed filesystem write', true);
+  await page.click('#btnTreeRefresh');
+  await page.waitForSelector('.tree-node[data-path="/home/user/rendered-new.txt"]', { visible: true, timeout: 30_000 });
+  a.check('Refresh completes and preserves filesystem entries', true);
+  await page.setViewport({ width: 390, height: 844 });
+  await page.click('#btnPhoneTerminal');
+  a.check('the tree is hidden when the phone shows Terminal', await page.$eval('#treePanel', (element) => element.getBoundingClientRect().width === 0));
+  await page.click('#btnPhoneFiles');
+  await page.waitForSelector('.tree-node[data-path="/home/user/rendered-new.txt"]', { visible: true, timeout: 10_000 });
+  a.check('opening Files restores the rendered tree', true);
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
+const result = a.summary();
+process.exit(result.fail ? 1 : 0);
