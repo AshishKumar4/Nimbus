@@ -37,7 +37,8 @@ import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import { createNodeFacetRuntime, fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
+import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
+import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import {
@@ -955,6 +956,8 @@ const SQLITE_FACET_IMPORT =
  */
 interface GeneratedNodeFacetCode {
   code: string;
+  source: ModuleSource;
+  immutableModules: Record<string, ImmutableModuleSource>;
   modules: Record<string, string>;
   codeModules: Record<string, string>;
 }
@@ -1035,8 +1038,8 @@ function nodeProgramModule(
   usesSqlite: boolean,
   stagedBindings: FacetVfsState['stagedBindings'],
   wasmImports: readonly FacetWasmImport[],
-): string {
-  return `
+): ModuleSource {
+  return moduleSource`
 ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
 ${runtime.imports}
@@ -1064,8 +1067,8 @@ ${runtime.code}
  * lifetimes: its output relayed to the SUPERVISOR, the shims, the event loop
  * and the globals, up to its entry module (`mod`).
  */
-function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): string {
-  return `
+function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): ModuleSource {
+  return moduleSource`
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
     let __rpcDrops = 0;
@@ -1103,11 +1106,11 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): strin
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${sources.ledger}
+${nodeFacetSource(sources, "ledger")}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${sources.shims}
+${nodeFacetSource(sources, "shims")}
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -1169,8 +1172,7 @@ export async function generateEntrypointCode(
   const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
-  return {
-    code: `
+  const source = moduleSource`
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
 
 // The module bundle, at module level (startup time); the code cells the store
@@ -1241,7 +1243,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
     // Declared inside the request, beside the shims, so a loader that reuses
     // this isolate for another run starts it from an empty store.
-${sources.residentStore}
+${nodeFacetSource(sources, "residentStore")}
     __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
     __residentSetStorage(undefined, __supervisor);
     __nsSetCred(cred);
@@ -1387,7 +1389,11 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     });
   }
 };
-`,
+`;
+  return {
+    source,
+    get code() { return source.text; },
+    immutableModules: runtime.immutableModules,
     modules: bundleSource.modules,
     codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
   };
@@ -1539,8 +1545,7 @@ export async function generateLongRunningNodeCode(
   });
   const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
   const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
-  return {
-    code: `
+  const source = moduleSource`
 import { DurableObject } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
@@ -1551,7 +1556,7 @@ const __NIMBUS_ARGS = ${safeArgs};
 // are getters over the map's own module text.
 let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
-${sources.residentStore}
+${nodeFacetSource(sources, "residentStore")}
 
 let __nimbusStarted = false;
 let __nimbusStarting = null;
@@ -1961,7 +1966,11 @@ export class NimbusProcess extends DurableObject {
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
 }
-`,
+`;
+  return {
+    source,
+    get code() { return source.text; },
+    immutableModules: runtime.immutableModules,
     modules: bundleSource.modules,
     codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
   };
@@ -2240,11 +2249,12 @@ export class ModuleMapOverCeilingError extends Error {
  * small is answered without being read.
  */
 export function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: number): number | null {
-  const texts = [generated.code, ...Object.values(generated.modules), ...Object.values(generated.codeModules)];
+  const sharedBytes = generated.source.byteLength + Object.values(generated.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);
+  const texts = [...Object.values(generated.modules), ...Object.values(generated.codeModules)];
   let units = 0;
   for (const text of texts) units += text.length;
-  if (units * 3 <= room) return null;
-  let bytes = 0;
+  if (sharedBytes + units * 3 <= room) return null;
+  let bytes = sharedBytes;
   for (const text of texts) bytes += mapTextBytes(text);
   return bytes;
 }
@@ -7935,14 +7945,16 @@ export class FacetManager {
             );
             const codeModules: Record<string, { cjs: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
+            for (const [name, source] of Object.entries(generatedWorker.immutableModules)) codeModules[name] = { cjs: source.text };
             if (diagSink) {
-              diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
+              diagSink.moduleMapBytes = generatedWorker.source.byteLength;
               for (const source of Object.values(generatedWorker.modules)) {
                 diagSink.moduleMapBytes += _encodedSourceBytes(source);
               }
               for (const text of Object.values(generatedWorker.codeModules)) {
                 diagSink.moduleMapBytes += _encodedSourceBytes(text);
               }
+              for (const source of Object.values(generatedWorker.immutableModules)) diagSink.moduleMapBytes += source.byteLength;
               for (const m of [...Object.values(sqliteModules), ...Object.values(wasmModules)]) {
                 diagSink.moduleMapBytes += m.wasm.byteLength;
               }
@@ -7960,7 +7972,8 @@ export class FacetManager {
             // a module map rebuilt from files that changed while it waited
             // would answer it differently with nothing to show for it.
             if (opts.codeDigest) {
-              const digest = answerDigest([generatedWorker.code, generatedWorker.modules, generatedWorker.codeModules]);
+              const digest = answerDigest([generatedWorker.source.recipe(), generatedWorker.modules, generatedWorker.codeModules,
+                Object.fromEntries(Object.entries(generatedWorker.immutableModules).map(([name, source]) => [name, source.asset]))]);
               if (opts.codeDigest.value === undefined) opts.codeDigest.value = digest;
               else if (opts.codeDigest.value !== digest) throw new ReplayCodeChanged();
             }
@@ -8941,7 +8954,8 @@ export class FacetManager {
       for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules)]) {
         bundleBytes += _encodedSourceBytes(source);
       }
-      moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
+      moduleMapBytes = generatedWorker.source.byteLength + bundleBytes
+        + Object.values(generatedWorker.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);
     }
     const cacheHit = vfsState.cacheHit ?? false;
 
@@ -8966,15 +8980,17 @@ export class FacetManager {
       // source as the store takes it, so one image's text is resident rather
       // than every image's twice over.
       const sources: Record<string, string> = {
-        'worker.js': generatedWorker.code,
+        'worker.js': JSON.stringify(generatedWorker.source.recipe()),
         ...generatedWorker.modules,
       };
+      const assetModules = Object.fromEntries(Object.entries(generatedWorker.immutableModules)
+        .map(([name, source]) => [name, { kind: 'cjs' as const, source: source.asset }]));
       // The code cells travel as ONE image of many modules: the boot spec
       // names a path, not thousands, and the loader slices them out at load.
       const codePack = encodeCommonJsPack(generatedWorker.codeModules);
       generatedWorker = undefined;
       if (staged) sources[STAGED_BINDING_LOADER_MODULE] = staged.loader;
-      const { [CODE_PACK_IMAGE]: codePackPath, ...vfsTextModules } = await this.imageStore.materialize(
+      const { [CODE_PACK_IMAGE]: codePackPath, 'worker.js': mainSourcePath, ...vfsTextModules } = await this.imageStore.materialize(
         entry.pid,
         (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)] as const; })(),
         pacer,
@@ -9049,6 +9065,8 @@ export class FacetManager {
             // sqlite sidecar and the staged bindings' trampoline.
             modules: staged ? { ...sqliteModules, [STAGED_BINDING_TRAMPOLINE_MODULE]: { wasm: staged.trampoline } } : sqliteModules,
             vfsTextModules,
+            vfsComposedModules: { 'worker.js': mainSourcePath },
+            assetModules,
             // Wasm images are read by path when the facet loads: the closure's
             // own, and the staged bindings' kernel-owned copies.
             vfsWasmModules: {

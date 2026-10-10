@@ -5,12 +5,11 @@
 // test's (adoptCtxExports): what it asserts against differs.
 
 import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { PID_GEN_STRIDE } from '../../../packages/core/src/runtime/process-table.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, captureProcessBoots } from '../facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';
@@ -47,7 +46,7 @@ export function launchManager(label, {
   if (generation !== undefined) processes.setPidBase(generation * PID_GEN_STRIDE);
   const ctx = createFacetCtx(world, label, session.storage, { crashable });
   const manager = new FacetManager(
-    ctx, { LOADER: world.loader, ASSETS: stagedAssets, ...env }, processes, ports, processHostFor, hooks,
+    ctx, { LOADER: world.loader, ASSETS: stagedAssets, ...env }, processes, ports, captureProcessBoots(world), hooks,
   );
   manager.setVfs(session.vfs, processFiles(session.vfs));
   return { world, ctx, processes, ports, manager, vfs: session.vfs };

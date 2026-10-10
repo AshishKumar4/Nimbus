@@ -36,4 +36,12 @@ export declare const JS_INTERPRETER_OPS_SHA256: string;
 export declare const NODE_LIB_ENTRY: string;
 export declare const NODE_LIB_BUILD_ID: string;
 export declare const NODE_LIB_SHA256: string;
+/** dist/runtime/node-lib-module.js generateNodeDnsModule() */
+export declare const NODE_DNS_ENTRY: string;
+export declare const NODE_DNS_BUILD_ID: string;
+export declare const NODE_DNS_SHA256: string;
+/** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
+export declare const NODE_REGISTRY_ENTRY: string;
+export declare const NODE_REGISTRY_BUILD_ID: string;
+export declare const NODE_REGISTRY_SHA256: string;
 //# sourceMappingURL=node-shims-artifact.generated.d.ts.map

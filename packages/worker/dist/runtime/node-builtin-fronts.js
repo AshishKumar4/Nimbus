@@ -1,6 +1,6 @@
 /**
  * Node's own argument checks in front of the builtins workerd provides
- * (zlib, buffer, crypto): the shims run each over its forwarded module (node-shims.ts,
+ * (zlib, buffer, crypto, path, url, events): the shims run each over its forwarded module (node-shims.ts,
  * "the builtins workerd provides"). A call Node refuses throws Node's error,
  * from core _shared/node-error.ts or Node's own validator (node-lib-host.ts),
  * which is loaded only once a cheap check has failed. A call Node takes goes
@@ -24,6 +24,99 @@ function __nimbusFront(target, name, make) {
   const fronted = make(real);
   Object.defineProperty(fronted, "name", { value: name, configurable: true });
   Object.defineProperty(target, name, { value: fronted, writable: true, enumerable: descriptor?.enumerable ?? true, configurable: true });
+}
+
+// lib/path.js: validate from the right until an absolute path ends resolution.
+function __nimbusFrontPath(path) {
+  __nimbusFront(path, "resolve", (real) => function (...paths) {
+    for (let i = paths.length - 1; i >= 0; i--) {
+      if (typeof paths[i] !== "string") throw invalidArgType("paths[" + i + "]", "string", paths[i]);
+      if (paths[i].charCodeAt(0) === 47) break;
+    }
+    return Reflect.apply(real, this, paths);
+  });
+  __nimbusFront(path, "relative", (real) => function (from, to) {
+    if (typeof from !== "string") throw invalidArgType("from", "string", from);
+    if (typeof to !== "string") throw invalidArgType("to", "string", to);
+    return Reflect.apply(real, this, arguments);
+  });
+  for (const mod of [path, path.win32]) {
+    __nimbusFront(mod, "basename", (real) => function (path, suffix) {
+      if (suffix !== undefined && typeof suffix !== "string") throw invalidArgType("suffix", "string", suffix);
+      return Reflect.apply(real, this, arguments);
+    });
+    __nimbusFront(mod, "matchesGlob", (real) => function (path, pattern) {
+      if (typeof path !== "string") throw invalidArgType("path", "string", path);
+      if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
+      return Reflect.apply(real, this, arguments);
+    });
+    mod._makeLong = mod.toNamespacedPath;
+  }
+}
+
+function __nimbusFrontUrl(url) {
+  const hex = (byte) => byte >= 48 && byte <= 57 ? byte - 48 : byte >= 65 && byte <= 70 ? byte - 55 : byte >= 97 && byte <= 102 ? byte - 87 : -1;
+  __nimbusFront(url, "pathToFileURL", (real) => function (path, options) {
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
+    return Reflect.apply(real, this, arguments);
+  });
+  __nimbusFront(url, "fileURLToPath", (real) => function (path, options) {
+    if (typeof path === "string") path = new url.URL(path);
+    return Reflect.apply(real, this, [path, options]);
+  });
+  __nimbusFront(url, "urlToHttpOptions", (real) => function (value) {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+      __nimbusNodeValidator("validateObject")(value, "url", __nimbusNodeLib().require("internal/validators").kValidateObjectAllowObjects);
+    }
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/url.js fileURLToPathBuffer: percent decoding preserves non-UTF8 bytes.
+  url.fileURLToPathBuffer = function fileURLToPathBuffer(path, options) {
+    const windows = options?.windows ?? false;
+    if (typeof path === "string") path = new url.URL(path);
+    else if (!(path?.href && path.protocol && path.auth === undefined && path.path === undefined)) throw invalidArgType("path", ["string", "URL"], path);
+    if (path.protocol !== "file:") throw nodeError(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
+    if (!windows && path.hostname !== "") throw nodeError(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
+    const pathname = windows ? path.pathname.replace(/\//g, "\\") : path.pathname;
+    // lib/internal/data_url.js percentDecode, after Node's UTF-8 conversion.
+    const input = __BufferMod.from(pathname, "utf8");
+    const bytes = new Uint8Array(input.length);
+    let length = 0;
+    for (let i = 0; i < input.length; i++) {
+      const high = input[i] === 37 ? hex(input[i + 1]) : -1;
+      const low = high >= 0 ? hex(input[i + 2]) : -1;
+      if (low >= 0) { bytes[length++] = (high << 4) | low; i += 2; }
+      else bytes[length++] = input[i];
+    }
+    const decoded = __BufferMod.from(bytes.buffer, bytes.byteOffset, length);
+    if (!windows) return decoded;
+    if (path.hostname !== "") return __BufferMod.concat([__BufferMod.from("\\\\" + url.domainToUnicode(path.hostname)), decoded]);
+    const letter = decoded[1] | 0x20;
+    if (letter < 97 || letter > 122 || decoded[2] !== 58) throw nodeError(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must be absolute", { input: path });
+    return decoded.subarray(1);
+  };
+  delete url.toPathIfFileURL;
+}
+
+function __nimbusFrontEvents(events) {
+  __nimbusFront(events, "setMaxListeners", (real) => function (n = events.defaultMaxListeners, ...targets) {
+    if (typeof n !== "number" || n < 0 || Number.isNaN(n)) __nimbusNodeValidator("validateNumber")(n, "setMaxListeners", 0);
+    return Reflect.apply(real, this, [n, ...targets]);
+  });
+  __nimbusFront(events, "getMaxListeners", (real) => function (emitter) {
+    if (typeof emitter?.getMaxListeners === "function") return Reflect.apply(real, this, arguments);
+    if (emitter instanceof EventTarget) return emitter[events.kMaxEventTargetListeners] ?? events.defaultMaxListeners;
+    throw invalidArgType("emitter", ["EventEmitter", "EventTarget"], emitter);
+  });
+  const RealResource = events.EventEmitterAsyncResource;
+  class EventEmitterAsyncResource extends RealResource {
+    constructor(options) {
+      if (typeof options === "string") options = { name: options };
+      else if (new.target === EventEmitterAsyncResource && typeof options?.name !== "string") throw invalidArgType("options.name", "string", options?.name);
+      super(options);
+    }
+  }
+  events.EventEmitterAsyncResource = EventEmitterAsyncResource;
 }
 
 // zlib

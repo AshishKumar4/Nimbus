@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
-import { moduleMapText } from './lib/module-map-bundle.mjs';
+import { moduleMapText, storedBootModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
@@ -118,18 +118,13 @@ async function settle(world) {
 
 
   const [config] = [...world.configs.values()];
-  const entrySource = config.modules['worker.js'];
   assert.ok(
     moduleMapText(config.modules).includes('marker-first'),
     'a launch spread across turns still carries the program it was asked to run',
   );
 
-  const images = fs.readdir(FACET_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name));
-  assert.ok(
-    images.some((name) => new TextDecoder()
-      .decode(fs.readFileUncached(`${FACET_IMAGE_DIR}/${name}`)) === entrySource),
-    'every chunk of the map reached the image store',
-  );
+  assert.deepEqual(await storedBootModules(world, fs), config.modules,
+    'every process-owned chunk and immutable source reached the module map');
 }
 
 // ── 2. the root set is claimed before anything is written ────────────────

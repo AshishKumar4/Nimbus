@@ -45,6 +45,12 @@ const LIB = {
   'internal/util/trace_sigint': 'a40ab7d0652fac3691cb83d1084a94e1559f9a7773c17c8a6bdb51381530dc8c',
   'internal/process/per_thread': '9fb576a173cf42cfde6a73798c538ff8ad470b03fa8c4d132083774aee0e2266',
   util: '0499a613f2263f431151eb41380814a851b8cfecbf45044cfdd245e0f02e6dc6',
+  dns: 'c6f13326d594400b1879f3d56852d98e785f2bab92048592bce5b748b58549b2',
+  'dns/promises': 'd95ebe014ed0ef8fd9004935545903944589345bb13e0e52d849bd50e15fc4a8',
+  'internal/dns/utils': '551792e7d334ab57d7be038458753365bf089f0c550f27c4bc1a16575f2f64ff',
+  'internal/dns/callback_resolver': 'c409809e7df56cf2c820b7272714b60e3c31ac9b2f9e4b127d238352003573b7',
+  'internal/dns/promises': 'f724175f7c423dcff27eb5c89e2ddee4edd0cb9818d90a68adb2b5291dd7c7d0',
+  'internal/net': 'edbf1a195b68a7840be4fb11f8967cc4c4ca52ac2e1b1d368fd887491ba7918e',
 };
 const SOURCES = {
   primordials: {

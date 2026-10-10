@@ -23,6 +23,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
+import { storedBootModules } from './lib/module-map-bundle.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -150,12 +151,8 @@ assert.ok(
 
 // And the map the facet boots from is still exactly what was generated.
 const [config] = [...world.configs.values()];
-const entry = config.modules['worker.js'];
-assert.ok(
-  images.some((name) => new TextDecoder()
-    .decode(fs.readFileUncached(`${FACET_IMAGE_DIR}/${name}`)) === entry),
-  'a sliced image reassembles to the bytes the launch generated',
-);
+assert.deepEqual(await storedBootModules(world, fs), config.modules,
+  'sliced process images and shared assets reassemble the exact generated map');
 
 console.log(
   `resident-launch-bounded-turn-storage: OK `

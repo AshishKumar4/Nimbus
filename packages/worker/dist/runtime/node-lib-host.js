@@ -95,6 +95,21 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
   // libuv's errors (NODE_UV_ERRORS), by errno: [name, message].
   let uvErrorMap;
   const uvErrors = () => (uvErrorMap ??= new Map(platform.uvErrors.map(([errno, name, message]) => [errno, [name, message]])));
+  class DNSException extends Error {
+    constructor(code, syscall, hostname) {
+      let errno;
+      if (typeof code === "number") {
+        errno = code;
+        code = code === -3007 || code === -3008 ? "ENOTFOUND" : internalUtil.getSystemErrorName(code);
+      }
+      super(syscall + " " + code + (hostname ? " " + hostname : ""));
+      this.errno = errno;
+      this.code = code;
+      this.syscall = syscall;
+      if (hostname) this.hostname = hostname;
+    }
+    get ["constructor"]() { return Error; }
+  }
   const codesWarned = new Set();
   function getDeprecationWarningEmitter(code, msg, deprecated) {
     let warned = false;
@@ -675,7 +690,9 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
   // Node's internal modules that are not its own text here, by id.
   const hosted = {
     "internal/util": internalUtil,
-    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort, AbortError },
+    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort, AbortError, DNSException },
+    "internal/v8/startup_snapshot": { namespace: { isBuildingSnapshot: () => false } },
+    "internal/perf/observe": { hasObserver: () => false },
     "internal/options": {
       getOptionValue: (name) => platform.optionValue(name),
       // Over the CLI's option table (core node-cli-options.generated.ts), as src/node_options.cc gives it.
@@ -724,6 +741,7 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
     errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error), exitCodes: { kNoFailure: 0, kGenericUserError: 1 } },
     process_methods: platform.processMethods,
+    fs: {},
     // src/node_options.h's enums, as getCLIOptionsInfo's entries use them.
     options: {
       envSettings: { kAllowedInEnvvar: 0, kDisallowedInEnvvar: 1 },
@@ -732,7 +750,9 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     // Node's tracing is off: no category is enabled, and nothing traces.
     trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
   };
-  const internalBinding = (name) => bindings[name];
+  const internalBinding = (name) => name === "cares_wrap"
+    ? bindings.cares_wrap ??= platform.createCaresBinding(platform, require("internal/net").isIP)
+    : bindings[name];
   // inspect.js reads primordials.globalThis once, for the names it counts as
   // built-in (showHidden shows a prototype's properties when its
   // constructor's name is not one): the capitalised globals there were when
@@ -764,6 +784,7 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     source(module.exports, require, module, platform.process, internalBinding, id === "internal/util/inspect" ? inspectPrimordials : primordials);
     // As Node's bootstrap does, before any program reads it (pre_execution.js).
     if (id === "internal/util/debuglog") module.exports.initializeDebugEnv(platform.nodeDebug);
+    if (id === "internal/dns/utils") module.exports.initializeDns();
     return module.exports;
   }
   return { require };

@@ -29,6 +29,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';
 
 const bundle = await importWorkerBundle({
   'packages/worker/src/workspace-host.ts': ['composeHostedRuntime'],
@@ -72,13 +73,7 @@ const runtime = await bundle.composeHostedRuntime({
   ctx,
   env,
   ports,
-  lifecycle: {
-    waitUntil: (task) => facetCtx.waitUntil(task),
-    // The embedder's alarm, for the next turn a launch past one turn's
-    // chunk asks for; the test ends before any later task is due.
-    async schedule(task, at) { if (task === 'resident-launch') setTimeout(() => { void runtime.onScheduled(task); }, Math.max(0, at - Date.now())); },
-    async cancel() {},
-  },
+  lifecycle: hostedLifecycle(ctx, () => runtime),
 });
 
 const kernel = runtime.files.as(bundle.CRED_KERNEL);

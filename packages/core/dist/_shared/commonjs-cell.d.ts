@@ -131,6 +131,7 @@ export declare const RUNTIME_INTERPRETER_OPS_MODULE = "nimbus/interpreter-ops.js
 export declare const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = "nimbus/interpreter-primordials.js";
 /** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
 export declare const RUNTIME_NODE_LIB_MODULE = "nimbus/node-lib.js";
+export declare const RUNTIME_NODE_DNS_MODULE = "nimbus/node-dns.js";
 /** The module name of the runtime code with key `key`. */
 export declare function runtimeCodeModuleName(key: string): string;
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */

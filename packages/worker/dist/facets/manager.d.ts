@@ -21,6 +21,7 @@ import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
+import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -209,6 +210,8 @@ export declare function findInlineWasmImages(bundle: FacetVfsBundle): Uint8Array
  */
 interface GeneratedNodeFacetCode {
     code: string;
+    source: ModuleSource;
+    immutableModules: Record<string, ImmutableModuleSource>;
     modules: Record<string, string>;
     codeModules: Record<string, string>;
 }

@@ -102,6 +102,10 @@ export type StartContract = 'lifetime' | 'boot';
  * and read when the facet loads, so the bytes are transient rather than
  * resident in the coordinator's heap.
  */
+declare const ModuleSourceAssetSchema: z.ZodObject<{
+    path: z.ZodString;
+    sha256: z.ZodString;
+}, z.core.$strip>;
 export declare const ResidentCodeSpecSchema: z.ZodObject<{
     compatibilityDate: z.ZodString;
     compatibilityFlags: z.ZodArray<z.ZodString>;
@@ -111,6 +115,17 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     }, z.core.$strip>]>>;
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    vfsComposedModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    assetModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+        kind: z.ZodEnum<{
+            js: "js";
+            cjs: "cjs";
+        }>;
+        source: z.ZodObject<{
+            path: z.ZodString;
+            sha256: z.ZodString;
+        }, z.core.$strip>;
+    }, z.core.$strip>>>;
     vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
@@ -139,6 +154,17 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         }, z.core.$strip>]>>;
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        vfsComposedModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        assetModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+            kind: z.ZodEnum<{
+                js: "js";
+                cjs: "cjs";
+            }>;
+            source: z.ZodObject<{
+                path: z.ZodString;
+                sha256: z.ZodString;
+            }, z.core.$strip>;
+        }, z.core.$strip>>>;
         vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
@@ -217,7 +243,7 @@ export interface ResidentDiskReader {
  * re-minted). An absent env stays absent
  * so the worker config can tell "embedder takes the env" from the default.
  */
-export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader): Promise<Record<string, unknown>>;
+export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<Record<string, unknown>>;
 /**
  * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
  * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
@@ -646,4 +672,5 @@ export declare class ProcessFabric {
      */
     startResidentProcess(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle>;
 }
+export {};
 //# sourceMappingURL=process-fabric.d.ts.map

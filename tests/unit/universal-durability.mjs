@@ -634,13 +634,8 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const row = await rowFor(ctx, a.pid);
   assert.equal(row.injectedPort, 20730, 'the row records the injected port');
   assert.equal(row.port, 20730, 'the reserved port is the row\'s port from the start');
-  // The launch env is visible in the image the facet booted from: the
-  // generated worker.js carries `__NIMBUS_ARGS` with the env.
-  const kernel = vfs.as(CRED_KERNEL);
-  const images = kernel.readdir('var/lib/nimbus/facet-images').map((e) => e.name)
-    .map((name) => new TextDecoder().decode(kernel.readFile(`var/lib/nimbus/facet-images/${name}`)));
-  const booted = images.find((text) => text.includes('__NIMBUS_ARGS') && text.includes('"NIMBUS_APP":"web"'));
-  assert.ok(booted, 'the resident was booted with $NIMBUS_APP set to the reservation name');
+  const booted = world.boots.at(-1).config.modules['worker.js'];
+  assert.ok(booted.includes('"NIMBUS_APP":"web"'), 'the executed module has $NIMBUS_APP set to the reservation name');
   assert.ok(booted.includes('"PORT":"20730"'), 'the recipe\'s PORT=3000 was overridden by the reserved port');
   assert.ok(!(await journalRows(ctx)).some((r) => JSON.stringify(r).includes('20730"') && JSON.stringify(r.recipe).includes('"PORT":"20730"')),
     'the injected env is never journalled into the recipe');
