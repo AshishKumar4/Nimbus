@@ -367,7 +367,9 @@ function startShellJob(
   if (job.background) self.processes.openInput(pid);
 
   const controller = new AbortController();
-  self.processes.setTerminator(pid, () => {
+  // The job is this session's work behind the pid: a kill stops it, and the
+  // pid's release waits for its shell to close what it opened.
+  const stopped = self.processes.holdWork(pid, () => {
     try { controller.abort(); } catch { /* already settled */ }
   });
 
@@ -406,7 +408,7 @@ function startShellJob(
         }
         : {}),
     },
-  }).finally(() => shell.closeDescriptors());
+  }).finally(() => shell.closeDescriptors()).finally(stopped);
 
   return { pid, entry, run, abort: () => { try { controller.abort(); } catch {} } };
 }

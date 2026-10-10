@@ -1292,8 +1292,10 @@ export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, cod
    * has useful context, then runs the same dump machinery.
    */
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
-    // Its supervisor state goes however its exit was recorded.
-    self.supervisorForgetBridge?.(pid);
+    // Its receipts go however its exit was recorded. What it bound in the
+    // filesystem is the table's to release (SessionProcessSupervisor.holdWork):
+    // once whatever of it the session runs has unwound.
+    self.supervisorDeliveries?.forget(pid);
     if (self.processes.getExit(pid)) return;
     try { self.processes.closeInput(pid); } catch {}
     void self.processes.releaseOutput(pid, () => {
