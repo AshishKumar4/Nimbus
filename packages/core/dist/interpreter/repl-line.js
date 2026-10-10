@@ -37,7 +37,7 @@ import { SafeSet, SyntaxError, append, arrayIsArray, charCodeAt, isWhitespaceCod
 import { own } from './parser-realm.js';
 import { isObject } from './runtime.js';
 import { REPL_IMPORT } from '../runtime/js-repl-names.js';
-import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 const LINE_OPTIONS = own({ ecmaVersion: 'latest', sourceType: 'script', allowAwaitOutsideFunction: true });
 /**
  * The body of the async function a REPL line runs as, called with the global
@@ -121,10 +121,6 @@ function declareGlobal(line, name) {
         return;
     line.declared.add(name);
     append(line.globals, name);
-}
-/** A name a pattern binds, declared a global. */
-function declareIdentifier(identifier, line) {
-    declareGlobal(line, identifier.name);
 }
 /** Rewrite the declarations of one statement, outside any function; `top` when it is the line's own. */
 function statement(node, top, line) {
@@ -264,8 +260,11 @@ function declaration(node, line, head) {
     const declarators = node.declarations;
     const first = declarators[0];
     if (node.kind === 'var') {
-        for (let i = 0; i < declarators.length; i++)
-            forEachBindingIdentifier(declarators[i].id, declareIdentifier, line);
+        for (let i = 0; i < declarators.length; i++) {
+            const ids = bindingIdentifiers(declarators[i].id, newSafeList());
+            for (let j = 0; j < ids.length; j++)
+                declareGlobal(line, ids[j].name);
+        }
     }
     if (head !== null) {
         append(line.edits, { start: node.start, end: first.start, text: '' });

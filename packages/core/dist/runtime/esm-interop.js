@@ -1,4 +1,4 @@
-import { forEachBindingIdentifier } from './binding-pattern.js';
+import { bindingIdentifiers } from './binding-pattern.js';
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
     + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
@@ -44,9 +44,11 @@ export function esmRecord(node, lists) {
             const declaration = node.declaration;
             if (declaration) {
                 if (declaration.type === 'VariableDeclaration') {
-                    for (let i = 0; i < declaration.declarations.length; i++) {
-                        forEachBindingIdentifier(declaration.declarations[i].id, (id) => lists.push(names, { kind: 'named', exported: id.name, local: id.name }));
-                    }
+                    const ids = lists.list();
+                    for (let i = 0; i < declaration.declarations.length; i++)
+                        bindingIdentifiers(declaration.declarations[i].id, ids);
+                    for (let i = 0; i < ids.length; i++)
+                        lists.push(names, { kind: 'named', exported: ids[i].name, local: ids[i].name });
                 }
                 else {
                     lists.push(names, { kind: 'named', exported: declaration.id.name, local: declaration.id.name });

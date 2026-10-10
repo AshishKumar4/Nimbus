@@ -1,4 +1,4 @@
-import { forEachBindingIdentifier } from './binding-pattern.js';
+import { bindingIdentifiers } from './binding-pattern.js';
 export function isNode(value) {
     return typeof value === 'object' && value !== null
         && 'type' in value && typeof value.type === 'string'
@@ -30,9 +30,7 @@ export function patternNames(node) {
     while (binding !== null && (binding.type === 'TSParameterProperty' || binding.type === 'TSQualifiedName')) {
         binding = child(binding, binding.type === 'TSParameterProperty' ? 'parameter' : 'left');
     }
-    const names = [];
-    forEachBindingIdentifier(binding, (identifier) => names.push(identifier.name));
-    return names;
+    return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
 }
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 /** The names a program's top-level statement binds in its scope: its `var`s and its lexical declarations. */

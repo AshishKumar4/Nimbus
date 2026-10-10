@@ -14525,29 +14525,27 @@ function finish(settings) {
 }
 
 // ../core/src/runtime/binding-pattern.ts
-function forEachBindingIdentifier(pattern, visit, context) {
-  if (pattern === null) return;
+function bindingIdentifiers(pattern, out) {
+  if (pattern === null) return out;
   switch (pattern.type) {
     case "Identifier":
-      visit(pattern, context);
-      return;
+      out[out.length] = pattern;
+      return out;
     case "ObjectPattern":
       for (let i2 = 0; i2 < pattern.properties.length; i2++) {
         const property = pattern.properties[i2];
-        forEachBindingIdentifier(property.type === "RestElement" ? property.argument : property.value, visit, context);
+        bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
       }
-      return;
+      return out;
     case "ArrayPattern":
-      for (let i2 = 0; i2 < pattern.elements.length; i2++) forEachBindingIdentifier(pattern.elements[i2], visit, context);
-      return;
+      for (let i2 = 0; i2 < pattern.elements.length; i2++) bindingIdentifiers(pattern.elements[i2], out);
+      return out;
     case "RestElement":
-      forEachBindingIdentifier(pattern.argument, visit, context);
-      return;
+      return bindingIdentifiers(pattern.argument, out);
     case "AssignmentPattern":
-      forEachBindingIdentifier(pattern.left, visit, context);
-      return;
+      return bindingIdentifiers(pattern.left, out);
     default:
-      return;
+      return out;
   }
 }
 
@@ -14572,9 +14570,7 @@ function patternNames(node) {
   while (binding !== null && (binding.type === "TSParameterProperty" || binding.type === "TSQualifiedName")) {
     binding = child(binding, binding.type === "TSParameterProperty" ? "parameter" : "left");
   }
-  const names = [];
-  forEachBindingIdentifier(binding, (identifier) => names.push(identifier.name));
-  return names;
+  return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
 }
 var FUNCTIONS = /* @__PURE__ */ new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
 function* lexicalNames(statements) {

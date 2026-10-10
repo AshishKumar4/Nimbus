@@ -45,11 +45,11 @@ export interface ModulePlan {
     readonly dirnameSlot: number;
     /** The export getters, in the order they are installed. */
     readonly exports: readonly ModuleExport[];
-    /** Each requested module, required in order: the slots it goes to, and those its interop goes to (a default import's). */
+    /** Each requested module, required in order: the slot it goes to, and its interop's (a default import's); -1 for none. */
     readonly requests: readonly {
         readonly source: string;
-        readonly module: readonly number[];
-        readonly interop: readonly number[];
+        readonly module: number;
+        readonly interop: number;
     }[];
     /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
     readonly namespaces: readonly {

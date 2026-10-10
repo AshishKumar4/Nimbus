@@ -6,15 +6,16 @@
  *
  * Reads only ESTree's fields, so it serves acorn's trees, rolldown's and the
  * interpreter's own copies alike; callers differ only in what they do with
- * each identifier. The interpreter runs it after a program may have replaced
+ * the identifiers. The interpreter runs it after a program may have replaced
  * built-ins, so it names none (tests/unit/interpreter-primordials.mjs).
  */
 import type { Identifier, Pattern } from 'acorn';
 /**
- * Calls `visit` with each identifier `pattern` binds, and `context`: a caller
- * whose closures must keep nothing (the interpreter's) passes what it needs
- * there instead of closing over it.
+ * Appends to `out` each identifier `pattern` binds; answers `out`. It
+ * appends by index, so an interpreter SafeList serves as well as an array.
  */
-export declare function forEachBindingIdentifier(pattern: Pattern | null, visit: (identifier: Identifier) => void): void;
-export declare function forEachBindingIdentifier<C>(pattern: Pattern | null, visit: (identifier: Identifier, context: C) => void, context: C): void;
+export declare function bindingIdentifiers<L extends {
+    length: number;
+    [index: number]: Identifier;
+}>(pattern: Pattern | null, out: L): L;
 //# sourceMappingURL=binding-pattern.d.ts.map

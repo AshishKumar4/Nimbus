@@ -9832,29 +9832,27 @@ error: the Oxc transform crashed (${reason})`);
     return applySourceEdits(code, edits);
   }
 
-  function forEachBindingIdentifier(pattern, visit, context) {
-    if (pattern === null) return;
+  function bindingIdentifiers(pattern, out) {
+    if (pattern === null) return out;
     switch (pattern.type) {
       case "Identifier":
-        visit(pattern, context);
-        return;
+        out[out.length] = pattern;
+        return out;
       case "ObjectPattern":
         for (let i = 0; i < pattern.properties.length; i++) {
           const property = pattern.properties[i];
-          forEachBindingIdentifier(property.type === "RestElement" ? property.argument : property.value, visit, context);
+          bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
         }
-        return;
+        return out;
       case "ArrayPattern":
-        for (let i = 0; i < pattern.elements.length; i++) forEachBindingIdentifier(pattern.elements[i], visit, context);
-        return;
+        for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
+        return out;
       case "RestElement":
-        forEachBindingIdentifier(pattern.argument, visit, context);
-        return;
+        return bindingIdentifiers(pattern.argument, out);
       case "AssignmentPattern":
-        forEachBindingIdentifier(pattern.left, visit, context);
-        return;
+        return bindingIdentifiers(pattern.left, out);
       default:
-        return;
+        return out;
     }
   }
 
@@ -9885,9 +9883,9 @@ error: the Oxc transform crashed (${reason})`);
         const declaration = node.declaration;
         if (declaration) {
           if (declaration.type === "VariableDeclaration") {
-            for (let i = 0; i < declaration.declarations.length; i++) {
-              forEachBindingIdentifier(declaration.declarations[i].id, (id) => lists.push(names, { kind: "named", exported: id.name, local: id.name }));
-            }
+            const ids = lists.list();
+            for (let i = 0; i < declaration.declarations.length; i++) bindingIdentifiers(declaration.declarations[i].id, ids);
+            for (let i = 0; i < ids.length; i++) lists.push(names, { kind: "named", exported: ids[i].name, local: ids[i].name });
           } else {
             lists.push(names, { kind: "named", exported: declaration.id.name, local: declaration.id.name });
           }
@@ -10022,9 +10020,7 @@ error: the Oxc transform crashed (${reason})`);
     while (binding !== null && (binding.type === "TSParameterProperty" || binding.type === "TSQualifiedName")) {
       binding = child(binding, binding.type === "TSParameterProperty" ? "parameter" : "left");
     }
-    const names = [];
-    forEachBindingIdentifier(binding, (identifier) => names.push(identifier.name));
-    return names;
+    return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
   }
   var FUNCTIONS =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
   function programNames(statement) {

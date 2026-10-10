@@ -1,5 +1,5 @@
 import { Error, SafeMap, SafeSet, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys, reflectGet, someItem, } from './intrinsics.js';
-import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 import { UnsupportedSyntax } from './unsupported.js';
 /**
  * Kinds that throw when read before their declaration runs: lexical
@@ -139,8 +139,11 @@ function blockLexicalNames(statements) {
         while (node.type === 'LabeledStatement')
             node = node.body;
         if (node.type === 'VariableDeclaration' && node.kind !== 'var') {
-            for (let j = 0; j < node.declarations.length; j++)
-                forEachBindingIdentifier(node.declarations[j].id, (id) => names.add(id.name));
+            for (let j = 0; j < node.declarations.length; j++) {
+                const ids = bindingIdentifiers(node.declarations[j].id, newSafeList());
+                for (let k = 0; k < ids.length; k++)
+                    names.add(ids[k].name);
+            }
         }
         else if ((node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration') && node.id) {
             names.add(node.id.name);
@@ -409,8 +412,11 @@ class Analyzer {
             switch (node.type) {
                 case 'VariableDeclaration':
                     if (node.kind === 'var') {
-                        for (let i = 0; i < node.declarations.length; i++)
-                            forEachBindingIdentifier(node.declarations[i].id, declareVar);
+                        for (let i = 0; i < node.declarations.length; i++) {
+                            const ids = bindingIdentifiers(node.declarations[i].id, newSafeList());
+                            for (let j = 0; j < ids.length; j++)
+                                declareVar(ids[j]);
+                        }
                     }
                     return;
                 case 'FunctionDeclaration':
@@ -539,7 +545,9 @@ class Analyzer {
                         const kind = node.kind;
                         for (let j = 0; j < node.declarations.length; j++) {
                             const d = node.declarations[j];
-                            forEachBindingIdentifier(d.id, (id) => scope.declare(id.name, kind, d.end));
+                            const ids = bindingIdentifiers(d.id, newSafeList());
+                            for (let k = 0; k < ids.length; k++)
+                                scope.declare(ids[k].name, kind, d.end);
                         }
                     }
                     break;
@@ -561,7 +569,9 @@ class Analyzer {
         }
     }
     declarePattern(pattern, kind, scope, declEnd = -1) {
-        forEachBindingIdentifier(pattern, (id) => scope.declare(id.name, kind, declEnd));
+        const ids = bindingIdentifiers(pattern, newSafeList());
+        for (let i = 0; i < ids.length; i++)
+            scope.declare(ids[i].name, kind, declEnd);
     }
     // ── References ──
     /**

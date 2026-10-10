@@ -128,7 +128,7 @@ import { parse, tokenizer, tokTypes } from 'acorn';
 import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 import { applySourceEdits, COMMONJS_WRAPPER_NAMES, forEachNode } from '../runtime/javascript-ast.js';
-import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 import { ESM_MODULE_HELPERS } from '../runtime/esm-interop.js';
 import { moduleImporterUrl } from './module-importer.js';
 /** This module's own built-ins, for the checks it shares with the interpreter. */
@@ -257,11 +257,10 @@ export function declaresWrapperBinding(source) {
                 return true;
         }
         else if (statement.type === 'VariableDeclaration' && statement.kind !== 'var') {
-            let binds = false;
-            for (const declarator of statement.declarations) {
-                forEachBindingIdentifier(declarator.id, (identifier) => { binds ||= COMMONJS_WRAPPER_NAMES.has(identifier.name); });
-            }
-            if (binds)
+            const bound = [];
+            for (const declarator of statement.declarations)
+                bindingIdentifiers(declarator.id, bound);
+            if (bound.some((identifier) => COMMONJS_WRAPPER_NAMES.has(identifier.name)))
                 return true;
         }
     }
