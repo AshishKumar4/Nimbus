@@ -245,6 +245,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      if (this.finished) return http.OutgoingMessage.prototype.end.call(this, chunk, encoding, callback);
       if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
         throw invalidArgType("chunk", ["string", "Buffer", "Uint8Array"], chunk);
       }

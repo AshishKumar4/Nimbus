@@ -27,6 +27,11 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
       await new Promise((resolve) => setTimeout(resolve, 0));
       result.sameTick.push({ begin, events });
     }
+    const repeated = http.request({ host: '127.0.0.1', port, method: 'POST' });
+    repeated.on('error', () => {});
+    repeated.end('first');
+    result.repeatedEnd = await new Promise((resolve) => repeated.end('second', (error) => resolve(error?.code ?? null)));
+    repeated.abort();
     const req = http.request({ host: 'bad host', port: 80, method: 'POST' });
     const events = [];
     req.on('error', () => events.push('error'));
