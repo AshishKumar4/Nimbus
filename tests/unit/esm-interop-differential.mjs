@@ -59,6 +59,8 @@ const CASES = {
   'top-level await': "export const v = await Promise.resolve(42);\nexport { default } from 'esm';",
   // Linking a module that suspends fails as its body would: a rejection, not a throw.
   'a default import whose interop throws, in a module that awaits': "import d from 'throwing';\nawait 0;\nexport const v = d;",
+  // An export that cannot be installed, in a module that awaits: a rejection too.
+  'an export getter that cannot be installed, in a module that awaits': 'export const __esModule = 1;\nawait 0;',
   // A module in a cycle reads an import's namespace before linking made it: a TDZ error.
   'a namespace read back by a module in a cycle': "import * as ns from 'esm';\nimport 'cycle';\nexport function read() { return ns; }",
 };
