@@ -187,6 +187,7 @@
       "version": "0.12.0",
       "dependencies": {
         "@nimbus-sh/core": "^0.16.0",
+        "@nimbus-sh/platform": "^0.8.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {

@@ -7,17 +7,9 @@
  * sandbox APIs share one public package surface.
  */
 
+export * from './entrypoints.js';
+
 export {
-  NimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
   base64Utf8,
   base64Url,
   base64UrlDecode,

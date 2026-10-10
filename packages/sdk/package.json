@@ -58,6 +58,11 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js"
     },
+    "./entrypoints": {
+      "workspace": "./src/entrypoints.ts",
+      "types": "./dist/entrypoints.d.ts",
+      "import": "./dist/entrypoints.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -84,6 +89,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@nimbus-sh/platform": "^0.8.0",
     "zod": "^4.4.3",
     "@nimbus-sh/core": "^0.16.0"
   }

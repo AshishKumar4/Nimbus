@@ -22,7 +22,7 @@
  * DO-name composition.
  */
 
-import { isNimbusIdComponent } from '../auth/index.js';
+export { isNimbusIdComponent as isValidSessionId } from '@nimbus-sh/core/_shared/id-component.js';
 
 // Curated single-word adjectives. Lowercase ASCII, no profanity, no numbers,
 // no compounds. Sort order doesn't matter — we index randomly.
@@ -99,21 +99,6 @@ const NOUNS = [
   'wheat', 'whippet', 'willow', 'wisp', 'wolf', 'wombat', 'woodland',
   'woodpecker', 'yak', 'yew', 'zebra', 'zinnia',
 ] as const;
-
-/** Friendly ID shape emitted by {@link generateSessionId}. */
-const SESSION_ID_RE = /^[a-z]{3,14}-[a-z]{3,14}-\d{4}$/;
-
-/**
- * Validate a session ID before touching a DO.
- *
- * Browser-created sessions use the friendly generated shape. SDK-created
- * sandboxes can choose stable job IDs, so this also accepts the same compact
- * identifier class used by Nimbus JWT `sid`.
- */
-export function isValidSessionId(id: string | null | undefined): boolean {
-  if (typeof id !== 'string') return false;
-  return SESSION_ID_RE.test(id) || isNimbusIdComponent(id);
-}
 
 /**
  * Generate a fresh session ID. Uses crypto.getRandomValues for uniform

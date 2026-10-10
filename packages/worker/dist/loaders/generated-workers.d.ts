@@ -27,6 +27,7 @@ export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
 /** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */
 export declare const WAVE_WRITER_PREAMBLE: string;
+export declare const RPC_DISPOSE_PREAMBLE: string;
 /**
  * Declares `function nodeError(Base, code, message, props)`,
  * `function nodeSystemError(code, prefix, context)`,
