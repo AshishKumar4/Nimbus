@@ -5,11 +5,12 @@
  * A resident process's module map is sized by the user's disk, so it does not
  * ride inside the boot spec — the store writes it once and the session keeps
  * only a path (see process-fabric.ts, ResidentCodeSpec.vfsTextModules). This
- * module owns the write protocol: paced slicing so no one turn holds a
- * transaction the platform resets the object over, register-roots-before-
- * first-byte so the sweep can never observe an unrooted image, size-equality
- * as the completeness test, and a mark-sweep rooted off the live process
- * table.
+ * module owns the write protocol, for these images and every other
+ * content-addressed blob a session keeps (storeContentBlob): paced slicing so
+ * no one turn holds a transaction the platform resets the object over,
+ * register-roots-before-first-byte so the sweep can never observe an unrooted
+ * image, size-equality as the completeness test, and a mark-sweep rooted off
+ * the live process table.
  *
  * The filesystem itself stays the embedder's, reached through the
  * {@link ImageBlobStore} port — the store decides what is written where
@@ -19,7 +20,7 @@
 
 import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
+import { FACET_IMAGE_DIR, facetImagePath } from './process-fabric.js';
 import type { TurnBudget } from './turn-budget.js';
 
 /**
@@ -124,13 +125,8 @@ export class ImageStore {
    * Writing the sources here, once, is what lets the session stop holding
    * them: after this returns, the only thing it keeps is a path.
    *
-   * An image given as parts (a code pack: process-fabric.ts
-   * encodeCommonJsPack) is never encoded whole: it is digested a part at a
-   * time, and written a part at a time only if no complete image is stored
-   * at that digest, each part released (emptied in place) as it is written.
-   * Encoded whole, an astro project's second launch held its pack's 33.6 MiB
-   * of strings and their 25 MiB of UTF-8 at once, and reset the session's
-   * isolate.
+   * Each image is written by {@link storeContentBlob}: rooted here before its
+   * first byte, so a sweep that runs while this launch is suspended sees it.
    */
   async materialize(
     pid: number,
@@ -150,96 +146,18 @@ export class ImageStore {
     fs.mkdirp(FACET_IMAGE_DIR);
     let count = 0;
     for await (const [moduleName, source] of images) {
-      if (typeof source !== 'string') {
-        const { path, written } = await this.materializeParts(fs, source, rooted, pacer);
-        paths[moduleName] = path;
-        count++;
-        console.log(
-          '[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
-          + path.slice(-12) + ' ' + written + ' bytes in parts, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
-          + ' turns=' + pacer.chunks,
-        );
-        continue;
-      }
-      const bytes = new TextEncoder().encode(source);
-      const path = facetImagePath(await facetImageDigest(bytes));
+      const { path, bytes } = await storeContentBlob(fs, source, facetImagePath, { pacer, root: (named) => rooted.push(named) });
       paths[moduleName] = path;
-      rooted.push(path);
       count++;
-      const stored = path.replace(/^\/+/, '');
       console.log(
         '[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
-        + path.slice(-12) + ' ' + bytes.byteLength + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
+        + path.slice(-12) + ' ' + bytes + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
         + ' turns=' + pacer.chunks,
       );
-      // An image at its full size is a COMPLETE one: a write only ever grows
-      // the file from offset zero, so a write cut short by a reset leaves a
-      // strictly shorter file and fails this test. Size is enough of a check
-      // because the reader verifies the digest before the loader sees it.
-      if (fs.sizeOf(stored) === bytes.byteLength) {
-        await pacer.spend(bytes.byteLength);
-        continue;
-      }
-      // Sliced because the platform resets the object over what ONE TURN has
-      // outstanding, not over what it eventually writes — pi's 22.9 MB map
-      // went in as a single write and took the session down with it ~25% of
-      // the time. Spending between slices is what puts the rest of the image
-      // on later turns; the slice bound is what keeps any one of them small.
-      let offset = 0;
-      do {
-        const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
-        // The first slice REPLACES the file, so an interrupted write's remains
-        // are truncated to a known length rather than left as a tail past this
-        // content.
-        if (offset === 0) fs.writeFile(stored, slice);
-        else fs.writeRange(stored, offset, slice);
-        offset += slice.byteLength;
-        await pacer.spend(slice.byteLength);
-      } while (offset < bytes.byteLength);
     }
     this.sweep(fs);
     console.log('[image-store] pid=' + pid + ' materialized ' + count + ' image(s) in ' + pacer.chunks + ' turn(s)');
     return paths;
-  }
-
-  /**
-   * One image given as parts: its digest read a slice at a time, then, unless
-   * a complete image is already stored there, its bytes written a slice at a
-   * time, each part emptied once it is written. Both passes encode the parts
-   * into one slice-sized buffer (encodeInto: no part's encoding is made on
-   * its own) and hand it on whole, so the digest is fed and the disk written
-   * a slice at a time. The root is claimed before the first byte, as every
-   * image's is. What it holds at once is that buffer, whatever the image's
-   * size.
-   */
-  private async materializeParts(
-    fs: ImageBlobStore,
-    parts: string[],
-    rooted: string[],
-    pacer: TurnBudget,
-  ): Promise<{ path: string; written: number }> {
-    const slice = new Uint8Array(FACET_IMAGE_WRITE_SLICE_BYTES);
-    const digest = sha256Incremental();
-    const length = await encodeSlices(parts, slice, (bytes) => digest.update(bytes), false);
-    const path = facetImagePath(await digest.hex());
-    rooted.push(path);
-    const stored = path.replace(/^\/+/, '');
-    // A complete image is already these bytes (see materialize).
-    if (fs.sizeOf(stored) === length) {
-      parts.fill('');
-      await pacer.spend(length);
-      return { path, written: length };
-    }
-    let offset = 0;
-    const written = await encodeSlices(parts, slice, async (bytes) => {
-      // The first slice REPLACES the file, as materialize's does.
-      if (offset === 0) fs.writeFile(stored, bytes);
-      else fs.writeRange(stored, offset, bytes);
-      offset += bytes.byteLength;
-      await pacer.spend(bytes.byteLength);
-    }, true);
-    if (written !== length) throw new Error(`Nimbus: an image's parts encoded to ${written} bytes, digested as ${length}`);
-    return { path, written: length };
   }
 
   /**
@@ -269,6 +187,65 @@ export class ImageStore {
       try { fs.unlink(`${FACET_IMAGE_DIR}/${name}`); } catch { /* already gone */ }
     }
   }
+}
+
+/**
+ * Store `source` at its content address in `fs` (`pathOf` its digest), unless
+ * a complete copy is already there; the one write protocol for every
+ * content-addressed blob a session keeps, whatever keeps it alive.
+ *
+ * The source is never encoded whole: it is digested a slice at a time, then,
+ * unless a complete blob is already stored at that digest, written a slice at
+ * a time, both passes encoding into one slice-sized buffer (encodeInto: no
+ * part's encoding is made on its own), each part released (emptied in place)
+ * as it is written. Encoded whole, an astro project's second launch held its
+ * pack's 33.6 MiB of strings and their 25 MiB of UTF-8 at once, and reset the
+ * session's isolate. What it holds at once is that buffer, whatever the
+ * blob's size.
+ *
+ * `root` is told the path before the first byte. A blob at its full size is
+ * a COMPLETE one: a write only ever grows the file from offset zero, so a
+ * write cut short by a reset leaves a strictly shorter file and fails this
+ * test. Size is enough of a check because every reader verifies the digest
+ * (process-fabric.ts readContentBlob).
+ *
+ * Sliced because the platform resets the object over what ONE TURN has
+ * outstanding, not over what it eventually writes — pi's 22.9 MB map went in
+ * as a single write and took the session down with it ~25% of the time.
+ * Spending each slice on `pacer` is what puts the rest on later turns; the
+ * slice bound is what keeps any one of them small.
+ */
+export async function storeContentBlob(
+  fs: ImageBlobStore,
+  source: string | string[],
+  pathOf: (digest: string) => string,
+  { pacer, root }: { pacer?: TurnBudget; root?: (path: string) => void } = {},
+): Promise<{ digest: string; path: string; bytes: number }> {
+  const parts = typeof source === 'string' ? [source] : source;
+  const slice = new Uint8Array(FACET_IMAGE_WRITE_SLICE_BYTES);
+  const hash = sha256Incremental();
+  const length = await encodeSlices(parts, slice, (bytes) => hash.update(bytes), false);
+  const digest = await hash.hex();
+  const path = pathOf(digest);
+  root?.(path);
+  const stored = path.replace(/^\/+/, '');
+  if (fs.sizeOf(stored) === length) {
+    parts.fill('');
+    await pacer?.spend(length);
+    return { digest, path, bytes: length };
+  }
+  let offset = 0;
+  const written = await encodeSlices(parts, slice, async (bytes) => {
+    // The first slice REPLACES the file, so an interrupted write's remains
+    // are truncated to a known length rather than left as a tail past this
+    // content.
+    if (offset === 0) fs.writeFile(stored, bytes);
+    else fs.writeRange(stored, offset, bytes);
+    offset += bytes.byteLength;
+    await pacer?.spend(bytes.byteLength);
+  }, true);
+  if (written !== length) throw new Error(`Nimbus: a blob's parts encoded to ${written} bytes, digested as ${length}`);
+  return { digest, path, bytes: length };
 }
 
 /**

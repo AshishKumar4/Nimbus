@@ -82,7 +82,6 @@ import { z } from 'zod/v4';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import {
   ProcessHostLost,
-  residentBootSpecSchema,
   type HostedProcess,
   type OneShotParams,
   type ProcessHost,
@@ -614,8 +613,12 @@ class PeerProcessHost implements ProcessHost {
 
 /** What the object hosting processes supplies: the two things the fabric cannot know. */
 export interface PeerHostOptions {
-  /** The embedder's stage schema: the host leg is this peer's trust boundary for a staged boot spec. */
-  stage: z.ZodType;
+  /**
+   * The boot-spec schema with the embedder's own stage
+   * (residentBootSpecSchema): the host leg is this peer's trust boundary for
+   * what it boots.
+   */
+  bootSpec: z.ZodType<ResidentBootSpec>;
   /**
    * Arm the hosting watch through the object's own scheduler: a session's
    * timer mux, or an embedder's lifecycle, which owns its alarm.
@@ -724,7 +727,6 @@ export class PeerHost {
   private readonly records = new Map<string, HostedProcessRecord>();
   private readonly waiters = new Map<string, Set<(record: HostedProcessRecord) => void>>();
   private readonly env: ResidentFacetEnv;
-  private readonly bootSpec: z.ZodType<ResidentBootSpec>;
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -732,7 +734,6 @@ export class PeerHost {
     private readonly options: PeerHostOptions,
   ) {
     this.env = (env ?? {}) as ResidentFacetEnv;
-    this.bootSpec = residentBootSpecSchema(options.stage);
   }
 
   /**
@@ -763,7 +764,7 @@ export class PeerHost {
    */
   async host(boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
     const hostOpts = HostProcessOptsSchema.parse(opts);
-    const spec = this.bootSpec.parse(boot);
+    const spec = this.options.bootSpec.parse(boot);
     const { workerKey } = hostOpts;
     const supervisor: ResidentSupervisorProps = {
       ...supervisorBindingProps(this.ctx, hostOpts.pid, {
