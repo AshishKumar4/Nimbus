@@ -175,7 +175,9 @@ function sessionGitFs(vfs, worktree = null, promisor) {
                 await vfs.unlink(p);
             await vfs.symlink(target, p);
         },
-        readlink: (p) => vfs.readlink(p),
+        async readlink(p) {
+            return vfs.readlink(p);
+        },
     };
     // Packed objects are read by range, never a whole pack (git/pack/store.ts).
     return createGitFs(backend, packsSeam({

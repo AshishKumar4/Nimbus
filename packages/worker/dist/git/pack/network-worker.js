@@ -20,6 +20,12 @@ import { historyPlan, historyResume, historyStep } from './history.js';
 import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
 import { retryingGitHttp } from './transport.js';
+/**
+ * cf-git: a copy of vendor/git.generated.mjs in the facet's own module record
+ * (runtime/git-bundle-artifact.ts), there only when the facet is loaded, so
+ * its specifier is the record's, not one this bundle resolves.
+ */
+const GIT_BUNDLE_MODULE = './git-bundle.js';
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 function protocolError(message) {
     return new Error('git clone protocol: ' + message);
@@ -269,11 +275,9 @@ export const networkWorker = {
             }
             catch { /* the line is best-effort */ }
         };
-        // cf-git and its HTTP client: a module of the facet's own record
-        // (scripts/bundle-git.mjs), there only when the facet is loaded.
         let bundle;
         try {
-            bundle = await import('./git-bundle.js');
+            bundle = await import(GIT_BUNDLE_MODULE);
         }
         catch (e) {
             return respond(false, {
