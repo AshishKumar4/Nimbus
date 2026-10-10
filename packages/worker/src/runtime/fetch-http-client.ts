@@ -205,9 +205,8 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       }, (error) => { if (!this.destroyed) this.destroy(error); });
     }
     _write(chunk, encoding, callback) {
-      const bytes = Buffer.from(chunk);
       this.#start().then((admitted) => {
-        if (admitted && this.#writer) this.#writer.write(bytes).then(() => { this.#touch(); callback(); }, callback);
+        if (admitted && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
         else callback();
       });
     }
