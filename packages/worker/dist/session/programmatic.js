@@ -5,13 +5,6 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-/**
- * session/programmatic.ts - public sandbox RPC helpers.
- *
- * These helpers are called by NimbusSession one-line delegators so the
- * Durable Object exposes a typed, programmatic sandbox surface without
- * duplicating the interactive terminal boot path.
- */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -19,7 +12,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import { z } from 'zod/v4';
+import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
 import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
@@ -78,15 +71,6 @@ async function adoptStoredShells(self, workspace) {
 }
 /** The most keys one Durable Object storage `delete` takes. */
 const STORAGE_DELETE_KEYS = 128;
-/**
- * The durable half of the port capability lives in `./port-capability.js`, so
- * the facet manager can retire a stale one without importing this module.
- */
-const ProcessLogsOptionsSchema = z.object({
-    cursor: z.number().int().nonnegative().optional(),
-    lines: z.number().int().nonnegative().optional(),
-    bytes: z.number().int().nonnegative().optional(),
-}).strict();
 function getHome(self) {
     try {
         const shellEnv = self.shell?.getEnv?.();
@@ -503,7 +487,7 @@ export async function rpcSignalProcess(self, pid, signal) {
 }
 export async function rpcProcessLogs(self, pid, options = {}) {
     await ensureProgrammaticReady(self);
-    const parsed = ProcessLogsOptionsSchema.parse(options);
+    const parsed = SessionProcessLogsOptionsSchema.parse(options);
     const readOptions = {
         cursor: parsed.cursor,
         ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
