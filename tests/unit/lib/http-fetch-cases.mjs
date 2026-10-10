@@ -11,6 +11,7 @@ export async function httpFetchCases(http) {
       return;
     }
     if (req.url === '/bytes') { req.pipe(res); return; }
+    if (req.url === '/wire') { req.resume(); req.on('end', () => res.end(JSON.stringify([req.headers['content-length'] ?? null, req.headers['transfer-encoding'] ?? null]))); return; }
     if (req.url === '/abort') { abortResponse = res; arrived.resolve(); req.on('error', () => {}); return; }
     if (req.url === '/connection') {
       const count = await new Promise((resolve, reject) => server.getConnections((error, value) => error ? reject(error) : resolve(value)));
@@ -64,6 +65,15 @@ export async function httpFetchCases(http) {
       req.uncork();
       req.end(new Uint8Array([9, 8, 7]));
     });
+    parity.uploadHeaders = [];
+    for (const payload of [undefined, 'é', new Uint8Array([1, 2, 3])]) {
+      parity.uploadHeaders.push(await new Promise((resolve, reject) => {
+        let body = '';
+        const req = request('/wire', (res) => { res.setEncoding('utf8'); res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve(JSON.parse(body))); });
+        req.on('error', reject);
+        req.end(payload);
+      }));
+    }
     const signalled = request('/abort', undefined, { signal: AbortSignal.abort('reason') });
     const signalEvents = [];
     const signalledClose = new Promise((resolve) => signalled.on('close', () => { signalEvents.push('close'); resolve(); }));

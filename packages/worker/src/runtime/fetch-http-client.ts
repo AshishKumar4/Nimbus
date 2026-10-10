@@ -86,6 +86,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #incoming;
     #signal;
     #counted = false;
+    #contentLength;
     socket = null;
     connection = null;
     reusedSocket = false;
@@ -154,6 +155,10 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         if (Array.isArray(value)) for (const part of value) headers.append(name, String(part));
         else headers.set(name, String(value));
       }
+      if (this.method !== "GET" && this.method !== "HEAD" && !headers.has("content-length") && !headers.has("transfer-encoding")) {
+        if (this.#contentLength === undefined) headers.set("transfer-encoding", "chunked");
+        else headers.set("content-length", String(this.#contentLength));
+      }
       this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
       this._headerSent = true;
       let body;
@@ -194,6 +199,9 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      if (!this.#started && this.writableLength === 0) {
+        this.#contentLength = chunk == null ? 0 : typeof chunk === "string" ? Buffer.byteLength(chunk, encoding) : chunk instanceof Uint8Array ? chunk.byteLength : undefined;
+      }
       if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
       this.#start();
       Writable.prototype.end.call(this, callback);
