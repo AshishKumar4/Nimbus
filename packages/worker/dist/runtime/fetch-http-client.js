@@ -160,7 +160,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           else headers.push([name, String(value)]);
         }
         this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
-          headers, contentLength: this.#contentLength, body: this.#completeBody };
+          headers, framed: this.hasHeader("content-length") || this.hasHeader("transfer-encoding"), contentLength: this.#contentLength, body: this.#completeBody };
         this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
         this._headerSent = true;
       } catch (error) { this.destroy(error); this.#resume(); return; }
@@ -183,7 +183,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       target.port = request.port;
       const address = request.path && request.path !== "/" ? new URL(request.path, target) : target;
       const headers = request.headers;
-      if (request.method !== "GET" && request.method !== "HEAD" && !headers.some(([name]) => /^(?:content-length|transfer-encoding)$/i.test(name))) {
+      if (request.method !== "GET" && request.method !== "HEAD" && !request.framed) {
         headers.push(request.contentLength === undefined ? ["transfer-encoding", "chunked"] : ["content-length", String(request.contentLength)]);
       }
       let body;
@@ -207,7 +207,16 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         }, this.joinDuplicateHeaders);
         this.#touch();
         incoming.on("error", (error) => { if (!this.destroyed) this.emit("error", error); });
-        incoming.once("close", () => this.destroy());
+        incoming.once("close", () => {
+          if (!incoming.complete || !this._writableState.finished) { this.destroy(); return; }
+          // A completed exchange closes its transport, not its already-finished Writable.
+          // OutgoingMessage deliberately disables Writable autoDestroy for this lifetime.
+          if (this.destroyed) return;
+          this.destroyed = true;
+          clearTimeout(this.#timer);
+          this.#writer = undefined;
+          queueMicrotask(() => this.emit("close"));
+        });
         if (!this.emit("response", incoming)) incoming._dump();
       }, (error) => { if (!this.destroyed) this.destroy(error); });
     }
@@ -236,6 +245,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      if (this.finished) return http.OutgoingMessage.prototype.end.call(this, chunk, encoding, callback);
       if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
         throw invalidArgType("chunk", ["string", "Buffer", "Uint8Array"], chunk);
       }
@@ -287,7 +297,11 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         this.destroy();
       }
     }
-    destroy(error) { this.destroyed = true; return Writable.prototype.destroy.call(this, error); }
+    destroy(error) {
+      if (this.destroyed) return this;
+      this.destroyed = true;
+      return Writable.prototype.destroy.call(this, error);
+    }
     _destroy(error, callback) {
       clearTimeout(this.#timer);
       this.#prepared = undefined;
