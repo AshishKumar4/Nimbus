@@ -375,5 +375,7 @@ export declare function encodeWriteBatch(payload: BatchWritePayload): Promise<Ui
  * and before its payload bytes are read or copied.
  */
 export declare function decodeWriteBatchStream(stream: ReadableStream<Uint8Array>, options?: W7DecodeOptions): Promise<W7DecodedStream>;
+/** A W7 path as the frame owns it: slashes collapsed, `.` and `..` resolved, no leading `/` (the git network facet's paths too). */
+export declare function normalizePath(path: string): string;
 export {};
 //# sourceMappingURL=w7-frame.d.ts.map
