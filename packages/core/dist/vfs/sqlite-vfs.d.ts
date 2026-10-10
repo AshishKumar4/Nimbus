@@ -752,7 +752,7 @@ export declare class SqliteVFS {
     private _totalDirs;
     private _usedBytes;
     private _revision;
-    private readonly pathRevisions;
+    private pathRevisions;
     private static readonly PATH_REVISIONS_MAX_BYTES;
     /**
      * What each transaction committed since the last publication wrote at each
@@ -794,7 +794,12 @@ export declare class SqliteVFS {
      * generations back under cursors facets still hold.
      */
     rotateIncarnation(): string;
-    /** A new clock epoch, stored: every cursor held against the old one poisons. */
+    /**
+     * A new clock epoch, stored, starting from the store's committed state:
+     * every cursor held against the old one poisons, the clock is the store's
+     * generation (what an operation left part-published committed included),
+     * and no path keeps a revision of the old epoch's.
+     */
     private newIncarnation;
     private readonly exclusiveMutationLeases;
     /** Read leases (acquireReadLease), by owner. */

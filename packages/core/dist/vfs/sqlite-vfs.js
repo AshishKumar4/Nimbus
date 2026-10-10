@@ -938,16 +938,26 @@ export class SqliteVFS {
         this.sharedDirectories.clear();
         return this.newIncarnation();
     }
-    /** A new clock epoch, stored: every cursor held against the old one poisons. */
+    /**
+     * A new clock epoch, stored, starting from the store's committed state:
+     * every cursor held against the old one poisons, the clock is the store's
+     * generation (what an operation left part-published committed included),
+     * and no path keeps a revision of the old epoch's.
+     */
     newIncarnation() {
         const incarnation = crypto.randomUUID();
+        let gen = 0;
         this.transactionSync(() => {
-            this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1', incarnation);
+            gen = Number([...this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1 RETURNING gen', incarnation)][0].gen);
         });
         this._epoch = incarnation;
+        this._gen = gen;
+        this._revision = gen;
         this._invalidations = [];
         this._invalidationBytes = 0;
-        this._invalidationFloor = this._revision;
+        this._invalidationFloor = gen;
+        this.pathRevisions = new PathRevisions(this.pathRevisions.budget, gen);
+        this.committedRows.clear();
         // Granted at the clock this ends: each holder is told, and asks again.
         this.breakReadLeases();
         return incarnation;
