@@ -223,7 +223,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (operation) operation();
     }
     _write(chunk, encoding, callback) {
-      if (!this.#queued && this.#contentLength !== undefined) { this.#start(); callback(); return; }
+      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
         if (!this.destroyed && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
         else callback();

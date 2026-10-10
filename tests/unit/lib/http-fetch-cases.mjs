@@ -67,11 +67,12 @@ export async function httpFetchCases(http) {
       req.end(new Uint8Array([9, 8, 7]));
     });
     parity.uploadHeaders = [];
-    for (const payload of [undefined, 'é', new Uint8Array([1, 2, 3])]) {
+    for (const [payload, cork] of [[undefined, false], ['é', false], [new Uint8Array([1, 2, 3]), false], ['corked', true]]) {
       parity.uploadHeaders.push(await new Promise((resolve, reject) => {
         let body = '';
         const req = request('/wire', (res) => { res.setEncoding('utf8'); res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve(JSON.parse(body))); });
         req.on('error', reject);
+        if (cork) req.cork();
         req.end(payload);
       }));
     }

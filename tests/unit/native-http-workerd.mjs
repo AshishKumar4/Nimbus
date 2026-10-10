@@ -17,7 +17,7 @@ import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLi
 import { httpFetchCases } from './lib/http-fetch-cases.mjs';
 import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
 import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
-import { generateNodeLibModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
+import { generateNodeLibModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -203,8 +203,9 @@ await portReady.promise;
 const port = probePort.address().port;
 const released = Promise.withResolvers(); probePort.close(released.resolve); await released.promise;
 writeFileSync(join(dir, 'node-lib.js'), generateNodeLibModule());
+writeFileSync(join(dir, 'node-dns.js'), generateNodeDnsModule());
 writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
+const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
 import * as __real_http from 'node:http';
 import * as __real_https from 'node:https';
@@ -235,6 +236,7 @@ const nodeLib = lib.createNodeLib({
   primordials, sources: lib.sources, errors: { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable },
   slots: lib.createWorkerdSlots(__real_util.default), builtinObjects: lib.builtinObjects, uvErrors: lib.uvErrors,
   optionValue: () => undefined, fetch: fetch.bind(globalThis), timers: { setTimeout, clearTimeout },
+  createCaresBinding: lib.createCaresBinding,
 });
 builtins.dns = nodeLib.require('dns');
 ${ENTRYPOINT_EVENT_LOOP}
