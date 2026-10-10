@@ -1,4 +1,4 @@
-export async function httpFetchReviewCases(http, dns, net, address = (server) => server.address()) {
+export async function httpFetchReviewCases(http, dns, net, address = (server) => server.address(), scopedListen = (server, callback) => server.listen(0, '::1%lo', callback)) {
   const server = http.createServer((req, res) => { req.resume(); res.end('ok'); });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const port = server.address().port;
@@ -66,7 +66,7 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
   } finally { await new Promise((resolve) => named.close(resolve)); }
   const scoped = http.createServer();
   try {
-    await new Promise((resolve, reject) => { scoped.once('error', reject); scoped.listen(0, '::1%lo', resolve); });
+    await new Promise((resolve, reject) => { scoped.once('error', reject); scopedListen(scoped, resolve); });
     const bound = address(scoped);
     result.scoped = { numeric: net.isIP(bound.address) === 6, family: bound.family, address: bound.address };
   } catch (error) { result.scoped = { code: error.code, message: error.message }; }

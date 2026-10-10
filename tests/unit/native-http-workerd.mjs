@@ -234,6 +234,7 @@ const __nimbusProcessExitPromise = Promise.withResolvers().promise;
 globalThis.__nimbusRawSetTimeout = setTimeout;
 const previousHttp = { ...__real_http, request: __real_http.request };
 const previousAddress = __real_http.Server.prototype.address;
+const previousListen = __real_http.Server.prototype.listen;
 ${NODE_ERROR_PREAMBLE}
 const primordials = {};
 lib.primordialsOf(primordials, globalThis);
@@ -269,8 +270,13 @@ export default { async fetch(request) {
       return globalThis.__nimbusServeHttp(new Request(incoming, { headers }));
     };
     try {
-      if (mode === 'client-esm') return Response.json(await httpFetchCases(await import('node:http')));
-      if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, builtins.dns, __real_net.default, (server) => previousAddress.call(server)));
+      if (mode === 'client-esm') {
+        const { request, get, ClientRequest, default: defaultHttp } = await import('node:http');
+        const { request: httpsRequest, default: defaultHttps } = await import('node:https');
+        if (request !== http.request || get !== http.get || ClientRequest !== http.ClientRequest || request !== defaultHttp.request || httpsRequest !== defaultHttps.request || httpsRequest !== builtins.https.request) throw new Error('HTTP ESM exports bypass the canonical transport');
+        return Response.json(await httpFetchCases({ ...defaultHttp, request, get, ClientRequest }));
+      }
+      if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, builtins.dns, __real_net.default, (server) => previousAddress.call(server), (server, callback) => previousListen.call(server, 0, '::1%lo', callback)));
       if (mode === 'review-parity') return Response.json(await httpFetchReviewCases(http, builtins.dns, __real_net.default));
       return Response.json(await httpFetchCases(http));
     }

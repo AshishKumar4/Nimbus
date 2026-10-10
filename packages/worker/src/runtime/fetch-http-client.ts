@@ -241,18 +241,21 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     }
     #checkLength(chunk, encoding, ending) {
       if (!this.strictContentLength || this.finished || this.destroyed) return;
+      if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) return;
       const length = chunk == null ? 0 : typeof chunk === "string" ? Buffer.byteLength(chunk, typeof encoding === "string" ? encoding : undefined) : chunk.byteLength;
       const actual = this.#bytesWritten + length;
       if (this._hasBody && !this._removedContLen && !this.chunkedEncoding && this.hasHeader("content-length") && !this.hasHeader("transfer-encoding")) {
         const expected = Number(this.getHeader("content-length"));
         if (actual > expected || (ending && actual !== expected)) throw fail("ERR_HTTP_CONTENT_LENGTH_MISMATCH", "Response body's content-length of " + actual + " byte(s) does not match the content-length of " + expected + " byte(s) set in header");
       }
-      this.#bytesWritten = actual;
+      return actual;
     }
     write(chunk, encoding, callback) {
       if (this.finished) return http.OutgoingMessage.prototype.write.call(this, chunk, encoding, callback);
-      this.#checkLength(chunk, encoding, false);
-      return Writable.prototype.write.call(this, chunk, encoding, callback);
+      const length = this.#checkLength(chunk, encoding, false);
+      const accepted = Writable.prototype.write.call(this, chunk, encoding, callback);
+      if (length !== undefined) this.#bytesWritten = length;
+      return accepted;
     }
     end(chunk, encoding, callback) {
       if (this.destroyed) return this;
@@ -260,7 +263,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
       if (this.finished) return http.OutgoingMessage.prototype.end.call(this, chunk, encoding, callback);
       if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) throw invalidArgType("chunk", ["string", "Buffer", "Uint8Array"], chunk);
-      this.#checkLength(chunk, encoding, true);
+      const length = this.#checkLength(chunk, encoding, true);
       if (!this.#queued && this.writableLength === 0) {
         this.#contentLength = 0;
         if (this.method !== "GET" && this.method !== "HEAD") {
@@ -274,6 +277,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.#contentLength !== undefined && !this.strictContentLength) return http.OutgoingMessage.prototype.end.call(this, undefined, undefined, callback);
       if (chunk != null) Writable.prototype.write.call(this, this.#completeBody ?? chunk, encoding);
       Writable.prototype.end.call(this, callback);
+      if (length !== undefined) this.#bytesWritten = length;
       this.finished = true;
       return this;
     }
