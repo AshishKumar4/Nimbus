@@ -22,10 +22,6 @@
  */
 export const MAX_FILE_BYTES = 20_000_000;
 /**
- * Read one tar header (USTAR) out of `block`. Returns parsed fields or
- * `null` for an end-of-archive block (all zeros).
- */
-/**
  * Collapse "."/".." segments in a tar entry's package-relative path.
  * Returns the canonical relative path, or '' when the entry escapes its
  * package root (a leading ".." that pops above the root) — the caller
@@ -46,19 +42,37 @@ export function canonicalTarName(name) {
     }
     return out.join('/');
 }
+const UTF8 = new TextDecoder();
+/** A USTAR field of `block`: the bytes at [start, end) up to the first NUL. */
+function tarField(block, start, end) {
+    let stop = start;
+    while (stop < end && block[stop] !== 0)
+        stop++;
+    return block.subarray(start, stop);
+}
+/** A numeric USTAR field: its octal digits, after any leading spaces. */
+function tarOctal(block, start, end) {
+    let i = start;
+    while (i < end && block[i] === 0x20)
+        i++;
+    let value = 0;
+    for (; i < end && block[i] >= 0x30 && block[i] <= 0x37; i++)
+        value = value * 8 + (block[i] - 0x30);
+    return value;
+}
+/**
+ * Read one tar header (USTAR) out of `block`, or null for an end-of-archive
+ * block. Names are UTF-8, as tar writes them today.
+ */
 export function parseTarHeader(block) {
     if (block[0] === 0)
         return null;
-    let name = '';
-    for (let i = 0; i < 100 && block[i] !== 0; i++) {
-        name += String.fromCharCode(block[i]);
-    }
-    let prefix = '';
-    for (let i = 345; i < 500 && block[i] !== 0; i++) {
-        prefix += String.fromCharCode(block[i]);
-    }
-    if (prefix)
-        name = prefix + '/' + name;
+    let name = UTF8.decode(tarField(block, 0, 100));
+    const prefix = tarField(block, 345, 500);
+    if (prefix.length > 0)
+        name = UTF8.decode(prefix) + '/' + name;
+    const typeFlag = block[156];
+    const directory = typeFlag === 53 /* '5' */ || name.endsWith('/');
     // The single top-level directory npm wraps every package in is learned
     // and stripped per-archive by streamPackageEntries — the prefix is part
     // of the package contract, not a fixed 'package' literal.
@@ -71,13 +85,7 @@ export function parseTarHeader(block) {
     // downstream join canonical. An entry that escapes its package root via
     // ".." is dropped to '' → skipped as a no-name entry.
     name = canonicalTarName(name);
-    let sizeStr = '';
-    for (let i = 124; i < 136 && block[i] !== 0; i++) {
-        sizeStr += String.fromCharCode(block[i]);
-    }
-    const size = parseInt(sizeStr.trim(), 8) || 0;
-    const typeFlag = block[156];
-    return { name, size, typeFlag };
+    return { name, size: tarOctal(block, 124, 136), typeFlag, mode: tarOctal(block, 100, 108), mtime: tarOctal(block, 136, 148), directory };
 }
 /**
  * Wrap a `ReadableStream<Uint8Array>` as an async iterable. Workerd and
@@ -102,25 +110,24 @@ export async function* readableStreamToAsyncIterable(rs) {
         catch { /* ignore */ }
     }
 }
+/** An archive held whole in memory, as the stream streamTarRecords reads. */
+export async function* tarBytes(bytes) {
+    yield bytes;
+}
+/** Whether `header` is a regular file's: type '0', or NUL as old tars wrote it. */
+export function isRegularTarFile(header) {
+    return header.typeFlag === 48 /* '0' */ || header.typeFlag === 0;
+}
 /**
- * Streaming tar extractor.
+ * Every entry of a tar stream, in order, each as its data completes: its
+ * header, and its data when `read(header)` asks for it, else null (the data
+ * is passed over unread). An extraction's policy is its `read`.
  *
  * Consumes an async iterable of Uint8Array chunks (the decompressed tar
- * byte stream) and yields one `{ name, data }` entry per regular file,
- * as each file completes.
- *
- * Memory invariant: holds at most one pending file's bytes (≤ MAX_FILE_BYTES)
+ * byte stream). Memory invariant: holds at most one pending entry's bytes
  * plus a small carry buffer for the tar header being assembled.
- *
- * Skips: symlinks, directories, hardlinks, long-name extensions (PaxHeader),
- * and any file whose declared size exceeds MAX_FILE_BYTES.
- *
- * If `onSkip` is provided, it is invoked for each skipped entry with the
- * name, declared size, and reason code. Callers that need to surface
- * dropped-file warnings to users should pass one; legacy callers that
- * omit the arg still behave exactly as before (silent skip).
  */
-export async function* streamTarEntries(source, onSkip) {
+export async function* streamTarRecords(source, read) {
     let carry = new Uint8Array(0);
     let state = { kind: 'header' };
     function concat(a, b) {
@@ -140,87 +147,45 @@ export async function* streamTarEntries(source, onSkip) {
             if (state.kind === 'header') {
                 if (buf.length - cursor < 512)
                     break;
-                const header = buf.subarray(cursor, cursor + 512);
-                const parsed = parseTarHeader(header);
+                const header = parseTarHeader(buf.subarray(cursor, cursor + 512));
                 cursor += 512;
-                if (!parsed)
+                if (!header)
                     return; // end-of-archive
-                const { name, size, typeFlag } = parsed;
-                const pad = size === 0 ? 0 : (512 - (size % 512)) % 512;
-                const isRegularFile = (typeFlag === 48 /* '0' */ || typeFlag === 0);
-                if (size === 0) {
-                    if (isRegularFile && name) {
-                        yield { name, data: new Uint8Array(0) };
-                    }
-                    state = { kind: 'header' };
-                    continue;
-                }
-                if (!isRegularFile || !name || size > MAX_FILE_BYTES) {
-                    if (onSkip) {
-                        // Classify before entering the skip state so the reason is
-                        // exact. Precedence matches the condition order above:
-                        // non-regular first (directories/symlinks/PaxHeaders are
-                        // skipped regardless of size), then no-name, then too-large.
-                        const reason = !isRegularFile
-                            ? 'non-regular'
-                            : !name
-                                ? 'no-name'
-                                : 'too-large';
-                        try {
-                            onSkip(name, size, reason);
-                        }
-                        catch { /* best-effort */ }
-                    }
-                    state = { kind: 'skip', remaining: size + pad };
+                const wanted = read(header);
+                if (header.size === 0) {
+                    yield { header, data: wanted ? new Uint8Array(0) : null };
                     continue;
                 }
                 state = {
-                    kind: 'file',
-                    name,
-                    remaining: size,
-                    fileBuf: new Uint8Array(size),
-                    fileOffset: 0,
-                    pad,
-                    skip: false,
+                    kind: 'data',
+                    header,
+                    remaining: header.size,
+                    data: wanted ? new Uint8Array(header.size) : null,
+                    offset: 0,
+                    pad: (512 - (header.size % 512)) % 512,
                 };
                 continue;
             }
-            if (state.kind === 'file') {
-                const avail = buf.length - cursor;
-                if (avail === 0)
-                    break;
-                if (state.remaining > 0) {
-                    const take = Math.min(state.remaining, avail);
-                    state.fileBuf.set(buf.subarray(cursor, cursor + take), state.fileOffset);
-                    state.fileOffset += take;
-                    state.remaining -= take;
-                    cursor += take;
-                    if (state.remaining > 0)
-                        break;
-                }
-                if (state.pad > 0) {
-                    const avail2 = buf.length - cursor;
-                    if (avail2 === 0)
-                        break;
-                    const take = Math.min(state.pad, avail2);
-                    state.pad -= take;
-                    cursor += take;
-                    if (state.pad > 0)
-                        break;
-                }
-                yield { name: state.name, data: state.fileBuf };
-                state = { kind: 'header' };
-                continue;
-            }
-            // state.kind === 'skip'
             const avail = buf.length - cursor;
             if (avail === 0)
                 break;
-            const take = Math.min(state.remaining, avail);
-            cursor += take;
-            state.remaining -= take;
-            if (state.remaining > 0)
-                break;
+            if (state.remaining > 0) {
+                const take = Math.min(state.remaining, avail);
+                state.data?.set(buf.subarray(cursor, cursor + take), state.offset);
+                state.offset += take;
+                state.remaining -= take;
+                cursor += take;
+                if (state.remaining > 0)
+                    break;
+            }
+            if (state.pad > 0) {
+                const take = Math.min(state.pad, buf.length - cursor);
+                state.pad -= take;
+                cursor += take;
+                if (state.pad > 0)
+                    break;
+            }
+            yield { header: state.header, data: state.data };
             state = { kind: 'header' };
         }
         if (cursor >= buf.length) {
@@ -232,6 +197,36 @@ export async function* streamTarEntries(source, onSkip) {
         else {
             carry = buf.slice(cursor);
         }
+    }
+}
+/**
+ * The regular files of a tar stream, `{ name, data }`, as each completes:
+ * npm's policy over streamTarRecords.
+ *
+ * Skips: symlinks, directories, hardlinks, long-name extensions (PaxHeader),
+ * and any file whose declared size exceeds MAX_FILE_BYTES.
+ *
+ * If `onSkip` is provided, it is invoked for each skipped entry that
+ * carries bytes with the name, declared size, and reason code. Callers that
+ * need to surface dropped-file warnings to users should pass one; legacy
+ * callers that omit the arg still behave exactly as before (silent skip).
+ */
+export async function* streamTarEntries(source, onSkip) {
+    const wanted = (header) => isRegularTarFile(header) && header.name !== '' && header.size <= MAX_FILE_BYTES;
+    for await (const { header, data } of streamTarRecords(source, wanted)) {
+        if (data) {
+            yield { name: header.name, data };
+            continue;
+        }
+        if (!onSkip || header.size === 0)
+            continue;
+        // Non-regular first (directories/symlinks/PaxHeaders are skipped
+        // regardless of size), then no-name, then too-large.
+        const reason = !isRegularTarFile(header) ? 'non-regular' : header.name === '' ? 'no-name' : 'too-large';
+        try {
+            onSkip(header.name, header.size, reason);
+        }
+        catch { /* best-effort */ }
     }
 }
 /**
