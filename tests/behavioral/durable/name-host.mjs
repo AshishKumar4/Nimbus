@@ -32,7 +32,7 @@ const PORT = 4500;
 const NAME = 'shop';
 
 async function fetchApp(name, path = '') {
-  const r = await fetch(`${BASE}/s/${sid}/app/${name}/${path}`, { redirect: 'manual', headers: requestHeaders() });
+  const r = await fetch(`${BASE}/s/${sid}/app/${name}/${path}`, { redirect: 'manual', headers: requestHeaders({}, sid) });
   return { status: r.status, body: await r.text().catch(() => '') };
 }
 async function fetchHost(host, path = '/') {

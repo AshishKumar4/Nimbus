@@ -10,7 +10,7 @@ export function makeAsserter(label, { write = console.log, emit = (result) => pr
   emit(result(false));
   return {
     check(name, ok, detail = '') {
-      const shown = redactCredentials(String(detail));
+      const shown = ok ? '' : redactCredentials(String(detail));
       checks.push({ name, ok: Boolean(ok), detail: shown });
       write(`  ${ok ? '✓' : '✗'} ${name}${!ok && shown ? ' — ' + shown : ''}`);
       emit(result(false));

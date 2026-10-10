@@ -3,6 +3,7 @@
 export function redactCredentials(text) {
   return String(text)
     .replace(/([?&#](?:nimbus_token|access_token|token)=)[^&#\s"'<>]+/gi, '$1…')
+    .replace(/((?:__Host-)?nimbus_[A-Za-z0-9_-]+=)[^;&?#\s"'<>\\]+/gi, '$1…')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/g, '$1…');
 }
 

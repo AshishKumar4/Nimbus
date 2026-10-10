@@ -62,7 +62,7 @@ try {
   const t0 = Date.now();
   const results = await Promise.all(PKGS.map(async (p) => {
     const url = `${BASE}/s/${sid}/preview/@modules/${p}`;
-    const r = await fetch(url, { redirect: 'manual', headers: requestHeaders() });
+    const r = await fetch(url, { redirect: 'manual', headers: requestHeaders({}, sid) });
     const body = await r.text().catch(() => '');
     return { p, status: r.status, body };
   }));

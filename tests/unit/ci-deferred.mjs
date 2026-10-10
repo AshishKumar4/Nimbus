@@ -29,6 +29,18 @@ const ledger = row('session-ledger', 0);
 const grade = (checks, code = 1, entry = deferral) => gradeMatrix([verdict([row(entry.probe, code, checks), ledger])], [entry]);
 
 assert.deepEqual(validateDeferrals([deferral, { ...exclusion, probe: 'frameworks/remix-real' }]).length, 2);
+{
+  let snapshot;
+  const output = [];
+  const a = makeAsserter('redaction', { write: line => output.push(line), emit: result => { snapshot = result; } });
+  a.check('passed attach', true, '200 ["__Host-nimbus_token=live-success-cookie; Secure"]');
+  a.check('failed attach', false, '401 ["__Host-nimbus_token=live-failed-cookie; Secure"] Bearer raw-bearer');
+  a.summary();
+  assert.equal(snapshot.checks[0].detail, '', 'successful diagnostic details are neither printed nor persisted');
+  assert.doesNotMatch(JSON.stringify(snapshot), /live-success-cookie|live-failed-cookie|raw-bearer/);
+  assert.doesNotMatch(output.join('\n'), /live-success-cookie|live-failed-cookie|raw-bearer/);
+  assert.match(snapshot.checks[1].detail, /__Host-nimbus_token=…/);
+}
 for (const [entry, message] of [
   [{ ...deferral, assertion: '' }, /assertion is required/],
   [{ ...deferral, failure: undefined }, /failure/],

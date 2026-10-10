@@ -52,8 +52,8 @@ faulty.writeFile = async (path, data, options) => {
 };
 files.vfs.mount('/f', faulty);
 // A mount that cannot rename in place.
-const renameless = asyncMemoryVfs();
-delete renameless.rename;
+const renameless = asyncMemoryVfs({ hide: ['rename'] });
+assert.equal(renameless.rename, undefined, 'the package.json-last fixture genuinely lacks rename');
 files.vfs.mount('/nr', renameless);
 const view = files.view({ pid: PID, cred: CRED_SESSION_USER });
 const pkgJson = JSON.stringify({ name: 'p', version: '1.0.0', dependencies: { 'is-number': '7.0.0' } });

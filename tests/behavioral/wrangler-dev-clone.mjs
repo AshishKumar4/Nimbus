@@ -114,7 +114,7 @@ if (buildOutcome === 'success') {
   let body = '';
   let status = 0;
   try {
-    const resp = await fetch(workerUrl, { redirect: 'manual', headers: requestHeaders() });
+    const resp = await fetch(workerUrl, { redirect: 'manual', headers: requestHeaders({}, sid) });
     status = resp.status;
     body = await resp.text();
   } catch (e) {

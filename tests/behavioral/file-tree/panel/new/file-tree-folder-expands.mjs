@@ -16,7 +16,7 @@ const a = makeAsserter('file-tree/panel/new/file-tree-folder-expands');
 console.log(`file-tree/panel/new/file-tree-folder-expands — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });
@@ -55,7 +55,7 @@ if (dirEntry) {
 }
 
 // Probe 3: HTML wiring — clicking a folder triggers loadFolder().
-const r = await fetch(`${process.env.BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${process.env.BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 a.check('handleNodeClick toggles expanded state for directories',
   /handleNodeClick[\s\S]{0,400}type\s*===\s*['"]directory['"][\s\S]{0,200}expanded\.add/.test(html) ||

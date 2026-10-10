@@ -2,7 +2,7 @@
 // python/stderr-traceback — uncaught exception prints a traceback to
 // stderr and exits 1.
 
-import { mintSession, deleteSession, heredocCommand, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, heredocCommand, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('python/stderr-traceback');
@@ -41,6 +41,6 @@ a.check('traceback reports line 2 of the actual user program, not setup code',
   /File "<string>", line 2, in <module>/.test(failed) && /RuntimeError: user line two/.test(failed), failed);
 
 await t.close();
-a.check('probe session deleted', (await deleteSession(sid)).ok);
+// The shared ledger owns confirmed deletion or anonymous TTL cleanup.
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

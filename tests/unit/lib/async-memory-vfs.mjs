@@ -2,8 +2,8 @@
 // asynchronous face and deliberately exposes no synchronous backend.
 import { MemoryVFS } from '../../../packages/core/src/vfs/memory.ts';
 
-export function asyncMemoryVfs() {
-  return asyncOnly(new MemoryVFS({ uid: 1000, gid: 1000 }), { deep: true });
+export function asyncMemoryVfs({ hide = [] } = {}) {
+  return asyncOnly(new MemoryVFS({ uid: 1000, gid: 1000 }), { deep: true, hide });
 }
 
 /**

@@ -55,7 +55,7 @@ try {
 
   // 1. First transform — output must contain MARKER_V1 and be valid JS
   //    (esbuild stripped the `: string` type annotation).
-  const r1 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders() });
+  const r1 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const body1 = await r1.text();
   a.check('first transform served (200)', r1.status === 200, `status=${r1.status}`);
   a.check('first transform contains MARKER_V1', body1.includes('MARKER_V1'),
@@ -70,7 +70,7 @@ try {
   // The write has returned (the prompt is back); a content-addressed cache
   // must serve it on the next request.
 
-  const r2 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders() });
+  const r2 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const body2 = await r2.text();
   a.check('post-edit transform served (200)', r2.status === 200, `status=${r2.status}`);
   a.check('post-edit transform contains MARKER_V2_EDITED', body2.includes('MARKER_V2_EDITED'),
@@ -79,7 +79,7 @@ try {
     'stale path-only cache hit would return V1');
 
   // 3. Re-request the unchanged V2 — should still be V2 (cache hit path).
-  const r3 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders() });
+  const r3 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const body3 = await r3.text();
   a.check('repeat request stays V2 (cache hit)', body3.includes('MARKER_V2_EDITED') && !body3.includes('MARKER_V1'));
 } catch (e) {

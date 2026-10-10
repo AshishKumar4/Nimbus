@@ -140,8 +140,10 @@ export function waitForSessionTerminalText(page, pattern, timeout = 30_000) {
 }
 
 export async function applyProbeCookies(page, base = BASE, sid) {
-  const { Authorization, Cookie } = probeTarget.headers({}, sid);
-  if (Authorization) await page.setExtraHTTPHeaders({ Authorization });
+  // Bearers belong to the target's transport, never to every request a page
+  // might make (including cross-origin navigation/iframes). Attach exchanges
+  // below establish the host-scoped session cookie for browser traffic.
+  const { Cookie } = probeTarget.headers({}, sid);
   if (!Cookie) return;
   const url = new URL(base);
   const cookies = Cookie

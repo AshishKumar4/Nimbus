@@ -23,7 +23,7 @@ const THRESHOLD_MS = 1200;
 
 const t0 = performance.now();
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, { headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, { headers: requestHeaders({}, sid) });
 const body = await r.text();
 const elapsed = performance.now() - t0;
 
