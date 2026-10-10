@@ -179,7 +179,7 @@ function __wasiStartResident(sup, cred) {
         listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
-        barrier: (lease) => (view === null ? Promise.resolve({ ok: false }) : view.barrier(lease)),
+        barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
     };
@@ -766,7 +766,7 @@ export function __wasiMakeImports(opts) {
         output: (fd, bytes) => appendStream(fd === 1 ? 'stdout' : 'stderr', bytes),
         release: async () => { if (__wasiResident?.fs.holding())
             await __wasiResident.fs.flush(); },
-        inbound: (untimed) => { __wasiResident?.fs.inbound(untimed); },
+        inbound: () => { __wasiResident?.fs.inbound(); },
         news: __wasiChildNews(),
         cred: () => __wasiFS.cred ?? null,
     });

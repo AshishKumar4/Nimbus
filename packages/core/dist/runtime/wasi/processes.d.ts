@@ -93,8 +93,8 @@ export interface ProcessHostOptions {
     output(fd: 1 | 2, bytes: Uint8Array): void | Promise<void>;
     /** Before an observation: what the guest holds of its writes goes to the session. */
     release(): Promise<void>;
-    /** After input: the guest's next filesystem answer takes the barrier (ResidentFilesystem.inbound, `untimed`). */
-    inbound(untimed?: boolean): void;
+    /** After input: the guest's next filesystem answer takes the barrier. */
+    inbound(): void;
     /** The ledger's news protocol, where the session speaks it. */
     news: ChildNews | null;
     /** The credential the guest runs as; null where it has none (a guest with no session). */

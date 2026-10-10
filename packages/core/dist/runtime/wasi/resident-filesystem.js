@@ -94,7 +94,7 @@ function statOf(entry) {
 }
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
     // Every wait on the session is timed where it leaves: the authority's calls
     // and the store's listings, fills and barriers. A facet's clock moves only
     // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -138,17 +138,13 @@ export function residentFilesystem(session, resident, delegation) {
         listTree: (key) => timed(resident.listTree(key)),
         content: (key) => resident.content(key),
         fill: (key, entry) => timed(resident.fill(key, entry)),
-        barrier: (lease) => timed(resident.barrier(lease)),
+        barrier: () => timed(resident.barrier()),
         reserve: (bytes) => resident.reserve(bytes),
         release: (bytes) => resident.release(bytes),
     };
     const delegated = (name) => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
     /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
     let owed = false;
-    /** Owed for input that came with no I/O (inbound's `untimed`): the lease does not answer it. */
-    let untimed = false;
-    /** Owed for a change, not only for input: no read lease answers for what the process itself changed. */
-    let changed = false;
     if (delegation !== undefined) {
         holder = delegationHolder({
             session: delegation.session,
@@ -164,7 +160,7 @@ export function residentFilesystem(session, resident, delegation) {
             ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
             ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
             // What it sent changed the session: the store catches up before it answers next.
-            sent: () => { owed = true; changed = true; },
+            sent: () => { owed = true; },
         });
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
@@ -296,40 +292,6 @@ export function residentFilesystem(session, resident, delegation) {
         return store.fill(key, entry).then(keep);
     };
     /**
-     * Whether the barrier owed is asked now: owed for input alone, the
-     * process's trusted read lease answers it (nothing it holds has changed: a
-     * change recalls the lease first, and the lease is untrusted before that is
-     * answered; ProcessFsClient.readTrusted).
-     */
-    const asking = () => {
-        if (!owed)
-            return false;
-        if (changed || untimed || holder === null || !holder.client.readTrusted())
-            return true;
-        owed = false;
-        counts.leasedBarriers++;
-        return false;
-    };
-    /** The barrier, asking for the read lease too; whether it landed. */
-    const barrier = () => {
-        counts.barriers++;
-        const client = holder?.client;
-        const ask = client?.readLeaseAsk() ?? null;
-        return store.barrier(ask !== null).then(({ ok, readLease }) => {
-            if (readLease !== undefined && client !== undefined) {
-                client.readLeaseAnswered(readLease);
-                if (ok && store.ready())
-                    client.readLeased(readLease, ask);
-            }
-            if (ok && store.ready()) {
-                owed = false;
-                changed = false;
-                untimed = false;
-            }
-            return ok;
-        });
-    };
-    /**
      * Answer from the store when it can, else from the authority: the barrier
      * first when one is owed, then `local`, whose DELEGATE hands the call on.
      */
@@ -350,13 +312,15 @@ export function residentFilesystem(session, resident, delegation) {
             delegated(name);
             return remote();
         }
-        if (asking()) {
-            return barrier().then((ok) => {
+        if (owed) {
+            counts.barriers++;
+            return store.barrier().then((ok) => {
                 // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
                 if (!ok || !store.ready()) {
                     delegated(name);
                     return remote();
                 }
+                owed = false;
                 return after(local(), settle);
             });
         }
@@ -375,10 +339,12 @@ export function residentFilesystem(session, resident, delegation) {
                 counts.local++;
             return value;
         };
-        if (asking()) {
-            return barrier().then((ok) => {
+        if (owed) {
+            counts.barriers++;
+            return store.barrier().then((ok) => {
                 if (!ok || !store.ready())
                     return DELEGATE;
+                owed = false;
                 return after(local(), settle);
             });
         }
@@ -390,11 +356,10 @@ export function residentFilesystem(session, resident, delegation) {
     const changing = (name, call) => {
         delegated(name);
         try {
-            return after(call(), (value) => { owed = true; changed = true; return value; });
+            return after(call(), (value) => { owed = true; return value; });
         }
         catch (error) {
             owed = true;
-            changed = true;
             throw error;
         }
     };
@@ -419,8 +384,7 @@ export function residentFilesystem(session, resident, delegation) {
             : (...args) => { delegated(name); return call(...args); });
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
-    fs.inbound = (noIo = false) => { owed = true; if (noIo)
-        untimed = true; };
+    fs.inbound = () => { owed = true; };
     fs.holding = () => holder?.pending() ?? false;
     // What leaves the process is preceded by everything it logged.
     fs.flush = async () => { await holder?.flush(); };
@@ -612,7 +576,7 @@ export function residentFilesystem(session, resident, delegation) {
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
                     delegated('open');
-                    return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; changed = true; return handle; });
+                    return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return handle; });
                 });
             };
             return after(through(), (handle) => (handle === DELEGATE ? changing('open', () => authority.open(path, flags)) : handle));
@@ -812,18 +776,20 @@ export function residentFilesystem(session, resident, delegation) {
             holder.changing([op.from, op.to]);
         else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
             holder.changing([op.call.path]);
-        return holder.client.submit(op).then(() => { owed = true; changed = true; }, (error) => { owed = true; changed = true; throw error; });
+        return holder.client.submit(op).then(() => { owed = true; }, (error) => { owed = true; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
     /** Where the store places `path` (its directory resolved, the name itself not followed), current first; DELEGATE when it cannot say. */
     const placedKey = (path) => {
         if (holder === null || !store.ready())
             return DELEGATE;
-        if (!asking())
+        if (!owed)
             return keyFor(path, false);
-        return barrier().then((ok) => {
+        counts.barriers++;
+        return store.barrier().then((ok) => {
             if (!ok || !store.ready())
                 return DELEGATE;
+            owed = false;
             return keyFor(path, false);
         });
     };
