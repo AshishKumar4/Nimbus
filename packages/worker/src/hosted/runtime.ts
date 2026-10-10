@@ -289,7 +289,7 @@ class RuntimeOwner {
     if (task === 'resident-launch') {
       await this.ensureFacetManager().pumpLaunches();
     } else if (task === 'resident-keepalive') {
-      const next = residentKeepaliveFired(this, this.ctx, Date.now());
+      const next = residentKeepaliveFired(this, Date.now());
       if (next !== null && !(await this.scheduleKeepalive(next))) this._w1KeepaliveArmed = false;
     } else if (task === 'log-flush') {
       this.flushScheduled = false;

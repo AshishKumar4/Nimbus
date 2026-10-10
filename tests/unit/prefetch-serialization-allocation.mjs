@@ -1,0 +1,50 @@
+#!/usr/bin/env bun
+// Kinu #29: the real FacetManager.exec path keeps admission through source
+// serialization, not just the filesystem gather. Observe the production cell
+// serializer without replacing its work or changing the bytes it produces.
+import assert from 'node:assert/strict';
+import { mock } from 'bun:test';
+import { heapStats } from 'bun:jsc';
+import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+
+const cells = await import('@nimbus-sh/core/_shared/commonjs-cell.js');
+const wrap = cells.wrapCommonJsCell;
+const reservations = [];
+let peak = 0;
+mock.module('@nimbus-sh/core/_shared/commonjs-cell.js', () => ({ ...cells,
+  wrapCommonJsCell(...args) {
+    if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
+      reservations.push(readSupervisorAllocationBudget().current);
+      peak = Math.max(peak, heapStats().heapSize);
+    }
+    return wrap(...args);
+  },
+}));
+const { launchManager } = await import('./lib/facet-launch-harness.mjs');
+const env = { LOADER: {
+  load() { return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) }; },
+} };
+const { manager, vfs } = launchManager('prefetch-serialization-credit', { env });
+const fs = vfs.as(CRED_KERNEL);
+for (let i = 0; i < 3; i++) {
+  fs.mkdir(`home/user/tree${i}`, { recursive: true, mode: 0o755 });
+  fs.writeFile(`home/user/tree${i}/cell.js`, `// PREFETCH_LEASE_EVIDENCE\nmodule.exports = "${'x'.repeat(10 * 1024 * 1024)}";\n`, { mode: 0o644 });
+}
+Bun.gc(true);
+const baseHeap = heapStats().heapSize;
+peak = baseHeap;
+const sampled = setInterval(() => { peak = Math.max(peak, heapStats().heapSize); }, 1);
+const started = performance.now();
+try {
+  const results = await Promise.all(Array.from({ length: 3 }, (_, i) => manager.exec("require('./cell.js')", {
+    filename: `/home/user/tree${i}/run.js`, cwd: `/home/user/tree${i}`, captureOutput: true,
+  })));
+  console.log('PREFETCH_SERIALIZATION ' + JSON.stringify({ callers: 3, elapsedMs: performance.now() - started,
+    peakOverBase: peak - baseHeap, reservations }));
+  assert.ok(results.every(result => result.exitCode === 0));
+  assert.ok(reservations.length >= 3, 'every distinct launch actually serialized its large cell');
+  assert.ok(reservations.every(bytes => bytes >= VFS_BUNDLE_MAX_BYTES), 'no source serialization is outside supervisor admission');
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'completed builds release their allocation');
+} finally { clearInterval(sampled); }

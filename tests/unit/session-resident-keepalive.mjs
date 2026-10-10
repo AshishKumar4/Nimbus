@@ -245,16 +245,15 @@ function expire(storage, reason) {
   assert.equal(host.processes.residentRunning, 1, 'the resident is still running');
   assert.ok(!('resident-keepalive' in (storage.map.get(TIMER_REASONS_KEY) ?? {})), 'past the grace the cycle stops');
   assert.equal(host._w1KeepaliveArmed, false, 'and the flag clears so a client can re-arm it');
-  // An attached socket is presence, however long ago the last request was.
+  // Neither an embedder's unrelated socket nor an idle socket of this
+  // runtime is a reason to renew forever without client traffic.
   sockets = [{}];
   ensureResidentKeepalive(host, ctx);
   await host._timerChain;
   expire(storage, 'resident-keepalive');
   await dispatchAlarm(host, ctx);
-  assert.ok('resident-keepalive' in storage.map.get(TIMER_REASONS_KEY), 'an attached socket keeps the cycle');
+  assert.equal(host._w1KeepaliveArmed, false, 'an idle attached socket does not keep the cycle');
   sockets = [];
-  expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx);
   assert.equal(host._w1KeepaliveArmed, false, 'socket gone, grace long past: stopped again');
   // The client comes back over HTTP: that alone re-arms, no spawn needed.
   noteClientActivity(host, ctx);

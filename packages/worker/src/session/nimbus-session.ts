@@ -111,7 +111,7 @@ import { initSession as _w11InitSession, type InitSessionOptions } from './init.
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing } from './ws.js';
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
@@ -1372,6 +1372,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   // relaxed for the methods (default-public; was async/private).
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const { kind } = wsKind(ws);
+    if (kind === 'shell' || kind === 'process-logs' || kind === 'cirrus-hmr') noteClientActivity(this, this.ctx);
     return _wsDoMessage(this, ws, message);
   }
 
