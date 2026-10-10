@@ -50,12 +50,16 @@ export async function bundleRegistry({ start }) {
   const source = program.body.filter((node) => node.type === 'VariableDeclaration').flatMap((node) => node.declarations)
     .find((node) => node.id.type === 'Identifier' && node.id.name === 'COMMONJS_CELL_RUNTIME_SOURCE');
   if (source?.init?.type !== 'TemplateLiteral') throw new Error('registry source must be a template');
-  const captures = source.init.expressions.filter((node) => node.type === 'CallExpression'
-    && node.callee.type === 'MemberExpression' && node.callee.property.type === 'Identifier' && node.callee.property.name === 'toString');
+  const captures = source.init.expressions.flatMap((node) => {
+    if (node.type !== 'CallExpression' || node.callee.type !== 'MemberExpression'
+      || node.callee.property.type !== 'Identifier' || node.callee.property.name !== 'toString') return [];
+    if (node.callee.object.type !== 'Identifier' || node.arguments.length) throw new Error('registry captured a non-declaration function');
+    return [{ start: node.start, end: node.end, name: node.callee.object.name }];
+  });
   if (captures.length !== 2) throw new Error('registry must capture its two self-contained functions');
   for (const node of captures.sort((a, b) => b.start - a.start)) {
-    const declaration = node.callee.object.type === 'Identifier' && functions.get(node.callee.object.name);
-    if (!declaration || node.arguments.length) throw new Error('registry captured a non-declaration function');
+    const declaration = functions.get(node.name);
+    if (!declaration) throw new Error('registry captured a non-declaration function');
     text = text.slice(0, node.start) + JSON.stringify(output.outputFiles[0].text.slice(declaration.start, declaration.end)) + text.slice(node.end);
   }
   // Capture compiler source by its AST, never by an engine's Function#toString rendering.

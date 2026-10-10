@@ -1,12 +1,12 @@
 /** Source already verified against its deployment pin. Shared across generated programs. */
 export class ImmutableModuleSource {
-    text;
     asset;
     byteLength;
-    constructor(text, asset) {
-        this.text = text;
+    text;
+    constructor(bytes, asset) {
         this.asset = asset;
-        this.byteLength = new TextEncoder().encode(text).byteLength;
+        this.text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        this.byteLength = bytes.byteLength;
     }
 }
 /** A generated module retains its immutable pieces until the Loader needs its complete text. */

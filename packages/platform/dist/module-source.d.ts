@@ -10,10 +10,10 @@ export interface ModuleSourceEnv {
 }
 /** Source already verified against its deployment pin. Shared across generated programs. */
 export declare class ImmutableModuleSource {
-    readonly text: string;
     readonly asset: ModuleSourceAsset;
     readonly byteLength: number;
-    constructor(text: string, asset: ModuleSourceAsset);
+    readonly text: string;
+    constructor(bytes: ArrayBuffer | Uint8Array, asset: ModuleSourceAsset);
 }
 export type ModuleSourcePart = string | ImmutableModuleSource;
 export type ModuleSourceRecipe = (string | ModuleSourceAsset)[];
