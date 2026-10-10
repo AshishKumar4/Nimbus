@@ -7,7 +7,9 @@
  *
  *   facet — the process is a named child actor of the user's own session DO.
  *   peer  — the process is a named child actor of a SIBLING session DO, and
- *           the coordinator reaches it over one held-open RPC.
+ *           the coordinator reaches it over one held-open RPC, which
+ *           `PeerProcessHost` here calls and `PeerHost` (peer-host.ts)
+ *           serves.
  *
  * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
@@ -64,7 +66,7 @@
  * that pair unforgeable by anything that did not open the process.
  */
 
-import { networkRef, type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
@@ -82,13 +84,21 @@ import {
   type ResidentSupervisorProps,
   type Supervise,
 } from './process-fabric.js';
+import {
+  HOSTED_WEBSOCKET_CAPABILITY_HEADER,
+  HOSTED_WEBSOCKET_KEY_HEADER,
+  headerPairs,
+  isolateToken,
+  type HostedHttpRequest,
+  type HostedHttpResponse,
+  type HostProcessOpts,
+} from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import {
   processes,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
-import type { HostRoute } from './composition.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 
 /** The substrates this deployment can be configured for. */
@@ -194,55 +204,6 @@ function describeImageDelivery(delivery: ProcessImageDelivery): string {
  */
 const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
 
-/**
- * This workerd process's identity. Module scope, so two Durable Objects
- * reporting the same token are in the same process — which is exactly the CPU
- * sharing a peer exists to avoid, and the only way to detect it.
- */
-let _isolateToken: string | null = null;
-export function isolateToken(): string {
-  if (!_isolateToken) _isolateToken = crypto.randomUUID();
-  return _isolateToken;
-}
-
-/** Options the coordinator hands a hosting peer. */
-export interface HostProcessOpts {
-  coordinatorDoId: string;
-  /** The coordinator's route, minted into the process's SUPERVISOR binding. */
-  route?: HostRoute;
-  pid: number;
-  writerId: string;
-  /** The coordinator instance's delivery incarnation, minted into the SUPERVISOR binding (ResidentSupervisorProps). */
-  hostIncarnation?: string;
-  /** The coordinator workspace's egress, when it has one: the process's network. */
-  network?: WorkspaceNetworkRef;
-  workerKey: string;
-  /** Unforgeable capability for the fetch-semantic WebSocket hop. */
-  webSocketCapability: string;
-  startArgs?: unknown;
-}
-
-/**
- * Inbound HTTP for a peer-hosted process travels as PARTS, not as a
- * Request/Response pair: workerd refuses to transfer an object owned by a
- * dynamically-loaded worker across a sibling-DO hop. Bodies are plain
- * ReadableStreams, which RPC carries with flow control, so nothing is buffered
- * and a live SSE body still streams.
- */
-export interface HostedHttpRequest {
-  method: string;
-  url: string;
-  headers: [string, string][];
-  body: ReadableStream | null;
-}
-
-export interface HostedHttpResponse {
-  status: number;
-  statusText: string;
-  headers: [string, string][];
-  body: ReadableStream | null;
-}
-
 /** The host-process surface a sibling session DO exposes. */
 interface ProcessPeerStub {
   _rpcProcessHostProbe(): Promise<{ isolateToken: string }>;
@@ -253,19 +214,6 @@ interface ProcessPeerStub {
   _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }>;
   fetch(request: Request): Promise<Response>;
 }
-
-/**
- * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
- * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
- * as headers on the peer fetch instead.
- *
- * The key alone is guessable from a pid, so it is not enough on its own; the
- * capability is minted per `open()` and known only to the coordinator that
- * opened the process and the peer that hosts it. The receiving session strips
- * both before the request reaches the process.
- */
-export const HOSTED_WEBSOCKET_KEY_HEADER = 'x-nimbus-hosted-websocket';
-export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-capability';
 
 /**
  * Peer stubs forward one supervisorOp entrypoint: every method the host-
@@ -658,28 +606,4 @@ function routeWebSocketThroughPeer(
   headers.set(HOSTED_WEBSOCKET_KEY_HEADER, workerKey);
   headers.set(HOSTED_WEBSOCKET_CAPABILITY_HEADER, capability);
   return stub.fetch(new Request(request.url, { method: request.method, headers }));
-}
-
-/**
- * Headers as pairs, with every `Set-Cookie` kept separate.
- *
- * Iterating a `Headers` combines same-named fields into one comma-joined
- * value, and for `Set-Cookie` that is not reversible — `append` cannot split
- * `a=1; Path=/, b=2; Path=/` back into two cookies, and a browser reading the
- * merged form sets one malformed cookie instead of two. Every other field
- * combines by comma legally, so only this one needs the separate accessor.
- * A user's server setting two cookies must not depend on which substrate its
- * process happened to run on.
- */
-export function headerPairs(headers: Headers): [string, string][] {
-  const pairs: [string, string][] = [];
-  headers.forEach((value, key) => {
-    if (key.toLowerCase() !== 'set-cookie') pairs.push([key, value]);
-  });
-  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
-  const cookies = typeof getSetCookie === 'function'
-    ? getSetCookie.call(headers)
-    : (headers.get('set-cookie') ? [headers.get('set-cookie') as string] : []);
-  for (const cookie of cookies) pairs.push(['set-cookie', cookie]);
-  return pairs;
 }

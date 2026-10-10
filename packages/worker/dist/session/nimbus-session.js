@@ -539,7 +539,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * (retention sweep), 'resident-launch' and 'resident-keepalive'.
      */
     async alarm(alarmInfo) {
-        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo, () => _rpc.hostingWatchFired(this));
+        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo, () => this.peerHost.watchFired());
     }
     /**
      * Grant the fresh turn a suspended launch asked for.
@@ -587,10 +587,6 @@ export class NimbusSession extends CloudflareDurableObject {
     /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
     _scheduleLaunchTurn(notBefore = 0) {
         return timers(this, this.ctx).arm('resident-launch', Math.max(Date.now(), notBefore));
-    }
-    /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
-    scheduleHostingWatch(at) {
-        return timers(this, this.ctx).arm(_rpc.HOSTING_WATCH_REASON, at);
     }
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
@@ -850,13 +846,15 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcRouteLoopback(port, request) { return _rpc._rpcRouteLoopback(this, port, request); }
     async _rpcTransform(code, loader) { return _rpc._rpcTransform(this, code, loader); }
     // two-tier-fanout: peer-DO execute leg of Fanout's peer-DO fanout topology.
-    async _rpcFanoutExecute(fnSource, args, poolOpts) {
-        return _rpc._rpcFanoutExecute(this, fnSource, args, poolOpts);
+    async _rpcFanoutExecute(fnSource, args, shardOpts) {
+        return _rpc._rpcFanoutExecute(this, fnSource, args, shardOpts);
     }
-    // process fabric: the peer host leg. Populated only while THIS DO is hosting
-    // a resident process for a sibling coordinator — see session/rpc.ts.
-    _hostedProcesses = new Map();
-    _hostedProcessWaiters = new Map();
+    // process fabric: the peer host leg, for a sibling coordinator hosting a
+    // resident process on THIS object (fabric PeerHost).
+    _peerHost = null;
+    get peerHost() {
+        return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env, (at) => timers(this, this.ctx).arm('hosting-watch', at));
+    }
     _rpcProcessHostProbe() {
         return _rpc._rpcProcessHostProbe(this);
     }

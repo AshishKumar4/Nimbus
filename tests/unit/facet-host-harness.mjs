@@ -105,6 +105,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
         async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
+        // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
+        async fetch(request) { return (await ensure(name, start)).fetch(request); },
         // A runtime resident's class holds this open while its isolate lives.
         held() { return deathOf(name).promise; },
         // The journal reader's (LOADER.load above).
@@ -240,9 +242,10 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
 //
 // A `ProcessHost` of either kind, over the SAME facet world, so one suite can
 // be run twice and the two substrates compared assertion for assertion. The
-// peer arm is not a mock of the peer leg: it wires the real `_rpcHostProcess`
-// / `_rpcAwaitHostedOpen` / `_rpcAwaitHostedBoot` / `_rpcRouteHostedHttp` /
-// `_rpcCancelHostProcess` behind a fake `NIMBUS_SESSION` namespace, so what is
+// peer arm is not a mock of the peer leg: each sibling serves the real
+// `_rpcHostProcess` / `_rpcAwaitHostedOpen` / `_rpcAwaitHostedBoot` /
+// `_rpcRouteHostedHttp` / `_rpcCancelHostProcess` legs and the upgrade hop
+// from its own PeerHost, behind a fake `NIMBUS_SESSION` namespace, so what is
 // under test on that arm is the shipped code.
 
 import {
@@ -251,13 +254,9 @@ import {
   _rpcCancelHostProcess,
   _rpcHostProcess,
   _rpcRouteHostedHttp,
-  routeHostedWebSocket,
+  peerHostFor,
 } from '../../packages/worker/src/session/rpc.ts';
-import {
-  HOSTED_WEBSOCKET_CAPABILITY_HEADER,
-  HOSTED_WEBSOCKET_KEY_HEADER,
-  isolateToken,
-} from '../../packages/fabric/src/process-host.ts';
+import { isolateToken } from '../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
@@ -353,8 +352,6 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       peer = {
         ctx,
         env: { ...hostEnv, NIMBUS_SESSION: ns },
-        _hostedProcesses: new Map(),
-        _hostedProcessWaiters: new Map(),
         // A peer is a DIFFERENT Durable Object, so it reports a different
         // isolate. Modelling that matters: `isolateToken()` is a module
         // singleton, so calling the real probe in-process would make every
@@ -372,8 +369,8 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       // `error`.
       peer.resetBy = null;
       peer.reset = (error) => { peer.resetBy = error; };
-      // A session arms its hosting watch on its own timer mux (NimbusSession.scheduleHostingWatch).
-      peer.scheduleHostingWatch = (at) => timers(peer, ctx).arm('hosting-watch', at);
+      // A session arms its hosting watch on its own timer mux (NimbusSession.peerHost).
+      peer.peerHost = peerHostFor(ctx, peer.env, (at) => timers(peer, ctx).arm('hosting-watch', at));
       onPeer?.(peer);
       peers.set(name, peer);
     }
@@ -395,16 +392,10 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       return {
         [Symbol.dispose]() { record.disposed = true; },
         // The upgrade leg is a service-binding fetch on the peer — route it
-        // to the same real handler the production entrypoint calls.
+        // to the same real handler the production entrypoint calls first.
         async fetch(request) {
           if (peer.resetBy) throw peer.resetBy;
-          const headers = request.headers;
-          return routeHostedWebSocket(
-            peer,
-            headers.get(HOSTED_WEBSOCKET_KEY_HEADER) ?? '',
-            headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER) ?? '',
-            request,
-          );
+          return peer.peerHost.routeWebSocket(request);
         },
         // The host forwards one envelope op; the arm still exercises the
         // REAL _rpc* implementations — routing just went through

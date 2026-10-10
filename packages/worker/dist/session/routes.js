@@ -25,7 +25,6 @@
  */
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
-import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -51,8 +50,7 @@ import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
-import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
-import { routeHostedWebSocket } from './rpc.js';
+import { isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
 import { isCirrusHmrPath, readPortCapability, normalizeForwardedHttpPath, readPortReservationByName, readoptCapability, routeToSessionPort, } from './port-capability.js';
 import { registerServingPort } from './serving-port.js';
 import { PREVIEW_CAPABILITY_HEADER, CALLER_SCOPES_HEADER } from '../_shared/session-router.js';
@@ -380,23 +378,9 @@ export async function handleFetch(self, request) {
 }
 async function routeFetch(self, request) {
     const url = new URL(request.url);
-    // The peer end of the fetch-semantic WebSocket hop, before anything else:
-    // this request is a sibling coordinator's, not a browser's, and it names
-    // the hosted process rather than a route on this session. Both headers are
-    // stripped so the process never sees the transport that carried it.
-    const hostedWebSocket = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
-    if (hostedWebSocket) {
-        if (!isWebSocketUpgradeRequest(request.headers)) {
-            return new Response('Expected WebSocket', { status: 426 });
-        }
-        const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-        if (!capability)
-            return new Response('Not found', { status: 404 });
-        const headers = new Headers(request.headers);
-        headers.delete(HOSTED_WEBSOCKET_KEY_HEADER);
-        headers.delete(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-        return routeHostedWebSocket(self, hostedWebSocket, capability, new Request(request.url, { method: request.method, headers }));
-    }
+    // The peer end of the fetch-semantic WebSocket hop, before anything else.
+    if (isHostedWebSocket(request))
+        return self.peerHost.routeWebSocket(request);
     // Capture session basePath from the routing header (if forwarded by the
     // Worker's session-router). Threaded through to ViteDevServer so the
     // served app's module URLs, HMR paths, <base href>, and router basename
