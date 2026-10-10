@@ -250,10 +250,10 @@ export interface NimbusFilesystemAuthority {
   nameLaunch?(binding: NimbusFilesystemBinding, names: () => Iterable<string>): void;
   /**
    * Process `pid`'s writes answer at their commit, its effects waiting for
-   * their publication instead (ProcessFiles.gateOutput): only for a process
+   * their publication instead (ProcessFiles.continueAtCommit): only for a process
    * whose every way out does. Absent, every write waits for its publication.
    */
-  gateOutput?(pid: number): void;
+  continueAtCommit?(pid: number): void;
 }
 
 /**
@@ -464,7 +464,7 @@ export interface RuntimeFsBridge {
   /**
    * Settled once every write of the process's that a reader's recall holds
    * is published (its writes answer at their commit while its output is
-   * gated: ProcessFiles.gateOutput): what its runtime waits for before an
+   * gated: ProcessFiles.continueAtCommit): what its runtime waits for before an
    * effect leaves by a way the session's gate does not see. `escape`: one
    * no boundary sees opens now (a raw socket), and the process's writes wait
    * for their publication from now on.

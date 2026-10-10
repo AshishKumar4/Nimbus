@@ -6453,7 +6453,7 @@ export class FacetManager {
     // Its program runs under the node shims, every way out of which waits at
     // the session's output gate or at their own boundary: its writes answer
     // at their commit.
-    this.filesystem.gateOutput?.(entry.pid);
+    this.filesystem.continueAtCommit?.(entry.pid);
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
     const { cred } = entry;
     const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;

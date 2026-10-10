@@ -160,7 +160,7 @@ await runScenarios(import.meta.path, {
     const out = [];
     const { authority, probe } = await boot((authority, pid) => {
       authority.files.holdOutput(authority.host.processes);
-      authority.files.gateOutput(pid);
+      authority.files.continueAtCommit(pid);
     }, {
       routeLoopback: async (port, request) => {
         out.push(new URL(request.url).pathname);

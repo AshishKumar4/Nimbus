@@ -161,7 +161,7 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
 {
   const s = session();
   s.files.holdOutput(new SessionProcessSupervisor());
-  s.files.gateOutput(PID);
+  s.files.continueAtCommit(PID);
   const lease = (pid) => {
     const view = s.files.bind({ pid, cred: CRED_SESSION_USER });
     const { readLease } = view.acquire(s.engine.epoch, s.engine.revision(), { lease: true });

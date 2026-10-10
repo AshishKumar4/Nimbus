@@ -428,7 +428,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const processes = new SessionProcessSupervisor();
   s.files.holdOutput(processes);
   const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
-  s.files.gateOutput(pid);
+  s.files.continueAtCommit(pid);
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
@@ -468,7 +468,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const ports = new PortRegistry();
   ports.setOutputGate(s.files.outputGate);
   const { pid } = processes.spawn('node', ['server.js'], '/home/user', { cred: USER });
-  s.files.gateOutput(pid);
+  s.files.continueAtCommit(pid);
   const writer = s.files.bind({ pid, cred: USER });
   const reader = s.files.bind({ pid: 7, cred: USER });
   const watcher = s.files.bind({ pid: 9, cred: USER });
@@ -532,7 +532,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const processes = new SessionProcessSupervisor();
   s.files.holdOutput(processes);
   const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
-  s.files.gateOutput(pid);
+  s.files.continueAtCommit(pid);
   const writer = s.files.bind({ pid, cred: USER });
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { encodeWriteBatchStream } = await import('../../packages/platform/src/w7-frame.ts');
