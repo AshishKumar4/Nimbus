@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "59631e13ba85f88a931bf82915abb8459b49d607204ee431917f2844056f5847",
+  "fingerprint": "e5a62af5ae782f5b2a234a316231381581ee1be7c5f7ef162f244df8455e7a81",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2573,7 +2573,7 @@
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
     "packages/worker/scripts/cirrus-bundle-shared.mjs": "a11f865af9da5dab8294fbfc3d1ff0deeb3dcdda10874298e14289597927cd04",
     "packages/worker/scripts/free-names.mjs": "b8771847cc9a54afc440e9007502fd14fbd0dd0c078f9a2f6a8003426d878101",
-    "packages/worker/scripts/interpreter-bundle.mjs": "4eab99ddd27b291ac87822f7e028267ab63b7852179618591f42df7d918ee0a2",
+    "packages/worker/scripts/interpreter-bundle.mjs": "35c529c20e4ca10ab62b9479112e2676e08352600c4719b7e5a3ab35f5de0659",
     "packages/worker/scripts/napi-wasm/astro-compiler/Cargo.lock": "090a5d238c8dbd6a5428d00e9648ad276e79e30210f5307e2c69e1775aca22fc",
     "packages/worker/scripts/napi-wasm/build.mjs": "0771382d391206c2da1baf948ddd928215f0df75f15bf0b52130d203a425b27f",
     "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",

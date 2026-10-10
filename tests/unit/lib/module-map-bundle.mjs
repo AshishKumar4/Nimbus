@@ -65,7 +65,7 @@ export function moduleMapText(modules) {
 /** Reconstruct a captured boot using only its images and pinned shared assets. */
 export async function storedBootModules(world, fs) {
   const boot = world.bootSpecs.at(-1);
-  if (boot?.kind !== 'vfs') throw new Error('expected a by-path boot');
+  if (boot?.kind !== 'code') throw new Error('expected a code boot');
   const config = await residentLoaderConfig(boot.code, { readFile: (path) => fs.readFileUncached(path) },
     (source) => readImmutableModuleSource({ ASSETS: stagedAssets }, source));
   return config.modules;
