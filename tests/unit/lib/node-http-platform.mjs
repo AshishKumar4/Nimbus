@@ -95,7 +95,7 @@ export function generateShimsCode() {
 }
 
 /** A generated runner's real workerd imports, mapped to this platform seam. */
-export function injectHttpRealm(source) {
+export function adaptHttpImports(source) {
   if (!source.includes("const __real_http = globalThis.process.getBuiltinModule('http');")) return source;
   return source
     .replace("const __real_http = globalThis.process.getBuiltinModule('http');", bindings())

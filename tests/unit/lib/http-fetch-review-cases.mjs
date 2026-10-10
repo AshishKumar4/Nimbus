@@ -42,7 +42,9 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
     await closed;
     result.preparation = events;
     result.strictLengths = [];
-    for (const [length, chunks] of [[1, ['a', 'b']], [2, ['a']], [2, ['a', 'b']], [2, ['é']]]) {
+    /** @type {Array<[number, string[]]>} */
+    const strictCases = [[1, ['a', 'b']], [2, ['a']], [2, ['a', 'b']], [2, ['é']]];
+    for (const [length, chunks] of strictCases) {
       const strict = http.request({ host: '127.0.0.1', port, method: 'POST', headers: { 'Content-Length': length } });
       strict.strictContentLength = true;
       strict.on('error', () => {});
