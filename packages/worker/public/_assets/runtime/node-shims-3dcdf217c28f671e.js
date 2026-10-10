@@ -351,13 +351,14 @@ if (typeof __real_net !== "undefined") {
   const __NativeSocket = __realNet.Socket;
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
   // What a connect refuses before it opens anything (a bad port, a missing
-  // one), thrown from connect as Node throws it: the native connect's own
-  // checks, made on a socket that opens nothing, its host one to look up by
-  // a lookup that never answers.
+  // one, a lookup that is no function), thrown from connect as Node throws
+  // it: the native connect's own checks, made on a socket that opens
+  // nothing, its host one to look up by a lookup that never answers.
   const __nativeConnectChecks = (options) => {
     const probe = new __NativeSocket();
     probe.on("error", () => {});
-    try { Reflect.apply(__nativeConnect, probe, [{ ...options, host: "nimbus-checks.invalid", lookup: () => {} }]); }
+    const lookup = options.lookup == null || typeof options.lookup === "function" ? () => {} : options.lookup;
+    try { Reflect.apply(__nativeConnect, probe, [{ ...options, host: "nimbus-checks.invalid", lookup }]); }
     finally { probe.destroy(); }
   };
   if (typeof __nativeConnect === "function") {
