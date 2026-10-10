@@ -84,6 +84,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #started = false;
     #timer;
     #incoming;
+    #signal;
     #counted = false;
     socket = null;
     connection = null;
@@ -134,6 +135,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (options.signal !== undefined) {
         const signal = options.signal;
         if (!(signal instanceof AbortSignal)) throw invalidArgType("signal", "AbortSignal", signal);
+        this.#signal = signal;
         const cancel = () => this.destroy(abortError(signal.reason));
         if (signal.aborted) queueMicrotask(cancel);
         else signal.addEventListener("abort", cancel, { once: true });
@@ -141,7 +143,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       }
     }
     #start() {
-      if (this.#started || this.destroyed) return;
+      if (this.#started || this.destroyed || this.#signal?.aborted) return;
       checkPath(this.path);
       const target = new URL(this.protocol + "//" + (this.host.includes(":") && !this.host.startsWith("[") ? "[" + this.host + "]" : this.host));
       target.port = this.port;
