@@ -19,11 +19,13 @@ const cells = await import(cellsPath);
 const wrap = cells.wrapCommonJsCell;
 const reservations = [];
 let peak = 0;
+let failSerialization = false;
 mock.module(cellsPath, () => ({ ...cells,
   wrapCommonJsCell(...args) {
     if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
       reservations.push(readSupervisorAllocationBudget().current);
       peak = Math.max(peak, heapStats().heapSize);
+      if (failSerialization) throw new Error('injected serializer failure');
     }
     return wrap(...args);
   },
@@ -54,4 +56,18 @@ try {
   assert.ok(reservations.length >= 3, 'every distinct launch actually serialized its large cell');
   assert.ok(reservations.every(bytes => bytes >= VFS_BUNDLE_MAX_BYTES), 'no source serialization is outside supervisor admission');
   assert.equal(readSupervisorAllocationBudget().current, 0, 'completed builds release their allocation');
+  fs.mkdir('home/user/shared', { recursive: true, mode: 0o755 });
+  fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=1;', { mode: 0o644 });
+  const options = { filename: '/home/user/shared/run.js', cwd: '/home/user/shared', captureOutput: true };
+  const count = reservations.length;
+  const identical = await Promise.all(Array.from({ length: 3 }, () => manager.exec("require('./cell.js')", options)));
+  assert.ok(identical.every(result => result.exitCode === 0));
+  assert.equal(reservations.length - count, 1, 'same-key waiters use the published cache after admission instead of gathering again');
+  fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=2;', { mode: 0o644 });
+  failSerialization = true;
+  const failed = await manager.exec("require('./cell.js')", options);
+  assert.notEqual(failed.exitCode, 0);
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'a serializer failure cannot leak its lease');
+  failSerialization = false;
+  assert.equal((await manager.exec("require('./cell.js')", options)).exitCode, 0, 'the next launch can be admitted after failure');
 } finally { clearInterval(sampled); }
