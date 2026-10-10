@@ -28,7 +28,7 @@ export interface BashReplDeps {
   filesystem: RuntimeFsBridge;
   env: Record<string, string>;
   cwd: string;
-  shell?: Pick<Shell, 'env' | 'cwd' | 'takeQueuedInput'>;
+  shell?: Pick<Shell, 'getEnv' | 'getCwd' | 'takeQueuedInput'>;
 }
 
 class BashReplAdapter implements ReplAdapter {
@@ -45,8 +45,8 @@ class BashReplAdapter implements ReplAdapter {
   constructor(private readonly deps: BashReplDeps) {}
 
   get ps1(): string {
-    const env = this.deps.shell?.env ?? this.deps.env;
-    const cwd = this.deps.shell?.cwd ?? this.deps.cwd;
+    const env = this.deps.shell?.getEnv() ?? this.deps.env;
+    const cwd = this.deps.shell?.getCwd() ?? this.deps.cwd;
     return formatShellPrompt(env, cwd);
   }
 

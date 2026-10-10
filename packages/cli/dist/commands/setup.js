@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { syncRuntimes } from './runtime-sync.js';
 import { parseArgs } from 'node:util';
+import { buildNimbusWranglerConfig } from '@nimbus-sh/config';
 export async function setupCloudflare(args) {
     let parsed;
     try {
@@ -31,13 +32,12 @@ export async function setupCloudflare(args) {
         process.stderr.write('nimbus setup cloudflare: CLOUDFLARE_ACCOUNT_ID env var required\n');
         return 78;
     }
-    const prefix = opts.bucketPrefix || opts.name;
-    const runtimeBucket = opts.runtimeBucket || 'nimbus-runtime-cache-public';
-    const buckets = [
-        `${prefix}-npm-cache`,
-        `${prefix}-npm-packument-cache`,
-        runtimeBucket,
-    ];
+    const config = buildNimbusWranglerConfig({
+        name: opts.name, r2BucketPrefix: opts.bucketPrefix || undefined,
+        runtimeCache: opts.runtimeBucket ? { mode: 'byoa', bucket: opts.runtimeBucket } : 'shared',
+    });
+    const buckets = config.r2_buckets.map(({ bucket_name }) => bucket_name);
+    const runtimeBucket = config.r2_buckets.find(({ binding }) => binding === 'NIMBUS_RUNTIME_CACHE').bucket_name;
     process.stderr.write(`nimbus: preparing Cloudflare account for ${opts.name}\n`);
     for (const bucket of buckets) {
         const code = await runWrangler(['r2', 'bucket', 'create', bucket], {

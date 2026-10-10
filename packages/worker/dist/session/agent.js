@@ -10,8 +10,9 @@
 import { generateText, isLoopFinished, jsonSchema, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
-import { base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
-import { clearNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, isNimbusCloudflareAccountId, isNimbusTenantSegment, NIMBUS_CF_OAUTH_AUTH_URL, readNimbusCookie, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
+import { base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, } from '@nimbus-sh/core/_shared/crypto.js';
+import { clearNimbusAgentOAuthCookie, isNimbusTenantSegment, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, } from './agent-oauth.js';
+import { beginNimbusCloudflareOAuth, exchangeNimbusCloudflareOAuthCode, createNimbusOAuthStateCookie, loadNimbusOAuthStateCookie, fetchNimbusCloudflareAccounts, isNimbusCloudflareAccountId, serializeNimbusCookie, } from '@nimbus-sh/core/_shared/oauth.js';
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -22,7 +23,6 @@ import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_STORED_MESSAGES = 80;
 const MAX_TOOL_RESULT_CHARS = 8000;
 const STREAMING_TEXT_FLUSH_MS = 500;
@@ -155,12 +155,10 @@ async function oauthStart(self, request, url) {
     if (!isValidSessionId(sessionId) || !isNimbusTenantSegment(tenantSegment)) {
         return json({ error: 'invalid session route', code: 'E_AGENT_SESSION' }, 400);
     }
-    const nonce = randomBase64Url(24);
-    const codeVerifier = randomBase64Url(48);
-    const codeChallenge = await pkceChallenge(codeVerifier);
-    const redirectUri = config.redirectUri;
-    const now = Date.now();
-    const payload = { v: 1, nonce, sessionId, tenantSegment, exp: now + OAUTH_STATE_TTL_MS };
+    const { transaction, authUrl } = await beginNimbusCloudflareOAuth({
+        clientId: config.oauthClientId, redirectUri: config.redirectUri, scopes: config.oauthScopes,
+    });
+    const payload = { v: 1, nonce: transaction.nonce, sessionId, tenantSegment, exp: transaction.expiresAt };
     let state;
     try {
         state = await signAgentOAuthState(payload, self.env);
@@ -171,17 +169,10 @@ async function oauthStart(self, request, url) {
             code: 'E_AGENT_COOKIE_SECRET',
         }, 409);
     }
-    const stored = { ...payload, codeVerifier, redirectUri, createdAt: now };
-    const authUrl = new URL(NIMBUS_CF_OAUTH_AUTH_URL);
-    authUrl.searchParams.set('client_id', config.oauthClientId);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('redirect_uri', redirectUri);
+    const stored = {
+        ...payload, codeVerifier: transaction.codeVerifier, redirectUri: transaction.redirectUri, createdAt: transaction.createdAt,
+    };
     authUrl.searchParams.set('state', state);
-    authUrl.searchParams.set('code_challenge', codeChallenge);
-    authUrl.searchParams.set('code_challenge_method', 'S256');
-    if (config.oauthScopes.length > 0) {
-        authUrl.searchParams.set('scope', config.oauthScopes.join(' '));
-    }
     const headers = new Headers();
     try {
         headers.append('Set-Cookie', await sealStateCookie(self, stored));
@@ -212,19 +203,18 @@ async function oauthCallback(self, request, url) {
         return oauthResultHtml(false, 'OAuth state did not match this session.', payload.sessionId);
     }
     try {
-        const token = await exchangeCode(self, code, stored.codeVerifier, stored.redirectUri);
-        const accessToken = String(token.access_token || '');
-        if (!accessToken)
-            throw new Error('Cloudflare did not return an access token');
+        const config = readNimbusAgentOAuthConfig(self.env, new URL(stored.redirectUri).origin);
+        const token = await exchangeNimbusCloudflareOAuthCode({ clientId: config.oauthClientId, clientSecret: config.oauthClientSecret }, stored, code);
+        const accessToken = token.accessToken;
         const accounts = await fetchNimbusCloudflareAccounts(accessToken).catch(() => []);
         // Straight into the session, not into a cookie: this callback is already
         // being served by the session itself, and the session is what needs the
         // credential in order to answer in-session inference.
         await storeSessionAiCredential(self, {
             accessToken,
-            refreshToken: token.refresh_token ? String(token.refresh_token) : undefined,
+            refreshToken: token.refreshToken,
             accountId: accounts[0]?.id ?? null,
-            expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
+            expiresAt: token.expiresAt,
         });
         const headers = new Headers();
         headers.append('Set-Cookie', clearStateCookie());
@@ -883,20 +873,10 @@ async function runTool(self, name, args) {
         return { error: e instanceof Error ? e.message : String(e) };
     }
 }
-async function exchangeCode(self, code, codeVerifier, redirectUri) {
-    const config = readNimbusAgentOAuthConfig(self.env, new URL(redirectUri).origin);
-    return requestNimbusCloudflareOAuthToken(config, {
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: redirectUri,
-        code_verifier: codeVerifier,
-    });
-}
 async function loadStateCookie(self, request) {
-    const value = readNimbusCookie(request, STATE_COOKIE);
-    if (!value)
-        return null;
-    const state = await unsealCookie(self, value, STATE_COOKIE_PURPOSE).catch(() => null);
+    const state = await loadNimbusOAuthStateCookie(request, {
+        name: STATE_COOKIE, purpose: STATE_COOKIE_PURPOSE, secret: cookieSecret(self),
+    });
     if (!state || state.v !== 1 || !isNonce(state.nonce))
         return null;
     if (!isValidSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment))
@@ -906,9 +886,8 @@ async function loadStateCookie(self, request) {
     return state;
 }
 async function sealStateCookie(self, state) {
-    return serializeNimbusCookie(STATE_COOKIE, await sealCookie(self, state, STATE_COOKIE_PURPOSE), {
-        path: '/',
-        maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
+    return createNimbusOAuthStateCookie(state, {
+        name: STATE_COOKIE, purpose: STATE_COOKIE_PURPOSE, secret: cookieSecret(self),
     });
 }
 function clearStateCookie() {
@@ -916,12 +895,6 @@ function clearStateCookie() {
 }
 function clearAuthCookie(request) {
     return clearNimbusAgentOAuthCookie(request);
-}
-async function sealCookie(self, value, purpose) {
-    return sealJson(value, cookieSecret(self), { purpose });
-}
-async function unsealCookie(self, value, purpose) {
-    return unsealJson(value, cookieSecret(self), { purpose });
 }
 function cookieSecret(self) {
     return readNimbusAgentCookieSecret(self.env);

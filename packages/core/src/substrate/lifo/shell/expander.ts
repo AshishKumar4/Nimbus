@@ -4,7 +4,7 @@ import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
 import { readBalancedCommand, readBracedExpansion } from './lexer.js';
-import type { ShellOptions } from './interpreter.js';
+import type { ShellOptions } from './state.js';
 
 export interface ExpandContext {
   env: Record<string, string>;

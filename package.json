@@ -26,6 +26,7 @@
     "apps/*"
   ],
   "scripts": {
+    "generate:wrangler": "bun scripts/generate-wrangler-configs.mjs",
     "bundle": "bun run --cwd packages/worker bundle",
     "predev": "bun run bundle",
     "dev": "bun run --cwd apps/hosted-demo dev",

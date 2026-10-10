@@ -142,6 +142,7 @@ export const BUILD_FIXPOINT = [
     script: 'build',
     why: 'compile src → dist',
   })),
+  { cwd: '.', script: 'generate:wrangler', why: 'project canonical deployment policy and explicit environment identities' },
   {
     cwd: 'packages/worker',
     script: 'bundle:facets',
@@ -174,7 +175,7 @@ export const BUILD_FIXPOINT = [
 ];
 
 /** Everything the build can write. Digested whole, before and after. */
-export const OUTPUT_ROOTS = BUILT_PACKAGES.map((pkg) => `packages/${pkg}`);
+export const OUTPUT_ROOTS = [...BUILT_PACKAGES.map((pkg) => `packages/${pkg}`), 'apps/hosted-demo/wrangler.jsonc', 'apps/probe/wrangler.jsonc'];
 
 /** Where a `/_assets/...` path resolves on disk for every deploy target. */
 export const STAGED_ASSETS_DIR = join('packages', 'worker', 'public');
@@ -236,6 +237,8 @@ export const INPUT_ROOTS = [
   'bun.lock',
   'scripts/dist-integrity.mjs',
   'scripts/clean-dist.mjs',
+  'scripts/generate-wrangler-configs.mjs',
+  'apps/nimbus-deployments.json',
 ];
 
 /** The toolchain is an input: a new bun or node can change what the same src compiles to. */

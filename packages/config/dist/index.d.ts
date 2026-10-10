@@ -21,38 +21,7 @@
  * writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
  * ```
  */
-export type NimbusRuntimeName = 'node' | 'bun' | 'npm' | 'git' | 'python' | 'ruby' | 'clang' | 'shell' | (string & {});
-export interface NimbusSandboxProfile {
-    root?: string;
-    runtimes?: {
-        preinstall?: string[];
-        onDemand?: boolean;
-        allow?: NimbusRuntimeName[];
-    };
-    tools?: {
-        namespace?: string;
-        kind?: string;
-    };
-    preview?: {
-        baseUrl?: string;
-        pathStyle?: boolean;
-    };
-}
-export interface NimbusConfig {
-    endpoint?: string;
-    /**
-     * Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`, enabling `<port>--<sid>.<suffix>`
-     * preview origins. Only remote clients need to state it — `Nimbus.fromEnv`
-     * reads it straight off the bindings.
-     */
-    previewHostSuffix?: string;
-    runtimeCache?: 'shared' | 'byoa' | {
-        mode: 'shared' | 'byoa';
-        bucket?: string;
-    };
-    sandboxes?: Record<string, NimbusSandboxProfile>;
-}
-export declare function defineNimbusConfig<T extends NimbusConfig>(config: T): T;
+export * from './sandbox.js';
 export interface BuildWranglerOptions {
     /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
     name: string;
@@ -68,7 +37,9 @@ export interface BuildWranglerOptions {
      */
     compatibilityDate?: string;
     /** Smart placement on/off. Default `true`. */
-    placement?: 'smart' | undefined;
+    placement?: 'smart' | false;
+    /** Existing deployments can retain their migration tag namespace. Default `nimbus-`. */
+    migrationTagPrefix?: string;
     /** Prefix for R2 buckets (npm tarball + packument caches). Default = `name`. */
     r2BucketPrefix?: string;
     /**
@@ -145,7 +116,7 @@ export interface WranglerConfig {
     assets: {
         directory: string;
         binding: string;
-        run_worker_first?: string[];
+        run_worker_first?: boolean | string[];
     };
     alias: Record<string, string>;
     durable_objects: {

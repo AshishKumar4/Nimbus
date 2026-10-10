@@ -18,8 +18,8 @@ class BashReplAdapter {
         this.deps = deps;
     }
     get ps1() {
-        const env = this.deps.shell?.env ?? this.deps.env;
-        const cwd = this.deps.shell?.cwd ?? this.deps.cwd;
+        const env = this.deps.shell?.getEnv() ?? this.deps.env;
+        const cwd = this.deps.shell?.getCwd() ?? this.deps.cwd;
         return formatShellPrompt(env, cwd);
     }
     banner() {
