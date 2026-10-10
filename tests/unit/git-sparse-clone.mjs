@@ -15,8 +15,8 @@
 //     written (nor fetched, partial), what changed inside is written; the
 //     same index and worktree as host git;
 //   - an edit inside the cone, add -A and commit: the tree host git writes;
-//   - a merge: refused with a named message, nothing changed (it does not
-//     read skip-worktree entries yet); a pull the same, before it fetches.
+//   - a merge that is not a fast-forward, and a pull: host git's tree, index
+//     and worktree.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -30,7 +30,7 @@ import { createFacetSession, hostGit as hostGitIn, hostObjects as hostObjectsIn 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-sparse-clone-'));
 const hostGit = (cwd, args) => hostGitIn(work, cwd, args);
 const hostObjects = (dir) => hostObjectsIn(work, dir);
-const session = await createFacetSession(work);
+const session = await createFacetSession(work, { realGit: true });
 const { git, requests } = session;
 
 /** A worktree as a sorted list: each path (but .git), its kind, mode and contents. */
@@ -156,43 +156,42 @@ try {
       }
       if (checkout) console.log(`  ok  checkout in the sparse clone (${name}): host git's index and worktree, outside the cone unwritten`);
 
-      // A merge in a sparse checkout is refused, named, before anything is touched (the merge
-      // does not read skip-worktree entries yet): HEAD, the index and the worktree as they were.
+      // A merge in a sparse checkout, not a fast-forward, then a pull: what host git does in
+      // the same clone. The merged tree, every path outside the cone indexed skip-worktree
+      // and never written, the cone's changes written.
       if (name === 'stream') {
         const ident = { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b' };
-        for (const args of [['checkout', first], ['checkout', '-b', 'side']]) {
-          const step = await git('/home/user/' + name, args, ident);
-          assert.equal(step.code, 0, `${args.join(' ')}: ${step.stderr}`);
-        }
-        session.kernel.writeFile('home/user/' + name + '/run.sh', '#!/bin/sh\necho side\n');
-        const sideCommit = await git('/home/user/' + name, ['commit', '-q', '-a', '-m', 'side'], ident);
-        assert.equal(sideCommit.code, 0, sideCommit.stderr);
-        const before = session.materialize('home/user/' + name, join(work, `ours-${name}-before-merge`));
-        const merged = await git('/home/user/' + name, ['merge', 'main'], ident);
-        assert.equal(merged.code, 128, `merge: refused: ${merged.stderr}`);
-        assert.equal(merged.stderr, 'fatal: merging in a sparse checkout is not supported yet; nothing was changed\n');
-        const after = session.materialize('home/user/' + name, join(work, `ours-${name}-after-merge`));
-        assert.deepEqual(worktreeOf(after), worktreeOf(before), 'merge refused: the worktree as it was');
-        for (const args of [['ls-files', '-s', '-t'], ['rev-parse', 'HEAD', 'side']]) {
-          assert.equal(hostGit(after, args), hostGit(before, args), `merge refused: ${args.join(' ')} as it was`);
-        }
-        assert.equal((await git('/home/user/' + name, ['checkout', 'main'], ident)).code, 0);
-        console.log('  ok  merge in the sparse clone (stream): refused, named, nothing changed');
+        const both = async (args, edit) => {
+          edit?.();
+          const ran = await git('/home/user/' + name, args, ident);
+          assert.equal(ran.code, 0, `${args.join(' ')}: ${ran.stderr}`);
+          hostGit(host, args);
+        };
+        const same = (label, args) => {
+          const ours = session.materialize('home/user/' + name, join(work, `ours-${name}-${label}`));
+          assert.deepEqual(worktreeOf(ours), worktreeOf(host), `${label}: the worktree`);
+          assert.equal(hostGit(ours, ['ls-files', '-s', '-t']), hostGit(host, ['ls-files', '-s', '-t']), `${label}: the index`);
+          assert.equal(hostGit(ours, args), hostGit(host, args), `${label}: ${args.join(' ')}`);
+          assert.equal(hostGit(ours, ['status', '--porcelain']), '', `${label}: clean`);
+        };
+        await both(['checkout', '-q', first]);
+        await both(['checkout', '-q', '-b', 'side']);
+        await both(['commit', '-q', '-a', '-m', 'side'], () => {
+          session.kernel.writeFile('home/user/' + name + '/run.sh', '#!/bin/sh\necho side\n');
+          writeFileSync(join(host, 'run.sh'), '#!/bin/sh\necho side\n');
+        });
+        await both(['merge', '-q', '--no-edit', 'main']);
+        same('merge', ['rev-parse', 'HEAD^{tree}', 'HEAD^1^{tree}', 'HEAD^2']);
+        console.log('  ok  merge in the sparse clone (stream): host git\'s tree, index and worktree');
 
-        // A pull: refused before its fetch, though the remote has moved on.
+        await both(['checkout', '-q', 'main']);
         write('pulled.txt', 'pulled\n');
         hostGit(source, ['add', '-A']);
         hostGit(source, ['commit', '-q', '-m', 'third']);
         hostGit(source, ['push', '-q', join(served, 'stream.git'), 'main']);
-        const third = hostGit(source, ['rev-parse', 'HEAD']).trim();
-        const unpulled = session.materialize('home/user/' + name, join(work, `ours-${name}-before-pull`));
-        const pulled = await git('/home/user/' + name, ['pull'], ident);
-        assert.equal(pulled.code, 128, `pull: refused: ${pulled.stderr}`);
-        assert.equal(pulled.stderr, 'fatal: merging in a sparse checkout is not supported yet; nothing was changed\n');
-        const afterPull = session.materialize('home/user/' + name, join(work, `ours-${name}-after-pull`));
-        assert.equal(hostGit(afterPull, ['rev-parse', 'origin/main']), hostGit(unpulled, ['rev-parse', 'origin/main']), 'pull refused: origin/main as it was');
-        assert.notEqual(spawnSync('git', ['cat-file', '-e', third], { cwd: afterPull }).status, 0, 'pull refused: nothing fetched');
-        console.log('  ok  pull in the sparse clone (stream): refused before it fetches');
+        await both(['pull', '-q']);
+        same('pull', ['rev-parse', 'HEAD', 'origin/main']);
+        console.log('  ok  pull in the sparse clone (stream): host git\'s commit, index and worktree');
       }
 
       // An edit inside the cone, add -A, commit: host git's tree.
