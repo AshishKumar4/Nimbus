@@ -12,7 +12,7 @@ export interface ModuleSourceEnv {
 export class ImmutableModuleSource {
   readonly byteLength: number;
   readonly text: string;
-  constructor(bytes: Uint8Array, readonly asset: ModuleSourceAsset) {
+  constructor(bytes: ArrayBuffer | Uint8Array, readonly asset: ModuleSourceAsset) {
     this.text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     this.byteLength = bytes.byteLength;
   }
