@@ -18,17 +18,11 @@
 
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import {
-  COMMONJS_CELL_IMPORTS,
-  COMMONJS_CELL_RUNTIME_SOURCE,
   commonJsCellModuleName,
   commonJsCellReadsBack,
   columnMapModuleName,
   commonJsEntryModuleName,
   declaresWrapperBinding,
-  RUNTIME_INTERPRETER_MODULE,
-  RUNTIME_INTERPRETER_OPS_MODULE,
-  RUNTIME_INTERPRETER_PRIMORDIALS_MODULE,
-  RUNTIME_NODE_LIB_MODULE,
   runtimeCodeModuleName,
   runtimeExpressionModule,
   runtimeFunctionModule,
@@ -43,7 +37,7 @@ import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
+import { createNodeFacetRuntime, fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import {
@@ -944,23 +938,6 @@ interface GeneratedNodeFacetCode {
 }
 
 /**
- * The runtime's own modules in every launch's map: the runtime-code
- * interpreter, its primordials and its host module, whose primordials load at
- * the launch's start and the other two only when the program first produces
- * code no launch staged (core/_shared/commonjs-cell.ts, RUNTIME CODE); and
- * Node's library, loaded when the program first needs it (node-shims.ts
- * __nimbusNodeLib).
- */
-function runtimeModules(sources: NodeFacetSources): Record<string, string> {
-  return {
-    [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
-    [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
-    [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
-    [RUNTIME_NODE_LIB_MODULE]: sources.nodeLib,
-  };
-}
-
-/**
  * The URL an entry's import() resolves against and its `Function` carries:
  * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
  * `<cwd>/[stdin]`).
@@ -1044,11 +1021,12 @@ export async function generateEntrypointCode(
 ): Promise<GeneratedNodeFacetCode> {
   const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
+  const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   return {
     code: `
 ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
-${COMMONJS_CELL_IMPORTS}
+${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
@@ -1061,10 +1039,7 @@ ${SUPERVISOR_ANSWERING_SRC}
 ${STOP_REPLAY_SOURCE}
 
 // The process's code: a module per cell, compiled when first required.
-const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
-const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
-const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
-${COMMONJS_CELL_RUNTIME_SOURCE}
+${runtime.code}
 
 // The module bundle, at module level (startup time); the code cells the store
 // adopts are getters over the map's own text.
@@ -1367,7 +1342,7 @@ ${RESIDENCY_MISS_REPORT}
 };
 `,
     modules: bundleSource.modules,
-    codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
+    codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
   };
 }
 
@@ -1516,12 +1491,13 @@ export async function generateLongRunningNodeCode(
     cred: opts.cred,
   });
   const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
+  const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   return {
     code: `
 ${bundleSource.imports}
 import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
-${COMMONJS_CELL_IMPORTS}
+${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(opts.wasmImports ?? [])}
@@ -1537,10 +1513,7 @@ ${STOP_REPLAY_SOURCE}
 // The process's code: a module per cell, compiled when first required. The
 // only other way a string becomes code in a Worker is \`new Function\` at
 // module evaluation, which compiled the whole closure before the program ran.
-const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
-const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
-const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
-${COMMONJS_CELL_RUNTIME_SOURCE}
+${runtime.code}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
@@ -2031,7 +2004,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
     modules: bundleSource.modules,
-    codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
+    codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
   };
 }
 

@@ -229,7 +229,7 @@ export async function assembleOpencodeFacetConfig(
       attached ? yogaModuleEntry(assets) : Promise.resolve({}),
     ]);
 
-  const runnerCode = generateOpencodeRunnerCode({
+  const runner = generateOpencodeRunnerCode({
     argv: spec.argv,
     env: spec.env,
     cred: spec.cred,
@@ -246,7 +246,8 @@ export async function assembleOpencodeFacetConfig(
     compatibilityFlags: [...GUEST_COMPAT_FLAGS],
     mainModule: 'runner.js',
     modules: {
-      'runner.js': runnerCode,
+      'runner.js': runner.code,
+      ...Object.fromEntries(Object.entries(runner.codeModules).map(([name, cjs]) => [name, { cjs }])),
       [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
       ...sqliteModules,
       ...treeSitterModules,
