@@ -33,7 +33,7 @@ import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
-import type { OutputGate, ProcessOutputGate } from './output-gate.js';
+import type { ProcessOutput } from './output-gate.js';
 
 export interface PortEntry {
   port: number;
@@ -121,17 +121,14 @@ function relayRpcBody(response: Response, method: string, gated: TransformStream
 }
 
 /**
- * A process's answer body, each piece let through once `gate` lets its
- * process's output go on: what it wrote while answering is published before
- * the piece after it is seen.
+ * A process's answer body, each piece and its end let out as the rest of
+ * its output is (ProcessOutput.releaseOutput): what it wrote while answering
+ * is published before the piece after it, or its end, is seen.
  */
-function gatedBody(gate: OutputGate, pid: number): TransformStream<Uint8Array, Uint8Array> {
+function releasedBody(output: ProcessOutput, pid: number): TransformStream<Uint8Array, Uint8Array> {
   return new TransformStream({
-    transform(chunk, controller) {
-      const held = gate.before(pid);
-      if (held === null) controller.enqueue(chunk);
-      else return held.then(() => controller.enqueue(chunk));
-    },
+    transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
+    flush: () => output.releaseOutput(pid, () => {}),
   });
 }
 
@@ -185,8 +182,8 @@ export class PortRegistry {
   /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
   private acquireDeliveredPids = new Set<number>();
   private portWaitersByPid = new Map<number, Set<() => void>>();
-  /** Holds a process's answers until what it wrote is published (setOutputGate). */
-  private outputGate: ProcessOutputGate | null = null;
+  /** Where a process's answers leave (setOutput). */
+  private output: ProcessOutput | null = null;
 
   /**
    * @param deliveredAcquire What the owner of the filesystem attaches to a
@@ -201,13 +198,13 @@ export class PortRegistry {
   ) {}
 
   /**
-   * Hold each process's answers (status and headers, and each piece of its
-   * body as it comes) until `gate` lets them through: what a process makes
-   * visible after a write waits for the write's publication. A socket an
-   * upgrade hands it is one no gate sees, which `gate` is told. One slot.
+   * Let each process's answers out through `output` (its status and headers,
+   * each piece of its body, and the body's end), as the rest of what it makes
+   * visible: once what it wrote before is published. A socket an upgrade
+   * hands it is one nothing there sees, which `output` is told. One slot.
    */
-  setOutputGate(gate: ProcessOutputGate | null): void {
-    this.outputGate = gate;
+  setOutput(output: ProcessOutput | null): void {
+    this.output = output;
   }
 
   /**
@@ -485,12 +482,12 @@ export class PortRegistry {
         return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
       }
       const response: Response = await handler(forwarded);
-      const gate = this.outputGate;
+      const output = this.output;
       // What it wrote before answering is published before anyone sees the
-      // answer; a socket the answer hands over carries what no gate sees.
-      if (gate !== null) {
-        if (response instanceof Response && response.webSocket) gate.escaped(entry.pid);
-        await gate.before(entry.pid);
+      // answer; a socket the answer hands over carries what nothing sees.
+      if (output !== null) {
+        if (response instanceof Response && response.webSocket) output.escapeOutput(entry.pid);
+        await output.releaseOutput(entry.pid, () => {});
       }
 
       if (!(response instanceof Response)) {
@@ -520,7 +517,7 @@ export class PortRegistry {
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
       // forwards whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
-      return decodeContentCoding(response, port, request.method, gate === null || response.body === null ? null : gatedBody(gate, entry.pid));
+      return decodeContentCoding(response, port, request.method, output === null || response.body === null ? null : releasedBody(output, entry.pid));
     } catch (error: unknown) {
       // Server-side triage — users see only the 502 body, operators
       // see the full error + stack in Worker logs.

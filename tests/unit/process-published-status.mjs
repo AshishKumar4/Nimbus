@@ -3,7 +3,7 @@
 // is released as soon as the end is decided; what observers are told of it
 // (ps, the SDK's process listing, the processes API) is published with its
 // output, once the session's output gate lets that through, as a parent's
-// wait is. Until then every view still shows it running.
+// wait is. Until then every view still shows it running, and logs -f follows it.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -81,9 +81,17 @@ assert.equal(ports.get(8080), undefined, 'its port is freed at the kill');
 assert.equal(processes.get(pid).state, 'killed', 'its lifecycle ended at the kill');
 assert.deepEqual(await views(), { listed: ['running', null, null], api: ['running', null], ps: 'running' },
   'every view shows it running while its output is held');
+// Followed while its end is held: the follower hears it once it is let through.
+processes.markExit(pid, 137);
+let followed = null;
+const following = runtime.exec(`logs -f ${pid}`).then((result) => { followed = stripAnsi(result.stdout); });
+await settle();
+assert.equal(followed, null, 'logs -f ended on an end not yet published, missing it');
 
 release();
 await settle();
+await following;
+assert.match(followed, /process exited with code 137/);
 const ended = await views();
 assert.equal(ended.listed[0], 'killed');
 assert.equal(ended.listed[1], 137);

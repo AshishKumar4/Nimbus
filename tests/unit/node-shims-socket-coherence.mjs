@@ -37,7 +37,10 @@ vfs.writeFile(peerPath, enc.encode('V1'));
 let acquireCalls = 0;
 let sentFrames = [];
 let sawAtSend = null;
+let sawAtOpen = null;
+let sawAtClose = null;
 let closedWith = null;
+const parked = async () => { const bytes = await bridge.readFile(minePath); return bytes === null ? null : dec.decode(bytes); };
 
 // The relay queue, as the supervisor would hold it. Each poll hands back one
 // batch; the third party writes to the filesystem just before the frame is
@@ -63,6 +66,7 @@ const supervisor = {
   wsOpen: async (url, protocols) => {
     assert.equal(url, 'wss://third-party.invalid/socket');
     assert.deepEqual(protocols, ['chat']);
+    sawAtOpen = await parked();
     return { id: 42, protocol: 'chat' };
   },
   wsPoll: async (id) => {
@@ -76,11 +80,10 @@ const supervisor = {
     return frames[pollIndex++];
   },
   wsSend: async (id, text, bytes) => {
-    const parked = await bridge.readFile(minePath);
-    sawAtSend = parked === null ? null : dec.decode(parked);
+    sawAtSend = await parked();
     sentFrames.push(text !== null ? text : dec.decode(bytes));
   },
-  wsClose: async (id, code, reason) => { closedWith = { id, code, reason }; },
+  wsClose: async (id, code, reason) => { sawAtClose = await parked(); closedWith = { id, code, reason }; },
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
@@ -169,6 +172,8 @@ socket.send(new Uint8Array([0x68, 0x69]));
 await new Promise((resolve) => setTimeout(resolve, 40));
 assert.deepEqual(sentFrames, ['notify', 'hi'], 'a binary send crosses as bytes');
 
+// So is its close (its code and reason), and another socket's handshake (its URL and headers).
+fs.writeFileSync(minePath, 'CLOSING');
 const closed = new Promise((resolve) => { socket.onclose = resolve; });
 socket.close(1000, 'done');
 const closeEvent = await closed;
@@ -176,5 +181,11 @@ assert.equal(closeEvent.code, 1000);
 assert.equal(closeEvent.wasClean, true);
 assert.equal(socket.readyState, WebSocket.CLOSED);
 assert.deepEqual(closedWith, { id: 42, code: 1000, reason: 'done' });
+assert.equal(sawAtClose, 'CLOSING', 'parked writes reached the authority before the close left the facet');
+fs.writeFileSync(minePath, 'OPENING');
+const second = new WebSocket('wss://third-party.invalid/socket', ['chat']);
+await new Promise((resolve) => setTimeout(resolve, 40));
+assert.equal(sawAtOpen, 'OPENING', 'parked writes reached the authority before the handshake left the facet');
+second.close(1000, 'done');
 
 console.log('node-shims-socket-coherence: all assertions passed');

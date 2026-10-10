@@ -30,8 +30,8 @@ globalThis.__probe = { fs, read, resume };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-/** Booted; `prepare` runs before the launch, with the process's pid; `overrides`, the supervisor calls a test answers itself. */
-async function boot(prepare, overrides) {
+/** Booted (`program`); `prepare` runs before the launch, with the process's pid; `overrides`, the supervisor calls a test answers itself. */
+async function boot(prepare, overrides, program = PROGRAM) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
@@ -39,7 +39,7 @@ async function boot(prepare, overrides) {
   await prepare?.(authority, handle.log.pid);
   await launchResident({
     authority,
-    program: PROGRAM,
+    program,
     env: { SUPERVISOR: handle.supervisor },
     dataPlan: await residentDataPlan(authority, '/home/user/app'),
     cursor: authority.cursor(),
@@ -189,6 +189,21 @@ await runScenarios(import.meta.path, {
     probe.fs.writeFileSync(F, 'v3');
     assert.equal(await flushed(), 'waiting', 'a process handed a raw socket was answered before its publication');
     reader.recalled(lease.owner, 'revoke');
+    await globalThis.__nimbusProcessFs.flush();
+  },
+
+  async 'a gated process\'s first raw socket, opened before it wrote anything, ends its gate'() {
+    const { authority, probe } = await boot((authority, pid) => {
+      authority.files.holdOutput(authority.host.processes);
+      authority.files.continueAtCommit(pid);
+    }, undefined, `require("net").connect({ port: 9, host: "127.0.0.1" }).on("error", () => {});\n${PROGRAM}`);
+    const reader = authority.files.bind({ pid: 99, cred: CRED });
+    const { readLease } = reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true });
+    assert.ok(readLease, 'no lease to meet');
+    probe.fs.writeFileSync(F, 'v2');
+    const flushed = await Promise.race([globalThis.__nimbusProcessFs.flush().then(() => 'answered'), rawSleep(200).then(() => 'waiting')]);
+    assert.equal(flushed, 'waiting', 'a process with a raw socket opened before it wrote was answered before its publication');
+    reader.recalled(readLease.owner, 'revoke');
     await globalThis.__nimbusProcessFs.flush();
   },
 

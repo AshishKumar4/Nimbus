@@ -190,7 +190,7 @@ export class Delegations {
     };
     held = { pid, owner: lease.owner, root: lease.root, asked: [], waiter: null, pending: null, end, scope, read: null };
     this.held.set(lease.owner, held);
-    this.holdsOf(pid, scope).add(lease.owner);
+    this.holdsOf(pid).add(lease.owner);
     // The process ended holding it: reported, then given up.
     scope.subscriptions.add(() => {
       if (this.held.get(lease.owner) === held) this.options.orphaned?.({ pid, root: lease.root });
@@ -249,7 +249,7 @@ export class Delegations {
     };
     held = { pid, owner: lease.owner, root: '', asked: [], waiter: null, pending: null, end, scope, read: { grantedAt: now, confirmedAt: now } };
     this.held.set(lease.owner, held);
-    this.holdsOf(pid, scope).add(lease.owner);
+    this.holdsOf(pid).add(lease.owner);
     // Its holder decided nothing: ending with it loses nothing, and says nothing.
     scope.subscriptions.add(end);
     return { owner: lease.owner, trustMs: READ_LEASE_TRUST_MS };
@@ -302,27 +302,30 @@ export class Delegations {
   }
 
   /**
-   * The leases process `pid` holds, as one set for as long as its `scope`
-   * lives: a call that began before it took one (a wave in flight when its
-   * read lease is granted) is made by that one too.
+   * The leases process `pid` holds, as one set from its first call until it
+   * is retired: a call that began before it took one (a wave in flight when
+   * its read lease is granted) is made by that one too, and what the engine
+   * holds of its writes for their publication is found by it
+   * (SqliteVFS.publishedFor).
    */
-  holdsOf(pid: number, scope: { readonly subscriptions: Set<() => void> }): Set<string> {
+  holdsOf(pid: number): Set<string> {
     let owned = this.byPid.get(pid);
     if (owned === undefined) {
-      const made = owned = new Set();
-      this.byPid.set(pid, made);
-      scope.subscriptions.add(() => {
-        if (this.byPid.get(pid) !== made) return;
-        this.byPid.delete(pid);
-        this.readRecalled.delete(pid);
-      });
+      owned = new Set();
+      this.byPid.set(pid, owned);
     }
     return owned;
   }
 
-  /** The leases process `pid` holds, while a scope of its lives (holdsOf); undefined otherwise. */
+  /** Process `pid`'s set (holdsOf), until it is retired; undefined otherwise. */
   holdsAt(pid: number): ReadonlySet<string> | undefined {
     return this.byPid.get(pid);
+  }
+
+  /** Process `pid` is over, and nothing it wrote is held: what is kept of it here goes. */
+  retire(pid: number): void {
+    this.byPid.delete(pid);
+    this.readRecalled.delete(pid);
   }
 
   get size(): number {

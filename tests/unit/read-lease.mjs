@@ -26,6 +26,9 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
+import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { _rpcReportExit } from '../../packages/worker/src/session/rpc.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -48,6 +51,24 @@ function session(options) {
 /** A barrier of `bridge`'s that asks for the lease, from `from` (an answer it applied) or from now. */
 function barrier(s, bridge, from) {
   return bridge.acquire(s.engine.epoch, from?.rev ?? s.engine.revision(), { lease: true });
+}
+
+/** `text` to `path` in a wave of `bridge`'s, as a process's writes travel: answered at its commit when its process continues. */
+function wave(bridge, path, text) {
+  const key = path.replace(/^\/+/, '');
+  const data = new TextEncoder().encode(text);
+  return bridge.writeStream(encodeWriteBatchStream({
+    inodes: [{ path: key, parentPath: key.slice(0, key.lastIndexOf('/')), kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path: key, chunkId: 0, data }],
+  }));
+}
+
+/** A sequenced wave of process `pid`'s writing a file named `name`, its one op numbered `first`. */
+function sequenced(bridge, pid, name, first) {
+  return bridge.writeStream(encodeWriteBatchStream({
+    inodes: [], chunks: [],
+    ops: [{ type: 'call', call: { call: 'writeFile', path: `home/user/d/${name}`, mode: 0o644, data: new TextEncoder().encode(name) } }],
+  }), { sequence: { writer: `${pid}:w`, first, ack: first - 1, pid } });
 }
 
 // ── What a lease vouches for: all but its namespace's mounts, at or under them, and the names above them ──
@@ -422,7 +443,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.ok(READ_LEASE_HOLD_OFF_MAX_MS >= 8 * READ_LEASE_TRUST_MS);
 }
 
-// ── A gated writer continues at commit; its output and exit wait for the publication, and an ungated one waits at its write ──
+// ── A gated writer's wave is answered at its commit; its output and exit wait for the publication, and an ungated one waits at its write ──
 {
   const s = session();
   const processes = new SessionProcessSupervisor();
@@ -436,7 +457,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const { readLease } = barrier(s, reader);
   assert.equal(s.files.outputGate.before(pid), null, 'output was held with nothing of its held');
   // Answered at commit: the reader has not answered its recall.
-  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
+  assert.equal((await wave(writer, '/home/user/d/a.txt', 'held')).held, true);
   assert.equal(new TextDecoder().decode(writer.readFile('/home/user/d/a.txt')), 'held', 'its writer reads its own');
   assert.throws(() => other.readFile('/home/user/d/a.txt'), (error) => error.code === 'EAGAIN', 'another read it before its publication');
   processes.appendOutput(pid, 'stdout', 'written\n');
@@ -460,13 +481,13 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(new TextDecoder().decode(other.readFile('/home/user/d/a.txt')), 'held');
 }
 
-// ── A dev server's "saved" waits for its write's publication; so does each later piece of its answer, and a socket it is handed ends its gate ──
+// ── A dev server's "saved" waits for its write's publication; so does each later piece of its answer, and its end, and a socket it is handed ends its gate ──
 {
   const s = session();
   const processes = new SessionProcessSupervisor();
   s.files.holdOutput(processes);
   const ports = new PortRegistry();
-  ports.setOutputGate(s.files.outputGate);
+  ports.setOutput(processes);
   const { pid } = processes.spawn('node', ['server.js'], '/home/user', { cred: USER });
   s.files.continueAtCommit(pid);
   const writer = s.files.bind({ pid, cred: USER });
@@ -475,15 +496,19 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const encode = (text) => new TextEncoder().encode(text);
   const decode = (bytes) => new TextDecoder().decode(bytes);
   let more;
+  let end;
   ports.bindFacetStub(pid, {
     async handleHttpRequest() {
-      await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'saved'));
+      await wave(writer, '/home/user/d/a.txt', 'saved');
       return new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(encode('saved\n'));
           more = async () => {
-            await withRecall(() => writer.writeFile('/home/user/d/b.txt', 'later'));
+            await wave(writer, '/home/user/d/b.txt', 'later');
             controller.enqueue(encode('later\n'));
+          };
+          end = async () => {
+            await wave(writer, '/home/user/d/e.txt', 'done');
             controller.close();
           };
         },
@@ -512,6 +537,17 @@ for (const pathRevisionBytes of [undefined, 0]) {
   watcher.recalled(watched.readLease.owner, 'revoke');
   assert.equal(decode((await piece).value), 'later\n');
   assert.equal(decode(watcher.readFile('/home/user/d/b.txt')), 'later');
+  // Its end follows a last write with no piece after it: the end is seen once that write is published.
+  const closer = s.files.bind({ pid: 12, cred: USER });
+  const closing = barrier(s, closer);
+  void end();
+  let ended = false;
+  const eof = body.read().then((chunk) => { ended = true; return chunk; });
+  await sleep(20);
+  assert.equal(ended, false, 'its answer ended before what it wrote last was published');
+  closer.recalled(closing.readLease.owner, 'revoke');
+  assert.equal((await eof).done, true);
+  assert.equal(decode(closer.readFile('/home/user/d/e.txt')), 'done');
   // An answer that hands it a socket the session cannot see: its writes wait for their publication from then on.
   ports.bindFacetStub(pid, { async handleHttpRequest() { return Object.defineProperty(new Response(null), 'webSocket', { value: {} }); } });
   ports.register(8081, pid);
@@ -519,7 +555,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const third = barrier(s, s.files.bind({ pid: 11, cred: USER }));
   assert.ok(third.readLease, 'no lease to meet');
   let waited = false;
-  const writing = withRecall(() => writer.writeFile('/home/user/d/c.txt', 'waits')).then(() => { waited = true; });
+  const writing = wave(writer, '/home/user/d/c.txt', 'waits').then(() => { waited = true; });
   await sleep(10);
   assert.equal(waited, false, 'a writer holding a socket no gate sees was answered before its publication');
   s.files.bind({ pid: 11, cred: USER }).recalled(third.readLease.owner, 'revoke');
@@ -561,6 +597,123 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(answered, false, 'an escaped writer\'s wave was answered before its publication');
   s.files.bind({ pid: 9, cred: USER }).recalled(again.readLease.owner, 'revoke');
   assert.equal((await waved).held, undefined);
+}
+
+// ── A gated writer that exits with nothing printed: its exit, reported after its scope is released, waits for what it wrote, and closes its relayed sockets with it ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  s.files.continueAtCommit(pid);
+  const writer = s.files.bind({ pid, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { readLease } = barrier(s, reader);
+  assert.equal((await wave(writer, '/home/user/d/a.txt', 'last')).held, true);
+  const closed = [];
+  // The session's: its exit releases the process's binding first (supervisorForgetBridge), as the session's does.
+  const host = {
+    processes,
+    supervisorForgetBridge: (released) => { void s.files.releaseProcess(released); },
+    webSocketRelay: { closeForPid: (closing) => { closed.push(closing); } },
+  };
+  const reported = _rpcReportExit(host, pid, 0, '');
+  await sleep(10);
+  assert.equal(processes.getExit(pid), null, 'its exit went out before what it wrote was published');
+  assert.deepEqual(closed, [], 'its relayed sockets were closed before what it wrote was published');
+  reader.recalled(readLease.owner, 'revoke');
+  await reported;
+  assert.equal(processes.getExit(pid)?.code, 0);
+  assert.deepEqual(closed, [pid]);
+  assert.equal(s.files.outputGate.before(pid), null);
+}
+
+// ── A wave in flight when its process escapes the gate is answered as an escaped writer's: once it is published ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  s.files.continueAtCommit(pid);
+  const writer = s.files.bind({ pid, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const data = new TextEncoder().encode('racing');
+  const { readable, writable } = new TransformStream();
+  // Begun before its first record arrives.
+  let answered = false;
+  const waving = writer.writeStream(readable).then((answer) => { answered = true; return answer; });
+  await sleep(5);
+  await writer.published({ escape: true });
+  void encodeWriteBatchStream({
+    inodes: [{ path: 'home/user/d/r', parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path: 'home/user/d/r', chunkId: 0, data }],
+  }).pipeTo(writable);
+  await sleep(20);
+  assert.equal(answered, false, 'a wave in flight when its process escaped was answered before its publication');
+  reader.recalled(readLease.owner, 'revoke');
+  const answer = await waving;
+  assert.equal(answer.ok, true, JSON.stringify(answer.error));
+  assert.equal(answer.held, undefined);
+}
+
+// ── A resend of a wave its process committed is answered as that wave was: held while it is, and an ungated writer's once it is published ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  s.files.continueAtCommit(pid);
+  const gated = s.files.bind({ pid, cred: USER });
+  const ungated = s.files.bind({ pid: 9, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { readLease } = barrier(s, reader);
+  assert.equal((await sequenced(gated, pid, 'g', 1)).held, true);
+  // Its answer lost: the resend's record is the first attempt's, which is held.
+  const resent = await sequenced(gated, pid, 'g', 1);
+  assert.equal(resent.ok, true, JSON.stringify(resent.error));
+  assert.equal(resent.held, true, 'a resend of a held wave said nothing of it');
+  let first = false;
+  const original = sequenced(ungated, 9, 'u', 1).then(() => { first = true; });
+  await sleep(10);
+  assert.equal(first, false);
+  let again = false;
+  const resend = sequenced(ungated, 9, 'u', 1).then((answer) => { again = true; return answer; });
+  await sleep(10);
+  assert.equal(again, false, 'a resend of a wave held for its publication was answered before it was published');
+  reader.recalled(readLease.owner, 'revoke');
+  await original;
+  assert.equal((await resend).ok, true);
+}
+
+// ── What a process makes visible through the session's supervisor leaves once what it wrote is published, in the order it made it: a socket's handshake and its close among it ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  s.files.continueAtCommit(pid);
+  const writer = s.files.bind({ pid, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const sent = [];
+  const dispatch = createSupervisorOpHandler({
+    vfs: s.engine, filesystem: s.files, processes,
+    host: {
+      _rpcWsOpen: async (url) => { sent.push(`open ${url}`); return { id: 1, protocol: '', headers: [] }; },
+      _rpcWsClose: async (_id, _code, reason) => { sent.push(`close ${reason}`); },
+    },
+  });
+  const { readLease } = barrier(s, reader);
+  assert.equal((await wave(writer, '/home/user/d/a.txt', 'saved')).held, true);
+  const opened = dispatch({ op: 'wsOpen', pid, args: ['wss://peer.invalid/?saved', [], [], false] });
+  const closed = dispatch({ op: 'wsClose', pid, args: [1, 1000, 'saved'] });
+  // What stays in the session does not wait: its process reads its own write.
+  assert.equal(await dispatch({ op: 'readFile', pid, args: ['/home/user/d/a.txt'] }), 'saved');
+  await sleep(10);
+  assert.deepEqual(sent, [], 'a socket\'s handshake left before what its process wrote was published');
+  reader.recalled(readLease.owner, 'revoke');
+  await Promise.all([opened, closed]);
+  assert.deepEqual(sent, ['open wss://peer.invalid/?saved', 'close saved']);
 }
 
 // ── Held for publication: another opener's description waits for it, its writer's reads its own ──

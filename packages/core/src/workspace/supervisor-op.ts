@@ -2,7 +2,7 @@ import { isPendingChunkError, type SqliteVFS, type WaveMountReach, type WaveSequ
 import type { ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { withRecall } from '../vfs/recall.js';
-import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
+import { SUPERVISOR_OPS, supervisorOpLeaves, type SupervisorOpName } from './supervisor-ops.js';
 import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -646,8 +646,17 @@ export function createSupervisorOpHandler(
   // A process's call that meets another holder's delegation waits for its
   // recall and runs again (withRecall): this dispatch is asynchronous, so no
   // process call is refused for one.
-  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
+  const answer = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
     ? deps.observe(envelope, () => withRecall(() => perform(op, envelope))) : withRecall(() => perform(op, envelope));
+  // What a process makes visible outside the session leaves at its output
+  // gate, as the rest of its output does: in the order it made it, once what
+  // it wrote is published (supervisorOpLeaves).
+  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
+    const pid = envelope.pid;
+    return deps.processes !== undefined && pid !== undefined && supervisorOpLeaves(op)
+      ? deps.processes.releaseOutput(pid, () => answer(op, envelope))
+      : answer(op, envelope);
+  };
   /**
    * A mutation delivered exactly once (supervisor-delivery.ts). Refuse a
    * missing process before its stale binding. A live process's delivery must
