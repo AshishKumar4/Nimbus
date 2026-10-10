@@ -7247,6 +7247,8 @@ function __nimbusNodeLib() {
     nodeDebug: __nimbusNodeDebugAtLaunch,
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
+    fetch: globalThis.fetch.bind(globalThis),
+    createCaresBinding: lib.createCaresBinding,
     primordials,
     sources: lib.sources,
   });
@@ -7371,6 +7373,8 @@ Object.defineProperties(__nimbusInspect, {
   // Named URL, as Node's class is: its name is what inspect and errors print.
   class URL extends _Orig {
     constructor(input, base) {
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("url");
+      const inputText = "".concat(input);
       if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
         catch {
@@ -7385,7 +7389,12 @@ Object.defineProperties(__nimbusInspect, {
           return;
         }
       }
-      super(input, base);
+      const baseText = base === undefined ? undefined : "".concat(base);
+      try { super(inputText, baseText); }
+      catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
+      }
     }
     // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
     // context, which workerd's URL has none of.
@@ -7468,7 +7477,7 @@ const __urlMod = {
     let resolved = __pathMod.resolve(input);
     if (input.endsWith("/") && !resolved.endsWith("/")) resolved += "/";
     const url = new URL("file:///");
-    url.pathname = resolved.replace(/%/g, "%25").replace(/\\n/g, "%0A").replace(/\\r/g, "%0D").replace(/\\t/g, "%09");
+    url.pathname = resolved.replace(/%/g, "%25").replace(/\\\\/g, "%5C").replace(/\\n/g, "%0A").replace(/\\r/g, "%0D").replace(/\\t/g, "%09");
     return url;
   },
 };
@@ -10887,6 +10896,8 @@ for (const [name, read] of [
   ["punycode", () => __nimbusNodeLib().require("punycode")],
   ["util", () => __nimbusNodeLib().require("util")],
   ["util/types", () => __nimbusNodeLib().require("util").types],
+  ["dns", () => __nimbusNodeLib().require("dns")],
+  ["dns/promises", () => __nimbusNodeLib().require("dns/promises")],
   ["timers/promises", () => __nimbusNodeLib().require("timers/promises")],
   ["path/posix", () => builtins.path.posix],
   ["path/win32", () => builtins.path.win32],
@@ -11017,10 +11028,7 @@ builtins.dgram = (() => {
   }
   return { Socket, createSocket: (opts, cb) => { const s = new Socket(opts); if (typeof cb === "function") s.on("message", cb); return s; } };
 })();
-builtins.dns = (() => {
-  async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
-  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: Object.defineProperty((h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, __nimbusCustomPromisifyArgs, { value: ["address", "family"], enumerable: false }), promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
-})();
+
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
   ReadStream: class extends __streamMod.Readable {
@@ -11293,15 +11301,38 @@ builtins.zlib = (() => {
   const __real = (typeof __real_zlib !== "undefined") ? (__real_zlib.default ?? __real_zlib) : null;
   if (__real && typeof __real.gzipSync === "function") {
     const mod = {};
-    // Constants, lookup tables, crc32, and the stream factories/classes pass
+    // lib/zlib.js: the functions, the classes, \`constants\` and \`codes\` are
+    // the module's enumerable exports; each constant but Brotli's is on the
+    // module too, read-only and not enumerable (deprecated); there is no
+    // \`default\`. workerd exports every constant by name, enumerable, and two
+    // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
+    // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
+    // Z_MAX_CHUNK are the engine's values, not Node's.
+    const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
+    const constants = Object.create(null);
+    for (const [name, value] of Object.entries(__real.constants)) {
+      if (!Object.hasOwn(workerdOnly, name)) Object.defineProperty(constants, name, { value, enumerable: true });
+    }
+    // The lookup tables, crc32, and the stream factories/classes pass
     // through bound to the native module (capitalized names are classes —
     // binding would strip their prototype and break \`new\`).
     for (const k of Object.keys(__real)) {
+      if (k === "constants" || k === "codes" || k in constants || Object.hasOwn(workerdOnly, k)) continue;
       const v = __real[k];
-      mod[k] = (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v;
+      // lib/zlib.js defines each create* factory read-only.
+      Object.defineProperty(mod, k, {
+        value: (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v,
+        writable: !/^create[A-Z]/.test(k), enumerable: true, configurable: true,
+      });
+    }
+    Object.defineProperties(mod, {
+      constants: { value: constants, enumerable: true },
+      codes: { value: __real.codes, enumerable: true },
+    });
+    for (const [name, value] of Object.entries(constants)) {
+      if (!name.startsWith("BROTLI")) Object.defineProperty(mod, name, { value });
     }
     if (__real.promises) mod.promises = __real.promises;
-    mod.default = mod;
     return mod;
   }
   function _c(i,a) { return new Response(new Blob([i]).stream().pipeThrough(new CompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
@@ -11964,25 +11995,6 @@ for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, 
   }
 }
 
-// X.5-M (M-2): dns/promises subpath registration for redis.
-// @redis/client/dist/lib/client does require('dns/promises') to do
-// hostname → IP resolution. Pre-fix the only exposure was
-// builtins.dns.promises (an object property of the parent dns shim);
-// __requireFrom matches keys exactly, so 'dns/promises' missed.
-// Mirror the timers/promises pattern above. builtins.dns.promises is
-// already a complete object (DoH-backed lookup/resolve/resolve4) —
-// re-exposing it as a subpath builtin is a 2-line registration.
-builtins["dns/promises"] = builtins.dns.promises;
-// lib/internal/dns/utils.js's error codes, on dns and dns/promises; dns's getaddrinfo flags.
-{
-  const errorCodes = Object.fromEntries(["NODATA", "FORMERR", "SERVFAIL", "NOTFOUND", "NOTIMP", "REFUSED", "BADQUERY", "BADNAME", "BADFAMILY",
-    "BADRESP", "CONNREFUSED", "TIMEOUT", "EOF", "FILE", "NOMEM", "DESTRUCTION", "BADSTR", "BADFLAGS", "NONAME", "BADHINTS",
-    "NOTINITIALIZED", "LOADIPHLPAPI", "ADDRGETNETWORKPARAMS", "CANCELLED"].map((name) => [name, name === "EOF" ? "EOF" : "E" + name]));
-  Object.assign(builtins.dns, { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8 }, errorCodes);
-  Object.assign(builtins.dns.promises, errorCodes);
-}
-
-
 // undici (npm, not node core) — Nimbus provides it instead of node_modules.
 // __requireFrom checks this table BEFORE resolving, so this wins over any
 // installed copy, and esbuild lowers every ESM import of "undici" into the
@@ -12103,6 +12115,9 @@ ${NODE_BUILTIN_FRONTS_SOURCE}
 __nimbusFrontZlib(builtins.zlib);
 __nimbusFrontBuffer(builtins.buffer);
 __nimbusFrontCrypto(builtins.crypto);
+__nimbusFrontPath(builtins.path);
+__nimbusFrontUrl(builtins.url);
+__nimbusFrontEvents(builtins.events);
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────

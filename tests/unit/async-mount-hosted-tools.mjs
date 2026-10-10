@@ -28,6 +28,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
 // The mount's errors must be the bundle's VfsError, so it is bundled with the runtime.
@@ -79,7 +80,7 @@ workspace.filesystem.vfs.mount('/sick', { stat: sick, readFile: broken, writeFil
 const runtime = await bundle.composeHostedRuntime({
   workspace, ctx, env,
   ports: new bundle.PortRegistry(),
-  lifecycle: { waitUntil: (task) => { facetCtx.waitUntil(task); }, async schedule() {}, async cancel() {} },
+  lifecycle: hostedLifecycle(ctx, () => runtime),
 });
 
 /** One line in /m and in /home/user: each result, with the mounted one's paths spelled as the home's. */

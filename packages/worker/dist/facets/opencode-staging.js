@@ -183,6 +183,7 @@ export async function assembleOpencodeFacetConfig(env, specInput) {
         modules: {
             'runner.js': runner.code,
             ...Object.fromEntries(Object.entries(runner.codeModules).map(([name, cjs]) => [name, { cjs }])),
+            ...Object.fromEntries(Object.entries(runner.immutableModules).map(([name, source]) => [name, { cjs: source.text }])),
             [OPENCODE_BUNDLE_MODULE_NAME]: bundle,
             ...sqliteModules,
             ...treeSitterModules,

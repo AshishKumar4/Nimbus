@@ -39,7 +39,8 @@ import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { getRealNodeSharedImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
-import { createNodeFacetRuntime } from './node-shims-artifact.js';
+import { createNodeFacetRuntime, nodeFacetSource } from './node-shims-artifact.js';
+import { moduleSource } from '@nimbus-sh/platform/module-source.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_BACKEND_GLOBAL, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
@@ -619,7 +620,7 @@ export function generateOpencodeRunnerCode(opts) {
     const attachedTty = mode === 'attached';
     const resident = mode === 'attached' || mode === 'server';
     const runtime = createNodeFacetRuntime(opts.sources);
-    return { codeModules: runtime.modules, code: `
+    const source = moduleSource `
 // Two bases for two lifecycles, over one module scope. A resident run (the
 // attached TUI, opencode serve) is a DO Facet of the session, so NimbusProcess
 // extends DurableObject and its startProcess() holds the process open. A
@@ -694,10 +695,10 @@ ${SUPERVISOR_ANSWERING_SRC}
 // __nimbusResidentBundle.
 let __MODULE_VFS_BUNDLE = ${opts.vfsBundle};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
-${opts.sources.residentStore}
+${nodeFacetSource(opts.sources, 'residentStore')}
 const __vfsBundle = __nimbusResidentBundle;
 ${VFS_CURSOR_SEED_SOURCE}
-${opts.sources.ledger}
+${nodeFacetSource(opts.sources, 'ledger')}
 const __vfsDirs = {};
 const __nimbusDeferProcessExitReport = true;
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push
@@ -726,7 +727,7 @@ class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
 }
 
-${opts.sources.shims}
+${nodeFacetSource(opts.sources, 'shims')}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
 // Patch native HTTP listen/close before the staged ESM graph links. Its
@@ -1386,5 +1387,6 @@ async function __ocOneShotFetch(request, workerEnv) {
     await __ocDrainVfsWrites();
     return __ocHostResponse.json({ exitCode, stdout, stderr });
 }
-` };
+`;
+    return { source, get code() { return source.text; }, codeModules: runtime.modules, immutableModules: runtime.immutableModules };
 }
