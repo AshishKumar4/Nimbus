@@ -550,11 +550,14 @@ export class NimbusWorkspace {
     // it there, and its `cd` would not survive the call.
     const shell = named?.open(pid) ?? this.shellFor(pid, { cwd, env: options.env });
     // The call is this workspace's work behind the pid until its shell has
-    // closed what it opened: only then is what it bound released.
-    const stopped = this.processes.holdWork(pid, () => {});
+    // closed what it opened: a kill stops it, and only then is what it bound
+    // released.
+    const stop = new AbortController();
+    const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
+    const stopped = this.processes.holdWork(pid, () => stop.abort());
     let exitCode = 1;
     try {
-      const result = await runCommand(shell, command, named ? options : { ...options, cwd: undefined, env: undefined });
+      const result = await runCommand(shell, command, { ...(named ? options : { ...options, cwd: undefined, env: undefined }), signal });
       exitCode = result.exitCode;
       return result;
     } finally {
@@ -596,6 +599,7 @@ export class NimbusWorkspace {
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
         accountWork: (worker: number) => processes.beginWork(worker),
+        holdWork: (worker: number, stop: () => void) => processes.holdWork(worker, stop),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
@@ -731,7 +735,9 @@ function workspaceShellIdentity(
     // them doing nothing but await a program (SessionProcessSupervisor).
     const endAwait = processes.beginAwait(parent.pid, child.pid);
     const endWork = processes.beginWork(child.pid);
-    const stopped = processes.holdWork(child.pid, () => {});
+    // Its program is this workspace's work behind its pid: a kill stops it.
+    const stop = new AbortController();
+    const stopped = processes.holdWork(child.pid, () => stop.abort());
     let exitCode = 1;
     try {
       // The child inherits its parent's descriptors, environment and directory.
@@ -745,7 +751,7 @@ function workspaceShellIdentity(
         terminalStdin: parent.terminalStdin,
         isFdTerminal: parent.isFdTerminal,
         isFdPipe: parent.isFdPipe,
-        signal: parent.signal,
+        signal: parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal,
         runAs: runAsProcess,
       });
       exitCode = ended.status;
@@ -768,6 +774,7 @@ function workspaceShellIdentity(
     },
     runAs: runAsProcess,
     accountWork: (worker: number) => processes.beginWork(worker),
+    holdWork: (worker: number, stop: () => void) => processes.holdWork(worker, stop),
   });
 
   return commandIdentityFor(shellProcess.pid);

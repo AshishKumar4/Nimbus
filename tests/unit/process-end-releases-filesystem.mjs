@@ -22,6 +22,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { DELEGATION_RECALL_TIMEOUT_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { assumeGeneration } from '../../packages/fabric/src/generation.ts';
 import { routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
@@ -243,6 +244,131 @@ for (const [what, end] of [
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     console.log('  a killed or timed-out shell job closes its own descriptors before its end releases them');
+  } finally {
+    box.close();
+  }
+}
+
+// ── Every owner of such work stops it on a kill, and a destroy waits for
+//    what the stopped work held (a delegation among it) to go ─────────────
+// A workspace exec killed with no signal of the caller's stops (red before:
+// its hold's stop did nothing, so the command ran on and the release waited
+// for it). A line on the workspace's own shell is held too, so its kill
+// meets no EBADF. A destroy that stops a held job with a delegation goes
+// ahead once the job has unwound (red before: it checked in the same turn as
+// its kills and was refused EBUSY). Work that ignores its stop is released
+// all the same after the session's bound for a holder that does not let go
+// (DELEGATION_RECALL_TIMEOUT_MS).
+{
+  const sleepers = new Map();
+  const stubborn = [];
+  const box = await programmaticHost({
+    commands: {
+      async sleep(ctx) {
+        await new Promise((resolve) => {
+          sleepers.set(ctx.pid, resolve);
+          if (ctx.signal.aborted) resolve();
+          ctx.signal.addEventListener('abort', resolve, { once: true });
+        });
+        return 130;
+      },
+      // Ignores its stop: ends only when the test lets it.
+      async stubborn(ctx) {
+        await new Promise((resolve) => stubborn.push(resolve));
+        return 0;
+      },
+    },
+  });
+  /** Until `pid`'s command (`sleep`) is running. */
+  const asleep = async (pid) => {
+    for (let i = 0; i < 500 && !sleepers.has(pid); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(sleepers.has(pid), `pid ${pid} is asleep`);
+  };
+  const pidOf = (command) => Math.max(...box.ws.processes.getAll().filter((entry) => entry.command === command).map((entry) => entry.pid));
+  /** Whether `pid`'s binding is released, within `ms`. */
+  const releasedWithin = async (pid, cred, ms) => {
+    for (const deadline = Date.now() + ms; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 10))) {
+      try { box.ws.filesystem.bind({ pid, cred }); } catch (error) { if (error.code === 'ESTALE') return true; throw error; }
+    }
+    return false;
+  };
+  try {
+    const { ws, host, held } = box;
+    const cred = ws.processes.cred(ws.shellProcessPid);
+    await ws.fs.writeFile('/home/user/in', 'input');
+
+    const exec = ws.exec('sleep 10 > /home/user/out');
+    const execPid = await (async () => {
+      for (let i = 0; i < 500; i++) {
+        const pid = ws.processes.getAll().find((entry) => entry.command === 'sleep 10 > /home/user/out' && entry.state === 'running')?.pid;
+        if (pid !== undefined) return pid;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error('the exec never started');
+    })();
+    await asleep(execPid);
+    ws.processes.kill(execPid);
+    const ended = await Promise.race([exec, new Promise((resolve) => setTimeout(() => resolve(null), 2_000))]);
+    assert.notEqual(ended, null, 'a killed workspace exec stops');
+    assert.doesNotMatch(ended.stderr, /EBADF|Error/, `its cleanup met nothing closed under it: ${ended.stderr}`);
+    assert.ok(await releasedWithin(execPid, cred, 1_000), 'and is released once it has');
+    console.log('  a killed workspace exec stops, and is released once it has');
+
+    // A delegated job: its pid holds a subtree, and its shell sleeps.
+    ws.vfs.as(CRED_KERNEL).mkdir('home/user/deleg', { recursive: true });
+    ws.vfs.as(CRED_KERNEL).chown('home/user/deleg', cred.uid, cred.gid);
+    const { pid: jobPid } = await rpcStartProcess(host, 'sleep 10');
+    await asleep(jobPid);
+    const op = createSupervisorOpHandler({ vfs: ws.vfs, filesystem: ws.filesystem, processes: ws.processes });
+    await op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/deleg', { delegate: { reads: true } }], pid: jobPid });
+    assert.equal(ws.vfs.hasExclusiveMutation(), true, 'the job holds a delegation');
+
+    // Work that ignores its stop is released after the session's bound.
+    const { pid: stubbornPid } = await rpcStartProcess(host, 'stubborn > /home/user/s');
+    for (let i = 0; i < 500 && stubborn.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    ws.processes.kill(stubbornPid);
+    assert.equal(await releasedWithin(stubbornPid, cred, DELEGATION_RECALL_TIMEOUT_MS - 500), false, 'not before its bound');
+    assert.ok(await releasedWithin(stubbornPid, cred, 1_500), 'released once its bound has passed');
+    for (const resolve of stubborn.splice(0)) resolve();
+    console.log('  work that ignores its stop is released after the bound');
+
+    // The destroy stops the job, waits for its release, and goes ahead.
+    Object.assign(host.ctx, { getWebSockets: () => [] });
+    Object.assign(host.ctx.storage, { async deleteAll() {}, async deleteAlarm() {} });
+    assumeGeneration(host.ctx, 1);
+    const destroyed = await rpcDestroy(host, { reason: 'test' });
+    assert.equal(destroyed.ok, true, 'a destroy that stopped a held job holding a delegation goes ahead');
+    await Promise.all(held.splice(0));
+    console.log('  a destroy waits for a stopped job to let go of its delegation');
+  } finally {
+    box.close();
+  }
+}
+
+// ── A line on the workspace's own shell is held too ────────────────────────
+{
+  const box = await programmaticHost({
+    commands: {
+      async sleep(ctx) {
+        await new Promise((resolve) => {
+          box.asleep?.();
+          if (ctx.signal.aborted) resolve();
+          ctx.signal.addEventListener('abort', resolve, { once: true });
+        });
+        return 130;
+      },
+    },
+  });
+  try {
+    const { ws } = box;
+    await ws.fs.writeFile('/home/user/in', 'input');
+    const sleeping = new Promise((resolve) => { box.asleep = resolve; });
+    const line = ws.shell.execute('sleep 10 < /home/user/in');
+    await sleeping;
+    ws.processes.kill(ws.shellProcessPid);
+    const result = await line;
+    assert.doesNotMatch(result.stderr, /EBADF|Error/, `a killed shell's line met nothing closed under it: ${result.stderr}`);
+    console.log('  a line on the workspace shell closes its redirection before the shell is released');
   } finally {
     box.close();
   }
