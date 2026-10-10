@@ -14,7 +14,7 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
-import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, linkedSignal, listPageBudget } from '../vfs/sqlite-vfs.js';
 import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator } from './hydration.js';
 import { Delegations } from './delegations.js';
@@ -33,28 +33,6 @@ import { closeDescriptions, createSqliteDescriptorScope, fsError, modeAllows, re
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
-}
-/**
- * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
- * is not in every runtime this code ships to, so the combination is a small
- * linked controller instead.
- */
-function linkedSignal(signals) {
-    const controller = new AbortController();
-    const listeners = [];
-    for (const signal of signals) {
-        if (!signal)
-            continue;
-        if (signal.aborted) {
-            controller.abort(signal.reason);
-            break;
-        }
-        const onAbort = () => controller.abort(signal.reason);
-        signal.addEventListener('abort', onAbort, { once: true });
-        listeners.push(() => signal.removeEventListener('abort', onAbort));
-    }
-    return { signal: controller.signal, dispose: () => { for (const remove of listeners)
-            remove(); } };
 }
 /**
  * A scope still held: its caller's signal not aborted (that abort's reason),

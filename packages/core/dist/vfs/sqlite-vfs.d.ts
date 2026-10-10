@@ -608,6 +608,15 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
     };
 });
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
+/**
+ * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
+ * is not in every runtime this code ships to, so the combination is a small
+ * linked controller instead.
+ */
+export declare function linkedSignal(signals: readonly (AbortSignal | undefined)[]): {
+    signal: AbortSignal;
+    dispose(): void;
+};
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
@@ -825,6 +834,8 @@ export declare class SqliteVFS {
     private activePipeline;
     /** Pipelines whose commits are held, not yet published: no read lease is granted until they are. */
     private readonly heldPipelines;
+    /** Each wave being read now (writeStream), to cut (cancelStreams). */
+    private readonly streams;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
     /** Whether the running call is a view's synchronous mutation, whose writes to the session's stores a read recall holds rather than refuses (readRecallAt). */
@@ -1499,7 +1510,10 @@ export declare class SqliteVFS {
      * answer timed out) loses its authority before the work is redone.
      */
     rotateExclusiveMutation(owner: string): string;
+    /** Whether a holder's exclusive mutation is active: a lease taken for work, not a commit held for its publication. */
     hasExclusiveMutation(): boolean;
+    /** Cut every wave being read now: each ends as a refused one does, what it committed published once its recalls are answered. */
+    cancelStreams(reason: string): void;
     /**
      * Recall a read-covering delegation `key` lies in, for any caller but its
      * holder (the lease a mutation scope or a view presents).

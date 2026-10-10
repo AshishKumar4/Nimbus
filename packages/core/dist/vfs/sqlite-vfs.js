@@ -120,6 +120,28 @@ const MANIFEST_ROW_COLUMNS = 4;
 const CONTENT_ROW_COLUMNS = 6;
 const GC_ROW_COLUMNS = 2;
 export const INODE_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / INODE_ROW_COLUMNS);
+/**
+ * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
+ * is not in every runtime this code ships to, so the combination is a small
+ * linked controller instead.
+ */
+export function linkedSignal(signals) {
+    const controller = new AbortController();
+    const listeners = [];
+    for (const signal of signals) {
+        if (!signal)
+            continue;
+        if (signal.aborted) {
+            controller.abort(signal.reason);
+            break;
+        }
+        const onAbort = () => controller.abort(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        listeners.push(() => signal.removeEventListener('abort', onAbort));
+    }
+    return { signal: controller.signal, dispose: () => { for (const remove of listeners)
+            remove(); } };
+}
 /** A batch's directory record over a symbolic link it does not remove: refused, never followed or replaced. */
 function linkedDirectoryRefusal(path) {
     return vfsError('ENOTDIR', path, 'a directory record never replaces a symbolic link; remove the link in the same batch');
@@ -978,6 +1000,8 @@ export class SqliteVFS {
     activePipeline = null;
     /** Pipelines whose commits are held, not yet published: no read lease is granted until they are. */
     heldPipelines = new Set();
+    /** Each wave being read now (writeStream), to cut (cancelStreams). */
+    streams = new Set();
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     activeWrite = false;
     /** Whether the running call is a view's synchronous mutation, whose writes to the session's stores a read recall holds rather than refuses (readRecallAt). */
@@ -3344,8 +3368,17 @@ export class SqliteVFS {
         this.exclusiveMutationLeases.set(next, lease);
         return next;
     }
+    /** Whether a holder's exclusive mutation is active: a lease taken for work, not a commit held for its publication. */
     hasExclusiveMutation() {
-        return this.exclusiveMutationLeases.size > 0;
+        for (const lease of this.exclusiveMutationLeases.values())
+            if (lease.held === undefined)
+                return true;
+        return false;
+    }
+    /** Cut every wave being read now: each ends as a refused one does, what it committed published once its recalls are answered. */
+    cancelStreams(reason) {
+        for (const cut of this.streams)
+            cut.abort(new Error(reason));
     }
     /**
      * Recall a read-covering delegation `key` lies in, for any caller but its
@@ -8065,12 +8098,19 @@ export class SqliteVFS {
         // answered (as itself: under a lease not its own, it waits).
         const continues = holds === caller ? this.activeContinues : null;
         const pipeline = this.newPipeline(holds, false);
+        // Cut with every wave being read (cancelStreams): it ends as a refused
+        // one does, and what it committed is published as any wave's end publishes it.
+        const cut = new AbortController();
+        const linked = linkedSignal([options.signal, cut.signal]);
+        this.streams.add(cut);
         return this.spanning(async () => {
             let result;
             try {
-                result = await this.consumeStream(stream, options, cred, origin, holds, pipeline);
+                result = await this.consumeStream(stream, { ...options, signal: linked.signal }, cred, origin, holds, pipeline);
             }
             finally {
+                this.streams.delete(cut);
+                linked.dispose();
                 pipeline.continues = continues?.() === true;
                 const published = this.endPipeline(pipeline);
                 if (!pipeline.continues)
