@@ -508,7 +508,8 @@ async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
     const tar = await vfs.readFileUncached(tarVfsPath);
     // Its regular files (tarball-stream.ts): their paths read first and
     // checked, then their bytes, each written as it is read.
-    const isFile = (header) => isRegularTarFile(header) && !header.directory && header.name !== '';
+    // An entry that claims more bytes than the archive holds is never read (its buffer would be the claim's size).
+    const isFile = (header) => isRegularTarFile(header) && !header.directory && header.name !== '' && header.size <= tar.length;
     const records = (read) => streamTarRecords(tarBytes(tar), (header) => read && isFile(header));
     const paths = new Set();
     for await (const { header } of records(false))

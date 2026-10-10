@@ -86,12 +86,14 @@ export function createTar(entries) {
  * The entries of a tar archive, as the shell extracts them
  * (tarball-stream.ts streamTarRecords): a directory, or anything else with
  * its bytes as a file. Paths are canonical and inside the archive's root; an
- * entry that escapes it is left out.
+ * entry that escapes it is left out, and one that claims more bytes than
+ * the archive holds is never read (its buffer would be the claim's size).
  */
 export async function parseTar(data) {
     const entries = [];
-    for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), () => true)) {
-        if (header.name === '')
+    const read = (header) => header.name !== '' && header.size <= data.length;
+    for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), read)) {
+        if (bytes === null)
             continue;
         entries.push({
             path: header.name,

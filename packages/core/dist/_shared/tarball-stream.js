@@ -42,7 +42,8 @@ export function canonicalTarName(name) {
     }
     return out.join('/');
 }
-const UTF8 = new TextDecoder();
+/** Pathname fields are names, not documents: a leading U+FEFF is part of the name. */
+const PATH_DECODER = new TextDecoder('utf-8', { ignoreBOM: true });
 /** A USTAR field of `block`: the bytes at [start, end) up to the first NUL. */
 function tarField(block, start, end) {
     let stop = start;
@@ -60,6 +61,11 @@ function tarOctal(block, start, end) {
         value = value * 8 + (block[i] - 0x30);
     return value;
 }
+/** Whether `block` is a POSIX ustar header ("ustar\0" and version "00"), whose bytes 345 on are a name prefix (GNU's hold times there). */
+function posixUstar(block) {
+    return block[257] === 0x75 && block[258] === 0x73 && block[259] === 0x74 && block[260] === 0x61 && block[261] === 0x72
+        && block[262] === 0 && block[263] === 0x30 && block[264] === 0x30;
+}
 /**
  * Read one tar header (USTAR) out of `block`, or null for an end-of-archive
  * block. Names are UTF-8, as tar writes them today.
@@ -67,10 +73,10 @@ function tarOctal(block, start, end) {
 export function parseTarHeader(block) {
     if (block[0] === 0)
         return null;
-    let name = UTF8.decode(tarField(block, 0, 100));
-    const prefix = tarField(block, 345, 500);
+    let name = PATH_DECODER.decode(tarField(block, 0, 100));
+    const prefix = posixUstar(block) ? tarField(block, 345, 500) : block.subarray(0, 0);
     if (prefix.length > 0)
-        name = UTF8.decode(prefix) + '/' + name;
+        name = PATH_DECODER.decode(prefix) + '/' + name;
     const typeFlag = block[156];
     const directory = typeFlag === 53 /* '5' */ || name.endsWith('/');
     // The single top-level directory npm wraps every package in is learned

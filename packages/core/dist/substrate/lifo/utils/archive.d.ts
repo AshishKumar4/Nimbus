@@ -13,7 +13,8 @@ export declare function createTar(entries: TarEntry[]): Uint8Array;
  * The entries of a tar archive, as the shell extracts them
  * (tarball-stream.ts streamTarRecords): a directory, or anything else with
  * its bytes as a file. Paths are canonical and inside the archive's root; an
- * entry that escapes it is left out.
+ * entry that escapes it is left out, and one that claims more bytes than
+ * the archive holds is never read (its buffer would be the claim's size).
  */
 export declare function parseTar(data: Uint8Array): Promise<TarEntry[]>;
 export interface ZipEntry {
