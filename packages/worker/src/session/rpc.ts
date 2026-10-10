@@ -1292,9 +1292,10 @@ export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, cod
    * has useful context, then runs the same dump machinery.
    */
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
+    // Its supervisor state goes however its exit was recorded.
+    self.supervisorForgetBridge?.(pid);
     if (self.processes.getExit(pid)) return;
     try { self.processes.closeInput(pid); } catch {}
-    self.supervisorForgetBridge?.(pid);
     void self.processes.releaseOutput(pid, () => {
       closeRelayedSockets(self, pid);
       reportExternalExit(self, pid, code, reason);
