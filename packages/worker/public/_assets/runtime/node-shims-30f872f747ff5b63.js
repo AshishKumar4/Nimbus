@@ -15536,7 +15536,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     }
   }
   for (const name of ["onSocket", "addTrailers", "setNoDelay", "setSocketKeepAlive"]) {
-    Object.defineProperty(ClientRequest.prototype, name, Object.getOwnPropertyDescriptor(NativeClientRequest.prototype, name));
+    Object.defineProperty(ClientRequest.prototype, name, { value: NativeClientRequest.prototype[name], writable: true, configurable: true });
   }
   http.ClientRequest = ClientRequest;
   http.request = function request(...args) { return new ClientRequest(...args); };
