@@ -193,7 +193,7 @@ try {
   let echoed = null;
   const echoDeadline = Date.now() + 60_000;
   while (Date.now() < echoDeadline) {
-    const response = await fetch(url('echo', ECHO_PORT), { headers: requestHeaders(sent) });
+    const response = await fetch(url('echo', ECHO_PORT), { headers: requestHeaders(sent, sid) });
     if (response.status === 200) { echoed = await response.json(); break; }
     await response.body?.cancel();
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -202,7 +202,7 @@ try {
   for (const [name, value] of Object.entries(sent)) {
     a.check(`${name} reaches the guest unchanged`, echoed?.[name] === value, `sent ${JSON.stringify(value)} got ${JSON.stringify(echoed?.[name])}`);
   }
-  const partial = await fetch(url('partial', ECHO_PORT), { headers: requestHeaders() });
+  const partial = await fetch(url('partial', ECHO_PORT), { headers: requestHeaders({}, sid) });
   const partialBody = await partial.text();
   a.check(
     "a guest's 206 comes back with its Content-Range, Content-Length, Accept-Ranges and ETag",
@@ -211,7 +211,7 @@ try {
       && partial.headers.get('accept-ranges') === 'bytes' && partial.headers.get('etag') === '"v1"' && partialBody === '56789',
     `status=${partial.status} ${JSON.stringify(Object.fromEntries(partial.headers))} body=${partialBody}`,
   );
-  const notModified = await fetch(url('not-modified', ECHO_PORT), { headers: requestHeaders() });
+  const notModified = await fetch(url('not-modified', ECHO_PORT), { headers: requestHeaders({}, sid) });
   await notModified.body?.cancel();
   a.check(
     "a guest's 304 comes back with its ETag",
@@ -222,7 +222,7 @@ try {
   let first = null;
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    first = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=0-63' }) });
+    first = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=0-63' }, sid) });
     if (first.status === 206) break;
     await first.body?.cancel();
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -240,7 +240,7 @@ try {
   ];
   let etag = null;
   for (const range of ranges) {
-    const response = await fetch(url('big.bin'), { headers: requestHeaders({ Range: range.header }) });
+    const response = await fetch(url('big.bin'), { headers: requestHeaders({ Range: range.header }, sid) });
     const expectedLength = range.end - range.start + 1;
     const contentRange = response.headers.get('content-range');
     etag ??= response.headers.get('etag');
@@ -258,7 +258,7 @@ try {
 
   // ── conditional requests reach the server and its answers come back ──
   a.check('the server’s ETag comes back', typeof etag === 'string' && etag.length > 0, `etag=${etag}`);
-  const unchanged = await fetch(url('big.bin'), { headers: requestHeaders({ 'If-None-Match': etag }) });
+  const unchanged = await fetch(url('big.bin'), { headers: requestHeaders({ 'If-None-Match': etag }, sid) });
   a.check(
     'If-None-Match with the current ETag → 304 carrying that ETag',
     unchanged.status === 304 && unchanged.headers.get('etag') === etag,
@@ -266,7 +266,7 @@ try {
   );
   await unchanged.body?.cancel();
   const lastModified = unchanged.headers.get('last-modified');
-  const notModifiedSince = await fetch(url('big.bin'), { headers: requestHeaders({ 'If-Modified-Since': lastModified }) });
+  const notModifiedSince = await fetch(url('big.bin'), { headers: requestHeaders({ 'If-Modified-Since': lastModified }, sid) });
   await notModifiedSince.body?.cancel();
   a.check(
     'If-Modified-Since with the file\'s Last-Modified → 304',
@@ -274,14 +274,14 @@ try {
     `status=${notModifiedSince.status} last-modified=${lastModified}`,
   );
   if (server.ifRange) {
-    const ifRange = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=10-19', 'If-Range': etag }) });
+    const ifRange = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=10-19', 'If-Range': etag }, sid) });
     const ifRangeChecked = await verifyStream(ifRange.body, 10);
     a.check(
       'If-Range with the current ETag → 206 of the range',
       ifRange.status === 206 && ifRangeChecked.length === 10 && ifRangeChecked.mismatch === null,
       `status=${ifRange.status} length=${ifRangeChecked.length}`,
     );
-    const staleIfRange = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=10-19', 'If-Range': '"stale"' }) });
+    const staleIfRange = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=10-19', 'If-Range': '"stale"' }, sid) });
     a.check(
       'If-Range with a stale ETag → 200 of the whole file',
       staleIfRange.status === 200 && Number(staleIfRange.headers.get('content-length')) === SIZE,
@@ -292,7 +292,7 @@ try {
 
   // ── the whole file, streamed ──
   const t0 = Date.now();
-  const whole = await fetch(url('big.bin'), { headers: requestHeaders() });
+  const whole = await fetch(url('big.bin'), { headers: requestHeaders({}, sid) });
   const wholeChecked = await verifyStream(whole.body, 0);
   const seconds = (Date.now() - t0) / 1000;
   console.log(`  full download: ${wholeChecked.length} bytes in ${seconds.toFixed(1)} s (${(wholeChecked.length / MiB / seconds).toFixed(1)} MiB/s)`);
@@ -307,7 +307,7 @@ try {
   a.check('the terminal socket stayed open throughout', !t.closed, t.closeDetail ?? '');
   const alive = await t.run('echo session-alive-$((6*7))', 30_000);
   a.check('the same terminal still runs commands', alive.output.includes('session-alive-42'), alive.output.slice(-200));
-  const again = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=0-3' }) });
+  const again = await fetch(url('big.bin'), { headers: requestHeaders({ Range: 'bytes=0-3' }, sid) });
   a.check('the server still answers afterwards', again.status === 206, `status=${again.status}`);
   await again.body?.cancel();
 } catch (error) {

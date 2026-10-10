@@ -17,7 +17,7 @@ const a=makeAsserter('vite8-real');
 const ROOT='/home/user/vite8-probe',APP=ROOT+'/app',PORT=5173;
 const MARKER='vite8-real-'+Date.now();
 function tail(s,n=20){return stripAnsi(s).split(/\r?\n/).filter(Boolean).slice(-n).join('\n');}
-async function readPort(sid,path){const r=await fetch(`${BASE}/s/${sid}/port/${PORT}/${path}`,{headers:requestHeaders(),signal:AbortSignal.timeout(30000)});return {status:r.status,body:await r.text()};}
+async function readPort(sid,path){const r=await fetch(`${BASE}/s/${sid}/port/${PORT}/${path}`,{headers:requestHeaders({}, sid),signal:AbortSignal.timeout(30000)});return {status:r.status,body:await r.text()};}
 const sid=await mintSession();console.log(`[vite8-real] sid=${sid} BASE=${BASE}`);
 const t=new Terminal(sid);let proc;
 try{

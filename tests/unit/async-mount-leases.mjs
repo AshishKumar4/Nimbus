@@ -25,6 +25,7 @@
 import assert from 'node:assert/strict';
 import { testBox } from './lib/test-box.mjs';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 
 const USER = { uid: 1000, gid: 1000 };
 const code = (run) => Promise.resolve().then(run).then(() => 'ok', (error) => error.code);
@@ -32,21 +33,9 @@ const code = (run) => Promise.resolve().then(run).then(() => 'ok', (error) => er
 /** Called with each call the asynchronous mount takes, before it runs (the alias swap below). */
 let beforeCall = null;
 
-/** A MemoryVFS with no synchronous face: every call answers a promise. */
-const asyncOnly = (vfs) => new Proxy(vfs, {
-  get(target, key) {
-    if (key === 'sync') return undefined;
-    const value = target[key];
-    if (typeof value !== 'function') return value;
-    if (key === 'as') return (...args) => asyncOnly(value.apply(target, args));
-    return async (...args) => { beforeCall?.(String(key), args); return value.apply(target, args); };
-  },
-  has: (target, key) => key !== 'sync' && key in target,
-});
-
 const m = new MemoryVFS(USER);
 const s = new MemoryVFS(USER);
-const box = await testBox({ mounts: { '/m': asyncOnly(m), '/s': s } });
+const box = await testBox({ mounts: { '/m': asyncOnly(m, { deep: true, beforeCall: (key, args) => beforeCall?.(key, args) }), '/s': s } });
 const { workspace: ws } = box;
 const engine = box.files.engine;
 const view = ws.shell.getVfs();
@@ -262,19 +251,14 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
    * before a call. With rmdir hidden, its unlink removes an empty directory,
    * as a plane's single delete does.
    */
-  const hooked = (vfs, hooks, hide = []) => new Proxy(vfs, {
-    get(target, key) {
-      if (key === 'sync' || hide.includes(key)) return undefined;
-      const value = target[key];
-      if (typeof value !== 'function') return value;
-      if (key === 'as') return (...args) => hooked(value.apply(target, args), hooks, hide);
-      return async (...args) => {
-        await hooks[key]?.(...args);
-        if (key === 'unlink' && hide.includes('rmdir') && (await target.stat(args[0], { follow: false }))?.type === 'directory') return target.rmdir(args[0]);
-        return value.apply(target, args);
-      };
+  const hooked = (vfs, hooks, hide = []) => asyncOnly(vfs, {
+    deep: true, hide, beforeCall: (key, args) => hooks[key]?.(...args),
+    methods: {
+      async unlink(path) {
+        if (hide.includes('rmdir') && vfs.stat(path, { follow: false })?.type === 'directory') return vfs.rmdir(path);
+        return vfs.unlink(path);
+      },
     },
-    has: (target, key) => key !== 'sync' && !hide.includes(key) && key in target,
   });
 
   const src = new MemoryVFS(USER);
@@ -365,20 +349,12 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
   const gated = new MemoryVFS(USER);
   let gate = null;
   /** Asynchronous-only, its stat of the gate's path held until the gate is released. */
-  const gating = (vfs) => new Proxy(vfs, {
-    get(target, key) {
-      if (key === 'sync') return undefined;
-      const value = target[key];
-      if (typeof value !== 'function') return value;
-      if (key === 'as') return (...args) => gating(value.apply(target, args));
-      return async (...args) => {
-        if (key === 'stat' && gate !== null && args[0] === gate.path) { const open = gate; gate = null; open.reached(); await open.released; }
-        return value.apply(target, args);
-      };
+  ws.filesystem.vfs.mount('/g', asyncOnly(gated, {
+    deep: true,
+    async beforeCall(key, args) {
+      if (key === 'stat' && gate !== null && args[0] === gate.path) { const open = gate; gate = null; open.reached(); await open.released; }
     },
-    has: (target, key) => key !== 'sync' && key in target,
-  });
-  ws.filesystem.vfs.mount('/g', gating(gated));
+  }));
   /** Run `write` until the mount is asked for `path`, `revoke` there, then let it go on. */
   const revokedDuring = async (path, write, revoke) => {
     let reached; let release;
@@ -488,20 +464,12 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
 {
   const owned = new MemoryVFS(USER);
   let gate = null;
-  const gating = (vfs) => new Proxy(vfs, {
-    get(target, key) {
-      if (key === 'sync') return undefined;
-      const value = target[key];
-      if (typeof value !== 'function') return value;
-      if (key === 'as') return (...args) => gating(value.apply(target, args));
-      return async (...args) => {
-        if (key === 'stat' && gate !== null && args[0] === gate.path) { const open = gate; gate = null; open.reached(); await open.released; }
-        return value.apply(target, args);
-      };
+  ws.filesystem.vfs.mount('/o', asyncOnly(owned, {
+    deep: true,
+    async beforeCall(key, args) {
+      if (key === 'stat' && gate !== null && args[0] === gate.path) { const open = gate; gate = null; open.reached(); await open.released; }
     },
-    has: (target, key) => key !== 'sync' && key in target,
-  });
-  ws.filesystem.vfs.mount('/o', gating(owned));
+  }));
   await owned.mkdir('/held', { recursive: true });
   const files = box.files;
   const cred = { ...USER, groups: [1000], umask: 0o022 };

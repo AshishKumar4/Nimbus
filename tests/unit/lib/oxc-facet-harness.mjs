@@ -13,6 +13,7 @@ import { oxcFacetWorkerCode } from '../../../packages/worker/src/facets/oxc-tran
 import { OXC_WASM_ASSET_PATH } from '../../../packages/worker/src/oxc-wasm-artifact.generated.ts';
 import { OXC_FACET_ASSET_PATH } from '../../../packages/worker/src/oxc-facet-artifact.generated.ts';
 import { AMARO_WASM_ASSET_PATH } from '../../../packages/worker/src/amaro-wasm-artifact.generated.ts';
+import { namedFacetPlatform } from './named-facet-platform.mjs';
 
 const staged = (path) => readFile(new URL(`../../../packages/worker/public${path}`, import.meta.url));
 
@@ -89,44 +90,15 @@ export async function freshFacetClass() {
  * mints throw on every call, as a stub whose connection dropped does.
  */
 export function durableObject(OxcFacet, { brokenStubs = 0 } = {}) {
-  const counts = { loaderGets: 0, facetInstances: 0, stubs: 0, transformCalls: 0 };
-  const facets = new Map();
-  const ctx = {
-    id: { toString: () => 'oxc-facet-do' },
-    facets: {
-      get(name, load) {
-        if (!facets.has(name)) {
-          facets.set(name, load().then(({ class: FacetClass }) => {
-            counts.facetInstances++;
-            return new FacetClass({}, {});
-          }));
-        }
-        const instance = facets.get(name);
-        if (++counts.stubs <= brokenStubs) {
-          return { transformMany: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
-        }
-        return {
-          transformMany: async (requests) => {
-            counts.transformCalls++;
-            return structuredClone(await (await instance).transformMany(structuredClone(requests)));
-          },
-        };
-      },
+  const platform = namedFacetPlatform({ id: 'oxc-facet-do', classFor: () => OxcFacet, loadDelayMs: 5, brokenStubs,
+    async invoke(_name, method, args, instance) {
+      platform.counts.transformCalls++;
+      const target = await instance;
+      return structuredClone(await target[method](...structuredClone(args)));
     },
-  };
-  const env = {
-    ASSETS: { async fetch() { throw new Error('the worker is handed out by LOADER.get below'); } },
-    LOADER: {
-      async get() {
-        counts.loaderGets++;
-        // A load takes a turn or two, as a real one does, so a transform can
-        // start while another caller is still inside it.
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return { getDurableObjectClass: () => OxcFacet };
-      },
-    },
-  };
-  return { ctx, env, counts };
+  });
+  platform.counts.transformCalls = 0;
+  return platform;
 }
 
 /** Restore the globals the harness set; a test that uses the harness ends with this. */

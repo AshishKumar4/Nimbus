@@ -20,7 +20,7 @@ console.log(`file-tree-fix/new/fs-request-queues-while-ws-pending — ${process.
 const sid = await mintSession();
 
 // HTML wiring — both Editor and FileTree expose drainFsQueue.
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 a.check('Editor exposes drainFsQueue in return-object',
   /return\s*\{[\s\S]{0,800}\bensureLoaded\b[\s\S]{0,800}\bdrainFsQueue\b[\s\S]{0,800}\}/.test(html),
@@ -44,7 +44,7 @@ a.check('fsRequest still tries direct send when WS is OPEN',
 // Protocol round-trip: open WS, immediately send 3 fs-* frames in
 // rapid succession. Server should respond to ALL three with proper
 // reqId echo.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => {

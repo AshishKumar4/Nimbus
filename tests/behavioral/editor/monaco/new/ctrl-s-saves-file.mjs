@@ -1,10 +1,10 @@
-import { mintSession, deleteSession, BASE, AUTH_TOKEN, makeAsserter } from '../../../_driver.mjs';
+import { mintSession, deleteSession, BASE, requestHeaders, makeAsserter } from '../../../_driver.mjs';
 import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
 import { Nimbus } from '../../../../../packages/sdk/src/index.ts';
 
 const a = makeAsserter('editor/monaco/new/ctrl-s-saves-file');
 const sid = await mintSession();
-const box = Nimbus.connect({ endpoint: BASE, token: AUTH_TOKEN }).sandbox(sid);
+const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
 const path = '/home/user/ctrl-s-target.txt';
 const content = 'saved by the keyboard\nsecond line\n  indented';
 let browser;

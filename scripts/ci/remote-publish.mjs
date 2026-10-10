@@ -20,7 +20,7 @@ const git = (args) => {
 try {
   const repo = git(['rev-parse', '--show-toplevel']);
   const sha = git(['rev-parse', '--verify', `${argv[0] ?? 'HEAD'}^{commit}`]);
-  const mapped = await mapOnArmada({ repo, sha, files: ['scripts/ci/publish-pack.mjs', 'scripts/ci/lib/publish-packages.mjs'], items: [1], command: ['bun', 'scripts/ci/publish-pack.mjs', '--out', '{out}'], label: `publish-pack ${sha.slice(0, 12)}` });
+  const mapped = await mapOnArmada({ repo, sha, files: ['scripts/ci/publish-pack.mjs', 'scripts/ci/lib/publish-packages.mjs', 'scripts/ci/lib/publish-tarballs.mjs', 'scripts/ci/lib/step.mjs', 'scripts/check-published.mjs'], items: [1], command: ['bun', 'scripts/ci/publish-pack.mjs', '--out', '{out}'], label: `publish-pack ${sha.slice(0, 12)}` });
   const outcome = mapped.outcomes[0];
   if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada publish packing was not graded (${mapped.jobId}): ${outcome?.tail ?? 'no outcome'}`);
   const result = JSON.parse(mapped.outputs[0]);

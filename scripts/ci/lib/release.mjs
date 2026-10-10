@@ -13,13 +13,13 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { loadConfig } from '../../deploy-isolation.mjs';
 import { filesUnder } from '../../lib/fs-walk.mjs';
 import { mapOnArmada } from './armada.mjs';
+import { NIMBUS_STATE } from './state-dir.mjs';
 
-export const RELEASES = join(homedir(), '.local', 'state', 'nimbus', 'releases');
+export const RELEASES = join(NIMBUS_STATE, 'releases');
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const slug = (name) => name.replace(/[/:]/g, '-');
@@ -38,7 +38,7 @@ const git = (cwd, args) => {
  */
 export async function fetchRelease({ repo, sha, targets, log = (line) => console.error(line) }) {
   const mapped = await mapOnArmada({
-    repo, sha, files: ['scripts/ci/bundle.mjs'], items: [1], label: `bundle ${sha.slice(0, 12)} ${targets.join(' ')}`, log,
+    repo, sha, files: ['scripts/ci/bundle.mjs', 'scripts/ci/lib/step.mjs'], items: [1], label: `bundle ${sha.slice(0, 12)} ${targets.join(' ')}`, log,
     command: ['bun', 'scripts/ci/bundle.mjs', '--out', '{out}', ...targets.flatMap((target) => ['--target', target])],
   });
   const [outcome] = mapped.outcomes;

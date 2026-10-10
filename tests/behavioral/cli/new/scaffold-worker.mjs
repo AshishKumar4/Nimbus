@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import WebSocket from 'ws';
-import { makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { makeAsserter, Terminal } from '../../_driver.mjs';
+import { createProbeTarget } from '../../_session-transport.mjs';
 import { scaffold } from '../../../../packages/cli/src/commands/scaffold.ts';
 import { newSession } from '../../../../packages/cli/src/commands/session.ts';
 import { issueNimbusToken } from '../../../../packages/sdk/src/token.ts';
@@ -15,7 +15,7 @@ const a = makeAsserter('cli/new/scaffold-worker');
 const root = mkdtempSync(join(tmpdir(), 'nimbus-scaffold-probe-'));
 const project = join(root, 'worker');
 const repo = new URL('../../../../', import.meta.url).pathname;
-let child, socket, session, token, base;
+let child, terminal, session, target, token, base;
 let log = '';
 async function capture(command, args) {
   const write = process.stdout.write;
@@ -50,6 +50,7 @@ try {
   base = `http://127.0.0.1:${port}`;
   const secret = 'scaffold-probe-local-secret';
   token = await issueNimbusToken({ JWT_SECRET: secret }, { tn: 'scaffold', sub: 'tester' });
+  target = createProbeTarget({ base, token });
   child = spawn('node', [join(repo, 'node_modules/wrangler/bin/wrangler.js'), 'dev', '--local', '--port', String(port), '--var', `JWT_SECRET:${secret}`], {
     cwd: project, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -65,23 +66,17 @@ try {
   a.check('CLI session new talks to the generated Worker router', minted.code === 0);
   if (minted.code !== 0) throw new Error(`session creation failed: ${log.slice(-4000)}`);
   session = JSON.parse(minted.stdout);
-  const output = [];
-  socket = new WebSocket(`${base.replace('http:', 'ws:')}/s/${session.sessionId}/ws`, { headers: { Authorization: `Bearer ${token}` } });
-  socket.on('message', (frame) => {
-    const message = JSON.parse(frame.toString());
-    if (message.type === 'output') output.push(message.data);
-  });
-  await Promise.race([once(socket, 'open'), new Promise((_, reject) => setTimeout(() => reject(new Error('generated Worker WebSocket did not open')), 30_000))]);
-  socket.send(JSON.stringify({ type: 'input', data: 'node -e "console.log(6*7)"\r' }));
-  await until('a Node command through the generated host registry', () => /(?:^|\n)42\r?\n/.test(stripAnsi(output.join(''))));
-  a.check('the scaffold host classes run a real Node process and return its output', true);
+  terminal = new Terminal(session.sessionId, { base, wsOptions: { headers: target.session(session.sessionId).headers } });
+  await terminal.connect();
+  const execution = await terminal.run('node -e "console.log(6*7)"');
+  a.check('the scaffold host classes run a real Node process and return its output',
+    execution.exitCode === 0 && /(?:^|\n)42\r?\n/.test(execution.output), JSON.stringify(execution));
 } finally {
-  if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+  if (terminal) await terminal.close();
   try {
     if (session) {
-      const response = await fetch(`${base}/s/${session.sessionId}/`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-      const destroyed = await response.json();
-      a.check('the scaffold session is destroyed through its public cleanup route', destroyed.ok === true && destroyed.result?.ok === true && typeof destroyed.result.destroyedAt === 'number');
+      const destroyed = await target.delete(session.sessionId, { reason: 'scaffold-probe-complete' });
+      a.check('the scaffold session is destroyed through its public cleanup route', destroyed.ok, JSON.stringify(destroyed));
     }
   } finally {
     if (child && child.exitCode === null) {

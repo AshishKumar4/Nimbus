@@ -75,7 +75,7 @@ async function cutShort(dest, fresh, durable) {
   a.check('the clone marks its .git while it runs', marked.ok, JSON.stringify(marked.last));
 
   // ── 2. a real isolate reset, mid-clone ──
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders() });
+  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
   a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
   const resetDeadline = Date.now() + 10_000;
   while (!t.closed && Date.now() < resetDeadline) await sleep(50);

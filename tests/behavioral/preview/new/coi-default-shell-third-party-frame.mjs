@@ -13,7 +13,7 @@
 // Chrome runs with web security on: the rules under test are the browser's.
 // NIMBUS_PROBE_SCREENSHOTS=<dir> saves the isolated shell's offer, desktop and 390 px.
 
-import { AUTH_TOKEN, deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
+import { deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
 import { applyProbeCookies, exchangeAttachCookie, launchBrowser, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -97,8 +97,8 @@ try {
   // The session's DELETE below ends the app with everything else.
   await t.close();
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
 
   // ── default shell ──
   const shellResponse = await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 90_000 });

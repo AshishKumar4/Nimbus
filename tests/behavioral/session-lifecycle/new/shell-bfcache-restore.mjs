@@ -9,7 +9,7 @@
 // it: let the shell finish loading, navigate away, go back, and the same
 // page's terminal runs a command.
 
-import { AUTH_TOKEN, BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
+import { BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
 import {
   applyProbeCookies,
   exchangeAttachCookie,
@@ -33,8 +33,8 @@ try {
   page.on('request', (request) => open.set(request, `${request.resourceType()} ${request.url().replace(/[?#].*$/, '')}`));
   page.on('requestfinished', (request) => open.delete(request));
   page.on('requestfailed', (request) => open.delete(request));
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await waitForSessionTerminalText(page, /user@nimbus:/, 30_000);
   // The user leaves a page that has loaded: the prompt can paint before the

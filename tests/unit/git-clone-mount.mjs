@@ -56,17 +56,7 @@ class Locking extends MemoryVFS {
   writeRange(path, offset, bytes, options) { this.lockFor(path); return super.writeRange(path, offset, bytes, options); }
 }
 
-/** A MemoryVFS with no synchronous face: every call answers a promise. */
-const asyncOnly = (vfs) => new Proxy(vfs, {
-  get(target, key) {
-    if (key === 'sync') return undefined;
-    const value = target[key];
-    if (typeof value !== 'function') return value;
-    if (key === 'as') return (...args) => asyncOnly(value.apply(target, args));
-    return async (...args) => value.apply(target, args);
-  },
-  has: (target, key) => key !== 'sync' && key in target,
-});
+import { asyncOnly as asyncFace } from './lib/async-memory-vfs.mjs';
 
 /** git's lines a failure says (error:, fatal:, warning: and the hints after them), as a list. */
 const gitLines = (stderr) => stderr.split('\n').filter((line) => /^(error|fatal|warning): |^You can inspect|^and retry|^Another git|^an editor|^are terminated|^may have crashed|^remove the file/.test(line));
@@ -147,7 +137,7 @@ try {
     '/mnt/norename': noRename,
     '/mnt/limited': limited,
     '/mnt/locking': locking,
-    '/mnt/async': asyncOnly(awaited),
+    '/mnt/async': asyncFace(awaited, { deep: true }),
   } });
   try {
     // Host git's clone is the whole history without --depth: ours takes --no-shallow for it.
