@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
@@ -375,6 +376,38 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(decode(pushed(answer).bytes), 'held');
   assert.equal(pushed(answer).stat.size, 4);
   assert.equal(decode(landed.readFile('home/user/d/a.txt')), 'held');
+}
+
+// ── A writer whose output is held continues at commit; its output and exit wait for the publication ──
+{
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['w.js'], '/home/user', { cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const logged = () => processes.readLogs(pid).chunks.map((chunk) => chunk.data).join('');
+  const { readLease } = barrier(s, reader);
+  assert.equal(s.files.outputGate.before(pid), null, 'output was held with nothing of its held');
+  // Answered at commit: the reader has not answered its recall.
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
+  assert.equal(new TextDecoder().decode(writer.readFile('/home/user/d/a.txt')), 'held', 'its writer reads its own');
+  assert.throws(() => other.readFile('/home/user/d/a.txt'), (error) => error.code === 'EAGAIN', 'another read it before its publication');
+  processes.appendOutput(pid, 'stdout', 'written\n');
+  processes.markExit(pid, 0);
+  await sleep(10);
+  assert.equal(logged(), '', 'its output went out before what it wrote was published');
+  assert.equal(processes.getExit(pid), null, 'its exit went out before what it wrote was published');
+  // Another process's output waits for nothing of this one's.
+  assert.equal(s.files.outputGate.before(9), null);
+  reader.recalled(readLease.owner, 'revoke');
+  await s.files.outputGate.before(pid);
+  await sleep(0);
+  assert.equal(logged(), 'written\n');
+  assert.equal(processes.getExit(pid)?.code, 0);
+  assert.equal(s.files.outputGate.before(pid), null);
+  assert.equal(new TextDecoder().decode(other.readFile('/home/user/d/a.txt')), 'held');
 }
 
 // ── Held for publication: another opener's description waits for it, its writer's reads its own ──

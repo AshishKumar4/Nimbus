@@ -33,6 +33,7 @@ import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
+import type { OutputGate } from './output-gate.js';
 
 export interface PortEntry {
   port: number;
@@ -175,9 +176,21 @@ export class PortRegistry {
    *   `_acquireOnDelivery`). Undefined attaches nothing, and without it every
    *   request is forwarded bare; either way the process then asks.
    */
+  /** Holds a process's answers until what it wrote is published (setOutputGate). */
+  private outputGate: OutputGate | null = null;
+
   constructor(
     private readonly deliveredAcquire: ((pid: number) => Promise<unknown>) | null = null,
   ) {}
+
+  /**
+   * Hold each process's answers (status and headers, and each piece of its
+   * body as it comes) until `gate` lets them through: what a process makes
+   * visible after a write waits for the write's publication. One slot.
+   */
+  setOutputGate(gate: OutputGate | null): void {
+    this.outputGate = gate;
+  }
 
   /**
    * Remember the available facet capabilities for a running process.
@@ -454,6 +467,8 @@ export class PortRegistry {
         return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
       }
       const response: Response = await handler(forwarded);
+      // What it wrote before answering is published before anyone sees the answer.
+      await this.outputGate?.before(entry.pid);
 
       if (!(response instanceof Response)) {
         // Defensive: if a facet ever returns something else (JSON

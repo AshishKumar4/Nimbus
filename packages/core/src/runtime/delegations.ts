@@ -312,6 +312,11 @@ export class Delegations {
     return owned;
   }
 
+  /** The leases process `pid` holds, while a scope of its lives (holdsOf); undefined otherwise. */
+  holdsAt(pid: number): ReadonlySet<string> | undefined {
+    return this.byPid.get(pid);
+  }
+
   get size(): number {
     return this.held.size;
   }

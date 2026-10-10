@@ -20,6 +20,7 @@ import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult, 
 import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
+import type { OutputGate } from './output-gate.js';
 import { withRecall } from '../vfs/recall.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
@@ -470,6 +471,33 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     }
   }
 
+  /**
+   * What holds a process's output back: the publication of every commit of
+   * its that another reader's recall holds (SqliteVFS.publishedFor). None
+   * held, nothing waits.
+   */
+  readonly outputGate: OutputGate = {
+    before: (pid) => {
+      const holds = this.delegations.holdsAt(pid);
+      return holds === undefined ? null : this.engine.publishedFor(holds);
+    },
+  };
+  /** Whether every external channel of a process waits at `outputGate` (holdOutput): its writes continue at commit. */
+  private outputHeld = false;
+
+  /**
+   * From now on each process's output waits for what it wrote to be
+   * published (`outputGate`, installed on `processes`), so its writes
+   * answer at commit rather than at their publication: the writer
+   * continues, and what it makes visible after a write is held instead. The
+   * host gates every other channel a process's effects leave by (its ports'
+   * answers) with the same gate.
+   */
+  holdOutput(processes: { setOutputGate(gate: OutputGate | null): void }): void {
+    processes.setOutputGate(this.outputGate);
+    this.outputHeld = true;
+  }
+
   async releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
     this.listings.delete(pid);
@@ -565,7 +593,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // recall none of them, on SQLite and through the namespace alike.
     const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
     const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds }), this.engine, scope, view, this.bufferedWriteBytes);
+    const continues = pid === undefined ? undefined : () => this.outputHeld;
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
     const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view));
     // Every other method forwards to the guarded bridge.
     let awaited = this.awaitedDescriptors.get(scope);

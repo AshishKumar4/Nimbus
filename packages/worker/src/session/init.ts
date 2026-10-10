@@ -223,6 +223,8 @@ export async function initSession(
       egress: self.egressForWorkspace(),
     });
     self.runtimeWorkspace = workspace;
+    // A process's answers wait for what it wrote, as its output does (ProcessFiles.holdOutput).
+    self.portRegistry.setOutputGate(workspace.filesystem.outputGate);
     self.shellProcessPid = workspace.shellProcessPid;
     self.kernel = workspace.kernel;
     self.shell = workspace.shell;
