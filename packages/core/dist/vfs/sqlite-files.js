@@ -74,6 +74,7 @@ export class SqliteFiles {
         return new SqliteFiles(this.engine, this.engine.as(cred, {
             ...(actor === undefined ? {} : { actor }),
             ...(options?.holds === undefined ? {} : { holds: options.holds }),
+            ...(options?.landed === true ? { landed: true } : {}),
         }));
     }
     /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */

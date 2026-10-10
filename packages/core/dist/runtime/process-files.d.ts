@@ -105,9 +105,14 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * paths in one turn (git, the build services, vite's file shim, agent
      * tools). Mounted paths route to their mount (a mount without a
      * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
-     * exactly as a process's syscalls do. One per credential for the session.
+     * exactly as a process's syscalls do. `landed`: its reads read what has
+     * landed (VFS.as), asking no delegation's holder — a listing that runs on
+     * every change (the editor's file tree). One per credential and option for
+     * the session.
      */
-    namespaceFs(cred: Readonly<VfsCred>): NamespaceFs;
+    namespaceFs(cred: Readonly<VfsCred>, options?: {
+        landed?: boolean;
+    }): NamespaceFs;
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
     /**
