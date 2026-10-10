@@ -31,6 +31,8 @@
  * whose reset ends every process in the session.
  */
 export const STDIN_SYNC_READ_BYTES = 16 * 1024 * 1024;
+/** One complete-file fd0 read window; bounded while amortizing ranged RPC latency. */
+export const STDIN_FILE_READ_PIECE_BYTES = 1024 * 1024;
 
 /**
  * What one process holds of a ReadAheadBudget: bytes taken as they are about

@@ -97,7 +97,10 @@ export async function initSession(
     // facet and the scrollback replay below is wire-phase work.
     // Phase B will tag in once we start building the kernel.
     setPhase(self, 'wire', 'init-session');
-    self.terminal = new WebSocketTerminal(ws, shellTerminalTee(self));
+    self.terminal = new WebSocketTerminal(ws, shellTerminalTee(self), (send) => {
+      if (self.shellProcessPid === null) send();
+      else void self.processes.releaseOutput(self.shellProcessPid, send);
+    });
 
     // [B'.3] Replay persisted scrollback BEFORE the cold-start UI gate.
     // On rehydrate (hasPersistedState=true) we emit the prior

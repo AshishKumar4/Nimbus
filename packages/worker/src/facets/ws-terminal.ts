@@ -1,5 +1,7 @@
 import type { ShellInputSubmission, ShellIntegrationEvent } from '@nimbus-sh/core/shell/input-submission.js';
 
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
+
 interface ReplBinding {
   input(data: string): void | Promise<void>;
   dispose?: () => Promise<void>;
@@ -30,16 +32,19 @@ export class WebSocketTerminal {
   private _cols: number = 80;
   private _rows: number = 24;
   private buffer: string[] = [];
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushScheduled = false;
   /** [B'.3] Optional tee called from flush() with the final coalesced
    *  frame data. Used by initSession to mirror every WS output frame
    *  into nimbus_terminal_scrollback. Single-frame granularity (not
-   *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
+   *  per-write) coalesces writes from one JavaScript turn. */
   private onFlush: ((data: string) => void) | null;
+  /** Sends a frame once the shell's output may go (SessionProcessSupervisor.releaseOutput), in order. */
+  private readonly release: (send: () => void) => void;
 
-  constructor(ws: WebSocket | null = null, onFlush?: (data: string) => void) {
+  constructor(ws: WebSocket | null = null, onFlush?: (data: string) => void, release: (send: () => void) => void = (send) => send()) {
     this.ws = ws;
     this.onFlush = onFlush ?? null;
+    this.release = release;
   }
 
   /**
@@ -81,8 +86,7 @@ export class WebSocketTerminal {
   }
   close(): void {
     void this.disposeRepl().catch((error) => console.warn('[terminal] REPL cleanup failed', error));
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = null;
+    this.flushScheduled = false;
     this.buffer = [];
     this.onFlush = null;
     this.dataCallback = null;
@@ -97,8 +101,12 @@ export class WebSocketTerminal {
 
   write(data: string): void {
     this.buffer.push(data);
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(() => this.flush(), 5);
+    if (!this.flushScheduled) {
+      this.flushScheduled = true;
+      // A file/pipe reader can keep RPC turns arriving continuously; a
+      // timer then runs only when it ends. A microtask flush is part of the
+      // write's own turn, so echo and progress are not withheld meanwhile.
+      afterTurn(() => { if (this.flushScheduled) this.flush(); });
     }
   }
 
@@ -106,7 +114,7 @@ export class WebSocketTerminal {
 
   /**
    * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
-   * the 5 ms coalescer. Used by ReplSession.submitLine to emit stdout,
+   * the turn coalescer. Used by ReplSession.submitLine to emit stdout,
    * stderr, and the next-prompt as three discrete frames in deterministic
    * order. Without this, all three coalesce into one `{type:'output'}`
    * frame and probes asserting frame-order (stderr-before-stdout or
@@ -116,26 +124,25 @@ export class WebSocketTerminal {
    * Safe to call on an empty buffer (no-op).
    */
   flushNow(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
+    this.flushScheduled = false;
     this.flush();
   }
 
   private flush(): void {
-    this.flushTimer = null;
+    this.flushScheduled = false;
     if (this.buffer.length === 0) return;
     const combined = this.buffer.join('');
     this.buffer = [];
-    try { this.ws?.send(JSON.stringify({ type: 'output', data: combined })); } catch {}
-    // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
-    // tee can't break the live stream. Fail-soft on the call: any
-    // throw is swallowed; appendScrollback itself catches its own
-    // SQL errors via try/catch in initSession's wrapper.
-    if (this.onFlush) {
-      try { this.onFlush(combined); } catch {}
-    }
+    this.release(() => {
+      try { this.ws?.send(JSON.stringify({ type: 'output', data: combined })); } catch {}
+      // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
+      // tee can't break the live stream. Fail-soft on the call: any
+      // throw is swallowed; appendScrollback itself catches its own
+      // SQL errors via try/catch in initSession's wrapper.
+      if (this.onFlush) {
+        try { this.onFlush(combined); } catch {}
+      }
+    });
   }
 
   onData(callback: (data: string, submission?: ShellInputSubmission) => void | Promise<void>): void { this.dataCallback = callback; }
@@ -146,7 +153,9 @@ export class WebSocketTerminal {
 
   shellIntegration(event: ShellIntegrationEvent): void {
     this.flushNow();
-    try { this.ws?.send(JSON.stringify(event)); } catch { /* the socket closed */ }
+    this.release(() => {
+      try { this.ws?.send(JSON.stringify(event)); } catch { /* the socket closed */ }
+    });
   }
 
   handleMessage(msg: { type: string; data?: string; submissionId?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void | Promise<void> {

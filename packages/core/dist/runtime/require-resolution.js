@@ -37,8 +37,22 @@ export function requirePackageEntry(pkg, subpath, conditions) {
         return entry;
     return sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
 }
+const fileTextDecoder = new TextDecoder();
+/** A file's bytes as RequireFs.readFileString answers them. */
+function fileText(bytes) {
+    return fileTextDecoder.decode(bytes);
+}
+/**
+ * The text RequireFs.readFileString answers for a file whose content is
+ * `cell`, a cell a module map already holds: a text cell is that text; a
+ * byte cell (a file that is not valid UTF-8, facets/manager.ts
+ * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
+ * and compares a held cell through this, in the one representation it reads.
+ */
+export function heldCellText(cell) {
+    return typeof cell === 'string' ? cell : fileText(cell);
+}
 export function requireFsOverBridge(bridge) {
-    const decoder = new TextDecoder();
     const absent = (read) => (async () => {
         try {
             return await read();
@@ -58,7 +72,7 @@ export function requireFsOverBridge(bridge) {
             const bytes = await readBytes(path);
             if (bytes === null)
                 throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-            return decoder.decode(bytes);
+            return fileText(bytes);
         },
         stat,
         assertReadable: path => bridge.access(path, 4),

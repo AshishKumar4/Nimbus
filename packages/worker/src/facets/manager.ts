@@ -266,9 +266,6 @@ function* launchNames(
   }
 }
 
-// A piped stdin's largest single write to the process input channel, a
-// quarter of that queue's bound (core/runtime/process-input.ts).
-const STDIN_PIPE_PIECE_BYTES = 64 * 1024;
 
 /** A pipe or redirect's bytes, exactly as written, until it ends (null). */
 export interface StdinBytes {
@@ -1168,6 +1165,7 @@ ${nodeFacetSource(sources, "residentStore")}
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
+      return __task;
     };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
@@ -1184,8 +1182,8 @@ ${RESIDENCY_MISS_REPORT}
 
     // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
     if (__supervisor && !captureOutput) {
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => __nimbusWriteLiveOutput("stdout", d, enc, cb, __queueRpcWrite);
+      __processMod.stderr.write = (d, enc, cb) => __nimbusWriteLiveOutput("stderr", d, enc, cb, __queueRpcWrite);
     }
     // A fatal report goes to fd 2 as Node's does: past any write a program
     // installs, after what the program wrote, and not program output that
@@ -1731,6 +1729,7 @@ ${VFS_CURSOR_SEED_SOURCE}
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
+      return __task;
     };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
@@ -1747,8 +1746,8 @@ ${RESIDENCY_MISS_REPORT}
 
     // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
     if (__supervisor && !captureOutput) {
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => __nimbusWriteLiveOutput("stdout", d, enc, cb, __queueRpcWrite);
+      __processMod.stderr.write = (d, enc, cb) => __nimbusWriteLiveOutput("stderr", d, enc, cb, __queueRpcWrite);
     }
     // A fatal report goes to fd 2 as Node's does: past any write a program
     // installs, after what the program wrote, and not program output that
@@ -3989,23 +3988,33 @@ export async function addObservedReads(
     budgetState.fileCount++;
     added++;
   }
-  // A module brings its static imports: learned one miss per launch, nuxt's
-  // on-change alone would have cost a relaunch for each of its files.
+  // A module brings what it loads synchronously, its closure staged whole or
+  // not at all: its static imports (learned one miss per launch, nuxt's
+  // on-change alone would have cost a relaunch for each of its files) and
+  // its require wrappers' loads (a learned @vitejs/plugin-vue without
+  // vue/compiler-sfc failed "Failed to resolve vue/compiler-sfc"). A part of
+  // a closure is no use: the module it leaves out fails its synchronous read.
+  // The file itself was read, so it stays, as data, whether its closure fits
+  // or not (observed-read-closure.mjs: Tailwind v3 reads .js content files as
+  // text); executed without its closure, the run fails naming what it missed
+  // and the next launch stages that (facet-observed-residency.mjs). What the
+  // module defers with import() is fetched when it runs, and what the runs
+  // executed is evidence of its own.
   for (const path of observed) {
     if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined) continue;
-    const cell = bundle[path];
-    const source = typeof cell === 'string' ? cell : new TextDecoder().decode(cell);
-    const closure = await prefetchForRequire(requireFsOverBridge(vfs), source, '/' + path.slice(0, path.lastIndexOf('/')), '/' + path,
-      undefined, pacer?.spend.bind(pacer));
+    const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path,
+      undefined, pacer?.spend.bind(pacer), {
+        purpose: 'dependency-closure', held: bundle,
+        // UTF-8 bytes, which bound both the raw bytes `room` counts and the
+        // cell lengths the bundle's own cap counts.
+        maxAdditionalBytes: Math.max(0, Math.min(room - bytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
+        maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
+      });
     if ('kind' in closure) continue;
     for (const [dep, content] of Object.entries(closure.bundle)) {
-      if (closure.speculative.has(dep)) continue;
       if (bundle[dep] !== undefined) { requiredPaths.add(dep); continue; }
       const cellLen = _bundleCellLength(content);
-      if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
-      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
       const raw = _bundleCellRawBytes(content);
-      if (bytes + raw > room) continue;
       bundle[dep] = content;
       requiredPaths.add(dep);
       bytes += raw;
@@ -5018,7 +5027,7 @@ export interface FacetManagerHooks {
 
 export interface ForegroundLaunch {
   signal: AbortSignal;
-  write(stream: 'stdout' | 'stderr', text: string): void;
+  write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }
 
 export interface LongRunningWorkerSpawnOptions {
@@ -6965,6 +6974,7 @@ export class FacetManager {
        * starts; the program is never held for the pipe to end.
        */
       stdinPipe?: StdinBytes;
+      foreground?: ForegroundLaunch;
       /**
        * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
        * program reads the file ahead before it starts (a run after one that
@@ -7017,6 +7027,7 @@ export class FacetManager {
     // guest takes what is queued then, for its synchronous reads of fd 0
     // (node-shims.ts, __nimbusPrepareStdin).
     const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
+    const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
 
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
@@ -7044,6 +7055,7 @@ export class FacetManager {
       // and the remedy — the same shape the got/next guards print.
       pacer.settle();
       stdinPump?.stop();
+      foreground?.release();
       if (err instanceof ClosureBoundExceededError) {
         const o = err.outcome;
         const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
@@ -7257,6 +7269,7 @@ export class FacetManager {
       opts.signal?.removeEventListener('abort', onShellAbort);
       pacer.settle();
       stdinPump?.stop();
+      foreground?.release();
       if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
       this.stdinTaken.delete(inputChannel);
       held.give();
@@ -7412,7 +7425,7 @@ export class FacetManager {
   /** A process's output, delivered as its own supervisor RPC delivers it. */
   private async _deliverOutput(pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array): Promise<void> {
     if (this.hooks.deliverOutput) await this.hooks.deliverOutput(pid, stream, bytes);
-    else this.processes.appendOutputBytes(pid, stream, bytes);
+    else await this.processes.appendOutputBytes(pid, stream, bytes);
   }
 
   /**
@@ -7670,27 +7683,7 @@ export class FacetManager {
    * shell.
    */
   private _pumpStdinPipe(pid: number, pipe: StdinBytes): { stop(): void } {
-    const opened = !this.processes.hasInput(pid);
-    if (opened) this.processes.openInput(pid);
-    let stopped = false;
-    void (async () => {
-      for (;;) {
-        // A piece at a time: the queue is bounded, and one larger than its
-        // room would never fit.
-        const piece = await pipe.readBytes(STDIN_PIPE_PIECE_BYTES);
-        if (stopped) return;
-        if (piece === null) { this.processes.endInput(pid); return; }
-        while (!this.processes.writeInputBytes(pid, piece).ok) {
-          if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped) return;
-        }
-      }
-    })().catch(() => { if (!stopped) this.processes.endInput(pid); });
-    return {
-      stop: () => {
-        stopped = true;
-        if (opened) this.processes.closeInput(pid);
-      },
-    };
+    return this.processes.pumpInput(pid, pipe);
   }
 
   /**
@@ -9430,7 +9423,7 @@ export class FacetManager {
 
   private _holdForeground(pid: number, launch: ForegroundLaunch): { interrupted: Promise<never>; release(): void } {
     this.processes.setForeground(pid, true);
-    const unsubscribe = this.processes.subscribeLogs(pid, (chunk) => launch.write(chunk.stream, chunk.data));
+    const unsubscribe = this.processes.subscribeOutputBytes(pid, (chunk) => launch.write(chunk.stream, chunk.data));
     let onAbort = (): void => {};
     const interrupted = new Promise<never>((_, reject) => {
       onAbort = () => {

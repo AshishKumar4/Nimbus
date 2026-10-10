@@ -101,6 +101,7 @@ console.log('  stdin carries all 65536 bytes unmodified');
 // ── child → parent ───────────────────────────────────────────────────────
 // The parent's Readable must hand back the queue's bytes untouched.
 const stdoutSeen = [];
+
 child.stdout.on('data', (d) => stdoutSeen.push(Buffer.from(d)));
 const outputDeadline = Date.now() + 5000;
 while (Buffer.concat(stdoutSeen).length < payload.length && Date.now() < outputDeadline) await sleep(20);
@@ -123,6 +124,40 @@ childProcess.stderr.write(Buffer.from('é', 'utf8').subarray(0, 1));
 childProcess.stderr.write(Buffer.from('é', 'utf8').subarray(1));
 assert.deepEqual(reported(), { stdout: '€!', stderr: 'é' }, 'the reported result decodes a split character as one');
 console.log('  the child\'s reported text decodes split characters as one');
+
+// Async fd writes must share that same byte producer, not decode and then
+// re-encode at an intermediate edge. Their callback observes delivery/errors.
+{
+  const raw = new Uint8Array([255, 254, 0, 195, 40]);
+  const original = [childProcess.stdout.write, childProcess.stderr.write];
+  try {
+    for (const fd of [1, 2]) {
+      const output = fd === 1 ? childProcess.stdout : childProcess.stderr;
+      let received, ack;
+      output.write = (bytes, cb) => { received = bytes; ack = cb; return false; };
+      let finished = false;
+      const written = new Promise((resolve, reject) => childFs.write(fd, raw, 0, raw.length, null, (error, length, buffer) => {
+        finished = true;
+        if (error) reject(error); else resolve({ length, buffer });
+      }));
+      await null;
+      assert.ok(received instanceof Uint8Array, 'fs.write passes bytes to its stdout/stderr sink');
+      assert.deepEqual(received, raw, 'invalid UTF-8 remains byte-exact');
+      assert.equal(finished, false, 'the fd callback waits for the sink acknowledgement');
+      ack(null);
+      assert.deepEqual(await written, { length: raw.length, buffer: raw });
+      output.write = (_bytes, cb) => { cb(Object.assign(new Error('closed'), { code: 'EPIPE' })); return false; };
+      const failed = await new Promise(resolve => childFs.write(fd, raw, (error, length, buffer) => resolve({ error, length, buffer })));
+      assert.equal(failed.error.code, 'EPIPE');
+      assert.equal(failed.length, 0);
+      assert.equal(failed.buffer, raw);
+    }
+  } finally {
+    childProcess.stdout.write = original[0];
+    childProcess.stderr.write = original[1];
+  }
+  console.log('  asynchronous fd writes carry bytes and acknowledge the actual sink');
+}
 
 // ── the split-multibyte test at the log and terminal edges ───────────────
 // Bytes of one character delivered in two chunks are decoded as one
@@ -179,7 +214,8 @@ console.log('  the child\'s reported text decodes split characters as one');
   for (const [label, code] of [['one-shot wrapper', oneShot], ['resident wrapper', resident], ['opencode wrapper', opencode]]) {
     assert.doesNotThrow(() => parse(code, { ecmaVersion: 'latest', sourceType: 'module' }), `${label} parses`);
     for (const sink of ['"stdout"', '"stderr"']) {
-      assert.ok(code.includes(`__queueRpcWrite(${sink}, b)`), `${label} sends the stream's bytes, not a string`);
+      const write = label === 'opencode wrapper' ? `__queueRpcWrite(${sink}, b)` : `__nimbusWriteLiveOutput(${sink}, d, enc, cb, __queueRpcWrite)`;
+      assert.ok(code.includes(write), `${label} sends the stream's bytes through its delivery-accounted sink`);
     }
   }
   console.log('  both generated wrappers parse and relay bytes');

@@ -16,6 +16,7 @@ import { requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/w
 import type { Facet, FacetHost, FacetSpec } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 
 /**
  * The transforms and builds a host's own Durable Object runs outside the
@@ -45,6 +46,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
         wasmModules: spec.wasmModules,
         omitSupervisor: spec.syscalls === undefined,
         supervisorPid: spec.syscalls?.pid,
+        processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
         cacheScope: spec.reuse,
         network,
       });

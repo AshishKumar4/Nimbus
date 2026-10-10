@@ -30,10 +30,12 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority } from './os-contracts.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export declare function makeClangRunnerFactory(deps: {
     facets: FacetHost;
     filesystem: NimbusFilesystemAuthority;
+    processes: SessionProcessSupervisor;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export declare const CLANG_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=clang-runner.d.ts.map

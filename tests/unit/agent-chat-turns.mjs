@@ -33,7 +33,7 @@ function makeHost(initialStore = new Map()) {
         NIMBUS_AGENT_COOKIE_SECRET: 'unit-test-cookie-secret-0123456789abcdef',
       },
       shell: {},
-      processes: { getAll() { return []; } },
+      processes: { publishedAll() { return []; } },
       ensureSqliteFs() {},
       ensureFacetManager() {},
       async ensureRuntimeReady() {},

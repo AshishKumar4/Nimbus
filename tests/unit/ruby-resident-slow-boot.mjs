@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plugin } from 'bun';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 
 plugin({
   name: 'cloudflare-shims',
@@ -24,14 +26,14 @@ plugin({
 // The interpreter is stood in for by a program that binds only when told to.
 const preamble = [
   'function __wasiAdoptSupervisor() {}',
+  'globalThis.__nimbusRubyDrainOutput = () => globalThis.__testOutput.drain();',
   'globalThis.__nimbusRubyStep = async () => ({ resumed: false, alive: true, wakeAfter: null });',
   'globalThis.__rubyRun = () => new Promise((resolve) => {',
   '  globalThis.__testBind = (port) => globalThis.__nimbusVirtualSockets.listen(port);',
   '  globalThis.__testExit = () => resolve({ exitCode: 0, stdout: "done\\n", stderr: "" });',
-  // What the runner's stdoutWrite/stderrWrite do with each write the program makes.
+  // Stand in for the same bounded byte/control path as the real preamble.
   '  globalThis.__testWrite = (stream, text) => {',
-  '    (stream === "stdout" ? (globalThis.__nimbusRubyStdout ||= []) : (globalThis.__nimbusRubyStderr ||= [])).push(text);',
-  '    globalThis.__nimbusRubyEmit?.(stream, text);',
+  '    globalThis.__testOutput[stream+"Bytes"](new TextEncoder().encode(text));',
   '  };',
   '});',
 ].join('\n');
@@ -48,8 +50,9 @@ const boot = async (stage, env = {}) => {
   // One module instance is one process, and its state lives on globalThis.
   for (const key of Object.keys(globalThis)) if (key.startsWith('__nimbus')) delete globalThis[key];
   const { NimbusProcess } = await import(join(dir, `worker.mjs?${stage}`));
-  // A Durable Object's state: its store has no SQLite here, so nothing is journaled.
   const proc = new NimbusProcess({ storage: {} }, env);
+  const control = outputControlReader([{key:'resume',prefix:'__NIMBUS_RESUMED_',suffix:'\n'}]);
+  globalThis.__testOutput = wasiOutputRelay({stdout:b=>env.SUPERVISOR?.stdout(b),stderr:b=>{const data=control.feed(b);if(data.length)return env.SUPERVISOR?.stderr(data);}});
   const state = { boot: null };
   const booting = proc.startProcess({ userCode: 'run app', rbArgv: [], userEnv: {}, progName: 'rackup', cwd: '/home/user' })
     .then((value) => { state.boot = value; });
@@ -59,14 +62,20 @@ const boot = async (stage, env = {}) => {
   assert.equal(state.boot, null, 'a program still loading has not booted yet, however long it has taken');
   // The program writes while it loads, before it binds: at a fixed point of
   // the boot, not after however many macrotasks the import took.
-  if (stage === 'stream') {
+  if (stage === 'stream' || stage === 'drain') {
     globalThis.__testWrite('stdout', 'loading\n');
     globalThis.__testWrite('stderr', '__NIMBUS_RESUMED_true_1_0_nil\n');
     globalThis.__testWrite('stderr', 'Ignoring debug\n');
   }
-  if (stage === 'bind' || stage === 'stream') globalThis.__testBind(8126);
+  if (stage === 'bind' || stage === 'stream' || stage === 'drain') globalThis.__testBind(8126);
   else globalThis.__testExit();
+  if (stage === 'drain') {
+    await settle();
+    assert.equal(state.boot, null, 'a listener does not retire its boot I/O context while output RPCs are pending');
+    globalThis.__testAcknowledge();
+  }
   await booting;
+  await globalThis.__testOutput.drain();
   return state.boot;
 };
 
@@ -98,6 +107,12 @@ try {
   assert.equal(streamed.stdout, '', 'and the boot answer does not repeat it');
   assert.equal(streamed.stderr, '');
   console.log('  ok  a booting process streams what it writes, markers excluded');
+  const drained = await boot('drain', { SUPERVISOR: {
+    stdout: () => new Promise(resolve => { globalThis.__testAcknowledge = resolve; }),
+    stderr: async () => {}, registerPort: async () => {},
+  } });
+  assert.equal(drained.state, 'listening');
+  console.log('  ok  boot output settles before the listener response ends its I/O context');
 } finally {
   globalThis.setTimeout = realSetTimeout;
   rmSync(dir, { recursive: true, force: true });

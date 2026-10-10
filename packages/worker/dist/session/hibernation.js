@@ -103,7 +103,7 @@ export function installLogPersistence(host, ctx, onActivity, onRetention) {
                 const chunks = chunkRows.map((r) => ({
                     ts: Number(r.ts),
                     stream: r.stream === 'stderr' ? 'stderr' : 'stdout',
-                    data: String(r.data),
+                    data: r.data instanceof ArrayBuffer ? new Uint8Array(r.data) : r.data instanceof Uint8Array ? r.data : String(r.data),
                     binary: !!r.binary,
                     ...(r.seq !== undefined ? { seq: Number(r.seq) } : {}),
                 }));
@@ -134,7 +134,7 @@ export function installLogPersistence(host, ctx, onActivity, onRetention) {
                 ctx.storage.transactionSync(() => {
                     for (const r of rows) {
                         const c = r.chunk;
-                        sql.exec('INSERT OR REPLACE INTO w9_proc_logs (pid, seq, ts, stream, data, binary) VALUES (?, ?, ?, ?, ?, ?)', pid, r.seq, c.ts, c.stream, c.data, c.binary ? 1 : 0);
+                        sql.exec('INSERT OR REPLACE INTO w9_proc_logs (pid, seq, ts, stream, data, binary) VALUES (?, ?, ?, ?, ?, ?)', pid, r.seq, c.ts, c.stream, c.data, 0);
                     }
                 });
             }
@@ -368,7 +368,7 @@ export function ensureHibSchema(host, ctx) {
         const sql = ctx.storage.sql;
         sql.exec('CREATE TABLE IF NOT EXISTS w9_proc_logs (' +
             'pid INTEGER NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, ' +
-            'stream TEXT NOT NULL, data TEXT NOT NULL, binary INTEGER NOT NULL, ' +
+            'stream TEXT NOT NULL, data BLOB NOT NULL, binary INTEGER NOT NULL, ' +
             'PRIMARY KEY (pid, seq))');
         sql.exec('CREATE INDEX IF NOT EXISTS w9_proc_logs_ts ON w9_proc_logs(ts)');
         sql.exec('CREATE TABLE IF NOT EXISTS w9_proc_exits (' +
