@@ -14,13 +14,11 @@
 export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus', 'var/lib/nimbus'];
 
 /**
- * Whether what a process knows of `key`, its entry or with `listing` its
- * names, is clear of every root in `roots`: nothing at or under one is, nor
- * the names of a directory above one (they include the root's own). Under a
- * trusted read lease a process's view answers in the session's place only
- * what is clear of the lease's `uncovered` roots (VfsAcquireResult.readLease:
- * its namespace's mount points). Asked on every lookup a view makes, so it
- * allocates nothing.
+ * Whether `key`, its entry or with `listing` its names, is clear of every
+ * root in `roots`: nothing at or under one is, nor the names of a directory
+ * above one (they include the root's own). The engine asks it of the
+ * session's stores (SESSION_KERNEL_ROOTS) on each write that meets a read
+ * lease, so it allocates nothing.
  */
 export function readLeaseCovers(key: string, listing: boolean, roots: readonly string[]): boolean {
   for (const root of roots) {

@@ -206,8 +206,8 @@ export async function takeAttachCookie(sid) {
 export async function exchangeAttachCookie(page, sid) {
   const taken = attachCookies.get(sid);
   if (taken !== undefined) {
-    const url = new URL(BASE);
-    await page.setCookie({ ...taken, domain: url.hostname, path: '/', secure: url.protocol === 'https:', httpOnly: true, sameSite: 'None' });
+    // As the exchange sets it (auth/middleware.ts setNimbusTokenCookie): Secure on any scheme, which its __Host- name requires.
+    await page.setCookie({ ...taken, domain: new URL(BASE).hostname, path: '/', secure: true, httpOnly: true, sameSite: 'None' });
     return;
   }
   if (!sid || exchangedSessions.has(sid)) return;

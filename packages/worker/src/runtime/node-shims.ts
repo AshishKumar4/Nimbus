@@ -312,9 +312,9 @@ async function __nimbusUseRpcResultUnref(promise, use) {
  * The barrier is installed by the fs module, which is evaluated after this
  * point; a facet with no supervisor has none and nothing to be coherent with.
  */
-async function __nimbusInboundBarrier(delivered) {
+async function __nimbusInboundBarrier(delivered, untimed = false) {
   const acquire = globalThis.__nimbusVfsAcquireBarrier;
-  if (typeof acquire === "function") await acquire(delivered);
+  if (typeof acquire === "function") await acquire(delivered, untimed);
 }
 
 /**
@@ -659,9 +659,9 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // of the process; a response with no body has nothing to carry.
   const __foreignBodies = new WeakSet();
   let __foreignOpen = 0;
-  const __resumeCoherent = async (pending, own = false) => {
+  const __resumeCoherent = async (pending, own = false, untimed = false) => {
     const value = await pending;
-    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier();
+    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier(undefined, untimed);
     return value;
   };
   const __barriered = async (input, init) => {
@@ -716,6 +716,8 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // It is also a second resumption from the network, so it takes the same
   // ACQUIRE: a program that reads a file after parsing a response body is no
   // less entitled to current bytes than one that reads after the headers.
+  // Untimed: a body already received, or one the program made, ends with no
+  // I/O, so a read lease does not answer for it (_acquireBarrier).
   for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
     const __orig = Response.prototype[__name];
     if (typeof __orig !== "function") continue;
@@ -723,10 +725,10 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
       Response.prototype[__name] = function(...args) {
         const own = __nimbusOwnHttpResponses.has(this);
         const drained = (value) => { if (__foreignBodies.delete(this)) __foreignOpen--; return value; };
-        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).then(drained));
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own, true).then(drained));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
-        return __nimbusTrackOp(__resumeCoherent(pending, own).then(drained));
+        return __nimbusTrackOp(__resumeCoherent(pending, own, true).then(drained));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -2495,9 +2497,10 @@ const __fsMod = (() => {
     // change waits for the lease's recall, and the recall untrusts it first
     // (ProcessFsClient.readTrusted). A delivered answer is still applied,
     // and a store owed a repair still asks. So does an \`untimed\`
-    // resumption, a timer's: its turn carries no I/O, so workerd's clock
-    // stands at the time the timer was set for, which the lease's trust is
-    // measured on and the program reads; asking is I/O, and real time.
+    // resumption, one with no I/O behind it (a timer's, a body's end): its
+    // turn leaves workerd's clock where it was (a timer fires at the time it
+    // was set for), and that clock is what the program reads and the lease's
+    // trust is measured on; asking is I/O, and real time.
     if (!delivered && !untimed && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];

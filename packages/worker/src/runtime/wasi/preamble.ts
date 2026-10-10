@@ -257,7 +257,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
     content: (key: string) => (view === null ? undefined : view.content(key)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
-    barrier: (lease: boolean) => (view === null ? Promise.resolve({ ok: false }) : view.barrier(lease)),
+    barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },
   };
@@ -832,7 +832,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     pid: __wasiFS.pid,
     output: (fd, bytes) => appendStream(fd === 1 ? 'stdout' : 'stderr', bytes),
     release: async () => { if (__wasiResident?.fs.holding()) await __wasiResident.fs.flush(); },
-    inbound: (untimed) => { __wasiResident?.fs.inbound(untimed); },
+    inbound: () => { __wasiResident?.fs.inbound(); },
     news: __wasiChildNews(),
     cred: () => __wasiFS.cred ?? null,
   });

@@ -32,7 +32,9 @@ const read = (p) => { try { return fs.readFileSync(p, "utf8"); } catch (e) { ret
 // A resumption that arrives by I/O: a response from the network, with no body to read.
 const resume = () => fetch("http://localhost:4321/").then(() => {});
 const timer = () => new Promise((resolve) => setTimeout(resolve, 0));
-globalThis.__probe = { fs, read, resume, timer };
+// A body the program made, read to its end: no I/O behind it.
+const body = () => new Response("made here").text();
+globalThis.__probe = { fs, read, resume, timer, body };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
@@ -85,6 +87,13 @@ await runScenarios(import.meta.path, {
     for (let i = 0; i < 5; i++) await probe.timer();
     assert.equal(asked(log), before + 5, 'a timer under a trusted lease asked nothing');
     assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'a timer\'s answer did not confirm the lease');
+  },
+
+  async 'a body read to its end asks the session under a trusted read lease: it may end with no I/O'() {
+    const { probe, log } = await bootTrusted();
+    const before = asked(log);
+    for (let i = 0; i < 5; i++) assert.equal(await probe.body(), 'made here');
+    assert.equal(asked(log), before + 5, 'a body\'s end under a trusted lease asked nothing');
   },
 
   async "another's change is seen by the next response, and waited for the process's answer"() {
