@@ -76,7 +76,11 @@ export declare class SessionProcessSupervisor {
     private readonly heldOutput;
     /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
     private readonly releasing;
-    /** The pids whose end is decided but not yet published: observers are told they run. */
+    /**
+     * The pids whose end is decided but not yet published: observers are told
+     * they run. A pid's own slot, kept until its end is published, whatever
+     * becomes of its table entry.
+     */
     private readonly unpublishedEnds;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
@@ -96,6 +100,8 @@ export declare class SessionProcessSupervisor {
     /** Every process, as observers are told it (see {@link published}). */
     publishedAll(): ProcessEntry[];
     private asPublished;
+    /** Whether `pid`'s end is decided and still held from its observers (see {@link published}). */
+    endHeld(pid: number): boolean;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
     /** Every process spawned under `pid`, transitively, oldest first. */
@@ -185,6 +191,8 @@ export declare class SessionProcessSupervisor {
      * A prune serves whoever runs next, not the processes it removes, so a
      * release that fails goes to that process's own stderr log, where its
      * output is read; every expired entry is still released and forgotten.
+     * One whose end is still held from its observers has not ended to them,
+     * and waits for a prune after it is published.
      */
     reap(maxAge?: number): Promise<number>;
     /**
@@ -200,8 +208,8 @@ export declare class SessionProcessSupervisor {
      * that waited for its children does: what a caller ran to completion has
      * nothing left to report. Each is released first (see {@link setRelease}),
      * so what it bound goes with its entry rather than outliving it; with no
-     * release set this refuses. One still running is kept. Logs are
-     * orphaned as by {@link reap}.
+     * release set this refuses. One still running, or whose end is still held
+     * from its observers, is kept. Logs are orphaned as by {@link reap}.
      */
     reapTree(pid: number): Promise<number>;
     /**

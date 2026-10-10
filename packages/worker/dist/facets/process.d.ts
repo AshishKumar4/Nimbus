@@ -355,7 +355,7 @@ export declare class FacetProcessManager {
      * once the end is published (_ended).
      */
     private _stampExit;
-    /** Whether the child's end is published (SessionProcessSupervisor.published): what wait and its streams report. */
+    /** Whether the child's end is published (SessionProcessSupervisor.endHeld): what wait and its streams report. */
     private _ended;
     /** The child's published end, to its waiters: wakes all of them (exit, output, stdin) so callers don't hang. */
     private _announceExit;
@@ -375,7 +375,7 @@ export declare class FacetProcessManager {
     private _markStarted;
     /** A piece of news of `child` for its parent, numbered (FacetProcessManagerDeps.issueNews). */
     private _news;
-    /** Reap entries older than maxAgeMs whose exit slot is stamped. */
+    /** Reap entries older than maxAgeMs whose end is published. */
     reap(maxAgeMs?: number): number;
     get stats(): {
         total: number;
