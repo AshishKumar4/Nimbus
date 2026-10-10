@@ -24,6 +24,8 @@ async function sent(options) {
 
 assert.deepEqual(await sent({ url: 'https://us%C3%A9r:p%40ss@example.com/repo.git/' }),
   [{ url: 'https://example.com/repo.git/info/refs?service=git-upload-pack', authorization: basic('usér', 'p@ss') }]);
+assert.deepEqual(await sent({ url: 'https://usér%:p@ss%@example.com/repo.git' }),
+  [{ url: 'https://example.com/repo.git/info/refs?service=git-upload-pack', authorization: basic('usér%', 'p@ss%') }], 'raw, a stray % kept');
 assert.deepEqual(await sent({ url: 'https://token@example.com/repo.git', auth: { username: 'other', password: 'x' } }),
   [{ url: 'https://example.com/repo.git/info/refs?service=git-upload-pack', authorization: basic('token', '') }], 'the URL\'s own win');
 assert.deepEqual(await sent({ url: 'https://example.com/repo.git', auth: { username: 'José', password: 'пароль-✓' } }),
