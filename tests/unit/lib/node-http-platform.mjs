@@ -95,10 +95,10 @@ export function generateShimsCode() {
 }
 
 /** A generated runner's real workerd imports, mapped to this platform seam. */
-export function adaptHttpImports(source) {
-  if (!source.includes("import * as __real_http from 'node:http';")) return source;
+export function injectHttpRealm(source) {
+  if (!source.includes("const __real_http = globalThis.process.getBuiltinModule('http');")) return source;
   return source
-    .replace("import * as __real_http from 'node:http';", bindings())
+    .replace("const __real_http = globalThis.process.getBuiltinModule('http');", bindings())
     .replace("import * as __real_net from 'node:net';", '')
     .replace("import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';", '');
 }

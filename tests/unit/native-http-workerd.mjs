@@ -18,6 +18,7 @@ import { httpFetchCases } from './lib/http-fetch-cases.mjs';
 import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
 import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateNodeLibModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
+import { opencodeBuiltinBridgeModules } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -204,11 +205,14 @@ const port = probePort.address().port;
 const released = Promise.withResolvers(); probePort.close(released.resolve); await released.promise;
 writeFileSync(join(dir, 'node-lib.js'), generateNodeLibModule());
 writeFileSync(join(dir, 'node-dns.js'), generateNodeDnsModule());
+const httpBridges = opencodeBuiltinBridgeModules('attached');
+writeFileSync(join(dir, 'http-bridge.js'), httpBridges['node:http'].js);
+writeFileSync(join(dir, 'https-bridge.js'), httpBridges['node:https'].js);
 writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
+const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
-import * as __real_http from 'node:http';
-import * as __real_https from 'node:https';
+const __real_http = globalThis.process.getBuiltinModule('http');
+const __real_https = globalThis.process.getBuiltinModule('https');
 import * as __real_net from 'node:net';
 import * as __real_util from 'node:util';
 import * as __real_url from 'node:url';
@@ -228,8 +232,8 @@ const __nimbusInboundBarrier = async () => {};
 const __nimbusReplay = null;
 const __nimbusProcessExitPromise = Promise.withResolvers().promise;
 globalThis.__nimbusRawSetTimeout = setTimeout;
-const previousHttp = { ...__real_http.default, request: __real_http.default.request };
-const previousAddress = __real_http.default.Server.prototype.address;
+const previousHttp = { ...__real_http, request: __real_http.request };
+const previousAddress = __real_http.Server.prototype.address;
 ${NODE_ERROR_PREAMBLE}
 const primordials = {};
 lib.primordialsOf(primordials, globalThis);
@@ -243,6 +247,7 @@ const nodeLib = lib.createNodeLib({
 builtins.dns = nodeLib.require('dns');
 ${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
+globalThis.__nimbusOpencodeBuiltins = builtins;
 const exercise = ${exercise.toString()};
 const httpFetchCases = ${httpFetchCases.toString()};
 const httpFetchReviewCases = ${httpFetchReviewCases.toString()};
@@ -255,7 +260,7 @@ export default { async fetch(request) {
   if (new URL(request.url).pathname === '/ready') return new Response('ready');
   const http = builtins.http;
   const mode = new URL(request.url).searchParams.get('case');
-  if (mode === 'client-parity' || mode === 'review-parity' || mode === 'review-previous') {
+  if (mode === 'client-parity' || mode === 'client-esm' || mode === 'review-parity' || mode === 'review-previous') {
     const nativeFetch = globalThis.fetch;
     globalThis.fetch = (url, init) => {
       const incoming = new Request(url, init);
@@ -264,6 +269,7 @@ export default { async fetch(request) {
       return globalThis.__nimbusServeHttp(new Request(incoming, { headers }));
     };
     try {
+      if (mode === 'client-esm') return Response.json(await httpFetchCases(await import('node:http')));
       if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, builtins.dns, __real_net.default, (server) => previousAddress.call(server)));
       if (mode === 'review-parity') return Response.json(await httpFetchReviewCases(http, builtins.dns, __real_net.default));
       return Response.json(await httpFetchCases(http));
@@ -305,6 +311,9 @@ try {
   const actualClient = await clientResponse.json();
   console.log('HTTP_CLIENT_PARITY ' + JSON.stringify({ node: expectedClient, ours: actualClient }));
   assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
+  const esmClient = await (await fetch(`http://127.0.0.1:${port}/run?case=client-esm`, { signal: AbortSignal.timeout(15000) })).json();
+  console.log('HTTP_ESM_PARITY ' + JSON.stringify({ node: expectedClient, nimbus: esmClient }));
+  // Compare both reviewed paths before asserting, so a red prints all the evidence.
   const gaps = JSON.parse(readFileSync(new URL('../fixtures/node-http-fetch-gaps.json', import.meta.url), 'utf8'));
   assert.deepEqual({ node: expectedClient.gaps, nimbus: actualClient.gaps }, gaps, 'physical socket gaps stay pinned until Outbound TCP');
   let previous;
@@ -312,6 +321,7 @@ try {
   catch (error) { throw new Error(logs, { cause: error }); }
   const review = await (await fetch(`http://127.0.0.1:${port}/run?case=review-parity`, { signal: AbortSignal.timeout(10000) })).json();
   console.log('HTTP_REVIEW_PARITY ' + JSON.stringify({ node: expectedReview, previous, nimbus: review }));
+  assert.deepEqual(esmClient.parity, expectedClient.parity, 'native ESM named imports join the same HTTP client transport');
   assert.deepEqual(review, expectedReview, 'review regressions match host Node and are compared with the previous native shim');
   const snapshots = {};
   for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {

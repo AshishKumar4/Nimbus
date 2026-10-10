@@ -18,9 +18,11 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
       const req = http.request({ host: '127.0.0.1', port, path: '/', method: 'POST', agent: false });
       const events = [];
       req.on('abort', () => events.push('abort'));
+      req.on('finish', () => events.push('finish'));
       req.on('error', (error) => events.push([error.code, error.message]));
       const closed = new Promise((resolve) => req.on('close', () => { events.push('close'); resolve(); }));
       if (begin === 'write') req.write('a');
+      else if (begin === 'end') req.end('x', () => events.push('end-callback'));
       else req[begin]();
       req.abort();
       await closed;
@@ -39,6 +41,17 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
     try { req.end('x'); } catch (error) { events.push('throw'); req.destroy(error); }
     await closed;
     result.preparation = events;
+    result.strictLengths = [];
+    for (const [length, chunks] of [[1, ['a', 'b']], [2, ['a']], [2, ['a', 'b']], [2, ['é']]]) {
+      const strict = http.request({ host: '127.0.0.1', port, method: 'POST', headers: { 'Content-Length': length } });
+      strict.strictContentLength = true;
+      strict.on('error', () => {});
+      let outcome = null;
+      try { for (const chunk of chunks) strict.write(chunk); strict.end(); }
+      catch (error) { outcome = [error.code, error.message]; }
+      strict.abort();
+      result.strictLengths.push(outcome);
+    }
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -51,5 +64,12 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
     const family = net.isIP(bound.address);
     result.hostname = { numeric: family !== 0, familyMatches: bound.family === 'IPv' + family, resolved: lookup.some((ip) => ip.address === bound.address && ip.family === family) };
   } finally { await new Promise((resolve) => named.close(resolve)); }
+  const scoped = http.createServer();
+  try {
+    await new Promise((resolve, reject) => { scoped.once('error', reject); scoped.listen(0, '::1%lo', resolve); });
+    const bound = address(scoped);
+    result.scoped = { numeric: net.isIP(bound.address) === 6, family: bound.family, address: bound.address };
+  } catch (error) { result.scoped = { code: error.code, message: error.message }; }
+  finally { if (scoped.listening) await new Promise((resolve) => scoped.close(resolve)); }
   return result;
 }

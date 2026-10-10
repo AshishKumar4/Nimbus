@@ -113,10 +113,12 @@ Object.defineProperty(builtins, "http", {
       const owners = new WeakMap();
       const normalizeAddress = (host) => {
         if (net.isIP(host) !== 6) return host;
-        host = new URL("http://[" + host + "]").hostname.slice(1, -1);
+        const zone = host.indexOf("%");
+        const scope = zone < 0 ? "" : host.slice(zone);
+        host = new URL("http://[" + (zone < 0 ? host : host.slice(0, zone)) + "]").hostname.slice(1, -1);
         // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
         const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(host);
-        if (!mapped) return host;
+        if (!mapped) return host === "::1" || host === "::" ? host : host + scope;
         const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
         return "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
       };
