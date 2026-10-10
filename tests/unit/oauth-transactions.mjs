@@ -77,8 +77,10 @@ try {
   assert.equal(await loadNimbusOAuthStateCookie(request('/', { Cookie: agentCookie.replace('__Host-nimbus_agent_oauth_state=', '__Host-nimbus_demo_state=') }), {
     name: '__Host-nimbus_demo_state', purpose: 'nimbus-demo-oauth-state', secret,
   }), null, 'demo and agent state purposes remain cryptographically separate');
-  const wrongCookie = agentCookie.replace(/.$/, (last) => last === 'a' ? 'b' : 'a');
-  await agent(request('/api/agent/oauth/callback?code=agent-code&state=' + encodeURIComponent(signed), { Cookie: wrongCookie }));
+  const signatureStart = signed.indexOf('.') + 1;
+  const middle = signatureStart + Math.floor((signed.length - signatureStart) / 2);
+  const wrongState = signed.slice(0, middle) + (signed[middle] === 'a' ? 'b' : 'a') + signed.slice(middle + 1);
+  await agent(request('/api/agent/oauth/callback?code=agent-code&state=' + encodeURIComponent(wrongState), { Cookie: agentCookie }));
   assert.equal(tokenCalls.length, 1, 'invalid session state does not reach the provider');
   const agentDone = await agent(request('/api/agent/oauth/callback?code=agent-code&state=' + encodeURIComponent(signed), { Cookie: agentCookie }));
   assert.equal(agentDone.status, 200);

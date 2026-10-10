@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the shared base64url decoder requires canonical unpadded encodings,
+  rejecting nonzero unused padding bits. JWT, signed OAuth state and sealed
+  JSON verification therefore reject alternate strings for the same bytes;
+  generated canonical tokens and cookies are unchanged.
+
 - Changed: colocated SDK `runCode` enforces the sandbox profile's `node`
   and `shell` allow rules for JavaScript, TypeScript and shell code, as the
   remote API already did. Sandbox profiles and runtime-policy decisions now
