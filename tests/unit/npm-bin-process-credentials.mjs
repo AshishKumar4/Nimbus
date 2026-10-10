@@ -90,4 +90,64 @@ const rootRuntime = await invoke(rootParent.pid);
 assert.equal(rootRuntime.cred.uid, 0);
 assert.equal(rootRuntime.cred.gid, 0);
 
-console.log('npm bin process credentials: ok');
+// A reserved bin pid's foreground output has already been logged by the
+// runtime. Re-appending from its launching fd feeds that same subscriber
+// again; a text-only wrapper also corrupts binary output.
+const raw = new Uint8Array([255, 254, 0, 128, 195, 40]);
+let deliveries = 0, runtimePid;
+const entered = Promise.withResolvers(), room = Promise.withResolvers();
+registry.register('node', async (ctx) => {
+  runtimePid = ctx.__nimbusBinSpawn.callerPid;
+  const unsubscribe = processes.subscribeOutputBytes(runtimePid, (chunk) => {
+    deliveries++;
+    // Bound the old feedback loop so the red test fails without a stack
+    // overflow or a timing-dependent runaway output buffer.
+    if (deliveries > 2) return;
+    return ctx.stdout.writeBytes
+      ? ctx.stdout.writeBytes(chunk.data)
+      : ctx.stdout.write(new TextDecoder().decode(chunk.data));
+  });
+  try {
+    await processes.appendOutputBytes(runtimePid, 'stdout', raw);
+    return 0;
+  } finally { unsubscribe(); }
+});
+const received = [];
+let finished = false;
+const running = handler({
+  pid: userParent.pid, cred: userParent.cred,
+  vfs: files.view({ pid: userParent.pid, cred: userParent.cred }),
+  args: [], cwd: `/${project}`, env: {},
+  stdout: {
+    write(text) { received.push(new TextEncoder().encode(text)); entered.resolve(); },
+    async writeBytes(bytes) { received.push(bytes.slice()); entered.resolve(); await room.promise; },
+  },
+  stderr: { write() {} },
+}).then((code) => { finished = true; return code; });
+await entered.promise;
+try {
+  assert.equal(deliveries, 1, 'a foreground bin write is logged once, without feeding itself back');
+  assert.deepEqual(received, [raw], 'the bin fd preserves every byte');
+  for (let i = 0; i < 8; i++) await null;
+  assert.equal(finished, false, 'the runtime waits for room on the bin launching fd');
+} finally { room.resolve(); }
+assert.equal(await running, 0);
+assert.equal(processes.readLogs(runtimePid).chunks.length, 1, 'the bin log renders the output once');
+
+const child = processes.spawn(entry.name, [entry.name], `/${project}`, { parentPid: userParent.pid });
+processes.openInput(child.pid);
+const countBefore = processes.getAll().length;
+let binSpawn;
+registry.register('node', async (ctx) => { binSpawn = ctx.__nimbusBinSpawn; return 0; });
+assert.equal(await handler({
+  pid: child.pid, cred: child.cred,
+  vfs: files.view({ pid: child.pid, cred: child.cred }),
+  args: [], cwd: `/${project}`, env: {},
+  stdout: { write() {} }, stderr: { write() {} },
+  __nimbusBinSpawn: { callerPid: child.pid, command: entry.name, liveInput: true },
+}), 0);
+assert.equal(processes.getAll().length, countBefore, 'a broker-owned bin reuses the existing child pid');
+assert.equal(binSpawn.callerPid, child.pid);
+assert.equal(binSpawn.liveInput, true, 'the bin runtime reads the broker child shared fd0 channel');
+
+console.log('npm bin process credentials and byte-exact foreground relay: ok');

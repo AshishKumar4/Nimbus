@@ -20,6 +20,11 @@ const __streamMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
+  function _byteBuffer(chunk) {
+    const Buffer = typeof __BufferMod !== 'undefined' ? __BufferMod : globalThis.Buffer;
+    if (!Buffer) throw new Error('Nimbus byte streams require node:buffer');
+    return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  }
 
   /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
   function _destroyedError(method) {
@@ -57,6 +62,12 @@ const __streamMod = (() => {
     if (r) { r.destroyed = true; stream.readable = false; }
     if (w) {
       w.destroyed = true;
+      stream.writable = false;
+      if (stream.__nimbusTransformReadCallback) {
+        const pending = stream.__nimbusTransformReadCallback;
+        stream.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending(err ?? _destroyedError('write')));
+      }
       // A write in flight answers the queue when it calls back.
       if (!w.writing) queueMicrotask(() => _errorBuffer(w));
     }
@@ -155,6 +166,11 @@ const __streamMod = (() => {
       const state = this._readableState;
       const chunk = state.buffer.shift();
       state.readableLength -= (chunk?.length || 0);
+      if (this.__nimbusTransformReadCallback && state.readableLength < state.highWaterMark) {
+        const pending = this.__nimbusTransformReadCallback;
+        this.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending());
+      }
       return this._decode(chunk);
     }
 
@@ -240,6 +256,11 @@ const __streamMod = (() => {
       }
       if (typeof chunk === 'string' && !state.objectMode) {
         chunk = _enc.encode(chunk);
+      }
+      if (!state.objectMode && chunk instanceof Uint8Array) {
+        // The channel carries Uint8Array; Node's byte-mode readable edge
+        // publishes Buffer. Object mode and setEncoding keep their own API.
+        chunk = _byteBuffer(chunk);
       }
       state.buffer.push(chunk);
       state.readableLength += (chunk?.length || 0);
@@ -424,6 +445,7 @@ const __streamMod = (() => {
   // Transform's output delivered, before 'finish' and 'close'.
   function _writableState(opts, highWaterMark) {
     return {
+      objectMode: opts?.objectMode === true || opts?.writableObjectMode === true,
       buffer: [],
       writing: false,
       // Writes and _final not yet called back.
@@ -457,6 +479,7 @@ const __streamMod = (() => {
       return false;
     }
     if (typeof chunk === 'string') chunk = _enc.encode(chunk);
+    if (!state.objectMode && chunk instanceof Uint8Array) chunk = _byteBuffer(chunk);
     state.bufferedLength += (chunk?.length || 0);
     state.pending++;
     const request = { chunk, encoding, callback };
@@ -586,9 +609,13 @@ const __streamMod = (() => {
     uncork() { _uncork(this); }
     destroy(err) { return _destroyStream(this, err); }
 
+    get destroyed() { return this._writableState.destroyed; }
+    set destroyed(value) { this._writableState.destroyed = !!value; }
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
   const Writable = __legacyConstructor(WritableClass, 'Writable', (stream, opts) => {
     __eventsMod.call(stream, opts);
@@ -621,6 +648,8 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
   const Duplex = __legacyConstructor(DuplexClass, 'Duplex', _initDuplex);
 
@@ -647,7 +676,11 @@ const __streamMod = (() => {
       this._transform(chunk, encoding, (err, data) => {
         if (err) return callback(err);
         if (data !== null && data !== undefined) this.push(data);
-        callback();
+        // A Transform's two sides are one bounded pipe: completing this
+        // write while the readable side is full would drain the broker into
+        // an unbounded local buffer. The consumer's _shift releases it.
+        if (this._readableState.readableLength >= this._readableState.highWaterMark) this.__nimbusTransformReadCallback = callback;
+        else callback();
       });
     }
 

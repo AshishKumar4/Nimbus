@@ -153,12 +153,27 @@ class RealmFacet {
     /** Why the realm ended, once it has. */
     over = null;
     supervisor;
+    supervisorMethods;
     synchronous;
     isolation = facetIsolation();
     constructor(spec, network) {
         this.spec = spec;
         this.network = network;
         this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
+        this.supervisorMethods = SUPERVISOR_METHODS;
+        const processes = spec.syscalls?.processes;
+        if (this.supervisor && processes && spec.syscalls) {
+            const pid = spec.syscalls.pid;
+            Object.assign(this.supervisor, {
+                stdout: (bytes) => processes.appendOutputBytes(pid, 'stdout', bytes),
+                stderr: (bytes) => processes.appendOutputBytes(pid, 'stderr', bytes),
+                cpReadStdin: async (_child, waitMs, _acquire, maxBytes) => {
+                    const packet = await processes.readInput(pid, waitMs, maxBytes);
+                    return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
+                },
+            });
+            this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+        }
         this.synchronous = spec.syscalls?.vfs.synchronous;
     }
     submit(fn, args, options) {
@@ -176,7 +191,7 @@ class RealmFacet {
             tag: this.spec.tag,
             parking: engineParks(),
             preamble: this.spec.preamble,
-            supervisor: this.supervisor ? { methods: SUPERVISOR_METHODS, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+            supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
             egress: this.network.egress !== undefined,
         };
         let post = () => false;
@@ -216,7 +231,7 @@ class RealmFacet {
         if (!isSupervisorCall(call))
             throw new TypeError('Nimbus: a facet called nothing its host answers');
         const target = call.view === 'synchronous' ? this.synchronous : this.supervisor;
-        const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : SUPERVISOR_METHODS;
+        const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : this.supervisorMethods;
         const method = target && names.includes(call.method) ? Reflect.get(target, call.method) : undefined;
         if (typeof method !== 'function')
             throw new TypeError(`Nimbus: a facet's ${call.view} has no method ${JSON.stringify(call.method)}`);

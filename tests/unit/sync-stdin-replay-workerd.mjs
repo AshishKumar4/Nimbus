@@ -588,7 +588,11 @@ try {
       await write(`${W}/net.js`, NET_PARENT);
       fixtureStats.tcp = 0;
       fixtureStats.bodyErrors = 0;
-      const net = netLines((await run(`cd ${W} && node net.js`, 400_000)).stdout);
+      const networkRun = await run(`cd ${W} && node net.js`, 400_000);
+      const net = netLines(networkRun.stdout);
+      if (networkRun.status !== 0 || Object.keys(net).length !== Object.keys(NET).length) {
+        console.error('sync-stdin network parent result: ' + JSON.stringify(networkRun));
+      }
       check(JSON.stringify(net.headers) === JSON.stringify(netExpected.headers),
         `a response's headers and bytes, through blob() and a body reader, are the run before's\n  node:   ${JSON.stringify(netExpected.headers)}\n  nimbus: ${JSON.stringify(net.headers)}`);
       check(JSON.stringify(net.pending) === JSON.stringify(netExpected.pending),
@@ -713,10 +717,8 @@ try {
     await box.destroy().catch(() => {});
   }
 } catch (error) {
-  // What the worker said, for a failure the driver only sees as a closed socket.
-  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
-  writeFileSync(logPath, probe.log());
-  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
+  // CI retains the worker log with this test's output, without a tmp leak.
+  console.error(`sync-stdin-replay-workerd: the worker's log:\n${probe.log()}`);
   throw error;
 } finally {
   workerLog = probe.log();
@@ -725,9 +727,7 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 if (failures.length > 0) {
-  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
-  writeFileSync(logPath, workerLog);
-  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
+  console.error(`sync-stdin-replay-workerd: the worker's log:\n${workerLog}`);
   console.error(`sync-stdin-replay-workerd: ${failures.length} failure(s):\n${failures.join('\n\n')}`);
   process.exit(1);
 }

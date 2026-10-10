@@ -6,7 +6,7 @@
 //     (a sleep's wakeup is such input);
 //   - a resident server reads the file as it is when the request arrives;
 //   - a file the process wrote is there for whoever it then talks to.
-import { mintSession, deleteSession, Terminal, stripAnsi, makeAsserter } from '../../_driver.mjs';
+import { mintSession, deleteSession, Terminal, stripAnsi, makeAsserter, sleep } from '../../_driver.mjs';
 
 const a = makeAsserter('wasi-fs-coherence');
 const sid = await mintSession();
@@ -18,6 +18,14 @@ const run = async (cmd, timeout = 300_000) => {
   return out;
 };
 const py = (body) => `python3 -c "${body.replace(/"/g, '\\"')}"`;
+// `cmd`'s output once it satisfies `done`, polled for at most a minute.
+const until = async (cmd, done) => {
+  for (const deadline = Date.now() + 60_000; ;) {
+    const out = await run(cmd);
+    if (done(out) || Date.now() > deadline) return out;
+    await sleep(500);
+  }
+};
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
@@ -29,9 +37,11 @@ try {
 
   await run('echo one > watch.txt');
   await run(py("import time\nfor i in range(16):\n  print('saw', open('watch.txt').read().strip(), flush=True)\n  time.sleep(0.5)") + ' > watch.log 2>&1 &');
-  await run('sleep 2; echo two > watch.txt; sleep 4; cat watch.log');
-  const log = await run('sleep 3; cat watch.log');
-  a.check('a running process saw the shell\'s change after its sleep woke it', log.includes('saw one') && log.includes('saw two'), log.slice(-300));
+  // The change is made once the process is running and has read the file.
+  const before = await until('cat watch.log', (out) => out.includes('saw one'));
+  await run('echo two > watch.txt');
+  const log = await until('cat watch.log', (out) => out.includes('saw two'));
+  a.check('a running process saw the shell\'s change after its sleep woke it', before.includes('saw one') && log.includes('saw two'), log.slice(-300));
 
   await run('mkdir -p site && echo first > site/page.txt');
   const served = await run('cd site && python3 -m http.server 8077 2>&1 | head -3; cd ..', 120_000);

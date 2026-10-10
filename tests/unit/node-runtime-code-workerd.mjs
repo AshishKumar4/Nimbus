@@ -195,7 +195,7 @@ const FILES = {
     'const { Writable, Readable, Duplex, Transform, PassThrough } = require("stream");',
     'const out = {};',
     'function W(o) { Writable.call(this, o); } W.prototype = Object.create(Writable.prototype);',
-    'const text = (c) => Buffer.from(c).toString();',
+    'const text = (c) => String(c);',
     'new W({ write(c, e, cb) { out.w = text(c); cb(); } }).end("w1");',
     'function R(o) { Readable.call(this, o); } R.prototype = Object.create(Readable.prototype);',
     'const r = new R({ read() {} }); r.on("data", (d) => { out.r = text(d); }); r.push("r1"); r.push(null);',

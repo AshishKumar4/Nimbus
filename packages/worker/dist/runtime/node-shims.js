@@ -45,7 +45,7 @@
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
-import { CHILD_NEWS_SOURCE } from './child-news.js';
+import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
@@ -55,7 +55,7 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
-import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
+import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ES_MODULE_SCOPE_GLOBAL } from '@nimbus-sh/core/runtime/module-format.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
@@ -490,6 +490,13 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
       ? new Request(input, { ...(init || {}), signal: null })
       : new Request(url.href, { ...(init || {}), signal: null })
   );
+  // The port a loopback URL names, or 0: the one reading of it that the route
+  // below and a process's own server (__ownPortOf) both go by.
+  const __loopbackPortOf = (url) => {
+    if (!__loopbackHosts.has(url.hostname)) return 0;
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    return Number.isFinite(port) && port > 0 ? port : 0;
+  };
   // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
   // to the facet that owns <port> through the supervisor's port registry (the
   // same routing the shell curl/node loopback uses), so a facet can reach another
@@ -497,10 +504,22 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // the target's Response (streamed over RPC, so SSE flows). Anything non-
   // loopback, or when no supervisor is bound, falls through to real fetch.
   const __maybeRouteLoopback = (url, input, init) => {
-    if (!__loopbackHosts.has(url.hostname)) return null;
-    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
-    if (!Number.isFinite(port) || port <= 0) return null;
+    const port = __loopbackPortOf(url);
+    if (!port) return null;
     return Promise.resolve(__supervisor.routeLoopback(port, __supervisorRequest(url, input, init)));
+  };
+  // The port of a request this process's own server may answer by itself: a
+  // loopback http(s) request that the route would also take for ordinary HTTP.
+  // The session's gateway port is not one, and neither is an upgrade, which is
+  // the route's by its own rule (isWebSocketUpgradeRequest) on the Headers it
+  // would be handed: those of init when given, else the Request's.
+  const __ownPortOf = (input, init) => {
+    const url = __fetchUrl(input);
+    if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return 0;
+    const port = __loopbackPortOf(url);
+    if (!port || port === ${NIMBUS_AI_GATEWAY_PORT}) return 0;
+    const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+    return isWebSocketUpgradeRequest(headers) ? 0 : port;
   };
   // AI-egress mediation: a request addressed anywhere on the network that
   // presents this session's AI capability token is inference the session owns,
@@ -566,9 +585,23 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   //
   // The RELEASE barrier lives on globalThis because the fs module installs it
   // and is evaluated after this one; the ACQUIRE is __nimbusInboundBarrier.
-  const __resumeCoherent = async (pending) => {
+  //
+  // A request to a server this process itself runs (__barriered's claim) has
+  // no outside to resume from: the client, the handler and the response are
+  // one process's, and what the handler took in from outside took its own
+  // barrier on the way in. Except a foreign body read raw (piped, through a
+  // reader, by the native http client): no barrier covers its chunks, and a
+  // response of the process's own can carry them to a reader owed the
+  // ACQUIRE after them. So while a foreign body has not been read to the end
+  // through a barriered method (below) nothing is skipped: the claim is not
+  // made, and a response already on its way takes the ACQUIRE. A body read
+  // raw, read by a method that failed, or never read, stays open for the life
+  // of the process; a response with no body has nothing to carry.
+  const __foreignBodies = new WeakSet();
+  let __foreignOpen = 0;
+  const __resumeCoherent = async (pending, own = false) => {
     const value = await pending;
-    await __nimbusInboundBarrier();
+    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier();
     return value;
   };
   const __barriered = async (input, init) => {
@@ -586,9 +619,16 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     // through the guest's proxy, it cannot pass the replay boundary notice.
     const afterRead = __nimbusReplay && __nimbusReplay.afterBoundary();
     if (afterRead) await afterRead;
+    // No transport or coherence boundary: the client, native HTTP handler and
+    // response body all live in one process. Other ports still route.
+    const own = __foreignOpen === 0 ? __nimbusTryOwnHttp(__ownPortOf(input, init), input, init) : null;
+    if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const pending = __resumeCoherent(__dispatch(input, init));
+    const pending = __resumeCoherent(__dispatch(input, init)).then((response) => {
+      if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
+      return response;
+    });
     if (!__recordingNetwork) return pending;
     let response;
     try { response = await pending; }
@@ -617,10 +657,12 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
+        const own = __nimbusOwnHttpResponses.has(this);
+        const drained = (value) => { if (__foreignBodies.delete(this)) __foreignOpen--; return value; };
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).then(drained));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
-        return __nimbusTrackOp(__resumeCoherent(pending));
+        return __nimbusTrackOp(__resumeCoherent(pending, own).then(drained));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -5277,8 +5319,9 @@ const __fsMod = (() => {
     catch (e) { queueMicrotask(() => cb(e)); return; }
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(norm.bytes));
-      queueMicrotask(() => cb(null, norm.bytes.byteLength, data));
+      try {
+        (n === 2 ? __processMod.stderr : __processMod.stdout).write(norm.bytes, error => cb(error || null, error ? 0 : norm.bytes.byteLength, data));
+      } catch (error) { queueMicrotask(() => cb(error, 0, data)); }
       return;
     }
     const handle = _fdFor(fd, "write", cb);
@@ -6198,7 +6241,13 @@ const __fsMod = (() => {
       }
       async _pull() {
         if (this._pos > this._last) { this.push(null); return; }
-        const want = Math.min(READ_STREAM_CHUNK_BYTES, this._last - this._pos + 1);
+        // A resolved ranged RPC can feed the next read in the same task
+        // indefinitely. Yield between windows so other session traffic and
+        // other processes can run; this is a scheduling boundary, not a
+        // backoff or a timeout that pretends I/O completed.
+        if (this.bytesRead > 0) await new Promise((nextTurn) => globalThis.setTimeout(nextTurn, 0));
+        if (this._readableState.destroyed) return;
+        const want = Math.min(this._readableState.highWaterMark, READ_BATCH_REQUEST_BYTES, this._last - this._pos + 1);
         const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
@@ -8090,7 +8139,8 @@ const __childProcessMod = (() => {
       const piece = data.subarray(at, Math.min(data.byteLength, at + __NIMBUS_STDIN_PIECE_BYTES));
       for (let wait = 10; ; wait = Math.min(wait * 2, 250)) {
         const answer = await __nimbusUseRpcResult(__supervisor.cpStdinWrite(child._brokerPid, piece), (result) => result);
-        if (!answer || (!answer.ok && !answer.full) || __nimbusProgramStopped) return;
+        if (__nimbusProgramStopped) return;
+        if (!answer || (!answer.ok && !answer.full)) throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
         if (answer.ok) break;
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
@@ -8143,7 +8193,9 @@ const __childProcessMod = (() => {
     let ended = false;
     return {
       write(bytes) {
-        if (!ended) (fd === 1 ? __processMod.stdout : __processMod.stderr).write(bytes);
+        if (ended) return;
+        const parent = fd === 1 ? __processMod.stdout : __processMod.stderr;
+        if (!parent.write(bytes)) return new Promise((resolve) => parent.once('drain', resolve));
       },
       end() {
         if (ended) return;
@@ -8356,7 +8408,14 @@ const __childProcessMod = (() => {
           for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
-            stream.write(__BufferMod.from(c.data));
+            const written = stream.write(__BufferMod.from(c.data));
+            if (written && typeof written.then === 'function') await written;
+            else if (written === false && stream.writableNeedDrain) {
+              await new Promise((resolve) => {
+                const done = () => { stream.removeListener('drain', done); stream.removeListener('close', done); resolve(); };
+                stream.once('drain', done); stream.once('close', done);
+              });
+            }
             if (typeof c.seq === "number" && c.seq > sinceSeqRef.value) {
               sinceSeqRef.value = c.seq;
             }
@@ -8420,6 +8479,13 @@ const __childProcessMod = (() => {
     });
   }
 
+  // Node destroys the parent's pipe to fd0 before announcing the child's
+  // exit. A later stdin.end(data) is a write to a destroyed stream, not a
+  // fresh RPC to an input reader the session has already removed.
+  function _closeChildInput(child) {
+    try { child.stdin && child.stdin.destroy(); } catch {}
+  }
+
   function _applyWait(child, r) {
     // Settled already (both the wait loop and the exit-time drain can hear
     // of the same exit or refusal): nothing more to emit.
@@ -8435,6 +8501,7 @@ const __childProcessMod = (() => {
     child.exitCode = r.exitCode;
     child.signalCode = r.signal || null;
     child._exitFired = true;
+    _closeChildInput(child);
     try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
     _flushStdio(child);
     _maybeFireClose(child);
@@ -8462,6 +8529,7 @@ const __childProcessMod = (() => {
         // Couldn't wait — synthesize an error exit.
         child.exitCode = 1;
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         _flushStdio(child);
         _maybeFireClose(child);
@@ -8487,6 +8555,7 @@ const __childProcessMod = (() => {
     __cpChildren.delete(child._brokerPid);
     child.exitCode = errno;
     child._exitFired = true;
+    _closeChildInput(child);
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -8522,6 +8591,7 @@ const __childProcessMod = (() => {
         const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
@@ -8543,7 +8613,10 @@ const __childProcessMod = (() => {
             args,
             env: { ...(__processMod.env || {}), ...(opts.env || {}) },
             cwd: opts.cwd || cwd || "/home/user",
-            stdio: opts.stdio || ["pipe", "pipe", "pipe"],
+            // Node has already buffered stdin in the guest. Its inherited
+            // descriptor is a byte source into the SAME broker pipe, whereas
+            // a WASI fd is inherited directly from the supervisor channel.
+            stdio: child._stdioModes[0] === 'inherit' ? ['pipe', ...child._stdioModes.slice(1)] : child._stdioModes,
             detached: !!opts.detached,
             shell: opts.shell || false,
           }),
@@ -8602,6 +8675,7 @@ const __childProcessMod = (() => {
         }
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -8916,6 +8990,7 @@ const __childProcessMod = (() => {
             if (!settled) {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
               child._exitFired = true;
+              _closeChildInput(child);
               try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
               _flushStdio(child);
             }
@@ -9612,7 +9687,7 @@ async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) { await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined); return; }
-    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 65536), (r) => r);
+    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, ${STDIN_FILE_READ_PIECE_BYTES}), (r) => r);
     const want = Math.max(0, Math.min(prepared.size - file.offset, ${STDIN_SYNC_READ_BYTES}));
     const bytes = __BufferMod.allocUnsafe(want);
     let got = 0, packet = prepared;
@@ -9621,7 +9696,7 @@ async function __nimbusPrepareStdin() {
       if (!n) break;
       bytes.set(packet.data.subarray(0, n), got);
       got += n;
-      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(65536, want - got)), (r) => r);
+      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(${STDIN_FILE_READ_PIECE_BYTES}, want - got)), (r) => r);
     }
     __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= prepared.size, from: file.offset + got };
     await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined);
@@ -9771,7 +9846,7 @@ function __makeProcessStdin() {
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from });
+      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: ${STDIN_FILE_READ_PIECE_BYTES} });
       source.on("error", (err) => r.destroy(err));
       source.pipe(r);
       return;
@@ -9937,6 +10012,36 @@ function __makeProcessOutputStream(streamName) {
   Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
   __nimbusTerminalOutputStreams.push(stream);
   return stream;
+}
+
+// Every live output stream uses the same Writable accounting. The producer
+// gets false at its existing high-water mark and drain only once the
+// supervisor/foreground pipe has acknowledged the bytes, not at enqueue.
+function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
+  if (typeof encoding === 'function') callback = encoding;
+  if (__nimbusProgramStopped) return true;
+  const bytes = __nimbusOutBytes(data, encoding);
+  const stream = __processMod[streamName];
+  // Live output belongs to the byte delivery/replay ledger, not also to an
+  // unbounded returned-result string. Explicit capture uses its own writer.
+  stream.writableLength += bytes.byteLength;
+  const ready = stream.writableLength < stream.writableHighWaterMark;
+  if (!ready) stream.writableNeedDrain = true;
+  const sent = Promise.resolve(send(streamName, bytes));
+  stream.__nimbusOutputPending = sent;
+  sent.then(() => {
+    stream.writableLength -= bytes.byteLength;
+    if (typeof callback === 'function') callback();
+    if (stream.writableLength === 0 && stream.writableNeedDrain) {
+      stream.writableNeedDrain = false;
+      stream.emit('drain');
+    }
+  }, (error) => {
+    stream.writableLength -= bytes.byteLength;
+    if (typeof callback === 'function') callback(error);
+    else stream.emit('error', error);
+  });
+  return ready;
 }
 
 // The gate an output or exit leaving the process is released at, taken when
@@ -12072,12 +12177,12 @@ function __resolveFile(base) {
   return null;
 }
 
-// ── Resolution and credential rules, compiled from @nimbus-sh/core ──────
+// ── Resolution, credential and upgrade rules, compiled from @nimbus-sh/core ──
 // _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
 // resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
 // DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
-// TYPESCRIPT_INDEX_CANDIDATES and presentedCredential (a function declaration,
-// so the fetch patch above can call it).
+// TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
+// (function declarations, so the fetch patch above can call them).
 ${NODE_SHIM_RESOLUTION_PREAMBLE}
 
 /** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */

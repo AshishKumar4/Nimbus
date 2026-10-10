@@ -88,14 +88,15 @@ const env = {
   LOADER: {
     // A one-shot `node -e "console.log(1)"`. Like the node runner, the program
     // hands its output and its exit to the supervisor, which keeps them as the
-    // process's log, and answers the run with the same.
+    // process's byte log. A live foreground run has no second text capture
+    // in its completion response.
     load() {
       return {
         getEntrypoint: () => ({
           async run(_request, supervisor) {
             await supervisor.stdout(new TextEncoder().encode('1\n'));
             await supervisor.reportExit(0, '', [], null, [], []);
-            return Response.json({ exitCode: 0, stdout: '1\n', stderr: '' });
+            return Response.json({ exitCode: 0, stdout: '', stderr: '' });
           },
           [Symbol.dispose]() {},
         }),

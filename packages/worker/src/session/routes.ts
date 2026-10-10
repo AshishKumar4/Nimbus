@@ -26,6 +26,7 @@
 
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
+import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
 } from '../runtime/process-logs-api.js';
@@ -431,7 +432,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
     // stripped so the process never sees the transport that carried it.
     const hostedWebSocket = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
     if (hostedWebSocket) {
-      if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+      if (!isWebSocketUpgradeRequest(request.headers)) {
         return new Response('Expected WebSocket', { status: 426 });
       }
       const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
@@ -783,7 +784,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // Per-DO Dynamic Worker accounting: distinct workers in flight now,
         // fan-out claims, remaining headroom against the platform limit,
         // and the peak.
-        loader: loaderLedgerStats(self.ctx),
+        loader: loaderLedgerStats(self.ctx, self.env.NIMBUS_DIAG_TURN === '1'),
         rpc: {
           lastFrame: getLastRpcFrame(),
         },
@@ -975,11 +976,12 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         }
       }
       // Where a session's write time goes, phase by phase, without RPC: the
-      // clock only moves across I/O, so each phase ends on a timer turn.
+      // clock only moves across I/O, so each phase ends after a real 1 ms
+      // clock deadline. An afterTurn continuation is not a clock tick.
       if (url.pathname === '/api/_test/sql-bench' && request.method === 'POST') {
         const body = await parseJsonBody(request, SqlBenchBodySchema);
         const tick = async (): Promise<number> => {
-          await new Promise((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => setTimeout(resolve, 1));
           return Date.now();
         };
         const sql = self.ctx.storage.sql;

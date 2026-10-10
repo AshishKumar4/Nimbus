@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -70,8 +71,9 @@ function authority(files) {
   return new ProcessFiles(raw);
 }
 
-async function dispatch(bytes, argv) {
+async function dispatch(bytes, argv, output) {
   const filesystem = authority({ 'home/user/program.wasm': bytes });
+  const processes = new SessionProcessSupervisor();
   const opened = [];
   const submitted = [];
   const run = makeWasmRunner({
@@ -89,13 +91,7 @@ async function dispatch(bytes, argv) {
         };
       },
     },
-    processes: {
-      spawn: () => ({ pid: 42 }),
-      appendOutput() {},
-      exit() {},
-      getExit: () => null,
-      markExit() {},
-    },
+    processes,
   });
   const result = await run('', {
     argv,
@@ -105,8 +101,9 @@ async function dispatch(bytes, argv) {
     dirname: '/home/user',
     command: 'wasm-runner /home/user/program.wasm',
     cred: USER_CRED,
+    ...(output ? { output } : {}),
   });
-  return { result, opened, submitted };
+  return { result, opened, submitted, processes };
 }
 
 {
@@ -129,6 +126,71 @@ async function dispatch(bytes, argv) {
 {
   const { submitted } = await dispatch(both, []);
   assert.equal(submitted[0]?.wasiAbi, 'preview1', 'a module importing both namespaces is preview1');
+}
+
+{
+  const { result, processes } = await dispatch(directWithCustomNeedle, ['f'], () => {});
+  assert.equal(result.stdout, '7\n');
+  const pid = processes.getAll()[0].pid;
+  assert.equal(processes.allLogs(pid).map(chunk => chunk.data).join(''), '7\n', 'a direct scalar result is stored in the process log even when the caller supplies a live output sink');
+}
+
+// A broker already owns the process, fd0, and byte-log delivery. In particular
+// no output callback is present here: the runner must not allocate an inner
+// process or turn its retained log tail into the returned stdout string.
+{
+  const filesystem = authority({ 'home/user/program.wasm': preview0WithNeedles });
+  const processes = new SessionProcessSupervisor();
+  const { pid } = processes.spawn('broker WASI child', ['program.wasm'], '/home/user', { cred: USER_CRED });
+  processes.openInput(pid);
+  processes.writeInputBytes(pid, new Uint8Array([255, 0, 254]));
+  const payload = new Uint8Array(96 * 1024).fill(255);
+  const received = [];
+  let running = true, live = false, openedPid, submittedPid, input;
+  const release = processes.subscribeOutputBytes(pid, chunk => {
+    assert.equal(chunk.stream, 'stdout');
+    received.push(chunk.data);
+    live = running;
+  });
+  try {
+    const run = makeWasmRunner({
+      filesystem, processes,
+      facets: {
+        parking: 'none',
+        open(spec) {
+          openedPid = spec.syscalls.pid;
+          return {
+            async submit(_fn, args) {
+              submittedPid = args.processPid;
+              assert.equal(args.liveOutput, true);
+              input = await processes.readInput(submittedPid, 0);
+              // The facet publishes through its actual bound supervisor pid,
+              // before it can finish. The native workerd case compiles and
+              // executes the corresponding fd_write/fd_read guest.
+              await processes.appendOutputBytes(submittedPid, 'stdout', payload);
+              return { ok: true, mode: 'wasi', exitCode: 0, stdout: '', stderr: '', streamedOutput: true };
+            },
+            dispose() {},
+          };
+        },
+      },
+    });
+    const result = await run('', { argv: [], env: {}, cwd: '/home/user', filename: '/home/user/program.wasm', dirname: '/home/user', command: 'program.wasm', cred: USER_CRED, stdinPid: pid });
+    running = false;
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout, '', 'a streamed result must not render a lossy, truncated process-log tail');
+    assert.equal(openedPid, pid, 'the syscall binding is the broker process, not an extra inner process');
+    assert.equal(submittedPid, pid, 'the WASI relay reads and writes that same process channel');
+    assert.deepEqual(input.data, new Uint8Array([255, 0, 254]), 'queued broker input is consumed byte-exactly');
+    assert.equal(processes.getAll().length, 1, 'no second process identity is allocated');
+    assert.equal(live, true, 'the broker sees bytes while the guest is still running');
+    assert.deepEqual(Buffer.concat(received), Buffer.from(payload), 'all 96 KiB reach the byte subscriber, beyond any retained log tail');
+    assert.equal(processes.hasInput(pid), true, 'only the broker may close its input ownership');
+  } finally {
+    release();
+    processes.closeInput(pid);
+    await filesystem.releaseProcess(pid);
+  }
 }
 
 console.log('wasm-runner-abi-detect: ok');

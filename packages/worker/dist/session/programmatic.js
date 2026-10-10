@@ -449,7 +449,7 @@ export async function rpcListRuntimes(self) {
 }
 export async function rpcListProcesses(self) {
     await ensureProgrammaticReady(self);
-    return self.processes.getAll().map((p) => serializeProcess(p));
+    return self.processes.publishedAll().map((p) => serializeProcess(p));
 }
 export async function rpcKillProcess(self, pid) {
     await ensureProgrammaticReady(self);

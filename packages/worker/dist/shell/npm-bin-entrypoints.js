@@ -1,4 +1,5 @@
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { ProcessView, X_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { resolveNpmBin, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
@@ -137,8 +138,9 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             const bundleProfile = bundleProfileForNpmBin(bin);
             const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
-            const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
-            const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
+            const reserved = ctx.__nimbusBinSpawn;
+            const attachedTty = reserved?.attachedTty ?? looksAttachedTtyNpmBin(metadata, argv, ctx.env);
+            const longRunning = reserved?.forceLongRunning === true || attachedTty || looksLongRunningNpmBin(name, argv);
             const runtimeCmd = await upstreamResolve(runtimeName, from);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -146,27 +148,38 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             const runRuntime = runtimeCmd;
             const shellLine = `${name} ${argv.join(' ')}`.trim();
-            const entry = deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty, parentPid: ctx.pid });
+            // A broker or launch wrapper may already own the process and fd0.
+            // An npm entrypoint is that program, not a second child incarnation.
+            const ownsEntry = reserved?.callerPid === undefined;
+            const entry = ownsEntry ? deps.processes.spawn(shellLine, [name, ...argv], invocationCwd, { longRunning, attachedTty, parentPid: ctx.pid }) : deps.processes.get(reserved.callerPid);
+            if (!entry || entry.state !== 'running')
+                throw new Error(`${name}: reserved process is not running`);
             const pid = entry.pid;
             const startedAt = Date.now();
-            if (longRunning)
+            if (longRunning && !deps.processes.hasInput(pid))
                 deps.processes.openInput(pid);
             const label = longRunning ? 'started (long-running)' : 'started';
-            deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
-            deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning, attachedTty });
-            // Output goes to the pid's log ring and the caller's streams; nothing
-            // abandons this invocation — it runs until the program exits.
-            const writeThrough = (stream, target) => (data) => {
-                const text = String(data);
-                try {
-                    deps.processes.appendOutput(pid, stream, text);
-                }
-                catch { }
-                try {
-                    target.write(text);
-                }
-                catch { }
+            if (ownsEntry) {
+                deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
+                deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning, attachedTty });
+            }
+            // Live runtime bytes have already reached this reserved pid's log and
+            // its foreground subscriber. Forward them to the launching fd without
+            // re-appending to that pid (which would feed the subscriber back into
+            // itself). Text returned by a non-streaming command still needs a log.
+            const writeThrough = (stream, target) => {
+                const decoded = textSink((text) => target.write(text));
+                return {
+                    async write(data) {
+                        const text = String(data);
+                        await deps.processes.appendOutputBytes(pid, stream, new TextEncoder().encode(text));
+                        await target.write(text);
+                    },
+                    writeBytes: (data) => target.writeBytes ? target.writeBytes(data) : decoded(data),
+                };
             };
+            const stdout = writeThrough('stdout', ctx.stdout);
+            const stderr = writeThrough('stderr', ctx.stderr);
             let exitCode = 1;
             try {
                 // A user-invoked bin is a foreground program: the shell waits for its
@@ -175,12 +188,13 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 exitCode = await runRuntime({
                     ...ctx,
                     args: ['/' + bin.targetPath, ...argv],
-                    stdout: { write: writeThrough('stdout', ctx.stdout) },
-                    stderr: { write: writeThrough('stderr', ctx.stderr) },
+                    stdout,
+                    stderr,
                     __nimbusBinSpawn: {
+                        ...reserved,
                         skipSpawn: true,
                         callerPid: pid,
-                        command: shellLine,
+                        command: reserved?.command ?? shellLine,
                         forceLongRunning: longRunning,
                         attachedTty,
                     },
@@ -188,7 +202,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 });
             }
             catch (e) {
-                writeThrough('stderr', ctx.stderr)(`bin error: ${formatError(e)}\n`);
+                await stderr.write(`bin error: ${formatError(e)}\n`);
                 exitCode = 1;
             }
             finally {
@@ -203,8 +217,10 @@ export function installNpmBinFallbackResolver(registry, deps) {
                             deps.processes.markExit(pid, exitCode);
                     }
                     catch { }
-                    deps.notifyTerminalEvent({ type: 'exit', pid, code: exitCode, command: shellLine });
-                    deps.emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt);
+                    if (ownsEntry) {
+                        deps.notifyTerminalEvent({ type: 'exit', pid, code: exitCode, command: shellLine });
+                        deps.emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt);
+                    }
                 }
             }
             return exitCode;

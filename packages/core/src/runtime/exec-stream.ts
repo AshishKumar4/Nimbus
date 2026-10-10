@@ -74,7 +74,7 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   let pendingStream: ExecStreamName = 'stdout';
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
-    clearTimeout(flushTimer);
+    if (flushTimer !== null) clearTimeout(flushTimer);
     flushTimer = null;
     if (settled || pendingBytes === 0) return;
     let data = pending[0];
@@ -92,7 +92,8 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   };
   const settle = () => {
     settled = true;
-    clearTimeout(flushTimer);
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    flushTimer = null;
     pending = [];
     pendingBytes = 0;
     openRoom();
@@ -123,6 +124,9 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
       pending.push(data);
       pendingBytes += data.byteLength;
       if (pendingBytes >= COALESCE_BYTES) flush();
+      // This is an intentional transport batching window, not a deferred
+      // bookkeeping decision. A microtask fence between awaited writes
+      // turned seq's two million numbers into two million network frames.
       else flushTimer ??= setTimeout(flush, 0);
       if ((controller.desiredSize ?? 0) > 0) return;
       room ??= new Promise<void>((resolve) => { release = resolve; });

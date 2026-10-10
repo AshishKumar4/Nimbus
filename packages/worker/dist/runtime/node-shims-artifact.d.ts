@@ -29,6 +29,21 @@ export interface NodeFacetSources {
     /** Node's library (runtime/node-lib-module.ts generateNodeLibModule()), a module of the map. */
     nodeLib: string;
 }
+/** The registry bootstrap and its modules, for every runner that hosts node shims. */
+export declare function createNodeFacetRuntime(sources: NodeFacetSources, { codeCells, runtimeCode, stackEntry, }?: {
+    codeCells?: string;
+    runtimeCode?: string;
+    stackEntry?: string;
+}): {
+    imports: string;
+    code: string;
+    modules: {
+        "nimbus/interpreter-primordials.js": string;
+        "nimbus/interpreter.js": string;
+        "nimbus/interpreter-ops.js": string;
+        "nimbus/node-lib.js": string;
+    };
+};
 /**
  * The node-compat layer's sources for facet worker codegen. Memoized per
  * isolate; a failed fetch clears the memo so the next exec retries instead of
