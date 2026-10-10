@@ -277,9 +277,10 @@ for (const pathRevisionBytes of [undefined, 0]) {
   }
   const largest = Math.max(...perTransaction.values());
   assert.ok(largest <= MAX_TX_SQL_EXECS, `a publication's transaction ran ${largest} statements`);
-  const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/many/f0');
+  // Reported where the removed names were, the directory they were in.
+  const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/many');
   assert.ok(reported !== undefined && reported.rev > later.rev, 'a removal passed by a later publication was reported below it');
-  assert.equal(other.revision('/home/user/d/many/f0'), reported.rev);
+  assert.equal(other.revision('/home/user/d/many'), reported.rev);
 }
 
 // ── Held for publication: a barrier's stats and pushed bytes, and a landed view's reads, wait for it; its writer's barrier sees its own ──
