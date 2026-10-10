@@ -28,6 +28,7 @@
 export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
   /** One entry per module evaluation — the ledger a ghost boot lands in. */
   const boots = [];
+  const bootSpecs = [];
   /** loaderId → the resolved loader config (the module map that was built). */
   const configs = new Map();
   /** facetName → the live instance, or a promise for it while it starts. */
@@ -123,7 +124,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
   };
 
   return {
-    boots,
+    boots, bootSpecs,
     configs,
     facets,
     loader,
@@ -267,6 +268,16 @@ import { missingAssets } from './lib/staged-assets.mjs';
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
 // answer to the name the real worker registers for its supervisor class.
 composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+
+/** Observe the real host's public boot boundary without retaining generated source. */
+export function captureProcessBoots(world) {
+  return (...args) => {
+    const host = processHostFor(...args);
+    const open = host.open.bind(host);
+    host.open = (params) => { world.bootSpecs.push(params.boot); return open(params); };
+    return host;
+  };
+}
 
 /** The two settings of NIMBUS_PROCESS_HOST, for suites that run under both. */
 export const PROCESS_HOST_MODES = ['facet', 'peer'];

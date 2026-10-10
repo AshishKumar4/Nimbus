@@ -1,6 +1,6 @@
 /**
  * Node's own argument checks in front of the builtins workerd provides
- * (zlib, buffer, crypto): the shims run each over its forwarded module (node-shims.ts,
+ * (zlib, buffer, crypto, path, url, events): the shims run each over its forwarded module (node-shims.ts,
  * "the builtins workerd provides"). A call Node refuses throws Node's error,
  * from core _shared/node-error.ts or Node's own validator (node-lib-host.ts),
  * which is loaded only once a cheap check has failed. A call Node takes goes

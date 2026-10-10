@@ -108,6 +108,9 @@ export type StartContract = 'lifetime' | 'boot';
  * and read when the facet loads, so the bytes are transient rather than
  * resident in the coordinator's heap.
  */
+const ModuleSourceAssetSchema = z.object({ path: z.string().startsWith('/'), sha256: z.string().regex(/^[0-9a-f]{64}$/) });
+const ModuleSourceRecipeSchema = z.array(z.union([z.string(), ModuleSourceAssetSchema]));
+
 export const ResidentCodeSpecSchema = z.object({
   compatibilityDate: z.string().min(1),
   compatibilityFlags: z.array(z.string()),
@@ -137,6 +140,10 @@ export const ResidentCodeSpecSchema = z.object({
    * image store below and the spec names it.
    */
   vfsTextModules: z.record(z.string(), z.string()).optional(),
+  /** Process-owned source recipes whose immutable pieces are read only on a Loader cache miss. */
+  vfsComposedModules: z.record(z.string(), z.string()).optional(),
+  /** Runtime libraries are immutable deployment assets, never per-process images. */
+  assetModules: z.record(z.string(), z.object({ kind: z.enum(['js', 'cjs']), source: ModuleSourceAssetSchema })).optional(),
   /**
    * VFS paths of generated CommonJS PACKS (encodeCommonJsPack): each image
    * carries many `{ cjs }` modules, and the map gains every one of them at
@@ -276,8 +283,9 @@ export interface ResidentDiskReader {
 export async function residentLoaderConfig(
   spec: ResidentCodeSpec,
   disk: ResidentDiskReader,
+  readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>,
 ): Promise<Record<string, unknown>> {
-  const resolved: Record<string, string | { wasm: ArrayBuffer } | { cjs: string }> = {};
+  const resolved: Record<string, string | { wasm: ArrayBuffer } | { cjs: string } | { js: string }> = {};
   // The loader is handed every module at once, so the session holds them all
   // while the facet loads. A pack is read first, and its bytes let go once
   // its modules are decoded, before any other image is in hand: read after
@@ -287,6 +295,21 @@ export async function residentLoaderConfig(
   for (const path of spec.vfsCommonJsPacks ?? []) {
     Object.assign(resolved, decodeCommonJsPackBytes(await readFacetImageBytes(disk, path)));
   }
+  const immutable = (source: z.infer<typeof ModuleSourceAssetSchema>) => {
+    if (!readAsset) throw new Error('Nimbus: this module map requires an immutable source reader');
+    return readAsset(source);
+  };
+  await Promise.all([
+    ...Object.entries(spec.assetModules ?? {}).map(async ([name, member]) => {
+      const text = await immutable(member.source);
+      resolved[name] = member.kind === 'cjs' ? { cjs: text } : { js: text };
+    }),
+    ...Object.entries(spec.vfsComposedModules ?? {}).map(async ([name, path]) => {
+      const recipe = ModuleSourceRecipeSchema.parse(JSON.parse(new TextDecoder().decode(await readFacetImageBytes(disk, path))));
+      const parts = await Promise.all(recipe.map((part) => typeof part === 'string' ? part : immutable(part)));
+      resolved[name] = parts.join('');
+    }),
+  ]);
   for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
     const bytes = await disk.readFile(path);
     // The read's own buffer when it fits exactly, and only otherwise a copy.

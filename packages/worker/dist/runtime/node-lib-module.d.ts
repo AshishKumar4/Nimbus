@@ -8,5 +8,6 @@
  * punycode never compiles it. Staged as an asset beside the shims
  * (scripts/bundle-node-shims.mjs).
  */
+export declare function generateNodeDnsModule(): string;
 export declare function generateNodeLibModule(): string;
 //# sourceMappingURL=node-lib-module.d.ts.map
