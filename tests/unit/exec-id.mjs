@@ -72,7 +72,15 @@ const runtime = await bundle.composeHostedRuntime({
   ctx,
   env,
   ports,
-  lifecycle: { waitUntil: (task) => facetCtx.waitUntil(task), async schedule() {}, async cancel() {} },
+  lifecycle: {
+    waitUntil: (task) => facetCtx.waitUntil(task),
+    // As the embedder's alarm does: a launch paced across turns (TurnBudget,
+    // past TURN_CHUNK_MAX_BYTES of work) is handed back to resume.
+    async schedule(task, at) {
+      if (task === 'resident-launch') setTimeout(() => void runtime.onScheduled(task), Math.max(0, at - Date.now()));
+    },
+    async cancel() {},
+  },
 });
 
 const kernel = runtime.files.as(bundle.CRED_KERNEL);
