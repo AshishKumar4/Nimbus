@@ -273,4 +273,63 @@ for (const delivered of [false, true]) {
   } finally { harness.db.close(); }
 }
 
+// Two waves, each holding a committed prefix ahead of a reader's recall, each
+// then writing the file the other holds: each waits for the other's
+// publication, which comes only once that wave ends. The destroy cuts both,
+// and completes.
+{
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    const kernel = sqliteFs.as(CRED_KERNEL);
+    for (const [dir, name] of [['da', 'a.txt'], ['db', 'b.txt']]) {
+      kernel.mkdir(dir);
+      kernel.writeFile(`${dir}/${name}`, name);
+    }
+    const files = new ProcessFiles(sqliteFs);
+    const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    assert.ok(reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true }).readLease, 'no lease to meet');
+    const other = files.bind({ pid: 10, cred: CRED_KERNEL });
+    let open;
+    const opened = new Promise((resolve) => { open = resolve; });
+    /** Its own file truncated, held for the reader; then, once opened, the other's. */
+    const wave = async (pid, own, theirs) => {
+      const bytes = new Uint8Array(await new Response(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
+        { type: 'truncate', path: own, size: 0 },
+        { type: 'truncate', path: theirs, size: 0 },
+      ] })).arrayBuffer());
+      // Its magic, batch-begin and first truncate (each record a 5-byte header, then its length's bytes).
+      let at = 4;
+      for (let record = 0; record < 2; record++) at += 5 + new DataView(bytes.buffer, at + 1, 4).getUint32(0, true);
+      let settled = false;
+      const answer = files.bind({ pid, cred: CRED_KERNEL }).writeStream(new ReadableStream({
+        type: 'bytes',
+        start(controller) {
+          controller.enqueue(bytes.slice(0, at));
+          void opened.then(() => { controller.enqueue(bytes.slice(at)); controller.close(); });
+        },
+      })).finally(() => { settled = true; });
+      return { answer, settled: () => settled };
+    };
+    const a = await wave(8, 'da/a.txt', 'db/b.txt');
+    const b = await wave(9, 'db/b.txt', 'da/a.txt');
+    const held = (key) => { try { other.readFile(key); return false; } catch (error) { return error.code === 'EAGAIN'; } };
+    for (let i = 0; i < 200 && !(held('da/a.txt') && held('db/b.txt')); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(held('da/a.txt') && held('db/b.txt'), 'the waves held nothing ahead of the recall');
+    open();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual([a.settled(), b.settled()], [false, false], 'a wave writing the other\'s held file went on');
+    const self = {
+      sqliteFs,
+      ensureSqliteFs() {},
+      processes: { getAll: () => [], flushLogs() {} },
+      portRegistry: {},
+      ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
+    };
+    const outcome = await Promise.race([rpcDestroy(self).then((result) => result.ok), new Promise((resolve) => setTimeout(() => resolve('waiting'), 3_000))]);
+    assert.equal(outcome, true, 'a destroy waited on two waves each waiting for the other\'s publication');
+    assert.deepEqual([(await a.answer).ok, (await b.answer).ok], [false, false], 'a cut wave was answered as applied');
+  } finally { harness.db.close(); }
+}
+
 console.log('session exclusive mutation RPC: ok');

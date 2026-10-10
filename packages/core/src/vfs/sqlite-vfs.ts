@@ -852,15 +852,15 @@ export function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { s
 }
 
 /**
- * `work`, a mounted backend's answer to a wave, raced with the wave's
- * `signal`: once it aborts, the wave goes on at once (ending refused), and a
- * late answer is dropped. The namespace's guard starts no backend call
- * after the abort (WaveRouter.apply).
+ * `work`, something a wave waits for, raced with the wave's `signal`: once
+ * it aborts, the wave goes on at once (ending refused), and a late answer is
+ * `discard`ed. The namespace's guard starts no backend call after the abort
+ * (WaveRouter.apply).
  */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined, discard?: (late: T) => void): Promise<T> {
   if (signal === undefined) return work;
   return new Promise<T>((resolve, reject) => {
-    const abort = (): void => { work.catch(() => {}); reject(signal.reason); };
+    const abort = (): void => { work.then((late) => discard?.(late), () => {}); reject(signal.reason); };
     if (signal.aborted) return abort();
     signal.addEventListener('abort', abort, { once: true });
     work.then(
@@ -4629,25 +4629,26 @@ export class SqliteVFS {
   /**
    * Give up every delegation of another holder that a write at `key`
    * overlaps (each recalled, revoked); `holds`: the writer's own. A reader's
-   * recall a `pipeline` runs ahead of: sent, and a turn given for it to leave
-   * before the write commits.
+   * recall the wave's `pipeline` runs ahead of: sent, and a turn given for it
+   * to leave before the write commits. Each wait ends with `signal` (a
+   * delegation recalled may be another wave's held commit, published only
+   * once that wave ends), and no recall is asked after it.
    */
-  private async recallDelegationsAt(key: string, holds: ReadonlySet<string> | null, pipeline?: Pipeline): Promise<void> {
-    if (this.readLeases.size > 0 && pipeline !== undefined) {
+  private async recallDelegationsAt(key: string, holds: ReadonlySet<string> | null, pipeline: Pipeline, signal: AbortSignal | undefined): Promise<void> {
+    if (this.readLeases.size > 0) {
       const sent = pipeline.recalls.size;
       this.withHolds(holds, () => this.inPipeline(pipeline, () => this.readRecallAt(normalizeVfsPath(key))));
-      if (pipeline.recalls.size > sent) await new Promise((resolve) => engineSetTimeout(resolve, 0));
-    } else if (this.readLeases.size > 0) {
-      await this.withHolds(holds, () => this.readRecallAt(normalizeVfsPath(key)))?.recall();
+      if (pipeline.recalls.size > sent) await untilAborted(new Promise((resolve) => engineSetTimeout(resolve, 0)), signal);
     }
     for (;;) {
+      signal?.throwIfAborted();
       const normalized = normalizeVfsPath(key);
       const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (
         lease.delegation !== null && holds?.has(id) !== true && this.mutationMeets(lease, normalized)
         // What the writer itself holds for its publication.
         && !(lease.held !== undefined && (lease.held === pipeline || (lease.held.writer !== null && lease.held.writer === holds)))));
       if (met === undefined) return;
-      await this.recallRequired(met[0], met[1], 'revoke', normalized).recall();
+      await untilAborted(this.recallRequired(met[0], met[1], 'revoke', normalized).recall(), signal);
     }
   }
 
@@ -9617,6 +9618,8 @@ export class SqliteVFS {
     const asWriter = <T>(fn: () => T): T => this.inPipeline(pipeline, () => this.withHolds(holds, fn));
     // As the stream's caller: its origin and the lease it writes under, too.
     const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, () => asWriter(fn)));
+    /** What the wave waits for that does not take its signal: ended by its cut too (untilAborted). */
+    const unlessCut = <T>(work: Promise<T>, discard?: (late: T) => void): Promise<T> => untilAborted(work, options.signal, discard);
     const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
     const decodeDrainToken = {};
     this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
@@ -10028,7 +10031,7 @@ export class SqliteVFS {
       phase = 'publish';
       asWriter(queueLeading);
       while (asWriter(commitLeadingStep)) {
-        if (options.turn !== undefined && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await options.turn();
+        if (options.turn !== undefined && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await unlessCut(options.turn());
       }
     };
     const queueLeading = (): void => {
@@ -10280,22 +10283,22 @@ export class SqliteVFS {
           };
         }
       }
-      const decoded = await decodeWriteBatchStream(stream, {
+      const decoded = await unlessCut(decodeWriteBatchStream(stream, {
         signal: options.signal,
         retainChunk,
-      });
+      }));
       recordIterator = decoded.records[Symbol.asyncIterator]();
       let turnAt = 0;
       while (true) {
         if (options.turn !== undefined && progress.committedGroupSequence !== turnAt) {
           turnAt = progress.committedGroupSequence;
-          await options.turn();
+          await unlessCut(options.turn());
         }
         phase = 'decode';
         const waitStartedAt = performance.now();
         let next: IteratorResult<W7DecodedRecord>;
         try {
-          next = await recordIterator.next();
+          next = await unlessCut(recordIterator.next(), (late) => { if (late.done !== true && late.value.type === 'file-chunk') late.value.retention.release(); });
         } finally {
           decodeDrainWaitMs += performance.now() - waitStartedAt;
         }
@@ -10308,7 +10311,7 @@ export class SqliteVFS {
         // be given up first, here between records, where the stream may wait:
         // its group's commit would otherwise be refused.
         if (this.exclusiveMutationLeases.size > 0 || this.readLeases.size > 0) {
-          for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, holds, pipeline);
+          for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, holds, pipeline, options.signal);
         }
         // A record that is no call: the calls before it commit first.
         const partOfCall = record.type === 'call' || (record.type === 'file-begin' && record.inode.call !== undefined)
@@ -10733,7 +10736,7 @@ export class SqliteVFS {
         routed.file = null;
       }
       if (!recordIteratorFinished && recordIterator?.return) {
-        try { await recordIterator.return(); } catch { /* preserve the primary stream result */ }
+        try { await unlessCut(recordIterator.return()); } catch { /* preserve the primary stream result */ }
       }
       if (!decodeDrainFinished) {
         this._decodeDrainStarts.delete(decodeDrainToken);
