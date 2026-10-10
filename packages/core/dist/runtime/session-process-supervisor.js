@@ -23,6 +23,15 @@ import { ProcessTable } from './process-table.js';
 import { ProcessInputStore } from './process-input.js';
 import { ProcessLogStore, } from './process-logs.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
+/**
+ * How long work still held for an ended process (holdWork) has to stop: the
+ * session's bound on a holder that does not let go when asked, the one a
+ * delegation's recall has (delegations.ts). Past it the work is stopped
+ * again and the process released all the same; work that ignored its stop
+ * meets a closed scope.
+ */
+const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 export class SessionProcessSupervisor {
     table = new ProcessTable();
     input = new ProcessInputStore();
@@ -44,6 +53,10 @@ export class SessionProcessSupervisor {
     release = null;
     /** Each ended pid's release, begun at its end: what a prune reports and waits for before it forgets the entry. */
     releases = new Map();
+    /** Who waits for a pid's release to run (released), until it begins. */
+    releaseWaiters = new Map();
+    /** Each ended pid whose held work is still stopping: the bound on it (HELD_WORK_STOP_MS). */
+    stopBounds = new Map();
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     defaultSignalAction = null;
     /** Holds a process's output until its writes are published; see setOutputGate. */
@@ -435,7 +448,53 @@ export class SessionProcessSupervisor {
      */
     releaseEnded(pid) {
         const entry = this.table.get(pid);
-        if (entry === undefined || entry.state === 'running' || this.held.has(pid))
+        if (entry === undefined || entry.state === 'running')
+            return;
+        if (!this.held.has(pid)) {
+            void this.releaseOf(pid);
+            return;
+        }
+        if (this.stopBounds.has(pid))
+            return;
+        this.stopBounds.set(pid, setTimeout(() => {
+            this.stopBounds.delete(pid);
+            if (!this.held.has(pid))
+                return;
+            this.terminate(pid);
+            this.held.delete(pid);
+            void this.releaseOf(pid);
+        }, HELD_WORK_STOP_MS));
+    }
+    /**
+     * Settles once `pid`'s release has run, however it went; at once when
+     * nothing of it is still to be released (it has, or there is no release
+     * to wait for). What a caller that ended a process waits for before it
+     * relies on what the process held being gone (a destroy), bounded by
+     * HELD_WORK_STOP_MS for work that ignores its stop.
+     */
+    released(pid) {
+        const begun = this.releases.get(pid);
+        if (begun !== undefined)
+            return begun.then(() => { });
+        const entry = this.table.get(pid);
+        if (this.release === null || entry === undefined || entry.state === 'running' || !this.held.has(pid))
+            return Promise.resolve();
+        return new Promise((resolve) => {
+            const waiting = this.releaseWaiters.get(pid);
+            if (waiting)
+                waiting.push(resolve);
+            else
+                this.releaseWaiters.set(pid, [resolve]);
+        });
+    }
+    /**
+     * The program behind `pid`, run elsewhere, says it has ended, ahead of
+     * the table hearing of it (its exit is told once its output is let out):
+     * what it bound is released now, so what its last closes flush goes with
+     * that output, unless work the session runs on the pid still holds it.
+     */
+    programEnded(pid) {
+        if (this.table.get(pid) === undefined || this.held.has(pid))
             return;
         void this.releaseOf(pid);
     }
@@ -454,6 +513,14 @@ export class SessionProcessSupervisor {
             released = Promise.resolve({ error });
         }
         this.releases.set(pid, released);
+        const bound = this.stopBounds.get(pid);
+        if (bound !== undefined)
+            clearTimeout(bound);
+        this.stopBounds.delete(pid);
+        const waiting = this.releaseWaiters.get(pid);
+        this.releaseWaiters.delete(pid);
+        for (const resolve of waiting ?? [])
+            void released.then(resolve);
         return released;
     }
     /**

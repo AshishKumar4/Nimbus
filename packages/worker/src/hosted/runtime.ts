@@ -264,7 +264,6 @@ class RuntimeOwner {
     return manager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope));
   }
   supervisorBridge(pid?: number) { return this.supervisorOps().bridge(pid); }
-  supervisorForgetBridge(pid: number) { this.supervisorOps().forget(pid); }
   supervisorRewindBridge(pid: number) { return this.supervisorOps().rewind(pid); }
 
   private scheduleLogs(): void {

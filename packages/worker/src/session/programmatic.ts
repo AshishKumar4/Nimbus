@@ -1228,6 +1228,10 @@ export async function rpcDestroy(
       try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
     }
   }
+  // What they held goes once the work stopping on them has closed what it
+  // opened (SessionProcessSupervisor.released, bounded for work that ignores
+  // its stop): their delegations among it.
+  await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
 
   // Its processes stopped, every wave still being read is cut, which ends
   // the commits it held open: each is then published once its reader

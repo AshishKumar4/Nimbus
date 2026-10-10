@@ -994,7 +994,10 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.closeInput(pid);
     }
     catch { }
-    self.supervisorForgetBridge?.(pid);
+    // Its receipts go, and what it bound is released ahead of its output,
+    // so what its last closes flush goes out with it.
+    self.supervisorDeliveries?.forget(pid);
+    self.processes.programEnded(pid);
     await self.processes.releaseOutput(pid, () => {
         closeRelayedSockets(self, pid);
         reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules);

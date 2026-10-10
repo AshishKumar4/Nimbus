@@ -75,11 +75,6 @@ export class SessionFilesystem {
     return this.ops ??= buildSessionSupervisorOps(this.host);
   }
 
-  /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
-  forget(pid: number): void {
-    this.ops?.forget(pid);
-  }
-
   /** Close a live pid's descriptors for a run that starts in place of another. */
   rewind(pid: number): Promise<void> {
     return this.ops?.rewind(pid) ?? Promise.resolve();

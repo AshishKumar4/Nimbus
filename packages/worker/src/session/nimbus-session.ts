@@ -802,11 +802,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return this.openFilesystem().supervisorOps().bridge(pid);
   }
 
-  /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
-  supervisorForgetBridge(pid: number): void {
-    this.filesystem?.forget(pid);
-  }
-
   supervisorRewindBridge(pid: number): Promise<void> { return this.filesystem?.rewind(pid) ?? Promise.resolve(); }
 
   // A storage wait: its input gate keeps this session's events out while the isolate's other objects run.

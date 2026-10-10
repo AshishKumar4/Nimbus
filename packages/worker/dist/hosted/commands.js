@@ -53,6 +53,7 @@ export async function registerHostedCommands(self, workspace) {
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: runAsProcess,
         accountWork: (worker) => self.processes.beginWork(worker),
+        holdWork: (worker, stop) => self.processes.holdWork(worker, stop),
     });
     // `kill` is the shell's builtin; the session's own processes (resident
     // servers, the vite shim), numbered in this table's pid space, are reached
@@ -795,9 +796,10 @@ export async function registerHostedCommands(self, workspace) {
             }
             const childProcess = self.processes.spawn('sh', ['sh'], options?.cwd || '/home/user', { parentPid });
             // The command that runs the script (`sh x.sh`) awaits its shell, which is
-            // this session's work behind the child's pid until it returns.
+            // this session's work behind the child's pid: a kill stops it.
             const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
-            const stopped = self.processes.holdWork(childProcess.pid, () => { });
+            const stop = new AbortController();
+            const stopped = self.processes.holdWork(childProcess.pid, () => stop.abort());
             let exitCode = 1;
             try {
                 const identity = commandIdentityFor(childProcess.pid);
@@ -816,6 +818,7 @@ export async function registerHostedCommands(self, workspace) {
                         setUmask: identity.setUmask,
                     },
                     runAs: runAsProcess,
+                    signal: stop.signal,
                 });
                 exitCode = result.exitCode;
                 return result;
@@ -868,8 +871,10 @@ export async function registerHostedCommands(self, workspace) {
         const scriptShell = workspace.shellFor(pid, { cwd: cmdCtx.cwd || '/home/user', env: cmdCtx.env });
         const endAwait = self.processes.beginAwait(cmdCtx.pid, pid);
         // The script is this session's work behind the pid until its shell has
-        // closed what it opened: only then is what it bound released.
-        const stopped = self.processes.holdWork(pid, () => { });
+        // closed what it opened: a kill stops it, and only then is what it bound
+        // released.
+        const stop = new AbortController();
+        const stopped = self.processes.holdWork(pid, () => stop.abort());
         let exitCode = 1;
         try {
             const result = await scriptShell.execute(cmd, {
@@ -905,6 +910,7 @@ export async function registerHostedCommands(self, workspace) {
                         : {}),
                 },
                 runAs: runAsProcess,
+                signal: stop.signal,
             });
             exitCode = result.exitCode;
         }

@@ -333,8 +333,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     getFilesystemAuthority(): ProcessFiles;
     /** The pid-keyed filesystem bridge behind the supervisor ops. */
     supervisorBridge(pid?: number): RuntimeFsBridge;
-    /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
-    supervisorForgetBridge(pid: number): void;
     supervisorRewindBridge(pid: number): Promise<void>;
     waveTurn(): Promise<void>;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
