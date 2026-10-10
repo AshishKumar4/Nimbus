@@ -637,7 +637,8 @@ export async function _rpcFsAcquire(
   pid?: number,
 ): Promise<VfsAcquireResult> {
   const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
-  return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+  // What it reports another's held commit made waits for its publication, as a list does.
+  return withRecall(() => self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options));
 }
 
 /** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
@@ -762,11 +763,11 @@ export async function _acquireOnDelivery(
   // A delivery never takes a read lease: its process cannot time the trust
   // of an answer it did not ask for (the barrier that asks does).
   const { lease: _lease, ...options } = parsed.data.options ?? {};
+  // Computed now, or not carried: one that would wait for another's held
+  // commit to publish holds no delivery back (the process asks, and waits).
   try {
-    return {
-      args: parsed.data,
-      answer: await _rpcFsAcquire(self, parsed.data.epoch, parsed.data.cursor, parsed.data.options === undefined ? undefined : options, caller),
-    };
+    const { epoch, cursor } = parsed.data;
+    return { args: parsed.data, answer: await self.supervisorBridge(caller).acquire(epoch, cursor, parsed.data.options === undefined ? undefined : options) };
   } catch {
     return undefined;
   }

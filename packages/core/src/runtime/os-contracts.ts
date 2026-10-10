@@ -569,7 +569,16 @@ export interface VfsAcquireResult {
    * and how long the process may trust it from the moment it asked.
    * Absent when it was not asked, or its recall is pending.
    */
-  readLease?: { owner: string; trustMs: number };
+  readLease?: {
+    owner: string;
+    trustMs: number;
+    /**
+     * Engine keys of the subtrees it does not vouch for: the mount points of
+     * the process's namespace (readLeaseCovers), whose backends are not the
+     * engine's. A mount or an unmount ends it.
+     */
+    uncovered: readonly string[];
+  };
 }
 
 /**

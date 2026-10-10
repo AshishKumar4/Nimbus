@@ -9,7 +9,9 @@ import assert from 'node:assert/strict';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
+import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
 import {
+  CRED,
   createAuthority,
   facetSupervisor,
   launchResident,
@@ -28,11 +30,13 @@ globalThis.__probe = { fs, read, resume };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot() {
+/** Booted; `prepare` runs before the launch, with the process's pid. */
+async function boot(prepare) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
   const handle = facetSupervisor(authority);
+  await prepare?.(authority, handle.log.pid);
   await launchResident({
     authority,
     program: PROGRAM,
@@ -45,9 +49,9 @@ async function boot() {
   return { authority, probe, log: handle.log };
 }
 
-/** Booted, `seed` made, then holding a trusted read lease (past the hold-off a recall leaves). */
-async function bootTrusted(seed) {
-  const booted = await boot();
+/** Booted (`prepare`), `seed` made, then holding a trusted read lease (past the hold-off a recall leaves). */
+async function bootTrusted(seed, prepare) {
+  const booted = await boot(prepare);
   await seed?.(booted.authority);
   await rawSleep(READ_LEASE_TRUST_MS + 20);
   await booted.probe.resume();
@@ -135,6 +139,21 @@ await runScenarios(import.meta.path, {
     assert.equal(device(await probe.fs.promises.stat('/dev/null')), 0o020000);
     assert.equal(device(await probe.fs.promises.stat('/home/user/app/null')), 0o020000);
     assert.ok((await probe.fs.promises.readdir('/')).includes('dev'));
+  },
+
+  async 'a mount the launch listed is the session\'s under a trusted lease: the lease vouches for SQLite alone'() {
+    const drive = asyncMemoryVfs();
+    const bytes = (text) => new TextEncoder().encode(text);
+    await drive.writeFile('/f', bytes('one'));
+    const { probe } = await bootTrusted(undefined, (authority, pid) => {
+      authority.files.vfs.mount('/m', drive);
+      authority.files.nameLaunch({ pid, cred: CRED }, () => ['/m/f']);
+    });
+    assert.equal(probe.fs.statSync('/m/f').size, 3, 'the launch did not list the mount');
+    await drive.writeFile('/f', bytes('three'));
+    await drive.writeFile('/g', bytes('g'));
+    assert.equal((await probe.fs.promises.stat('/m/f')).size, 5, 'the view answered for the mount');
+    assert.deepEqual((await probe.fs.promises.readdir('/m')).sort(), ['f', 'g'], 'the view listed the mount');
   },
 
   async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {

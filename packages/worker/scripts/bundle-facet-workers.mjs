@@ -908,11 +908,6 @@ async function main() {
   if (!/^function readLeaseCovers\(/m.test(readLeaseCover)) {
     throw new Error('[bundle-facet-workers/read-lease-cover] the bundle no longer declares function readLeaseCovers');
   }
-  for (const name of ['SESSION_KERNEL_ROOTS', 'READ_LEASE_UNCOVERED_ROOTS']) {
-    if (!new RegExp(`^(?:var|const|let) ${name}\\b`, 'm').test(readLeaseCover)) {
-      throw new Error(`[bundle-facet-workers/read-lease-cover] the bundle no longer declares ${name}`);
-    }
-  }
 
   const waveWriter = await bundleWaveWriter();
 
@@ -980,7 +975,7 @@ async function main() {
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
     '',
     '/**',
-    ' * Declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers;',
+    ' * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);',
     ' * the node shims splice it into their fs scope.',
     ' */',
     `export const READ_LEASE_COVER_PREAMBLE: string = ${JSON.stringify(readLeaseCover)};`,

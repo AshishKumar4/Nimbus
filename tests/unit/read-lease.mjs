@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
-import { READ_LEASE_UNCOVERED_ROOTS, SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
+import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -26,9 +27,9 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function session() {
+function session(options) {
   const harness = createSqliteVfsTestHarness();
-  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const engine = new SqliteVFS(harness.sql, harness.ctx, undefined, options);
   const kernel = engine.as(CRED_KERNEL);
   kernel.mkdir('home/user/d', { recursive: true });
   kernel.chown('home/user', USER.uid, USER.gid);
@@ -45,13 +46,22 @@ function barrier(s, bridge, from) {
   return bridge.acquire(s.engine.epoch, from?.rev ?? s.engine.revision(), { lease: true });
 }
 
-// ── What a lease vouches for: all but the kernel's mounts, at or under them, and the names above them ──
+// ── What a lease vouches for: all but its namespace's mounts, at or under them, and the names above them ──
 {
-  const covers = (key, listing = false) => readLeaseCovers(key, listing, READ_LEASE_UNCOVERED_ROOTS);
-  assert.deepEqual(['dev', 'dev/null', 'proc', 'proc/self'].filter((key) => covers(key)), []);
-  assert.equal(covers('', true), false);
-  assert.deepEqual(['', '.nimbus/images/x', 'var/lib/nimbus', 'devices', 'process', 'home/user/a'].filter((key) => !covers(key)), []);
-  assert.deepEqual(['var', 'devices', 'home'].filter((key) => !covers(key, true)), []);
+  const s = session();
+  s.files.vfs.mount('/mnt/drive', new MemoryVFS());
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { readLease } = barrier(s, reader);
+  assert.deepEqual([...readLease.uncovered].sort(), ['dev', 'mnt/drive', 'proc']);
+  // A mount moves what is the engine's: the lease ends, its holder told.
+  s.files.vfs.mount('/mnt/other', new MemoryVFS());
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  assert.equal(s.engine.readLeaseStats().held, 0);
+  const covers = (key, listing = false) => readLeaseCovers(key, listing, readLease.uncovered);
+  assert.deepEqual(['dev', 'dev/null', 'proc', 'proc/self', 'mnt/drive', 'mnt/drive/f'].filter((key) => covers(key)), []);
+  assert.deepEqual(['', 'mnt'].filter((key) => covers(key, true)), []);
+  assert.deepEqual(['', '.nimbus/images/x', 'var/lib/nimbus', 'devices', 'process', 'mnt', 'mnt/drive2', 'home/user/a'].filter((key) => !covers(key)), []);
+  assert.deepEqual(['var', 'devices', 'home', 'mnt/other'].filter((key) => !covers(key, true)), []);
   // Where a synchronous write is held rather than refused (SqliteVFS.readRecallAt): the stores, and the directories they are made in.
   const store = (key) => !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS);
   assert.deepEqual(['', 'var', 'var/lib', 'var/lib/nimbus', 'var/lib/nimbus/staged/x', '.nimbus', '.nimbus/images/x'].filter((key) => !store(key)), []);
@@ -201,9 +211,9 @@ function barrier(s, bridge, from) {
   assert.equal(after.rev, s.engine.revision());
 }
 
-// ── A held write is published after a later one elsewhere, at a revision of its own ──
-{
-  const s = session();
+// ── A held write is published after a later one elsewhere, at a revision of its own, kept whatever revisions are dropped ──
+for (const pathRevisionBytes of [undefined, 0]) {
+  const s = session({ pathRevisionBytes });
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid: 8, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
@@ -222,9 +232,37 @@ function barrier(s, bridge, from) {
   const reported = last.paths.find((entry) => entry.path === 'home/user/d/a.txt');
   assert.ok(reported !== undefined, 'a barrier at the later write\'s revision never hears of the held one');
   assert.ok(last.rev > later.rev);
-  // What the barrier reports is the revision the file has: a read expecting it is answered.
+  // What the barrier reports is the revision the file has, after others' changes too, and on the next open: a read expecting it is answered.
+  for (let i = 0; i < 64; i++) reader.writeFile(`/home/user/churn-${i}`, 'x');
   const fetched = other.readRange('/home/user/d/a.txt', 0, 64, { expectedEpoch: s.engine.epoch, expectedRevision: reported.rev });
-  assert.equal(new TextDecoder().decode(fetched), 'held');
+  assert.equal(new TextDecoder().decode(fetched), 'held', `budget ${pathRevisionBytes}`);
+  assert.equal(new SqliteVFS(s.harness.sql, s.harness.ctx).revision('home/user/d/a.txt'), reported.rev, 'the revision it was published at was not stored');
+}
+
+// ── Held for publication: a barrier's stats and pushed bytes, and a landed view's reads, wait for it; its writer's barrier sees its own ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  writer.writeFile('/home/user/d/a.txt', 'published');
+  const { readLease } = barrier(s, reader);
+  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
+  await sleep(10);
+  const ask = (view) => view.acquire(s.engine.epoch, from.rev, { namespace: true, push: { roots: ['/home/user'] } });
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  const pushed = (answer) => answer.paths.find((entry) => entry.path === 'home/user/d/a.txt');
+  assert.throws(() => ask(other), (error) => error.code === 'EAGAIN', 'a barrier reported what is held for publication');
+  const landed = s.engine.as(CRED_KERNEL, { landed: true });
+  assert.throws(() => landed.readFile('home/user/d/a.txt'), (error) => error.code === 'EAGAIN', 'a landed read saw what is held for publication');
+  assert.equal(decode(pushed(ask(writer)).bytes), 'held', 'its writer\'s barrier waited for its own');
+  reader.recalled(readLease.owner, 'revoke');
+  await writing;
+  const answer = await withRecall(() => ask(other));
+  assert.equal(decode(pushed(answer).bytes), 'held');
+  assert.equal(pushed(answer).stat.size, 4);
+  assert.equal(decode(landed.readFile('home/user/d/a.txt')), 'held');
 }
 
 // ── Held for publication: another opener's description waits for it, its writer's reads its own ──
@@ -405,6 +443,8 @@ function barrier(s, bridge, from) {
   assert.equal(decode(s.files.bind({ pid: 8, cred: USER }).readFile(image)), 'image', 'the process it was written for waited');
   assert.equal(decode(s.kernel.readFile(image.slice(1))), 'image', 'the kernel waited');
   assert.throws(() => other.readFile(image), (error) => error.code === 'EAGAIN', 'another read what is held for publication');
+  const root = s.files.bind({ pid: 10, cred: CRED_KERNEL });
+  assert.throws(() => root.readFile(image), (error) => error.code === 'EAGAIN', 'another process, as root, read what is held for process 8');
   assert.ok(!other.acquire(s.engine.epoch, from.rev).paths.some((entry) => entry.path.startsWith('var/lib/nimbus')), 'a barrier reported it before the recall');
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
   reader.recalled(readLease.owner, 'revoke');

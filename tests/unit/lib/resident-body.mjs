@@ -41,6 +41,7 @@ import { generatedModuleSet, writeModuleSet } from './module-map-bundle.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SUPERVISOR_OP_ROUTES } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import * as rpc from '../../../packages/worker/src/session/rpc.ts';
@@ -112,7 +113,9 @@ export function createAuthority(vfsOptions) {
     root.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   }
   const kfs = rawVfs.as(CRED_SESSION_USER);
-  const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} };
+  // The session's filesystem authority, as the session holds it: where an embedder mounts.
+  const files = new ProcessFiles(rawVfs);
+  const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {}, getFilesystemAuthority: () => files };
   const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
     const handler = Reflect.get(rpc, method);
     if (typeof handler !== 'function') throw new Error(`no rpc.ts implementation of the routed ${method}`);
@@ -128,6 +131,7 @@ export function createAuthority(vfsOptions) {
   });
   return {
     rawVfs,
+    files,
     kfs,
     peer: peerOf(kfs),
     /** A peer with credential `cred` (root's, for a change the session user may not make). */

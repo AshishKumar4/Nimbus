@@ -273,6 +273,8 @@ interface Table {
   synthesized: Map<string, Set<string>>;
   /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
   guard?: MutationGuard;
+  /** Told of every mount and unmount (watchMounts). */
+  moved?: () => void;
 }
 
 /**
@@ -767,6 +769,7 @@ export class CompositeVFS implements VFS {
     this.table.generation++;
     this.resynthesize();
     if (this.table.writes !== undefined) this.subscribeWrites(mount);
+    this.table.moved?.();
   }
 
   /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
@@ -783,6 +786,7 @@ export class CompositeVFS implements VFS {
     this.table.writes?.subscribed.get(mount)?.();
     this.table.writes?.subscribed.delete(mount);
     this.resynthesize();
+    this.table.moved?.();
   }
 
   // ── write observation ─────────────────────────────────────────────────
@@ -1167,6 +1171,11 @@ export class CompositeVFS implements VFS {
    */
   guardMutations(guard: MutationGuard): void {
     this.table.guard = guard;
+  }
+
+  /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
+  watchMounts(moved: () => void): void {
+    this.table.moved = moved;
   }
 
   /**
