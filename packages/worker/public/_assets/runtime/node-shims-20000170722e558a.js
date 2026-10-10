@@ -150,6 +150,9 @@ var nodeErrorMessages = {
   ERR_ASSERTION: ["%s", Error],
   ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: ["The feature %s is unavailable on the current platform, which is being used to run Node.js", TypeError],
   ERR_CONSTRUCT_CALL_REQUIRED: ["Class constructor %s cannot be invoked without `new`", TypeError],
+  ERR_CRYPTO_ENGINE_UNKNOWN: ['Engine "%s" was not found', Error],
+  ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: ["Invalid key object type %s, expected %s.", TypeError],
+  ERR_CRYPTO_SIGN_KEY_REQUIRED: ["No key provided to sign", Error],
   ERR_FALSY_VALUE_REJECTION: [function(reason) {
     this.reason = reason;
     return "Promise was rejected with falsy value";
@@ -2588,6 +2591,13 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
       ? new Request(input, { ...(init || {}), signal: null })
       : new Request(url.href, { ...(init || {}), signal: null })
   );
+  // The port a loopback URL names, or 0: the one reading of it that the route
+  // below and a process's own server (__ownPortOf) both go by.
+  const __loopbackPortOf = (url) => {
+    if (!__loopbackHosts.has(url.hostname)) return 0;
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    return Number.isFinite(port) && port > 0 ? port : 0;
+  };
   // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
   // to the facet that owns <port> through the supervisor's port registry (the
   // same routing the shell curl/node loopback uses), so a facet can reach another
@@ -2595,10 +2605,22 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // the target's Response (streamed over RPC, so SSE flows). Anything non-
   // loopback, or when no supervisor is bound, falls through to real fetch.
   const __maybeRouteLoopback = (url, input, init) => {
-    if (!__loopbackHosts.has(url.hostname)) return null;
-    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
-    if (!Number.isFinite(port) || port <= 0) return null;
+    const port = __loopbackPortOf(url);
+    if (!port) return null;
     return Promise.resolve(__supervisor.routeLoopback(port, __supervisorRequest(url, input, init)));
+  };
+  // The port of a request this process's own server may answer by itself: a
+  // loopback http(s) request that the route would also take for ordinary HTTP.
+  // The session's gateway port is not one, and neither is an upgrade, which is
+  // the route's by its own rule (isWebSocketUpgradeRequest) on the Headers it
+  // would be handed: those of init when given, else the Request's.
+  const __ownPortOf = (input, init) => {
+    const url = __fetchUrl(input);
+    if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return 0;
+    const port = __loopbackPortOf(url);
+    if (!port || port === 8790) return 0;
+    const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+    return isWebSocketUpgradeRequest(headers) ? 0 : port;
   };
   // AI-egress mediation: a request addressed anywhere on the network that
   // presents this session's AI capability token is inference the session owns,
@@ -2664,9 +2686,23 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   //
   // The RELEASE barrier lives on globalThis because the fs module installs it
   // and is evaluated after this one; the ACQUIRE is __nimbusInboundBarrier.
-  const __resumeCoherent = async (pending) => {
+  //
+  // A request to a server this process itself runs (__barriered's claim) has
+  // no outside to resume from: the client, the handler and the response are
+  // one process's, and what the handler took in from outside took its own
+  // barrier on the way in. Except a foreign body read raw (piped, through a
+  // reader, by the native http client): no barrier covers its chunks, and a
+  // response of the process's own can carry them to a reader owed the
+  // ACQUIRE after them. So while a foreign body has not been read to the end
+  // through a barriered method (below) nothing is skipped: the claim is not
+  // made, and a response already on its way takes the ACQUIRE. A body read
+  // raw, read by a method that failed, or never read, stays open for the life
+  // of the process; a response with no body has nothing to carry.
+  const __foreignBodies = new WeakSet();
+  let __foreignOpen = 0;
+  const __resumeCoherent = async (pending, own = false) => {
     const value = await pending;
-    await __nimbusInboundBarrier();
+    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier();
     return value;
   };
   const __barriered = async (input, init) => {
@@ -2684,9 +2720,16 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     // through the guest's proxy, it cannot pass the replay boundary notice.
     const afterRead = __nimbusReplay && __nimbusReplay.afterBoundary();
     if (afterRead) await afterRead;
+    // No transport or coherence boundary: the client, native HTTP handler and
+    // response body all live in one process. Other ports still route.
+    const own = __foreignOpen === 0 ? __nimbusTryOwnHttp(__ownPortOf(input, init), input, init) : null;
+    if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const pending = __resumeCoherent(__dispatch(input, init));
+    const pending = __resumeCoherent(__dispatch(input, init)).then((response) => {
+      if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
+      return response;
+    });
     if (!__recordingNetwork) return pending;
     let response;
     try { response = await pending; }
@@ -2715,10 +2758,12 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
+        const own = __nimbusOwnHttpResponses.has(this);
+        const drained = (value) => { if (__foreignBodies.delete(this)) __foreignOpen--; return value; };
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).then(drained));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
-        return __nimbusTrackOp(__resumeCoherent(pending));
+        return __nimbusTrackOp(__resumeCoherent(pending, own).then(drained));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -7503,8 +7548,9 @@ function readLeaseCovers(key, listing, roots) {
     catch (e) { queueMicrotask(() => cb(e)); return; }
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(norm.bytes));
-      queueMicrotask(() => cb(null, norm.bytes.byteLength, data));
+      try {
+        (n === 2 ? __processMod.stderr : __processMod.stdout).write(norm.bytes, error => cb(error || null, error ? 0 : norm.bytes.byteLength, data));
+      } catch (error) { queueMicrotask(() => cb(error, 0, data)); }
       return;
     }
     const handle = _fdFor(fd, "write", cb);
@@ -8424,7 +8470,13 @@ function readLeaseCovers(key, listing, roots) {
       }
       async _pull() {
         if (this._pos > this._last) { this.push(null); return; }
-        const want = Math.min(READ_STREAM_CHUNK_BYTES, this._last - this._pos + 1);
+        // A resolved ranged RPC can feed the next read in the same task
+        // indefinitely. Yield between windows so other session traffic and
+        // other processes can run; this is a scheduling boundary, not a
+        // backoff or a timeout that pretends I/O completed.
+        if (this.bytesRead > 0) await new Promise((nextTurn) => globalThis.setTimeout(nextTurn, 0));
+        if (this._readableState.destroyed) return;
+        const want = Math.min(this._readableState.highWaterMark, READ_BATCH_REQUEST_BYTES, this._last - this._pos + 1);
         const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
@@ -9188,6 +9240,11 @@ const __streamMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
+  function _byteBuffer(chunk) {
+    const Buffer = typeof __BufferMod !== 'undefined' ? __BufferMod : globalThis.Buffer;
+    if (!Buffer) throw new Error('Nimbus byte streams require node:buffer');
+    return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  }
 
   /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
   function _destroyedError(method) {
@@ -9225,6 +9282,12 @@ const __streamMod = (() => {
     if (r) { r.destroyed = true; stream.readable = false; }
     if (w) {
       w.destroyed = true;
+      stream.writable = false;
+      if (stream.__nimbusTransformReadCallback) {
+        const pending = stream.__nimbusTransformReadCallback;
+        stream.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending(err ?? _destroyedError('write')));
+      }
       // A write in flight answers the queue when it calls back.
       if (!w.writing) queueMicrotask(() => _errorBuffer(w));
     }
@@ -9323,6 +9386,11 @@ const __streamMod = (() => {
       const state = this._readableState;
       const chunk = state.buffer.shift();
       state.readableLength -= (chunk?.length || 0);
+      if (this.__nimbusTransformReadCallback && state.readableLength < state.highWaterMark) {
+        const pending = this.__nimbusTransformReadCallback;
+        this.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending());
+      }
       return this._decode(chunk);
     }
 
@@ -9408,6 +9476,11 @@ const __streamMod = (() => {
       }
       if (typeof chunk === 'string' && !state.objectMode) {
         chunk = _enc.encode(chunk);
+      }
+      if (!state.objectMode && chunk instanceof Uint8Array) {
+        // The channel carries Uint8Array; Node's byte-mode readable edge
+        // publishes Buffer. Object mode and setEncoding keep their own API.
+        chunk = _byteBuffer(chunk);
       }
       state.buffer.push(chunk);
       state.readableLength += (chunk?.length || 0);
@@ -9592,6 +9665,7 @@ const __streamMod = (() => {
   // Transform's output delivered, before 'finish' and 'close'.
   function _writableState(opts, highWaterMark) {
     return {
+      objectMode: opts?.objectMode === true || opts?.writableObjectMode === true,
       buffer: [],
       writing: false,
       // Writes and _final not yet called back.
@@ -9625,6 +9699,7 @@ const __streamMod = (() => {
       return false;
     }
     if (typeof chunk === 'string') chunk = _enc.encode(chunk);
+    if (!state.objectMode && chunk instanceof Uint8Array) chunk = _byteBuffer(chunk);
     state.bufferedLength += (chunk?.length || 0);
     state.pending++;
     const request = { chunk, encoding, callback };
@@ -9754,9 +9829,13 @@ const __streamMod = (() => {
     uncork() { _uncork(this); }
     destroy(err) { return _destroyStream(this, err); }
 
+    get destroyed() { return this._writableState.destroyed; }
+    set destroyed(value) { this._writableState.destroyed = !!value; }
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
   const Writable = __legacyConstructor(WritableClass, 'Writable', (stream, opts) => {
     __eventsMod.call(stream, opts);
@@ -9789,6 +9868,8 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
   const Duplex = __legacyConstructor(DuplexClass, 'Duplex', _initDuplex);
 
@@ -9815,7 +9896,11 @@ const __streamMod = (() => {
       this._transform(chunk, encoding, (err, data) => {
         if (err) return callback(err);
         if (data !== null && data !== undefined) this.push(data);
-        callback();
+        // A Transform's two sides are one bounded pipe: completing this
+        // write while the readable side is full would drain the broker into
+        // an unbounded local buffer. The consumer's _shift releases it.
+        if (this._readableState.readableLength >= this._readableState.highWaterMark) this.__nimbusTransformReadCallback = callback;
+        else callback();
       });
     }
 
@@ -12422,7 +12507,8 @@ const __childProcessMod = (() => {
       const piece = data.subarray(at, Math.min(data.byteLength, at + __NIMBUS_STDIN_PIECE_BYTES));
       for (let wait = 10; ; wait = Math.min(wait * 2, 250)) {
         const answer = await __nimbusUseRpcResult(__supervisor.cpStdinWrite(child._brokerPid, piece), (result) => result);
-        if (!answer || (!answer.ok && !answer.full) || __nimbusProgramStopped) return;
+        if (__nimbusProgramStopped) return;
+        if (!answer || (!answer.ok && !answer.full)) throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
         if (answer.ok) break;
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
@@ -12475,7 +12561,9 @@ const __childProcessMod = (() => {
     let ended = false;
     return {
       write(bytes) {
-        if (!ended) (fd === 1 ? __processMod.stdout : __processMod.stderr).write(bytes);
+        if (ended) return;
+        const parent = fd === 1 ? __processMod.stdout : __processMod.stderr;
+        if (!parent.write(bytes)) return new Promise((resolve) => parent.once('drain', resolve));
       },
       end() {
         if (ended) return;
@@ -12688,7 +12776,14 @@ const __childProcessMod = (() => {
           for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
-            stream.write(__BufferMod.from(c.data));
+            const written = stream.write(__BufferMod.from(c.data));
+            if (written && typeof written.then === 'function') await written;
+            else if (written === false && stream.writableNeedDrain) {
+              await new Promise((resolve) => {
+                const done = () => { stream.removeListener('drain', done); stream.removeListener('close', done); resolve(); };
+                stream.once('drain', done); stream.once('close', done);
+              });
+            }
             if (typeof c.seq === "number" && c.seq > sinceSeqRef.value) {
               sinceSeqRef.value = c.seq;
             }
@@ -12752,6 +12847,13 @@ const __childProcessMod = (() => {
     });
   }
 
+  // Node destroys the parent's pipe to fd0 before announcing the child's
+  // exit. A later stdin.end(data) is a write to a destroyed stream, not a
+  // fresh RPC to an input reader the session has already removed.
+  function _closeChildInput(child) {
+    try { child.stdin && child.stdin.destroy(); } catch {}
+  }
+
   function _applyWait(child, r) {
     // Settled already (both the wait loop and the exit-time drain can hear
     // of the same exit or refusal): nothing more to emit.
@@ -12767,6 +12869,7 @@ const __childProcessMod = (() => {
     child.exitCode = r.exitCode;
     child.signalCode = r.signal || null;
     child._exitFired = true;
+    _closeChildInput(child);
     try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
     _flushStdio(child);
     _maybeFireClose(child);
@@ -12794,6 +12897,7 @@ const __childProcessMod = (() => {
         // Couldn't wait — synthesize an error exit.
         child.exitCode = 1;
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         _flushStdio(child);
         _maybeFireClose(child);
@@ -12819,6 +12923,7 @@ const __childProcessMod = (() => {
     __cpChildren.delete(child._brokerPid);
     child.exitCode = errno;
     child._exitFired = true;
+    _closeChildInput(child);
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -12854,6 +12959,7 @@ const __childProcessMod = (() => {
         const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
@@ -12875,7 +12981,10 @@ const __childProcessMod = (() => {
             args,
             env: { ...(__processMod.env || {}), ...(opts.env || {}) },
             cwd: opts.cwd || cwd || "/home/user",
-            stdio: opts.stdio || ["pipe", "pipe", "pipe"],
+            // Node has already buffered stdin in the guest. Its inherited
+            // descriptor is a byte source into the SAME broker pipe, whereas
+            // a WASI fd is inherited directly from the supervisor channel.
+            stdio: child._stdioModes[0] === 'inherit' ? ['pipe', ...child._stdioModes.slice(1)] : child._stdioModes,
             detached: !!opts.detached,
             shell: opts.shell || false,
           }),
@@ -12934,6 +13043,7 @@ const __childProcessMod = (() => {
         }
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -13248,6 +13358,7 @@ const __childProcessMod = (() => {
             if (!settled) {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
               child._exitFired = true;
+              _closeChildInput(child);
               try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
               _flushStdio(child);
             }
@@ -13944,7 +14055,7 @@ async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) { await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined); return; }
-    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 65536), (r) => r);
+    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 1048576), (r) => r);
     const want = Math.max(0, Math.min(prepared.size - file.offset, 16777216));
     const bytes = __BufferMod.allocUnsafe(want);
     let got = 0, packet = prepared;
@@ -13953,7 +14064,7 @@ async function __nimbusPrepareStdin() {
       if (!n) break;
       bytes.set(packet.data.subarray(0, n), got);
       got += n;
-      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(65536, want - got)), (r) => r);
+      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(1048576, want - got)), (r) => r);
     }
     __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= prepared.size, from: file.offset + got };
     await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined);
@@ -14103,7 +14214,7 @@ function __makeProcessStdin() {
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from });
+      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
       source.on("error", (err) => r.destroy(err));
       source.pipe(r);
       return;
@@ -14269,6 +14380,36 @@ function __makeProcessOutputStream(streamName) {
   Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
   __nimbusTerminalOutputStreams.push(stream);
   return stream;
+}
+
+// Every live output stream uses the same Writable accounting. The producer
+// gets false at its existing high-water mark and drain only once the
+// supervisor/foreground pipe has acknowledged the bytes, not at enqueue.
+function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
+  if (typeof encoding === 'function') callback = encoding;
+  if (__nimbusProgramStopped) return true;
+  const bytes = __nimbusOutBytes(data, encoding);
+  const stream = __processMod[streamName];
+  // Live output belongs to the byte delivery/replay ledger, not also to an
+  // unbounded returned-result string. Explicit capture uses its own writer.
+  stream.writableLength += bytes.byteLength;
+  const ready = stream.writableLength < stream.writableHighWaterMark;
+  if (!ready) stream.writableNeedDrain = true;
+  const sent = Promise.resolve(send(streamName, bytes));
+  stream.__nimbusOutputPending = sent;
+  sent.then(() => {
+    stream.writableLength -= bytes.byteLength;
+    if (typeof callback === 'function') callback();
+    if (stream.writableLength === 0 && stream.writableNeedDrain) {
+      stream.writableNeedDrain = false;
+      stream.emit('drain');
+    }
+  }, (error) => {
+    stream.writableLength -= bytes.byteLength;
+    if (typeof callback === 'function') callback(error);
+    else stream.emit('error', error);
+  });
+  return ready;
 }
 
 // The gate an output or exit leaving the process is released at, taken when
@@ -15235,6 +15376,10 @@ builtins.console = __consoleMod;
 
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
+// Only this runtime's listener registrations can claim a local request. Neither
+// guest-writable globals nor a request/response header can select this path.
+let __nimbusTryOwnHttp = () => null;
+const __nimbusOwnHttpResponses = new WeakSet();
 const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent", "referer", "authorization",
   "proxy-authorization", "if-modified-since", "if-unmodified-since", "from", "location", "max-forwards"]);
 Object.defineProperty(builtins, "http", {
@@ -15244,7 +15389,12 @@ Object.defineProperty(builtins, "http", {
       ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
     const net = typeof __real_net !== "undefined"
       ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
-    const ports = globalThis.__portRegistry ??= new Map();
+    const ports = new Map();
+    // The event loop reads listening handles; this is a view, not admission.
+    globalThis.__portRegistry = Object.freeze({
+      get: port => ports.get(port), has: port => ports.has(port),
+      values: () => ports.values(), get size() { return ports.size; },
+    });
     const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
     // Native clients keep consuming their IncomingMessage after fetch has
@@ -15422,13 +15572,13 @@ Object.defineProperty(builtins, "http", {
         return Reflect.apply(unref, this, []);
       };
     } else http.Server.prototype[patchKey](context);
-    globalThis.__nimbusServeHttp = async (request) => {
-      const port = Number(request.headers.get("X-Nimbus-Port") || 0);
-      const server = port ? ports.get(port) : ports.values().next().value;
+    const serveHttp = async (request, server, sameProcess) => {
       if (!server) return new __nativeHttpResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
       let acquired;
       try { acquired = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
-      await __nimbusInboundBarrier(acquired);
+      // A local client and handler use the very same process filesystem view.
+      // External deliveries still acquire before the handler sees the request.
+      if (!sameProcess) await __nimbusInboundBarrier(acquired);
       const headers = new Headers(request.headers);
       headers.delete("X-Nimbus-Vfs-Acquired");
       const controller = new AbortController();
@@ -15484,6 +15634,24 @@ Object.defineProperty(builtins, "http", {
       try {
         return await Promise.race([dispatch(), deadline.promise]);
       } finally { clearTimeout(timer); detach(); server.removeListener("request", captureResponse); }
+    };
+    globalThis.__nimbusServeHttp = request => {
+      const port = Number(request.headers.get("X-Nimbus-Port") || 0);
+      return serveHttp(request, port ? ports.get(port) : ports.values().next().value, false);
+    };
+    // Answers a request from the server this runtime runs on that port, or null
+    // when it runs none. Whether the request may be answered so is the caller's:
+    // the fetch shim's claim (__ownPortOf, and no foreign body open).
+    __nimbusTryOwnHttp = (port, input, init) => {
+      const server = ports.get(port);
+      if (!server?.listening) return null;
+      const request = new __nativeHttpRequest(input, init);
+      // Dispatch after the caller's stack (including ClientRequest's finish
+      // listeners), as a native HTTP exchange does, never inside fetch().
+      return Promise.resolve().then(() => serveHttp(request, server, true)).then(response => {
+        __nimbusOwnHttpResponses.add(response);
+        return response;
+      });
     };
     Object.defineProperty(builtins, "http", { value: http, writable: true, enumerable: true, configurable: true });
     return http;
@@ -17218,6 +17386,449 @@ builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { protot
 for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
+// Node's argument checks in front of them (node-builtin-fronts.ts).
+
+const __nimbusTypes = __realUtil.types;
+// Node's validator \`name\` from its library, for a value a cheap check refused.
+function __nimbusNodeValidator(name) {
+  return __nimbusNodeLib().require("internal/validators")[name];
+}
+// \`target[name]\` replaced by \`make(real)\`, named as the real one; a
+// property the module fixed is left as it is.
+function __nimbusFront(target, name, make) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, name);
+  const real = target[name];
+  if (typeof real !== "function" || descriptor?.configurable === false) return;
+  const fronted = make(real);
+  Object.defineProperty(fronted, "name", { value: name, configurable: true });
+  Object.defineProperty(target, name, { value: fronted, writable: true, enumerable: descriptor?.enumerable ?? true, configurable: true });
+}
+
+// zlib
+function __nimbusFrontZlib(zlib) {
+  // lib/zlib.js zlibBufferSync: a string, an ArrayBufferView, or any
+  // ArrayBuffer (as a Buffer). Node constructs its engine from the options
+  // first; here the buffer is checked first, which differs only where both
+  // are wrong.
+  const bufferOf = (buffer) => {
+    if (typeof buffer === "string" || ArrayBuffer.isView(buffer)) return buffer;
+    if (__nimbusTypes.isAnyArrayBuffer(buffer)) return __BufferMod.from(buffer);
+    throw invalidArgType("buffer", ["string", "Buffer", "TypedArray", "DataView", "ArrayBuffer"], buffer);
+  };
+  // Node's engines read their options' fields: options that are no object are the defaults.
+  const optionsOf = (opts) => (opts !== null && typeof opts === "object" ? opts : undefined);
+  for (const name of ["deflateSync", "inflateSync", "gzipSync", "gunzipSync", "deflateRawSync", "inflateRawSync", "unzipSync",
+    "brotliCompressSync", "brotliDecompressSync", "zstdCompressSync", "zstdDecompressSync"]) {
+    __nimbusFront(zlib, name, (real) => function (buffer, opts) {
+      return Reflect.apply(real, this, [bufferOf(buffer), optionsOf(opts)]);
+    });
+  }
+  // lib/zlib.js crc32.
+  __nimbusFront(zlib, "crc32", (real) => function (data, value = 0) {
+    if (typeof data !== "string" && !ArrayBuffer.isView(data)) throw invalidArgType("data", ["Buffer", "TypedArray", "DataView", "string"], data);
+    if (typeof value !== "number" || value >>> 0 !== value) __nimbusNodeValidator("validateUint32")(value, "value");
+    return Reflect.apply(real, this, [data, value]);
+  });
+}
+
+// buffer
+function __nimbusFrontBuffer(buffer) {
+  // lib/buffer.js isUtf8 and isAscii: a TypedArray or any ArrayBuffer, its bytes.
+  const bytesOf = (input) => (ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input));
+  for (const name of ["isUtf8", "isAscii"]) {
+    __nimbusFront(buffer, name, (real) => function (input) {
+      if (__nimbusTypes.isTypedArray(input) || __nimbusTypes.isAnyArrayBuffer(input)) return Reflect.apply(real, this, [bytesOf(input)]);
+      throw invalidArgType("input", ["ArrayBuffer", "Buffer", "TypedArray"], input);
+    });
+  }
+  // lib/buffer.js transcode.
+  __nimbusFront(buffer, "transcode", (real) => function (source, fromEncoding, toEncoding) {
+    if (!__nimbusTypes.isUint8Array(source)) throw invalidArgType("source", ["Buffer", "Uint8Array"], source);
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/buffer.js SlowBuffer.
+  __nimbusFront(buffer, "SlowBuffer", (real) => function (size) {
+    if (typeof size !== "number" || !(size >= 0 && size <= buffer.kMaxLength)) __nimbusNodeValidator("validateNumber")(size, "size", 0, buffer.kMaxLength);
+    return Reflect.apply(real, this, [size]);
+  });
+  // lib/buffer.js btoa and atob: Node's errors over the platform's codec, the
+  // input made a string as a template literal makes it.
+  __nimbusFront(buffer, "btoa", (real) => function (input) {
+    if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("input");
+    const text = "".concat(input);
+    if (/[^\u0000-\u00ff]/.test(text)) throw new DOMException("Invalid character", "InvalidCharacterError");
+    return Reflect.apply(real, this, [text]);
+  });
+  __nimbusFront(buffer, "atob", (real) => function (input) {
+    if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("input");
+    const text = "".concat(input);
+    try {
+      return Reflect.apply(real, this, [text]);
+    } catch (error) {
+      if (error?.name !== "InvalidCharacterError") throw error;
+      // Node's _atob (simdutf's forgiving base64): a character outside the
+      // alphabet, or one character left over.
+      const data = text.replace(/[\t\n\f\r ]/g, "");
+      const unpadded = data.length % 4 === 0 ? data.replace(/={1,2}$/, "") : data;
+      if (/[^A-Za-z0-9+/]/.test(unpadded) || unpadded.length % 4 !== 1) throw new DOMException("Invalid character", "InvalidCharacterError");
+      throw new DOMException("The string to be decoded is not correctly encoded.", "InvalidCharacterError");
+    }
+  });
+  // lib/internal/blob.js Blob and lib/internal/file.js File: the platform's
+  // classes, constructed past Node's checks; each the constructor of its
+  // instances, the platform's too.
+  const sourcesChecked = (sources = [], options) => {
+    if (sources === null || typeof sources[Symbol.iterator] !== "function" || typeof sources === "string") {
+      throw invalidArgType("sources", "a sequence", sources);
+    }
+    if (options != null && typeof options !== "object" && typeof options !== "function") __nimbusNodeValidator("validateDictionary")(options, "options");
+  };
+  const fronts = new Map();
+  for (const [name, check] of [
+    ["Blob", sourcesChecked],
+    ["File", function (fileBits, fileName, options) {
+      if (arguments.length < 2) throw new nodeErrorCodes.ERR_MISSING_ARGS("fileBits", "fileName");
+      sourcesChecked(fileBits, options);
+    }],
+  ]) {
+    const Class = buffer[name];
+    if (typeof Class !== "function" || Object.getOwnPropertyDescriptor(buffer, name)?.configurable === false) continue;
+    const fronted = new Proxy(Class, {
+      construct(target, args, newTarget) {
+        Reflect.apply(check, undefined, args);
+        return Reflect.construct(target, args, newTarget === fronted ? target : newTarget);
+      },
+      getPrototypeOf: (target) => fronts.get(Object.getPrototypeOf(target)) ?? Object.getPrototypeOf(target),
+    });
+    fronts.set(Class, fronted);
+    Object.defineProperty(Class.prototype, "constructor", { value: fronted, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(buffer, name, { value: fronted, writable: true, enumerable: true, configurable: true });
+    if (globalThis[name] === Class) globalThis[name] = fronted;
+  }
+  // Node's atob and btoa globals are buffer's.
+  for (const name of ["atob", "btoa"]) if (typeof buffer[name] === "function") globalThis[name] = buffer[name];
+}
+
+// crypto
+function __nimbusFrontCrypto(crypto) {
+  const isAnyArrayBuffer = __nimbusTypes.isAnyArrayBuffer;
+  const isStringOrBuffer = (value) => typeof value === "string" || ArrayBuffer.isView(value) || isAnyArrayBuffer(value);
+  const isKeyObject = (value) => typeof crypto.KeyObject === "function" && value instanceof crypto.KeyObject;
+  const isCryptoKey = (value) => typeof globalThis.CryptoKey === "function" && value instanceof globalThis.CryptoKey;
+  // An error Node's C++ binding throws: its code on the error, not in its stack's header.
+  const bindingError = (Base, code, message) => Object.assign(new Base(message), { code });
+  const string = (value, name) => {
+    if (typeof value !== "string") throw invalidArgType(name, "string", value);
+  };
+  const callback = (value, name = "callback") => {
+    if (typeof value !== "function") throw invalidArgType(name, "Function", value);
+  };
+  const object = (value, name) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) __nimbusNodeValidator("validateObject")(value, name);
+  };
+  const int32 = (value, name, min) => {
+    if (!Number.isInteger(value) || value < min || value > 2147483647) __nimbusNodeValidator("validateInt32")(value, name, min);
+  };
+  // lib/internal/crypto/util.js getArrayBufferOrView's check.
+  const bufferOrView = (value, name) => {
+    if (!isStringOrBuffer(value)) throw invalidArgType(name, ["string", "ArrayBuffer", "Buffer", "TypedArray", "DataView"], value);
+  };
+  // lib/internal/crypto/keys.js getKeyTypes.
+  const keyTypes = (allowKeyObject, bufferOnly = false) => {
+    const types = ["ArrayBuffer", "Buffer", "TypedArray", "DataView", "string", "KeyObject", "CryptoKey"];
+    return bufferOnly ? types.slice(0, 4) : allowKeyObject ? types : types.slice(0, 5);
+  };
+  // lib/internal/crypto/util.js getStringOption.
+  const stringOption = (options, key) => {
+    let value;
+    if (options && (value = options[key]) != null) string(value, "options." + key);
+    return value;
+  };
+  // lib/internal/crypto/keys.js prepareSecretKey's checks.
+  const secretKey = (key, bufferOnly = false) => {
+    if (!bufferOnly && (isKeyObject(key) || isCryptoKey(key))) {
+      if (key.type !== "secret") throw new nodeErrorCodes.ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE(key.type, "secret");
+      return;
+    }
+    if (!isStringOrBuffer(key)) throw invalidArgType("key", keyTypes(!bufferOnly, bufferOnly), key);
+  };
+  // lib/internal/crypto/keys.js prepareAsymmetricKey's checks, by its context.
+  const CREATE_PRIVATE = 0, CREATE_PUBLIC = 1, CONSUME_PRIVATE = 2, CONSUME_PUBLIC = 3;
+  const keyObjectChecked = (key, context) => {
+    if (context === CREATE_PRIVATE) throw invalidArgType("key", ["string", "ArrayBuffer", "Buffer", "TypedArray", "DataView"], key);
+    if (key.type !== "private") {
+      if (context === CONSUME_PRIVATE || context === CREATE_PUBLIC) throw new nodeErrorCodes.ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE(key.type, "private");
+      if (key.type !== "public") throw new nodeErrorCodes.ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE(key.type, "private or public");
+    }
+  };
+  const asymmetricKey = (key, context) => {
+    if (isKeyObject(key) || isCryptoKey(key)) return keyObjectChecked(key, context);
+    if (isStringOrBuffer(key)) return;
+    if (typeof key === "object") {
+      const { key: data, format } = key;
+      if (isKeyObject(data) || isCryptoKey(data)) return keyObjectChecked(data, context);
+      if (format === "jwk") return __nimbusNodeValidator("validateObject")(data, "key.key");
+      if (!isStringOrBuffer(data)) throw invalidArgType("key.key", keyTypes(context !== CREATE_PRIVATE), data);
+      return;
+    }
+    throw invalidArgType("key", keyTypes(context !== CREATE_PRIVATE), key);
+  };
+
+  // lib/internal/crypto/cipher.js createCipherWithIV.
+  for (const name of ["createCipheriv", "createDecipheriv"]) {
+    __nimbusFront(crypto, name, (real) => function (cipher, key, iv, options) {
+      string(cipher, "cipher");
+      stringOption(options, "encoding");
+      secretKey(key);
+      if (iv !== null) bufferOrView(iv, "iv");
+      return Reflect.apply(real, this, arguments);
+    });
+  }
+  // lib/internal/crypto/cipher.js getCipherInfo.
+  __nimbusFront(crypto, "getCipherInfo", (real) => function (nameOrNid) {
+    if (typeof nameOrNid !== "string" && typeof nameOrNid !== "number") throw invalidArgType("nameOrNid", ["string", "number"], nameOrNid);
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/crypto/cipher.js rsaFunctionFor.
+  for (const [name, context] of [["publicEncrypt", CONSUME_PUBLIC], ["privateDecrypt", CONSUME_PRIVATE], ["privateEncrypt", CONSUME_PRIVATE], ["publicDecrypt", CONSUME_PUBLIC]]) {
+    __nimbusFront(crypto, name, (real) => function (options, buffer) {
+      asymmetricKey(options, context);
+      const { oaepHash, oaepLabel } = options;
+      if (oaepHash !== undefined) string(oaepHash, "key.oaepHash");
+      if (oaepLabel !== undefined) bufferOrView(oaepLabel, "key.oaepLabel");
+      bufferOrView(buffer, "buffer");
+      return Reflect.apply(real, this, arguments);
+    });
+  }
+  // lib/internal/crypto/diffiehellman.js ECDH and DiffieHellmanGroup (its binding's words).
+  __nimbusFront(crypto, "createECDH", (real) => function (curve) {
+    string(curve, "curve");
+    try {
+      return Reflect.apply(real, this, arguments);
+    } catch (error) {
+      if (error?.message === "Invalid curve") throw bindingError(TypeError, "ERR_CRYPTO_INVALID_CURVE", "Invalid EC curve name");
+      throw error;
+    }
+  });
+  // src/crypto/crypto_dh.cc FindDiffieHellmanGroup: the groups Node knows,
+  // their names compared ASCII case-insensitively (StringEqualNoCase).
+  const knownGroups = new Set(["modp1", "modp2", "modp5", "modp14", "modp15", "modp16", "modp17", "modp18"]);
+  const asciiLower = (text) => text.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+  for (const name of ["createDiffieHellmanGroup", "getDiffieHellman"]) {
+    __nimbusFront(crypto, name, (real) => function (groupName) {
+      if (typeof groupName !== "string") throw bindingError(TypeError, "ERR_INVALID_ARG_TYPE", "Group name must be a string");
+      if (!knownGroups.has(asciiLower(groupName))) throw bindingError(Error, "ERR_CRYPTO_UNKNOWN_DH_GROUP", "Unknown DH group");
+      return Reflect.apply(real, this, arguments);
+    });
+  }
+  // lib/internal/crypto/hash.js Hmac and hash.
+  __nimbusFront(crypto, "createHmac", (real) => function (hmac, key, options) {
+    string(hmac, "hmac");
+    stringOption(options, "encoding");
+    secretKey(key);
+    return Reflect.apply(real, this, arguments);
+  });
+  __nimbusFront(crypto, "hash", (real) => function (algorithm, input) {
+    string(algorithm, "algorithm");
+    if (typeof input !== "string" && !ArrayBuffer.isView(input)) throw invalidArgType("input", ["Buffer", "TypedArray", "DataView", "string"], input);
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/crypto/keys.js createSecretKey, createPublicKey and createPrivateKey.
+  __nimbusFront(crypto, "createSecretKey", (real) => function (key) {
+    secretKey(key, true);
+    return Reflect.apply(real, this, arguments);
+  });
+  for (const [name, context] of [["createPublicKey", CREATE_PUBLIC], ["createPrivateKey", CREATE_PRIVATE]]) {
+    __nimbusFront(crypto, name, (real) => function (key) {
+      asymmetricKey(key, context);
+      return Reflect.apply(real, this, arguments);
+    });
+  }
+  // lib/internal/crypto/keygen.js generateKey and generateKeySync (generateKeyJob),
+  // generateKeyPair and generateKeyPairSync (createJob, parseKeyEncoding).
+  const keyJob = (type, options) => {
+    string(type, "type");
+    object(options, "options");
+  };
+  const keyPairJob = (type, options) => {
+    string(type, "type");
+    if (options !== undefined) {
+      const { publicKeyEncoding, privateKeyEncoding } = options;
+      object(options, "options");
+    }
+  };
+  for (const [name, job, async] of [["generateKey", keyJob, true], ["generateKeySync", keyJob, false], ["generateKeyPair", keyPairJob, true], ["generateKeyPairSync", keyPairJob, false]]) {
+    __nimbusFront(crypto, name, (real) => function (type, options, done) {
+      if (async) {
+        if (typeof options === "function") {
+          done = options;
+          options = undefined;
+        }
+        callback(done);
+      }
+      job(type, options);
+      return Reflect.apply(real, this, arguments);
+    });
+  }
+  // lib/internal/crypto/pbkdf2.js pbkdf2 and its check.
+  __nimbusFront(crypto, "pbkdf2", (real) => function (password, salt, iterations, keylen, digest, done) {
+    if (typeof digest === "function") {
+      done = digest;
+      digest = undefined;
+    }
+    string(digest, "digest");
+    bufferOrView(password, "password");
+    bufferOrView(salt, "salt");
+    int32(iterations, "iterations", 1);
+    int32(keylen, "keylen", 0);
+    callback(done);
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/crypto/random.js randomBytes, randomFillSync and randomFill.
+  // The platform's randomFillSync is the one random source: it hands its
+  // region to getRandomValues, which takes 65536 bytes a call (the Web Crypto
+  // quota), where Node's fill up to 2 ** 31 - 1. A region is filled through
+  // it 65536 bytes at a time, as a byte view, so a wider element counts in
+  // bytes (the native-esm port passed element offsets as byte offsets).
+  const RANDOM_CALL_BYTES = 65536;
+  const kMaxPossibleLength = 2 ** 31 - 1;
+  const platformFillSync = crypto.randomFillSync;
+  const number = (value, name) => {
+    if (typeof value !== "number") __nimbusNodeValidator("validateNumber")(value, name);
+  };
+  const assertOffset = (offset, elementSize, length) => {
+    number(offset, "offset");
+    offset *= elementSize;
+    const maxLength = Math.min(length, kMaxPossibleLength);
+    if (Number.isNaN(offset) || offset > maxLength || offset < 0) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("offset", ">= 0 && <= " + maxLength, offset);
+    return offset >>> 0;
+  };
+  const assertSize = (size, elementSize, offset, length) => {
+    number(size, "size");
+    size *= elementSize;
+    if (Number.isNaN(size) || size > kMaxPossibleLength || size < 0) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("size", ">= 0 && <= " + kMaxPossibleLength, size);
+    if (size + offset > length) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("size + offset", "<= " + length, size + offset);
+    return size >>> 0;
+  };
+  const randomBuffer = (buf) => {
+    if (!isAnyArrayBuffer(buf) && !ArrayBuffer.isView(buf)) throw invalidArgType("buf", ["ArrayBuffer", "ArrayBufferView"], buf);
+  };
+  // \`buf\`'s bytes from \`offset\` for \`size\`, filled 65536 at a time.
+  const fillBytes = (buf, offset, size) => {
+    const bytes = ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset + offset, size) : new Uint8Array(buf, offset, size);
+    for (let at = 0; at < size; at += RANDOM_CALL_BYTES) Reflect.apply(platformFillSync, crypto, [bytes.subarray(at, at + RANDOM_CALL_BYTES)]);
+    return buf;
+  };
+  __nimbusFront(crypto, "randomFillSync", () => function (buf, offset = 0, size) {
+    randomBuffer(buf);
+    const elementSize = buf.BYTES_PER_ELEMENT || 1;
+    offset = assertOffset(offset, elementSize, buf.byteLength);
+    size = size === undefined ? buf.byteLength - offset : assertSize(size, elementSize, offset, buf.byteLength);
+    return size === 0 ? buf : fillBytes(buf, offset, size);
+  });
+  __nimbusFront(crypto, "randomFill", () => function (buf, offset, size, done) {
+    randomBuffer(buf);
+    const elementSize = buf.BYTES_PER_ELEMENT || 1;
+    if (typeof offset === "function") {
+      done = offset;
+      offset = 0;
+      size = buf.length;
+    } else if (typeof size === "function") {
+      done = size;
+      size = buf.length - offset;
+    } else {
+      callback(done);
+    }
+    offset = assertOffset(offset, elementSize, buf.byteLength);
+    size = size === undefined ? buf.byteLength - offset : assertSize(size, elementSize, offset, buf.byteLength);
+    if (size !== 0) fillBytes(buf, offset, size);
+    __processMod.nextTick(done, null, buf);
+  });
+  __nimbusFront(crypto, "randomBytes", () => function (size, done) {
+    size = assertSize(size, 1, 0, Infinity);
+    if (done !== undefined) callback(done);
+    const buf = fillBytes(__BufferMod.allocUnsafe(size), 0, size);
+    if (done === undefined) return buf;
+    __processMod.nextTick(done, null, buf);
+  });
+  // Node's deprecated names for randomBytes are the same function.
+  for (const name of ["pseudoRandomBytes", "prng", "rng"]) {
+    if (typeof crypto[name] === "function" && Object.getOwnPropertyDescriptor(crypto, name)?.configurable !== false) {
+      Object.defineProperty(crypto, name, { value: crypto.randomBytes, writable: true, enumerable: true, configurable: true });
+    }
+  }
+  __nimbusFront(crypto, "randomInt", (real) => function (min, max, done) {
+    const minNotSpecified = typeof max === "undefined" || typeof max === "function";
+    if (minNotSpecified) {
+      done = max;
+      max = min;
+      min = 0;
+    }
+    if (typeof done !== "undefined") callback(done);
+    if (!Number.isSafeInteger(min)) throw invalidArgType("min", "a safe integer", min);
+    if (!Number.isSafeInteger(max)) throw invalidArgType("max", "a safe integer", max);
+    if (max <= min) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("max", 'greater than the value of "min" (' + min + ")", max);
+    if (!(max - min <= 0xFFFFFFFFFFFF)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("max" + (minNotSpecified ? "" : " - min"), "<= 281474976710655", max - min);
+    return Reflect.apply(real, this, arguments);
+  });
+  // A typed array's kind from its internal slot ([[TypedArrayName]]), whatever
+  // Symbol.toStringTag it carries, as Node's isFloat32Array and the rest read it.
+  const typedArrayKind = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+  const floatKinds = new Set(["Float16Array", "Float32Array", "Float64Array"]);
+  __nimbusFront(crypto, "getRandomValues", (real) => function (data) {
+    if (!__nimbusTypes.isTypedArray(data) || floatKinds.has(Reflect.apply(typedArrayKind, data, []))) {
+      throw new DOMException("The data argument must be an integer-type TypedArray", "TypeMismatchError");
+    }
+    if (data.byteLength > 65536) throw new DOMException("The requested length exceeds 65,536 bytes", "QuotaExceededError");
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/crypto/sig.js Sign, Verify, signOneShot and verifyOneShot.
+  for (const name of ["createSign", "createVerify"]) {
+    __nimbusFront(crypto, name, (real) => function (algorithm) {
+      string(algorithm, "algorithm");
+      try {
+        return Reflect.apply(real, this, arguments);
+      } catch (error) {
+        if (typeof error?.message === "string" && error.message.startsWith("Unknown digest")) throw bindingError(TypeError, "ERR_CRYPTO_INVALID_DIGEST", "Invalid digest");
+        throw error;
+      }
+    });
+  }
+  __nimbusFront(crypto, "sign", (real) => function (algorithm, data, key, done) {
+    if (algorithm != null) string(algorithm, "algorithm");
+    if (done !== undefined) callback(done);
+    bufferOrView(data, "data");
+    if (!key) throw new nodeErrorCodes.ERR_CRYPTO_SIGN_KEY_REQUIRED();
+    return Reflect.apply(real, this, arguments);
+  });
+  __nimbusFront(crypto, "verify", (real) => function (algorithm, data, key, signature, done) {
+    if (algorithm != null) string(algorithm, "algorithm");
+    if (done !== undefined) callback(done);
+    bufferOrView(data, "data");
+    if (!ArrayBuffer.isView(data) && typeof data !== "string") throw invalidArgType("data", ["Buffer", "TypedArray", "DataView"], data);
+    return Reflect.apply(real, this, arguments);
+  });
+  // src/crypto/crypto_timing.cc TimingSafeEqual.
+  __nimbusFront(crypto, "timingSafeEqual", (real) => function (buf1, buf2) {
+    for (const [name, value] of [["buf1", buf1], ["buf2", buf2]]) {
+      if (!ArrayBuffer.isView(value) && !isAnyArrayBuffer(value)) {
+        throw bindingError(TypeError, "ERR_INVALID_ARG_TYPE", 'The "' + name + '" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView.');
+      }
+    }
+    if (buf1.byteLength !== buf2.byteLength) throw bindingError(RangeError, "ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH", "Input buffers must have the same byte length");
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/crypto/util.js setEngine: no engine is loadable here, so none is found.
+  __nimbusFront(crypto, "setEngine", () => function (id, flags) {
+    string(id, "id");
+    if (flags) __nimbusNodeValidator("validateNumber")(flags, "flags");
+    throw new nodeErrorCodes.ERR_CRYPTO_ENGINE_UNKNOWN(id);
+  });
+}
+
+__nimbusFrontZlib(builtins.zlib);
+__nimbusFrontBuffer(builtins.buffer);
+__nimbusFrontCrypto(builtins.crypto);
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
@@ -17402,12 +18013,12 @@ function __resolveFile(base) {
   return null;
 }
 
-// ── Resolution and credential rules, compiled from @nimbus-sh/core ──────
+// ── Resolution, credential and upgrade rules, compiled from @nimbus-sh/core ──
 // _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
 // resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
 // DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
-// TYPESCRIPT_INDEX_CANDIDATES and presentedCredential (a function declaration,
-// so the fetch patch above can call it).
+// TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
+// (function declarations, so the fetch patch above can call them).
 var DEFAULT_ESM_CONDITIONS = ["import", "module", "browser", "default"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "default"];
 function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
@@ -17524,6 +18135,10 @@ var TYPESCRIPT_INDEX_CANDIDATES = ["/index.ts", "/index.tsx"];
 function presentedCredential(value) {
   const trimmed = value.trim();
   return /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, "") : trimmed;
+}
+
+function isWebSocketUpgradeRequest(headers) {
+  return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
 
 /** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */

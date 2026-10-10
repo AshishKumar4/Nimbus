@@ -5,7 +5,7 @@ import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpytho
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
+import { installedRuntime, runtimeContext, runtimeSupervisor } from './lib/runtime-session.mjs';
 
 function loaderHarness() {
   const calls = [];
@@ -48,7 +48,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
       kind: 'workerd-adapter',
     }],
   };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK) })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(
     manifest,
     '/runtime/python',
     'python',
@@ -78,6 +78,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
   const run = await makeRubyRunnerFactory({
     facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK),
     filesystem,
+    processes: runtimeSupervisor(),
     getHome: () => '/home/session',
   })(
     manifest,
@@ -120,6 +121,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
   await makeRubyRunnerFactory({
     facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK),
     filesystem,
+    processes: runtimeSupervisor(),
     registry,
     getHome: () => '/home/session',
   })({ files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] }, '/runtime/ruby', 'ruby', undefined);

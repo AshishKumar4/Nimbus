@@ -35,6 +35,7 @@ import { packageTypeOf, type PackageType } from './module-format.js';
 export interface RequireFs {
   exists(path: string): Awaitable<boolean>;
   isDirectory(path: string): Awaitable<boolean>;
+  /** The file decoded as UTF-8 with TextDecoder's defaults (an invalid sequence replaced, a leading BOM dropped). */
   readFileString(path: string): Awaitable<string>;
   stat(path: string): Awaitable<{ size: number } | null>;
   /** Revalidate held content through the same principal without rereading its bytes. */
@@ -80,8 +81,25 @@ export function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string,
   return sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
 }
 
+const fileTextDecoder = new TextDecoder();
+
+/** A file's bytes as RequireFs.readFileString answers them. */
+function fileText(bytes: Uint8Array): string {
+  return fileTextDecoder.decode(bytes);
+}
+
+/**
+ * The text RequireFs.readFileString answers for a file whose content is
+ * `cell`, a cell a module map already holds: a text cell is that text; a
+ * byte cell (a file that is not valid UTF-8, facets/manager.ts
+ * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
+ * and compares a held cell through this, in the one representation it reads.
+ */
+export function heldCellText(cell: string | Uint8Array): string {
+  return typeof cell === 'string' ? cell : fileText(cell);
+}
+
 export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
-  const decoder = new TextDecoder();
   const absent = <T>(read: () => Awaitable<T | null>): Promise<T | null> => (async () => {
     try {
       return await read();
@@ -98,7 +116,7 @@ export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
     readFileString: async (path) => {
       const bytes = await readBytes(path);
       if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return decoder.decode(bytes);
+      return fileText(bytes);
     },
     stat,
     assertReadable: path => bridge.access(path, 4),

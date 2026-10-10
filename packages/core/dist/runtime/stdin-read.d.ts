@@ -30,6 +30,8 @@
  * whose reset ends every process in the session.
  */
 export declare const STDIN_SYNC_READ_BYTES: number;
+/** One complete-file fd0 read window; bounded while amortizing ranged RPC latency. */
+export declare const STDIN_FILE_READ_PIECE_BYTES: number;
 /**
  * What one process holds of a ReadAheadBudget: bytes taken as they are about
  * to be read, and given back when it no longer holds them.

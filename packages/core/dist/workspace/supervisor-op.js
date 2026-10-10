@@ -161,7 +161,7 @@ export const SUPERVISOR_OP_ROUTES = {
     cpSpawn: { method: '_rpcCpSpawn', args: [0] },
     cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0, 1] },
     cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
-    cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid', 'writerId'] },
+    cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid', 'writerId', 3] },
     stdinFileRead: { method: '_rpcStdinFileRead', args: [0, 1, 2, 'pid'] },
     stdinPrepared: { method: '_rpcStdinPrepared', args: ['pid', 'run'] },
     getCachedTarball: { method: '_rpcGetCachedTarball', args: [0, 'pid', 'run'] },
@@ -349,8 +349,8 @@ const NATIVE_OPS = {
         t.bridge(e.pid, e.cred);
         return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
     },
-    stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
-    stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
+    stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, bytesArg(e, 0)),
+    stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, bytesArg(e, 0)),
 };
 /**
  * A sequenced wave's numbering, under the key its process's writer is kept

@@ -77,7 +77,7 @@ if (line1Ok) {
     // Call foo() — should print 42.
     t.reset();
     t.cmd('foo()');
-    await t.waitFor((b) => />>>\s*$/.test(b.trimEnd()), 15_000, '>>> after foo()');
+    await t.waitFor((b) => /(?:^|\n)>>>[ \t]*$/.test(b), 15_000, '>>> after foo()');
     const out = stripAnsi(t.buf);
     a.check('foo() → "42"',
       /\b42\b/.test(out),

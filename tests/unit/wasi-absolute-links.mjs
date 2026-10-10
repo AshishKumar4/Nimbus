@@ -26,12 +26,15 @@ import { plugin } from 'bun';
 import { runScript } from './lib/bash-preamble.mjs';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { RUBY_RUNNER_PREAMBLE_TAIL } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { runtimeSupervisor } from './lib/runtime-session.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -93,7 +96,7 @@ if (hasHost('python3')) {
   const filesystem = new ProcessFiles(raw);
   const submitted = [];
   const env = { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute(args) { submitted.push(args); return { exitCode: 0, stdout: '', stderr: '' }; } }) }) } };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }, ISOLATE_NETWORK) })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(
     { version: '3.13.14', files: [{ path: 'share/cpython/python.wasm' }, { path: 'lib/python313.zip' }] }, '/runtime/python', 'python3', undefined);
   // What the guest runs (the runner's prelude, then the program), under a real CPython.
   const guest = async (cwd) => {
@@ -103,7 +106,10 @@ if (hasHost('python3')) {
       args: ['-c', 'import os; print("ran in", os.getcwd())'], cwd, env: {}, stdin: '', stdout: { write() {} }, stderr: { write() {} },
     };
     assert.equal(await run(ctx), 0);
-    return spawnSync('python3', ['-c', submitted[0].userCode], { encoding: 'utf8', cwd: '/' });
+    const args = submitted[0];
+    // Match the reactor's two compilation units: setup must enter cwd before
+    // user code, without adding setup's line offset to the user compilation.
+    return spawnSync('python3', ['-c', `${args.bootstrapCode}\nexec(compile(${JSON.stringify(args.userCode)}, "<string>", "exec"))`], { encoding: 'utf8', cwd: '/' });
   };
   const refused = await guest(missing);
   assert.equal(refused.status, 1);
@@ -121,7 +127,7 @@ if (hasHost('ruby')) {
   // The facet's own __rubyRun, with the VM stood in for by a recorder of
   // what it evaluates; then that Ruby, under a real Ruby.
   const evaluated = [];
-  const scope = { __nimbusRubyStdout: [], __nimbusRubyStderr: [], __nimbusRubyStep: async () => ({ resumed: false, alive: false }), __evaluated: evaluated };
+  const scope = { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __nimbusRubyStep: async () => ({ resumed: false, alive: false }), __evaluated: evaluated };
   const stand = 'function __nimbusInstallRubyFs() {}\nfunction __wasiAdoptSupervisor() {}\nasync function __nimbusRubyEval(boot, code) { globalThis.__evaluated.push(code); return { status: 0 }; }';
   new Function('globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}\n${stand}`).call(scope, scope);
   scope.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });
@@ -155,6 +161,7 @@ if (hasHost('ruby')) {
     writeFileSync(join(dir, 'ruby+stdlib.wasm'), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
     writeFileSync(join(dir, 'worker.mjs'), buildRubySocketProcessWorker([
       'function __wasiAdoptSupervisor() {}',
+      'globalThis.__nimbusRubyDrainOutput = async () => {};',
       'globalThis.__nimbusRubyStep = async () => ({ resumed: false, alive: false, wakeAfter: null });',
       'globalThis.__rubyRun = async (args) => { globalThis.__residentArgs = args; return { exitCode: 0, stdout: "", stderr: "" }; };',
     ].join('\n')));

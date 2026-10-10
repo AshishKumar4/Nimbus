@@ -21,13 +21,15 @@ export declare class WebSocketTerminal {
     private _cols;
     private _rows;
     private buffer;
-    private flushTimer;
+    private flushScheduled;
     /** [B'.3] Optional tee called from flush() with the final coalesced
      *  frame data. Used by initSession to mirror every WS output frame
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
-     *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
+     *  per-write) coalesces writes from one JavaScript turn. */
     private onFlush;
-    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void);
+    /** Sends a frame once the shell's output may go (SessionProcessSupervisor.releaseOutput), in order. */
+    private readonly release;
+    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void, release?: (send: () => void) => void);
     /**
      * [B'.5] Swap the underlying WebSocket on a warm rejoin. The Shell
      * keeps `terminal` as a stable instance reference (it stored
@@ -49,7 +51,7 @@ export declare class WebSocketTerminal {
     writeln(data: string): void;
     /**
      * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
-     * the 5 ms coalescer. Used by ReplSession.submitLine to emit stdout,
+     * the turn coalescer. Used by ReplSession.submitLine to emit stdout,
      * stderr, and the next-prompt as three discrete frames in deterministic
      * order. Without this, all three coalesce into one `{type:'output'}`
      * frame and probes asserting frame-order (stderr-before-stdout or

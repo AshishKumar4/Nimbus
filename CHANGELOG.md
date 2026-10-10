@@ -5,6 +5,49 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: process stdin is one bounded byte channel for Node, WASI and registry
+  children. Inherited fd 0 keeps queued bytes, future writes and EOF; full
+  pipes hold their writers until a reader makes room. Registry and shebang
+  children stream byte-exact stdout/stderr, and foreground output no longer
+  passes through a decoded log or binary placeholder. Logs persist bytes and
+  derive their text view on read. Missing/nonexecutable children fail spawn
+  with ENOENT/EACCES, and a vanished reader releases a blocked writer. npm-bin
+  entrypoints retain their broker-owned pid/fd0 and forward logged bytes
+  without feeding the same foreground subscriber back into itself. A child's
+  parent-side stdin is destroyed on exit, so a delayed end cannot write to
+  a removed reader and abort its parent's asynchronous work. A source read
+  failure preserves queued input and then reports EIO instead of clean EOF.
+  Broker-owned WASI runs reuse the same process and stream their bytes rather
+  than returning a rendered, truncated process-log tail.
+- Fixed: echo, progress, replay wakeups and impossible-child refusals use a
+  timer-independent continuation fence, so incoming filesystem RPC traffic
+  cannot withhold their bookkeeping. Fresh CPU turns still use the session's
+  alarm-backed paced-work scheduler. Complete-file stdin reads use bounded
+  1 MiB windows rather than one RPC per small stream chunk.
+- Fixed: CPython, Ruby, bash and the clang toolchain use the shared live WASI
+  byte relay instead of returning collected output at exit. Redirected files
+  receive flushed output during the run, binary pipes preserve their bytes,
+  and REPL/server control frames are bounded metadata rather than stored text.
+- Fixed: Node byte-mode readable streams expose Buffer chunks at their public
+  edge, preserving Buffer methods and encoding-aware toString calls.
+- Fixed: live Node console output no longer retains a second whole-output
+  string. Opencode's explicit one-shot text-result capture is bounded to
+  1 MiB per stream; an oversized result fails with EFBIG and a nonzero exit
+  instead of silently truncating it or exhausting the facet's memory.
+- Changed: `zlib`, `buffer` and `crypto` in node programs check their
+  arguments as Node does and throw Node's errors (`ERR_INVALID_ARG_TYPE`,
+  `ERR_MISSING_ARGS`, `ERR_OUT_OF_RANGE` and the rest, in Node's words).
+  They used to throw workerd's uncoded `Failed to execute …` errors, which a
+  program's `e.code` checks missed.
+  - `btoa` now refuses characters past U+00FF, as Node's does.
+  - `atob` reports Node's two errors.
+  - `crypto.createECDH` and `getDiffieHellman` name an unknown curve or
+    group as Node does.
+  - `crypto.setEngine` reports that no engine is found.
+- Fixed: `crypto.randomBytes`, `randomFillSync` and `randomFill` in node
+  programs threw `QuotaExceededError` past 65536 bytes. They fill up to
+  2^31-1 bytes, as Node's do. `crypto.getRandomValues` keeps the Web
+  Crypto quota, as in Node.
 - Fixed: `fs.stat(path, options, callback)` treated the options object as
   the callback. `{ bigint: true }` was ignored by every stat call; it now
   returns `BigIntStats` in nanoseconds.
@@ -58,6 +101,11 @@ published independently in the `@nimbus-sh` npm scope.
   - Known limits: `perf_hooks.createHistogram` and `monitorEventLoopDelay`
     throw `ERR_METHOD_NOT_IMPLEMENTED`. `os.getPriority` and `setPriority`
     on another process throw ENOSYS.
+- Fixed: a module the launch staged because earlier runs executed it, or as
+  a guess at a package's main, came without what its require wrapper loads.
+  nuxt's `nuxt dev` failed "Failed to resolve vue/compiler-sfc" when
+  `@vitejs/plugin-vue` was staged that way. Such a module now brings its
+  static imports and its wrappers' loads together, or is left to load late.
 
 ## 2026-10-09: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 

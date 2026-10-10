@@ -41,7 +41,7 @@
  * wireProcessLogPersist again.
  */
 
-import type { LogChunk, PersistAdapter, PersistedLogPid, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
+import type { PersistedLogChunk, PersistAdapter, PersistedLogPid, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers, type TimerHost, type TimerContext } from '@nimbus-sh/fabric/timers.js';
@@ -142,10 +142,10 @@ export function installLogPersistence(
           'SELECT code, at, reason FROM w9_proc_exits WHERE pid = ?',
           pid,
         )] as any[];
-        const chunks: LogChunk[] = chunkRows.map((r) => ({
+        const chunks: PersistedLogChunk[] = chunkRows.map((r) => ({
           ts: Number(r.ts),
           stream: r.stream === 'stderr' ? 'stderr' : 'stdout',
-          data: String(r.data),
+          data: r.data instanceof ArrayBuffer ? new Uint8Array(r.data) : r.data instanceof Uint8Array ? r.data : String(r.data),
           binary: !!r.binary,
           ...(r.seq !== undefined ? { seq: Number(r.seq) } : {}),
         } as any));
@@ -176,7 +176,7 @@ export function installLogPersistence(
             const c = r.chunk;
             sql.exec(
               'INSERT OR REPLACE INTO w9_proc_logs (pid, seq, ts, stream, data, binary) VALUES (?, ?, ?, ?, ?, ?)',
-              pid, r.seq, c.ts, c.stream, c.data, c.binary ? 1 : 0,
+              pid, r.seq, c.ts, c.stream, c.data, 0,
             );
           }
         });
@@ -428,7 +428,7 @@ export function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any):
     sql.exec(
       'CREATE TABLE IF NOT EXISTS w9_proc_logs (' +
         'pid INTEGER NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, ' +
-        'stream TEXT NOT NULL, data TEXT NOT NULL, binary INTEGER NOT NULL, ' +
+        'stream TEXT NOT NULL, data BLOB NOT NULL, binary INTEGER NOT NULL, ' +
         'PRIMARY KEY (pid, seq))',
     );
     sql.exec('CREATE INDEX IF NOT EXISTS w9_proc_logs_ts ON w9_proc_logs(ts)');

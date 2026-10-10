@@ -46,6 +46,8 @@ try {
   // ── Request transport runs real bash and answers a real slice ─────────────
   {
     const { scope, bindings, evaluate } = request;
+    const written = [];
+    const release = request.processes.subscribeOutputBytes(request.pid, chunk => { if(chunk.stream==='stdout')written.push(chunk.data); });
     const scopedStep = evaluate(`(${bashRequestStep.toString()})`);
 
     const response = await scopedStep(stepRequest(bootArgs(request, 'printf "transport-ok\\n"')), bindings);
@@ -53,7 +55,9 @@ try {
     const slice = await response.json();
     assert.equal(slice.state, 'exited', JSON.stringify(slice));
     assert.equal(slice.exitCode, 0);
-    assert.equal(slice.stdout, 'transport-ok\n');
+    release();
+    assert.equal(slice.stdout, '', 'the reply does not repeat live output');
+    assert.equal(Buffer.concat(written).toString(), 'transport-ok\n', 'the serialized request streams its bytes before answering');
 
     // The warm session the boot left on this isolate's S answers feeds.
     const fed = await scopedStep(stepRequest({ op: 'feed', data: '', eof: true }), bindings);
@@ -74,10 +78,14 @@ try {
   // ── Classic submit transport over the same serialized preamble ────────────
   {
     const { bindings, evaluate } = submit;
+    const written = [];
+    const release = submit.processes.subscribeOutputBytes(submit.pid, chunk => { if(chunk.stream==='stdout')written.push(chunk.data); });
     const scopedFacetStep = evaluate(`(${bashFacetStep.toString()})`);
     const slice = await scopedFacetStep(bootArgs(submit, 'printf "submit-ok\\n"'), bindings);
     assert.equal(slice.state, 'exited', JSON.stringify(slice));
-    assert.equal(slice.stdout, 'submit-ok\n');
+    release();
+    assert.equal(slice.stdout, '', 'classic submit does not return a second stored output copy');
+    assert.equal(Buffer.concat(written).toString(), 'submit-ok\n');
   }
 
   // ── No preamble installed: the step reports, it does not throw ────────────

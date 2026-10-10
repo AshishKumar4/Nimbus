@@ -10,6 +10,7 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire as nativeCreateRequire, isBuiltin } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { adaptHttpImports } from './node-http-platform.mjs';
@@ -68,7 +69,9 @@ export function moduleMapText(modules) {
  * types a module by its `{ cjs }` member, not its name.
  */
 const registry = new Map();
+const builtinRequire = nativeCreateRequire(import.meta.url);
 const createRequire = (base) => (specifier) => {
+  if (isBuiltin(specifier)) return builtinRequire(specifier);
   const file = fileURLToPath(new URL(specifier, base));
   if (!registry.has(file)) {
     const moduleObject = { exports: {} };
