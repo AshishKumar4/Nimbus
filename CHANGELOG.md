@@ -13,9 +13,13 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: a bin that served once in a workspace starts as a server directly next time.
   - Learned by its package's name and version, the bin, and its first argument.
   - The known server CLIs (vite, next, astro, and the others) still start that way from their first launch.
+- Changed: an npm bin runs as `node <its file>` does: one process, shown under the bin's command line, whose start, output and exit are reported once. A bin no longer has a process entry and a `[bin started]` line of its own.
 - Fixed: a `kill` sent while a process's earlier end was still waiting for its writes to drain was acknowledged but did nothing; the process kept running until the drain finished. The kill now takes effect at once, and its status is the one recorded.
 - Fixed: `opencode` run once (`opencode --version`, `opencode run …`) could reset the session; repeated runs reset it within a few dozen. Killing such a run now also ends the program, which used to run on after the session had let it go.
 - Fixed: a resident process whose filesystem could not be listed at boot reported a stale cause ("a change reported without the stat every name needs"). It now names the listing's own failure.
+
+## 2026-10-10: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
+
 - Fixed: process stdin is one bounded byte channel for Node, WASI and registry
   children. Inherited fd 0 keeps queued bytes, future writes and EOF; full
   pipes hold their writers until a reader makes room. Registry and shebang
@@ -117,8 +121,6 @@ published independently in the `@nimbus-sh` npm scope.
   nuxt's `nuxt dev` failed "Failed to resolve vue/compiler-sfc" when
   `@vitejs/plugin-vue` was staged that way. Such a module now brings its
   static imports and its wrappers' loads together, or is left to load late.
-
-## 2026-10-09: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
 - Changed: `util`, `assert`, `querystring` and `punycode` in node programs
   are Node 22.22.3's own library code, loaded on first use. Modules are
