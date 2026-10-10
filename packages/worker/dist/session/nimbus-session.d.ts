@@ -22,6 +22,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -47,7 +48,7 @@ import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-
 import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { WebSocketRelay } from './ws-relay.js';
-import * as _programmatic from './programmatic.js';
+import * as _portCapability from './port-capability.js';
 import { ServedReads } from '../facets/read-profile.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
 export { detectCloudflareWorkersProject } from '@nimbus-sh/core/runtime/project-detect.js';
@@ -71,7 +72,7 @@ export { detectCloudflareWorkersProject } from '@nimbus-sh/core/runtime/project-
 export declare function renderMotdBanner(version: string): string;
 export declare function renderWelcomeMarkdown(version: string): string;
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
-export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
+export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
     #private;
     runtimeWorkspace: NimbusWorkspace | null;
     private runtimeReady;
@@ -354,14 +355,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcInnerDoCall(req: any): Promise<unknown>;
     _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
     _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
-    _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
-    _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
+    _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+    _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
     _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcSetUmask(mask: number, pid?: number): Promise<number>;
-    _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<{
-        name: string;
-        type: string;
-    }[]>;
+    _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<SessionDirectoryEntry[]>;
     _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
     _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
@@ -475,7 +473,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcCpKill(childPid: number, signal: string): Promise<boolean>;
     _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
     _rpcCpBlocked(pid: number, report: unknown): Promise<void>;
-    _rpcReady(options?: _programmatic.ProgrammaticReadyOptions): Promise<{
+    _rpcReady(options?: SessionReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];
     }>;
@@ -488,23 +486,87 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         ok: true;
     }>;
     /** The command's output as it is written: an encoded exec stream (`@nimbus-sh/core/runtime/exec-stream`). */
-    _rpcExecStream(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<ReadableStream<Uint8Array>>;
-    _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticStartResult>;
-    _rpcRunCode(code: string, options?: _programmatic.ProgrammaticExecOptions & {
-        language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
-        install?: 'never' | 'ifMissing';
-    }): Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecOutput>;
-    _rpcInstallRuntime(spec: string, options?: {
-        force?: boolean;
-    }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary>;
-    _rpcEnsureRuntimes(specs: string[], options?: {
-        force?: boolean;
-    }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
-    _rpcListRuntimes(): Promise<{
-        installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
-        available: import("@nimbus-sh/core/runtime/runtime-package.js").RuntimeAvailability[];
+    _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>>;
+    _rpcStartProcess(command: string, options?: SessionExecOptions): Promise<{
+        command: string;
+        pid: number;
+        process: {
+            pid: number;
+            command: string;
+            argv: string[];
+            cwd: string;
+            state: string;
+            exitCode: number | null;
+            startTime: number;
+            endTime: number | null;
+            longRunning: boolean;
+            attachedTty: boolean;
+            execId?: string | undefined;
+        };
+        ports: {
+            port: number;
+            pid: number;
+            registeredAt: number;
+            capability: string;
+            execId?: string | undefined;
+        }[];
+        startedAt: number;
     }>;
-    _rpcListProcesses(): Promise<_programmatic.SerializedProcess[]>;
+    _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<{
+        command: string;
+        exitCode: number;
+        success: boolean;
+        duration: number;
+        timestamp: number;
+        stdout: string;
+        stderr: string;
+    }>;
+    _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions): Promise<{
+        spec: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+    }>;
+    _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions): Promise<{
+        spec: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+    }[]>;
+    _rpcListRuntimes(): Promise<{
+        installed: {
+            name: string;
+            version: string;
+            root: string;
+            abi: string;
+            bins: string[];
+            sizeBytes: number;
+            license: string;
+        }[];
+        available: {
+            name: string;
+            abi: string;
+            defaultVersion: string;
+            versions: {
+                version: string;
+                sizeBytes: number;
+                license: string;
+            }[];
+        }[];
+    }>;
+    _rpcListProcesses(): Promise<{
+        pid: number;
+        command: string;
+        argv: string[];
+        cwd: string;
+        state: string;
+        exitCode: number | null;
+        startTime: number;
+        endTime: number | null;
+        longRunning: boolean;
+        attachedTty: boolean;
+        execId?: string | undefined;
+    }[]>;
     _rpcKillProcess(pid: number): Promise<{
         ok: boolean;
         pid: number;
@@ -517,10 +579,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         ok: boolean;
         pid: number;
     }>;
-    _rpcResizeProcess(pid: number, size: {
-        columns: number;
-        rows: number;
-    }): Promise<{
+    _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<{
         ok: boolean;
         pid: number;
     }>;
@@ -528,23 +587,32 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         ok: boolean;
         pid: number;
     }>;
-    _rpcProcessLogs(pid: number, options?: {
-        cursor?: number;
-        lines?: number;
-        bytes?: number;
-    }): Promise<{
+    _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions): Promise<{
         pid: number;
-        chunks: import("@nimbus-sh/core/runtime/process-logs.js").SequencedLogChunk[];
+        chunks: {
+            seq: number;
+            ts: number;
+            stream: "stdout" | "stderr";
+            data: string;
+            binary?: boolean | undefined;
+        }[];
         text: string;
         cursor: number;
         truncated: boolean;
-        exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
+        exit: {
+            code: number;
+            at: number;
+            reason?: string | undefined;
+        } | null;
     }>;
-    _rpcListPorts(): Promise<_programmatic.SerializedPort[]>;
-    _rpcExposePort(port: number, options?: {
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<{
+    _rpcListPorts(): Promise<{
+        port: number;
+        pid: number;
+        registeredAt: number;
+        capability: string;
+        execId?: string | undefined;
+    }[]>;
+    _rpcExposePort(port: number, options?: SessionExposeOptions): Promise<{
         execId?: string;
         port: number;
         listening: boolean;
@@ -555,26 +623,48 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         owner: string | null;
         name: string | null;
     }>;
-    _rpcExposeApp(target: _programmatic.AppTarget, options?: {
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<_programmatic.ExposedAppResult>;
-    _rpcListApps(): Promise<_programmatic.ListedApp[]>;
-    _rpcRotateLink(target: _programmatic.AppTarget): Promise<_programmatic.ExposedAppResult>;
-    _rpcRemoveApp(target: _programmatic.AppTarget): Promise<{
+    _rpcExposeApp(target: SessionAppTarget, options?: SessionExposeOptions): Promise<{
         owner: string;
-        removed: boolean;
-        port: number | null;
-    }>;
-    _rpcEnsureDurableApp(input: {
-        owner: string;
-        preferredPort?: number;
-        visibility?: 'scoped' | 'public';
-        name?: string;
-    }): Promise<{
+        name: string | null;
         port: number;
+        pid: number | null;
         capability: string | null;
         visibility: "scoped" | "public";
+        url: string | null;
+        execId?: string | undefined;
+    }>;
+    _rpcListApps(): Promise<{
+        owner: string;
+        name: string | null;
+        port: number | null;
+        pid: number | null;
+        status: "running" | "starting" | "stopped" | "failed";
+        visibility: "scoped" | "public";
+        capability: string | null;
+        restart: "never" | "on-failure";
+        diagnostic: string | null;
+        url: string | null;
+        execId?: string | undefined;
+    }[]>;
+    _rpcRotateLink(target: SessionAppTarget): Promise<{
+        owner: string;
+        name: string | null;
+        port: number;
+        pid: number | null;
+        capability: string | null;
+        visibility: "scoped" | "public";
+        url: string | null;
+        execId?: string | undefined;
+    }>;
+    _rpcRemoveApp(target: SessionAppTarget): Promise<{
+        removed: boolean;
+        owner: string;
+        port: number | null;
+    }>;
+    _rpcEnsureDurableApp(input: SessionDurableAppOptions): Promise<{
+        port: number;
+        capability: string | null;
+        visibility: _portCapability.PortVisibility;
     }>;
     _rpcRemoveDurableApp(owner: string): Promise<{
         owner: string;
@@ -602,7 +692,12 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     }, cred?: VfsCred): Promise<void>;
     /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
     _rpcSpawnWorker(workerCode: string, command: string, cwd: string, opts?: import('../facets/manager.js').LongRunningWorkerSpawnOptions): Promise<import("../facets/manager.js").SpawnedWorker>;
-    _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions): Promise<_programmatic.ProgrammaticDestroyResult>;
+    _rpcDestroy(options?: SessionDestroyOptions): Promise<{
+        ok: true;
+        killed: number;
+        destroyedAt: number;
+        reason: string | null;
+    }>;
     fetch(request: Request): Promise<Response>;
     _handleFetch(request: Request): Promise<Response>;
     /**

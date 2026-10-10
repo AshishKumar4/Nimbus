@@ -14,6 +14,10 @@
  */
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
+export const ExecExitSchema = z.object({
+    command: z.string(), exitCode: z.number(), success: z.boolean(), duration: z.number(), timestamp: z.number(),
+});
+export const ExecOutputSchema = ExecExitSchema.extend({ stdout: z.string(), stderr: z.string() });
 /** Output a writer may run ahead of its reader before its writes wait. */
 export const EXEC_STREAM_HIGH_WATER_BYTES = 64 * 1024;
 // Consecutive writes to one stream are joined up to this size, or until the
@@ -139,13 +143,6 @@ const FRAME_STDERR = 2;
 const FRAME_EXIT = 3;
 const FRAME_ERROR = 4;
 const HEADER_BYTES = 5;
-const ExitFrameSchema = z.object({
-    command: z.string(),
-    exitCode: z.number(),
-    success: z.boolean(),
-    duration: z.number(),
-    timestamp: z.number(),
-});
 const ErrorFrameSchema = z.object({ message: z.string() });
 function frame(kind, payload) {
     const out = new Uint8Array(HEADER_BYTES + payload.byteLength);
@@ -255,7 +252,7 @@ export function decodeExecStream(wire) {
                             let parsed;
                             try {
                                 const json = JSON.parse(new TextDecoder().decode(payload));
-                                parsed = header.kind === FRAME_EXIT ? ExitFrameSchema.parse(json) : ErrorFrameSchema.parse(json);
+                                parsed = header.kind === FRAME_EXIT ? ExecExitSchema.parse(json) : ErrorFrameSchema.parse(json);
                             }
                             catch (error) {
                                 fail(controller, new Error(`exec stream: malformed ${header.kind === FRAME_EXIT ? 'exit' : 'error'} frame: ${error instanceof Error ? error.message : String(error)}`));
