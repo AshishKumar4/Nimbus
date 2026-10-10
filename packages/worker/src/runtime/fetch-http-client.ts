@@ -160,7 +160,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           else headers.push([name, String(value)]);
         }
         this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
-          headers, contentLength: this.#contentLength, body: this.#completeBody };
+          headers, framed: this.hasHeader("content-length") || this.hasHeader("transfer-encoding"), contentLength: this.#contentLength, body: this.#completeBody };
         this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
         this._headerSent = true;
       } catch (error) { this.destroy(error); this.#resume(); return; }
@@ -183,7 +183,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       target.port = request.port;
       const address = request.path && request.path !== "/" ? new URL(request.path, target) : target;
       const headers = request.headers;
-      if (request.method !== "GET" && request.method !== "HEAD" && !headers.some(([name]) => /^(?:content-length|transfer-encoding)$/i.test(name))) {
+      if (request.method !== "GET" && request.method !== "HEAD" && !request.framed) {
         headers.push(request.contentLength === undefined ? ["transfer-encoding", "chunked"] : ["content-length", String(request.contentLength)]);
       }
       let body;
