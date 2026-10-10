@@ -217,10 +217,11 @@ export interface ProcessFsClient {
   /**
    * A raw socket opens, which carries whatever the process sends on it from
    * now on, past every gate of the session's. The session is told (once),
-   * and every wave sent from now on goes after that, so each is answered
-   * once published. The socket opens at the gate this answers: once what
-   * was logged before it is answered and published, or null when nothing
-   * waits.
+   * every wave sent from now on goes after that, so each is answered once
+   * published, and no mutation is decided here (holder) any more. The
+   * socket opens at the gate this answers: once the session answered that,
+   * and what was logged before it is answered and published; rejected when
+   * the session was not told. Null when nothing waits (told already).
    */
   rawSocket(): Promise<void> | null;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
@@ -573,8 +574,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Waves the session answered ahead of their publication, and how many of them it has since said are published (`published`). */
   let heldWaves = 0;
   let publishedThrough = 0;
-  /** The session told of a raw socket (rawSocket): every wave after it is sent once it lands. */
+  /**
+   * The session told of a raw socket (rawSocket): every wave after it is
+   * sent once it lands, and nothing is decided here from then on. Landed:
+   * the session answered it, everything it held of the process's published.
+   */
   let escaped: Promise<void> | null = null;
+  let escapeLanded = false;
   const marks: { mark: number; resolve(): void }[] = [];
   const counters: ProcessFsStats = {
     ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
@@ -1097,8 +1103,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     });
   };
 
-  const heldGrant = (key: string): Grant | undefined =>
-    grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
+  // A process with a raw socket decides nothing here: what it awaits is the
+  // session's answer, which comes once it is published.
+  const heldGrant = (key: string): Grant | undefined => (escaped !== null ? undefined
+    : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
 
   const client: ProcessFsClient = {
     holder(key) {
@@ -1111,7 +1119,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         held.lastUsed = now();
         return held;
       }
-      if (session.grants === undefined || settling) return undefined;
+      if (session.grants === undefined || settling || escaped !== null) return undefined;
       // Shared, or another's: the session decides; a subtree it refused is not asked for again.
       if (grants.some((grant) => !grant.ended && within(key, grant.root))) return undefined;
       // Counted at each directory above it: the deepest one that has had
@@ -1250,12 +1258,19 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const ask = options.session.published;
       if (processGone !== null || ask === undefined) return null;
       if (escaped === null) {
-        escaped = ask.call(options.session, true);
-        // Not told, every write after it fails (send) rather than be answered ahead of its publication.
+        // Its answer is the session's word on what it holds of the process's,
+        // this client's waves and what it never saw (its launch's writes) alike.
+        const through = heldWaves;
+        escaped = ask.call(options.session, true).then(() => {
+          escapeLanded = true;
+          publishedThrough = Math.max(publishedThrough, through);
+        });
+        // Not told, no socket opens, and every write after it fails (send) rather than be answered ahead of its publication.
         escaped.catch(() => {});
       }
       const logged = client.effect();
-      return logged === null ? client.published() : logged.then(() => client.published() ?? undefined);
+      if (escapeLanded && logged === null) return client.published();
+      return Promise.all([escaped, logged]).then(() => client.published() ?? undefined);
     },
     async settle() {
       settling = true;

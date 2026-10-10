@@ -18,6 +18,7 @@ import {
   runScenarios,
   residentDataPlan,
   sleep as rawSleep,
+  until,
 } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
@@ -205,6 +206,30 @@ await runScenarios(import.meta.path, {
     assert.equal(flushed, 'waiting', 'a process with a raw socket opened before it wrote was answered before its publication');
     reader.recalled(readLease.owner, 'revoke');
     await globalThis.__nimbusProcessFs.flush();
+  },
+
+  async 'a gated process that holds the subtree it writes, once it opens a raw socket, awaits each write there until it is published'() {
+    const { authority, probe } = await boot((authority, pid) => {
+      authority.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
+      authority.kfs.chown('home/user/app', 1000, 1000);
+      authority.kfs.chown('home/user/app/out', 1000, 1000);
+      authority.files.holdOutput(authority.host.processes);
+      authority.files.continueAtCommit(pid);
+    }, undefined, `${PROGRAM}\nglobalThis.__probe.connect = () => require("tls").connect({ host: "127.0.0.1", port: 9 }).on("error", () => {});`);
+    // Written often enough, the subtree is the process's: a write there is decided by the process itself.
+    for (let i = 0; i < 16; i++) await probe.fs.promises.writeFile(`/home/user/app/out/warm${i}`, 'w');
+    await until(() => globalThis.__nimbusProcessFs.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
+    await globalThis.__nimbusProcessFs.flush();
+    const reader = authority.files.bind({ pid: 99, cred: CRED });
+    const { readLease } = reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true });
+    assert.ok(readLease, 'no lease to meet');
+    probe.connect();
+    const written = probe.fs.promises.writeFile('/home/user/app/out/saved', 'saved');
+    const settled = await Promise.race([written.then(() => 'answered'), rawSleep(200).then(() => 'waiting')]);
+    assert.equal(settled, 'waiting', 'a write in a subtree it holds was answered before its publication, its process holding a raw socket');
+    reader.recalled(readLease.owner, 'revoke');
+    await written;
+    assert.equal(new TextDecoder().decode(reader.readFile('/home/user/app/out/saved')), 'saved');
   },
 
   async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {

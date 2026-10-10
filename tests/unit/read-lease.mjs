@@ -15,6 +15,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { mock } from 'bun:test';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -726,6 +727,45 @@ for (const pathRevisionBytes of [undefined, 0]) {
   reader.recalled(readLease.owner, 'revoke');
   await Promise.all([opened, closed]);
   assert.deepEqual(sent, ['open wss://peer.invalid/?saved', 'close saved']);
+}
+
+// ── What its binding does outside on the session's answer leaves once what its process wrote is published: a registry read on a miss, and a write to the shared cache ──
+{
+  mock.module('cloudflare:workers', () => ({ RpcTarget: class {}, WorkerEntrypoint: class {} }));
+  const { ProcessSupervisor } = await import('../../packages/worker/src/session/process-supervisor.ts');
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  s.files.holdOutput(processes);
+  const { pid } = processes.spawn('node', ['install.js'], '/home/user', { cred: USER });
+  s.files.continueAtCommit(pid);
+  const writer = s.files.bind({ pid, cred: USER });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const dispatch = createSupervisorOpHandler({
+    vfs: s.engine, filesystem: s.files, processes,
+    // As the session answers them (session/rpc.ts).
+    host: { _rpcGetPackument: async () => ({ readOnly: false }), _rpcPutCachedTarball: async () => {} },
+  });
+  const out = [];
+  const tarballs = { put: async (key) => { out.push(`put ${key}`); } };
+  const supervisor = new ProcessSupervisor({ doId: 'session', pid, writerId: 'run-1', bindingKind: 'process' }, { NPM_TARBALL_CACHE: tarballs }, dispatch);
+  const fetching = globalThis.fetch;
+  globalThis.fetch = async (input) => { out.push(`fetch ${input instanceof Request ? input.url : input}`); return new Response('', { status: 404 }); };
+  try {
+    const bytes = new TextEncoder().encode('tarball');
+    const integrity = `sha512-${Buffer.from(await crypto.subtle.digest('SHA-512', bytes)).toString('base64')}`;
+    const { readLease } = barrier(s, reader);
+    assert.equal((await wave(writer, '/home/user/d/a.txt', 'installing')).held, true);
+    const read = supervisor.getPackument('left-pad', { retries: 0, registry: 'http://npm-registry.invalid' });
+    const stored = supervisor.putCachedTarball(integrity, bytes);
+    await sleep(10);
+    assert.deepEqual(out, [], 'its registry read or its cache write left before what its process wrote was published');
+    reader.recalled(readLease.owner, 'revoke');
+    assert.equal((await read).status, 404);
+    assert.equal(await stored, true);
+    assert.deepEqual(out.map((line) => line.split(' ')[0]).sort(), ['fetch', 'put']);
+  } finally {
+    globalThis.fetch = fetching;
+  }
 }
 
 // ── Held for publication: another opener's description waits for it, its writer's reads its own ──

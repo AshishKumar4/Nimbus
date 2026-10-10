@@ -4,6 +4,7 @@
 // behind the same replay-boundary acknowledgement as supervisor/fetch I/O.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { _normalizeArgs } from 'node:net';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; };
@@ -15,12 +16,18 @@ function fixture(proxied) {
   let registered = false;
   class Socket extends EventEmitter {
     constructor() { super(); this.destroyed = false; this.connecting = false; }
-    connect(options) { if (this.connecting) throw Object.assign(new Error('Socket is already connecting'), { code: 'ERR_SOCKET_CONNECTING' }); calls.push({ options, registered }); this.connecting = true; return this; }
+    connect(options) {
+      if (this.connecting) throw Object.assign(new Error('Socket is already connecting'), { code: 'ERR_SOCKET_CONNECTING' });
+      this.connecting = true;
+      // A host looked up by the caller's lookup opens once it answers (none here does).
+      if (typeof options.lookup !== 'function') calls.push({ options, registered });
+      return this;
+    }
     destroy(error) { if (this.destroyed) return this; this.destroyed = true; this.connecting = false; queueMicrotask(() => { if (error) this.emit('error', error); this.emit('close'); }); return this; }
     ref() { return this; }
     unref() { return this; }
   }
-  const net = { Socket, connect(options) { const socket = new Socket(); carriers.push(socket); return socket.connect(options); } };
+  const net = { Socket, _normalizeArgs, connect(options) { const socket = new Socket(); carriers.push(socket); return socket.connect(options); } };
   const tls = { connect(options) {
     const socket = new Socket();
     socket.carrier = options.socket;

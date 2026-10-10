@@ -181,8 +181,11 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   answer();
   await published;
   assert.equal(c.published(), null, 'asked again with nothing held since');
-  // A raw socket opens: with nothing logged or held it opens at once, the session told, and its writes wait for their publication from then on.
-  assert.equal(c.rawSocket(), null, 'a raw socket waited with nothing logged or held');
+  // A raw socket opens once the session is told, and its writes wait for their publication from then on.
+  const opened = c.rawSocket();
+  assert.notEqual(opened, null, 'a raw socket opened before the session was told');
+  await opened;
+  assert.equal(c.rawSocket(), null, 'a later raw socket waited with nothing logged or held');
   const later = lease(9);
   c.submit(writeFile('home/user/g.txt', 'waits'));
   let flushed = false;
@@ -213,14 +216,53 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
     },
     retry: RETRY,
   });
-  assert.equal(c.rawSocket(), null, 'a raw socket waited with nothing logged or held');
+  const opened = c.rawSocket();
   c.submit(writeFile('home/user/after.txt', 'after'));
   const flushing = c.flush();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(sent, [], 'a wave left before the session was told of the raw socket');
   land();
-  await flushing;
+  await Promise.all([opened, flushing]);
   assert.deepEqual(sent, [true]);
+  await c.settle();
+}
+
+// ── An idle process's raw socket opens once the session answers its escape: after what the session holds of the process's that it never logged (its launch's image) is published ──
+{
+  const s = session();
+  s.files.holdOutput(new SessionProcessSupervisor());
+  s.files.continueAtCommit(PID);
+  const reader = s.files.bind({ pid: 7, cred: CRED_SESSION_USER });
+  const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+  // As a launch writes the process's boot image: the kernel, through its binding, held for the reader's recall.
+  const launching = s.files.bind({ pid: PID, cred: CRED_KERNEL }).synchronous;
+  launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
+  launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+  let land;
+  const landing = new Promise((resolve) => { land = resolve; });
+  // The transport delivers the escape late.
+  const c = processFsClient({ session: { ...s.port, published: (escape) => landing.then(() => s.port.published(escape)) }, retry: RETRY });
+  const gate = c.rawSocket();
+  assert.notEqual(gate, null, 'an idle process\'s raw socket opened before the session answered its escape');
+  let opened = false;
+  void gate.then(() => { opened = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(opened, false, 'a raw socket opened before the session answered its escape');
+  land();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(opened, false, 'a raw socket opened before what the session holds of its process was published');
+  reader.recalled(readLease.owner, 'revoke');
+  await gate;
+  assert.equal(c.rawSocket(), null, 'a later raw socket waited with nothing logged or held');
+  await c.settle();
+}
+
+// ── A raw socket the session was not told of is refused, and so is every later one ──
+{
+  const s = session();
+  const c = processFsClient({ session: { ...s.port, published: async () => { throw new Error('the escape was lost'); } }, retry: RETRY });
+  await assert.rejects(c.rawSocket(), /the escape was lost/, 'a raw socket opened, the session not told of it');
+  await assert.rejects(c.rawSocket(), /the escape was lost/, 'a later raw socket opened, the session never told');
   await c.settle();
 }
 
