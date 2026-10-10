@@ -437,14 +437,18 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * paths in one turn (git, the build services, vite's file shim, agent
    * tools). Mounted paths route to their mount (a mount without a
    * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
-   * exactly as a process's syscalls do. One per credential for the session.
+   * exactly as a process's syscalls do. `landed`: its reads read what has
+   * landed (VFS.as), asking no delegation's holder — a listing that runs on
+   * every change (the editor's file tree). One per credential and option for
+   * the session.
    */
-  namespaceFs(cred: Readonly<VfsCred>): NamespaceFs {
+  namespaceFs(cred: Readonly<VfsCred>, options: { landed?: boolean } = {}): NamespaceFs {
     const identity = immutableCredential(cred);
-    const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}`;
+    const landed = options.landed === true;
+    const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}${landed ? ':landed' : ''}`;
     let fs = this.namespaces.get(key);
     if (!fs) {
-      const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity);
+      const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity, undefined, undefined, landed);
       fs = new NamespaceFs(bridge.synchronous!, identity);
       this.namespaces.set(key, fs);
     }
@@ -605,7 +609,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     reportLost(lost);
   }
 
-  private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
+  private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false): RuntimeFsBridge {
     // The scope is checked again by the namespace right before each mutation
     // reaches a backend, after the lookups it awaited: a write still
     // resolving when the process is released or killed, or its lease is
@@ -613,9 +617,9 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // A process's calls are made by the delegations it holds: its own lookups
     // recall none of them, on SQLite and through the namespace alike.
     const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
-    const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
+    const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
     const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
     const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
     // Every other method forwards to the guarded bridge.
     let awaited = this.awaitedDescriptors.get(scope);

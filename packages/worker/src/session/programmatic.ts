@@ -24,6 +24,7 @@ import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/c
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionFilesystem } from './session-filesystem.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
@@ -91,6 +92,8 @@ export interface ProgrammaticHost extends TimerHost {
   readonly sqliteFs: SqliteVFS | null;
   /** The session's filesystem resource, where the host owns one (NimbusSession): a destroy closes it. */
   filesystem?: SessionFilesystem | null;
+  /** The namespace every file the caller names is read and changed through. */
+  getFilesystemAuthority(): ProcessFiles;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
   facetManagerComposed: ComposedFacetManager | null;
@@ -1291,17 +1294,17 @@ export async function rpcDeleteFile(
   cred?: VfsCred,
 ): Promise<void> {
   await ensureProgrammaticReady(self);
-  const p = String(path).replace(/^\/+/, '');
-  const vfs = self.sqliteFs!.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
+  const p = `/${String(path).replace(/^\/+/, '')}`;
+  const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
   // A delegation it meets is recalled first.
   await withRecall(() => {
-    if (!vfs.exists(p)) return;
-    if (vfs.isDirectory(p)) {
-      if (!options.recursive) vfs.rmdir(p);
-      else vfs.removeRecursive(p);
+    if (!fs.exists(p)) return;
+    if (fs.isDirectory(p)) {
+      if (!options.recursive) fs.rmdir(p);
+      else fs.removeRecursive(p);
       return;
     }
-    vfs.unlink(p);
+    fs.unlink(p);
   });
 }
 
