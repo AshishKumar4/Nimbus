@@ -3,7 +3,7 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
-## Unreleased
+## 2026-10-10: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
 - Fixed: process stdin is one bounded byte channel for Node, WASI and registry
   children. Inherited fd 0 keeps queued bytes, future writes and EOF; full
@@ -106,8 +106,6 @@ published independently in the `@nimbus-sh` npm scope.
   nuxt's `nuxt dev` failed "Failed to resolve vue/compiler-sfc" when
   `@vitejs/plugin-vue` was staged that way. Such a module now brings its
   static imports and its wrappers' loads together, or is left to load late.
-
-## 2026-10-09: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
 - Changed: `util`, `assert`, `querystring` and `punycode` in node programs
   are Node 22.22.3's own library code, loaded on first use. Modules are
