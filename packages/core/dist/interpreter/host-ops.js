@@ -112,7 +112,8 @@ return {
     return f;
   },
   arrow(fi, scope) {
-    return (...args) => callArrow(fi, scope, args);
+    const f = (0, (...args) => callArrow(fi, scope, f, args));
+    return f;
   },
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
@@ -144,9 +145,10 @@ return {
     return f;
   },
   asyncArrow(fi, scope) {
-    return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);${ASYNC_BODY}
-    };
+    const f = (0, async (...args) => {
+      const env = enter(fi, scope, f, undefined, args, undefined, undefined);${ASYNC_BODY}
+    });
+    return f;
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
   // return() request at a yield is a return completion this frame cannot

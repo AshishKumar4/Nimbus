@@ -30,14 +30,14 @@ export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID: string = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256: string = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-712ee78ac17be572.js";
-export const JS_INTERPRETER_BUILD_ID: string = "712ee78ac17be572";
-export const JS_INTERPRETER_SHA256: string = "712ee78ac17be572dd4f3b6ad9b30f998b7a7cddc6d9ec27062986cd1aa845a7";
+export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-84df8d4b52dc3bdc.js";
+export const JS_INTERPRETER_BUILD_ID: string = "84df8d4b52dc3bdc";
+export const JS_INTERPRETER_SHA256: string = "84df8d4b52dc3bdcf2da318614e96c6a213cd9240ce4bb27ca7030b10b24a2d4";
 
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
-export const JS_INTERPRETER_OPS_ENTRY: string = "/_assets/runtime/js-interpreter-ops-b456989de0336aed.js";
-export const JS_INTERPRETER_OPS_BUILD_ID: string = "b456989de0336aed";
-export const JS_INTERPRETER_OPS_SHA256: string = "b456989de0336aed095ac728c699771f53803a80274fa3cb2cb7042f3e000883";
+export const JS_INTERPRETER_OPS_ENTRY: string = "/_assets/runtime/js-interpreter-ops-ccbd7d3e4dd7b3d1.js";
+export const JS_INTERPRETER_OPS_BUILD_ID: string = "ccbd7d3e4dd7b3d1";
+export const JS_INTERPRETER_OPS_SHA256: string = "ccbd7d3e4dd7b3d1b5e1b5e42d223c6e4fbbf7e6c51d313d5251696411afecc6";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-12b4803c53369862.js";
@@ -50,6 +50,6 @@ export const NODE_DNS_BUILD_ID: string = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256: string = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-ad049e816c69c07b.js";
-export const NODE_REGISTRY_BUILD_ID: string = "ad049e816c69c07b";
-export const NODE_REGISTRY_SHA256: string = "ad049e816c69c07bdff8b382bc3defa072709ab30c843c8b2815df98af0265da";
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-e38747c2c0e6e8d9.js";
+export const NODE_REGISTRY_BUILD_ID: string = "e38747c2c0e6e8d9";
+export const NODE_REGISTRY_SHA256: string = "e38747c2c0e6e8d9fd5fb70a45283b976b62fc6c4c7f7362618015ae6ef33930";

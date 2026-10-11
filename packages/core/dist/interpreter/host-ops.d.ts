@@ -27,7 +27,7 @@ export interface FunctionRuntime<F, E, R> {
     /** Run a plain function, method, getter or setter body. */
     call(fi: F, scope: E, fn: Function, thisArg: unknown, args: IArguments, newTarget: Function | undefined, home: object | undefined): unknown;
     /** Run an arrow function body. */
-    arrow(fi: F, scope: E, args: unknown[]): unknown;
+    arrow(fi: F, scope: E, fn: Function, args: unknown[]): unknown;
     /** Bind a call's environment: the function's frame with its parameters bound. */
     enter(fi: F, scope: E, fn: Function | undefined, thisArg: unknown, args: ArrayLike<unknown>, newTarget: Function | undefined, home: object | undefined): E;
     /**

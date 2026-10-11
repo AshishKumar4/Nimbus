@@ -101,7 +101,8 @@ return {
     return f;
   },
   arrow(fi, scope) {
-    return (...args) => callArrow(fi, scope, args);
+    const f = (0, (...args) => callArrow(fi, scope, f, args));
+    return f;
   },
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
@@ -142,8 +143,8 @@ return {
     return f;
   },
   asyncArrow(fi, scope) {
-    return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);
+    const f = (0, async (...args) => {
+      const env = enter(fi, scope, f, undefined, args, undefined, undefined);
       if (fi.body) return run(fi, env);
       const it = fi.gen(env);
       let r = step(env, it, "next", undefined);
@@ -153,7 +154,8 @@ return {
         r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);
-    };
+    });
+    return f;
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
   // return() request at a yield is a return completion this frame cannot
@@ -255,7 +257,8 @@ return {
     return f;
   },
   arrow(fi, scope) {
-    return (...args) => callArrow(fi, scope, args);
+    const f = (0, (...args) => callArrow(fi, scope, f, args));
+    return f;
   },
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
@@ -296,8 +299,8 @@ return {
     return f;
   },
   asyncArrow(fi, scope) {
-    return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);
+    const f = (0, async (...args) => {
+      const env = enter(fi, scope, f, undefined, args, undefined, undefined);
       if (fi.body) return run(fi, env);
       const it = fi.gen(env);
       let r = step(env, it, "next", undefined);
@@ -307,7 +310,8 @@ return {
         r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);
-    };
+    });
+    return f;
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
   // return() request at a yield is a return completion this frame cannot

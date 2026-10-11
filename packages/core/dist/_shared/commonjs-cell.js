@@ -791,7 +791,7 @@ function __nimbusRecordInterpretedStack(error, frames) {
 }
 function __nimbusProgramSites(error, original) {
   const stamp = __nimbusInterpretedStacks.get(error);
-  if (stamp === undefined) return original.map(__NimbusCallSite.of);
+  if (stamp === undefined || (original.length !== 0 && !original.some(__nimbusInterpreterSite))) return original.map(__NimbusCallSite.of);
   const output = [];
   // Host errors keep their native innermost frames. Their interpreted
   // callers are captured before the interpreter unwinds the fault's node.

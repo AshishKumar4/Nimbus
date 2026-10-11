@@ -1,5 +1,5 @@
 import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, registerSource, resume, resumeReturning, resumeThrowing, stringOf, symbolDescription, withElement, } from './intrinsics.js';
-import { initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
+import { STACK_SLOTS, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The enclosing environment of `env`. */
 export function up(env) {
     const parent = env[0];
@@ -98,10 +98,33 @@ export function frameTemplate(size, tdz) {
         frame[tdz[i]] = TDZ;
     return frame;
 }
+/**
+ * Simple-parameter templates contain only undefined. Populate their small
+ * environments and activation suffix together, instead of copying the
+ * template through a primordial .with and then storing the suffix again.
+ * Array literals create every slot as an own data property (no setters,
+ * iterators, or species); this remains the call's one environment allocation.
+ */
+function callFrame(fi, scope, fn, receiver, constructor) {
+    const info = fi.stack;
+    if (info !== null && fi.params !== null) {
+        switch (fi.frame.length - STACK_SLOTS) {
+            case 1: return [scope, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 2: return [scope, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 3: return [scope, undefined, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 4: return [scope, undefined, undefined, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 5: return [scope, undefined, undefined, undefined, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+        }
+    }
+    const env = withElement(fi.frame, 0, scope);
+    if (info !== null)
+        initializeStack(env, info, fn, receiver, constructor);
+    return env;
+}
 function enter(fi, scope, fn, thisArg, args, newTarget, home) {
     if (fi.lazy !== null)
         fi.lazy();
-    const env = withElement(fi.frame, 0, scope);
+    const env = callFrame(fi, scope, fn, thisArg, newTarget !== undefined);
     if (fi.thisSlot !== 0)
         env[fi.thisSlot] = fi.derived ? TDZ : thisArg;
     if (fi.argumentsSlot !== 0)
@@ -112,8 +135,6 @@ function enter(fi, scope, fn, thisArg, args, newTarget, home) {
         env[fi.homeSlot] = home;
     if (fi.funcSlot !== 0)
         env[fi.funcSlot] = fn;
-    if (fi.stack !== null)
-        initializeStack(env, fi.stack, fn, thisArg, newTarget !== undefined);
     const params = fi.params;
     if (params !== null) {
         // A parameter past the last argument is undefined: reading the index would
@@ -208,8 +229,8 @@ const runtime = {
     call(fi, scope, fn, thisArg, args, newTarget, home) {
         return run(fi, enter(fi, scope, fn, thisArg, args, newTarget, home));
     },
-    arrow(fi, scope, args) {
-        return run(fi, enter(fi, scope, undefined, undefined, args, undefined, undefined));
+    arrow(fi, scope, fn, args) {
+        return run(fi, enter(fi, scope, fn, undefined, args, undefined, undefined));
     },
     enter,
     finish,
