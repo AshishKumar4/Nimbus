@@ -10,7 +10,7 @@
 import { processView, type Description, type DescriptorScope } from '../runtime/descriptors.js';
 import type { RuntimeFileHandle, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import { runtimeStatOf } from './composite.js';
-import { andThen, isPromise, readRangeOrWhole, type Awaitable, type VFS, type VfsStat } from './vfs.js';
+import { andThen, isPromise, readRangeOrWhole, type Awaitable, type VFS, type VfsDirentType, type VfsStat } from './vfs.js';
 import { isVfsError } from './vfs-error.js';
 
 /** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
@@ -58,15 +58,21 @@ export function openOnMount(open: MountedOpen, describes: boolean, settled?: () 
       }
       return andThen(settled?.(), () => {
         if (there !== null && !flags.truncate) return there;
-        const changed = there === null
-          ? files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode })
-          : need(files.truncate, refuse, 'open').call(files, name, 0);
-        return andThen(changed, () => andThen(files.stat(name), (after) => {
-          if (after === null) throw refuse('ENOENT', 'open');
-          return after;
-        }));
+        if (there !== null) {
+          // A description needs only the file's inode, which truncating keeps; a wave answers the stat after.
+          const truncated = need(files.truncate, refuse, 'open').call(files, name, 0);
+          return describes ? andThen(truncated, () => there) : andThen(truncated, () => statAfter(open));
+        }
+        return andThen(files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), () => statAfter(open));
       });
     });
+  });
+}
+
+function statAfter({ files, name, refuse }: MountedOpen): Awaitable<VfsStat> {
+  return andThen(files.stat(name), (after) => {
+    if (after === null) throw refuse('ENOENT', 'open');
+    return after;
   });
 }
 
@@ -85,8 +91,10 @@ export interface MountedDescriptionOptions extends MountedOpen {
 
 /** open(2) of a mounted file, and the description its descriptors share. */
 export function openMounted(options: MountedDescriptionOptions): Awaitable<Description> {
-  return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => mountedDescription({ ...options, name: file }, stat)));
+  return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription({ ...options, name: file }, stat)));
 }
+
+type Held = { offset: number | null; bytes: Uint8Array };
 
 /**
  * The description of `name` on a mount. A write goes in place (writeRange);
@@ -97,101 +105,128 @@ export function openMounted(options: MountedDescriptionOptions): Awaitable<Descr
  * with them applied. Writes made by awaiting, or under O_SYNC, are flushed
  * as each is made, so a write's answer is what the mount did.
  */
-function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): Description {
-  const { files, name, refuse, scope } = options;
-  const immediate = options.sync || options.awaits;
-  let inPlace = true;
-  let pending: { offset: number | null; bytes: Uint8Array }[] = [];
-  let held = 0;
-  const whole = (): Awaitable<Uint8Array> => andThen(files.stat(name), (there) => (there === null ? new Uint8Array(0) : files.readFile(name)));
-  // `file` with `writes` applied in order (an append at the end as it then
-  // is): what a flush writes, and what this process reads.
-  const apply = (writes: readonly { offset: number | null; bytes: Uint8Array }[], base: Uint8Array): Uint8Array => {
-    // A copy: a backend may hand out its own buffer, which must not change before the flush.
-    let file = base.slice();
-    for (const write of writes) {
-      const at = write.offset ?? file.byteLength;
-      if (at + write.bytes.byteLength > file.byteLength) {
-        const grown = new Uint8Array(at + write.bytes.byteLength);
-        grown.set(file);
-        file = grown;
-      }
-      file.set(write.bytes, at);
-    }
-    return file;
-  };
-  // A flush that fails loses what it held (lastClose says so): taken before it reads.
-  const flush = (): Awaitable<void> => {
-    if (pending.length === 0) return;
-    const writes = pending;
-    pending = [];
-    held = 0;
-    return andThen(whole(), (file) => files.writeFile(name, apply(writes, file)));
-  };
-  const hold = (offset: number | null, bytes: Uint8Array): Awaitable<number> => {
-    if (held + bytes.byteLength > options.bufferedWriteBytes) throw refuse('EFBIG', 'write');
-    pending.push({ offset, bytes: bytes.slice() });
-    held += bytes.byteLength;
-    return immediate ? andThen(flush(), () => bytes.byteLength) : bytes.byteLength;
-  };
-  // This process's view of the file while it holds writes to it, by any of its descriptions (processView).
-  const viewed = (): Uint8Array | undefined => (immediate ? undefined : processView(scope, () => {
-    const file = whole();
-    return isPromise(file) ? null : file;
-  }, name));
-  // In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written.
-  const inPlaceOr = (offset: number, bytes: Uint8Array, otherwise: () => Awaitable<number>): Awaitable<number> => {
-    if (!inPlace || files.writeRange === undefined) {
-      inPlace = false;
+class MountedDescription implements Description {
+  readonly ino: number;
+  readonly mounted = true as const;
+  declare readonly awaits?: true;
+  private readonly files: VFS;
+  private readonly name: string;
+  private readonly immediate: boolean;
+  private inPlace = true;
+  private pending: Held[] = [];
+  private held = 0;
+
+  constructor(private readonly options: MountedDescriptionOptions, stat: VfsStat) {
+    this.ino = stat.ino ?? 0;
+    if (options.awaits) this.awaits = true;
+    this.files = options.files;
+    this.name = options.name;
+    this.immediate = options.sync || options.awaits;
+  }
+
+  path(): string { return this.name; }
+
+  stat(): Awaitable<RuntimeVfsStat> {
+    return andThen(this.files.stat(this.name), (there) => {
+      if (there === null) throw this.options.refuse('ENOENT', 'fstat');
+      const now = runtimeStatOf(there);
+      const view = this.viewed();
+      return view ? { ...now, size: view.byteLength } : now;
+    });
+  }
+
+  read(offset: number, length: number): Awaitable<Uint8Array> {
+    const view = this.viewed();
+    return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.name, offset, length);
+  }
+
+  write(offset: number, bytes: Uint8Array): Awaitable<number> {
+    return andThen(this.inPlaceOr(offset, bytes, () => this.hold(offset, bytes)), () => bytes.byteLength);
+  }
+
+  /** At the end as it is then; a held one goes at the end as it stands at the flush. */
+  append(bytes: Uint8Array): Awaitable<number> {
+    const held = (): Awaitable<number> => andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));
+    return this.inPlace ? andThen(this.files.stat(this.name), (there) => this.inPlaceOr(there?.size ?? 0, bytes, held)) : held();
+  }
+
+  truncate(size: number): Awaitable<void> { return need(this.files.truncate, this.options.refuse, 'ftruncate').call(this.files, this.name, size); }
+  readdir(): Awaitable<{ name: string; type: VfsDirentType }[]> {
+    return andThen(this.files.readdir(this.name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
+  }
+  chmod(mode: number): Awaitable<void> { return need(this.files.chmod, this.options.refuse, 'fchmod').call(this.files, this.name, mode); }
+  chown(uid: number, gid: number): Awaitable<void> { return need(this.files.chown, this.options.refuse, 'fchown').call(this.files, this.name, uid, gid); }
+  utimes(atime: number, mtime: number): Awaitable<void> { return need(this.files.utimes, this.options.refuse, 'futimes').call(this.files, this.name, atime, mtime); }
+
+  /** A flush that fails loses what it held (lastClose says so): taken before it reads. */
+  flush(): Awaitable<void> {
+    if (this.pending.length === 0) return;
+    const writes = this.pending;
+    this.pending = [];
+    this.held = 0;
+    return andThen(this.whole(), (file) => this.files.writeFile(this.name, apply(writes, file)));
+  }
+
+  close(): Awaitable<void> { return this.flush(); }
+  pendingBytes(): number { return this.held; }
+  applyPending(file: Uint8Array): Uint8Array { return apply(this.pending, file); }
+
+  private whole(): Awaitable<Uint8Array> {
+    return andThen(this.files.stat(this.name), (there) => (there === null ? new Uint8Array(0) : this.files.readFile(this.name)));
+  }
+
+  private hold(offset: number | null, bytes: Uint8Array): Awaitable<number> {
+    if (this.held + bytes.byteLength > this.options.bufferedWriteBytes) throw this.options.refuse('EFBIG', 'write');
+    this.pending.push({ offset, bytes: bytes.slice() });
+    this.held += bytes.byteLength;
+    return this.immediate ? andThen(this.flush(), () => bytes.byteLength) : bytes.byteLength;
+  }
+
+  /** This process's view of the file while it holds writes to it, by any of its descriptions (processView). */
+  private viewed(): Uint8Array | undefined {
+    if (this.immediate) return undefined;
+    return processView(this.options.scope, () => {
+      const file = this.whole();
+      return isPromise(file) ? null : file;
+    }, this.name);
+  }
+
+  /** In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written. */
+  private inPlaceOr(offset: number, bytes: Uint8Array, otherwise: () => Awaitable<number>): Awaitable<number> {
+    const writeRange = this.files.writeRange;
+    if (!this.inPlace || writeRange === undefined) {
+      this.inPlace = false;
       return otherwise();
     }
     const cannot = (error: unknown): Awaitable<number> => {
       if (!isVfsError(error, 'ENOTSUP')) throw error;
-      inPlace = false;
+      this.inPlace = false;
       return otherwise();
     };
     let written: Awaitable<void>;
     try {
-      written = files.writeRange(name, offset, bytes);
+      written = writeRange.call(this.files, this.name, offset, bytes);
     } catch (error) {
       return cannot(error);
     }
     return isPromise(written) ? written.then(() => offset + bytes.byteLength, cannot) : offset + bytes.byteLength;
-  };
-  const statNow = (): Awaitable<RuntimeVfsStat> => andThen(files.stat(name), (there) => {
-    if (there === null) throw refuse('ENOENT', 'fstat');
-    const now = runtimeStatOf(there);
-    const view = viewed();
-    return view ? { ...now, size: view.byteLength } : now;
-  });
-  const op = <A extends unknown[]>(fn: ((path: string, ...args: A) => Awaitable<void>) | undefined, syscall: string) =>
-    (...args: A): Awaitable<void> => need(fn, refuse, syscall).call(files, name, ...args);
-  return {
-    ino: stat.ino ?? 0,
-    mounted: true,
-    ...(options.awaits ? { awaits: true as const } : {}),
-    path: () => name,
-    stat: statNow,
-    read: (offset, length) => {
-      const view = viewed();
-      return view ? view.slice(offset, offset + length) : readRangeOrWhole(files, name, offset, length);
-    },
-    write: (offset, bytes) => andThen(inPlaceOr(offset, bytes, () => hold(offset, bytes)), () => bytes.byteLength),
-    // At the end as it is then; a held one goes at the end as it stands at the flush.
-    append: (bytes) => {
-      const held = (): Awaitable<number> => andThen(hold(null, bytes), () => andThen(statNow(), (now) => now.size));
-      return inPlace ? andThen(files.stat(name), (there) => inPlaceOr(there?.size ?? 0, bytes, held)) : held();
-    },
-    truncate: op(files.truncate, 'ftruncate'),
-    readdir: () => andThen(files.readdir(name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type }))),
-    chmod: op(files.chmod, 'fchmod'),
-    chown: op(files.chown, 'fchown'),
-    utimes: op(files.utimes, 'futimes'),
-    flush,
-    close: flush,
-    pendingBytes: () => held,
-    applyPending: (base) => apply(pending, base),
-  };
+  }
+}
+
+/** `file` with `writes` applied in order (an append at the end as it then is): what a flush writes, and what a process reads. */
+function apply(writes: readonly Held[], base: Uint8Array): Uint8Array {
+  // A copy: a backend may hand out its own buffer, which must not change before the flush.
+  let file = base.slice();
+  for (const write of writes) {
+    const at = write.offset ?? file.byteLength;
+    if (at + write.bytes.byteLength > file.byteLength) {
+      const grown = new Uint8Array(at + write.bytes.byteLength);
+      grown.set(file);
+      file = grown;
+    }
+    file.set(write.bytes, at);
+  }
+  return file;
 }
 
 /** A mount's optional operation, or ENOTSUP when it has none. */
