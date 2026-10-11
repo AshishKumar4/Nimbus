@@ -21,21 +21,27 @@ import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
-// A live input channel (a child_process child's): its supervisor long-polls
-// it, handing what the test feeds, until the test ends it.
-const inbox = [];
+// Live input channels (a child_process child's), one a process: their
+// supervisor long-polls each, handing what the test feeds it, until the test
+// ends them.
+const inboxes = new Map();
 let ended = false;
 const supervisor = {
-  async cpReadStdin(_pid, waitMs) {
+  async cpReadStdin(pid, waitMs) {
     await tick(Math.min(waitMs, 5));
+    const inbox = inboxes.get(pid) ?? [];
     return inbox.length > 0 ? { data: inbox.shift(), ended: false } : { data: new Uint8Array(0), ended };
   },
 };
-const feed = (text) => inbox.push(new TextEncoder().encode(text));
-const makeShim = () => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  'const __pendingIO = [];' + generateShimsCode() + '\nreturn { tty: builtins.tty, stdin: __processMod.stdin };')(
-  {}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], { NIMBUS_CP_CHILD_PID: '41' }, '/home/user/main.js', '/home/user');
-const shim = makeShim();
+const makeShim = (pid) => {
+  inboxes.set(pid, []);
+  const shim = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    'const __pendingIO = [];' + generateShimsCode() + '\nreturn { tty: builtins.tty, stdin: __processMod.stdin };')(
+    {}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], { NIMBUS_CP_CHILD_PID: String(pid) }, '/home/user/main.js', '/home/user');
+  return { ...shim, feed: (text) => inboxes.get(pid).push(new TextEncoder().encode(text)) };
+};
+const shim = makeShim(41);
+const feed = shim.feed;
 const held = () => globalThis.__nimbusInputHandles || 0;
 
 {
@@ -104,20 +110,36 @@ const held = () => globalThis.__nimbusInputHandles || 0;
   assert.equal(shim.stdin.isPaused(), true, "the program's pause pauses process.stdin while a tty reader reads");
   feed('c');
   await tick(40);
-  assert.deepEqual(own, [], 'paused, process.stdin is given nothing');
-  assert.deepEqual(got, ['c'], 'the reader still reading is');
+  assert.deepEqual(own, [], 'paused, process.stdin emits nothing');
   assert.equal(held(), 1, "the reader's hold stays");
+  shim.stdin.resume();
+  await tick(20);
+  assert.deepEqual([...own, ...got], ['c'], 'the chunk went to one of them, as a read of one fd does');
   input.destroy();
   shim.stdin.removeListener('data', ownListener);
+  shim.stdin.pause();
   await tick(20);
   assert.equal(held(), 0);
+}
+
+{
+  // Pull mode: paused, the program reads by polling read(), which is a read
+  // outstanding like any other.
+  feed('d');
+  let chunk = null;
+  for (let i = 0; i < 100 && chunk === null; i++) {
+    chunk = shim.stdin.read();
+    if (chunk === null) await tick(5);
+  }
+  assert.equal(String(chunk), 'd', "a paused stdin's read() is served");
+  assert.equal(held(), 0, 'and holds nothing while paused');
 }
 
 {
   // A program reading its stdin, and a tty reader that reads into its buffer
   // and is never read, which takes the first of what comes (it asked first),
   // past its high-water mark: backpressured.
-  const fresh = makeShim();
+  const fresh = makeShim(42);
   const input = new fresh.tty.ReadStream(0);
   input.on('readable', () => {});
   await tick(20);
@@ -125,12 +147,12 @@ const held = () => globalThis.__nimbusInputHandles || 0;
   const ownListener = (chunk) => own.push(String(chunk));
   fresh.stdin.on('data', ownListener);
   await tick(20);
-  feed('x'.repeat(64 * 1024));
+  fresh.feed('x'.repeat(64 * 1024));
   await tick(40);
   assert.equal(input.readableLength, 64 * 1024, 'the reader took it');
   input.destroy();
   await tick(20);
-  feed('b');
+  fresh.feed('b');
   await tick(40);
   assert.deepEqual(own, ['b'], 'a reader destroyed while backpressured leaves the program reading');
   assert.equal(fresh.stdin.readableFlowing, true);
