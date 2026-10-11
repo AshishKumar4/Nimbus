@@ -17,6 +17,7 @@
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
+import { buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 import { RESIDENCY_MISS_REPORT_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
@@ -7230,12 +7231,15 @@ export class FacetManager {
      * Returns the ATTACH pid — the user-facing foreground process.
      */
     async execStagedArtifactDual(artifact, opts) {
-        const port = this._allocateLoopbackPort();
+        const planned = opts.plan ?? buildOpenCodeTransportPlan(opts.argv, opts.cwd, opts.env);
+        if ('error' in planned)
+            throw new Error(planned.error);
+        const port = planned.port || this._allocateLoopbackPort();
         // (a) resident serve facet on the allocated loopback port.
         const serveStaged = await this._stageOpencodeFacet(artifact, {
-            argv: ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--print-logs'],
+            argv: [...planned.serveArgv, '--port', String(port)],
             env: opts.env,
-            cwd: opts.cwd,
+            cwd: planned.cwd,
             command: `opencode serve --port ${port}`,
             invokerPid: opts.invokerPid,
         }, 'server');
@@ -7257,9 +7261,9 @@ export class FacetManager {
         let attach;
         try {
             attach = await this.execStagedArtifact(artifact, {
-                argv: ['attach', `http://127.0.0.1:${port}`],
+                argv: ['attach', `http://127.0.0.1:${port}`, '--dir', planned.cwd, ...planned.attachArgv],
                 env: opts.env,
-                cwd: opts.cwd,
+                cwd: planned.cwd,
                 stdin: '',
                 command: opts.command || 'opencode',
                 attachedTty: true,
