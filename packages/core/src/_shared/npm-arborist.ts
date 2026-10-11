@@ -19,9 +19,11 @@
  * a peer conflict the project owns is npm's ERESOLVE unless forced, and
  * another's a warning.
  *
- * Then calc-dep-flags marks what the project reaches: what it does not is
- * extraneous, and goes; what only optional edges reach is optional, and
- * what only devDependencies reach is dev. A package that failed to load,
+ * Then calc-dep-flags marks what the project reaches. What it does not is
+ * extraneous, and goes where a tree was installed before (#fixDepFlags'
+ * prune: npm with its lockfile, for which a changed tree is always
+ * suspect); a tree built from nothing keeps what its build left unreached,
+ * as npm installs it. What only optional edges reach is optional. A package that failed to load,
  * or that the host refuses (EBADPLATFORM), fails the install where it is
  * required and is left out with its optional set where it is optional.
  *
@@ -94,6 +96,8 @@ export type TreeNode<P extends TreePackage, I extends TreePackage> =
 export interface TreePlan<P extends TreePackage, I extends TreePackage> {
   /** The tree, by placement: placed and kept packages alike, the skipped among them. */
   readonly nodes: ReadonlyMap<string, TreeNode<P, I>>;
+  /** Whether the build asked the host to resolve anything. */
+  readonly resolvedAny: boolean;
   readonly failures: readonly TreeFailure[];
   /** Placements (and failure ids) a path of required edges reaches from the project. */
   readonly required: ReadonlySet<string>;
@@ -559,7 +563,7 @@ class Builder<P extends TreePackage> {
   private queueSorted = true;
   private readonly seen = new Set<Node>();
   private readonly virtualRoots = new Map<Node, Node>();
-  private readonly resolutions = new Map<string, TreeResolution<P>>();
+  readonly resolutions = new Map<string, TreeResolution<P>>();
 
   constructor(readonly tree: Tree, private readonly host: TreeHost<P>, private readonly options: PlanOptions) {}
 
@@ -970,8 +974,8 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   withFolders(reached);
   withFolders(required);
 
-  // ── What the project does not reach is extraneous, and goes; a frozen tree is installed as it is ──
-  if (!options.frozen) for (const each of [...tree.nodes()]) if (each.tree === tree && !reached.has(each)) tree.detach(each);
+  // ── What the project does not reach is extraneous, and goes from a tree installed before; a frozen tree is installed as it is ──
+  if (!options.frozen && installed.length > 0) for (const each of [...tree.nodes()]) if (each.tree === tree && !reached.has(each)) tree.detach(each);
   const extraneous = new Set<string>();
   for (const [at, each] of installedAt) if (at !== '' && each.tree !== tree) extraneous.add(at);
 
@@ -1016,6 +1020,7 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   const byPlacement = new Map([...tree.nodes()].map((each) => [each.location, each]));
   return {
     nodes,
+    resolvedAny: builder.resolutions.size > 0,
     failures: [...failures.values()],
     required: requiredAt,
     skipped,

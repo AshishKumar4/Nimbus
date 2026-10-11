@@ -390,7 +390,7 @@ export class NpmInstaller {
       });
       tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
       // The lockfile answered every edge: nothing resolved, nothing failed.
-      usedLockfile = lockfile !== null && tree.plan.failures.length === 0 && [...tree.plan.nodes.values()].every((node) => !node.planned);
+      usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
       log(usedLockfile ? `Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.` : `Resolved ${tree.plan.nodes.size} packages.`);
     }
     phases['resolve'] = Date.now() - phaseStart;

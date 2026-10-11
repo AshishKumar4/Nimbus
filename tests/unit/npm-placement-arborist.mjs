@@ -240,7 +240,8 @@ function resolveTask(name, spec) {
   const file = `${request.registryName}-${version}.tgz`;
   const pkg = {
     name: request.installName, version, tarballUrl: `${base}/${file}`, integrity: isBroken(file) ? NO_BYTES : integrity.get(file),
-    dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, optionalDependencies: fields.optionalDependencies,
+    dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, peerDependenciesMeta: fields.peerDependenciesMeta,
+    optionalDependencies: fields.optionalDependencies,
     exports: null, main: 'index.js', module: '', bin: {},
   };
   return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
