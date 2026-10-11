@@ -66,6 +66,8 @@ const FILES = {
   'beforecode.cjs': 'process.on("beforeExit", () => { process.exitCode = 5; });\n',
   'beforework.cjs': 'let once = false; process.on("beforeExit", () => { if (!once) { once = true; setTimeout(() => { console.error("later"); process.exitCode = 6; }, 0); } });\n',
   'beforeprint.cjs': 'process.on("beforeExit", () => console.error("before"));\n',
+  'beforewrite.cjs': 'process.on("beforeExit", () => { const fs = require("fs"); fs.writeFileSync("before.txt", "before-write"); console.error(fs.readFileSync("before.txt", "utf8")); });\n',
+  'beforethrow.cjs': 'process.on("beforeExit", () => { throw new Error("before-exit failure"); });\n',
   'input.js': 'throw new Error("in")\n',
 };
 const COMMANDS = [
@@ -74,7 +76,7 @@ const COMMANDS = [
   'node minified.cjs', 'node noname.cjs', 'node tab.cjs', 'node uni.cjs', 'node multi.cjs', 'node fnthrow.cjs',
   'node this.cjs', 'node bad.cjs', 'node req.cjs', 'node code3.cjs', 'node code4.cjs',
   'node code257.cjs', 'node codeneg.cjs', 'node clearcode.cjs', 'node nullcode.cjs', 'node beforecode.cjs', 'node beforework.cjs',
-  'node beforeprint.cjs',
+  'node beforeprint.cjs', 'node beforewrite.cjs', 'node beforethrow.cjs',
   `node -e 'throw new Error("ev")'`, 'node - < input.js',
 ];
 
