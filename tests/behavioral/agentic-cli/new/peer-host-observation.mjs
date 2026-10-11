@@ -1,4 +1,4 @@
-import { BASE, mintSession, deleteSession, Terminal, makeAsserter, requestHeaders, sleep, hasOutputLine, termBody } from '../../_driver.mjs';
+import { BASE, mintSession, deleteSession, Terminal, makeAsserter, requestHeaders, sleep, hasOutputLine, termBody, fetchPort } from '../../_driver.mjs';
 
 const a = makeAsserter('peer-host-observation');
 const sessions = [], terminals = [];
@@ -51,16 +51,18 @@ try {
     a.check('idle has no continuous loss watcher', beforeUse.state === 'running', JSON.stringify(beforeUse));
     const resumed = new Terminal(second); terminals.push(resumed);
     await resumed.connect(); await resumed.waitForPrompt(30000);
-    const attempted = await resumed.run('echo SHOULD_NOT_RUN_AFTER_IDLE_LOSS', 30000);
-    a.check('next terminal work is refused before admission', !hasOutputLine(termBody(attempted.output), 'SHOULD_NOT_RUN_AFTER_IDLE_LOSS'), attempted.output.slice(-700));
+    const attempted = await resumed.run('echo UNRELATED_WORK_AFTER_IDLE_LOSS', 30000);
+    a.check('unrelated terminal work survives another process host loss', hasOutputLine(termBody(attempted.output), 'UNRELATED_WORK_AFTER_IDLE_LOSS'), attempted.output.slice(-700));
+    const gone = await fetchPort(second, 3217, '/');
+    a.check('the lost process port refuses work instead of admitting a new incarnation', gone.status === 502, JSON.stringify(gone));
     let afterUse;
     for (let i = 0; i < 40; i++) {
       afterUse = await probe(second, 'state', idle.pid);
       if (afterUse.state !== 'running' && /host.*reset|peer.*restarted/i.test(resumed.buf)) break;
       await sleep(50);
     }
-    a.check('the refused work reports host loss', /host.*reset|peer.*restarted/i.test(resumed.buf), resumed.buf.slice(-700));
-    a.check('the lost process is terminal before the next work', afterUse.exitCode === 137, JSON.stringify(afterUse));
+    a.check('the lost process reports its host loss', /host.*reset|peer.*restarted/i.test(resumed.buf), resumed.buf.slice(-700));
+    a.check('only the lost process becomes terminal', afterUse.exitCode === 137, JSON.stringify(afterUse));
 
     const third = await mintSession(); sessions.push(third);
     const quiet = await server(third);

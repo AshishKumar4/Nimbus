@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a resident's host loss is reported on that process and cannot refuse
+  unrelated commands or healthy siblings. Resident preparation and streamed
+  HTTP responses retain their work ownership through startup or body completion.
 - Breaking: the retired peer control operations `awaitHostedOpen` and `hostLost`
   are removed. Staged boot assemblers return the shared `WorkerCode` contract.
 - Fixed: peer process hosts use activity-owned, abortable loss observation and

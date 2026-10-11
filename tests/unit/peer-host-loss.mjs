@@ -144,7 +144,7 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
 
 // ── 5. idle hosts schedule nothing; the next use validates incarnation ────
 {
-  const { peers, ctx, world, fm, processes, exits } = setup();
+  const { peers, ctx, world, fm, processes, exits, host } = setup();
   const { pid } = await fm.spawnNode(SERVER, { command: 'node quiet.js', argv: ['/home/user/app/quiet.js'], cwd: '/home/user/app', port: 20902 });
   await waitFor(() => processes.get(pid)?.state === 'running', 5_000, 'the quiet server running');
   const peer = peerOf(peers, pid);
@@ -155,9 +155,11 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   peer.peerHost = nextIncarnation(peer);
   let admitted = false;
   const lease = hostActivity(ctx).acquire();
-  try { await assert.rejects(lease.ready.then(() => { admitted = true; }), /restarted|reset/); }
+  try { await lease.ready; admitted = true; }
   finally { lease.release(); }
-  assert.equal(admitted, false, 'idle loss is reported before work can run');
+  assert.equal(admitted, true, 'an unrelated command does not depend on the lost host');
+  const result = await route(host, 20902);
+  assert.equal(result.status, 502, 'the lost process itself refuses a request');
   await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end when its host reports its reset');
   assert.equal(processes.get(pid).exitCode, 137);
   assert.match(exits.find((e) => e.pid === pid)?.reason ?? '', /its host was reset by the platform/);

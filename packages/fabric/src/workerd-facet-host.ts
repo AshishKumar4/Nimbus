@@ -14,7 +14,7 @@
  */
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_WATCH_HEADER, observeResidentConfig } from './host-activity.js';
+import { hostActivity, hostResponse, HOST_WATCH_HEADER, observeResidentConfig, type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
@@ -367,7 +367,7 @@ export function abortFacet(ctx: DurableObjectState, name: string, reason: Error)
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & { name: string; slot?: number };
+export type ResidentFacet = Omit<HostedProcess, 'describe'> & { name: string; slot?: number; acquireActivity(signal?: AbortSignal): HostActivityLease };
 
 /**
  * The process surface of one hosting actor: how a resident process comes
@@ -571,16 +571,18 @@ function spawnResident(
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
   started.catch(() => {});
-  stopObserving = hostActivity(ctx).observe(
+  const observation = hostActivity(ctx).observe(
     (signal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } })),
     (error) => { if (!released) markLost(error); },
   );
+  stopObserving = observation.close;
   return {
     started,
     lost,
+    acquireActivity: observation.acquire,
     // A request can arrive before the boot call; it creates the facet as that call would.
-    handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
-    handleWebSocketRequest: (request: Request) => facet.fetch(request),
+    handleHttpRequest: (request: Request) => hostResponse(ctx, observation, request, () => facet.handleHttpRequest(request)),
+    handleWebSocketRequest: (request: Request) => hostResponse(ctx, observation, request, () => facet.fetch(request)),
     release,
     name,
     slot,

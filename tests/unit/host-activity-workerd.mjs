@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const main = `import {DurableObject} from 'cloudflare:workers';
-import {HostActivity,observeResidentConfig,HOST_WATCH_HEADER} from './activity.js';
+import {HostActivity,hostResponse,observeResidentConfig,HOST_WATCH_HEADER} from './activity.js';
 export class Peer extends DurableObject {
   watches=new Set();
   codes=[];
@@ -42,8 +42,8 @@ export class Host extends DurableObject {
   losses=[];
   async startWatch(name){
     this.activity=new HostActivity();
-    this.activity.observe(signal=>this.env.PEER.get(this.env.PEER.idFromName(name)).fetch(new Request('https://peer.invalid/',{signal,headers:{Upgrade:'websocket'}})),error=>this.losses.push(error.message));
-    this.lease=this.activity.acquire();await this.lease.ready;
+    const target=this.activity.observe(signal=>this.env.PEER.get(this.env.PEER.idFromName(name)).fetch(new Request('https://peer.invalid/',{signal,headers:{Upgrade:'websocket'}})),error=>this.losses.push(error.message));
+    this.lease=target.acquire();await this.lease.ready;
   }
   watchStatus(){return this.losses;}
   releaseWatch(){this.lease.release();}
@@ -56,27 +56,27 @@ export class Host extends DurableObject {
       const facet=this.ctx.facets.get(name,async()=>({class:leaf}));
       await facet.startProcess();
       let opens=0;
-      activity.observe(signal=>{opens++;return facet.fetch(new Request('https://watch.invalid/',{signal,headers:{[HOST_WATCH_HEADER]:key}}));},error=>lost.push(error.message));
-      return {activity,lost,facet,opens:()=>opens};
+      const target=activity.observe(signal=>{opens++;return facet.fetch(new Request('https://watch.invalid/',{signal,headers:{[HOST_WATCH_HEADER]:key}}));},error=>lost.push(error.message));
+      return {activity,target,lost,facet,opens:()=>opens};
     };
     const active=await make('active');
-    const a=active.activity.acquire(),b=active.activity.acquire();
+    const a=active.target.acquire(),b=active.target.acquire();
     await Promise.all([a.ready,b.ready]);
     const shared=active.opens();a.release();b.release();
     await new Promise(r=>setTimeout(r,20));
     const afterCancel=await(await active.facet.fetch(new Request('https://user.invalid/'))).text();
     const wrong=await active.facet.fetch(new Request('https://watch.invalid/',{headers:{[HOST_WATCH_HEADER]:'wrong-capability'}}));
     const rejectedCapability={body:await wrong.text(),incarnation:wrong.headers.get('x-nimbus-host-incarnation')};
-    const c=active.activity.acquire();await c.ready;
+    const c=active.target.acquire();await c.ready;
     this.ctx.facets.abort('active',new Error('platform reset active actor'));
     for(let i=0;i<100&&!active.lost.length;i++)await new Promise(r=>setTimeout(r,10));
     c.release();
     const idle=await make('idle');
-    const first=idle.activity.acquire();await first.ready;first.release();
+    const first=idle.target.acquire();await first.ready;first.release();
     await new Promise(r=>setTimeout(r,20));
     this.ctx.facets.abort('idle',new Error('platform reset idle actor'));
     let admitted=false,error='';
-    const validation=idle.activity.acquire();
+    const validation=idle.target.acquire();
     try{await validation.ready;admitted=true;}catch(e){error=e.message;}finally{validation.release();}
     const experiments=[];
     for(const options of [
@@ -96,7 +96,7 @@ export class Host extends DurableObject {
         const response=await stub.fetch(new Request('https://peer.invalid/'+(options.badReply?'?badReply':''),{signal,headers:{Upgrade:'websocket'}}));
         socket=response.webSocket;return response;
       };
-      if(options.activity){activity.observe(open,error=>losses.push(error.message));lease=activity.acquire();await lease.ready;}
+      if(options.activity){const target=activity.observe(open,error=>losses.push(error.message));lease=target.acquire();await lease.ready;}
       else{await open();socket.accept();}
       if(options.echo){
         const echo=new Promise((resolve,reject)=>{socket.addEventListener('message',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
@@ -133,7 +133,23 @@ export class Host extends DurableObject {
       }
       resetCases.push({cause,resetError,remote,losses});
     }
-    return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases};
+    const streamCases=[];
+    for(const ending of ['eof','cancel','error']){
+      const activity=new HostActivity();let watches=0,output;
+      const target=activity.observe(async()=>new Response(new ReadableStream({start(){watches++;},cancel(){watches--;}}),{headers:{'x-nimbus-host-incarnation':'stream'}}),()=>{});
+      const response=await hostResponse(this.ctx,target,new Request('https://stream.invalid/'),async()=>new Response(new ReadableStream({start(controller){output=controller;}}),{headers:{'Content-Length':'3'}}));
+      const atHeaders=watches,reader=response.body.getReader();
+      if(ending==='cancel')await reader.cancel();
+      else{
+        output.enqueue(new Uint8Array([1,2,3]));await reader.read();
+        if(ending==='eof'){output.close();await reader.read();}
+        else{output.error(new Error('source failed'));await reader.read().catch(()=>{});}
+      }
+      reader.releaseLock();
+      for(let i=0;i<100&&watches;i++)await new Promise(resolve=>setTimeout(resolve,1));
+      streamCases.push({ending,atHeaders,after:watches,length:response.headers.get('Content-Length')});target.close();
+    }
+    return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,streamCases};
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
@@ -179,6 +195,11 @@ try{
   for(const test of result.resetCases){
     assert.equal(test.remote.watches,0,JSON.stringify(test)+'\n'+logs);
     assert.equal(test.losses.length,test.cause==='peer-reset'||test.cause==='peer-close'?1:0,JSON.stringify(test));
+  }
+  for(const test of result.streamCases){
+    assert.equal(test.atHeaders,1,JSON.stringify(test));
+    assert.equal(test.after,0,JSON.stringify(test));
+    assert.equal(test.length,'3','native ownership preserves declared length');
   }
   console.log('host-activity-workerd: native abort, shared watch, active reset and idle incarnation change');
 }finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}

@@ -8,21 +8,21 @@ function setup() {
   const activity = new HostActivity();
   const calls = [], failures = [];
   let incarnation = 'one';
-  const remove = activity.observe(async (signal) => {
+  const target = activity.observe(async (signal) => {
     const call = { signal, cancelled: false, controller: null };
     calls.push(call);
     return new Response(new ReadableStream({ start(controller) { call.controller = controller; }, cancel() { call.cancelled = true; } }), {
       headers: { [HOST_INCARNATION_HEADER]: incarnation },
     });
   }, (error) => failures.push(error));
-  return { activity, calls, failures, remove, change() { incarnation = 'two'; } };
+  return { activity, target, calls, failures, remove: target.close, change() { incarnation = 'two'; } };
 }
 
 {
   const t = setup();
   await turns();
   assert.equal(t.calls.length, 0, 'idle registration starts no I/O');
-  const first = t.activity.acquire(), second = t.activity.acquire();
+  const first = t.target.acquire(), second = t.target.acquire();
   await Promise.all([first.ready, second.ready]);
   assert.equal(t.calls.length, 1, 'overlapping work shares its observation');
   first.release(); await turns(); assert.equal(t.calls[0].signal.aborted, false);
@@ -32,7 +32,7 @@ function setup() {
   assert.deepEqual(t.failures, [], 'idle cancellation is not host loss');
   t.change();
   let admitted = false;
-  const lease = t.activity.acquire();
+  const lease = t.target.acquire();
   try { await assert.rejects(lease.ready.then(() => { admitted = true; }), /restarted without its process/); }
   finally { lease.release(); }
   assert.equal(admitted, false, 'wake validates the old incarnation before new work');
@@ -40,7 +40,7 @@ function setup() {
   t.remove();
 }
 {
-  const t = setup(), lease = t.activity.acquire();
+  const t = setup(), lease = t.target.acquire();
   await lease.ready;
   const error = new Error('host reset during active work');
   t.calls[0].controller.error(error);
@@ -50,7 +50,7 @@ function setup() {
 }
 {
   const t = setup(), processes = new SessionProcessSupervisor();
-  processes.setWorkObservation(() => t.activity.acquire());
+  processes.setWorkObservation(() => t.target.acquire());
   const abort = new AbortController();
   const work = processes.holdWork(100, () => {}, abort.signal);
   await work.ready;
@@ -59,10 +59,10 @@ function setup() {
   work(); t.remove();
 }
 {
-  const t = setup(), a = t.activity.acquire(); await a.ready;
+  const t = setup(), a = t.target.acquire(); await a.ready;
   t.activity.close(); await turns();
   assert.equal(t.calls[0].signal.aborted, true);
-  const b = t.activity.acquire(); await b.ready;
+  const b = t.target.acquire(); await b.ready;
   a.release(); assert.equal(t.calls[1].signal.aborted, false, 'old leases cannot release a new session generation');
   b.release(); t.remove();
 }
@@ -71,8 +71,8 @@ console.log('host-activity: idle, shared active watches, abort, wake validation 
 {
   const activity = new HostActivity(), pending = Promise.withResolvers(), processes = new SessionProcessSupervisor();
   let transport;
-  activity.observe((signal) => { transport = signal; return pending.promise; }, () => assert.fail('owner cancellation is not host loss'));
-  processes.setWorkObservation(() => activity.acquire());
+  const target = activity.observe((signal) => { transport = signal; return pending.promise; }, () => assert.fail('owner cancellation is not host loss'));
+  processes.setWorkObservation(() => target.acquire());
   const abort = new AbortController();
   const one = processes.holdWork(100, () => {}, abort.signal);
   const two = processes.holdWork(101, () => {});
@@ -100,9 +100,9 @@ console.log('host-activity: idle, shared active watches, abort, wake validation 
 }
 {
   const activity = new HostActivity(), response = Promise.withResolvers();
-  activity.observe(() => response.promise, () => assert.fail('closure is not host loss'));
+  const target = activity.observe(() => response.promise, () => assert.fail('closure is not host loss'));
   let admitted = false;
-  const lease = activity.acquire();
+  const lease = target.acquire();
   const work = lease.ready.then(() => { admitted = true; });
   await turns();
   activity.close();

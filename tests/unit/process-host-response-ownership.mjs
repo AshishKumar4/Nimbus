@@ -40,5 +40,5 @@ for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'er
     }
     reader.releaseLock();
     assert.equal(watching, 0, 'EOF, cancellation and failure release stream ownership');
-  } finally { if (response && !response.body.locked) await response.body.cancel().catch(() => {}); remove(); await process.release(); }
+  } finally { if (response && !response.body.locked) await response.body.cancel().catch(() => {}); remove.close(); await process.release(); }
 }

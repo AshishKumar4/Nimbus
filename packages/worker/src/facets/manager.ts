@@ -8796,7 +8796,8 @@ export class FacetManager {
     attempt: number,
   ): Promise<void> {
     if (this.launchesClosed) return Promise.reject(new Error('Launch scheduler is closed'));
-    return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt));
+    const preparing = this.processes.holdWork(entry.pid);
+    return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
   }
 
   private async _runResidentLaunchBody(
