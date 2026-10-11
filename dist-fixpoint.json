@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c074809f547b526be0a22348f1993ca8ddcc11ae428339a36725521b2d40b95f",
+  "fingerprint": "509b3d7aa8355499557dc341aab41adcdb89a60962ad46820a8ac26a47762dc3",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2073,8 +2073,8 @@
     "packages/worker/dist/facets/esbuild-transform.d.ts.map": "395c661d487ad0debf7f7d0f2f211af527b974cfa8b6121e84328a6f29a5f774",
     "packages/worker/dist/facets/esbuild-transform.js": "33131c1549bf0c29e62b66e92079255a047223c9238281c1549faeb26f8d69d5",
     "packages/worker/dist/facets/esm-stage.d.ts": "e731f6f2c79ef3231aed613571efdee5c2cc02cb033ddd1887dc72aaebe83f87",
-    "packages/worker/dist/facets/esm-stage.d.ts.map": "efcbc50de81c7445aa4eb1ade1cc01d12e0e2dd496be013e73dfada59a814b4f",
-    "packages/worker/dist/facets/esm-stage.js": "8567d37fd57907e53fd76157821e73e8e0d8f6ad46ace3ae8d992e7b659aefab",
+    "packages/worker/dist/facets/esm-stage.d.ts.map": "c65169923eb74e138861b3b9cf8ca52e212c3e2f97eeab5a6524d4b4fc3c91d0",
+    "packages/worker/dist/facets/esm-stage.js": "7dee7a84e9578730c8f62b69097382ae4b6a9d16145f99f5c7f75479cb57dbe4",
     "packages/worker/dist/facets/exec-telemetry.d.ts": "1c781c994875de8e7665607a8fb166fda54dc9886742f852c6b08e0c3fc031e8",
     "packages/worker/dist/facets/exec-telemetry.d.ts.map": "233f04f926977e3e1139507bdd25f18aeb321d3d92f8e00a4fef9ad8b1a7c0ce",
     "packages/worker/dist/facets/exec-telemetry.js": "ca016fce9d18f6a29cc2db43a71e958c52d39c25f2ca3f0ab12215a29065d0f9",
@@ -2859,7 +2859,7 @@
     "packages/worker/src/facets/durable-images.ts": "6f37c070fbde0eea6d84fd39337c36f167a7b5e2d7251ca4309efd04ed639116",
     "packages/worker/src/facets/durable-slots.ts": "bdbe2a56483a438c3b9ad5394f8c2719ab3b9f254c16452ab520a6cf1ce7839d",
     "packages/worker/src/facets/esbuild-transform.ts": "3f0a04f55b50a81923875325437e7a1f2d3724e20f9a8d826dd42b0965c2c5d3",
-    "packages/worker/src/facets/esm-stage.ts": "640a0f6d850bec47e47a607c841ffa8e35900ee1adda876c601d2f641b854239",
+    "packages/worker/src/facets/esm-stage.ts": "ab5ebd7d4c279b634924c478f7032938c0a66696ed30d63c3373a1f1aef5841e",
     "packages/worker/src/facets/exec-telemetry.ts": "f864bdb624b9d4cd44f53783a9c5bf9c0f9e92036068fcdd4cecb4d335817ca9",
     "packages/worker/src/facets/helper-facet.ts": "571ad3b51685af1ad96e101809c311a8bdc60a8f0881853aac2da3db430145a9",
     "packages/worker/src/facets/launch-learning-store.ts": "0ba1ebe8b6e30ff694f70db7de5e06c0b536beed882c3f9e3db3068ec49851d8",

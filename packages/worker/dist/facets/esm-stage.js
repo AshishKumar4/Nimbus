@@ -169,10 +169,26 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             }
         });
     };
+    // require()'s resolution (a CommonJS facade's names, a missing import's
+    // hint, Bun's probing) asks the same questions through the same answers:
+    // a launch whose imports are not installed asked each node_modules up the
+    // tree again per specifier, on every launch (a terminal `node -e` 2x main's).
+    const requireFiles = {
+        ...fs.files,
+        exists: async (path) => (await kind(stripLeadingSlashes(path))) !== null,
+        isDirectory: async (path) => (await kind(stripLeadingSlashes(path))) === 'directory',
+        readFileString: async (path) => {
+            const text = await readText(path);
+            if (text === null)
+                throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+            return text;
+        },
+        realpath: (path) => realpath('/' + stripLeadingSlashes(path)),
+    };
     const requireResolve = (specifier, fromPath) => {
         const fromDir = stripLeadingSlashes(fromPath.slice(0, fromPath.lastIndexOf('/')));
         return once(requires, `${fromDir}\n${specifier}`, async () => {
-            const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
+            const found = await resolveRequireEx(requireFiles, specifier, fromDir, undefined, undefined, conditions);
             return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
         });
     };
