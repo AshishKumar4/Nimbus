@@ -135,7 +135,9 @@ assert.ok(root.exists(`${NM}/.bin/c-cli`), 'c links its bin');
   assert.equal(present('c'), false, 'a dependency dropped after an explicit add is still pruned');
   assert.equal(root.exists(`${NM}/.bin/c-cli`), false, 'with its bin');
   assert.deepEqual(bins(), ['e-cli']);
-  assert.deepEqual(placements(), ['a', 'b', 'd', 'e']);
+  // As npm keeps it: a's copy of d stays where it was installed (an install
+  // does not dedupe), and the root d only c needed goes with c.
+  assert.deepEqual(placements(), ['a', 'a/node_modules/d', 'b', 'e']);
 }
 
 // ── a declared package the resolver could not resolve is not pruned ────────
