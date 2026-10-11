@@ -58,6 +58,12 @@ export function urlCredentials(url: string): { username: string; password: strin
     : { username: unescapeUserinfo(info.slice(0, colon)), password: unescapeUserinfo(info.slice(colon + 1)) };
 }
 
+/** A URL's credentials form one pair and take precedence over the caller's pair, as git's transport does. */
+export function selectRemoteCredentials(url: string, supplied: ReturnType<typeof urlCredentials> = { username: '', password: '' }): ReturnType<typeof urlCredentials> {
+  const embedded = urlCredentials(url);
+  return embedded.username || embedded.password ? embedded : supplied;
+}
+
 /** Decode valid UTF-8 escape runs exactly as the Git HTTP transport does; keep stray/invalid escapes. */
 function unescapeUserinfo(text: string): string {
   return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
@@ -107,12 +113,14 @@ export function redactCredentials(text: string, secrets: readonly string[]): str
  */
 export function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets: readonly string[] = []): string {
   // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
-  const shown = anonymizeUrl(url.endsWith('/') ? url : url + '/');
+  const shown = redactCredentials(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
   if (failure.kind === 'transport') return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
   // A 401 asks for what was not offered (credential_fill), and there is no terminal to ask at.
   if (failure.status === 401 && !credentials.password) {
     const what = credentials.username ? 'Password' : 'Username';
-    return `fatal: could not read ${what} for '${credentialDescription(url, credentials.username)}': terminal prompts disabled\n`;
+    const prompt = credentialDescription(url, credentials.username);
+    const safePrompt = secrets.reduce((text, secret) => secret ? text.split(secret).join('<redacted>') : text, prompt);
+    return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
   const remote = redactCredentials(failure.message ?? '', secrets).trim();
   const lines = remote === '' ? '' : remote.split('\n').map((line) => `remote: ${line}\n`).join('');

@@ -13,8 +13,8 @@ export class GitGlobalsError extends Error {
   }
 }
 
-/** `-c`'s settings: each key (section and variable name in lower case), its values in order. */
-export type ConfigOverrides = Map<string, string[]>;
+/** `-c`'s settings in order; null is a name-only value (boolean true, raw config value absent). */
+export type ConfigOverrides = Map<string, Array<string | null>>;
 
 /** iskeychar: what a config section and variable name are made of. */
 const KEY_CHAR = /^[A-Za-z0-9-]$/;
@@ -26,10 +26,10 @@ const ALPHA = /^[A-Za-z]$/;
  * subsection as written. An invalid one is git's error, then "unable to
  * parse command-line config" (128).
  */
-export function parseConfigParameter(text: string): [key: string, value: string] {
+export function parseConfigParameter(text: string): [key: string, value: string | null] {
   const eq = text.indexOf('=');
   const key = eq < 0 ? text : text.slice(0, eq);
-  const value = eq < 0 ? 'true' : text.slice(eq + 1);
+  const value = eq < 0 ? null : text.slice(eq + 1);
   const refuse = (error: string): never => {
     throw new GitGlobalsError(`error: ${error}\nfatal: unable to parse command-line config\n`, 128);
   };

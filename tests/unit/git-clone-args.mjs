@@ -208,6 +208,6 @@ assert.throws(() => parseGitGlobals(['-C'], '/home/user'), /requires a value/);
 assert.throws(() => parseGitGlobals(['--git-dir=/x', 'status'], '/home/user'), /unknown option '--git-dir=\/x'/);
 // -c <name>=<value>: each key's section and name in lower case, its values in order.
 assert.deepEqual(parseGitGlobals(['-c', 'User.Name=a', '-c', 'remote.Up.URL=x', '-c', 'user.name=b', '-c', 'core.bare', 'status'], '/home/user').config,
-  new Map([['user.name', ['a', 'b']], ['remote.Up.url', ['x']], ['core.bare', ['true']]]));
+  new Map([['user.name', ['a', 'b']], ['remote.Up.url', ['x']], ['core.bare', [null]]]));
 
 console.log('git-clone-args: ok');

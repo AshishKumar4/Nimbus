@@ -12,7 +12,7 @@
 import { retrying } from '@nimbus-sh/platform/retry.js';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
 import { PackFormatError } from './format.js';
-import { plainTextMessage, urlCredentials, type RemoteFailure } from './remote-failure.js';
+import { plainTextMessage, selectRemoteCredentials, type RemoteFailure } from './remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 
 export interface GitTransportAuth {
@@ -89,9 +89,9 @@ function pktLine(text: string): Uint8Array {
  * the options'.
  */
 function remote(options: UploadPackOptions): { url: string; auth: GitTransportAuth | undefined } {
+  const auth = selectRemoteCredentials(options.url, options.auth);
   const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
-  if (parsed === null || (parsed.username === '' && parsed.password === '')) return { url: withoutSlash(options.url), auth: options.auth };
-  const auth = urlCredentials(parsed.href);
+  if (parsed === null || (parsed.username === '' && parsed.password === '')) return { url: withoutSlash(options.url), auth };
   parsed.username = '';
   parsed.password = '';
   return { url: withoutSlash(parsed.href), auth };
