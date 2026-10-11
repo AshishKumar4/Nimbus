@@ -33,12 +33,6 @@ export interface GitFsBackend {
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string, filepath: string): Promise<string>;
 }
-type FsErrorCode = 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'ENOTEMPTY' | 'EINVAL' | 'EIO' | 'ELOOP';
-/** Node's error for `code` at `filepath`, as `syscall` reports it. */
-export declare function fsError(code: FsErrorCode, syscall: string, filepath: string, detail?: string): Error & {
-    code: string;
-    errno: number;
-};
 /**
  * cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam.
  * Each call is the backend's promise, shaped by one `then` where it needs
@@ -100,5 +94,4 @@ export declare function createGitFs<P>(backend: GitFsBackend, packs: P): {
         readlink: (filepath: string) => Promise<string>;
     };
 };
-export {};
 //# sourceMappingURL=git-fs.d.ts.map

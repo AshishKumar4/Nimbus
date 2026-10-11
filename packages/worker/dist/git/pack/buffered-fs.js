@@ -17,7 +17,7 @@ import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { fsError } from '../git-fs.js';
+import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { facetFileApi, METADATA_MAX_ACCOUNTED_BYTES, METADATA_MAX_ENTRIES, READ_RANGE_BYTES, supervisorStat, WHOLE_FILE_RPC_SAFE_BYTES, } from './facet-supervisor.js';
 import { MOUNT_WAVE_FILE_MAX, replaceFile } from './mount-writer.js';
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
@@ -282,7 +282,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
         if (size === null)
             return null;
         if (!Number.isSafeInteger(size) || size < 0)
-            throw fsError('EIO', 'open', filepath, 'invalid file size ' + String(size));
+            throw fsError('EIO', 'open', filepath, undefined, { detail: 'invalid file size ' + String(size) });
         // Ordinary RPC values have a 32 MiB structured-clone ceiling, so a larger
         // file is reconstructed through the bounded range RPC, whatever its kind.
         if (size > WHOLE_FILE_RPC_SAFE_BYTES) {
@@ -292,10 +292,10 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 stats.supervisorRpc.fsReadRange++;
                 offset += await useRpcResource(supervisor.fsReadRange(durablePath, offset, expected), (result) => {
                     if (result === null || result === undefined)
-                        throw fsError('EIO', 'open', filepath, `range ${offset}..${offset + expected} is missing`);
+                        throw fsError('EIO', 'open', filepath, undefined, { detail: `range ${offset}..${offset + expected} is missing` });
                     const chunk = result instanceof Uint8Array ? result : new Uint8Array(result);
                     if (chunk.byteLength !== expected) {
-                        throw fsError('EIO', 'open', filepath, `range ${offset}..${offset + expected} returned ${chunk.byteLength} bytes`);
+                        throw fsError('EIO', 'open', filepath, undefined, { detail: `range ${offset}..${offset + expected} returned ${chunk.byteLength} bytes` });
                     }
                     data.set(chunk, offset);
                     return chunk.byteLength;

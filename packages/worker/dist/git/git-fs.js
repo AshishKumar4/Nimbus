@@ -13,24 +13,13 @@
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-const FS_ERRORS = {
-    ENOENT: [-2, 'no such file or directory'],
-    ENOTDIR: [-20, 'not a directory'],
-    EISDIR: [-21, 'illegal operation on a directory'],
-    ENOTEMPTY: [-39, 'directory not empty'],
-    EINVAL: [-22, 'invalid argument'],
-    EIO: [-5, 'input/output error'],
-    ELOOP: [-40, 'too many symbolic links encountered'],
-};
-/** Node's error for `code` at `filepath`, as `syscall` reports it. */
-export function fsError(code, syscall, filepath, detail) {
-    const [errno, message] = FS_ERRORS[code];
-    return Object.assign(new Error(`${code}: ${message}, ${syscall} '${filepath}'${detail ? `: ${detail}` : ''}`), { code, errno });
+import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+/** Whether `options` is an options object (`{ encoding: 'utf8' }`), not the bare encoding. */
+function isOptionsObject(options) {
+    return typeof options === 'object' && options !== null;
 }
 function wantsUtf8(options) {
-    const encoding = typeof options === 'string'
-        ? options
-        : options?.encoding;
+    const encoding = isOptionsObject(options) ? options.encoding : options;
     return encoding === 'utf8' || encoding === 'utf-8';
 }
 const TYPE_BITS = { file: 0o100000, dir: 0o040000, symlink: 0o120000 };

@@ -14,7 +14,7 @@
  * through it.
  */
 import { type WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-import { type GitFsBackend } from '../git-fs.js';
+import type { GitFsBackend } from '../git-fs.js';
 import { type FacetStats, type GitFacetSupervisor, type MetadataOverlayStats, type SupervisorStat } from './facet-supervisor.js';
 /** A path the overlay knows, as the wave that publishes it will. */
 export interface OverlayEntry {
