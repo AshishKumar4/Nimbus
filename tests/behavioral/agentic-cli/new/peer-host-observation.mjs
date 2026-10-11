@@ -59,10 +59,10 @@ try {
     let afterUse;
     for (let i = 0; i < 40; i++) {
       afterUse = await probe(second, 'state', idle.pid);
-      if (afterUse.state !== 'running' && /host.*reset|peer.*restarted/i.test(resumed.buf)) break;
+      if (afterUse.state !== 'running') break;
       await sleep(50);
     }
-    a.check('the lost process reports its host loss', /host.*reset|peer.*restarted/i.test(resumed.buf), resumed.buf.slice(-700));
+    a.check('the lost process port reports its host loss', /host.*reset|peer.*restarted/i.test(gone.body), gone.body);
     a.check('only the lost process becomes terminal', afterUse.exitCode === 137, JSON.stringify(afterUse));
 
     const third = await mintSession(); sessions.push(third);
