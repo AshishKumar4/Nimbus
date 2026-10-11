@@ -57,6 +57,8 @@ export declare const TIMER_REASONS_KEY = "w1_next_alarm_reasons";
 export interface TimerHost {
     _timerChain?: Promise<unknown>;
     _timerEpoch?: number;
+    /** When each link still on the chain was queued (a schedule or a dispatch), oldest first. */
+    _timerChainQueued?: number[];
 }
 /**
  * What one timer handler may return: nothing, or a deadline this reason
@@ -153,5 +155,10 @@ export declare class Timers {
      * next schedule call).
      */
     dispatch(handlers: TimerHandlers, onLegacyAlarm?: () => void, alarmInfo?: TimerAlarmInfo): Promise<void>;
+    /** What is still queued on the chain: its links, and how long the oldest has waited or run. */
+    chainState(now?: number): {
+        links: number;
+        oldestMs: number | null;
+    };
 }
 //# sourceMappingURL=timers.d.ts.map

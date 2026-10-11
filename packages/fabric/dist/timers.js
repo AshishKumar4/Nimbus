@@ -146,9 +146,7 @@ export class Timers {
                 return false;
             }
         };
-        const chained = (host._timerChain ?? Promise.resolve()).then(run, run);
-        host._timerChain = chained;
-        return chained;
+        return link(host, run);
     }
     /**
      * {@link schedule}, for a caller that cannot go on unarmed: a refused arm
@@ -200,10 +198,26 @@ export class Timers {
         const current = () => (host._timerEpoch ?? 0) === epoch;
         // Same serialization as schedule: the dispatcher's read→handlers→write
         // cycle must not interleave with an activity-hook schedule.
-        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo));
-        host._timerChain = chained;
-        return chained;
+        return link(host, () => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo));
     }
+    /** What is still queued on the chain: its links, and how long the oldest has waited or run. */
+    chainState(now = Date.now()) {
+        const queued = this.host._timerChainQueued ?? [];
+        return { links: queued.length, oldestMs: queued.length === 0 ? null : now - queued[0] };
+    }
+}
+/** `step` queued on `host`'s chain after every link before it, its queueing kept until it settles. */
+function link(host, step) {
+    const at = Date.now();
+    const queued = (host._timerChainQueued ??= []);
+    queued.push(at);
+    const chained = (host._timerChain ?? Promise.resolve()).then(step, step).finally(() => {
+        const index = queued.indexOf(at);
+        if (index >= 0)
+            queued.splice(index, 1);
+    });
+    host._timerChain = chained;
+    return chained;
 }
 /**
  * One dispatch. `current` answers whether the epoch it was requested in still
