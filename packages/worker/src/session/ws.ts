@@ -395,13 +395,22 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
 }
 
 export async function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string): Promise<void> {
+  const terminal = self.terminal;
+  if (!terminal || terminal.signal.aborted) return;
+  let release!: () => void;
+  const closed = new Promise<void>((resolve) => { release = resolve; });
+  terminal.signal.addEventListener('abort', release, { once: true });
   try {
-    if (!self.terminal) throw new Error('terminal input reached a session with no terminal');
-    await self.terminal.handleMessage(TerminalMessageSchema.parse(JSON.parse(frame)));
+    await Promise.race([terminal.handleMessage(TerminalMessageSchema.parse(JSON.parse(frame))), closed]);
   } catch (error) {
-    console.error('[nimbus] terminal input failed:', errorText(error));
-    self.terminal?.writeln(`terminal input failed: ${errorText(error)}`);
-  } finally { snapshotShellState(self); }
+    if (!terminal.signal.aborted) {
+      console.error('[nimbus] terminal input failed:', errorText(error));
+      terminal.writeln(`terminal input failed: ${errorText(error)}`);
+    }
+  } finally {
+    terminal.signal.removeEventListener('abort', release);
+    if (!terminal.signal.aborted && self.terminal === terminal) snapshotShellState(self);
+  }
 }
 
 async function routeProcessLogClientMessage(

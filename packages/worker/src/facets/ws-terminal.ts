@@ -10,6 +10,8 @@ interface ReplBinding {
 
 
 export class WebSocketTerminal {
+  private readonly lifetime = new AbortController();
+  get signal(): AbortSignal { return this.lifetime.signal; }
   /** Null while the terminal is headless (composed before any attach). */
   public ws: WebSocket | null;
   private dataCallback: ((data: string, submission?: ShellInputSubmission) => void | Promise<void>) | null = null;
@@ -85,6 +87,7 @@ export class WebSocketTerminal {
     return this.replTeardown;
   }
   close(): void {
+    this.lifetime.abort();
     void this.disposeRepl().catch((error) => console.warn('[terminal] REPL cleanup failed', error));
     this.flushScheduled = false;
     this.buffer = [];
