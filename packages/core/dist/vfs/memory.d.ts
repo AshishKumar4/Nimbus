@@ -24,7 +24,7 @@ export declare class MemoryVFS implements VFS {
     /** The entry at `path`, following symlinks except a final one when `follow` is false; `call` names a failure. */
     private find;
     private parentOf;
-    /** VFS.fileStore: this one, through any wrapper of it. */
+    /** VFS.fileStore: its tree, whichever object (a wrapper of it) is asked. */
     get fileStore(): object;
     private stats;
     private file;

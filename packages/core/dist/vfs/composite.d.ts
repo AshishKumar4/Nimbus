@@ -429,6 +429,17 @@ export declare class CompositeVFS implements VFS {
      * kept its operand, did not land there.
      */
     private reportWrite;
+    /**
+     * reportWrite of the mutation `prepare` gives, prepared in its turn, after
+     * the observed mutations queued before it (a held-open file's change is
+     * placed where that file is then). Its `spec` null: a change at no name,
+     * reported to no one. `name`: the mutation's name before it is placed.
+     */
+    private reportPrepared;
+    /** `report` in its turn among the observed mutations (takeTurn); a caller that cannot wait is refused while another holds it. */
+    private inTurn;
+    /** reportWrite's report of `spec`'s mutation, `run`, in its turn. */
+    private reportIn;
     /** `run` once every observed mutation queued before it is done; those after it wait for it. */
     private takeTurn;
     /**
@@ -482,12 +493,14 @@ export declare class CompositeVFS implements VFS {
         sync: boolean;
     }): Awaitable<PinnedName>;
     /**
-     * A pinned target's mutation of the file at `at` (the target's name, or
-     * where a file held open is named now; null once it has none): refused on
+     * A pinned target's mutation of the file `place` finds in the mutation's
+     * turn, after the observed mutations before it (the target's name, or
+     * where a file held open is named then; null once it has none): refused on
      * a read-only mount and by the guard there, `admit` right before the
-     * backend, observed there while `still`. `held`:
-     * the held file's own refusal (it is not the file at its name now), asked in
-     * the mutation's turn, after the mutations before it, before the guard.
+     * backend, observed there while `still`. `held(at)`: the held file's own
+     * refusal (it is not the file at `at` now), asked after the before-image is
+     * read, before the guard. A file with no name (unlinked, held open) is no
+     * name's change: only the view's own check is asked.
      */
     private changingOn;
     /** A name an open found on a backend (pin). */

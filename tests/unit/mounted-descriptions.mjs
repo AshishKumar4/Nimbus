@@ -1073,6 +1073,26 @@ await check('a killed process\'s descriptions close the files their mount holds 
   }
 });
 
+await check('a mounted description that takes an id the session kept for a file here leaves nothing of that one to adopt', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('there'));
+  files.vfs.mount('/ri', backend);
+  const procPid = ++pid;
+  const proc = files.bind({ pid: procPid, cred: USER });
+  proc.writeFile('/home/user/ri.txt', 'here');
+  const at = (first) => waveOf(proc, { sequence: { writer: `${procPid}:w`, first, ack: first - 1, pid: procPid } });
+  try {
+    assert.equal((await at(1)([{ type: 'call', call: { call: 'open', path: 'home/user/ri.txt', mode: 0o644, read: true, description: 'd1' } }])).ok, true);
+    assert.equal((await at(2)([{ type: 'call', call: { call: 'open', path: 'ri/x', mode: 0o644, read: true, description: 'd1' } }])).ok, true);
+    assert.equal((await at(3)([{ type: 'call', call: { call: 'close', path: 'ri/x', description: 'd1' } }])).ok, true);
+    const late = await at(4)([{ type: 'call', call: { call: 'write', path: 'home/user/ri.txt', description: 'd1', offset: 0, data: enc.encode('NO') } }]);
+    assert.equal(late.error?.errno ?? late.sequence?.refused?.errno, 'EBADF');
+    assert.equal(dec.decode(proc.readFile('/home/user/ri.txt')), 'here');
+  } finally {
+    files.vfs.unmount('/ri');
+  }
+});
+
 {
   const proc = files.bind({ pid: ++pid, cred: USER });
   proc.writeFile('/home/user/sq.log', '12345');

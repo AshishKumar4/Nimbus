@@ -8905,6 +8905,10 @@ export class SqliteVFS {
         return { befores, results, after: this._revision };
       },
       reopened: (path, id) => this.reopened(described, path, id, cred),
+      forgetDescription: (id) => {
+        const { pid } = described;
+        if (pid !== null) this.transactionSync(() => this.forgetDescription(pid, id));
+      },
       openSequence: (sequence) => this.openSequence(sequence),
       advanceSequence: (writer, seq) => this.transactionSync(() => this.advanceSequence(writer, seq)),
       refuseInSequence: (writer, refused, closed) => this.refuseInSequence(writer, refused, closed),

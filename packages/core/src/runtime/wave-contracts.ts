@@ -453,6 +453,8 @@ export interface WaveScope {
   ): { at: number; error: unknown } | { befores: number[]; results: (VfsStat | null | void)[]; after: number };
   /** An open the cursor passed, answered again as it was. */
   reopened(path: string, id: string): WriteStreamReceipt | null;
+  /** What the session kept of the wave's process's description `id` (vfs_wave_descriptions) is no longer this filesystem's: a mount's description took the id, or closed it. */
+  forgetDescription(id: string): void;
   /** The writer's cursor and any refusal kept for it (WaveSequence), acknowledging `ack`. */
   openSequence(sequence: WaveSequence): { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null };
   /** The writer's cursor moved to `seq`, in a transaction of its own. */

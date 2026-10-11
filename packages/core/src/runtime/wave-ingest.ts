@@ -1040,6 +1040,7 @@ export class WaveIngest {
           await at.settleBefore();
           reached();
           await backend(Promise.resolve(descriptions.close(call.description)));
+          scope.forgetDescription(call.description);
           at.committed(null, 0);
           return true;
         }
@@ -1074,6 +1075,8 @@ export class WaveIngest {
           const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
           const handle = call.description === undefined || descriptions === undefined ? undefined
             : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, { read: call.read === true, write: true })));
+          // The id is this mount's description's now: what the session kept of an earlier one under it is not adopted again.
+          if (call.description !== undefined) scope.forgetDescription(call.description);
           at.committed({ path: call.path, ...opened.stat, ...(handle === undefined ? {} : { handle }) }, 0);
           return true;
         }

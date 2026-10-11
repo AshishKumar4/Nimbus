@@ -70,9 +70,9 @@ export class MemoryVFS {
             throw fail('ENOTDIR', call);
         return { dir, name };
     }
-    /** VFS.fileStore: this one, through any wrapper of it. */
+    /** VFS.fileStore: its tree, whichever object (a wrapper of it) is asked. */
     get fileStore() {
-        return this;
+        return this.root;
     }
     stats(entry) {
         return {
