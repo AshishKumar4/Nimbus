@@ -1,5 +1,7 @@
 import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 export class WebSocketTerminal {
+    lifetime = new AbortController();
+    get signal() { return this.lifetime.signal; }
     /** Null while the terminal is headless (composed before any attach). */
     ws;
     dataCallback = null;
@@ -79,6 +81,7 @@ export class WebSocketTerminal {
         return this.replTeardown;
     }
     close() {
+        this.lifetime.abort();
         void this.disposeRepl().catch((error) => console.warn('[terminal] REPL cleanup failed', error));
         this.flushScheduled = false;
         this.buffer = [];

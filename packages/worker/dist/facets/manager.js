@@ -386,6 +386,13 @@ function __nimbusNaturalExit(__beforeExit) {
         if (!__none) return;
         if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
         resolve();
+      }).catch((error) => {
+        __checking = false;
+        __nimbusUncaughtException(error, false);
+        if (__nimbusProgramStopped) {
+          if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
+          resolve();
+        } else __released();
       });
     };
     globalThis.__nimbusHandleReleased = __released;

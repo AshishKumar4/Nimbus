@@ -394,9 +394,9 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
   }
 }
 
-export async function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string): Promise<void> {
+export async function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string, terminalId: string): Promise<void> {
   const terminal = self.terminal;
-  if (!terminal || terminal.signal.aborted) return;
+  if (!terminal || terminal.id !== terminalId || terminal.signal.aborted) return;
   let release!: () => void;
   const closed = new Promise<void>((resolve) => { release = resolve; });
   terminal.signal.addEventListener('abort', release, { once: true });

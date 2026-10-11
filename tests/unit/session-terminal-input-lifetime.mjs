@@ -12,7 +12,7 @@ const box=await testBox();
 box.shell.bindTerminal(terminal);
 const tasks=[];
 const host={shell:box.shell,kernel:box.kernel,terminal,ctx:{waitUntil(){assert.fail('terminal completion must belong to its own request');}},_wakeRebuild:null,processes:box.workspace.processes,
-  dispatchTerminalInput(frame){tasks.push(Promise.resolve().then(()=>sessionWs.terminalInput(host,frame)));}};
+  dispatchTerminalInput(frame){const id=this.terminal.id;tasks.push(Promise.resolve().then(()=>sessionWs.terminalInput(host,frame,id)));}};
 const input=(data)=>sessionWs.wsMessage(host,socket,JSON.stringify({type:'input',data}));
 let release;
 try {
@@ -83,12 +83,16 @@ try {
   const late = Promise.withResolvers();
   oldTerminal.onData(() => late.promise);
   host.terminal = oldTerminal;
-  const pending = sessionWs.terminalInput(host, JSON.stringify({ type: 'input', data: 'held' }));
+  const pending = sessionWs.terminalInput(host, JSON.stringify({ type: 'input', data: 'held' }), oldTerminal.id);
   oldTerminal.close();
   host.terminal = replacement;
+  let staleDelivered = false;
+  replacement.onData(() => { staleDelivered = true; });
   try {
     const ended = await Promise.race([pending.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 1000))]);
     assert.equal(ended, true, 'terminal close ends an input request even when its callback ignores disposal');
+    await sessionWs.terminalInput(host, JSON.stringify({ type: 'input', data: 'stale' }), oldTerminal.id);
+    assert.equal(staleDelivered, false, 'a queued input cannot land on a replacement terminal');
     late.reject(new Error('late terminal failure'));
     await Promise.resolve(); await Promise.resolve();
     replacement.flushNow();

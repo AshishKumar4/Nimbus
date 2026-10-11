@@ -1337,19 +1337,25 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
   // relaxed for the methods (default-public; was async/private).
 
-  private terminalInputDispatcher: ((frame: string) => Promise<void>) | null = null;
+  private terminalInputDispatcher: ((frame: string, terminalId: string) => Promise<void>) | null = null;
   readonly dispatchTerminalInput = (frame: string): void => {
+    const terminal = this.terminal;
+    if (!terminal || terminal.signal.aborted) return;
     if (!this.terminalInputDispatcher) {
-      const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id) as unknown as { _rpcTerminalInput(frame: string): Promise<void> };
-      this.terminalInputDispatcher = (input) => stub._rpcTerminalInput(input);
+      const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id) as unknown as { _rpcTerminalInput(frame: string, terminalId: string): Promise<void> };
+      this.terminalInputDispatcher = (input, id) => stub._rpcTerminalInput(input, id);
     }
-    void this.terminalInputDispatcher(frame).catch((error: unknown) => {
-      console.error('[nimbus] terminal input request failed:', error);
-      this.terminal?.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+    void this.terminalInputDispatcher(frame, terminal.id).catch((error: unknown) => {
+      if (!terminal.signal.aborted) {
+        console.error('[nimbus] terminal input request failed:', error);
+        terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     });
   };
 
-  _rpcTerminalInput(frame: string): Promise<void> { return terminalInput(this, frame); }
+  _rpcTerminalInput(frame: string, terminalId: string): Promise<void> {
+    return terminalInput(this, frame, terminalId);
+  }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const { kind } = wsKind(ws);

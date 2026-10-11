@@ -1,5 +1,7 @@
 import type { ShellInputSubmission, ShellIntegrationEvent } from '@nimbus-sh/core/shell/input-submission.js';
 export declare class WebSocketTerminal {
+    private readonly lifetime;
+    get signal(): AbortSignal;
     /** Null while the terminal is headless (composed before any attach). */
     ws: WebSocket | null;
     private dataCallback;

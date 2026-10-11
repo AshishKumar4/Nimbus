@@ -10,6 +10,7 @@ interface ReplBinding {
 
 
 export class WebSocketTerminal {
+  readonly id = crypto.randomUUID();
   private readonly lifetime = new AbortController();
   get signal(): AbortSignal { return this.lifetime.signal; }
   /** Null while the terminal is headless (composed before any attach). */
