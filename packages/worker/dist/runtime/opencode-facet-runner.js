@@ -38,8 +38,8 @@
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
-import { getRealNodeSharedImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { createNodeFacetRuntime, nodeFacetSource } from './node-shims-artifact.js';
+import { NODE_SHIMS_IMPORTS } from './node-shims-imports.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_BACKEND_GLOBAL, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
@@ -633,7 +633,7 @@ export function generateOpencodeRunnerCode(opts) {
 // one-shot run is a single fetch into a stateless entrypoint, which cannot be a
 // Durable Object; it keeps the WorkerEntrypoint default export.
 import { DurableObject as __NimbusDurableObject } from "cloudflare:workers";
-${getRealNodeSharedImportsCode()}
+${NODE_SHIMS_IMPORTS}
 ${runtime.imports}
 ${runtime.code}
 

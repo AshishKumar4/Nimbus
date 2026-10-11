@@ -1,4 +1,10 @@
 
+// The platform's own builtins, which every native front below forwards to: a
+// generated runner's static imports of them (NODE_SHIMS_IMPORTS), else the
+// host's process.getBuiltinModule, captured before the program's process
+// replaces the global one.
+const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined" ? host
+  : (id) => (Object.hasOwn(__nimbusNativeBuiltins, id) ? __nimbusNativeBuiltins[id] : host(id)))(globalThis.process.getBuiltinModule.bind(globalThis.process));
 // What process.exit throws to end the program where it stands; its host
 // catches it as the exit.
 class __ProcessExit extends Error {
@@ -350,8 +356,8 @@ function __nimbusRawSocket() {
   try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
   return bound && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs().rawSocket() : null;
 }
-if (typeof __real_net !== "undefined") {
-  const __realNet = __real_net.default ?? __real_net;
+{
+  const __realNet = __nativeBuiltin("net");
   const __NativeSocket = __realNet.Socket;
   const __egressSocketHolds = new WeakMap();
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
@@ -2946,8 +2952,7 @@ function __vfsNormalizePath(p) {
 // "//name" and answered 404. Only resolution is the process's: resolve and
 // relative start from its cwd, not the Worker's.
 const __pathMod = (() => {
-  const native = typeof __real_path !== "undefined"
-    ? (__real_path.default ?? __real_path) : globalThis.process.getBuiltinModule("path");
+  const native = __nativeBuiltin("path");
   const posix = native.posix ?? native;
   const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
   const mod = {
@@ -2968,9 +2973,7 @@ const __pathMod = (() => {
 // offsets, UTF-16 writes and numeric/prototype APIs required by napi and Vite.
 // Non-Workers embedders obtain the same native module through their Node API;
 // there is deliberately no emulated Buffer fallback.
-const __bufferModule = typeof __real_buffer !== "undefined"
-  ? (__real_buffer.default ?? __real_buffer) : globalThis.process?.getBuiltinModule?.("node:buffer");
-if (!__bufferModule?.Buffer) throw new Error("Nimbus node runtime requires native node:buffer");
+const __bufferModule = __nativeBuiltin("buffer");
 const __BufferMod = __bufferModule.Buffer;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -9224,8 +9227,7 @@ const __osMod = {
 // https://developers.cloudflare.com/workers/runtime-apis/nodejs/events/ and
 // workerd v1.20260926.1 src/node/internal/events.ts (`export function
 // EventEmitter`; http servers extend it in internal_http_server.ts).
-const __eventsMod = typeof __real_events !== "undefined"
-  ? (__real_events.default ?? __real_events.EventEmitter) : globalThis.process.getBuiltinModule("events");
+const __eventsMod = __nativeBuiltin("events");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  stream module (real, with backpressure) ────────────────────────
@@ -10869,8 +10871,7 @@ const __undiciMod = (() => {
 // util.types, and reads what only V8's internals hold (a promise's state,
 // a proxy's target) as values, through its inspect. consola's FancyReporter
 // calls formatWithOptions directly (nuxi init).
-const __realUtil = typeof __real_util !== "undefined"
-  ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
+const __realUtil = __nativeBuiltin("util");
 // ── Node's library ──
 // Node's own modules (node-lib-source.ts), run over node-lib-host.ts the
 // first time a program needs one: util.inspect, util, assert, querystring,
@@ -11173,14 +11174,12 @@ Object.defineProperties(__nimbusInspect, {
   });
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
-// module are workerd's own node:url (see core/_shared/real-node-imports.ts).
+// module are workerd's own node:url (runtime/node-shims-imports.ts).
 // It was imitated here over WHATWG `new URL()`, which throws for the path-only
 // URL every HTTP server receives as `req.url`: `url.parse("/hello.txt")` came
 // back as `{ href }` with no pathname, so node-static stat'ed
 // "<root>/undefined" and answered 404 for every file.
-const __realUrl = (typeof __real_url !== "undefined")
-  ? (__real_url.default ?? __real_url)
-  : globalThis.process.getBuiltinModule("url");
+const __realUrl = __nativeBuiltin("url");
 const __urlMod = {
   ...__realUrl,
   URL: globalThis.URL, URLSearchParams: globalThis.URLSearchParams,
@@ -11203,49 +11202,9 @@ const __urlMod = {
 __urlMod.URL = globalThis.URL;
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  crypto module (W3: forward to workerd's real node:crypto) ──────
+// ──  crypto module: the platform's node:crypto ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-//
-// Pre-W3 this was a hand-rolled FNV-1a fake that returned a 16-byte
-// FNV state repeated as a 32-byte "sha256" hash — silent correctness
-// disaster (sha256("hello") = abdd62852c5bd7fc9fa116d64f0254ec × 2
-// instead of 2cf24dba...).  W3 forwards to workerd's real
-// node:crypto, which has been stable since CF changelog 2025-04-08.
-// __real_crypto comes from the static import block at the top of the
-// generated facet file (see src/_shared/real-node-imports.ts).
-//
-// The forward is exhaustive — Node 20 surface (createHash, createHmac,
-// pbkdf2/Sync, scrypt/Sync, createCipheriv/Decipheriv, createSign/
-// Verify, KeyObject, generateKeyPair/Sync, createPublic/PrivateKey,
-// timingSafeEqual, randomBytes/UUID/Int/Fill, getHashes/Ciphers/Curves,
-// constants, webcrypto, subtle) is all on the workerd module.
-const __cryptoMod = (() => {
-  const real = (typeof __real_crypto !== 'undefined') ? (__real_crypto.default ?? __real_crypto) : null;
-  if (real && typeof real.createHash === 'function') return real;
-  // Defensive fallback: if for some reason the static import didn't
-  // materialise (e.g. compat-flag drift), surface honest-error rather
-  // than silently shipping a fake hash.  Anything beyond randomBytes/
-  // randomUUID throws a NIMBUS-flavoured error.
-  function _unavail(name) {
-    return () => {
-      throw nodeError(Error, 'ERR_CRYPTO_UNAVAILABLE', 'crypto.' + name + ': workerd node:crypto not available. Check facet compat date >= 2025-04-08.');
-    };
-  }
-  return {
-    randomBytes: (n) => { const a = new Uint8Array(n); crypto.getRandomValues(a); return __BufferMod.from(a); },
-    randomUUID: () => crypto.randomUUID(),
-    randomInt: (min, max) => { if (max === undefined) { max = min; min = 0; } return min + Math.floor(Math.random() * (max - min)); },
-    randomFillSync: (buf) => { crypto.getRandomValues(buf); return buf; },
-    createHash: _unavail('createHash'),
-    createHmac: _unavail('createHmac'),
-    pbkdf2: _unavail('pbkdf2'),
-    pbkdf2Sync: _unavail('pbkdf2Sync'),
-    timingSafeEqual: (a, b) => { if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a[i] ^ b[i]; return r === 0; },
-    constants: {},
-    webcrypto: globalThis.crypto,
-    subtle: globalThis.crypto?.subtle,
-  };
-})();
+const __cryptoMod = __nativeBuiltin("crypto");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  vm module (W3: hybrid — forward surface, honest-error on eval) ──
@@ -11476,7 +11435,7 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
 })();
 
 const __vmMod = (() => {
-  const real = (typeof __real_vm !== 'undefined') ? (__real_vm.default ?? __real_vm) : null;
+  const real = __nativeBuiltin("vm");
   // What a script's function is called with, as the launch starts: the
   // program may later replace Reflect.apply or the globalThis property, and
   // native vm consults neither.
@@ -11491,9 +11450,7 @@ const __vmMod = (() => {
   }
   function wrapRuntimeEval(method) {
     return (...args) => {
-      if (!real || typeof real[method] !== 'function') {
-        throw honestError(method, null);
-      }
+      if (typeof real[method] !== 'function') throw honestError(method, null);
       try { return real[method](...args); } catch (e) {
         // Workerd surfaces ERR_METHOD_NOT_IMPLEMENTED;
         // `new Function` surfaces "Code generation from strings disallowed".
@@ -11506,13 +11463,12 @@ const __vmMod = (() => {
     };
   }
   return {
-    constants: real?.constants ?? {},
+    constants: real.constants,
     createContext: (sandbox, opts) => {
-      if (!real || typeof real.createContext !== 'function') return sandbox || {};
       try { return real.createContext(sandbox, opts); }
       catch { return sandbox || {}; }
     },
-    isContext: real?.isContext ?? ((o) => !!o),
+    isContext: real.isContext,
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
     // jiti evaluates a parenthesized (async) CommonJS wrapper expression
@@ -11550,11 +11506,11 @@ const __vmMod = (() => {
         return service.compileFunction("function", Array.from(params, String), String(code), globalThis.__nimbusVmOrigin);
       }
     },
-    Script: real?.Script ?? class { constructor() { throw honestError('Script', null); } },
-    Module: real?.Module,
-    SourceTextModule: real?.SourceTextModule,
-    SyntheticModule: real?.SyntheticModule,
-    measureMemory: real?.measureMemory ?? (async () => ({ total: { jsMemoryEstimate: 0 } })),
+    Script: real.Script,
+    Module: real.Module,
+    SourceTextModule: real.SourceTextModule,
+    SyntheticModule: real.SyntheticModule,
+    measureMemory: real.measureMemory ?? (async () => ({ total: { jsMemoryEstimate: 0 } })),
   };
 })();
 
@@ -12075,61 +12031,14 @@ const __http2Mod = createHttp2Module({
 // ──  repl module (W3: forward to workerd) ───────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 // ts-node imports repl. Workerd has it (stub since 2026-03-17).
-const __replMod = (() => {
-  const real = (typeof __real_repl !== 'undefined') ? (__real_repl.default ?? __real_repl) : null;
-  if (real && typeof real.start === 'function') return real;
-  // Fallback if static import didn't materialise.
-  class REPLServer extends __eventsMod {
-    close() { this.emit('exit'); }
-    displayPrompt() {} pause() {} resume() {}
-    setupHistory(p, cb) { if (cb) cb(null, this); }
-    defineCommand() {}
-  }
-  return { start: (opts) => new REPLServer(), REPLServer, REPL_MODE_SLOPPY: 0, REPL_MODE_STRICT: 1 };
-})();
+const __replMod = __nativeBuiltin("repl");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  diagnostics_channel (W3: forward to workerd) ───────────────────
 // ═══════════════════════════════════════════════════════════════════════
 // fastify uses Channel.runStores at request-handler time — workerd's
 // real impl includes this. Forward whole module.
-const __diagChannelMod = (() => {
-  const real = (typeof __real_diagnostics_channel !== 'undefined') ? (__real_diagnostics_channel.default ?? __real_diagnostics_channel) : null;
-  if (real && typeof real.channel === 'function') return real;
-  // Fallback: tiny pure-JS impl (no runStores; fastify will fail loud).
-  const channels = new Map();
-  class Channel {
-    constructor(name) { this.name = name; this._subs = []; }
-    get hasSubscribers() { return this._subs.length > 0; }
-    subscribe(fn) { this._subs.push(fn); }
-    unsubscribe(fn) { const i = this._subs.indexOf(fn); if (i >= 0) { this._subs.splice(i, 1); return true; } return false; }
-    publish(msg) { for (const fn of [...this._subs]) { try { fn(msg, this.name); } catch {} } }
-    runStores(_store, fn, thisArg, ...args) { return fn.apply(thisArg, args); }
-    bindStore() {} unbindStore() {}
-  }
-  function channel(name) {
-    let c = channels.get(name);
-    if (!c) { c = new Channel(name); channels.set(name, c); }
-    return c;
-  }
-  return {
-    channel,
-    hasSubscribers: (name) => { const c = channels.get(name); return !!(c && c.hasSubscribers); },
-    subscribe: (name, fn) => channel(name).subscribe(fn),
-    unsubscribe: (name, fn) => channel(name).unsubscribe(fn),
-    tracingChannel: (n) => ({
-      start: channel('tracing:' + n + ':start'),
-      end: channel('tracing:' + n + ':end'),
-      asyncStart: channel('tracing:' + n + ':asyncStart'),
-      asyncEnd: channel('tracing:' + n + ':asyncEnd'),
-      error: channel('tracing:' + n + ':error'),
-      traceSync(fn) { return fn(); },
-      tracePromise(fn) { return Promise.resolve().then(fn); },
-      traceCallback(fn, _pos, _ctx, thisArg, ...args) { return fn.apply(thisArg, args); },
-    }),
-    Channel,
-  };
-})();
+const __diagChannelMod = __nativeBuiltin("diagnostics_channel");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  tls module (W3: forward to workerd, override createServer) ─────
@@ -12230,10 +12139,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
 }
 
 const __tlsMod = (() => {
-  const real = (typeof __real_tls !== 'undefined') ? (__real_tls.default ?? __real_tls) : null;
-  if (!real) {
-    return { connect: () => { throw new Error('tls: workerd node:tls not available'); } };
-  }
+  const real = __nativeBuiltin("tls");
   // A socket tls.connect opens holds the program until it closes or is
   // unref'd, as in Node. Held once the socket exists: arguments tls.connect
   // refuses (a bad port) throw first, and a caught throw holds nothing.
@@ -12253,7 +12159,7 @@ const __tlsMod = (() => {
   // there when node:tls asks for it (its native socket's startTls). workerd's
   // own TLSSocket still runs on top, so what node:tls offers is what it
   // offers natively, and an option neither path can honour fails by name.
-  const realNet = (typeof __real_net !== 'undefined') ? (__real_net.default ?? __real_net) : null;
+  const realNet = __nativeBuiltin("net");
   const tokens = new WeakMap();
   // The plaintext net.Socket each proxied native socket belongs to.
   const carriers = new WeakMap();
@@ -12324,7 +12230,6 @@ const __tlsMod = (() => {
     const note = options.ca !== undefined || options.secureContext !== undefined
       ? ' (the options.' + (options.ca !== undefined ? 'ca' : 'secureContext') + ' given is not used: Nimbus checks a server against the platform trust store only)'
       : '';
-    if (!realNet) throw new Error('tls: node:net is not available');
     let token = '';
     for (const b of crypto.getRandomValues(new Uint8Array(16))) token += (b < 16 ? '0' : '') + b.toString(16);
     __nimbusReplay?.effect('tls.connect ' + host + ':' + port);
@@ -12443,19 +12348,7 @@ const __tlsMod = (() => {
 // AsyncLocalStorage is the 90% case; workerd has it via nodejs_als
 // (auto-on at compat date 2026-04-01). createHook is also present
 // in workerd as a non-functional stub.
-const __asyncHooksMod = (() => {
-  const real = (typeof __real_async_hooks !== 'undefined') ? (__real_async_hooks.default ?? __real_async_hooks) : null;
-  if (real && typeof real.AsyncLocalStorage === 'function') return real;
-  // Defensive fallback.
-  return {
-    AsyncLocalStorage: class { run(_s, fn, ...args) { return fn(...args); } getStore() { return undefined; } enterWith() {} disable() {} exit(fn, ...args) { return fn(...args); } },
-    AsyncResource: class { runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); } bind(fn) { return fn; } asyncId() { return 0; } triggerAsyncId() { return 0; } emitDestroy() {} },
-    createHook: () => ({ enable() { return this; }, disable() { return this; } }),
-    executionAsyncId: () => 0,
-    executionAsyncResource: () => null,
-    triggerAsyncId: () => 0,
-  };
-})();
+const __asyncHooksMod = __nativeBuiltin("async_hooks");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  inspector module (forward to workerd) ──────────────────────────
@@ -12465,24 +12358,7 @@ const __asyncHooksMod = (() => {
 // constructed Session is inert: connect()/post() resolve/no-op rather
 // than driving a real debugger. Tools that import it for optional
 // profiling (e.g. nuxi's lockfile timing Session) degrade cleanly.
-const __inspectorMod = (() => {
-  const real = (typeof __real_inspector !== 'undefined') ? (__real_inspector.default ?? __real_inspector) : null;
-  if (real && typeof real.Session === 'function') return real;
-  // Defensive fallback when workerd doesn't surface node:inspector.
-  const noopSession = class {
-    connect() {} connectToMainThread() {} disconnect() {}
-    post(_method, _params, cb) { if (typeof _params === 'function') cb = _params; if (typeof cb === 'function') cb(null, {}); }
-    on() { return this; } once() { return this; } removeListener() { return this; } emit() { return false; }
-  };
-  return {
-    Session: noopSession,
-    console: globalThis.console,
-    url: () => undefined,
-    open: () => {},
-    close: () => {},
-    waitForDebugger: () => {},
-  };
-})();
+const __inspectorMod = __nativeBuiltin("inspector");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  assert module ──────────────────────────────────────────────────
@@ -12492,8 +12368,7 @@ const __inspectorMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // workerd's node:string_decoder, Node's StringDecoder: hex, base64, latin1
 // and UTF-16 as well as UTF-8, a character split across writes held over.
-const __stringDecoderMod = typeof __real_string_decoder !== "undefined"
-  ? (__real_string_decoder.default ?? __real_string_decoder) : globalThis.process.getBuiltinModule("string_decoder");
+const __stringDecoderMod = __nativeBuiltin("string_decoder");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  child_process — W8 facet-mapped impl ──────────────────────────
@@ -15841,6 +15716,12 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
   Object.defineProperty(http, installed, { value: (next) => { activeContext = next; } });
 }
 
+// The platform's HTTP modules and the net they connect over, taken as the
+// runner's modules initialize: before any builtin bridge of the program's
+// graph (node:http re-exported from these shims) links.
+const __nativeHttp = __nativeBuiltin("http");
+const __nativeHttps = __nativeBuiltin("https");
+const __nativeNet = __nativeBuiltin("net");
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
 // Only this runtime's listener registrations can claim a local request. Neither
@@ -15852,15 +15733,11 @@ const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent",
 Object.defineProperty(builtins, "http", {
   configurable: true, enumerable: true,
   get() {
-    const http = typeof __real_http !== "undefined"
-      ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
-    const net = typeof __real_net !== "undefined"
-      ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
-    const https = typeof __real_https !== "undefined"
-      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
-    const url = typeof __real_url !== "undefined"
-      ? (__real_url.default ?? __real_url) : globalThis.process.getBuiltinModule("url");
-    const buffer = typeof __real_buffer !== "undefined" ? __real_buffer : globalThis.process.getBuiltinModule("buffer");
+    const http = __nativeHttp;
+    const net = __nativeNet;
+    const https = __nativeHttps;
+    const url = __nativeBuiltin("url");
+    const buffer = __nativeBuiltin("buffer");
     const ports = new Map();
     // The event loop reads listening handles; this is a view, not admission.
     globalThis.__portRegistry = Object.freeze({
@@ -16143,8 +16020,7 @@ Object.defineProperty(builtins, "https", {
     // Install the shared HTTP Server prototype bridge before native HTTPS is
     // used; workerd's HTTPS server is the HTTP server (TLS ends at ingress).
     void builtins.http;
-    const https = typeof __real_https !== "undefined"
-      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
+    const https = __nativeHttps;
     Object.defineProperty(builtins, "https", { value: https, writable: true, enumerable: true, configurable: true });
     return https;
   },
@@ -16703,8 +16579,8 @@ Object.defineProperty(builtins, "https", {
 // ERR_NET_SOCKET_NOT_AVAILABLE so callers fail loud.  W8 will route
 // raw outbound TCP through supervisor RPC.
 builtins.net = (() => {
-  if (globalThis.__nimbusEgress === true && typeof __real_net !== 'undefined') {
-    const native = __real_net.default ?? __real_net;
+  if (globalThis.__nimbusEgress === true) {
+    const native = __nativeBuiltin("net");
     return { ...native, get Server() { return builtins.http.Server; },
       createServer: (options, handler) => builtins.http.createServer(typeof options === 'function' ? options : handler) };
   }
@@ -17047,305 +16923,48 @@ for (const name of ["_unrefActive", "active", "unenroll", "enroll", "promises"])
 }
 // ──  zlib ───────────────────────────────────────────────────────────
 //
-// Two runtimes, one surface:
-//   1. Facet templates prepend the static import block
-//      (_shared/real-node-imports.ts), which carries workerd's native
-//      node:zlib — complete at the production compat date: every *Sync
-//      variant, brotli/zstd, crc32, constants, and real streaming create*
-//      factories. Forward verbatim: results are the host realm's own Buffer
-//      instances, and __BufferMod.isBuffer recognizes that brand (see the
-//      Buffer shim), so Buffer checks stay truthful without copying every
-//      result or intercepting stream chunks.
-//   2. Scopes without the import block keep the CompressionStream fallback.
-//      It is async-only by nature; the sync names refuse with an honest,
-//      actionable error instead of pretending.
+// The platform's node:zlib — complete at the production compat date: every
+// *Sync variant, brotli/zstd, crc32, constants, and real streaming create*
+// factories. Forwarded verbatim: results are the host realm's own Buffer
+// instances, and __BufferMod.isBuffer recognizes that brand (see the Buffer
+// shim), so Buffer checks stay truthful without copying every result or
+// intercepting stream chunks.
 builtins.zlib = (() => {
-  const __real = (typeof __real_zlib !== "undefined") ? (__real_zlib.default ?? __real_zlib) : null;
-  if (__real && typeof __real.gzipSync === "function") {
-    const mod = {};
-    // lib/zlib.js: the functions, the classes, `constants` and `codes` are
-    // the module's enumerable exports; each constant but Brotli's is on the
-    // module too, read-only and not enumerable (deprecated); there is no
-    // `default`. workerd exports every constant by name, enumerable, and two
-    // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
-    // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
-    // Z_MAX_CHUNK are the engine's values, not Node's.
-    const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
-    const constants = Object.create(null);
-    for (const [name, value] of Object.entries(__real.constants)) {
-      if (!Object.hasOwn(workerdOnly, name)) Object.defineProperty(constants, name, { value, enumerable: true });
-    }
-    // The lookup tables, crc32, and the stream factories/classes pass
-    // through bound to the native module (capitalized names are classes —
-    // binding would strip their prototype and break `new`).
-    for (const k of Object.keys(__real)) {
-      if (k === "constants" || k === "codes" || k in constants || Object.hasOwn(workerdOnly, k)) continue;
-      const v = __real[k];
-      // lib/zlib.js defines each create* factory read-only.
-      Object.defineProperty(mod, k, {
-        value: (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v,
-        writable: !/^create[A-Z]/.test(k), enumerable: true, configurable: true,
-      });
-    }
-    Object.defineProperties(mod, {
-      constants: { value: constants, enumerable: true },
-      codes: { value: __real.codes, enumerable: true },
+  const __real = __nativeBuiltin("zlib");
+  const mod = {};
+  // lib/zlib.js: the functions, the classes, `constants` and `codes` are
+  // the module's enumerable exports; each constant but Brotli's is on the
+  // module too, read-only and not enumerable (deprecated); there is no
+  // `default`. workerd exports every constant by name, enumerable, and two
+  // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
+  // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
+  // Z_MAX_CHUNK are the engine's values, not Node's.
+  const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
+  const constants = Object.create(null);
+  for (const [name, value] of Object.entries(__real.constants)) {
+    if (!Object.hasOwn(workerdOnly, name)) Object.defineProperty(constants, name, { value, enumerable: true });
+  }
+  // The lookup tables, crc32, and the stream factories/classes pass
+  // through bound to the native module (capitalized names are classes —
+  // binding would strip their prototype and break `new`).
+  for (const k of Object.keys(__real)) {
+    if (k === "constants" || k === "codes" || k in constants || Object.hasOwn(workerdOnly, k)) continue;
+    const v = __real[k];
+    // lib/zlib.js defines each create* factory read-only.
+    Object.defineProperty(mod, k, {
+      value: (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v,
+      writable: !/^create[A-Z]/.test(k), enumerable: true, configurable: true,
     });
-    for (const [name, value] of Object.entries(constants)) {
-      if (!name.startsWith("BROTLI")) Object.defineProperty(mod, name, { value });
-    }
-    if (__real.promises) mod.promises = __real.promises;
-    return mod;
   }
-  function _c(i,a) { return new Response(new Blob([i]).stream().pipeThrough(new CompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
-  // Decompression is driven by hand rather than piped: feeding and draining
-  // run together, because a write only completes while somebody reads.
-  async function _d(i,a) {
-    const codec = _openCodec("decompress", a);
-    const chunks = [];
-    let failure = null;
-    const record = (reason) => { if (!failure) failure = { reason }; };
-    const drain = (async () => {
-      for (;;) {
-        const next = await codec.reader.read();
-        if (next.done) return;
-        chunks.push(next.value);
-      }
-    })().catch(record);
-    const feed = (async () => {
-      await codec.writer.write(i);
-      await codec.writer.close();
-    })().catch(record);
-    await Promise.all([drain, feed]);
-    if (failure) throw _decompressFailure(failure.reason);
-    return __BufferMod.from(_concat(chunks));
+  Object.defineProperties(mod, {
+    constants: { value: constants, enumerable: true },
+    codes: { value: __real.codes, enumerable: true },
+  });
+  for (const [name, value] of Object.entries(constants)) {
+    if (!name.startsWith("BROTLI")) Object.defineProperty(mod, name, { value });
   }
-  function _syncRefusal(name, asyncName) {
-    const e = nodeError(Error, "ERR_ZLIB_SYNC_UNAVAILABLE", "zlib." + name + ": synchronous compression is not available on this runtime (no native node:zlib in scope). Use the async zlib." + asyncName + "(data, callback) form.");
-    throw e;
-  }
-  // Node accepts strings, ArrayBuffers, and any ArrayBufferView; one funnel
-  // yields a byte-addressed Uint8Array over the caller's own region —
-  // byteOffset/byteLength preserved, element values never reinterpreted.
-  function _u8(d) {
-    if (typeof d === "string") return new TextEncoder().encode(d);
-    if (d instanceof Uint8Array) return d;
-    if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
-    return new Uint8Array(d);
-  }
-  // Node splits decompression failures two ways, and the engine's own
-  // failure is the only thing that can tell them apart: an input that ran
-  // out is Z_BUF_ERROR / errno -5, everything else — bad header, bad block,
-  // and a checksum or length trailer that only fails once the member is
-  // complete — is Z_DATA_ERROR / errno -3. Which side of a write or close
-  // the failure lands on says nothing about that, so it is not consulted.
-  function _zdata(e) {
-    const err = new Error(e instanceof Error && e.message ? e.message : String(e));
-    err.code = "Z_DATA_ERROR";
-    err.errno = -3;
-    err.cause = e;
-    return err;
-  }
-  function _zbuf(e) {
-    const err = new Error("unexpected end of file");
-    err.code = "Z_BUF_ERROR";
-    err.errno = -5;
-    if (e != null) err.cause = e;
-    return err;
-  }
-  function _isUnexpectedEnd(e) {
-    const m = e instanceof Error && typeof e.message === "string" ? e.message : String(e);
-    return /unexpected end|end of (?:file|input|stream)|premature|truncated|\bEOF\b/i.test(m);
-  }
-  function _decompressFailure(e) { return _isUnexpectedEnd(e) ? _zbuf(e) : _zdata(e); }
-  function _destroyedWrite() {
-    const e = nodeError(Error, "ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
-    return e;
-  }
-  // Node's Unzip contract sniffs the wrapper itself: gzip magic or zlib.
-  function _isGzip(u8) { return u8.length >= 2 && u8[0] === 0x1f && u8[1] === 0x8b; }
-  function _concat(chunks) {
-    let n = 0;
-    for (const c of chunks) n += c.length;
-    const out = new Uint8Array(n);
-    let o = 0;
-    for (const c of chunks) { out.set(c, o); o += c.length; }
-    return out;
-  }
-  function _process(mode, fmt, input) {
-    const algo = mode === "compress" ? fmt : (fmt || (_isGzip(input) ? "gzip" : "deflate"));
-    return mode === "compress" ? _c(input, algo) : _d(input, algo);
-  }
-  function _async(mode, fmt) {
-    return (d, o, cb) => {
-      const callback = typeof o === "function" ? o : cb;
-      // Node throws synchronously rather than deferring a callback that is
-      // not there; this surface has no promise form to fall back on.
-      if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-      // Two arms, not .then().catch(): a callback that throws on success must
-      // not be handed its own exception as a second, failed invocation.
-      _process(mode, fmt, _u8(d)).then(
-        (r) => callback(null, r),
-        (e) => callback(e instanceof Error ? e : new Error(String(e))),
-      );
-    };
-  }
-  // Live codec per Transform lifetime: every write feeds one real
-  // CompressionStream/DecompressionStream writer (its queue serializes
-  // ordering; the write promise settles before the callback), a reader pump
-  // relays output as it is produced instead of accumulating the payload,
-  // and flush closes the writer then awaits full drain before completing.
-  // Chunks are copied so later caller mutations cannot reach the codec, and
-  // createUnzip holds copies only until two bytes decide the wrapper.
-  function _openCodec(openMode, openAlgo) {
-    const cs = openMode === "compress" ? new CompressionStream(openAlgo) : new DecompressionStream(openAlgo);
-    return { writer: cs.writable.getWriter(), reader: cs.readable.getReader() };
-  }
-  // The legacy Readable has no resume notification, so room below the
-  // high-water mark is observed by yielding to the task queue until the
-  // consumer drains or the stream is destroyed.
-  async function _drainRoom(stream) {
-    while (
-      stream._readableState &&
-      !stream._readableState.destroyed &&
-      stream.readableLength >= stream._readableState.highWaterMark
-    ) {
-      await new Promise((tick) => setTimeout(tick, 0));
-    }
-    // True when the wait ended because the stream went away, not because
-    // the consumer made room.
-    return !!(stream._readableState && stream._readableState.destroyed);
-  }
-  function _streamFactory(factoryMode, fmt) {
-    return () => {
-      let writer = null;
-      let reader = null;
-      let drained = Promise.resolve();
-      let pumpFailure = null;
-      let algo = fmt;
-      let held = [];
-      let heldLen = 0;
-      let destroyed = false;
-      const t = new __streamMod.Transform({
-        transform: async (chunk, _enc, cb) => {
-          try {
-            if (destroyed) return cb(_destroyedWrite());
-            const bytes = _u8(chunk).slice();
-            let feed = bytes;
-            if (!writer) {
-              if (fmt === null && heldLen + bytes.length < 2) {
-                held.push(bytes);
-                heldLen += bytes.length;
-                return cb();
-              }
-              if (heldLen > 0) feed = _concat([...held, bytes]);
-              held = [];
-              heldLen = 0;
-              if (fmt === null) algo = _isGzip(feed) ? "gzip" : "deflate";
-              start();
-            }
-            await writer.write(feed);
-            cb();
-          } catch (e) {
-            cb(destroyed ? _destroyedWrite() : factoryMode === "decompress" ? _decompressFailure(e) : e);
-          }
-        },
-        flush: async (cb) => {
-          try {
-            if (destroyed) return cb(_destroyedWrite());
-            if (!writer) {
-              if (factoryMode !== "compress") {
-                // Nothing was ever fed: the input ended before a member
-                // began, which is Node's unexpected-end buffer error rather
-                // than corrupt data. No codec is invented to hide it.
-                return cb(_zbuf(null));
-              }
-              start();
-            }
-            await writer.close();
-            await drained;
-            cb(pumpFailure);
-          } catch (e) {
-            if (pumpFailure) return cb(pumpFailure);
-            if (destroyed) return cb(_destroyedWrite());
-            cb(factoryMode === "decompress" ? _decompressFailure(e) : e);
-          }
-        },
-      });
-      // Every destroy exit fires 'close' on the custom Transform — even when
-      // the pump sits parked inside reader.read() on truncated input that can
-      // never decode. Waking there is immediate: cancel settles the parked
-      // read, abort fails queued writes, and writes arriving after destroy
-      // report ERR_STREAM_DESTROYED instead of silent acceptance.
-      t.on("close", () => {
-        destroyed = true;
-        _releaseCodec();
-      });
-      // One cleanup path for every destroy exit: cancel the readable side,
-      // abort the writable side, and stop the pump.
-      function _releaseCodec() {
-        if (reader) reader.cancel().catch(() => {});
-        if (writer) writer.abort().catch(() => {});
-      }
-      function start() {
-        const opened = _openCodec(factoryMode, algo);
-        writer = opened.writer;
-        reader = opened.reader;
-        drained = (async () => {
-          try {
-            for (;;) {
-              // A destroy can land while a read is in flight; check on both
-              // sides so nothing buffers after the stream went away.
-              if (destroyed) return _releaseCodec();
-              const next = await reader.read();
-              if (destroyed) return _releaseCodec();
-              if (next.done) {
-                return;
-              }
-              // Backpressure: once push reports pressure, park the pump and
-              // do not read again until the consumer drains below the
-              // high-water mark. The pending writer.write promise then holds
-              // the transform callback, so producer writes stop resolving
-              // instead of accumulating. A destroy while parked releases the
-              // codec through the close hook above.
-              if (!t.push(__BufferMod.from(next.value))) {
-                if (await _drainRoom(t)) return _releaseCodec();
-              }
-            }
-          } catch (e) {
-            pumpFailure = factoryMode === "decompress"
-              ? _decompressFailure(e)
-              : (e instanceof Error ? e : new Error(String(e)));
-          }
-        })();
-      }
-      return t;
-    };
-  }
-  return {
-    gzip: _async("compress", "gzip"),
-    gunzip: _async("decompress", "gzip"),
-    deflate: _async("compress", "deflate"),
-    inflate: _async("decompress", "deflate"),
-    deflateRaw: _async("compress", "deflate-raw"),
-    inflateRaw: _async("decompress", "deflate-raw"),
-    unzip: _async("decompress", null),
-    gzipSync: (d, o) => _syncRefusal("gzipSync", "gzip"),
-    gunzipSync: (d, o) => _syncRefusal("gunzipSync", "gunzip"),
-    deflateSync: (d, o) => _syncRefusal("deflateSync", "deflate"),
-    inflateSync: (d, o) => _syncRefusal("inflateSync", "inflate"),
-    deflateRawSync: (d, o) => _syncRefusal("deflateRawSync", "deflateRaw"),
-    inflateRawSync: (d, o) => _syncRefusal("inflateRawSync", "inflateRaw"),
-    unzipSync: (d, o) => _syncRefusal("unzipSync", "unzip"),
-    createGzip: _streamFactory("compress", "gzip"),
-    createGunzip: _streamFactory("decompress", "gzip"),
-    createDeflate: _streamFactory("compress", "deflate"),
-    createInflate: _streamFactory("decompress", "deflate"),
-    createDeflateRaw: _streamFactory("compress", "deflate-raw"),
-    createInflateRaw: _streamFactory("decompress", "deflate-raw"),
-    createUnzip: _streamFactory("decompress", null),
-    constants: { Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1 },
-  };
+  if (__real.promises) mod.promises = __real.promises;
+  return mod;
 })();
 builtins.readline = (() => {
   function emitKeypressEvents(stream) {
@@ -17509,8 +17128,7 @@ builtins.readline = (() => {
 builtins.perf_hooks = ((perfHooks) => Object.fromEntries([
   "Performance", "PerformanceEntry", "PerformanceMark", "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList",
   "PerformanceResourceTiming", "monitorEventLoopDelay", "createHistogram", "performance", "constants",
-].map((name) => [name, perfHooks[name]])))(typeof __real_perf_hooks !== "undefined"
-  ? (__real_perf_hooks.default ?? __real_perf_hooks) : globalThis.process.getBuiltinModule("perf_hooks"));
+].map((name) => [name, perfHooks[name]])))(__nativeBuiltin("perf_hooks"));
 // X.5-Z5 §3 follow-on: minimal v8 stub for jiti (used transitively by
 // @tailwindcss/vite). jiti reads v8.startupSnapshot.isBuildingSnapshot()
 // to decide whether to skip JIT compilation; workerd never builds v8
@@ -17650,17 +17268,8 @@ builtins.diagnostics_channel = __diagChannelMod;
 builtins.tls = __tlsMod;
 builtins.async_hooks = __asyncHooksMod;
 builtins.inspector = __inspectorMod;
-// node:inspector/promises — the promisified Session surface. workerd
-// exposes it natively; fall back to a Promise-shaped wrapper otherwise.
-builtins["inspector/promises"] = (() => {
-  const real = (typeof __real_inspector !== 'undefined') ? (__real_inspector.default ?? __real_inspector) : null;
-  if (real && real.promises && typeof real.promises.Session === 'function') return real.promises;
-  return {
-    Session: class { connect() {} disconnect() {} post(_m, _p) { return Promise.resolve({}); } on() { return this; } },
-    console: __inspectorMod.console, url: __inspectorMod.url,
-    open: __inspectorMod.open, close: __inspectorMod.close, waitForDebugger: __inspectorMod.waitForDebugger,
-  };
-})();
+// node:inspector/promises — the promisified Session surface.
+builtins["inspector/promises"] = __nativeBuiltin("inspector/promises");
 // Subpath-style require() — the shim's __requireFrom strips a 'node:'
 // prefix to look up bare names, so we expose both bare and prefixed
 // keys explicitly for grep-friendliness and to handle any future call
