@@ -47,6 +47,8 @@ assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 503 }, n
   "fatal: unable to access 'https://h/r/': The requested URL returned error: 503\n");
 assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 403, message: 'use https://x:hunter2@h/r or TOKEN-9\n' }, { username: '', password: true }, ['TOKEN-9']),
   "remote: use https://h/r or <redacted>\nfatal: unable to access 'https://h/r/': The requested URL returned error: 403\n", 'credentials a server echoes are not printed');
+assert.equal(remoteFailureText('http://127.0.0.1/auth.git', { kind: 'status', status: 401 }, { username: 'u', password: true }, ['p']),
+  "fatal: Authentication failed for 'http://127.0.0.1/auth.git/'\n", 'a single-letter secret does not redact the protocol spelling');
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 /** A server answering each repository's discovery with a failure. */

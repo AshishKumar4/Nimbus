@@ -110,6 +110,13 @@ function redactSecrets(text: string, secrets: readonly string[]): string {
   return out;
 }
 
+/** A URL's scheme is transport syntax, not secret-bearing input (a password "p" must not redact "http"). */
+function redactDestination(url: string, secrets: readonly string[]): string {
+  const scheme = url.indexOf('://');
+  const prefix = scheme < 0 ? 0 : scheme + 3;
+  return url.slice(0, prefix) + redactSecrets(url.slice(prefix), secrets);
+}
+
 /**
  * git's lines for `failure` of the repository at `url` (as configured or
  * given), `credentials` what the request offered: the server's plain-text
@@ -118,13 +125,13 @@ function redactSecrets(text: string, secrets: readonly string[]): string {
  */
 export function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets: readonly string[] = []): string {
   // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
-  const shown = redactCredentials(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
+  const shown = redactDestination(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
   if (failure.kind === 'transport') return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
   // A 401 asks for what was not offered (credential_fill), and there is no terminal to ask at.
   if (failure.status === 401 && !credentials.password) {
     const what = credentials.username ? 'Password' : 'Username';
     const prompt = credentialDescription(url, credentials.username);
-    const safePrompt = redactSecrets(prompt, secrets);
+    const safePrompt = redactDestination(prompt, secrets);
     return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
   const remote = redactCredentials(failure.message ?? '', secrets).trim();
