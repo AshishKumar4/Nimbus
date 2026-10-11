@@ -12,7 +12,7 @@ import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@ni
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { concatBytes } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
-import { parentVfsPath } from '../vfs/path.js';
+import { parentKey } from '../vfs/path.js';
 import { CALL_GROUP_BYTES, CALL_GROUP_OPS, DATA_CALL_MAX, ROUTED_FILE_MAX, ROUTED_LINK_TARGET_MAX, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from './wave-contracts.js';
 /** The paths a record lands at: where a delegation's holder is asked to give way first. */
 function recordPaths(record) {
@@ -76,7 +76,7 @@ export class WaveIngest {
         const routes = new Map();
         for (const named of names) {
             const key = view.storageKey(named);
-            const looked = follow ? key : parentVfsPath(key);
+            const looked = follow ? key : parentKey(key);
             let resolved = routes.get(looked);
             if (resolved === undefined) {
                 let answer;
@@ -170,7 +170,7 @@ export class WaveIngest {
         const placeSync = (kind, named) => {
             if (router === null)
                 return null;
-            const parent = parentVfsPath(named);
+            const parent = parentKey(named);
             const epoch = viewEpoch();
             let route = routes.get(parent);
             // A directory this wave placed in this view, not made yet: its names go under where it was placed.
@@ -243,7 +243,7 @@ export class WaveIngest {
                 placements.delete(named);
                 let now = placed.resolved;
                 if (placed.epoch !== viewEpoch()) {
-                    const parent = parentVfsPath(named);
+                    const parent = parentKey(named);
                     let dir = resolvedNow.get(parent);
                     if (dir === undefined) {
                         let answer;
@@ -905,7 +905,7 @@ export class WaveIngest {
             const quick = at.placeSync(kind, named);
             if (quick !== undefined)
                 return quick;
-            const parent = parentVfsPath(named);
+            const parent = parentKey(named);
             let route = at.routes.get(parent);
             const epoch = at.view();
             if (route === undefined || route.epoch !== epoch) {

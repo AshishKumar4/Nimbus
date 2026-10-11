@@ -2040,25 +2040,6 @@ export declare class SqliteVFS {
      */
     private writeFileFrom;
     /**
-     * Incremental W7 v3 consumer. Chunk payload is admitted through one
-     * per-VFS weighted credit pool and committed in bounded synchronous
-     * transactions, which release their credit before the decoder pulls
-     * another record.
-     *
-     * Publication is group-atomic with a committed prefix: a bounded group of
-     * whole files commits in one transaction, and either every file in it is
-     * durable or none is. A file never publishes partially — a group is closed
-     * on the record boundary before the file that would overflow it, so a file
-     * too large for one transaction stages across several and publishes on the
-     * last. Chunks staged for a file still in flight may ride along in a group
-     * that publishes other files; they belong to a state-0 content no inode
-     * references yet, so nothing observes them.
-     *
-     * The wire's 64 KiB positional chunks are re-cut by FastCDC as they arrive
-     * (ContentCutter holds at most one chunk of carry), so a streamed file is
-     * stored exactly as the same bytes written any other way.
-     */
-    /**
      * A wave on this filesystem as `cred`'s caller (WaveIngest): the
      * delegations it holds and whether its view continues as it is answered,
      * taken in the caller's turn; `work` applies the wave through the scope.
@@ -2070,10 +2051,25 @@ export declare class SqliteVFS {
     /** A wave's op that lands here, applied by this filesystem's operation of that name: an open's or a data call's stat. */
     private applyWaveOp;
     /**
-     * A wave's files on this filesystem (WaveFiles): a file whole enough for
-     * one group is held until its group commits and authorised there, with
-     * the group's other files; a larger one is authorised at its begin and
-     * stages its chunks as groups flush, publishing with its last.
+     * A wave's files on this filesystem (WaveFiles). Chunk payload is admitted
+     * through the engine's one weighted credit pool and committed in bounded
+     * synchronous transactions, which release their credit before the decoder
+     * pulls another record. A file whole enough for one group is held until
+     * its group commits and authorised there, with the group's other files; a
+     * larger one is authorised at its begin and stages its chunks as groups
+     * flush, publishing with its last.
+     *
+     * Publication is group-atomic with a committed prefix: a bounded group of
+     * whole files commits in one transaction, and either every file in it is
+     * durable or none is. A file never publishes partially — a group is closed
+     * on the record boundary before the file that would overflow it. Chunks
+     * staged for a file still in flight may ride along in a group that
+     * publishes other files; they belong to a state-0 content no inode
+     * references yet, so nothing observes them.
+     *
+     * The wire's 64 KiB positional chunks are re-cut by FastCDC as they arrive
+     * (ContentCutter holds at most one chunk of carry), so a streamed file is
+     * stored exactly as the same bytes written any other way.
      */
     private waveFiles;
     private openSequence;
