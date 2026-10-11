@@ -27,7 +27,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
