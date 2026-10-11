@@ -2,6 +2,7 @@
  * realm-egress-guest.ts — a realm's side of realm-egress.ts: its `fetch`,
  * crossing to the host.
  */
+import { routeWebSocketsThroughHost } from './realm-websocket-guest.js';
 /** A Request's redirect mode, as its type names it (a string, in the platform's typing). */
 function redirectMode(mode) {
     if (mode === 'follow' || mode === 'manual' || mode === 'error')
@@ -12,7 +13,7 @@ function redirectMode(mode) {
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 /**
  * Route this realm's `fetch` through its host (`post` crosses to it), and
- * refuse a WebSocket, which cannot cross, with `webSocketRefusal`. The host
+ * relay WebSocket frames unless the caller supplies `webSocketRefusal`. The host
  * sends each request out through the egress and follows its redirects as the
  * realm asked; a response is the realm's once its head arrives, and its body
  * is read from the host as the realm reads it. Fails as Node's fetch fails:
@@ -129,13 +130,14 @@ export function routeFetchThroughHost(post, waiting, webSocketRefusal) {
         request.signal.throwIfAborted();
         return await send(request, body);
     };
-    globalThis.WebSocket = class {
-        constructor() {
-            throw new Error(webSocketRefusal);
-        }
-    };
+    const sockets = webSocketRefusal === undefined ? routeWebSocketsThroughHost(post, waiting, () => ++ids) : null;
+    if (webSocketRefusal !== undefined) {
+        globalThis.WebSocket = class {
+            constructor() { throw new Error(webSocketRefusal); }
+        };
+    }
     return {
-        answer: (event) => requests.get(event.id)?.(event),
-        get awaited() { return awaited; },
+        answer: (event) => { requests.get(event.id)?.(event); sockets?.answer(event); },
+        get awaited() { return awaited + (sockets?.awaited ?? 0); },
     };
 }
