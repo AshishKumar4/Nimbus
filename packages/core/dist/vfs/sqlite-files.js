@@ -41,6 +41,8 @@ function statOf(stat, epoch) {
 export class SqliteFiles {
     engine;
     view;
+    /** VFS.storesWrites: a regular file holds what it was written. */
+    storesWrites = true;
     sync = this;
     /** The database's change feed, in this principal's view (names it could list). */
     changes;
