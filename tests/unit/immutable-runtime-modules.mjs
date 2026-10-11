@@ -5,7 +5,7 @@ import { readImmutableModuleSource } from '../../packages/core/src/_shared/stage
 import { facetImageDigest, facetImagePath, residentLoaderConfig } from '../../packages/fabric/src/process-fabric.ts';
 import { fetchNodeFacetSources } from '../../packages/worker/src/runtime/node-shims-artifact.ts';
 import { generateLongRunningNodeCode } from '../../packages/worker/src/facets/manager.ts';
-import { RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_DNS_MODULE } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, RUNTIME_NODE_DNS_MODULE } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const text = 'const shared = "' + 'library'.repeat(10_000) + '";';
@@ -41,6 +41,7 @@ for (const name of ['shims', 'ledger', 'residentStore', 'registry']) {
   assert.ok(refs.some((pin) => pin.sha256 === sources.immutable[name].asset.sha256), name + ' is a shared source');
 }
 assert.equal(generated.codeModules[RUNTIME_NODE_LIB_MODULE], undefined);
+assert.equal(generated.codeModules[RUNTIME_NODE_LIB_REST_MODULE], undefined);
 assert.equal(generated.codeModules[RUNTIME_NODE_DNS_MODULE], undefined);
 const registry = new Map();
 const loaded = [];
@@ -54,9 +55,12 @@ const requireModule = (name) => {
   return entry.exports;
 };
 const lib = requireModule(RUNTIME_NODE_LIB_MODULE);
+assert.equal(typeof lib.sources['internal/util/inspect'], 'function');
+assert.equal(typeof lib.sources['internal/validators'], 'function');
+assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE], 'formatting a value (an uncaught error\'s report) loads no other module');
 assert.equal(typeof lib.sources.util, 'function');
-assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE], 'ordinary builtins do not load DNS');
+assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE], 'the other builtins load one shared module on their first require, not DNS');
 assert.equal(typeof lib.sources.dns, 'function');
 assert.equal(typeof lib.sources['internal/dns/promises'], 'function');
-assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_DNS_MODULE], 'DNS loads one shared module on its first require');
-console.log('immutable-runtime-modules: recipes, integrity, shared loading and lazy DNS are intact');
+assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, RUNTIME_NODE_DNS_MODULE], 'DNS loads one shared module on its first require');
+console.log('immutable-runtime-modules: recipes, integrity, shared loading, the formatting closure and lazy DNS are intact');

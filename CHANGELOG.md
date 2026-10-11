@@ -40,6 +40,14 @@ published independently in the `@nimbus-sh` npm scope.
   path or descriptor, awaited ones included. The synchronous face refuses a
   descriptor on an asynchronous mount with that mount's `EAGAIN`, not
   `EBADF`. `CompositeVFS.writesInPlace` is removed.
+- `CompositeVFS.route` and `mutationRoute` take `{ report: true }`: the answer
+  then carries the links the lookup traversed, in order, and a lookup that
+  refuses (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENXIO`, `EACCES`) answers its refusal
+  `{ code, at }` instead of throwing, for a caller that invalidates on what a
+  name depended on. Without it both answer and refuse as before.
+
+## 2026-10-11: platform 0.8.1, config 0.3.0, core 0.17.0, fabric 0.12.0, worker 0.15.0, loom 0.2.4, sdk 0.13.0, react 0.3.0, cli 0.2.4
+
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the
   namespace's `WaveIngest` (`@nimbus-sh/core/runtime/wave-ingest.js`,
   `ProcessFiles.waves`). `CredentialedVfs.writeStream` and `writeBatchPlaced`
@@ -128,6 +136,38 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a `kill` sent while a process's earlier end was still waiting for its writes to drain was acknowledged but did nothing; the process kept running until the drain finished. The kill now takes effect at once, and its status is the one recorded.
 - Fixed: `opencode` run once (`opencode --version`, `opencode run …`) could reset the session; repeated runs reset it within a few dozen. Killing such a run now also ends the program, which used to run on after the session had let it go.
 - Fixed: a resident process whose filesystem could not be listed at boot reported a stale cause ("a change reported without the stat every name needs"). It now names the listing's own failure.
+
+- Breaking: `@nimbus-sh/react` takes `@nimbus-sh/sdk` `^0.13.0` as its peer.
+  `NimbusTerminal` builds its attach URL with the SDK's `sessionAttachUrl`, at
+  the endpoint's origin root rather than under the endpoint's own path, and
+  drives the frame through the headless `useNimbusSession`.
+- Breaking: `@nimbus-sh/fabric`'s peer-hosting receiver moves from
+  `process-host.js` to `peer-host.js` (`isolateToken`, `HostProcessOpts`,
+  `HostedHttpRequest`, `HostedHttpResponse`, `headerPairs` and the
+  `HOSTED_WEBSOCKET_*` headers); `workerd-facet-host.js` no longer exports
+  `NimbusCtxExports`, `createLoadedWorkerEntrypoint` or `getNimbusCtxExports`.
+- Added: a program under an egress makes its TLS sockets through the egress,
+  `node:net` sockets go out through it, and a WebSocket a program opens is
+  relayed inline (Kinu ask 37).
+- Added: `CompositeVFS.route` and `mutationRoute` take `creating`, the lookup
+  `writeFile({ parents })` makes; a namespace write reports each side's
+  observation; `writeFileIfRevision` expecting revision 0 creates only where
+  no file is (Kinu asks 32, 34, 36).
+- Changed: one namespace walk answers a lookup on the SQLite root, and a miss
+  is an answer rather than an error (Kinu ask 28).
+- Changed: a resident's keep-alive follows client traffic rather than any
+  attached socket, an aborted call settles, and verified npm tarballs stay in
+  a local tier (Kinu asks 30, 26).
+- Changed: a node program's writes made while a relay call is out go in one
+  call (Kinu ask 39). A process end ends its read lease, an ended program takes
+  no resumption barrier, and node's formatting closure loads first, the rest
+  of Node's library on first use (Kinu ask 40).
+- Changed: `node:http`'s client runs over the native transport; `node:stream`
+  is the one stream implementation.
+- Fixed: a shed writer-epoch open is opened again, not cached as a failure.
+- Fixed: a destroy stops session work, a running clone included, before it
+  returns the session's leases; Git's network failures exit as Git's do,
+  honour `-c` overrides, and redact credentials in what they print.
 
 ## 2026-10-10: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
