@@ -149,6 +149,7 @@ const resultPath = (result) => {
   if (!result?.path) throw Object.assign(new Error('missing'), { code: 'MODULE_NOT_FOUND' });
   return result.path;
 };
+const HostURL = globalThis.URL;
 try {
   for (const [path, content] of Object.entries(FILES)) {
     mkdirSync(dirname(disk(path)), { recursive: true });
@@ -169,6 +170,9 @@ try {
     '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire(filename);',
   );
   for (const conditions of [[], ['development']]) {
+    // Each guest boot gets a fresh host constructor, as in its own realm;
+    // do not wrap the previous standalone guest's URL a second time.
+    globalThis.URL = HostURL;
     const driver = disk(W + '/__oracle.cjs');
     writeFileSync(driver, [
       'const { createRequire } = require("module");',
@@ -266,6 +270,7 @@ try {
     assert.ok(expected in bundle, 'prefetch stages ' + expected);
   }
 } finally {
+  globalThis.URL = HostURL;
   rmSync(root, { recursive: true, force: true });
 }
 console.log('require-package-main: Node CommonJS resolution and named product policies');
