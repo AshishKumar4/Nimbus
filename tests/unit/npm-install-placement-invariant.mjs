@@ -20,7 +20,7 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { visiblePlacements } from '../../packages/core/src/_shared/npm-tree.ts';
-import { resolveVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
+import { pickPackumentVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -56,7 +56,7 @@ function genRegistry() {
 async function install(registry, deps) {
   const resultFor = (name, spec) => {
     const versions = registry[name] ?? {};
-    const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
+    const version = pickPackumentVersion(versions, { latest: Object.keys(versions).at(-1) }, spec?.range ?? 'latest');
     const base = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     if (!version) return { ...base, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
     const pkg = {

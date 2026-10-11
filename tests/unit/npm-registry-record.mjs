@@ -110,12 +110,16 @@ console.log('  ok  a warm resolve answers what the cold one did');
   const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor: () => null });
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx: { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage } });
   installer.npmCache.putRegistryEntries([record]);
-  const lockfile = new Map([['odd', { name: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]);
-  const recordOf = installer.lockRecords();
-  assert.equal(installer.isLockfileValid(lockfile, { odd: '1.0.0' }, recordOf), true, 'a malformed record still answers the check');
-  const { resolved } = installer.lockfileToResolved(installer.reachableFromSpecs(lockfile, { odd: '1.0.0' }, recordOf), recordOf);
-  assert.equal(resolved.get('odd')?.version, '1.0.0', 'and the reconstruction');
-  console.log('  ok  a record of another shape reads as none, and a valid-lockfile install over it goes on');
+  // A warm install over it: odd is installed, as the lockfile records, and the plan keeps it.
+  root.writeFile('app/package.json', JSON.stringify({ name: 'app', dependencies: { odd: '1.0.0' } }));
+  root.mkdir('app/node_modules/odd', { recursive: true });
+  root.writeFile('app/node_modules/odd/package.json', JSON.stringify({ name: 'odd', version: '1.0.0' }));
+  installer.npmCache.writeLockfile('app', new Map([['odd', { name: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]), { storage: harness.ctx.storage });
+  const log = [];
+  const result = await installer.install('app', { onProgress: (line) => log.push(line) });
+  assert.deepEqual(result.failed, [], log.join('\n'));
+  assert.ok(log.some((line) => line.startsWith('Lockfile valid')), `the install keeps what the lockfile records: ${log.join('\n')}`);
+  console.log('  ok  a record of another shape reads as none, and a warm install over it goes on');
 }
 
 console.log('npm-registry-record: ok');

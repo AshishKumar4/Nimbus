@@ -190,7 +190,7 @@ try {
     const run = await ws.npm('install xc@2.0.0');
     moved = null;
     assert.notEqual(run.exitCode, 0);
-    assert.doesNotMatch(run.stderr, /could not tell/, 'the filesystem said what the rename did');
+    assert.doesNotMatch(run.stderr, /could not (tell|restore)/, `the filesystem said what the rename did, and the undo used it:\n${run.stderr}`);
     assert.deepEqual(ws.tree(), { xc: '1.0.0' }, 'the complete retired copy is put back');
     assert.equal(ws.fs.exists(`${ws.NM}/xc/lib/residue.js`), false, 'over the residue');
     assert.deepEqual(ws.dotEntries(), []);
