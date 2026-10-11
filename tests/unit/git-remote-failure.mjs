@@ -161,6 +161,7 @@ try {
       await compare(`first configured URL survives appended -c for ${args[0]}`, ['-c', `remote.origin.url=${base}/forbidden.git`, ...args]);
     }
     await compare('command-only remote URL', ['-c', `remote.temporary.url=${base}/forbidden.git`, 'fetch', 'temporary']);
+    await compare('empty URL resets earlier configured URLs', ['-c', 'remote.origin.url=', '-c', `remote.origin.url=${base}/forbidden.git`, 'fetch', 'origin']);
     for (const args of [
       ['config', 'remote.upload.pushurl', `${base}/forbidden.git`],
       ['config', 'remote.origin.url', `${base}/missing.git`],
@@ -172,6 +173,7 @@ try {
     await compare('pushurl-only remote', ['push', 'upload', 'main']);
     await compare('pushurl preferred over fetch URL', ['push', 'origin', 'main']);
     await compare('first pushurl survives appended -c', ['-c', `remote.origin.pushurl=${base}/missing.git`, 'push', 'origin', 'main']);
+    await compare('empty pushurl resets earlier configured URLs', ['-c', 'remote.origin.pushurl=', '-c', `remote.origin.pushurl=${base}/missing.git`, 'push', 'origin', 'main']);
     assert.deepEqual(differences, [], 'remote destination and reported failure agree with host git for every operation');
     console.log('  ok  each effective fetch/pull/push destination crosses the facet and appears in its error');
   }

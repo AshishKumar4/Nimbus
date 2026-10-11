@@ -38,7 +38,20 @@ export function urlCredentials(url) {
         return { username: '', password: '' };
     const info = url.slice(start, at);
     const colon = info.indexOf(':');
-    return colon < 0 ? { username: info, password: '' } : { username: info.slice(0, colon), password: info.slice(colon + 1) };
+    return colon < 0
+        ? { username: unescapeUserinfo(info), password: '' }
+        : { username: unescapeUserinfo(info.slice(0, colon)), password: unescapeUserinfo(info.slice(colon + 1)) };
+}
+/** Decode valid UTF-8 escape runs exactly as the Git HTTP transport does; keep stray/invalid escapes. */
+function unescapeUserinfo(text) {
+    return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+        try {
+            return decodeURIComponent(run);
+        }
+        catch {
+            return run;
+        }
+    });
 }
 /** strbuf_add_percentencode with STRBUF_ENCODE_SLASH: every byte but [A-Za-z0-9-_.~] as %XX. */
 function percentEncode(text) {
