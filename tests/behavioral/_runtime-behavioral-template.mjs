@@ -173,6 +173,28 @@ export async function applyProbeCookies(page, base = BASE, sid) {
  * with helpers for the standard probe shape.
  */
 const exchangedSessions = new Set();
+/** Session cookies taken over HTTP before a browser opened (takeAttachCookie), by session. */
+const attachCookies = new Map();
+
+/**
+ * Exchange the session's single-use attach bootstrap for its session cookie
+ * now, over HTTP, for every page opened later (exchangeAttachCookie). The
+ * bootstrap lives 90 s (ATTACH_BOOTSTRAP_TTL_MS): a probe whose setup
+ * outlasts it (a clone, an install, a dev server) found it expired once its
+ * browser opened, and every page of the session answered 401
+ * (frameworks/markflow-real, on whichever runs set up past 90 s).
+ */
+export async function takeAttachCookie(sid) {
+  if (!sid || exchangedSessions.has(sid) || attachCookies.has(sid)) return;
+  const attachPath = attachPathFor(sid);
+  if (!attachPath.includes('nimbus_token=')) return;
+  const response = await fetch(`${BASE}${attachPath}`, { redirect: 'manual' });
+  await response.body?.cancel();
+  const pair = (response.headers.get('set-cookie') ?? '').split(';', 1)[0];
+  const eq = pair.indexOf('=');
+  if (response.status !== 302 || eq < 1) throw new Error(`attach exchange for ${sid}: ${response.status}, no session cookie`);
+  attachCookies.set(sid, { name: pair.slice(0, eq), value: pair.slice(eq + 1) });
+}
 
 /**
  * In token mode the browser holds no auth, and header injection does
@@ -182,6 +204,12 @@ const exchangedSessions = new Set();
  * API, and WebSocket requests for every page in this browser.
  */
 export async function exchangeAttachCookie(page, sid) {
+  const taken = attachCookies.get(sid);
+  if (taken !== undefined) {
+    // As the exchange sets it (auth/middleware.ts setNimbusTokenCookie): Secure on any scheme, which its __Host- name requires.
+    await page.setCookie({ ...taken, domain: new URL(BASE).hostname, path: '/', secure: true, httpOnly: true, sameSite: 'None' });
+    return;
+  }
   if (!sid || exchangedSessions.has(sid)) return;
   const attachPath = attachPathFor(sid);
   if (!attachPath.includes('nimbus_token=')) return;
@@ -367,6 +395,7 @@ export async function scaffoldAndStartVite(sid, opts) {
   //   devReadyMarkers?: string[],
   //   devReadyTimeoutMs?: number,
   // }
+  await takeAttachCookie(sid);
   const installCmd = opts.installCmd || 'npm install';
   const installTimeoutMs = opts.installTimeoutMs || 600_000;
   const devCmd = opts.devCmd || 'npm run dev';
@@ -436,6 +465,7 @@ export async function cloneAndStartVite(sid, opts) {
   //   cloneTimeoutMs?: number,           // default 240_000
   //   postCloneCmds?: string[],          // optional pre-install fixups
   // }
+  await takeAttachCookie(sid);
   const installCmd = opts.installCmd || 'npm install';
   const installTimeoutMs = opts.installTimeoutMs || 900_000;
   const devCmd = opts.devCmd || 'npm run dev';
