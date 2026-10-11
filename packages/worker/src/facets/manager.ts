@@ -40,7 +40,7 @@ import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
-import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
+import { NATIVE_HTTP_IMPORTS } from '../runtime/native-http.js';
 import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
@@ -825,13 +825,6 @@ export function residencyMissReport(keys: readonly string[]): string {
 }
 
 /**
- * Static `import * as __real_X from 'node:X'` block. Prepended to generated
- * runtime workers so the shims can forward to workerd's real `node:*` builtins.
- * See src/_shared/real-node-imports.ts for the rationale and matrix.
- */
-const REAL_NODE_IMPORTS = getRealNodeImportsCode();
-
-/**
  * Detect whether a facet bundle imports node:sqlite. When true, the
  * supervisor attaches the sql.js WebAssembly.Module to the facet's Worker
  * Loader module map (request-time WebAssembly.compile is blocked) and the
@@ -1042,7 +1035,7 @@ function nodeProgramModule(
 ): ModuleSource {
   return moduleSource`
 ${bundleSource.imports}
-${REAL_NODE_IMPORTS}
+${NATIVE_HTTP_IMPORTS}
 ${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(stagedBindings)}

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { _normalizeArgs } from 'node:net';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { withNativeBuiltins } from './lib/native-builtins.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; };
 const tick = async () => { for (let i = 0; i < 40; i++) await null; };
@@ -44,10 +45,10 @@ function fixture(proxied) {
     return true;
   } };
   const replay = { outbound: proxied, effect: (what) => effects.push(what), afterBoundary: () => notice.promise };
-  const factory = new Function('__real_net', '__real_tls', '__nimbusStopReplay', '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  const factory = new Function('__nimbusStopReplay', '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     generateShimsCode() + '\nreturn { tls: __tlsMod };');
-  const guest = factory(net, tls, replay, {}, {}, supervisor,
-    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/', [], {}, '/main.js', '/');
+  const guest = withNativeBuiltins({ net, tls }, () => factory(replay, {}, {}, supervisor,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/', [], {}, '/main.js', '/'));
   return { ...guest, Socket, notice, registration, calls, effects, carriers };
 }
 

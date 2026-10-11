@@ -5,6 +5,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import { generateShimsCode as shims } from '../../../packages/worker/src/runtime/node-shims.ts';
+import { NATIVE_HTTP_IMPORTS } from '../../../packages/worker/src/runtime/native-http.ts';
 
 const hostFetch = globalThis.fetch.bind(globalThis);
 const hostTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
@@ -16,6 +17,15 @@ function withHostTimers(work) {
 }
 const realms = globalThis.__nimbusTestHttpRealms ??= new Map();
 let nextRealm = 0;
+// The shims take the platform's http and net from the host's
+// process.getBuiltinModule as they evaluate (node-shims.ts __nativeBuiltin):
+// those of the realm the shims' prelude (bindings) names, the host's otherwise.
+const hostBuiltin = process.getBuiltinModule;
+process.getBuiltinModule = function getBuiltinModule(id) {
+  const realm = realms.get(globalThis.__nimbusTestHttpRealm);
+  const name = String(id).replace(/^node:/, '');
+  return realm !== undefined && (name === 'http' || name === 'net') ? realm[name] : Reflect.apply(hostBuiltin, process, [id]);
+};
 
 
 export function createHttpPlatform() {
@@ -86,7 +96,7 @@ export function createHttpPlatform() {
 function bindings() {
   const id = ++nextRealm;
   realms.set(id, createHttpPlatform());
-  return `const { http: __real_http, net: __real_net, handleAsNodeRequest: __nimbusHandleAsNodeRequest } = globalThis.__nimbusTestHttpRealms.get(${id});`;
+  return `globalThis.__nimbusTestHttpRealm = ${id};\nconst { handleAsNodeRequest: __nimbusHandleAsNodeRequest } = globalThis.__nimbusTestHttpRealms.get(${id});`;
 }
 
 /** Standalone shims factories, without a generated runner's import block. */
@@ -94,13 +104,9 @@ export function generateShimsCode() {
   return `${bindings()}\nconst __pendingIO = [];\n${shims()}`;
 }
 
-/** A generated runner's real workerd imports, mapped to this platform seam. */
+/** A generated runner's workerd HTTP import, mapped to this platform seam. */
 export function adaptHttpImports(source) {
-  if (!source.includes("const __real_http = globalThis.process.getBuiltinModule('http');")) return source;
-  return source
-    .replace("const __real_http = globalThis.process.getBuiltinModule('http');", bindings())
-    .replace("import * as __real_net from 'node:net';", '')
-    .replace("import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';", '');
+  return source.includes(NATIVE_HTTP_IMPORTS) ? source.replace(NATIVE_HTTP_IMPORTS, bindings()) : source;
 }
 
 /**

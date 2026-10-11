@@ -16,8 +16,17 @@
  */
 import { FETCH_HTTP_CLIENT_SOURCE } from './fetch-http-client.js';
 
+/** What NATIVE_HTTP_SOURCE reaches that is not a Node builtin: every runner's module imports it. */
+export const NATIVE_HTTP_IMPORTS = `import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';`;
+
 export const NATIVE_HTTP_SOURCE = `
 ${FETCH_HTTP_CLIENT_SOURCE}
+// The platform's HTTP modules and the net they connect over, taken as the
+// runner's modules initialize: before any builtin bridge of the program's
+// graph (node:http re-exported from these shims) links.
+const __nativeHttp = __nativeBuiltin("http");
+const __nativeHttps = __nativeBuiltin("https");
+const __nativeNet = __nativeBuiltin("net");
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
 // Only this runtime's listener registrations can claim a local request. Neither
@@ -29,15 +38,11 @@ const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent",
 Object.defineProperty(builtins, "http", {
   configurable: true, enumerable: true,
   get() {
-    const http = typeof __real_http !== "undefined"
-      ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
-    const net = typeof __real_net !== "undefined"
-      ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
-    const https = typeof __real_https !== "undefined"
-      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
-    const url = typeof __real_url !== "undefined"
-      ? (__real_url.default ?? __real_url) : globalThis.process.getBuiltinModule("url");
-    const buffer = typeof __real_buffer !== "undefined" ? __real_buffer : globalThis.process.getBuiltinModule("buffer");
+    const http = __nativeHttp;
+    const net = __nativeNet;
+    const https = __nativeHttps;
+    const url = __nativeBuiltin("url");
+    const buffer = __nativeBuiltin("buffer");
     const ports = new Map();
     // The event loop reads listening handles; this is a view, not admission.
     globalThis.__portRegistry = Object.freeze({
@@ -320,8 +325,7 @@ Object.defineProperty(builtins, "https", {
     // Install the shared HTTP Server prototype bridge before native HTTPS is
     // used; workerd's HTTPS server is the HTTP server (TLS ends at ingress).
     void builtins.http;
-    const https = typeof __real_https !== "undefined"
-      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
+    const https = __nativeHttps;
     Object.defineProperty(builtins, "https", { value: https, writable: true, enumerable: true, configurable: true });
     return https;
   },
