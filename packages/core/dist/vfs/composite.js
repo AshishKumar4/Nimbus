@@ -218,12 +218,9 @@ class Pinned {
             throw new Refusal('ENOTSUP', this.name, `this filesystem does not support ${name}`);
         return fn.bind(this.backend);
     }
-    /** A mutation by an optional operation: refused as ENOTSUP before the namespace hears of it. */
+    /** A mutation by an optional operation: the guard refuses it first, as the namespace's own; then ENOTSUP when the backend has none. */
     changingBy(syscall, name, run) {
-        return this.call(syscall, () => {
-            const fn = this.optional(name);
-            return this.mutate(syscall, () => run(fn));
-        });
+        return this.changing(syscall, () => run(this.optional(name)));
     }
     stat(path, options) { return this.call('stat', () => this.backend.stat(path, options)); }
     readFile(path) { return this.call('open', () => this.backend.readFile(path)); }

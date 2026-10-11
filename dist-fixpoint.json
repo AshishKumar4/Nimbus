@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "62edd75bff1c9a5700dd125eff792bef63c5af85ddfca46c6b071d366a531520",
+  "fingerprint": "75dc7dbe71dbff4015c7aac27248b33a6ddcf0350a6cefe601f98a2b515f9552",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1172,8 +1172,8 @@
     "packages/core/dist/vfs/chunk-codec.d.ts.map": "a28ba5a2e63037b3111a22355d9157bc7fbd8f005d443cda476b53d41cc45b67",
     "packages/core/dist/vfs/chunk-codec.js": "bf60ed375449aa5d4318ebd8aeb9bf41609f084fef9405707a51057528c3ac8f",
     "packages/core/dist/vfs/composite.d.ts": "d7d2e7f8a3f8521fe5b2cb13b0be23d32c426e2edcb6c0872d8824233a560343",
-    "packages/core/dist/vfs/composite.d.ts.map": "9e650c5b87db44f838041d92336ce5dba0a27267b81d0c120c27c64b20bc7165",
-    "packages/core/dist/vfs/composite.js": "a1db7121ba92b589f33d8bdbe3e6e2c4a826aaa5ee29f29ff3b97ae35d72ebb1",
+    "packages/core/dist/vfs/composite.d.ts.map": "0d0b8ca31e768fcfb55962330810e10faf97c912210e40468b7763d1f6fb9a3e",
+    "packages/core/dist/vfs/composite.js": "5add91a42b0a3d0947170fde87aadd732c999289a453bb819ab1a48f2c27613f",
     "packages/core/dist/vfs/content-chunking.d.ts": "ab7d97839621cd850eca630ab05598ed0de71747e28ad047cab7daccbc0066a8",
     "packages/core/dist/vfs/content-chunking.d.ts.map": "88536b4287f6bf75688693a634d7cf1a0f286588c1452ee835f233637d884d3b",
     "packages/core/dist/vfs/content-chunking.js": "0a261d37ecbece8432375d0e2b49ae3b42806ddc8b707436757a55f88fc5e5b2",
@@ -1619,7 +1619,7 @@
     "packages/core/src/types/node-zlib.d.ts": "6a2d801eb505f60eb0a67103a5e698ae11fcebf4b30fb268b7bf9ed836ba867f",
     "packages/core/src/types/npm-libs.d.ts": "5d2da876416ecc57683402b2f9cd98f671b01b75029d9f03d2e02c4e60642b57",
     "packages/core/src/vfs/chunk-codec.ts": "5813343d3d7ea72567a1b13e3b13e6045f4aaca0dc2be7ebf691b6874e9150b9",
-    "packages/core/src/vfs/composite.ts": "c094532c87cd9051f6ad31e1bb69b935f3bd530f944db9e6d83bbb94909116df",
+    "packages/core/src/vfs/composite.ts": "c587a7c8d871cee9557a1b161609d219e9bf6c7ddba00ebe853d53d4e92e5785",
     "packages/core/src/vfs/content-chunking.ts": "233171797daf4525018f5b2f57c7f79afaf244810fac502a843ec5ca1476df0c",
     "packages/core/src/vfs/dev-vfs.ts": "e6d6f4ed7a13daa5f7d7f951e2620a86aa6d268b76bef85bdb5087bcd2efba7a",
     "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
