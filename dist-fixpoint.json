@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "43f7e8690c9b413f480bacca84b78b648b5071b53d20d880630a6af1750f8baf",
+  "fingerprint": "4a9f7e76ad7d2025c2bfa891f6eb9c03c90304434d00180093dff5150c4840c7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -352,8 +352,8 @@
     "packages/core/dist/runtime/delegations.d.ts": "0ddd33e5b46facccf809376b57e09e3e126112c6d5ba275abddbf787c0d3e2fc",
     "packages/core/dist/runtime/delegations.d.ts.map": "f7a924642d4d5a6a7728346309addaa0b5fcf7f0506a3a3d04391d0a216a2332",
     "packages/core/dist/runtime/delegations.js": "973b4c1d556ad00943edfa429ffde9ab65b356487abf8ffce4bc1500f4c09799",
-    "packages/core/dist/runtime/descriptors.d.ts": "3f615575d60a53a47ff7a721d6377c08d72d44c05397808cdbfdf55e799891c2",
-    "packages/core/dist/runtime/descriptors.d.ts.map": "b681d21aff2e6e0c13d5678a0f6f6448bbaddf6bdd11a797fac608126addc991",
+    "packages/core/dist/runtime/descriptors.d.ts": "4fb9e441ff0a8c6e50fe9cd54483680ebea145cf1fdcd7658e881dece6276a61",
+    "packages/core/dist/runtime/descriptors.d.ts.map": "e17397c079b42899166438dbf46e72acaf1d74408e705af2268f8a39854a5d44",
     "packages/core/dist/runtime/descriptors.js": "f1b47a275a6b86ba4e037c884bcf63c221e85367ef26a3be32fc1b0cdd32187f",
     "packages/core/dist/runtime/document-policy.d.ts": "cf81b3bcb4c15d1f863cafda7f66285d658b68d72ad7a735ec923826247dc055",
     "packages/core/dist/runtime/document-policy.d.ts.map": "d7d7ac7cbc3583387a6a2d0263930bcbe24f97627f63dbafec46f2561fcddd78",
@@ -1342,7 +1342,7 @@
     "packages/core/src/runtime/css-bundle.ts": "fbe4b93ba2aaf5d9c4c2cf28b7c451abeddf391aee90219198b1a77d53b08ff0",
     "packages/core/src/runtime/css-syntax.ts": "44bbbbbdf2398d0c6af55df46b71ecc5a075495e3e120cdc363a9d15a01a9a8b",
     "packages/core/src/runtime/delegations.ts": "99b4265653b0b012ee03d8e88f0b587d51cdcff368f8eaaeee7228cf734b63d4",
-    "packages/core/src/runtime/descriptors.ts": "fd2ee4b9e466eb323ece6596517378ac86d8fd89d70f56fd7dfe2a5f5f8a3785",
+    "packages/core/src/runtime/descriptors.ts": "c5c6b5eac7bbb2eebc310610a9bf8b93ae8a5c80448acf70748b608176c35b45",
     "packages/core/src/runtime/document-policy.ts": "9c2089c0747a3ada7acae22a8634e8495083e6bc3914650a4d863b64f665fce7",
     "packages/core/src/runtime/dynamic-import-rewrite.ts": "1bdb32458ad9b70b21490a7d5601b96d094b487cf747e4fc66664b68734936ca",
     "packages/core/src/runtime/esbuild-cli.ts": "1ef1a390699ef9a1eeb8ad01e9df9be014f8b22637f0ae217fd8b22b8ea9de45",

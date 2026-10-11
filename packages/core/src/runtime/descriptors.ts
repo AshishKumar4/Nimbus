@@ -14,9 +14,10 @@ import { fsError } from '../vfs/vfs-error.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 
 type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
+type EngineDescription = Omit<VfsOpenDescription, 'path'>;
 
 /** An open file description: what a process's descriptors (dups included) share. Its name is known at once. */
-export type Description = { [K in Exclude<keyof VfsOpenDescription, 'path'>]: Answering<VfsOpenDescription[K]> } & {
+export type Description = { [K in keyof EngineDescription]: Answering<EngineDescription[K]> } & {
   path(): string;
   /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
   readonly awaits?: true;

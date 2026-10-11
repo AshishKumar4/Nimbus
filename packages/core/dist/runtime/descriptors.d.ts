@@ -11,10 +11,11 @@ import { type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
-/** An open file description: what a process's descriptors (dups included) share. */
+/** An open file description: what a process's descriptors (dups included) share. Its name is known at once. */
 export type Description = {
-    [K in keyof VfsOpenDescription]: Answering<VfsOpenDescription[K]>;
+    [K in Exclude<keyof VfsOpenDescription, 'path'>]: Answering<VfsOpenDescription[K]>;
 } & {
+    path(): string;
     /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
     readonly awaits?: true;
     /** A mounted file's: its stat is the mount's, which never moves the SQLite clock. */
