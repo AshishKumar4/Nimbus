@@ -13,7 +13,7 @@ import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platf
 import { concatBytes } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
 import { parentVfsPath } from '../vfs/path.js';
-import { CALL_GROUP_BYTES, CALL_GROUP_OPS, DATA_CALL_MAX, ROUTED_FILE_MAX, ROUTED_LINK_TARGET_MAX, untilAborted, validateInodeShape, withUmask, } from './wave-contracts.js';
+import { CALL_GROUP_BYTES, CALL_GROUP_OPS, DATA_CALL_MAX, ROUTED_FILE_MAX, ROUTED_LINK_TARGET_MAX, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from './wave-contracts.js';
 /** The paths a record lands at: where a delegation's holder is asked to give way first. */
 function recordPaths(record) {
     switch (record.type) {
@@ -739,7 +739,7 @@ export class WaveIngest {
                         }
                         case 'directory': {
                             phase = 'validation';
-                            validateInodeShape(record.inode);
+                            validateFileChunks(record.inode, []);
                             phase = 'publish';
                             // Records commit in their order: files the stream wrote before
                             // this directory commit before it.
@@ -854,6 +854,9 @@ export class WaveIngest {
             };
         }
         finally {
+            // What the wave staged and never published goes back to the store, and
+            // every chunk lease it holds with it, before the decoder is let go.
+            files.abandon();
             // Data calls the wave did not make: what they held goes back.
             for (const lease of callLeases)
                 lease.release();
@@ -873,8 +876,6 @@ export class WaveIngest {
                 catch { /* preserve the primary stream result */ }
             }
             drain.end();
-            // What the wave staged and never published goes back to the store.
-            files.abandon();
         }
     }
     /**
