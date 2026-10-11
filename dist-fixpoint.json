@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "52e8976093e34c47895513c347ad61239802d703fcf27ae2e90ecb983e668a50",
+  "fingerprint": "f6bfcea495b1072912a2700b0c3578c16964db82c33c74409a787b2c2e04fe3f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2166,8 +2166,8 @@
     "packages/worker/dist/git/pack/reader.d.ts.map": "6a7c3f1a759184de75cedf0d523c04c8768df36e6ccdc8abd9c66bd56abccadf",
     "packages/worker/dist/git/pack/reader.js": "30bd3b14eed8e3216594981049ae0f10f0dbee9034927c4bd7859bcba23df40d",
     "packages/worker/dist/git/pack/remote-failure.d.ts": "098bf099a3c374f5736b5e744d8c37426e3b010889dae356b734fcd6681aaff1",
-    "packages/worker/dist/git/pack/remote-failure.d.ts.map": "9bf26626d5f0b003bce09edaa4256adc2394a359e1141d067cd280f97c317cc5",
-    "packages/worker/dist/git/pack/remote-failure.js": "8417513bee99db1458541797dfe6a8cece233d00d8d153962178165339388ab4",
+    "packages/worker/dist/git/pack/remote-failure.d.ts.map": "cf27354afd10bc5896d126880782060b1b2d142f0fbbee555c2a764d93105a95",
+    "packages/worker/dist/git/pack/remote-failure.js": "6262385bbfcad6b88d62add62fcf0dbb2f684c9f5ba6fe1aec46623652726c1f",
     "packages/worker/dist/git/pack/sparse.d.ts": "8a856c73c947f216fda784f2ded40e6912e14f9e8be08aac66f72cce7dc9a599",
     "packages/worker/dist/git/pack/sparse.d.ts.map": "0443c3c9e5b47581f03759eb59834a6d60966ee27a3dc9d03b20c3571a20747a",
     "packages/worker/dist/git/pack/sparse.js": "8e065ee7fe0ad0c43294c3692c83995497ce64ee7c814ba1c55753378c14e9d4",
@@ -2860,7 +2860,7 @@
     "packages/worker/src/git/pack/plan.ts": "5b26f664e7c48bdbe8276ee8e419a1814ab2d106ffc0aad9d9e2761607b7c86a",
     "packages/worker/src/git/pack/processor.ts": "aaa00029d544a27f29291805a981e2b6fdd8e1ed82232cc7ab83785518d1d00c",
     "packages/worker/src/git/pack/reader.ts": "e126c4307209d774d29a1152884252f1649843b1a44c6fa3b6cf5bcd85fd75ef",
-    "packages/worker/src/git/pack/remote-failure.ts": "3cfa5e3f06d29451c2737e00ce53bbbe29d0a788e39b9c8568084449633dd8c9",
+    "packages/worker/src/git/pack/remote-failure.ts": "d22e26797ac7dd04e47222972a28950016d327cd693134911991620cfc15abaf",
     "packages/worker/src/git/pack/sparse.ts": "70ca6c370f669920a4ca51a533bc2414da0bc7b15931c73c2fc9d704c2cd52dd",
     "packages/worker/src/git/pack/store.ts": "54b16d1f17d1a86060683b94a2a86b5295180cb548161c0b608b3fa4e439e00b",
     "packages/worker/src/git/pack/transport.ts": "8d2dae2beeb5b967461935ce76869ba0e04e77d2e43cbe9f862d5b814aaa3cca",
