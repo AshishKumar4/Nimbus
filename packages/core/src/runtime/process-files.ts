@@ -579,7 +579,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     if (!scope || scope.closed) return { lost: [] };
     const lost: number[] = [];
     for (const [id, opened] of scope.handles) {
-      if ((opened.node.pendingBytes?.() ?? 0) > 0) lost.push(id);
+      if (opened.node.mounted && opened.node.pendingBytes() > 0) lost.push(id);
       // Dropped unflushed; a description another process still holds stays open.
       opened.refs--;
     }

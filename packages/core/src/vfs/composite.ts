@@ -1253,7 +1253,7 @@ export class CompositeVFS implements VFS {
       if (source === null) throw this.absent(route.mount, at);
       return andThen(this.reachable(at, options.sync), (): PinnedName => {
         // Found by awaiting, a file on a backend that answers at once is held as one: its description need not await.
-        const files = this.viewOf(source);
+        const files = this.backendView(source);
         const sync = options.sync || files.sync !== undefined;
         const backend: VFS = sync ? this.synchronousFace(files, route) : files;
         return new CompositeVFS.Pinned(this, { mount: route.mount, backend, source, rel: route.rel, name: at, root: point !== undefined, sync });
@@ -1758,7 +1758,7 @@ export class CompositeVFS implements VFS {
 
   private backend(mount: Mount): VFS | null {
     const found = this.sourceOf(mount);
-    return found === null ? null : this.viewOf(found);
+    return found === null ? null : this.backendView(found);
   }
 
   /** What `mount`'s source gives this view's principal now (the backend itself, before a principal's view of it). */
@@ -1768,7 +1768,7 @@ export class CompositeVFS implements VFS {
   }
 
   /** `found` as this view's principal sees it (its `as`), one view per backend. */
-  private viewOf(found: VFS): VFS {
+  private backendView(found: VFS): VFS {
     const cred = this.viewer.cred;
     if (cred === null || found.as === undefined) return found;
     let view = this.viewed.get(found);
