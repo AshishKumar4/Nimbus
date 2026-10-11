@@ -62,7 +62,7 @@ export class HostActivity {
         const ready = Promise.resolve().then(() => observation.open(abort.signal)).then(async (response) => {
             if (abort.signal.aborted) {
                 await response.body?.cancel();
-                return;
+                throw abort.signal.reason;
             }
             const incarnation = response.headers.get(HOST_INCARNATION_HEADER);
             if (response.status !== 200 || !incarnation || !response.body) {
@@ -97,10 +97,8 @@ export class HostActivity {
                 }
             })();
         }).catch((error) => {
-            const cancelled = abort.signal.aborted;
             this.failed(observation, abort, error);
-            if (!cancelled)
-                throw error;
+            throw error;
         });
         ready.catch(() => { });
         observation.current = { abort, ready };
