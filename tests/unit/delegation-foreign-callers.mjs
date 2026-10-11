@@ -79,7 +79,8 @@ function held(root, decided, stored = {}) {
 // ── Class 4: the programmatic files API (files.delete) ──
 {
   const { raw, kernel, recalls } = held('home/user/repo', { 'home/user/repo/decided': 'by the holder' });
-  const host = { sqliteFs: raw, async ensureRuntimeReady() {} };
+  const authority = new ProcessFiles(raw);
+  const host = { sqliteFs: raw, getFilesystemAuthority: () => authority, async ensureRuntimeReady() {} };
   await rpcDeleteFile(host, '/home/user/repo/existing');
   // It looks before it removes: the look shares, the removal revokes.
   assert.deepEqual(recalls, ['share', 'revoke']);
@@ -90,7 +91,9 @@ function held(root, decided, stored = {}) {
 // ── Class 7: the editor pane's reads, lists and writes ──
 {
   const { raw, kernel, recalls } = held('home/user/repo', { 'home/user/repo/decided': 'by the holder' });
-  const editor = { files: raw.as(CRED_KERNEL), tree: raw.as(CRED_KERNEL, { landed: true }) };
+  // The session's namespace, as the editor reaches it: the tree's a `landed` view of it.
+  const namespace = new ProcessFiles(raw);
+  const editor = { files: namespace.namespaceFs(CRED_KERNEL), tree: namespace.namespaceFs(CRED_KERNEL, { landed: true }) };
   // The tree lists what has landed, asking the holder for nothing.
   const landed = await serveEditorFs(editor, { type: 'fs-list', dir: '/home/user', recursive: true });
   assert.deepEqual(landed.entries.map((entry) => entry.path).sort(), ['/home/user/repo', '/home/user/repo/existing']);
@@ -111,7 +114,7 @@ function held(root, decided, stored = {}) {
 //    recalled whole, never answered with the subtree left out ──
 {
   const { raw, recalls } = held('home/user/repo', {});
-  const files = raw.as(CRED_KERNEL);
+  const files = new ProcessFiles(raw).namespaceFs(CRED_KERNEL);
   const listed = await serveEditorFs({ files, tree: files }, { type: 'fs-list', dir: '/home', recursive: true });
   assert.ok(listed.entries.some((entry) => entry.path === '/home/user/repo/existing'), JSON.stringify(listed));
   assert.deepEqual(recalls, ['share']);
