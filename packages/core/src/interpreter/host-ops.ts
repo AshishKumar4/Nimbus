@@ -29,7 +29,7 @@ export interface FunctionRuntime<F, E, R> {
   /** Run a plain function, method, getter or setter body. */
   call(fi: F, scope: E, fn: Function, thisArg: unknown, args: IArguments, newTarget: Function | undefined, home: object | undefined): unknown;
   /** Run an arrow function body. */
-  arrow(fi: F, scope: E, args: unknown[]): unknown;
+  arrow(fi: F, scope: E, fn: Function, args: unknown[]): unknown;
   /** Bind a call's environment: the function's frame with its parameters bound. */
   enter(fi: F, scope: E, fn: Function | undefined, thisArg: unknown, args: ArrayLike<unknown>, newTarget: Function | undefined, home: object | undefined): E;
   /**
@@ -238,7 +238,8 @@ return {
     return f;
   },
   arrow(fi, scope) {
-    return (...args) => callArrow(fi, scope, args);
+    const f = (0, (...args) => callArrow(fi, scope, f, args));
+    return f;
   },
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
@@ -270,9 +271,10 @@ return {
     return f;
   },
   asyncArrow(fi, scope) {
-    return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);${ASYNC_BODY}
-    };
+    const f = (0, async (...args) => {
+      const env = enter(fi, scope, f, undefined, args, undefined, undefined);${ASYNC_BODY}
+    });
+    return f;
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
   // return() request at a yield is a return completion this frame cannot
