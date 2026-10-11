@@ -1,5 +1,5 @@
 /** Native TLSSocket owns the Node stream; the egress owns its encrypted session. */
-export const EGRESS_TLS_CLIENT_SOURCE = String.raw`
+export const EGRESS_TLS_CLIENT_SOURCE = String.raw `
 function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
   let options = {}, callback;
   if (args[0] !== null && typeof args[0] === 'object') { options = { ...args[0] }; callback = args[1]; }
@@ -32,10 +32,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     resource = undefined;
     resolveClosed();
   };
-  let admit;
-  const admitted = new Promise((resolve) => { admit = resolve; });
-  const ready = admitted.then(async () => {
-    await __nimbusRawSocket();
+  const ready = Promise.resolve(__nimbusRawSocket()).then(async () => {
     const where = await target();
     if (stopped) return;
     resource = await __supervisor.netTls(previous ? 'upgrade' : 'open', '', where);
@@ -84,7 +81,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     readable: placeholderRead, writable: placeholderWrite, opened: Promise.resolve({}), closed: new Promise(() => {}),
     secureTransport: 'starttls', upgraded: false,
     close,
-    startTls() { carrier._handle = null; admit(); return transport; },
+    startTls() { carrier._handle = null; return transport; },
   };
   carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
     socket: initial, reader: placeholderRead.getReader({ mode: 'byob' }), writer: placeholderWrite.getWriter(),

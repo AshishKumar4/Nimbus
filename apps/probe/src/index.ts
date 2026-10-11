@@ -145,11 +145,6 @@ export class TestEgress extends WorkerEntrypoint {
   }
 }
 
-/**
- * The SDK's session, its workspace under the test egress when the probe runs
- * with NIMBUS_TEST_EGRESS=1, as an embedder that names each session to its
- * egress would write it.
- */
 export class TestTlsEgress extends TestEgress {
   async connectTls(target: { hostname: string; port: number }): Promise<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }> {
     if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
@@ -170,6 +165,7 @@ export class TestTlsEgress extends TestEgress {
   }
 }
 
+/** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
   /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
   #dataMounted = false;
