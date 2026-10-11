@@ -379,7 +379,7 @@ export class NpmInstaller {
     let tree: PlannedTree;
     let usedLockfile = false;
     if (opts.fromLockfile) {
-      const locked = await this.treeFromPackageLock(projDir, project, principal, log, registry);
+      const locked = await this.treeFromPackageLock(projDir, project, principal, opts.production === true, log, registry);
       tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, frozen: true });
       log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
     } else {
@@ -389,8 +389,8 @@ export class NpmInstaller {
         return record === null ? [] : [{ at, pkg: resolvedFromRecord(record) }];
       });
       tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
-      // The lockfile answered every edge: nothing resolved, nothing failed, nothing extraneous.
-      usedLockfile = lockfile !== null && tree.plan.failures.length === 0 && tree.plan.extraneous.size === 0 && [...tree.plan.nodes.values()].every((node) => !node.planned);
+      // The lockfile answered every edge: nothing resolved, nothing failed.
+      usedLockfile = lockfile !== null && tree.plan.failures.length === 0 && [...tree.plan.nodes.values()].every((node) => !node.planned);
       log(usedLockfile ? `Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.` : `Resolved ${tree.plan.nodes.size} packages.`);
     }
     phases['resolve'] = Date.now() - phaseStart;
@@ -414,14 +414,13 @@ export class NpmInstaller {
     opts.signal?.throwIfAborted();
 
     // ── Phase 2: Hoist ────────────────────────────────────────────────
-    // The tree to install: what the plan holds, but what it leaves out and,
-    // with --omit=dev, what only devDependencies need.
+    // The tree to install: what the plan holds, but what it leaves out.
     phaseStart = Date.now();
     setInstallPhase('hoist');
     const resolved = new Map<string, ResolvedPackage>();
     const nested = new Map<string, ResolvedPackage>();
     for (const [at, node] of plan.nodes) {
-      if (plan.skipped.has(at) || (opts.production && plan.dev.has(at))) continue;
+      if (plan.skipped.has(at)) continue;
       (at.includes('/node_modules/') ? nested : resolved).set(at, node.pkg);
     }
     const hoistPlan: HoistPlan = { root: resolved, nested };
@@ -1363,7 +1362,7 @@ export class NpmInstaller {
   private async buildRoots(
     projDir: string,
     fs: ProjectFs,
-    opts: { packages?: string[]; saveDev?: boolean; saveOptional?: boolean; global?: boolean; legacyPeerDeps?: boolean },
+    opts: { packages?: string[]; production?: boolean; saveDev?: boolean; saveOptional?: boolean; global?: boolean; legacyPeerDeps?: boolean },
     lockfile: Map<string, LockfileEntry> | null,
   ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string> }> {
     // Which names only a devDependency asked for — diagnostics only, so an
@@ -1378,7 +1377,7 @@ export class NpmInstaller {
     const manifest = await fs.exists(pkgJsonPath) ? readPackageJson(await fs.readFileString(pkgJsonPath))?.manifest ?? null : null;
     const named = namedPackages(manifest, opts.packages ?? [], opts);
     const implicit = opts.global ? [...(lockfile?.keys() ?? [])].filter((at) => !at.includes('/node_modules/')) : [];
-    const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true });
+    const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true, production: opts.production === true });
     const explicit = new Set(named.map(({ name }) => name));
     const rooted = new Set(roots.map(({ name }) => name));
     for (const name of Object.keys(manifest?.devDependencies ?? {})) {
@@ -1522,6 +1521,7 @@ export class NpmInstaller {
     projDir: string,
     fs: ProjectFs,
     principal: { cred: VfsCred; view: ProcessView },
+    production: boolean,
     log: (msg: string) => void,
     registry: string,
   ): Promise<{ installed: Array<InstalledPackage<ResolvedPackage>>; lockName: string }> {
@@ -1558,6 +1558,7 @@ export class NpmInstaller {
     const swapPlacements: { placement: string; folderName: string; spec: string }[] = [];
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (key === '') continue;
+      if (production && entry.dev === true) continue;
       const placement = key.slice('node_modules/'.length);
       const folderName = placement.split('/node_modules/').pop() ?? placement;
       const name = typeof entry.name === 'string' ? entry.name : folderName;

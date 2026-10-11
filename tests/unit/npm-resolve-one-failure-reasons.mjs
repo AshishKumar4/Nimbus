@@ -114,8 +114,8 @@ const packument = (versions, distTags = {}) => JSON.stringify({
       source: 'network',
     }),
   );
-  assert.equal(platformBound.pkg, null);
   assert.equal(platformBound.error?.type, 'w6-reject', 'a platform-bound package is a refusal');
+  assert.equal(platformBound.pkg?.version, '0.21.5', 'of the package it resolved, whose edges still shape the tree');
   assert.match(platformBound.error.reason, /os=\[linux\]/);
 
   const nativeBin = await resolveOnePackumentInFacet(

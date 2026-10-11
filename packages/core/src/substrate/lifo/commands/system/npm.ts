@@ -296,8 +296,6 @@ interface TreeInstall {
 	kernel?: Kernel;
 	/** A global install: npm's shallow layout, and the roots' bins linked into this directory. */
 	globalBinDir?: string;
-	/** `--omit=dev`: what only devDependencies reach is not installed. */
-	production?: boolean;
 	force?: boolean;
 	legacyPeerDeps?: boolean;
 }
@@ -403,8 +401,8 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 	// ── Reify ──
 	const run = Math.random().toString(36).slice(2, 10);
 	const staging = join(targetBase, `.nimbus-staging-${run}`);
-	// The tree to publish: what the plan holds, but what it leaves out (and, with --omit=dev, what only devDependencies need).
-	const inTree = (at: string) => plan.nodes.has(at) && !plan.skipped.has(at) && !(install.production && plan.dev.has(at));
+	// The tree to publish: what the plan holds, but what it leaves out.
+	const inTree = (at: string) => plan.nodes.has(at) && !plan.skipped.has(at);
 	// What the plan places is fetched, but where that package is installed already.
 	const installedAt = new Map(installed.map(({ at, pkg }) => [at, pkg]));
 	const planned: Array<Extract<TreeNode<ResolvedShellPackage, InstalledShellPackage>, { planned: true }>> = [];
@@ -613,7 +611,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const tree: TreeInstall = {
 				targetBase, vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-				production: spec.production === true, force: spec.force === true, legacyPeerDeps: spec.legacyPeerDeps === true,
+				force: spec.force === true, legacyPeerDeps: spec.legacyPeerDeps === true,
 				...(globalBinDir ? { globalBinDir } : {}),
 			};
 			// The project's package.json is read and written under the tree's
@@ -630,7 +628,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 				const implicit: string[] = [];
 				if (spec.global) for await (const name of packagesIn(vfs, targetBase)) implicit.push(name);
 				const named = namedPackages(project?.manifest ?? null, spec.packages, { saveDev: spec.saveDev, saveOptional: spec.saveOptional });
-				const roots = projectRoots(project?.manifest ?? null, named, { implicit, legacyPeerDeps: spec.legacyPeerDeps === true });
+				const roots = projectRoots(project?.manifest ?? null, named, { implicit, legacyPeerDeps: spec.legacyPeerDeps === true, production: spec.production === true });
 				await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
 				const result = await installTree(roots, tree);
 				if (result.failed.length > 0 || project === null || named.length === 0) return result;

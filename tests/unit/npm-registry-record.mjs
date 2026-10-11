@@ -51,7 +51,8 @@ const cold = await resolveOnePackumentInFacet(spec({ name: 'pkg', range: '^2.0.0
   SUPERVISOR: { async getPackument() { return { json: JSON.stringify(packument), source: 'network', events: [] }; } },
 });
 assert.ok(cold.pkg, `the cold resolve answered: ${JSON.stringify(cold.error ?? cold.messages)}`);
-assert.deepEqual(plain(cold.pkg.peerDependencies), { react: '^18.0.0' }, 'the cold resolve keeps the required peers');
+assert.deepEqual(plain(cold.pkg.peerDependencies), { react: '^18.0.0', maybe: '*' }, 'the cold resolve keeps every peer');
+assert.deepEqual(plain(cold.pkg.peerDependenciesMeta), { maybe: { optional: true } }, 'and which are optional');
 const record = cold.cacheWrites.find((entry) => entry.version === '2.1.0');
 assert.ok(record, 'the cold resolve staged its version');
 

@@ -270,7 +270,7 @@ function workerProject(dir = 'app') {
         const result = await installer.install(dir, {
           packages: invocation.packages.length > 0 ? invocation.packages : undefined,
           saveDev: invocation.saveDev, saveOptional: invocation.saveOptional,
-          allowPeerConflicts: invocation.allowPeerConflicts, production: invocation.production,
+          force: invocation.force, legacyPeerDeps: invocation.legacyPeerDeps, production: invocation.production,
           ...options,
         });
         return result.failed.length === 0;

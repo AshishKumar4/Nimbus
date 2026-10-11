@@ -97,8 +97,6 @@ export interface TreePlan<P extends TreePackage, I extends TreePackage> {
   readonly failures: readonly TreeFailure[];
   /** Placements (and failure ids) a path of required edges reaches from the project. */
   readonly required: ReadonlySet<string>;
-  /** Placements only devDependencies reach: what `--omit=dev` leaves out. */
-  readonly dev: ReadonlySet<string>;
   /** Placements (and failure ids) left out: optional failures and refusals, what the host leaves out, and their optional sets. */
   readonly skipped: ReadonlySet<string>;
   /** Why each one left out is (by placement or failure id). */
@@ -220,6 +218,9 @@ class Tree {
   }
 
   named(name: string): ReadonlySet<Node> { return this.byName.get(name) ?? new Set(); }
+
+  /** Whether anything in the tree is, or asks for, `name`. */
+  mentions(name: string): boolean { return (this.byName.get(name)?.size ?? 0) > 0 || (this.edgesByName.get(name)?.size ?? 0) > 0; }
 
   *nodes(): Generator<Node> {
     const pending = [...this.root.children.values()];
@@ -394,7 +395,7 @@ function canDedupe(node: Node, preferDedupe: boolean): boolean {
   if (!other) return false;
   if (other.matches(node)) return true;
   if (!canReplace(other, node)) return false;
-  return preferDedupe || (other.version !== null && other.version === node.version);
+  return preferDedupe || (other.version !== null && node.version !== null && versionAtLeast(other.version, node.version));
 }
 
 // ── Placement (can-place-dep.js, place-dep.js) ───────────────────────────────
@@ -642,6 +643,10 @@ class Builder<P extends TreePackage> {
       const conflictOK = this.options.force === true || root.marks.sourceReference?.isProjectRoot !== true;
       if (!edge.to) {
         if (!parentEdge) {
+          // An optional peer is never placed for its package: it only
+          // constrains what the tree has or asks for. Where nothing in the
+          // tree mentions the name it cannot conflict, and is not resolved.
+          if (edge.type === 'peerOptional' && !this.tree.mentions(edge.name)) continue;
           await this.nodeFromEdge(edge, root, null, required);
           continue;
         }
@@ -696,7 +701,7 @@ class Builder<P extends TreePackage> {
         const answer = this.resolutions.get(key);
         if (!answer || 'failed' in answer) continue;
         for (const peer of this.edgesOf(answer.package)) {
-          if (!isPeer(peer.type)) continue;
+          if (!isPeer(peer.type) || (peer.type === 'peerOptional' && !this.tree.mentions(peer.name))) continue;
           next.push({ name: peer.name, range: peer.range, from });
           const own = from.edgesOut.get(peer.name);
           if (own) next.push({ name: peer.name, range: own.spec, from });
@@ -941,15 +946,16 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   for (const message of builder.warnings) await host.warn?.(message);
 
   // ── calc-dep-flags: what the project reaches, and through which edges ──
+  // What the project's edges reach, and what its required edges reach: a
+  // folder holding one is kept with it (calc-dep-flags' resetParents), but
+  // only edges are followed.
   const reached = new Set<Node>();
   const required = new Set<Node>();
-  const prod = new Set<Node>();
   const mark = (flagged: Set<Node>, start: Node, follow: (edge: Edge) => boolean) => {
     const pending = [start];
     for (let each = pending.pop(); each; each = pending.pop()) {
       if (flagged.has(each)) continue;
       flagged.add(each);
-      for (let up = each.parent; up && !up.isProjectRoot; up = up.parent) if (!flagged.has(up)) pending.push(up);
       for (const edge of each.edgesOut.values()) if (edge.to && follow(edge)) pending.push(edge.to);
     }
   };
@@ -957,22 +963,24 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     if (!edge.to) continue;
     mark(reached, edge.to, () => true);
     if (!edge.optional) mark(required, edge.to, (e) => !e.optional);
-    if (edge.type !== 'dev') mark(prod, edge.to, (e) => e.type !== 'dev');
   }
+  const withFolders = (flagged: Set<Node>) => {
+    for (const each of [...flagged]) for (let up = each.parent; up && !up.isProjectRoot; up = up.parent) flagged.add(up);
+  };
+  withFolders(reached);
+  withFolders(required);
 
-  // ── What the project does not reach is extraneous, and goes ──
-  for (const each of [...tree.nodes()]) if (each.tree === tree && !reached.has(each)) tree.detach(each);
+  // ── What the project does not reach is extraneous, and goes; a frozen tree is installed as it is ──
+  if (!options.frozen) for (const each of [...tree.nodes()]) if (each.tree === tree && !reached.has(each)) tree.detach(each);
   const extraneous = new Set<string>();
   for (const [at, each] of installedAt) if (at !== '' && each.tree !== tree) extraneous.add(at);
 
   // The tree, as the hosts get it, before anything is left out of it.
   const nodes = new Map<string, TreeNode<P, I>>();
   const requiredAt = new Set<string>();
-  const dev = new Set<string>();
   for (const each of tree.nodes()) {
     const at = each.location;
     if (required.has(each)) requiredAt.add(at);
-    if (!prod.has(each)) dev.add(at);
     if (each.pkg === null) continue;
     // The host's own packages, under the types it gave them.
     nodes.set(at, each.origin === 'planned' && each.marks.placedFor
@@ -1010,7 +1018,6 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     nodes,
     failures: [...failures.values()],
     required: requiredAt,
-    dev,
     skipped,
     reasons,
     extraneous,
