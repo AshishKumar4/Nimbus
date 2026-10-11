@@ -3385,11 +3385,16 @@ export class SqliteVFS {
         this.exclusiveMutationLeases.set(next, lease);
         return next;
     }
-    /** Whether a holder's exclusive mutation is active: a lease taken for work, not a commit held for its publication. */
-    hasExclusiveMutation() {
-        for (const lease of this.exclusiveMutationLeases.values())
-            if (lease.held === undefined)
+    /**
+     * Whether a holder's exclusive mutation is active: a lease taken for work,
+     * not a commit held for its publication. `delegations: false` leaves out
+     * the subtrees delegated to processes, which go when their holders end.
+     */
+    hasExclusiveMutation({ delegations = true } = {}) {
+        for (const lease of this.exclusiveMutationLeases.values()) {
+            if (lease.held === undefined && (delegations || lease.delegation === null))
                 return true;
+        }
         return false;
     }
     /** Cut every wave being read now: each ends as a refused one does, what it committed published once its recalls are answered. */

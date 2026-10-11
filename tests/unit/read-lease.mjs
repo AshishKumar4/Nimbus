@@ -612,10 +612,10 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const { readLease } = barrier(s, reader);
   assert.equal((await wave(writer, '/home/user/d/a.txt', 'last')).held, true);
   const closed = [];
-  // The session's: its exit releases the process's binding first (supervisorForgetBridge), as the session's does.
+  // The session's: its exit releases the process's binding first (SessionProcessSupervisor.programEnded), through the table's release, as the workspace composes it.
+  processes.setRelease((released) => s.files.releaseProcess(released));
   const host = {
     processes,
-    supervisorForgetBridge: (released) => { void s.files.releaseProcess(released); },
     webSocketRelay: { closeForPid: (closing) => { closed.push(closing); } },
   };
   const reported = _rpcReportExit(host, pid, 0, '');

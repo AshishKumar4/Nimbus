@@ -68,11 +68,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
             ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
             : dispatch(),
     });
-    const forget = (pid) => {
-        host.supervisorDeliveries?.forget(pid);
-        return store.forget(pid);
-    };
-    return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => {
+    return { dispatch, bridge: store.bridge, rewind: async (pid) => {
             host.supervisorDeliveries?.endReadRun(pid);
             await store.rewind?.(pid);
         }, dispose: store.dispose };
