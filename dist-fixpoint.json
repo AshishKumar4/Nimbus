@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "75dc7dbe71dbff4015c7aac27248b33a6ddcf0350a6cefe601f98a2b515f9552",
+  "fingerprint": "f19bcd83d8db9b8544a9513f300b2330aaaccdfbb9794771f737d347ead6f0fa",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1204,9 +1204,9 @@
     "packages/core/dist/vfs/posix-access.d.ts": "6a9cdc852eeddd2b650b734ff8fe1351fe3af4c07008647d573a596f7259ce31",
     "packages/core/dist/vfs/posix-access.d.ts.map": "d8836ea22c3531b475bf9585e9748ccc3418ada324f18e3344478eeb493f24df",
     "packages/core/dist/vfs/posix-access.js": "7fab6b3a379d3e4348646989ef1202adf4f5c54ac941ecc92772c3ea711e4a1c",
-    "packages/core/dist/vfs/proc-vfs.d.ts": "0f2e667463379264aab4bba3e3490a4b7ec8b95d54482d63278b437a5c9a8127",
-    "packages/core/dist/vfs/proc-vfs.d.ts.map": "56c20056b5c2ce15b7cd2e0329e2ffd2ab0cd6b7c412f649cfdbf696075e912a",
-    "packages/core/dist/vfs/proc-vfs.js": "b09d47c416fe4d3bef0e31b1d3ba802f0b930fb6711703a7576826363ad39c82",
+    "packages/core/dist/vfs/proc-vfs.d.ts": "9d55d8cb1c9d9d255ab5750b565a2afe9d9715430874a48c293b8fba97445c80",
+    "packages/core/dist/vfs/proc-vfs.d.ts.map": "a0a285b8fc0b1edf256e5d72837079e17176114f967cfdbe0c4f84d791dd98ad",
+    "packages/core/dist/vfs/proc-vfs.js": "5fe5c30d164b2195ae6f84a8f6a1c8e1c312528a47712c20dd4fac271752de9f",
     "packages/core/dist/vfs/recall.d.ts": "6091abe379c4f917b610df9306366bece3343522739be50d507339fc147902f5",
     "packages/core/dist/vfs/recall.d.ts.map": "3bd63705eedb161d97f7df14a517fabed32d0d1c9cf2e0c61c2a332b0db23b1b",
     "packages/core/dist/vfs/recall.js": "87df1c5b095420e3448dee5af2926d8624cc29a8e791a27d9b390a938ee1dd30",
@@ -1630,7 +1630,7 @@
     "packages/core/src/vfs/path-revisions.ts": "6caf8c2a9185400c4c516609d369d40015e0cd69542afe75461c7695695637b1",
     "packages/core/src/vfs/path.ts": "78d829ad225a5bc803622ce155f8993611dad4eb9f6bff9459ec72d859a4e2bb",
     "packages/core/src/vfs/posix-access.ts": "b7f71453286ccfbc90d7d23024ca78f674225bdbd3eff2871aa2321a0f000a66",
-    "packages/core/src/vfs/proc-vfs.ts": "7f9db82d57301d72f0898f18659461d3fe914cf99dddc0125bdcd546a926beee",
+    "packages/core/src/vfs/proc-vfs.ts": "4050d5c0fb5e75c514a05188662b3557ee111c5f2b0e0575f24110d169db8889",
     "packages/core/src/vfs/recall.ts": "229c7f336961cdbc1908e8cdab481e0f740814212c4ab8a1d98df4cc0b1e3993",
     "packages/core/src/vfs/seed-project.ts": "0bae0c52abab747c22f53db63aad4fc0668972abea74cf384fd9637d4c542801",
     "packages/core/src/vfs/sqlite-files.ts": "20fe73d3540f6fa36dd3a411fc616445194243969dfed7d53814eee48fa2db29",

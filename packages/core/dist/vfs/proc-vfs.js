@@ -1,7 +1,10 @@
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 const enc = new TextEncoder();
-const DIR = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40555, uid: 0, gid: 0 };
+/** A directory's and a file's mode and owner: what their stats say and their access asks. */
+const DIRECTORY = { mode: 0o40555, uid: 0, gid: 0 };
+const FILE = { mode: 0o100444, uid: 0, gid: 0 };
+const DIR = { type: 'directory', size: 0, mtimeMs: 0, ...DIRECTORY };
 function key(path) {
     return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
 }
@@ -43,17 +46,18 @@ export class ProcVFS {
             return DIR;
         if (!this.files.has(k))
             return null;
-        return { type: 'file', size: this.generate(path).length, mtimeMs: Date.now(), mode: 0o100444, uid: 0, gid: 0 };
+        return { type: 'file', size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
     }
     readFile(path) {
         return this.generate(path);
     }
-    /** Its files are root's, 0444: a credential asks them by their mode (the embedder's view is not judged). */
+    /** Its files are root's, 0444, its directories 0555: a credential asks them by their mode (the embedder's view is not judged). */
     access(path, mode) {
-        const stat = this.stat(path);
-        if (stat === null)
+        const k = key(path);
+        const entry = this.isDir(k) ? DIRECTORY : this.files.has(k) ? FILE : null;
+        if (entry === null)
             throw syscallError('ENOENT', 'open', path);
-        if (this.cred !== null && !posixAccess({ mode: stat.mode ?? 0, uid: stat.uid ?? 0, gid: stat.gid ?? 0 }, mode, this.cred))
+        if (this.cred !== null && !posixAccess(entry, mode, this.cred))
             throw syscallError('EACCES', 'open', path);
     }
     readRange(path, offset, length) {
