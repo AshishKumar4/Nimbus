@@ -5,10 +5,12 @@
 //     let go; it removes its junk, as git's signal handler does, then its
 //     record goes, then its lease; it ends 130.
 //   - A kill of a background clone's process stops it the same way.
-//   - A destroy during a clone goes ahead: it stops the clone, which leaves
-//     its junk to the wipe and writes nothing after its record goes, and is
-//     answered once the clone has let go of its lease. A lease no process
-//     holds is still refused, EBUSY, which the remote API answers 409.
+//   - A destroy during a clone goes ahead: it stops the clone (through the
+//     session's facet manager, as a session has one), which leaves its junk
+//     to the wipe and writes nothing after its record goes, and is answered
+//     once the clone has let go of its lease. A lease no process holds is
+//     still refused, EBUSY, which the remote API answers 409, before anything
+//     is stopped: the session's shell runs the next line.
 //
 // Red before: execGitNetwork took no stop, so the clone ran on past a Ctrl-C
 // or a kill, and a destroy during a clone answered 500 EBUSY.
@@ -22,8 +24,12 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { signalAbortReason } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { assumeGeneration } from '../../packages/fabric/src/generation.ts';
+import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 
 adoptCtxExports({
   SupervisorRPC: (options) => ({ props: options.props, async stdout() {}, [Symbol.dispose]() {} }),
@@ -74,6 +80,11 @@ async function cloneSession() {
   Object.assign(host.ctx.storage, { async deleteAll() { box.rows.clear(); }, async deleteAlarm() {} });
   assumeGeneration(host.ctx, 1);
   ws.registry.register('git', (ctx) => runGitCommand(ctx, ws.vfs, host.ctx, env, ISOLATE_NETWORK, ws.filesystem, ws.processes));
+  // The session's facet manager, over the session's process table: a destroy kills through it.
+  const world = createFacetWorld(() => ({ async startProcess() { return { ok: true }; } }));
+  host.facetManager = new FacetManager(createFacetCtx(world, 'clone-stop-facets'), { LOADER: world.loader, ASSETS: stagedAssets },
+    ws.processes, new PortRegistry(), processHostFor, { requestLaunchTurn: () => {}, onExternalExit: () => {} });
+  host.facetManager.setVfs(ws.vfs, ws.filesystem);
   const records = () => [...box.rows.keys()].filter((key) => key.startsWith('git-clone-job:'));
   return { box, ws, host, facet, records };
 }
@@ -143,13 +154,18 @@ for (const background of [false, true]) {
   }
 }
 
-// ── A lease no process holds still refuses the destroy, which the remote API answers 409 ──
+// ── A lease no process holds still refuses the destroy, before anything is
+//    stopped, which the remote API answers 409 ──
 {
   const { box, ws, host } = await cloneSession();
   try {
     const lease = ws.vfs.acquireExclusiveMutation('home/user');
     await assert.rejects(rpcDestroy(host, { reason: 'test' }), (error) => error.code === 'EBUSY');
     ws.vfs.releaseExclusiveMutation(lease.owner);
+    assert.equal(ws.processes.get(ws.shellProcessPid)?.state, 'running', 'the refused destroy stopped nothing');
+    const line = await ws.shell.execute('echo still-here', {});
+    assert.equal(line.exitCode, 0, line.stderr);
+    assert.equal(line.stdout, 'still-here\n', 'the session\'s shell runs the next line');
     const env = {
       JWT_SECRET: 'unit-clone-stop-secret',
       NIMBUS_SESSION: {
@@ -164,7 +180,7 @@ for (const background of [false, true]) {
     }), env, { remote: true });
     assert.equal(response.status, 409, await response.clone().text());
     assert.equal((await response.json()).code, 'EBUSY');
-    console.log('  a lease no process holds still refuses the destroy: 409');
+    console.log('  a lease no process holds still refuses the destroy, stopping nothing: 409');
   } finally {
     box.close();
   }

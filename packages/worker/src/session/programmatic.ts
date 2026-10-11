@@ -5,7 +5,7 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-import { SESSION_DESTROYED } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { SESSION_DESTROYED, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { PID_GEN_STRIDE, execIdField, parseExecId, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
@@ -49,7 +49,7 @@ export interface ProgrammaticShell {
 type ProgrammaticContext = DurableObjectState;
 
 interface ProgrammaticFacetManager {
-  kill(pid: number): boolean;
+  kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
   closeLaunches(): Promise<void>;
   hasResidentProcess(pid: number): boolean;
   removeDurableApp(owner: string): Promise<boolean>;
@@ -1184,6 +1184,11 @@ export async function rpcDestroy(
   self.ensureSqliteFs();
   const guardedVfs = self.sqliteFs!;
   const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
+  // A lease that stopping the session's processes does not end refuses the
+  // destroy before anything is stopped: a refused destroy leaves the session
+  // as it was. What their work holds goes as it stops (a delegation with its
+  // process, a clone's lease with its clone).
+  if (guardedVfs.hasExclusiveMutation({ stoppable: false })) throw busy();
   const reason = typeof options.reason === 'string' && options.reason.trim()
     ? options.reason.trim().slice(0, 200)
     : null;
@@ -1193,6 +1198,8 @@ export async function rpcDestroy(
   const running: ProcessEntry[] = self.processes.getAll()
     .filter((p: ProcessEntry) => p.state === 'running');
 
+  // Each one's work stops as a destroy's (SESSION_DESTROYED): what it would
+  // still write into the storage about to be wiped, it does not.
   for (const entry of running) {
     const pid = Number(entry.pid);
     try {
@@ -1204,11 +1211,9 @@ export async function rpcDestroy(
         try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
         self._viteShimPid = null;
         self._viteShimPort = null;
-      } else if (self.facetManager?.kill?.(pid)) {
+      } else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
         // facetManager.kill already marks process state and unregisters ports.
       } else {
-        // Its work stops as a destroy's (SESSION_DESTROYED): what it would
-        // still write into the storage about to be wiped, it does not.
         try { self.processes.kill(pid, undefined, SESSION_DESTROYED); } catch {}
       }
       try { self.portRegistry?.unregisterByPid?.(pid); } catch {}
@@ -1226,7 +1231,8 @@ export async function rpcDestroy(
   // What they held goes once the work stopping on them has closed what it
   // opened (SessionProcessSupervisor.released, bounded for work that ignores
   // its stop): their delegations and leases among it (a clone releases its
-  // lease as it stops). What is still held after is refused below.
+  // lease as it stops). What work that ignored its stop still holds after is
+  // refused below.
   await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
 
   // Its processes stopped, every wave still being read is cut, which ends

@@ -177,16 +177,16 @@ for (const [what, end] of [
   console.log('  a destroy stops a live holder and goes ahead');
 }
 
-// ── A lease no process's work holds still refuses it: what is left once
-//    the destroy has stopped the session's work ─────────────────────────────
+// ── Work of the session's own that holds the filesystem still refuses it,
+//    before anything is stopped ──────────────────────────────────────────────
 {
   const s = session();
   const { pid } = s.processes.spawn('node server.js', [], '/home/user', { cred: user, longRunning: true });
   const lease = s.engine.acquireExclusiveMutation('home/user/repo');
   await assert.rejects(rpcDestroy(sessionHost(s), { reason: 'test' }), (error) => error.code === 'EBUSY');
-  assert.equal(s.processes.get(pid)?.state, 'killed', 'its processes were stopped first');
+  assert.equal(s.processes.get(pid)?.state, 'running', 'nothing was stopped');
   s.engine.releaseExclusiveMutation(lease.owner);
-  console.log('  a lease no process holds still refuses a destroy, once its work is stopped');
+  console.log('  work of the session\'s own still refuses a destroy, before anything is stopped');
 }
 
 // ── A process the session runs is stopped, and its own cleanup closes its
