@@ -131,7 +131,7 @@ export function* selectPackageMap(field, name, conditions, policy) {
                     last = error;
                     continue;
                 }
-                if (result === undefined)
+                if (result === undefined || (policy.permissive && result === ''))
                     continue;
                 if (result === null) {
                     last = null;
@@ -154,7 +154,7 @@ export function* selectPackageMap(field, name, conditions, policy) {
                 if (key !== 'default' && !active.has(key))
                     continue;
                 const result = yield* target(Reflect.get(value, key), match);
-                if (result === undefined || (policy.permissive && result === null))
+                if (result === undefined || (policy.permissive && (result === null || result === '')))
                     continue;
                 return result;
             }
@@ -200,7 +200,7 @@ export function* selectPackageMap(field, name, conditions, policy) {
         const star = key.indexOf('*');
         const subpath = name.slice(star, name.length - (key.length - star - 1));
         const result = yield* target(map[key], match(key, subpath, true));
-        if (!policy.permissive || result != null || map[key] === null)
+        if (!policy.permissive || (result != null && result !== '') || map[key] === null)
             return result;
     }
     return undefined;
