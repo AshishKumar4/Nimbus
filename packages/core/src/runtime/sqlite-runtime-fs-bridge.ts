@@ -580,29 +580,45 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
-      const found = this.locate(path, false);
-      if (found === null) {
-        this.leaseAllows(this.pathArgument(path), options.mutationOwner);
-        throw callError('ELOOP', { syscall: 'mkdir', path });
+      const owner = options.mutationOwner;
+      let located: Located;
+      if (options.recursive) {
+        const found = this.locate(path, false);
+        if (found === null) {
+          this.leaseAllows(this.pathArgument(path), owner);
+          throw callError('ELOOP', { syscall: 'mkdir', path });
+        }
+        // A recursive mkdir of a directory already there changes nothing, so
+        // it meets no lease: a sibling's write makes its parents while another
+        // owner holds a subtree beside it. It stats the name, following links,
+        // as coreutils and Node do after EEXIST: a link to a directory is
+        // already there.
+        if (this.mayExist(found) && this.stat(path)?.type === 'directory') return;
+        // A lease on a directory also covers names inside it that resolve
+        // elsewhere through a symlink, so the literal path is checked as well.
+        this.leaseAllows(this.pathArgument(path), owner);
+        located = this.reached(found, owner);
+      } else {
+        located = this.locateMutation(path, false, 'mkdir', owner);
       }
-      // `/` has no row (stat answers it with rootStat), but it exists.
-      const there = found.mount ? undefined : found.path === '' || this.vfs.exists(found.path);
-      // A recursive mkdir of a directory already there changes nothing, so it
-      // meets no lease: a sibling's write makes its parents while another
-      // owner holds a subtree beside it. It stats the name, following links,
-      // as coreutils and Node do after EEXIST: a link to a directory is
-      // already there.
-      if (options.recursive && there !== false && this.stat(path)?.type === 'directory') return;
-      // A lease on a directory also covers names inside it that resolve
-      // elsewhere through a symlink, so the literal path is checked as well.
-      this.leaseAllows(this.pathArgument(path), options.mutationOwner);
-      const located = this.reached(found, options.mutationOwner);
       if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
       // mkdir of what is there is EEXIST, as mkdir(2) says, before any
       // permission check on its parent (`/` has none).
-      if (there) throw fsError('EEXIST', 'mkdir', path);
-      this.owned(options.mutationOwner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
+      if (this.mayExist(located)) throw fsError('EEXIST', 'mkdir', path);
+      this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
     });
+  }
+
+  /**
+   * Whether anything may be at `located`: a mounted name (its mount
+   * answers), `/` (which has no row), a row, or a link the legacy registry
+   * holds. A walk that met the name absent has looked at all of them.
+   */
+  private mayExist(located: Located): boolean {
+    if (located.mount) return true;
+    if (located.absent) return false;
+    const p = located.path;
+    return p === '' || this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p));
   }
 
   unlink(path: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
