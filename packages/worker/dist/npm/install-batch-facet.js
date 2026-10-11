@@ -107,7 +107,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // and how many registry requests were issued alongside those waits.
     let r2WaitMsMax = 0;
     let speculativeFetches = 0;
-    // cache-obs-2: per-tier event accumulator. Filled in the L2/L3
+    // cache-obs-2: per-tier event accumulator. Filled in the L1/L2/L3
     // (supervisor RPC return.events) and L4 (post-network-fetch)
     // branches. Returned in result.cacheStatEvents at the end of the
     // batch. installer.ts folds these into the DO-side cache-stats
@@ -264,7 +264,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                             for (const e of r2Result.events) {
                                 if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
                                     continue;
-                                if (e.tier !== 'L2' && e.tier !== 'L3')
+                                if (e.tier !== 'L1' && e.tier !== 'L2' && e.tier !== 'L3')
                                     continue;
                                 if (e.cacheKind !== 'tarball')
                                     continue;
@@ -297,8 +297,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             let bytesStream;
             let integrityPromise = Promise.resolve();
             if (r2HitBytes && r2HitBytes.length > 0) {
-                // Cache HIT. The cross-tenant store is content-addressed and
-                // re-hashes on every read, so bytes that come back are already
+                // Cache HIT. External reads are re-hashed at the content-addressed
+                // boundary; its local store owns verified bytes. These are already
                 // proven to be spec.integrity's tarball — there is exactly one
                 // verification point and it is not here. Bytes shared by another
                 // placement were verified by their owner; not an R2 outcome.

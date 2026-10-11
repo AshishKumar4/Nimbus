@@ -19,7 +19,7 @@ import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_S
 import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
-import { ByteLru } from './byte-lru.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import { GitEntryWriteFailure } from './mount-writer.js';
 import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';

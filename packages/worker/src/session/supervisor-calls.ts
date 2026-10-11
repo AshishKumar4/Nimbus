@@ -809,11 +809,11 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * address (the resolved npm integrity string). Returns
      * { bytes, events } where:
      *   - bytes: Uint8Array on hit, null on miss/oversize/no-binding
-     *   - events: L2/L3 hit/miss tuples captured during this lookup
+     *   - events: L1/L2/L3 hit/miss tuples captured during this lookup
      *
      * Facets propagate events into their result for installer.ts to fold
      * into the DO singleton (mirroring the recordR2RaceCounters pattern).
-     * Without this enrichment the L2/L3 distinction is supervisor-side
+     * Without this enrichment the tier distinction is supervisor-side
      * knowledge only. The events list is structured-clone-safe (plain
      * objects + strings + numbers).
      *

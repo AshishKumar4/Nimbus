@@ -12,7 +12,7 @@
  * seam); Nimbus's filesystems always do.
  */
 
-import { ByteLru } from './byte-lru.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import { OID_BYTES, compareOids, oidFromHex, oidToHex, PackFormatError } from './format.js';
 import { IDX_HEADER_BYTES, idxLayout, parseIdxHeader } from './idx.js';
 import { MissingBaseError, PackObjectResolver, runAsync, type BaseCache, type CachedObject, type PackRange, type RefBase, type ResolvedObject } from './reader.js';

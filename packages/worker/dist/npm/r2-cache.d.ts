@@ -8,7 +8,7 @@
  * of a package benefits subsequent tenants on the platform.
  *
  * Caching layers (top-down):
- *   L1 — per-DO SQLite (warmest, in-memory; ~1 ms per file)
+ *   L1 — per-DO SQLite metadata and bounded, verified local tarball bytes
  *   L2 — caches.default (per-colo; ~50-500 µs hit / ~5-30 ms cold)
  *   L3 — R2 (global; ~30-100 ms regional)
  *   L4 — registry.npmjs.org origin (~100-300 ms cross-region)
@@ -31,8 +31,8 @@
  *   install name be picked independently of the registry package, so
  *   evil's bytes would land on react's key and pass evil's own integrity
  *   check. Keyed by the resolved integrity digest instead, a writer can
- *   only ever address its own bytes, and every read re-hashes what the
- *   store returned before handing it back. The store's contract is
+ *   only ever address its own bytes, and every external read re-hashes what
+ *   the store returned before handing it back. The store's contract is
  *   therefore absolute: an object at key K hashes to K, or it is not
  *   served. Shared storage is treated as untrusted.
  *
@@ -239,6 +239,7 @@ export declare class R2CacheClient {
     private readonly tarballBucket;
     private readonly packumentBucket;
     private readonly readOnly;
+    private readonly localTarballs;
     private _l2HitsPackument;
     private _l3GetsPackument;
     private _l2HitsTarball;
@@ -260,7 +261,9 @@ export declare class R2CacheClient {
      * Get the tarball stored at `integrity`'s content address, or null if
      * absent / unverifiable / oversize-bypassed.
      *
-     * The returned bytes are ALWAYS re-hashed against the address first.
+     * External bytes are ALWAYS re-hashed against the address first. A bounded
+     * local store keeps private copies of those verified immutable bytes; warm
+     * installs need neither an external cache read nor a redundant hash.
      * The bucket is shared by every tenant, so it is treated as untrusted
      * storage: whatever it hands back is only served on if it hashes to
      * the key it was asked for. A caller can therefore consume the bytes
@@ -272,6 +275,10 @@ export declare class R2CacheClient {
      * through to L3.
      */
     getTarball(integrity: string): Promise<Uint8Array | null>;
+    /** Read the external tiers directly, for the L2/L3 diagnostic benchmark. */
+    getSharedTarball(integrity: string): Promise<Uint8Array | null>;
+    private keepVerifiedTarball;
+    private readSharedTarball;
     /**
      * The colo copy of verified tarball bytes, kept as long as the cache layer
      * will: a content address never changes what it names. Best-effort: a
