@@ -7,6 +7,9 @@ import {
   W7_MAX_PATHS_PER_BATCH,
 } from '../../packages/platform/src/w7-frame.ts';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const bytes = (length, seed = 0) => {
   const value = new Uint8Array(length);
@@ -293,6 +296,21 @@ async function expectDecodeFailure(value, pattern) {
   assert.equal(badKindJson.length, fileBegin.length);
   badKind.set(badKindJson, fileBegin.payloadOffset);
   await expectDecodeFailure(badKind, /unsupported file-begin kind fifo/);
+
+  // The engine takes framing from the decoder alone: a misframed stream is
+  // refused there, before any of it is stored.
+  for (const [what, misframed, pattern] of [
+    ['a chunk out of order', outOfOrder, /expected chunk 1, got 0/],
+    ['a file-end miscounting its chunks', badEnd, /file-end chunk count mismatch/],
+  ]) {
+    const harness = createSqliteVfsTestHarness();
+    const engine = new SqliteVFS(harness.sql, harness.ctx);
+    const kernel = engine.as(CRED_KERNEL);
+    await assert.rejects(kernel.writeStream(streamBytes(misframed, 7)), pattern, `${what} is refused`);
+    for (const path of ['dir', 'empty.txt', 'one.bin', 'dir/many.bin']) {
+      assert.equal(kernel.exists(path), false, `${what}: ${path} was not stored`);
+    }
+  }
 }
 
 // Decoder acquires credit after the chunk header and before pulling its data.
