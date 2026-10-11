@@ -736,6 +736,46 @@ var __nimbusProcessFsModule = (() => {
     return output;
   }
 
+  function classifyMessage(msg) {
+    const m = msg.toLowerCase();
+    if (m.includes("sqlite_full"))
+      return "sqlite_full";
+    if (m.includes("database or disk is full"))
+      return "sqlite_full";
+    if (m.includes("sqlite_nomem"))
+      return "sqlite_nomem";
+    if (m.includes("out of memory"))
+      return "sqlite_nomem";
+    if (m.includes("deserialize cloned data"))
+      return "clone_refused";
+    if (m.includes("could not be cloned"))
+      return "clone_refused";
+    if (m.includes("timeouterror"))
+      return "rpc_timeout";
+    if (/\btimed?\s*out\b/.test(m))
+      return "rpc_timeout";
+    if (m.includes("too many subrequests"))
+      return "subrequest_cap";
+    if (m.includes("dynamic worker concurrency limit exceeded"))
+      return "dynamic_worker_cap";
+    if (m.includes("exceededmemory"))
+      return "oom";
+    if (/exceeded (?:its )?memory limit/.test(m))
+      return "oom";
+    if (m.includes("memory limit exceeded"))
+      return "oom";
+    if (m.includes("memory limit") && m.includes("reset"))
+      return "oom";
+    if (m.includes("cpu time limit"))
+      return "cpu_exceeded";
+    if (m.includes("exceeded cpu limit"))
+      return "cpu_exceeded";
+    if (m.includes("condemned"))
+      return "condemnation";
+    if (m.includes("hard evict"))
+      return "hard_evict";
+    return "unknown";
+  }
   function isDoOverloaded(input) {
     return readMessage(input).toLowerCase().includes("durable object is overloaded");
   }
@@ -1466,6 +1506,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (escaped !== null) await escaped;
         writer = await writerFor(entries);
       } catch (error2) {
+        if (error2 instanceof Error && classifyMessage(error2.message) === "subrequest_cap") {
+          exhaustedInvocation(entries, error2);
+          return;
+        }
         if (error2 instanceof Error && isProcessGone(error2)) {
           endedProcess(entries, error2, epoch?.writer ?? null);
           return;
@@ -1513,6 +1557,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           timers
         });
       } catch (error2) {
+        if (error2 instanceof Error && classifyMessage(error2.message) === "subrequest_cap") {
+          exhaustedInvocation(entries, error2);
+          return;
+        }
         if (error2 instanceof Error && isProcessGone(error2)) {
           endedProcess(entries, error2, writer);
           return;
@@ -1589,6 +1637,19 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       }
       journal.dropThrough(ended[ended.length - 1].jid);
       if (writer !== null) retiring.push(writer);
+      epoch = null;
+    };
+    const exhaustedInvocation = (entries, refusal) => {
+      processGone ??= fsError("EIO", refusal.message, "");
+      const stopped = [...entries, ...queue.splice(0)];
+      for (const entry of stopped) {
+        if (entry.op !== null) {
+          heapBytes -= entry.bytes;
+          entry.op = null;
+        }
+        fail(entry, "EIO", refusal.message);
+      }
+      if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1].jid);
       epoch = null;
     };
     const pump = () => {
