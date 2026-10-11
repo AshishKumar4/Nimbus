@@ -15141,7 +15141,7 @@ function __nimbusFatalArrow(error, fromPromise) {
     if (!texts.has(module.name)) texts.set(module.name, __nimbusFrameModuleText(module));
     return texts.get(module.name);
   };
-  if (!fromPromise) {
+  if (!fromPromise && !(top.esModule && typeof top.source === "string")) {
     for (const [file, line, column] of frames) {
       const module = __nimbusModuleOfFile(file);
       const text = module === null ? null : textOf(module);
