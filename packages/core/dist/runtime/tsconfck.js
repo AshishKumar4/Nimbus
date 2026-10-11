@@ -19,7 +19,7 @@
  */
 import { normalizeVfsPath } from '../vfs/path.js';
 import { jsoncToJson } from './jsonc.js';
-import { createRequireResolver } from './require-resolution.js';
+import { createRequireResolver, isRequireResolutionError } from './require-resolution.js';
 /** A config that could not be read or resolved, as tsconfck's TSConfckParseError. */
 export class TsconfckParseError extends Error {
     code;
@@ -207,8 +207,7 @@ function requireResolve(request, from, fs) {
         return resolver.resolveSync(request, dirname(from))?.path ?? null;
     }
     catch (error) {
-        if (error !== null && typeof error === 'object' && 'code' in error
-            && (String(error.code).startsWith('ERR_') || error.code === 'MODULE_NOT_FOUND'))
+        if (isRequireResolutionError(error))
             return null;
         throw error;
     }

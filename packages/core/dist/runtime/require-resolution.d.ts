@@ -105,6 +105,8 @@ export interface ResolveSubpathResult {
     scope?: RequirePackageScope | null;
     packageType?: PackageType;
 }
+/** The launch names reachable files; runtime resolution still reports refusals. */
+export declare function isRequireResolutionError(err: unknown): boolean;
 export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress, conditions?: readonly string[], policy?: RequireResolutionPolicy): Promise<ResolveSubpathResult | null>;
 export declare function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<string | null>;
 export declare function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType>;

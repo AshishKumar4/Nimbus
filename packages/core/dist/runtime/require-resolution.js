@@ -312,6 +312,10 @@ export function createRequireResolver(host, options = {}) {
         const scope = yield* nearestPackageScope(parentDir(path), state);
         return { path, scope, packageType: scope?.type ?? null };
     }
+    function* resolveFilePath(path) {
+        const found = yield* resolveFile(path, { configs: new Map() }, path.endsWith('/'));
+        return found === null ? null : yield* ask.realpath(found);
+    }
     function runSync(steps) {
         let next = steps.next();
         while (!next.done) {
@@ -339,8 +343,8 @@ export function createRequireResolver(host, options = {}) {
     return {
         resolve: (id, dir, request) => runAsync(resolve(id, dir, request)),
         resolveSync: (id, dir, request) => runSync(resolve(id, dir, request)),
-        resolveFile: (path) => runAsync(resolveFile(path, { configs: new Map() }, path.endsWith('/'))),
-        resolveFileSync: (path) => runSync(resolveFile(path, { configs: new Map() }, path.endsWith('/'))),
+        resolveFile: (path) => runAsync(resolveFilePath(path)),
+        resolveFileSync: (path) => runSync(resolveFilePath(path)),
         packageScope: (dir) => runAsync(nearestPackageScope(dir, { configs: new Map() })),
         packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs: new Map() })),
     };
@@ -414,7 +418,7 @@ export function requireResolverOverFs(vfs, sink, progress, conditions = [], poli
     }, { conditions, policy, progress });
 }
 /** The launch names reachable files; runtime resolution still reports refusals. */
-function loaderReportsResolutionError(err) {
+export function isRequireResolutionError(err) {
     return ['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED',
         'ERR_PACKAGE_IMPORT_NOT_DEFINED', 'ERR_INVALID_MODULE_SPECIFIER', 'ERR_INVALID_PACKAGE_TARGET',
         'ERR_INVALID_PACKAGE_CONFIG', 'ERR_INVALID_URL_SCHEME', 'ERR_UNKNOWN_BUILTIN_MODULE'].includes(String(codeOf(err)));
@@ -427,7 +431,7 @@ export async function resolveRequireEx(vfs, id, fromDir, sink, progress, conditi
         return { resolved: stripLeadingSlashes(result.path), scope: result.scope, packageType: result.packageType };
     }
     catch (err) {
-        if (loaderReportsResolutionError(err))
+        if (isRequireResolutionError(err))
             return null;
         throw err;
     }
@@ -438,7 +442,7 @@ export async function resolveFile(vfs, base, sink, progress) {
         return path === null ? null : stripLeadingSlashes(path);
     }
     catch (err) {
-        if (loaderReportsResolutionError(err))
+        if (isRequireResolutionError(err))
             return null;
         throw err;
     }

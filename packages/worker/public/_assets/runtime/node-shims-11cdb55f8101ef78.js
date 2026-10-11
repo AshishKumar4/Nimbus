@@ -18607,6 +18607,10 @@ function createRequireResolver(host, options = {}) {
     const scope = yield* nearestPackageScope(parentDir(path), state);
     return { path, scope, packageType: scope?.type ?? null };
   }
+  function* resolveFilePath(path) {
+    const found = yield* resolveFile(path, { configs:   new Map() }, path.endsWith("/"));
+    return found === null ? null : yield* ask.realpath(found);
+  }
   function runSync(steps) {
     let next = steps.next();
     while (!next.done) {
@@ -18632,8 +18636,8 @@ function createRequireResolver(host, options = {}) {
   return {
     resolve: (id, dir, request) => runAsync(resolve(id, dir, request)),
     resolveSync: (id, dir, request) => runSync(resolve(id, dir, request)),
-    resolveFile: (path) => runAsync(resolveFile(path, { configs:   new Map() }, path.endsWith("/"))),
-    resolveFileSync: (path) => runSync(resolveFile(path, { configs:   new Map() }, path.endsWith("/"))),
+    resolveFile: (path) => runAsync(resolveFilePath(path)),
+    resolveFileSync: (path) => runSync(resolveFilePath(path)),
     packageScope: (dir) => runAsync(nearestPackageScope(dir, { configs:   new Map() })),
     packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs:   new Map() }))
   };
