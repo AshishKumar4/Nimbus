@@ -938,14 +938,14 @@ function __nimbusRuntimeCodeStagedBuild(staged, kind, origin) {
 // it when an earlier launch staged it; otherwise recorded for the next
 // launch and interpreted. A SyntaxError is what compiling it natively throws
 // too.
-function __nimbusRuntimeCodeCompile(entry, describe, origin) {
+function __nimbusRuntimeCodeCompile(entry, describe, origin, format) {
   const __id = __nimbusRuntimeCodeKey(entry);
   const __staged = __nimbusRuntimeCodeStaged(__id.key);
   if (__staged !== undefined) return __nimbusRuntimeCodeStagedBuild(__staged, entry.kind, origin);
   __nimbusRuntimeCodeRecord(__id, entry);
   const __interpreter = __nimbusRuntimeInterpreter();
   try {
-    if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text, origin);
+    if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text, origin, false, format);
     if (entry.kind === "expression") return __interpreter.compileExpression(entry.code, origin);
     return __interpreter.compileFunction(entry.kind, entry.params, entry.body, origin);
   } catch (e) {
@@ -954,17 +954,18 @@ function __nimbusRuntimeCodeCompile(entry, describe, origin) {
   }
 }
 // The wrapper function of a file that is not one of the launch's cells, with
-// its own Function and import() (THE WRAPPER).
-function __nimbusRuntimeModule(path, text) {
+// its own Function and import() (THE WRAPPER); \`format\`, the loader's
+// "module" or "commonjs" for it where it knows, else its syntax decides.
+function __nimbusRuntimeModule(path, text, format) {
   const __origin = globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path));
-  return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'", __origin);
+  return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'", __origin, format);
 }
 // A staged ES module the interpreter evaluates instead of the registry
 // (node-shims' adoption), from its text before it was staged: JavaScript,
 // whatever its file's extension, and the launch's own, so not recorded for
 // the next one.
 function __nimbusAdoptedModule(path, text) {
-  return __nimbusRuntimeInterpreter().compileModule(path, text, globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path)), true);
+  return __nimbusRuntimeInterpreter().compileModule(path, text, globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path)), true, "module");
 }
 globalThis.__nimbusRuntimeCode = Object.freeze({
   // A constructor's code, from the origin the constructor carries (node-shims.ts).

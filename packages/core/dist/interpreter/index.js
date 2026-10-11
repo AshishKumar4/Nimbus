@@ -117,40 +117,6 @@ export function moduleRequests(path, text) {
     }
     return programRequests(program);
 }
-/**
- * Whether an ES module's text awaits at its top level (an `await`, or a
- * `for await`, outside any function): the module's evaluation can suspend.
- * Text the parser cannot read as a module has none. The process asks only of
- * a module whose body began and has not completed (node-shims'
- * __nimbusEsmSuspends).
- */
-export function hasTopLevelAwait(text) {
-    let program;
-    try {
-        program = parseQuick(text, MODULE_OPTIONS);
-    }
-    catch {
-        return false;
-    }
-    return awaitsOutsideFunctions(program);
-}
-/** Whether `node`'s tree has an await not inside a function of it. */
-function awaitsOutsideFunctions(node) {
-    if (node === null || typeof node !== 'object')
-        return false;
-    const type = reflectGet(node, 'type');
-    if (type === 'AwaitExpression')
-        return true;
-    if (type === 'ForOfStatement' && reflectGet(node, 'await') === true)
-        return true;
-    if (type === 'FunctionDeclaration' || type === 'FunctionExpression' || type === 'ArrowFunctionExpression')
-        return false;
-    for (const key in node) {
-        if (key !== 'type' && awaitsOutsideFunctions(reflectGet(node, key)))
-            return true;
-    }
-    return false;
-}
 const AcornParserClass = Parser;
 const FOUND = objectCreate(null);
 /**
@@ -274,7 +240,11 @@ function hasModuleSyntax(program) {
  * import or export declarations, or when it parses only as one (top-level
  * await, import.meta); else CommonJS, a script whose top level may return.
  */
-function moduleProgram(text) {
+function moduleProgram(text, format) {
+    if (format === 'module')
+        return { module: true, program: ownProgram(parseQuick(text, MODULE_OPTIONS)) };
+    if (format === 'commonjs')
+        return { module: false, program: ownProgram(parseQuick(text, COMMONJS_OPTIONS)) };
     let module = null;
     try {
         module = ownProgram(parseQuick(text, MODULE_OPTIONS));
@@ -343,12 +313,12 @@ export function createInterpreter(hostOps, host) {
             releaseScopes(root);
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileModule(path, text, origin, javaScript = false) {
+        compileModule(path, text, origin, javaScript = false, format) {
             if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
             const moduleHost = unitHost(host, origin, parentUrl);
-            const parsed = moduleProgram(text);
+            const parsed = moduleProgram(text, format);
             if (parsed.module) {
                 const program = parsed.program;
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });

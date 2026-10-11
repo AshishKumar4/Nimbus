@@ -146,11 +146,12 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   // nothing would send a deferred module again, so none may be deferred.
   resetInstances();
   const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
-  const { rewriteDynamicImports, readModuleImportSites } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { readEsModule } = await import('../../packages/core/src/runtime/native-esm.ts');
   const { rewriteProvidedCommonJsModules } = await import('../../packages/core/src/runtime/provided-packages.ts');
   const { transformBundleCells } = await import('../../packages/core/src/runtime/bundle-cell-transform.ts');
   const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
-  const runtime = { rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules };
+  const runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules };
   const { ctx, env } = durableObject(await freshFacetClass());
   const fallback = async () => assert.fail('native ES modules never need the engine\'s stack fallback');
   // Arrays 7,000 deep would exceed a recursive transform's stack, but

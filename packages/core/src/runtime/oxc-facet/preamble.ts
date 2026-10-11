@@ -15,13 +15,13 @@
  * serialized functions. Keep this analysis out of the session's isolate.
  */
 import { createOxcTransform } from '../oxc-transform.js';
-import { readModuleImportSites, rewriteDynamicImports } from '../dynamic-import-rewrite.js';
-import { bunScopeNames } from '../native-esm.js';
+import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
+import { readEsModule } from '../native-esm.js';
 import { rewriteProvidedCommonJsModules } from '../provided-packages.js';
 import { stripTypeScript } from '../typescript-strip.js';
 import type { TransformRuntime } from '../esbuild-service.js';
 
-const runtime: TransformRuntime = { rewriteDynamicImports, readModuleImportSites, bunScopeNames, rewriteProvidedCommonJsModules, stripTypeScript };
+const runtime: TransformRuntime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules, stripTypeScript };
 Object.assign(globalThis, {
   __nimbusCreateOxcTransform: createOxcTransform,
   __nimbusTransformRuntime: runtime,

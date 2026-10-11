@@ -7,19 +7,9 @@
 // resolution under exports/imports conditions and its refusals,
 // require(esm)'s values and refusals, a throw that stops a graph, top-level
 // I/O (sync fs, timers, randomness, the clock) and TypeScript Node strips.
-// stdout, stderr and the exit code are host Node's, with the place it ran
-// named W and Node's own frames left out.
-//
-// Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
-// generated artifacts before testing a runner change.
+// stdout, stderr and the exit code are host Node's (lib/node-differential.mjs).
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
-import { withoutInternalArrow } from './lib/node-report.mjs';
+import { matchNodeInWorkerd } from './lib/node-differential.mjs';
 
 const W = '/home/user/nesm';
 const json = (value) => JSON.stringify(value, null, 2);
@@ -77,6 +67,16 @@ const FILES = {
   'req/later.mjs': "import { createRequire } from 'node:module';\nconst ns = await import('./nodefault.mjs');\nconst required = createRequire(import.meta.url)('./nodefault.mjs');\nconsole.log(required === ns);\n",
   'req/cycle-a.mjs': "import './cycle-b.mjs';\nexport const a = 1;\n",
   'req/cycle-b.mjs': "import { createRequire } from 'node:module';\ntry { createRequire(import.meta.url)('./cycle-a.mjs'); } catch (e) { console.log(e.code); }\n",
+  // A bin that loads its program through require() first (pi's): staging
+  // imports it (esm-require-hoist.ts); one whose prefix is observable keeps
+  // the require at its call.
+  'hoist/bin.mjs': '#!/usr/bin/env node\nimport { createRequire, enableCompileCache } from "node:module";\n\nenableCompileCache();\ncreateRequire(import.meta.url)("./app.mjs");\n',
+  'hoist/app.mjs': "import { dep } from './dep.mjs';\nconsole.log('app', dep, typeof import.meta.url);\nexport const ready = true;\n",
+  'hoist/dep.mjs': "console.log('dep');\nexport const dep = 1;\n",
+  'hoist/observed.mjs': "import { createRequire } from 'node:module';\nconsole.log('before');\nconst ns = createRequire(import.meta.url)('./app2.mjs');\nconsole.log('after', ns.v, Object.keys(ns));\n",
+  'hoist/app2.mjs': "console.log('app2');\nexport default 1;\nexport const v = 2;\n",
+  // require() of an evaluated graph with top-level await still refuses it.
+  'req/tla-after.mjs': "import { createRequire } from 'node:module';\nawait import('./tla.mjs');\ntry { createRequire(import.meta.url)('./tla.mjs'); } catch (e) { console.log(e.code); }\n",
   // A throw stops the graph where Node's evaluation stops.
   'stop/c.mjs': "console.log('c');\n",
   'stop/thrower.mjs': "console.log('thrower');\nthrow new Error('boom');\n",
@@ -87,14 +87,7 @@ const FILES = {
   'io/data.txt': 'payload\n',
   'io/leaf.mjs': "import { readFileSync, statSync } from 'node:fs';\nimport { randomUUID } from 'node:crypto';\nexport const text = readFileSync(new URL('./data.txt', import.meta.url), 'utf8').trim();\nexport const size = statSync(new URL('./data.txt', import.meta.url)).size;\nexport const uuid = randomUUID().length;\nexport const now = Date.now() > 1e12;\nexport const timer = await new Promise((resolve) => setTimeout(() => resolve('fired'), 1));\n",
   'io/main.mjs': "import { text, size, uuid, now, timer } from './leaf.mjs';\nconsole.log(text, size, uuid, now, timer, crypto.getRandomValues(new Uint8Array(2)).length);\n",
-  // CommonJS names in an ES module's scope; a typeless .js that is one by
-  // syntax alone (a top-level declaration of a wrapper name).
-  'scope/destructured.js': "const { __filename } = {};\nconsole.log(JSON.stringify(['destructured', typeof require, typeof module, typeof exports]));\n",
-  'scope/pattern.js': "let { a: [, exports] } = { a: [0, 4] };\nconsole.log(JSON.stringify(['pattern', typeof module, exports]));\n",
-  'scope/class.js': "class module {}\nconsole.log(JSON.stringify(['class', typeof require, typeof module]));\n",
-  'scope/awaits.js': "const v = [(await 1), f(await 2), true ? await 3 : 0];\nfunction f(x) { return x; }\nconsole.log(JSON.stringify(['awaits', v, typeof require]));\n",
-  'scope/escaped.js': "const requir\\u0065 = 3;\nconsole.log(JSON.stringify(['escaped', typeof module, require]));\n",
-  'scope/declarators.js': "const a = 1, require = 2;\nconsole.log(JSON.stringify(['declarators', typeof module, require]));\n",
+  // CommonJS names in an ES module's scope (module-format-matches-node-workerd has the rest).
   'scope/req.mjs': "console.log(typeof require, typeof module, typeof __filename, this);\nrequire('fs');\n",
   // TypeScript Node strips, as an ES module.
   'ts/package.json': json({ type: 'module' }),
@@ -109,54 +102,9 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node scope/destructured.js', 'node scope/declarators.js', 'node scope/escaped.js', 'node scope/awaits.js', 'node scope/pattern.js', 'node scope/class.js', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
+  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];
 
-const host = realpathSync(mkdtempSync(join(tmpdir(), 'native-esm-')));
-process.on('exit', () => rmSync(host, { recursive: true, force: true }));
-for (const [name, text] of Object.entries(FILES)) {
-  mkdirSync(dirname(join(host, name)), { recursive: true });
-  writeFileSync(join(host, name), text);
-}
-const shown = (text, from) => text.split(from).join(W)
-  .split('\n').filter((line) => !/^\s+at /.test(line) || line.includes(`${W}/`)).join('\n');
-const run = (command) => `${command} > out.txt 2> err.txt; echo $? > code.txt`;
-const read = `node -e "const fs = require('fs'); process.stdout.write(JSON.stringify({ out: fs.readFileSync('out.txt').toString('base64'), err: fs.readFileSync('err.txt').toString('base64'), code: fs.readFileSync('code.txt', 'utf8') }))"`;
-const hostRead = (name) => spawnSync('cat', [name], { cwd: host, encoding: 'utf8' }).stdout;
-
-console.log('native-esm-matches-node-workerd: starting local workerd');
-const probe = await startLocalProbe({ runtimes: [] });
-const failures = [];
-try {
-  const session = await localTerminal(probe, { install: [] });
-  try {
-    const dirs = [...new Set(Object.keys(FILES).map((name) => dirname(`${W}/${name}`)))];
-    await session.run(`mkdir -p ${dirs.join(' ')}`, 30_000);
-    for (const [name, text] of Object.entries(FILES)) await session.writeFile(`${W}/${name}`, text);
-    for (const command of COMMANDS) {
-      assert.equal(spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
-      const want = { out: shown(hostRead('out.txt'), host), err: withoutInternalArrow(shown(hostRead('err.txt'), host)), code: hostRead('code.txt').trim() };
-      await session.run(`cd ${W} && ${run(command)}`, 120_000);
-      const r = await session.run(`cd ${W} && ${read}`, 60_000);
-      const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
-      assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);
-      const got = JSON.parse(line);
-      const decode = (b64) => shown(Buffer.from(b64, 'base64').toString('utf8'), W);
-      const seen = { out: decode(got.out), err: decode(got.err), code: got.code.trim() };
-      const same = seen.out === want.out && seen.err === want.err && seen.code === want.code;
-      console.log(`  ${same ? 'ok ' : 'BAD'} ${command.slice(0, 70)}: exit ${want.code}`);
-      if (!same) failures.push({ command, want, seen });
-    }
-  } finally {
-    await session.close().catch(() => {});
-  }
-} finally {
-  await probe.stop();
-}
-for (const { command, want, seen } of failures) {
-  console.log(`--- ${command}\n  want: ${JSON.stringify(want)}\n  seen: ${JSON.stringify(seen)}`);
-}
-assert.deepEqual(failures.map((f) => f.command), [], 'every program runs as Node runs it');
-console.log(`native-esm-matches-node-workerd: ${COMMANDS.length} programs as Node runs them`);
+await matchNodeInWorkerd('native-esm-matches-node-workerd', W, FILES, COMMANDS);

@@ -86,7 +86,8 @@ console.log('bundled provided packages: scoped binding, identity, aliases, synta
 // records are bound before it is staged natively, as a session binds JavaScript's.
 {
   const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
-  const { rewriteDynamicImports, readModuleImportSites } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { readEsModule } = await import('../../packages/core/src/runtime/native-esm.ts');
   const { parseJavaScriptModule } = await import('../../packages/core/src/runtime/javascript-ast.ts');
   const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
   const typed = `${commonJs}
@@ -96,7 +97,7 @@ console.log('bundled provided packages: scoped binding, identity, aliases, synta
   const bound = rewriteProvidedCommonJsModules(stripped);
   assert.notEqual(bound, stripped, 'premise: the stripped fixture has a provided-package record to bind');
   const runtime = {
-    rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules,
+    rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules,
     stripTypeScript: async (code) => {
       assert.equal(code, typed, 'the strip receives the original TypeScript');
       return { code: stripped, format: 'module' };

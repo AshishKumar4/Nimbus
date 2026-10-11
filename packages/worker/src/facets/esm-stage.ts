@@ -19,7 +19,7 @@ import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
 import type { ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import {
-  builtinFacadeModule, commonJsFacadeModule, ESM_FACADE_DIR, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
+  builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
   stageEsModule, type StagedEsModule,
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
@@ -39,7 +39,7 @@ import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
  * (esmRowName): its cell's module for a staged module, else its facade by id.
  */
 export type EsmModuleRow =
-  | readonly [kind: 'module', key: string, targets: readonly number[], bunScope?: 1]
+  | readonly [kind: 'module', key: string, targets: readonly number[], flags?: number, packageJson?: string]
   | readonly [kind: 'commonjs', key: string]
   | readonly [kind: 'builtin', builtin: string]
   | readonly [kind: 'json', key: string];
@@ -156,7 +156,8 @@ export async function stageEsModules(
   for (const [key, { sites }] of cells) {
     const targets: number[] = [];
     targetIds.push(targets);
-    table.push(sites.commonJsNames?.length ? ['module', key, targets, 1] : ['module', key, targets]);
+    const flags = (sites.commonJsNames?.length ? ESM_BUN_SCOPE : 0) | (sites.topLevelAwait ? ESM_TOP_LEVEL_AWAIT : 0);
+    table.push(flags === 0 ? ['module', key, targets] : ['module', key, targets, flags]);
   }
   const ids = new Map<string, number>();
   for (let id = 0; id < table.length; id++) ids.set(`module:${table[id]![1]}`, id);
@@ -248,9 +249,23 @@ export async function stageEsModules(
     return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
   };
 
-  const modules = new Map<string, StagedEsModule>();
+  // A `.js` that is a module by its syntax alone, outside node_modules,
+  // under a package.json with no "type": Node's loader warns of it (ESM_TYPELESS).
+  for (let at = 0; at < targetIds.length; at++) {
+    const row = table[at]!;
+    if (row[0] !== 'module') continue;
+    const key = row[1];
+    if (!key.endsWith('.js') || key.split('/').includes('node_modules')) continue;
+    const url = new URL('file://');
+    url.pathname = '/' + key;
+    const scope = await resolver.packageScope(url.href);
+    if (scope.exists && scope.type === 'none') table[at] = ['module', key, row[2], (row[3] ?? 0) | ESM_TYPELESS, scope.pjsonPath];
+  }
+
+  // Each module's static imports, as the registry links them.
+  const targetNames: string[][] = [];
   let id = 0;
-  for (const [key, { code, sites }] of cells) {
+  for (const [key, { sites }] of cells) {
     const parentUrl = new URL('file://');
     parentUrl.pathname = '/' + key;
     const targets: string[] = [];
@@ -277,10 +292,61 @@ export async function stageEsModules(
         missing.push(refusal(error));
       }
     }
+    targetNames.push(targets);
+    id++;
+  }
+
+  // The require() calls a module's top level can make static imports
+  // (core runtime/esm-require-hoist.ts): each while its target is a staged
+  // ES module whose graph neither holds the module nor awaits at its top
+  // level, so the registry evaluates it, before the body, where Node's
+  // require() would. The first that cannot be hoisted is left to its call,
+  // and every later one with it, to keep Node's order.
+  const hoisted: string[][] = [];
+  id = 0;
+  for (const [key, { sites }] of cells) {
+    const names: string[] = [];
+    for (const specifier of sites.requires ?? []) {
+      const found = await requireResolve(specifier, '/' + key);
+      const target = found === null ? undefined : ids.get(`module:${stripLeadingSlashes(found)}`);
+      if (target === undefined || !hoistable(table, id, target)) break;
+      targetIds[id]!.push(target);
+      names.push(esmRowName(table[target]!, target));
+    }
+    hoisted.push(names);
+    id++;
+  }
+
+  const modules = new Map<string, StagedEsModule>();
+  id = 0;
+  for (const [key, { code, sites }] of cells) {
     modules.set(key, stageEsModule(code, sites, {
-      id, name: commonJsCellModuleName(key), targets, ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
+      id, name: commonJsCellModuleName(key), targets: targetNames[id]!,
+      ...(hoisted[id]!.length > 0 ? { hoisted: hoisted[id] } : {}),
+      ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
     }));
     id++;
   }
   return { modules, members, table, missing, ms: Date.now() - started };
+}
+
+/**
+ * Whether the module of row `requirer` may import row `target` in place of
+ * requiring it: no module of `target`'s graph is `requirer` or awaits at its
+ * top level.
+ */
+function hoistable(table: readonly EsmModuleRow[], requirer: number, target: number): boolean {
+  const seen = new Set<number>();
+  const stack = [target];
+  while (stack.length > 0) {
+    const at = stack.pop()!;
+    if (at < 0 || seen.has(at)) continue;
+    seen.add(at);
+    if (at === requirer) return false;
+    const row = table[at]!;
+    if (row[0] !== 'module') continue;
+    if (((row[3] ?? 0) & ESM_TOP_LEVEL_AWAIT) !== 0) return false;
+    stack.push(...row[2]);
+  }
+  return true;
 }

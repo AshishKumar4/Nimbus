@@ -39,7 +39,8 @@
  * (node-shims' adoption).
  */
 import { bindingIdentifiers } from './binding-pattern.js';
-import { escapedIdentifierNames } from './dynamic-import-rewrite.js';
+import { escapedIdentifierNames, readModuleImportSites } from './dynamic-import-rewrite.js';
+import { esModuleFacts } from './esm-require-hoist.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 /** The map module every staged module binds import.meta, import(), its check and its registration from. */
 export const ESM_META_MODULE = 'nimbus/meta.js';
@@ -47,6 +48,16 @@ export const ESM_META_MODULE = 'nimbus/meta.js';
 export const ESM_HOST_MODULE = 'nimbus/esm-host.js';
 /** Where a launch puts the facades an ES module imports a builtin or a CommonJS module through. */
 export const ESM_FACADE_DIR = 'nimbus/facade/';
+/** A staged module's flag in its launch's table: its meta instance binds Bun's CommonJS names (bunScopeNames). */
+export const ESM_BUN_SCOPE = 1;
+/** A staged module's flag in its launch's table: it awaits at its top level (esm-require-hoist.ts hasTopLevelAwait). */
+export const ESM_TOP_LEVEL_AWAIT = 2;
+/**
+ * A staged module's flag in its launch's table: a `.js` an ES module by its
+ * syntax alone, under a package.json with no "type" (its row names that
+ * package.json), which Node warns about as it loads it (MODULE_TYPELESS_PACKAGE_JSON).
+ */
+export const ESM_TYPELESS = 4;
 const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
 /** The ColumnMap of `edits` to `source`, none of which adds or removes a line break. */
 export function columnMap(source, edits) {
@@ -172,7 +183,8 @@ export function stageEsModule(text, sites, link) {
     for (const name of link.commonJsNames ?? [])
         bindings.push([COMMONJS_NAME_EXPORTS[name] ?? name, name]);
     const prologue = `${check}();`;
-    const tail = `\n;${metaImport(link.name, link.id, bindings)}import*as ${self} from${JSON.stringify(relativeSpecifier(link.name, link.name))};${register}(${self});`;
+    const hoisted = (link.hoisted ?? []).map((target) => `import${JSON.stringify(relativeSpecifier(link.name, target))};`).join('');
+    const tail = `\n;${hoisted}${metaImport(link.name, link.id, bindings)}import*as ${self} from${JSON.stringify(relativeSpecifier(link.name, link.name))};${register}(${self});`;
     let body = '';
     let at = 0;
     for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
@@ -261,6 +273,19 @@ function attributesClause(source, from) {
         }
     }
     return null;
+}
+/**
+ * What staging reads of an ES module's text, once, where the module is read
+ * (the transform host; its store keeps the reading with the module): its
+ * import sites, its EsModuleFacts, and in Bun's `scope` the CommonJS names
+ * its meta instance binds.
+ */
+export function readEsModule(code, scope) {
+    return {
+        ...readModuleImportSites(code),
+        ...esModuleFacts(code),
+        ...(scope === 'bun' ? { commonJsNames: bunScopeNames(code) } : {}),
+    };
 }
 /** What ESM_META_MODULE exports a Bun module's CommonJS names as. */
 const COMMONJS_NAME_EXPORTS = { require: 'q', __filename: 'f', __dirname: 'd' };

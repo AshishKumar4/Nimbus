@@ -6,8 +6,8 @@
 // "require is not defined", completed by Node's loader where the error
 // leaves the module's job ("in ES module scope", the package.json that made
 // a .js a module, top-level await's ambiguity), and the module's own line as
-// its stack's first frame. module-format-matches-node covers the rest of the
-// scope, in-process. A SyntaxError's text, V8's, is compared here too.
+// its stack's first frame. module-format-matches-node-workerd covers the
+// rest of the scope. A SyntaxError's text, V8's, is compared here too.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -35,9 +35,11 @@ const files = {
   'import-in.cjs': "import { sep } from 'node:path';\nconsole.log(sep);\n",
   'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
   'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  // V8's "Missing } in template expression", which Node does not retry as a module.
+  'template-await.js': 'console.log(`${await 1}`);\n',
 };
 // Entries print their uncaught error; the rest report what they caught.
-const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs', 'import-in.cjs', 'commonjs/import.js'];
+const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs', 'import-in.cjs', 'commonjs/import.js', 'template-await.js'];
 
 /**
  * An uncaught error's `<Name>: <message>` and further message lines, and its

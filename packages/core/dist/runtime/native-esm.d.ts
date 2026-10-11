@@ -39,6 +39,7 @@
  * (node-shims' adoption).
  */
 import { type ImportSites } from './dynamic-import-rewrite.js';
+import type { ModuleScope } from './module-format.js';
 import { type SourceEdit } from './javascript-ast.js';
 /** The map module every staged module binds import.meta, import(), its check and its registration from. */
 export declare const ESM_META_MODULE = "nimbus/meta.js";
@@ -46,6 +47,16 @@ export declare const ESM_META_MODULE = "nimbus/meta.js";
 export declare const ESM_HOST_MODULE = "nimbus/esm-host.js";
 /** Where a launch puts the facades an ES module imports a builtin or a CommonJS module through. */
 export declare const ESM_FACADE_DIR = "nimbus/facade/";
+/** A staged module's flag in its launch's table: its meta instance binds Bun's CommonJS names (bunScopeNames). */
+export declare const ESM_BUN_SCOPE = 1;
+/** A staged module's flag in its launch's table: it awaits at its top level (esm-require-hoist.ts hasTopLevelAwait). */
+export declare const ESM_TOP_LEVEL_AWAIT = 2;
+/**
+ * A staged module's flag in its launch's table: a `.js` an ES module by its
+ * syntax alone, under a package.json with no "type" (its row names that
+ * package.json), which Node warns about as it loads it (MODULE_TYPELESS_PACKAGE_JSON).
+ */
+export declare const ESM_TYPELESS = 4;
 /**
  * Where a module's edits change a line, by line: [line, source column,
  * generated length, source text], and 1 for a call (commonjs-cell.ts
@@ -75,6 +86,11 @@ export interface EsModuleLink {
     readonly targets: readonly string[];
     /** Bun's scope: the CommonJS names (`require`, `__filename`, `__dirname`) it reads but does not declare. */
     readonly commonJsNames?: readonly string[];
+    /**
+     * The map names its hoisted require()s load (esm-require-hoist.ts), in
+     * order: imported after its own imports, so evaluated before its body.
+     */
+    readonly hoisted?: readonly string[];
 }
 /** The map's root as module URLs name it: workerd's, under which a Worker Loader map's modules live. */
 export declare const MAP_ROOT = "file:///bundle/";
@@ -97,6 +113,13 @@ export declare function stageEsModule(text: string, sites: ImportSites, link: Es
  * harmless; one it declares is its own.
  */
 export declare function bunScopeNames(code: string): string[];
+/**
+ * What staging reads of an ES module's text, once, where the module is read
+ * (the transform host; its store keeps the reading with the module): its
+ * import sites, its EsModuleFacts, and in Bun's `scope` the CommonJS names
+ * its meta instance binds.
+ */
+export declare function readEsModule(code: string, scope: ModuleScope | undefined): ImportSites;
 /**
  * The facade an ES module imports CommonJS module `id` through (Node's
  * createCJSModuleWrap): it loads the module as require() does, at its place

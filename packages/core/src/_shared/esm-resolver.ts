@@ -82,7 +82,16 @@ export interface EsmResolver {
    * answer is immediate: the package.json path its scope reads, and the
    * "type" it declares.
    */
-  packageScopeSync(url: string): { pjsonPath: string; type: 'module' | 'commonjs' | 'none' };
+  packageScopeSync(url: string): PackageScope;
+  /** packageScopeSync over a host whose answers may be promises. */
+  packageScope(url: string): Promise<PackageScope>;
+}
+
+/** Node's package scope of a file: whether a package.json governs it, its path, and the "type" it declares. */
+export interface PackageScope {
+  readonly exists: boolean;
+  readonly pjsonPath: string;
+  readonly type: 'module' | 'commonjs' | 'none';
 }
 
 /** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
@@ -438,27 +447,32 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     return next.value;
   }
 
-  return {
-    async resolve(specifier, parentUrl) {
-      const steps = importTarget(specifier, parentUrl);
-      let next = steps.next();
-      while (!next.done) {
-        let answer: unknown;
-        try {
-          answer = await next.value;
-        } catch (error) {
-          next = steps.throw(error);
-          continue;
-        }
-        next = steps.next(answer);
+  async function runAsync<T>(steps: Step<T>): Promise<T> {
+    let next = steps.next();
+    while (!next.done) {
+      let answer: unknown;
+      try {
+        answer = await next.value;
+      } catch (error) {
+        next = steps.throw(error);
+        continue;
       }
-      return next.value;
-    },
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+
+  return {
+    resolve: (specifier, parentUrl) => runAsync(importTarget(specifier, parentUrl)),
     resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
     metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
     packageScopeSync(url) {
-      const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
-      return { pjsonPath, type };
+      const { exists, pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+      return { exists, pjsonPath, type };
+    },
+    async packageScope(url) {
+      const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(new URL(url)));
+      return { exists, pjsonPath, type };
     },
     assertLoadable({ format, path }) {
       if (format !== 'unknown' || path === undefined) return;
