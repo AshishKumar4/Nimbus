@@ -791,12 +791,12 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
   const open = (): JournalReaderStub => {
     if (reader) return reader;
     try { facets.abort(name, new Error('Nimbus: its write log is drained')); } catch { /* not running */ }
-    const worker = loader.load({
+    const worker = loader.load(applyFacetLimits('process', {
       compatibilityDate: CF_COMPAT_DATE,
       mainModule: 'reader.js',
       modules: { 'reader.js': PROCESS_FS_JOURNAL_READER_SOURCE },
-    });
-    reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader') })) as unknown as JournalReaderStub;
+    }));
+    reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader', { limits: facetLimits('process') }) })) as unknown as JournalReaderStub;
     return reader;
   };
   return {
@@ -810,7 +810,7 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
 /** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
 export interface JournalReaderEnv {
   LOADER?: {
-    load(code: { compatibilityDate: string; mainModule: string; modules: Record<string, string> }): { getDurableObjectClass(name: string): unknown };
+    load(code: { compatibilityDate: string; mainModule: string; modules: Record<string, string> }): { getDurableObjectClass(name: string, options?: { limits: FacetResourceLimits }): unknown };
   };
 }
 

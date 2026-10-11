@@ -62,6 +62,7 @@ import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
  * drop `private` on the class. `ctx` NOT on the interface (D1).
  */
 export interface WsHost {
+  dispatchTerminalInput(frame: string): void;
   sqliteFs: SqliteVFS | null;
   shell: Shell | null;
   terminal: WebSocketTerminal | null;
@@ -154,7 +155,7 @@ export async function bindShellSocket(self: WsHost, ws: WebSocket): Promise<bool
 }
 
 /** The shell state each instance last wrote, so an unchanged state costs no SQL. */
-const lastShellSnapshot = new WeakMap<WsHost, { cwd: string | null; envJson: string | null }>();
+const lastShellSnapshot = new WeakMap<object, { cwd: string | null; envJson: string | null }>();
 
 /**
  * Snapshot the live Shell state and write it through to DO SQLite
@@ -177,7 +178,7 @@ const lastShellSnapshot = new WeakMap<WsHost, { cwd: string | null; envJson: str
  * data, not an architectural bug. Suppressing the throw keeps the
  * WS message handler running; the next snapshot retries.
  */
-function snapshotShellState(self: WsHost): void {
+function snapshotShellState(self: Pick<WsHost, 'shell'>): void {
   const shell = self.shell;
   if (!shell) return;
   const ctx = (self as any).ctx;
@@ -382,29 +383,25 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     }
     const terminalMessage = TerminalMessageSchema.safeParse(value);
     if (self.terminal && terminalMessage.success) {
-      const terminal = self.terminal;
-      const completion = terminal.handleMessage(terminalMessage.data);
-      if (completion) {
-        const task = completion.catch((error: unknown) => {
-          console.error('[nimbus] terminal input failed:', errorText(error));
-          terminal.writeln(`terminal input failed: ${errorText(error)}`);
-        }).finally(() => snapshotShellState(self));
-        const ctx = (self as unknown as { ctx?: { waitUntil?: (promise: Promise<void>) => void } }).ctx;
-        // Hand the command's completion to waitUntil so its failure is observed and
-        // the final snapshot runs, without holding the WebSocket event open or
-        // serializing later input. DurableObjectState.waitUntil does not extend the
-        // object's lifetime (Cloudflare docs, api/state/#waituntil).
-        if (ctx?.waitUntil) ctx.waitUntil(task);
-        else await task;
-      }
+      self.dispatchTerminalInput(JSON.stringify(terminalMessage.data));
     }
     // ── B'.1 snapshot ───────────────────────────────────────────────
-    // Capture immediate keystroke changes; async input completion takes a final snapshot above.
+    // The input's own request takes a final snapshot on completion.
     snapshotShellState(self);
   } catch (e: any) {
     // Never let a message parsing error crash the DO
     console.error('[nimbus] webSocketMessage error:', e?.message);
   }
+}
+
+export async function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string): Promise<void> {
+  try {
+    if (!self.terminal) throw new Error('terminal input reached a session with no terminal');
+    await self.terminal.handleMessage(TerminalMessageSchema.parse(JSON.parse(frame)));
+  } catch (error) {
+    console.error('[nimbus] terminal input failed:', errorText(error));
+    self.terminal?.writeln(`terminal input failed: ${errorText(error)}`);
+  } finally { snapshotShellState(self); }
 }
 
 async function routeProcessLogClientMessage(

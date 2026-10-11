@@ -615,7 +615,28 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  const __startedAt = Date.now();
+  for (;;) {
+    const __remaining = Math.max(0, __deadlineMs - (Date.now() - __startedAt));
+    const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
+    if (__drained.pending || !await __nimbusBeforeExitHasWork()) return __drained;
+  }
+}
+
+async function __nimbusBeforeExitHasWork() {
+  if (__nimbusProgramStopped || !__processMod.listenerCount("beforeExit")) return false;
+  const __rawSetTimeout = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+  for (;;) {
+    __processMod.emit("beforeExit", __processMod.exitCode || 0);
+    let __continued = __nimbusLiveHandles() > 0;
+    for (let __pass = 0; __pass < 4; __pass++) {
+      await new Promise((resolve) => __rawSetTimeout(resolve, 0));
+      __continued ||= __nimbusLiveHandles() > 0;
+    }
+    if (__nimbusProgramStopped) return false;
+    if (__nimbusLiveHandles() > 0) return true;
+    if (!__continued) return false;
+  }
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -639,7 +660,8 @@ function __nimbusNaturalExit() {
     const __released = () => {
       if (__checking) return;
       __checking = true;
-      __nimbusHoldsNoHandle().then((__none) => {
+      __nimbusHoldsNoHandle().then(async (__none) => {
+        if (__none && await __nimbusBeforeExitHasWork()) __none = false;
         __checking = false;
         if (!__none) return;
         if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
@@ -1392,7 +1414,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     return __NimbusHostResponse.json({
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
-      stderr: (__supervisor && !captureOutput) ? "" : stderr,
+      stderr: (__supervisor && !captureOutput) ? __nimbusUnreportedStderr : stderr,
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
@@ -1803,7 +1825,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
         // Finished during its boot (\`--help\`, a CLI run that also serves):
         // the boot answers with its exit, as an explicit exit's does.
-        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle();
+        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle() && !await __nimbusBeforeExitHasWork();
       }
     } catch (e) {
       if (e instanceof __ProcessExit) {
