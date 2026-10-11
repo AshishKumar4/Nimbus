@@ -6,8 +6,9 @@ import type { FactoryFunctionInfo, FunctionFactories, FunctionRuntime, HostOpera
 import {
   Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList,
   dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn,
-  reflectApply, reflectConstruct, reflectOwnKeys, registerSource, stringOf, symbolDescription, withElement,
+  reflectApply, reflectConstruct, reflectOwnKeys, registerSource, resume, resumeReturning, resumeThrowing, stringOf, symbolDescription, withElement,
 } from './intrinsics.js';
+import { type StackInfo, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 
 /**
  * A scope's environment: slot 0 is the enclosing environment, the rest are
@@ -73,6 +74,7 @@ export type FunctionShape =
 
 /** A compiled function: what every function object made from one source function shares. */
 export class FunctionInfo implements FactoryFunctionInfo {
+  stack: StackInfo | null = null;
   body: Sync | null = null;
   gen: Gen | null = null;
   /** The body evaluates to the return value itself (an arrow's expression body). */
@@ -131,6 +133,7 @@ function enter(
   if (fi.newTargetSlot !== 0) env[fi.newTargetSlot] = newTarget;
   if (fi.homeSlot !== 0) env[fi.homeSlot] = home;
   if (fi.funcSlot !== 0) env[fi.funcSlot] = fn;
+  if (fi.stack !== null) initializeStack(env, fi.stack, fn, thisArg, newTarget !== undefined);
   const params = fi.params;
   if (params !== null) {
     // A parameter past the last argument is undefined: reading the index would
@@ -152,7 +155,31 @@ function finish(fi: FunctionInfo, result: unknown): unknown {
 function run(fi: FunctionInfo, env: Env): unknown {
   const body = fi.body;
   if (body === null) throw new Error('interpreter: a suspending body called synchronously');
-  return finish(fi, body(env));
+  const previous = fi.stack === null ? null : pushStack(env);
+  try {
+    return finish(fi, body(env));
+  } catch (error) {
+    stampStack(error);
+    throw error;
+  } finally {
+    if (fi.stack !== null) popStack(previous);
+  }
+}
+
+/** One generator step: no shadow activation remains live across a yield/await. */
+function step(env: Env, it: Generator<unknown, unknown, unknown>, kind: 'next' | 'throw' | 'return', value: unknown): IteratorResult<unknown, unknown> {
+  const previous = pushStack(env);
+  try {
+    if (kind === 'next') return resume(it, value);
+    if (kind === 'throw') return resumeThrowing(it, value);
+    return resumeReturning(it, value);
+  } catch (error) {
+    stampStack(error);
+    throw error;
+  } finally {
+    suspendedStack(env);
+    popStack(previous);
+  }
 }
 
 /**
@@ -202,6 +229,8 @@ const runtime: FunctionRuntime<FunctionInfo, Env, ClassRecord> = {
   },
   enter,
   finish,
+  run,
+  step,
   construct(fi, scope, ctor, record, thisArg, args, newTarget) {
     if (record.initialize) record.initialize(thisArg);
     if (fi.implicit) return undefined;
@@ -219,7 +248,7 @@ const runtime: FunctionRuntime<FunctionInfo, Env, ClassRecord> = {
     if (body === null) throw new Error('interpreter: a suspending constructor');
     // Undefined falls through to `this`; anything else is the native
     // constructor's own answer (an object, or the TypeError for a primitive).
-    const value = finish(fi, body(env));
+    const value = run(fi, env);
     if (value !== undefined) return value;
     const self = fi.thisSlot === 0 ? TDZ : env[fi.thisSlot];
     // Returning undefined uninitialized makes the native constructor throw its ReferenceError.
