@@ -33,13 +33,18 @@ export async function httpFetchCases(http) {
     const port = server.address().port;
     const request = (path, callback, extra = {}) => http.request({ host: '127.0.0.1', port, path, method: 'POST', agent: false, ...extra }, callback);
     const parity = {};
+    const completion = [];
     parity.cookies = await new Promise((resolve, reject) => {
       const req = request('/cookies', (res) => {
         const values = [res.headers['set-cookie'], res.headersDistinct['set-cookie'], res instanceof http.IncomingMessage, res.constructor.name];
-        res.resume(); res.on('end', () => resolve(values));
+        res.resume(); res.on('end', () => { completion.push('response-end'); resolve(values); });
+        res.on('close', () => completion.push('response-close'));
       });
+      req.on('close', () => completion.push('request-close'));
       req.on('error', reject); req.end();
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    parity.completion = completion;
     parity.upload = await new Promise((resolve, reject) => {
       let ended = false, early = false, body = '';
       const req = request('/upload', (res) => {
