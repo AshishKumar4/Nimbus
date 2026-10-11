@@ -70,7 +70,8 @@ import {
   type VfsMutationReceipt,
   type VfsListTree,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { CredentialedVfs, SqliteVFS, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -981,7 +982,7 @@ export async function _rpcWriteBatch(
       data: normalizeWriteBatchChunkData(c.data),
     }));
 
-    return self.sqliteFs!.as(callerCred(self, pid)).writeBatchPlaced({
+    return self.getFilesystemAuthority().waves.writeBatch(self.sqliteFs!.as(callerCred(self, pid)), {
       inodes,
       chunks,
       deletePaths,
@@ -1006,7 +1007,7 @@ function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
    * W7 — Streaming bulk-write entry point. Receives a
    * ReadableStream<Uint8Array> in the W7 v3 wire format (see
    * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
-   * SqliteVFS.writeStream().
+   * the namespace's ingestion (WaveIngest), through the writeBatchStream op.
    *
    * Bypasses the 32 MiB structured-clone cap that constrained the
    * legacy writeBatch path — workerd flow-controls the byte stream

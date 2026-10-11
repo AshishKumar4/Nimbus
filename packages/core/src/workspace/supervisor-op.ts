@@ -1,4 +1,5 @@
-import { isPendingChunkError, type SqliteVFS, type WaveMountReach, type WaveSequence } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { WaveMountReach, WaveSequence } from '../runtime/wave-contracts.js';
 import type { ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { withRecall } from '../vfs/recall.js';
