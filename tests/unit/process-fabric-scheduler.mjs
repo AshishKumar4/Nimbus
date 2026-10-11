@@ -541,9 +541,8 @@ for (const mode of PROCESS_HOST_MODES) {
   console.log('  caseP3: the host leg parses what it is handed, and parks exactly one key');
 }
 {
-  // A peer that dies under a process that is already up, through the REAL host
-  // leg this time: severing the held call is what a Durable Object reset does
-  // to it, and the process has to end rather than route to a corpse.
+  // A native watch ends on peer reset. Unlike an RPC, a socket does not carry
+  // the remote exception, but it still names host loss and ends the process.
   const world = createFacetWorld(makeProgram());
   const host = createProcessHost('peer', world, setupDisk([]).reader);
   const retired = [];
@@ -554,7 +553,7 @@ for (const mode of PROCESS_HOST_MODES) {
   await handle.booted();
   const activity = host.acquireActivity(); await activity.ready;
   [...host.peers.values()][0].die(new Error('peer reset under a running process'));
-  await assert.rejects(handle.done, /peer reset under a running process/,
+  await assert.rejects(handle.done, /its host was reset by the platform \(Nimbus: the process host ended its active watch\)/,
     'active observation reports the host reset');
   activity.release();
   assert.equal(retired.length, 1, 'and the writer identity it held is reclaimed');
