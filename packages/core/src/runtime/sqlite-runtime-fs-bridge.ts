@@ -378,7 +378,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         const namespace = this.namespace!;
         const node = openMounted({
-          files: located.mount, name: located.path, flags: normalizedFlags, cred: this.vfs.cred, mode: flags.mode,
+          files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
           refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => namespace.realpath(name),
           awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
         }) as Description;

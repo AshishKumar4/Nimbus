@@ -7,9 +7,8 @@
  * lookup, before anything has changed; or the namespace itself.
  */
 
-import { modeAllows } from '../runtime/beneath-walk.js';
 import { processView, type Description, type DescriptorScope } from '../runtime/descriptors.js';
-import type { RuntimeFileHandle, RuntimeVfsStat, VfsCred } from '../runtime/os-contracts.js';
+import type { RuntimeFileHandle, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import { runtimeStatOf } from './composite.js';
 import { isPromise, readRangeOrWhole, then, type Awaitable, type VFS, type VfsStat } from './vfs.js';
 import { isVfsError } from './vfs-error.js';
@@ -25,7 +24,6 @@ export interface MountedOpen {
   /** The name opened, in the namespace. */
   name: string;
   flags: RuntimeFileHandle['flags'];
-  cred: VfsCred;
   refuse: Refuse;
   /** The mode a file this open makes is made with. */
   mode?: number;
@@ -36,10 +34,11 @@ export interface MountedOpen {
  * POSIX differ: O_CREAT|O_EXCL is EEXIST on the name itself, a link
  * included; O_NOFOLLOW of a link is ELOOP; an absent name without O_CREAT is
  * ENOENT, and with O_DIRECTORY EINVAL; O_DIRECTORY of anything else is
- * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); the access
- * asked is checked against the file's mode (EACCES); and only then is the
- * file made (whatever its mode, as creat(2) makes it) or truncated. Answers
- * the file's stat. `describes`: whether the open keeps a description, whose
+ * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); and only
+ * then is the file made, or truncated. Answers the file's stat. Who may
+ * open a file for what is the mount's own policy, as for every operation on
+ * it: a backend that takes a caller's credential (VFS.as) enforces modes; a
+ * backend of one identity has none. `describes`: whether the open keeps a description, whose
  * write rights a directory may carry (a WASI guest asks a capability set);
  * an open that keeps none (a wave's) is an open to write, which a directory
  * refuses. `settled` runs right before the answer, or the change.
@@ -56,7 +55,6 @@ export function openOnMount(open: MountedOpen, describes: boolean, settled?: () 
       } else {
         if (flags.directory && there.type !== 'directory') throw refuse('ENOTDIR', 'open');
         if (there.type === 'directory' && (flags.truncate || flags.append || (flags.write && !describes))) throw refuse('EISDIR', 'open');
-        if (!modeAllows(there, (flags.read ? 4 : 0) | (flags.write && there.type !== 'directory' ? 2 : 0), open.cred)) throw refuse('EACCES', 'open');
       }
       return then(settled?.(), () => {
         if (there !== null && !flags.truncate) return there;
@@ -136,20 +134,21 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
     held += bytes.byteLength;
     return immediate ? then(flush(), () => bytes.byteLength) : bytes.byteLength;
   };
-  // This process's view of the file while it holds writes to it (processView).
-  const viewed = (): Uint8Array | undefined => (inPlace || immediate ? undefined : processView(scope, () => {
+  // This process's view of the file while it holds writes to it, by any of its descriptions (processView).
+  const viewed = (): Uint8Array | undefined => (immediate ? undefined : processView(scope, () => {
     const file = whole();
     return isPromise(file) ? null : file;
   }, name));
-  const write = (offset: number, bytes: Uint8Array): Awaitable<number> => {
+  // In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written.
+  const inPlaceOr = (offset: number, bytes: Uint8Array, otherwise: () => Awaitable<number>): Awaitable<number> => {
     if (!inPlace || files.writeRange === undefined) {
       inPlace = false;
-      return hold(offset, bytes);
+      return otherwise();
     }
     const cannot = (error: unknown): Awaitable<number> => {
       if (!isVfsError(error, 'ENOTSUP')) throw error;
       inPlace = false;
-      return hold(offset, bytes);
+      return otherwise();
     };
     let written: Awaitable<void>;
     try {
@@ -157,7 +156,7 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
     } catch (error) {
       return cannot(error);
     }
-    return isPromise(written) ? written.then(() => bytes.byteLength, cannot) : bytes.byteLength;
+    return isPromise(written) ? written.then(() => offset + bytes.byteLength, cannot) : offset + bytes.byteLength;
   };
   const statNow = (): Awaitable<RuntimeVfsStat> => then(files.stat(name), (there) => {
     if (there === null) throw refuse('ENOENT', 'fstat');
@@ -177,14 +176,12 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
       const view = viewed();
       return view ? view.slice(offset, offset + length) : readRangeOrWhole(files, name, offset, length);
     },
-    write,
-    // At the end as it is then: a held append goes at the end as it stands at the flush.
-    append: (bytes) => (inPlace
-      ? then(files.stat(name), (there) => {
-        const at = there?.size ?? 0;
-        return then(write(at, bytes), () => at + bytes.byteLength);
-      })
-      : then(hold(null, bytes), () => then(statNow(), (now) => now.size))),
+    write: (offset, bytes) => then(inPlaceOr(offset, bytes, () => hold(offset, bytes)), () => bytes.byteLength),
+    // At the end as it is then; a held one goes at the end as it stands at the flush.
+    append: (bytes) => {
+      const held = (): Awaitable<number> => then(hold(null, bytes), () => then(statNow(), (now) => now.size));
+      return inPlace ? then(files.stat(name), (there) => inPlaceOr(there?.size ?? 0, bytes, held)) : held();
+    },
     truncate: op(files.truncate, 'ftruncate'),
     readdir: () => then(files.readdir(name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type }))),
     chmod: op(files.chmod, 'fchmod'),

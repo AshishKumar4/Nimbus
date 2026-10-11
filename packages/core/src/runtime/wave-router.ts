@@ -82,7 +82,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       const ns = view(cred, guard, owner);
       // Removing its own slot after a failure is the record's own: not admitted again, under the same lease.
       const cleanup = view(cred, undefined, owner);
-      return applyRecord(ns, cleanup, record, pinsOf(ns, record), credential(cred));
+      return applyRecord(ns, cleanup, record, pinsOf(ns, record));
     },
   };
 }
@@ -147,7 +147,6 @@ async function applyRecord(
   cleanup: CompositeVFS,
   record: RoutedWaveRecord,
   pinned: () => void | Promise<void>,
-  cred: VfsCred,
 ): Promise<RoutedStat | null> {
   switch (record.type) {
     case 'directory':
@@ -213,7 +212,7 @@ async function applyRecord(
       else if (call.call === 'open') {
         // open(2) to write, as the namespace's open decides it for every caller.
         return statOf(await openOnMount({
-          files: ns, name: call.path, cred, mode: call.mode,
+          files: ns, name: call.path, mode: call.mode,
           flags: openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true }),
           refuse: (code) => new VfsError(code as VfsErrorCode, VFS_DESCRIPTION[code as VfsErrorCode], call.path),
         }, false, pinned));

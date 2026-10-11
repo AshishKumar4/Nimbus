@@ -89,13 +89,9 @@ for (const [face, at] of [['sync', '/s'], ['async', '/a']]) {
     await assert.rejects(async () => proc.open(`${at}/dir`, { write: true, truncate: true }), refused('EISDIR'));
   });
 
-  await check(`${face}: a file's mode is checked before anything changes`, async () => {
+  await check(`${face}: a mount of one identity has no modes to refuse by, and creat(2) writes what it makes`, async () => {
     seed('readonly', 'kept', 0o444);
-    await assert.rejects(async () => proc.open(`${at}/readonly`, { write: true, truncate: true }), refused('EACCES'));
-    assert.equal(dec.decode(backend.readFile('/readonly')), 'kept');
-  });
-
-  await check(`${face}: creat(2) writes what it makes, whatever its mode`, async () => {
+    await proc.close((await proc.open(`${at}/readonly`, { write: true, append: true })).id);
     const fd = await proc.open(`${at}/readonly-new`, { write: true, create: true, exclusive: true, mode: 0o444 });
     await proc.write(fd.id, null, enc.encode('made'));
     await proc.close(fd.id);
@@ -121,8 +117,8 @@ for (const [face, at] of [['sync', '/s'], ['async', '/a']]) {
   });
 
   const reading = await proc.open(`${at}/plain`, { read: true });
-  await check(`${face}: a mounted fstat carries revision 0`, async () => {
-    assert.equal((await proc.fstat(reading.id)).revision, 0);
+  await check(`${face}: a mounted fstat carries the mount's revision, not the SQLite clock`, async () => {
+    assert.equal((await proc.fstat(reading.id)).revision, (await proc.stat(`${at}/plain`)).revision);
   });
   await check(`${face}: a negative offset reads from 0`, async () => {
     assert.equal(dec.decode(await proc.read(reading.id, -5, 2)), 'ab');
