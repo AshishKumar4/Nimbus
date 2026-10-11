@@ -191,6 +191,10 @@ try {
       [path, { type: 'symlink', target, mode: 0o120777, uid: 1000, gid: 1000 }])) });
     const guest = factory(FILES, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
       '/' + W, [], {}, '/' + W + '/main.cjs', '/' + W, { conditions });
+    const differences = [];
+    const same = (actual, expected, label) => {
+      try { assert.deepEqual(actual, expected); } catch { differences.push({ label, actual, expected }); }
+    };
     for (let i = 0; i < CASES.length; i++) {
       const { id, from = W, paths, boundaryOnly } = CASES[i];
       const label = JSON.stringify({ id, from, paths, conditions });
@@ -199,19 +203,20 @@ try {
         const found = sync.resolveSync(diskId(id), disk(from), request);
         return found?.builtin && !id.startsWith('#') ? id : resultPath(found);
       });
-      if (!boundaryOnly) assert.deepEqual(coreAnswer, expected[i], 'core sync: ' + label);
+      if (!boundaryOnly) same(coreAnswer, expected[i], 'core sync: ' + label);
       let asyncAnswer;
       try {
         const found = await async_.resolve(diskId(id), disk(from), request);
         asyncAnswer = { path: normalize(found?.builtin && !id.startsWith('#') ? id : resultPath(found)) };
       } catch (e) { asyncAnswer = { code: e.code }; }
-      if (!boundaryOnly) assert.deepEqual(asyncAnswer, expected[i], 'core async: ' + label);
-      assert.deepEqual(answer(() => lifo.requireFrom('/' + from).resolve(id,
+      if (!boundaryOnly) same(asyncAnswer, expected[i], 'core async: ' + label);
+      same(answer(() => lifo.requireFrom('/' + from).resolve(id,
         paths === undefined ? undefined : { paths: paths.map((p) => typeof p === 'string' ? '/' + p : p) })), expected[i], 'lifo: ' + label);
       const runtime = from === W ? guest : guest('module').createRequire('/' + from + '/main.cjs');
-      assert.deepEqual(answer(() => runtime.resolve(id, paths === undefined ? undefined : { paths: paths.map((p) => typeof p === 'string' ? '/' + p : p) })),
+      same(answer(() => runtime.resolve(id, paths === undefined ? undefined : { paths: paths.map((p) => typeof p === 'string' ? '/' + p : p) })),
         expected[i], 'guest: ' + label);
     }
+    assert.deepEqual(differences, [], 'all hosts agree with Node under ' + JSON.stringify(conditions));
     const typed = sync.resolveSync('./typed/file.js', disk(W));
     assert.equal(typed.packageType, 'module');
     assert.equal(typed.scope.packageJsonPath, disk(W + '/typed/package.json'));

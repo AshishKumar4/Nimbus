@@ -313,11 +313,11 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
       return null;
     }
     if (id.startsWith('#')) {
-      if (id === '#' || id.startsWith('#/') || id.endsWith('/')) {
-        throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
-      }
       const scope = yield* nearestPackageScope(dir, state);
-      if (scope && scope.pkg.imports !== null && typeof scope.pkg.imports === 'object') {
+      if (scope && scope.pkg.imports != null) {
+        if (id === '#' || id.startsWith('#/') || id.endsWith('/')) {
+          throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
+        }
         let target: URL | null | undefined;
         try { target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state); }
         catch (err) {
@@ -327,9 +327,8 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
           throw err;
         }
         if (target != null) return yield* finalizeTarget(target, scope.packageJsonPath);
+        throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + ' imported from ' + dir, TypeError);
       }
-      const where = scope ? ' in package ' + scope.packageJsonPath : '';
-      throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined' + where + ' imported from ' + dir, TypeError);
     }
     const self = yield* loadPackageSelf(id, dir, state);
     if (self) return self;
