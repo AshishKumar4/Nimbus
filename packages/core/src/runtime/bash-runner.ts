@@ -71,12 +71,6 @@ function normalizeSlice(raw: unknown): BashSlice | null {
   };
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const out = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(out).set(bytes);
-  return out;
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -170,7 +164,7 @@ export async function createBashFacetSession(deps: {
 
 
   const wasmModules: Record<string, ArrayBuffer> = {
-    'bash.async.wasm': toArrayBuffer(await deps.artifacts.readFile(bashWasmPath)),
+    'bash.async.wasm': await deps.artifacts.readArrayBufferUncached(bashWasmPath),
   };
   for (const file of deps.manifest.files) {
     const prefix = 'share/bash/coreutils/';
@@ -178,7 +172,7 @@ export async function createBashFacetSession(deps: {
     const name = file.path.slice(prefix.length, -'.wasm'.length);
     const vfsPath = `${deps.installRoot}/${file.path}`;
     if (await deps.artifacts.exists(vfsPath)) {
-      wasmModules[`cu_${name}.wasm`] = toArrayBuffer(await deps.artifacts.readFile(vfsPath));
+      wasmModules[`cu_${name}.wasm`] = await deps.artifacts.readArrayBufferUncached(vfsPath);
     }
   }
 

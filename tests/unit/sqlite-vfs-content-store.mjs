@@ -174,6 +174,21 @@ function wireChunks(path, data) {
   const after = raw.getStats().cache;
   assert.equal(after.entries, before.entries, 'an uncached read filled the content cache');
   assert.equal(after.hits + after.misses, before.hits + before.misses, 'an uncached read consulted the content cache');
+  // A runtime image assembled range-by-range fills nothing either: the LRU
+  // stays empty while the caller holds the only copy of the 10.6 MiB image.
+  raw.evictAll();
+  const empty = raw.getStats().cache;
+  const chunks = [];
+  for (let offset = 0; offset < data.length; offset += 65536) {
+    chunks.push(vfs.readRangeUncached('blob.bin', offset, Math.min(65536, data.length - offset)));
+  }
+  const image = new Uint8Array(data.length);
+  let at = 0;
+  for (const chunk of chunks) { image.set(chunk, at); at += chunk.length; }
+  assert.deepEqual(image, data);
+  const held = raw.getStats().cache;
+  assert.equal(held.entries, empty.entries, 'a ranged image assembly filled the content cache');
+  assert.equal(held.hits + held.misses, empty.hits + empty.misses, 'a ranged image assembly consulted the content cache');
   // A cached read fills it, and what it hands back is the caller's to change.
   const read = vfs.readFile('blob.bin');
   assert.ok(raw.getStats().cache.entries > after.entries);
