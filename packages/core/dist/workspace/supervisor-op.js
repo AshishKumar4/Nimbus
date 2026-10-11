@@ -169,6 +169,7 @@ export const SUPERVISOR_OP_ROUTES = {
     cacheResult: { method: '_rpcCacheResult', args: [0, 1, 'pid', 'run'] },
     cpReadOutput: { method: '_rpcCpReadOutput', args: [0, 1, 2, 3, 4, 'pid'] },
     cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0] },
+    cpCloseOutput: { method: '_rpcCpCloseOutput', args: [0, 1] },
     cpKill: { method: '_rpcCpKill', args: [0, 1] },
     cpWait: { method: '_rpcCpWait', args: [0, 1, 2, 'pid', 3] },
     cpBlocked: { method: '_rpcCpBlocked', args: ['pid', 0] },

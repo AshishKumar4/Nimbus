@@ -1520,6 +1520,10 @@ export async function _rpcCpDrainOutput(self: RpcHost, childPid: number) {
     return fpm.drainOutput(childPid);
 }
 
+export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void> {
+    self._ensureFacetProcessManager().closeOutput(childPid, fd);
+}
+
 export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean> {
     const fpm = self._ensureFacetProcessManager();
     return fpm.kill(childPid, signal);

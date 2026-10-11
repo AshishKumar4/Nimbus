@@ -2,7 +2,7 @@
  * sqlite-shim.ts — node:sqlite shim for Nimbus facets, backed by sql.js
  * (Emscripten SQLite wasm) running in-memory inside the facet isolate.
  *
- * Like streams.ts / node-shims.ts, this emits a raw JS string embedded in
+ * Like node-shims.ts, this emits a raw JS string embedded in
  * the generated facet module. The emitted block:
  *
  *   1. Boots the sql.js engine LAZILY AND SYNCHRONOUSLY on the first

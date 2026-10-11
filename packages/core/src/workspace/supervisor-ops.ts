@@ -78,6 +78,7 @@ export const SUPERVISOR_OP_TABLE = {
   cpReadStdin: null,
   cpReadOutput: null,
   cpDrainOutput: null,
+  cpCloseOutput: null,
   cpKill: null,
   cpWait: null,
   cpBlocked: null,

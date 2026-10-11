@@ -99,6 +99,11 @@ interface ChildEntry {
         1: Promise<void>;
         2: Promise<void>;
     };
+    /** The parent closed its read end of fd 1 or 2 (closeOutput): the child's writes there fail, EPIPE. */
+    outputClosed: {
+        1: boolean;
+        2: boolean;
+    };
     parentClosed: (() => void) | null;
     outputWaiters: Array<{
         fd: 1 | 2;
@@ -331,6 +336,13 @@ export declare class FacetProcessManager {
      * chunks > sinceSeq OR if the child has already exited.
      */
     readOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs?: number): Promise<ReadOutputResult>;
+    /**
+     * The parent closed its read end of the child's fd 1 or 2 (a consumer
+     * destroyed the stream): what is queued there goes, and the child's
+     * writes there, those waiting for room and those to come, fail EPIPE, as a
+     * write to a pipe whose reader has gone does.
+     */
+    closeOutput(childPid: number, fd: 1 | 2): void;
     /**
      * One-shot final flush. Used by the parent's exit-time drain (BLOCKER-1
      * fix in W8-plan §8.5). Returns ALL pending output for both fds plus

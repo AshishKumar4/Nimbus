@@ -91,7 +91,7 @@ export const REPLAY_OPERATION_POLICY = {
   getCachedTarball: read, getPackument: read, putCachedTarball: effect,
   cacheResult: control,
   cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
-  cpDrainOutput: read, cpKill: effect,
+  cpDrainOutput: read, cpCloseOutput: effect, cpKill: effect,
   cpBlocked: { kind: 'control' },
   cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
   fsFstat: read, fsDup: read, fsSeek: read,
