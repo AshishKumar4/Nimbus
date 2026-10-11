@@ -41,10 +41,10 @@ import { z } from 'zod/v4';
  */
 
 /** Node 22.12+ defaults. `default` is always active, not a user condition. */
-export const DEFAULT_ESM_CONDITIONS = ['import', 'node', 'module-sync'];
+export const DEFAULT_ESM_CONDITIONS = ['import', 'node', 'node-addons', 'module-sync'];
 
 /** Default conditions for CJS runtime resolution (user-shell node). */
-export const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'module-sync'];
+export const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'node-addons', 'module-sync'];
 
 /** The install/bundler/browser policy, deliberately not Node's conditions. */
 export const DEFAULT_BUILD_CONDITIONS = ['import', 'module', 'browser', 'default'];

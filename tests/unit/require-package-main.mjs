@@ -52,6 +52,8 @@ const FILES = {
   [W + '/typed/file.js']: 'export default 1;',
   [W + '/typescript.ts']: 'const x: number = 1;',
   [W + '/tsdir/index.ts']: 'export const x = 1;',
+  [W + '/tsmain/package.json']: pkg({ main: './source.js' }),
+  [W + '/tsmain/source.ts']: 'export const x = 1;',
   [W + '/real/linked/package.json']: pkg({ name: 'linked', main: 'entry.cjs' }),
   [W + '/real/linked/entry.cjs']: 'module.exports = 1;',
   [W + '/real/linked/sub.cjs']: 'module.exports = 1;',
@@ -80,6 +82,7 @@ const FILES = {
     './array-missing': ['./missing.js', './r.cjs'],
     './no-extension': './raw', './directory': './folder',
     './dev': { development: './d.js', require: './r.cjs' },
+    './addons': { 'node-addons': './r.cjs', default: './d.js' },
     './bad': './node_modules/hidden.js', './encoded': './%2e%2e/escape.js',
     './repeat/*': './star/*/*.js',
   } }),
@@ -113,7 +116,7 @@ const CASES = [
   ...['tinydate', 'module-only', 'legacy/sub', 'root-null', 'linked', 'linked/sub.cjs', 'app', 'app/open', 'app/private',
     'dual', 'dual/require-first', 'dual/default-first', 'dual/null', 'dual/conditional-null', 'dual/private/hidden',
     'dual/array-invalid', 'dual/array-null', 'dual/array-invalid-null', 'dual/array-null-invalid', 'dual/array-missing',
-    'dual/no-extension', 'dual/directory', 'dual/repeat/a', 'dual/dev', 'dual/bad', 'dual/encoded',
+    'dual/no-extension', 'dual/directory', 'dual/repeat/a', 'dual/dev', 'dual/addons', 'dual/bad', 'dual/encoded',
     'patterns/a/x/long-suffix', 'import-only', 'numeric', 'mixed', 'not-installed-nimbus-fixture',
     '#x', '#dep', '#fs', '#null', '#conditional-null', '#pat/one', '#exact', '#invalid', '#bare-sub', '#array-missing',
     '#missing', '#', '#/bad', 'fs', 'node:fs', 'node:not-a-builtin',
@@ -220,6 +223,8 @@ try {
   assert.equal(strict.resolveSync('./tsdir', disk(W)), null);
   assert.equal(normalize(source.resolveSync('./typescript', disk(W)).path), W + '/typescript.ts');
   assert.equal(normalize(source.resolveSync('./tsdir', disk(W)).path), W + '/tsdir/index.ts');
+  assert.throws(() => strict.resolveSync('./tsmain', disk(W)), (e) => e.code === 'MODULE_NOT_FOUND');
+  assert.equal(normalize(source.resolveSync('./tsmain', disk(W)).path), W + '/tsmain/source.ts');
   assert.equal(normalize(source.resolveSync('./pick', disk(W)).path), W + '/pick.js');
   assert.throws(() => source.resolveSync('dual/no-extension', disk(W)), (e) => e.code === 'MODULE_NOT_FOUND');
   const product = createCjsLoader(context, () => ({ console, process }));

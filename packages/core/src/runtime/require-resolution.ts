@@ -186,6 +186,10 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
       // a file and then main/index, never recursively LOAD_AS_DIRECTORY.
       const found = (yield* loadAsFile(main)) ?? (yield* loadIndex(main)) ?? (yield* loadIndex(path));
       if (found) return found;
+      if (policy.typescriptFallback) {
+        const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
+        if (source) return source;
+      }
       throw Object.assign(error('MODULE_NOT_FOUND',
         "Cannot find module '" + main + "'. Please verify that the package.json has a valid \"main\" entry"),
       { path: pkgPath, requestPath: path });
@@ -195,13 +199,15 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
   function* resolveFile(path: string, state: State, trailingSlash = false): Step<string | null> {
     const normalized = absolute(path);
     const found = (!trailingSlash ? yield* loadAsFile(normalized) : null) ?? (yield* loadAsDirectory(normalized, state));
-    if (found || !policy.typescriptFallback) return found;
-    for (const candidate of typescriptFallbackCandidates(normalized)) {
+    return found ?? (policy.typescriptFallback ? yield* typeScriptFallback(normalized) : null);
+  }
+  function* typeScriptFallback(path: string): Step<string | null> {
+    for (const candidate of typescriptFallbackCandidates(path)) {
       if ((yield* ask.kind(candidate)) === 'file') return candidate;
     }
-    if ((yield* ask.kind(normalized)) === 'directory') {
+    if ((yield* ask.kind(path)) === 'directory') {
       for (const suffix of TYPESCRIPT_INDEX_CANDIDATES) {
-        if ((yield* ask.kind(normalized + suffix)) === 'file') return normalized + suffix;
+        if ((yield* ask.kind(path + suffix)) === 'file') return path + suffix;
       }
     }
     return null;
@@ -259,6 +265,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     return { name: slash === -1 ? id : id.slice(0, slash), subpath: slash === -1 ? '.' : '.' + id.slice(slash) };
   }
   function* finalizeTarget(target: URL, pjsonPath: string): Step<string> {
+    if (target.protocol !== 'file:') throw error('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file', TypeError);
     if (/%2f|%5c/i.test(target.pathname)) {
       throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + target.pathname + '" must not include encoded "/" or "\\" characters', TypeError);
     }
@@ -313,7 +320,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
       const scope = yield* nearestPackageScope(dir, state);
       if (scope && scope.pkg.imports !== null && typeof scope.pkg.imports === 'object') {
         const target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
-        if (target != null) return target.protocol === 'node:' ? target : yield* finalizeTarget(target, scope.packageJsonPath);
+        if (target != null) return yield* finalizeTarget(target, scope.packageJsonPath);
       }
       const where = scope ? ' in package ' + scope.packageJsonPath : '';
       throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined' + where + ' imported from ' + dir, TypeError);
@@ -441,7 +448,7 @@ export interface ResolveSubpathResult {
 function loaderReportsResolutionError(err: unknown): boolean {
   return ['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED',
     'ERR_PACKAGE_IMPORT_NOT_DEFINED', 'ERR_INVALID_MODULE_SPECIFIER', 'ERR_INVALID_PACKAGE_TARGET',
-    'ERR_INVALID_PACKAGE_CONFIG', 'ERR_UNKNOWN_BUILTIN_MODULE'].includes(String(codeOf(err)));
+    'ERR_INVALID_PACKAGE_CONFIG', 'ERR_INVALID_URL_SCHEME', 'ERR_UNKNOWN_BUILTIN_MODULE'].includes(String(codeOf(err)));
 }
 export async function resolveRequireEx(
   vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress,

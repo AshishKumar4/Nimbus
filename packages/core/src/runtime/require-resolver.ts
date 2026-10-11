@@ -809,10 +809,14 @@ function walkEsmResolver(
       if (!(await vfs.exists(key))) return null;
       return (await vfs.isDirectory(key)) ? 'directory' : 'file';
     },
-    realpath: (path) => path,
+    realpath: async (path) => vfs.realpath ? '/' + stripLeadingSlashes(await vfs.realpath(stripLeadingSlashes(path))) : path,
     readText,
     isBuiltin: (specifier) => isFacetProvided(specifier),
-    cjsResolve: () => null,
+    async cjsResolve(specifier, parentPath) {
+      const dir = parentPath.slice(0, parentPath.lastIndexOf('/'));
+      const found = await resolveRequireEx(vfs, specifier, dir, (path) => readText('/' + path), progress, conditions);
+      return found ? '/' + found.resolved : null;
+    },
   }, { conditions });
 }
 
