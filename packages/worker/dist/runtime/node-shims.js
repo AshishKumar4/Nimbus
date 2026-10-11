@@ -11808,7 +11808,7 @@ const __requireResolver = createRequireResolver({
   readText(path) { return __readFileOr(path, null); },
   realpath(path) { return __fsMod.realpathSync(path); },
   isBuiltin(specifier) {
-    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
+    return __nimbusBuiltinId(specifier) !== null;
   },
 }, { conditions: __nimbusConditions, policy: NIMBUS_TYPESCRIPT_REQUIRE_POLICY, collectPackageScope: false });
 
