@@ -273,8 +273,8 @@ export class Fanout {
    * `fn` is the user function executed per task. It runs INSIDE a
    * Worker Loader isolate (in the in-DO path) or inside a peer DO's
    * Worker Loader isolate (in the peer-DO path); same trust posture
-   * as IsolatePool.submit. The function is serialized via
-   * the vendored serializeFunction (same as IsolatePool#prepare).
+   * as IsolatePool.submit. The precompiled task expression is forwarded
+   * unchanged on either route (same as IsolatePool#prepare).
    */
   async submitMany<A, R>(
     tasks: FanoutTask<A>[],
