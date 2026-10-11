@@ -149,6 +149,8 @@ interface ResolvedTree {
   unresolved: Map<string, string>;
   /** Skip a placement that failed after the plan, if it is optional (TreePlan.skip). */
   skip?: (at: string, reason: string) => boolean;
+  /** Placements the plan keeps as installed (the lockfile's), not placed anew. */
+  kept?: ReadonlySet<string>;
   /**
    * Refusals the walk skipped: required packages whose own os/cpu/libc
    * allowlists exclude this platform (npm's EBADPLATFORM). `required`
@@ -366,6 +368,7 @@ export class NpmInstaller {
     // An optional placement that fails after the plan (its download) is
     // skipped, not failed; with no plan (a lockfile kept whole), none is.
     let skipOptional: (at: string, reason: string) => boolean = () => false;
+    let kept: ReadonlySet<string> = new Set();
     const recordOf = this.lockRecords();
 
     if (packageLock !== null) {
@@ -411,6 +414,7 @@ export class NpmInstaller {
       resolved = tree.resolved;
       nested = tree.nested;
       if (tree.skip) skipOptional = tree.skip;
+      if (tree.kept) kept = tree.kept;
       phases['resolve'] = Date.now() - phaseStart;
 
       // Transitive platform-gate refusals. Required ones join `failed`
@@ -465,6 +469,9 @@ export class NpmInstaller {
 
     for (const target of hoistPlacements(hoistPlan)) {
       const { pkg } = target;
+      // A named install changes what its plan placed; what the plan keeps
+      // is the installed tree, as the lockfile records it, left as it is.
+      if (opts?.packages && kept.has(target.placement)) continue;
       if (!pkg.tarballUrl) {
         // Resolved metadata with no tarball cannot be installed. Silently
         // dropping it here left the package absent from node_modules and
@@ -960,7 +967,7 @@ export class NpmInstaller {
       (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''),
     );
 
-    return { resolved, nested, unresolved, rejected, skip: plan.skip };
+    return { resolved, nested, unresolved, rejected, skip: plan.skip, kept: new Set([...plan.kept.keys()].filter((at) => !plan.skipped.has(at))) };
   }
 
   /**
