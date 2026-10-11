@@ -388,7 +388,8 @@ export function ensureHibSchema(host, ctx) {
  * remains interest until it closes; alarms and facet RPC never renew it.
  */
 export function residentClientPresent(host, now) {
-    return host.portRegistry.clientSocketCount > 0 || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
+    return host.portRegistry.clientSocketCount > 0 || (host._cirrusHmrWsClients?.size ?? 0) > 0
+        || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 /** W1: a client reached the session DO (see noteResidentClient). */
 export function noteClientActivity(host, ctx) {

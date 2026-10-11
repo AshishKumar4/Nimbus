@@ -251,7 +251,7 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss)$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket)$/;
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
@@ -267,7 +267,8 @@ export default {
   async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
     const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
-    const response = match ? await (match[2] === 'host-loss' ? probeHostLoss(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1])) : await nimbus.fetch(request, env, ctx);
+    const response = match ? await (match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
+      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1])) : await nimbus.fetch(request, env, ctx);
     const versionId = env.CF_VERSION_METADATA?.id;
     // Stamp the three readiness replies, including 101; leave encoded asset
     // and port responses intact instead of rebuilding their body metadata.
@@ -406,6 +407,38 @@ async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string)
     if (error instanceof NimbusAuthError) return authErrorResponse(error);
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   } finally { disposeRpcResource(owner); }
+}
+
+async function spawnQuietWebSocket(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  let stub: DurableObjectStub<NimbusSession> | undefined;
+  try {
+    const verified = await verifyRequestToken(request, env);
+    if (!verified) return authRequiredResponse();
+    requireScopes(verified, ['sandbox:use']); requireSessionPin(verified, sessionId);
+    const box = Nimbus.fromEnv(env).sandbox(sessionId, { tenant: verified.claims.tn, subject: verified.claims.sub ?? '_' });
+    await box.ready();
+    stub = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
+    const code = `import { DurableObject } from 'cloudflare:workers';
+export class NimbusProcess extends DurableObject {
+  nonce = crypto.randomUUID();
+  startProcess() { return { nonce: this.nonce }; }
+  handleHttpRequest() { return Response.json(this.startProcess()); }
+  fetch(request) {
+    if (request.headers.get('Upgrade') !== 'websocket') return this.handleHttpRequest(request);
+    const [client, server] = Object.values(new WebSocketPair());
+    server.addEventListener('message', () => server.send(JSON.stringify(this.startProcess())));
+    server.addEventListener('close', () => server.close());
+    server.accept(); server.send(JSON.stringify(this.startProcess()));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}`;
+    const spawned = await stub._rpcSpawnWorker(code, 'quiet preview socket', '/home/user', { port: 3248 });
+    try { return Response.json({ pid: spawned.pid, port: 3248, boot: z.object({ nonce: z.string().uuid() }).parse(spawned.boot) }); }
+    finally { disposeRpcResource(spawned); }
+  } catch (error) {
+    if (error instanceof NimbusAuthError) return authErrorResponse(error);
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  } finally { disposeRpcResource(stub); }
 }
 
 function authRequiredResponse(): Response {

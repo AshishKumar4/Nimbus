@@ -55,6 +55,7 @@ export type { WsHibernationConfigResult };
 export interface HibHost extends TimerHost {
     processes: SessionProcessSupervisor;
     portRegistry: Pick<PortRegistry, 'clientSocketCount'>;
+    _cirrusHmrWsClients: ReadonlyMap<WebSocket, string> | null;
     _w9SchemaInit: boolean;
     _w9PersistWired: boolean;
     _w9FlushTimer: any;
@@ -141,7 +142,7 @@ export declare function armLogJanitor(host: LogJanitorHost, schedule: LogJanitor
 export declare function logJanitorFired(host: LogJanitorHost): number | null;
 export declare function ensureLogJanitor(host: HibHost, ctx: TimerContext): void;
 /** The fields the keep-alive rule reads and keeps; both hosts carry them. */
-export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
+export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_cirrusHmrWsClients' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
 export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
 /**

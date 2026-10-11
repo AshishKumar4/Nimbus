@@ -1215,9 +1215,13 @@ export class NimbusSession extends CloudflareDurableObject {
         return _wsDoMessage(this, ws, message);
     }
     async webSocketClose(ws, code, reason, wasClean) {
+        if (wsKind(ws).kind === 'cirrus-hmr')
+            noteClientActivity(this, this.ctx);
         return _wsDoClose(this, ws, code, reason, wasClean);
     }
     async webSocketError(ws, error) {
+        if (wsKind(ws).kind === 'cirrus-hmr')
+            noteClientActivity(this, this.ctx);
         return _wsDoError(this, ws, error);
     }
     /** W9: synchronous flush on close. Delegator → ./session/hibernation.ts (S4). */
