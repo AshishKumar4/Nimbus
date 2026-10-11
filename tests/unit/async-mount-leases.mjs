@@ -413,7 +413,6 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
     has: (target, key) => key !== 'writeRange' && key in target,
   });
   ws.filesystem.vfs.mount('/b', unranged(plain));
-  assert.equal(box.files.vfs.as({ uid: 1000, gid: 1000, groups: [1000] }).writesInPlace('/b/x'), false, 'the mount buffers');
   const files = box.files;
   const cred = { ...USER, groups: [1000], umask: 0o022 };
   const lostOnClose = (error) => error.code === 'EIO' && /its buffered writes are lost/.test(error.message) && error.cause?.name === 'AbortError';

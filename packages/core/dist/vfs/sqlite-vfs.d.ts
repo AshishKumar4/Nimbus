@@ -128,21 +128,10 @@ export interface VfsOpenDescription {
      */
     end?(): number;
     /**
-     * A description whose backend cannot write in place buffers its writes
-     * (VFS-PF-001): an append goes at the end as it stands at the flush,
-     * `flush` applies what is pending, and `pendingBytes` is what a process
-     * killed now would lose. Absent: every write is in place.
-     */
-    writeAppend?(bytes: Uint8Array): number;
-    /**
-     * Write what is held for the file (fsync): a buffered mount handle's
-     * pending writes, the appends SqliteVFS holds; throws what writing them
-     * failed with. Absent: nothing is held.
+     * Write what is held for the file (fsync): the appends SqliteVFS holds;
+     * throws what writing them failed with. Absent: nothing is held.
      */
     flush?(): void;
-    pendingBytes?(): number;
-    /** `file` with this description's pending writes applied, as flush applies them. */
-    applyPending?(file: Uint8Array): Uint8Array;
 }
 export interface VfsStat {
     dev: number;
@@ -723,9 +712,12 @@ export declare class SqliteVFS {
     /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll(): void;
     /**
-     * A description of `path`, opened as `cred`. Its writes are its opener's,
-     * wherever they run: `principal` (else the calling view's, else `cred`'s)
-     * is the one its write events name and its held appends are written as.
+     * A description of `path`, opened as `cred`, its access decided by the
+     * open that asks (openAccess, or the creat(2) that made it, which writes
+     * whatever its mode): the lookup asks only search. Its writes are its
+     * opener's, wherever they run: `principal` (else the calling view's, else
+     * `cred`'s) is the one its write events name and its held appends are
+     * written as.
      */
     openDescription(path: string, cred: VfsCred, rights: {
         read: boolean;
@@ -2099,8 +2091,6 @@ export declare class SqliteVFS {
      * undefined when none is open under `id`.
      */
     private described;
-    /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
-    private isDescribed;
     /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
     private describedBy;
     /**

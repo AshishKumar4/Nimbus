@@ -16,6 +16,19 @@
 import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
+export declare function isPromise<T>(value: Awaitable<T>): value is Promise<T>;
+/** `value`, which a synchronous face answers at once: one that would wait is its caller's fault, never a value. */
+export declare function syncValue<T>(value: Awaitable<T>): T;
+/** `file`, opened for no one any more: closed, its answer unheard (nothing was written through it). */
+export declare function abandon(file: {
+    close(): Awaitable<void>;
+}): void;
+/**
+ * Apply `next` to a value that may or may not be a promise, staying
+ * synchronous when it is not. (Not `then`: a module exporting `then` is a
+ * thenable to `await import()`.)
+ */
+export declare function andThen<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;
 export type VfsFileType = 'file' | 'directory' | 'symlink';
@@ -52,24 +65,6 @@ export interface VfsCred {
     readonly gid: number;
     readonly groups: readonly number[];
     readonly umask: number;
-}
-export interface VfsOpenFlags {
-    read?: boolean;
-    write?: boolean;
-    append?: boolean;
-    create?: boolean;
-    exclusive?: boolean;
-    truncate?: boolean;
-    directory?: boolean;
-    follow?: boolean;
-}
-/** An open file on a backend with real handles: it stays readable after its name is unlinked. */
-export interface VfsHandle {
-    read(position: number, length: number): Awaitable<Uint8Array>;
-    write(position: number, bytes: Uint8Array): Awaitable<number>;
-    stat(): Awaitable<VfsStat>;
-    truncate(size: number): Awaitable<void>;
-    close(): Awaitable<void>;
 }
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
@@ -128,6 +123,18 @@ export interface VfsViewOptions {
     holds?: () => ReadonlySet<string>;
     landed?: boolean;
 }
+/** A file a backend holds open (VFS.openFile): it stays this file after its name is renamed or unlinked. */
+export interface VfsOpenFile {
+    /** Its name on the backend now; null once it has none (unlinked). */
+    path(): Awaitable<string | null>;
+    stat(): Awaitable<VfsStat>;
+    /** At most `length` bytes from `offset`, clamped at its end. */
+    read(offset: number, length: number): Awaitable<Uint8Array>;
+    /** `bytes` at `offset`, zero-filling any gap past its end. */
+    write(offset: number, bytes: Uint8Array): Awaitable<void>;
+    truncate(size: number): Awaitable<void>;
+    close(): Awaitable<void>;
+}
 export interface VFS {
     /** Null when nothing is there. `follow: false` is lstat. */
     stat(path: string, options?: {
@@ -158,6 +165,28 @@ export interface VFS {
     /** Writes `bytes` at `offset`, zero-filling any gap past the end, creating the file. */
     writeRange?(path: string, offset: number, bytes: Uint8Array): Awaitable<void>;
     truncate?(path: string, size: number): Awaitable<void>;
+    /**
+     * Refuses (EACCES) an open of `path` asking `mode` (r=4, w=2, x=1) the
+     * principal may not have, by this backend's own policy. Absent: a backend
+     * of one identity, which refuses no one at open.
+     */
+    access?(path: string, mode: number): Awaitable<void>;
+    /**
+     * The regular file at `path`, held open with `rights` (its access decided
+     * by the open that asks, VFS.access): its operations reach that file
+     * wherever it is named later, renamed or unlinked, until its close. Absent:
+     * a backend that keeps no open files; its files are held by name.
+     */
+    openFile?(path: string, rights: {
+        read: boolean;
+        write: boolean;
+    }): Awaitable<VfsOpenFile>;
+    /**
+     * The store its files' numbers (VfsStat.ino) are its own in: one object
+     * for every view of the same files (`as`), whatever wraps them, and another
+     * for any other files. Absent: the backend object is.
+     */
+    readonly fileStore?: object;
     /** rm -r; nothing returned means the whole operand went. */
     removeRecursive?(path: string): Awaitable<VfsRemoval | void>;
     symlink?(target: string, path: string): Awaitable<void>;
@@ -174,7 +203,6 @@ export interface VFS {
     writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): Awaitable<VfsCasResult>;
     /** Exactly that version, or a refusal; never the current file in its place. */
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Awaitable<Uint8Array>;
-    open?(path: string, flags: VfsOpenFlags): Awaitable<VfsHandle>;
     /**
      * This backend as another principal (`actor` names it finer than its uid).
      * `options.holds`: the delegations the principal's process holds, asked at
@@ -251,6 +279,11 @@ export interface SyncVFS {
     readRange?(path: string, offset: number, length: number): Uint8Array;
     writeRange?(path: string, offset: number, bytes: Uint8Array): void;
     truncate?(path: string, size: number): void;
+    access?(path: string, mode: number): void;
+    openFile?(path: string, rights: {
+        read: boolean;
+        write: boolean;
+    }): VfsOpenFile;
     removeRecursive?(path: string): VfsRemoval | void;
     symlink?(target: string, path: string): void;
     readlink?(path: string): string;
