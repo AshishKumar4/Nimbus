@@ -66,8 +66,12 @@ export interface CloneJobStorage {
 }
 
 export const CLONE_JOB_PREFIX = 'git-clone-job:';
-/** The marker a clone writes first in its .git (network-facet.ts GIT_CLONE_JOB_MARKER). */
-const MARKER = 'nimbus-clone-job';
+/**
+ * The clone's job marker, in its git directory from prepare until the clone
+ * is whole: the proof an abort needs that the destination is the clone's,
+ * and what tells every other git command the repository is not yet one.
+ */
+export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
 /** The clone's own scratch in .git: its staging directory, and its temporary packs' prefix. */
 const STAGE_DIR = '.git/nimbus-clone';
 const PACK_DIR = '.git/objects/pack';
@@ -120,7 +124,7 @@ function isAbsent(error: unknown): boolean {
 function markerJob(fs: CleanupFs, dir: string): string | null | undefined {
   let raw: Uint8Array;
   try {
-    raw = fs.readFile(dir + '/.git/' + MARKER);
+    raw = fs.readFile(dir + '/.git/' + GIT_CLONE_JOB_MARKER);
   } catch (error) {
     if (isAbsent(error)) return null;
     throw error;
@@ -156,7 +160,7 @@ export async function cleanUpClone(
   // With no marker the clone wrote nothing yet, or an earlier cleanup got as
   // far as removing it: only what comes after the marker is left to do.
   if (job !== null) {
-    const marker = dir + '/.git/' + MARKER;
+    const marker = dir + '/.git/' + GIT_CLONE_JOB_MARKER;
     let targets = record.phase === 'transport'
       ? [dir]
       : [dir + '/' + STAGE_DIR, ...tmpPacks(fs, dir)];

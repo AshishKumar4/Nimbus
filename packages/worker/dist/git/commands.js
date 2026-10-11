@@ -11,14 +11,15 @@
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
-import { execGitNetwork, GIT_CLONE_JOB_MARKER, runGraphFilters } from './network-facet.js';
+import { execGitNetwork, runGraphFilters } from './network-facet.js';
+import { createGitFs } from './git-fs.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob } from './clone-job.js';
+import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, } from './clone-job.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { fsError, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
@@ -47,26 +48,9 @@ async function getGit() {
 }
 // ── VFS→isomorphic-git FS adapter ───────────────────────────────────────
 /**
- * `fs.promises.readFile` takes its encoding either bare or on an options
- * object, and cf-git uses both spellings — `fs.read(path, 'utf8')` for
- * .gitignore, .git/info/exclude and the stash reflog, the object form
- * everywhere else. An adapter that honours only the object form hands
- * those call sites bytes where they asked for text, and cf-git feeds the
- * result straight to `ignore().add()`, which silently accepts only
- * strings — so every .gitignore rule became a no-op.
- */
-function wantsUtf8(options) {
-    const encoding = typeof options === 'string'
-        ? options
-        : options?.encoding;
-    return encoding === 'utf8' || encoding === 'utf-8';
-}
-/**
- * Creates an isomorphic-git compatible `fs` object over the repository's
- * filesystem. isomorphic-git requires: readFile, writeFile, unlink,
- * readdir, mkdir, rmdir, stat, lstat (all as promises).
+ * cf-git's `fs` over the repository's filesystem (git-fs.ts).
  *
- * With a `worktree`, the adapter writes that worktree the way git's checkout
+ * With a `worktree`, the backend writes that worktree the way git's checkout
  * does (entry.c create_directories, has_symlink_leading_path): below its top,
  * `.git` aside, every leading component is lstat'd, and one that is not a real
  * directory (a link, dangling or not, or a file) is replaced by one rather than
@@ -74,13 +58,8 @@ function wantsUtf8(options) {
  * through it. Components above the top are followed, as git follows them.
  * Commands that only read the worktree or write `.git` pass no worktree.
  */
-function createGitFs(vfs, worktree = null, promisor) {
-    // Path normalization is shared with esbuild-service via @nimbus-sh/core/vfs/path.js.
-    // isomorphic-git constructs paths like `dir + '/' + filepath` which can
-    // produce `/home/user/project/.` or paths with `..` segments — those are
-    // collapsed before VFS lookup. The bounded `..` pop won't escape root.
-    const normalizePath = normalizeVfsPath;
-    const top = worktree === null ? null : normalizePath(worktree);
+function sessionGitFs(vfs, worktree = null, promisor) {
+    const top = worktree === null ? null : normalizeVfsPath(worktree);
     const below = top ? `${top}/` : '';
     const gitdir = `${below}.git`;
     async function lstatOrNull(p) {
@@ -95,7 +74,7 @@ function createGitFs(vfs, worktree = null, promisor) {
     function checkedOut(p) {
         return top !== null && p.startsWith(below) && p !== gitdir && !p.startsWith(`${gitdir}/`);
     }
-    /** `p`'s directories, down to `p` itself when `self`; see createGitFs for the worktree's rule. */
+    /** `p`'s directories, down to `p` itself when `self`; see sessionGitFs for the worktree's rule. */
     async function ensureDirectories(p, self) {
         const parts = p.split('/');
         for (let i = 1; i <= (self ? parts.length : parts.length - 1); i++) {
@@ -115,136 +94,106 @@ function createGitFs(vfs, worktree = null, promisor) {
             await vfs.mkdir(dir);
         }
     }
-    // The inode as Node's fs.Stats: git's stat cache compares ctime, ino, uid and gid too.
-    async function statsOf(filepath, follow) {
-        const p = normalizePath(filepath);
-        let st;
-        if (!p) {
-            const now = Date.now();
-            st = { dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, atime: now, ctime: now, mtime: now, mode: 0o755, uid: 0, gid: 0 };
-        }
-        else {
+    const backend = {
+        stat(p, follow) {
+            if (!p) {
+                const now = Date.now();
+                return Promise.resolve({ type: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now, uid: 0, gid: 0, dev: 0, ino: 0, nlink: 1 });
+            }
+            // The engine answers some paths at once, its view the rest by promise; either may fail.
+            let st;
             try {
-                st = await (follow ? vfs.stat(p) : vfs.lstat(p));
+                st = follow ? vfs.stat(p) : vfs.lstat(p);
             }
             catch {
-                const err = new Error(`ENOENT: no such file or directory, ${follow ? 'stat' : 'lstat'} '${filepath}'`);
-                err.code = 'ENOENT';
-                err.errno = -2;
-                throw err;
+                return Promise.resolve(null);
             }
-        }
-        const isDir = st.type === 'directory';
-        const isLink = st.type === 'symlink';
-        return {
-            isFile: () => st.type === 'file',
-            isDirectory: () => isDir,
-            isSymbolicLink: () => isLink,
-            size: st.size,
-            mode: (isLink ? 0o120000 : isDir ? 0o040000 : 0o100000) | (st.mode & 0o7777),
-            mtimeMs: st.mtime, mtime: new Date(st.mtime),
-            ctimeMs: st.ctime, ctime: new Date(st.ctime),
-            atimeMs: st.atime, atime: new Date(st.atime),
-            uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
-            type: isDir ? 'dir' : isLink ? 'symlink' : 'file',
-        };
-    }
-    return {
-        // Packed objects are read by range, never a whole pack (git/pack/store.ts).
-        packs: packsSeam({
-            readRange: async (path, offset, length) => await vfs.readRangeUncached(normalizePath(path), offset, length),
-            readdir: async (dir) => {
-                try {
-                    return (await vfs.readdir(normalizePath(dir))).map((entry) => entry.name);
-                }
-                catch {
-                    return [];
-                }
-            },
-        }, { promisor }),
-        promises: {
-            async readFile(filepath, opts) {
-                const p = normalizePath(filepath);
-                let data;
-                try {
-                    data = await vfs.readFile(p);
-                }
-                catch {
-                    const err = new Error(`ENOENT: no such file or directory, open '${filepath}'`);
-                    err.code = 'ENOENT';
-                    err.errno = -2;
-                    throw err;
-                }
-                if (wantsUtf8(opts))
-                    return dec.decode(data);
-                return data;
-            },
-            async writeFile(filepath, data, opts) {
-                const p = normalizePath(filepath);
-                await ensureDirectories(p, false);
-                // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
-                const existing = checkedOut(p) ? (await lstatOrNull(p))?.type : undefined;
-                if (existing === 'symlink')
-                    await vfs.unlink(p);
-                else if (existing === 'directory')
+            return Promise.resolve(st).then((st) => ({
+                type: st.type === 'directory' ? 'dir' : st.type === 'symlink' ? 'symlink' : 'file',
+                size: st.size,
+                mode: st.mode,
+                mtimeMs: st.mtime, ctimeMs: st.ctime, atimeMs: st.atime,
+                uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
+            }), () => null);
+        },
+        readFile(p) {
+            let data;
+            try {
+                data = vfs.readFile(p);
+            }
+            catch {
+                return Promise.resolve(null);
+            }
+            return Promise.resolve(data).then((bytes) => bytes, () => null);
+        },
+        // A checkout's file modes are the index's: the session writes none here.
+        async writeFile(p, data) {
+            await ensureDirectories(p, false);
+            // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
+            const existing = checkedOut(p) ? (await lstatOrNull(p))?.type : undefined;
+            if (existing === 'symlink')
+                await vfs.unlink(p);
+            else if (existing === 'directory')
+                await vfs.removeRecursive(p);
+            await vfs.writeFile(p, data);
+        },
+        async unlink(p) {
+            if (await lstatOrNull(p))
+                await vfs.unlink(p);
+        },
+        async readdir(p) {
+            if (!p)
+                return []; // root level — not typically needed by isomorphic-git
+            if (!await vfs.exists(p))
+                return [];
+            return (await vfs.readdir(p)).map((entry) => entry.name);
+        },
+        async mkdir(p) {
+            await ensureDirectories(p, true);
+        },
+        async rmdir(p, filepath, recursive) {
+            const st = await lstatOrNull(p);
+            if (!st)
+                return;
+            if (recursive) {
+                // A link or a file goes itself; a directory with all it holds.
+                if (st.type === 'directory')
                     await vfs.removeRecursive(p);
-                if (typeof data === 'string') {
-                    await vfs.writeFile(p, data);
-                }
-                else {
-                    await vfs.writeFile(p, data instanceof Uint8Array ? data : new Uint8Array(data));
-                }
-            },
-            async unlink(filepath) {
-                const p = normalizePath(filepath);
-                if (await lstatOrNull(p))
+                else
                     await vfs.unlink(p);
-            },
-            async readdir(filepath) {
-                const p = normalizePath(filepath);
-                if (!p)
-                    return []; // root level — not typically needed by isomorphic-git
-                if (!await vfs.exists(p))
-                    return [];
-                return (await vfs.readdir(p)).map(e => e.name);
-            },
-            async mkdir(filepath, opts) {
-                await ensureDirectories(normalizePath(filepath), true);
-            },
-            async rmdir(filepath) {
-                const p = normalizePath(filepath);
-                const st = await lstatOrNull(p);
-                if (!st)
-                    return;
-                // rmdir(2) of a link is ENOTDIR: it never removes the directory the link names.
-                if (st.type !== 'directory') {
-                    throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${filepath}'`), { code: 'ENOTDIR', errno: -20 });
-                }
-                await vfs.rmdir(p);
-            },
-            async stat(filepath) {
-                return statsOf(filepath, true);
-            },
-            async lstat(filepath) {
-                return statsOf(filepath, false);
-            },
-            async chmod() { },
-            async symlink(target, filepath) {
-                const p = normalizePath(filepath);
-                await ensureDirectories(p, false);
-                // Checkout retargets a link in place, as the clone facet's adapter does.
-                const st = await lstatOrNull(p);
-                if (st?.type === 'directory' && checkedOut(p))
-                    await vfs.removeRecursive(p);
-                else if (st && st.type !== 'directory')
-                    await vfs.unlink(p);
-                await vfs.symlink(target, p);
-            },
-            async readlink(filepath) {
-                return vfs.readlink(normalizePath(filepath));
-            },
+                return;
+            }
+            // rmdir(2) of a link is ENOTDIR: it never removes the directory the link names.
+            if (st.type !== 'directory')
+                throw fsError('ENOTDIR', 'rmdir', filepath);
+            await vfs.rmdir(p);
+        },
+        async symlink(target, p) {
+            await ensureDirectories(p, false);
+            // Checkout retargets a link in place, as the network facet's backend does.
+            const st = await lstatOrNull(p);
+            if (st?.type === 'directory' && checkedOut(p))
+                await vfs.removeRecursive(p);
+            else if (st && st.type !== 'directory')
+                await vfs.unlink(p);
+            await vfs.symlink(target, p);
+        },
+        async readlink(p) {
+            return vfs.readlink(p);
         },
     };
+    // Packed objects are read by range, never a whole pack (git/pack/store.ts).
+    return createGitFs(backend, packsSeam({
+        readRange: async (path, offset, length) => await vfs.readRangeUncached(normalizeVfsPath(path), offset, length),
+        readdir: async (dir) => {
+            try {
+                return (await vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name);
+            }
+            catch {
+                return [];
+            }
+        },
+    }, { promisor }));
 }
 function getDir(ctx) {
     return '/' + (ctx.cwd || '/home/user').replace(/^\/+/, '');
@@ -1923,9 +1872,9 @@ async function refusal(ctx, error, strategy) {
     await ctx.stderr.write(`${error.message}${strategy ? `Merge with strategy ${strategy} failed.\n` : ''}`);
     return strategy ? 2 : 1;
 }
-/** createGitFs's worktree rule (a link or file in a directory's way is replaced), as the checkout writer. */
+/** sessionGitFs's worktree rule (a link or file in a directory's way is replaced), as the checkout writer. */
 function checkoutWriter(vfs, root) {
-    const fs = createGitFs(vfs, root);
+    const fs = sessionGitFs(vfs, root);
     return {
         writeFile: (path, data) => fs.promises.writeFile(path, data),
         symlink: (target, path) => fs.promises.symlink(target, path),
@@ -2013,7 +1962,7 @@ async function switchBranch(ctx, git, vfs, fs, dir, ref) {
  * pathspecs name, from the index, or from <tree-ish> into the index as well
  * (overlay mode: a path the tree lacks stays). A pathspec naming nothing fails
  * the command before any file is written, as in git. The files are written as
- * git's checkout writes them: see createGitFs's worktree rule. A
+ * git's checkout writes them: see sessionGitFs's worktree rule. A
  * skip-worktree entry is not checked out (nor one from the tree that is the
  * same), but with --ignore-skip-worktree-bits (`ignoreSkipWorktree`).
  */
@@ -2921,7 +2870,7 @@ filesystem) {
             }, network);
             return true;
         };
-        const fs = createGitFs(repoVfs, null, promisor);
+        const fs = sessionGitFs(repoVfs, null, promisor);
         commandFs = fs;
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
         commandEngines.set(fs, {
