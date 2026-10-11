@@ -17,6 +17,8 @@ import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters, type GitNetworkResult } from './network-facet.js';
 import { createGitFs, type GitFsBackend, type GitFsStat } from './git-fs.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
+import { exitCodeForAbortSignal, SESSION_DESTROYED } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import {
   bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, type CleanupBridge, type CloneJobRecord,
 } from './clone-job.js';
@@ -213,6 +215,8 @@ type Ctx = {
   env: Record<string, string>;
   /** The command's view of the namespace, as its credential. */
   vfs: ProcessView;
+  /** The command's stop: a Ctrl-C, a kill, a destroy (its reason SESSION_DESTROYED). */
+  signal: AbortSignal;
 };
 
 function getDir(ctx: Ctx): string {
@@ -2583,6 +2587,8 @@ export async function runGitCommand(
   network: WorkspaceNetwork = ISOLATE_NETWORK,
   /** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
   filesystem?: { openHost(cred: VfsCred): { fs: { synchronous?: CleanupBridge }; dispose(): Promise<void> } },
+  /** The session's process table: a background clone runs as a process of its own. */
+  processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>,
 ): Promise<number> {
   let globals: ParsedGitGlobals;
   try {
@@ -2757,24 +2763,28 @@ export async function runGitCommand(
         // to the destination as the namespace sees it (SQLite's own inodes do
         // not say), held at that path: the namespace refuses another's
         // mutations there by it, as it does on SQLite. A delegation it
-        // overlaps is recalled first (withRecall).
+        // overlaps is recalled first (withRecall). It goes when the clone's
+        // process is stopped (stoppable): a destroy stops the clone first.
         const leaseRoot = place.mount ? await firstMissing(ctx.vfs, target) : target;
-        const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, place.mount ? {} : { includeMissingAncestors: true }));
+        const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, { includeMissingAncestors: !place.mount, stoppable: true }));
         // A piece of the clone that hung may still write: the facet runner
         // hands the lease to a new owner before it runs the piece again.
         let mutationOwner = mutationLease.owner;
 
         // Delegate to git-network-facet: heavy packfile processing runs in
         // a dynamic worker with its own CPU budget, not the supervisor DO.
-        // It owns the lease from when it is called, and releases it.
-        const doClone = async (job: CloneJobRecord): Promise<number> => {
+        // It owns the lease from when it is called, and releases it. `signal`
+        // is its stop: a Ctrl-C or a kill removes the junk, as git's signal
+        // handler does, then the record; a destroy leaves both to its wipe.
+        const doClone = async (job: CloneJobRecord, pid: number, signal: AbortSignal): Promise<number> => {
           let cloned = false;
           try {
             let result: GitNetworkResult;
             try {
               result = await execGitNetwork(doCtx, doEnv, {
               op: 'clone',
-              pid: ctx.pid,
+              signal,
+              pid,
               dir: target,
               url,
               ref: branch,
@@ -2808,7 +2818,7 @@ export async function runGitCommand(
               result = { success: false, error: String((error as Error)?.message ?? error), cleanup: true, elapsed: 0, filesWritten: 0, bytesWritten: 0 } as GitNetworkResult;
             }
             if (result.success) {
-              await deleteCloneJob(doCtx.storage, job.dir);
+              await deleteCloneJob(doCtx.storage, job);
               progress.write(
                 `\n[git] clone complete (${result.filesWritten} files, ` +
                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
@@ -2817,10 +2827,15 @@ export async function runGitCommand(
               return 0;
             }
             // A write git would have failed: git's words, and git's 128 (it dies); else what failed.
-            const code = result.gitFailure !== undefined ? 128 : 1;
-            ctx.stderr.write(result.gitFailure ?? `\n[git] clone failed: ${result.error}\n`);
+            // A stopped clone ends as its signal says, silently, as git's does.
+            const code = result.cancelled !== undefined ? exitCodeForAbortSignal(signal)
+              : result.gitFailure !== undefined ? 128 : 1;
+            if (result.cancelled === undefined) ctx.stderr.write(result.gitFailure ?? `\n[git] clone failed: ${result.error}\n`);
+            // A destroy's wipe takes its junk and its record (or, if the wipe
+            // fails, the next start's recovery does): it writes nothing more.
+            if (result.cancelled?.reason === SESSION_DESTROYED) return code;
             if (result.cleanup !== true) {
-              await deleteCloneJob(doCtx.storage, job.dir);
+              await deleteCloneJob(doCtx.storage, job);
               return code;
             }
             // As git's remove_junk: in the DO, under the clone's lease (its
@@ -2848,7 +2863,7 @@ export async function runGitCommand(
             // clone's to wait for or to fail on.
             if (cloned && depth === undefined) {
               doCtx.waitUntil(runGraphFilters(doCtx, doEnv, {
-                pid: ctx.pid,
+                pid,
                 dir: target,
                 onMount: place.mount,
                 pieceCommits: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS) || undefined,
@@ -2893,6 +2908,9 @@ export async function runGitCommand(
             root: mutationLease.root,
             ...(place.mount ? { mount: true } : {}),
           };
+          // Stopped before it wrote anything (its lease taken, its destination
+          // proven): it ends, its record never written.
+          if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
           try {
             await writeCloneJob(doCtx.storage, job);
           } catch (error) {
@@ -2900,14 +2918,28 @@ export async function runGitCommand(
             return 128;
           }
           progress.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
-          const task = doClone(job);
-          handedOff = true;
-          if (isBg) {
-            doCtx.waitUntil(task);
-            progress.write('[git] clone running in background...\n');
-            return 0;
+          if (!isBg) {
+            handedOff = true;
+            return await doClone(job, ctx.pid, ctx.signal);
           }
-          return await task;
+          // A background clone is a job of its own: a process the session's
+          // work runs behind until the clone ends, so a kill of it, or a
+          // destroy, stops it as it stops the command's.
+          if (processes === undefined) {
+            ctx.stderr.write('[git] a background clone needs the session\'s process table (internal configuration error)\n');
+            return 1;
+          }
+          const background = processes.spawn('git', ctx.args, getDir(ctx), { parentPid: ctx.pid });
+          const stop = new AbortController();
+          const stopped = processes.holdWork(background.pid, (reason) => stop.abort(reason));
+          const task = doClone(job, background.pid, stop.signal).then(
+            (code) => processes.exit(background.pid, code),
+            () => processes.exit(background.pid, 1),
+          ).finally(stopped);
+          handedOff = true;
+          doCtx.waitUntil(task);
+          progress.write(`[git] clone running in background (pid ${background.pid})...\n`);
+          return 0;
         } finally {
           if (!handedOff) vfs.releaseExclusiveMutation(mutationOwner);
         }
@@ -3108,6 +3140,7 @@ export async function runGitCommand(
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'fetch',
           pid: ctx.pid,
+          signal: ctx.signal,
           dir: target,
           onMount: place.mount,
           remote,
@@ -3122,6 +3155,8 @@ export async function runGitCommand(
         if (result.success) {
           if (!quiet) ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
           return 0;
+        } else if (result.cancelled !== undefined) {
+          return exitCodeForAbortSignal(ctx.signal);
         } else {
           ctx.stderr.write(`\n[git] fetch failed: ${result.error}\n`);
           return 1;
@@ -3147,6 +3182,7 @@ export async function runGitCommand(
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'fetch',
           pid: ctx.pid,
+          signal: ctx.signal,
           dir: target,
           onMount: place.mount,
           remote,
@@ -3157,6 +3193,7 @@ export async function runGitCommand(
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
           },
         }, network);
+        if (result.cancelled !== undefined) return exitCodeForAbortSignal(ctx.signal);
         if (!result.success) {
           ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
           return 1;
@@ -3180,6 +3217,7 @@ export async function runGitCommand(
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'push',
           pid: ctx.pid,
+          signal: ctx.signal,
           dir: target,
           onMount: place.mount,
           remote,
@@ -3193,6 +3231,8 @@ export async function runGitCommand(
         if (result.success) {
           if (!quiet) ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
           return 0;
+        } else if (result.cancelled !== undefined) {
+          return exitCodeForAbortSignal(ctx.signal);
         } else {
           ctx.stderr.write(`\n[git] push failed: ${result.error}\n`);
           return 1;

@@ -4709,7 +4709,7 @@ export class FacetManager {
             if (this.processes.get(pid)?.state !== 'running')
                 return;
             if (ending.killed)
-                this.processes.kill(pid, ending.code);
+                this.processes.kill(pid, ending.code, ending.reason);
             else
                 this.processes.exit(pid, ending.code);
             if (ending.cause !== undefined) {
@@ -8692,12 +8692,16 @@ export class FacetManager {
      * Kill a running process by PID. Given the signal that ends it (a name
      * without `SIG`), it exits with that signal's status, 128+signo, and its
      * exit names `SIG<name>`; without one it is SIGKILL's 137, `killed`.
+     * `reason` is what the work held for it is stopped with (a destroy's).
      */
-    kill(pid, signal) {
+    kill(pid, signal, reason) {
         const entry = this.processes.get(pid);
         if (!entry || entry.state !== 'running')
             return false;
-        this._end(pid, { code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true });
+        this._end(pid, {
+            code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true,
+            ...(reason === undefined ? {} : { reason }),
+        });
         return true;
     }
     /**

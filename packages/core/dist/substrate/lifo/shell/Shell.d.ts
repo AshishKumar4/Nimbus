@@ -9,6 +9,7 @@ import { type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { type ShellOptions } from './state.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
+import { type SignalAbortReason } from './signals.js';
 import type { HostProcessSignals } from '../commands/system/kill.js';
 import { ShellInputSubmission, type ShellQueuedInput } from '../../../shell/input-submission.js';
 import type { ProcessExitNotice, ProcessExitNoticeSource } from '../../../runtime/process-exit-notices.js';
@@ -63,7 +64,7 @@ export interface ShellCommandIdentity {
      * holdWork). What the pid bound is released after the line has closed
      * what it opened, however the process ends.
      */
-    holdWork?(pid: number, stop: () => void): () => void;
+    holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;

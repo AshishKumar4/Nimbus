@@ -34,7 +34,7 @@ import {
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
-import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition, type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
 
@@ -78,13 +78,15 @@ export interface ProcessTerminalDescriptor {
 
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
+  /** Why no process is admitted any more (closeAdmission); null while they are. */
+  private refusal: Error | null = null;
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
 
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
   /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
-  private readonly held = new Map<number, Set<{ stop: () => void; stopped: boolean }>>();
+  private readonly held = new Map<number, Set<{ stop: (reason?: SignalAbortReason) => void; stopped: boolean }>>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
   private logActivity: (() => void) | null = null;
   /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -121,10 +123,19 @@ export class SessionProcessSupervisor implements ProcessOutput {
 
   /** Allocate a PID and register a new process. */
   spawn(command: string, argv: string[], cwd: string, opts: ProcessSpawnOptions = {}): ProcessEntry {
+    if (this.refusal !== null) throw this.refusal;
     const entry = this.table.spawn(command, argv, cwd, opts);
     if (opts.longRunning) this.table.setLongRunning(entry.pid);
     if (opts.attachedTty) this.table.setAttachedTty(entry.pid);
     return entry;
+  }
+
+  /**
+   * Admit no process from now on: each spawn throws `reason`. A destroy's,
+   * before it takes the processes it stops, so none starts behind it.
+   */
+  closeAdmission(reason: Error): void {
+    this.refusal = reason;
   }
 
   /** Mark an existing entry as long-running. Idempotent. */
@@ -305,9 +316,10 @@ export class SessionProcessSupervisor implements ProcessOutput {
 
   /**
    * This session runs work on `pid`'s own descriptors (a shell job, a
-   * command run in the session): `stop` ends it, and the function returned
-   * says it has stopped, its own cleanup done. A kill stops it rather than
-   * only marking the table entry.
+   * command run in the session): `stop` ends it, given the kill's reason
+   * when it has one (SESSION_DESTROYED for a destroy's), and the function
+   * returned says it has stopped, its own cleanup done. A kill stops it
+   * rather than only marking the table entry.
    *
    * The work owns those descriptors while it runs and closes them itself, so
    * the process's release (setRelease) comes after: once its end is marked
@@ -316,7 +328,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * host was lost: nothing of it here is left to unwind) is released at its
    * end.
    */
-  holdWork(pid: number, stop: () => void): () => void {
+  holdWork(pid: number, stop: (reason?: SignalAbortReason) => void): () => void {
     const work = { stop, stopped: false };
     let pieces = this.held.get(pid);
     if (!pieces) this.held.set(pid, pieces = new Set());
@@ -332,15 +344,15 @@ export class SessionProcessSupervisor implements ProcessOutput {
     };
   }
 
-  /** Stop the work behind `pid`: its terminator, and every piece held for it, once each. */
-  private terminate(pid: number): void {
+  /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
+  private terminate(pid: number, reason?: SignalAbortReason): void {
     const terminator = this.terminators.get(pid);
     this.terminators.delete(pid);
     try { terminator?.(); } catch { /* the process is going away regardless */ }
     for (const work of this.held.get(pid) ?? []) {
       if (work.stopped) continue;
       work.stopped = true;
-      try { work.stop(); } catch { /* the process is going away regardless */ }
+      try { work.stop(reason); } catch { /* the process is going away regardless */ }
     }
   }
 
@@ -416,14 +428,15 @@ export class SessionProcessSupervisor implements ProcessOutput {
   /**
    * Mark a process as killed and tear down its input channel so queued
    * stdin can't outlive the process. `exitCode` is the ending signal's
-   * status; SIGKILL's 137 when absent.
+   * status; SIGKILL's 137 when absent. `reason` is what its held work is
+   * stopped with (holdWork).
    */
-  kill(pid: number, exitCode?: number): boolean {
+  kill(pid: number, exitCode?: number, reason?: SignalAbortReason): boolean {
     const wasRunning = this.table.get(pid)?.state === 'running';
     const killed = this.table.kill(pid, exitCode);
     this.releaseEnded(pid);
     this.publishEnd(pid, wasRunning);
-    this.terminate(pid);
+    this.terminate(pid, reason);
     this.input.close(pid);
     this.fireTerminal(pid, wasRunning);
     return killed;

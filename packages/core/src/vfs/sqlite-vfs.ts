@@ -182,6 +182,12 @@ export interface InodeRange {
 export interface ExclusiveMutationOptions {
   readonly includeMissingAncestors?: boolean;
   /**
+   * Its holder is a process, or work one runs (a clone's job), which lets it
+   * go when that process is stopped, as a delegation goes with its process: a
+   * caller about to stop every process does not count it (hasExclusiveMutation).
+   */
+  readonly stoppable?: boolean;
+  /**
    * Make the lease a delegation: its holder decides the subtree's operations
    * itself and sends them later (as writes under the lease), so another
    * caller's access recalls them first (RecallRequired) instead of being
@@ -296,6 +302,8 @@ interface Lease {
   readonly held?: Pipeline;
   /** It holds its root's own entry and names only, not what is beneath (a held commit's parent directory). */
   readonly entries?: true;
+  /** Its holder lets it go when its process is stopped (ExclusiveMutationOptions.stoppable). */
+  readonly stoppable?: true;
 }
 
 interface INode {
@@ -4211,6 +4219,7 @@ export class SqliteVFS {
     try { inos = this.reserveInos(options.delegation?.inos ?? 0); } catch (error) { this.ledger.release(owner); throw error; }
     this.exclusiveMutationLeases.set(owner, {
       root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null, reason: null,
+      ...(options.stoppable === true ? { stoppable: true } : {}),
     });
     return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
   }
@@ -4227,6 +4236,17 @@ export class SqliteVFS {
     const owner = crypto.randomUUID();
     this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, inos: null, numbered: new Map(), reservation: null, shared: false, recalling: null, reason: reason ?? null });
     return { root: '', owner };
+  }
+
+  /**
+   * Hold the whole session for one owner over the leases held now, each of
+   * which ends: a write that presents one is ESTALE from then on. A
+   * destroy's, once it has stopped the work that held them: what they held,
+   * it wipes.
+   */
+  seizeGlobalExclusiveMutation(): ExclusiveMutationLease {
+    for (const owner of [...this.exclusiveMutationLeases.keys()]) this.releaseExclusiveMutation(owner);
+    return this.acquireGlobalExclusiveMutation();
   }
 
   releaseExclusiveMutation(owner: string): void {
@@ -4507,12 +4527,14 @@ export class SqliteVFS {
 
   /**
    * Whether a holder's exclusive mutation is active: a lease taken for work,
-   * not a commit held for its publication. `delegations: false` leaves out
-   * the subtrees delegated to processes, which go when their holders end.
+   * not a commit held for its publication. `stoppable: false` leaves out what
+   * goes when every process is stopped: the delegations, which end with
+   * their processes, and the leases of the work processes run
+   * (ExclusiveMutationOptions.stoppable).
    */
-  hasExclusiveMutation({ delegations = true }: { delegations?: boolean } = {}): boolean {
+  hasExclusiveMutation({ stoppable = true }: { stoppable?: boolean } = {}): boolean {
     for (const lease of this.exclusiveMutationLeases.values()) {
-      if (lease.held === undefined && (delegations || lease.delegation === null)) return true;
+      if (lease.held === undefined && (stoppable || (lease.delegation === null && lease.stoppable === undefined))) return true;
     }
     return false;
   }

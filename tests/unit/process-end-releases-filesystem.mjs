@@ -203,6 +203,19 @@ for (const [what, end] of [
   console.log('  a destroy stops a live holder and goes ahead');
 }
 
+// ── So it does a process holding a lease of its own (not a delegation),
+//    which ends with the process. Red before: refused EBUSY, nothing stopped. ─
+{
+  const s = session();
+  const { pid } = s.processes.spawn('node server.js', [], '/home/user', { cred: user, longRunning: true });
+  await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo'], pid });
+  assert.equal(s.engine.hasExclusiveMutation(), true, 'the process holds its lease');
+  const destroyed = await rpcDestroy(sessionHost(s), { reason: 'test' });
+  assert.equal(destroyed.ok, true, 'the destroy goes ahead');
+  assert.equal(destroyed.killed, 1, 'having stopped the holder');
+  console.log('  a destroy stops a process holding a lease of its own and goes ahead');
+}
+
 // ── Work of the session's own that holds the filesystem still refuses it,
 //    before anything is stopped ──────────────────────────────────────────────
 {

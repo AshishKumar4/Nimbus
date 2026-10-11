@@ -34,7 +34,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import {
-  CloneRecovery, RECOVERY_FENCE_REASON, bridgeCleanupFs, cleanUpClone, finishReservedClones, listCloneJobs, listInterruptedClones, reserveInterruptedClones, writeCloneJob,
+  CloneRecovery, RECOVERY_FENCE_REASON, bridgeCleanupFs, cleanUpClone, deleteCloneJob, finishReservedClones, listCloneJobs, listInterruptedClones,
+  reserveInterruptedClones, setCloneJobPhase, writeCloneJob,
 } from '../../packages/worker/src/git/clone-job.ts';
 import { memoryStorage } from './lib/do-storage.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -330,6 +331,22 @@ const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
   await assert.rejects(cleanUpClone(user, storage, job, { yieldBetween: async () => {} }), (error) => error?.code === 'EACCES');
   assert.equal((await listCloneJobs(storage)).length, 1, 'the record stays');
   console.log('  ok  as the record\'s credential: what it may not remove refuses (EACCES); the record stays');
+}
+
+// ── a job's record is its own: one cut short never touches another job's ──
+{
+  const { user, storage } = session();
+  const stale = record('home/user/r', 'job-cut-short');
+  const current = record('home/user/r', 'job-of-the-session-made-again');
+  await writeCloneJob(storage, current);
+  await setCloneJobPhase(storage, stale, 'checkout');
+  await deleteCloneJob(storage, stale);
+  cloneTree(user, 'home/user/r', current.jobId, { files: 3 });
+  assert.deepEqual(await cleanUpClone(user, storage, stale), { outcome: 'not-ours', removed: 0, slices: 0 });
+  assert.deepEqual(await listCloneJobs(storage), [current], 'the other job\'s record stands, as it was');
+  await deleteCloneJob(storage, current);
+  assert.deepEqual(await listCloneJobs(storage), [], 'its own job deletes it');
+  console.log('  ok  a job changes and deletes only its own record');
 }
 
 console.log('git-clone-job: ok');

@@ -20,6 +20,7 @@
  * routed through it would silently acquire all of that.
  */
 
+import type { SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -556,7 +557,7 @@ export class NimbusWorkspace {
     // released.
     const stop = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
-    const stopped = this.processes.holdWork(pid, () => stop.abort());
+    const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason));
     let exitCode = 1;
     try {
       const result = await runCommand(shell, command, { ...(named ? options : { ...options, cwd: undefined, env: undefined }), signal });
@@ -601,7 +602,7 @@ export class NimbusWorkspace {
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
         accountWork: (worker: number) => processes.beginWork(worker),
-        holdWork: (worker: number, stop: () => void) => processes.holdWork(worker, stop),
+        holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => processes.holdWork(worker, stop),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
@@ -739,7 +740,7 @@ function workspaceShellIdentity(
     const endWork = processes.beginWork(child.pid);
     // Its program is this workspace's work behind its pid: a kill stops it.
     const stop = new AbortController();
-    const stopped = processes.holdWork(child.pid, () => stop.abort());
+    const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason));
     let exitCode = 1;
     try {
       // The child inherits its parent's descriptors, environment and directory.
@@ -776,7 +777,7 @@ function workspaceShellIdentity(
     },
     runAs: runAsProcess,
     accountWork: (worker: number) => processes.beginWork(worker),
-    holdWork: (worker: number, stop: () => void) => processes.holdWork(worker, stop),
+    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => processes.holdWork(worker, stop),
   });
 
   return commandIdentityFor(shellProcess.pid);
