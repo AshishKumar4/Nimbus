@@ -176,7 +176,7 @@ export async function hostResponse(
     // Native identity pipes notice a disconnected reader on the next write.
     // The terminal's cancellation algorithm also ends a stalled source now.
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>({
-      cancel(reason) { lease.release(); cancelled.abort(reason); },
+      cancel(reason) { lease.release(); queueMicrotask(() => cancelled.abort(reason)); },
       ...(Number.isSafeInteger(length) ? { expectedLength: length } : {}),
     });
     const pipes: Promise<void>[] = [];
