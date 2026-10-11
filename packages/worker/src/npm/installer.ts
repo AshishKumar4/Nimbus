@@ -43,10 +43,10 @@ import {
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import {
-  canonicalTreePath, holdTree, namedPackages, placementName, planTree, projectRoots, saveNamed,
+  canonicalTreePath, holdTree, isManifest, namedPackages, placementName, planTree, projectRoots, saveNamed,
   type NamedPackage, type ProjectManifest, type TreePlan, type TreeResolution, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
-import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
+import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
@@ -60,6 +60,7 @@ import {
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
@@ -283,8 +284,7 @@ export class NpmInstaller {
     const engineDir = await engineKey(view, this.store, '/' + projDir);
     // One install into a project at a time (core npm-tree.ts holdTree),
     // keyed by where it is: its engine key, else (mounted) its resolved path.
-    // The tree's own state, and this installer's progress and log sinks, are
-    // the running install's until it returns.
+    // One that the command stops while it waits never starts.
     const where = engineDir ?? await canonicalTreePath(async (path) => view.realpath(path), '/' + projDir);
     const held = holdTree(this.store, where, opts.signal);
     const release = typeof held === 'function' ? held : await held;
@@ -387,7 +387,7 @@ export class NpmInstaller {
       // The project needs nothing, so whatever an earlier install placed is extraneous.
       if (lockfile) {
         const empty: HoistPlan = { root: new Map(), nested: new Map() };
-        if (await this.pruneExtraneous(lockfile, empty, nmDir, project, log) > 0) this.writeLockfile(projDir, empty, nmDir);
+        if (await this.pruneExtraneous([...lockfile.keys()], empty, nmDir, project, log) > 0) this.writeLockfile(projDir, [], nmDir);
       }
       log('No dependencies to install.');
       return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases: {} };
@@ -458,11 +458,39 @@ export class NpmInstaller {
     const hoistPlan: HoistPlan = { root: resolved, nested };
     phases['hoist'] = Date.now() - phaseStart;
 
-    // ── Prune ────────────────────────────────────────────────────────
-    // What an earlier install placed that this tree no longer holds is
-    // extraneous (a dependency the project dropped, or one a replacement no
-    // longer needs), and npm removes it on install.
-    const pruned = lockfile ? await this.pruneExtraneous(lockfile, hoistPlan, nmDir, project, log) : 0;
+    // A placement that cannot be installed fails the install where it is
+    // required; an optional one is left out with its optional set, as npm's
+    // reify handleOptionalFailure leaves it out (and removes it).
+    const leftOut: string[] = [];
+    const failedAt = new Set<string>();
+    const cannotInstall = (target: PackagePlacement, reason: string): void => {
+      const set = plan?.fail(target.placement, reason) ?? null;
+      if (set === null) {
+        failed.push(`${target.pkg.name}@${target.pkg.version}`);
+        failedAt.add(target.placement);
+        log(`npm ERR! ${target.pkg.name}@${target.pkg.version}: ${reason}`);
+        return;
+      }
+      log(`[resolve-fanout] [skip] ${target.pkg.name} — optional: ${reason}`);
+      for (const at of set) {
+        const pkg = resolved.get(at) ?? nested.get(at);
+        if (!pkg) continue;
+        resolved.delete(at);
+        nested.delete(at);
+        const held = installed.indexOf(`${pkg.name}@${pkg.version}`);
+        if (held >= 0) installed.splice(held, 1);
+        leftOut.push(at);
+      }
+    };
+    // Resolved metadata with no tarball cannot be installed: dropping it
+    // left the package absent from node_modules and both outcome lists.
+    for (const target of hoistPlacements(hoistPlan)) {
+      if (!target.pkg.tarballUrl) cannotInstall(target, 'resolved metadata carries no tarball URL');
+    }
+    if (failed.length > 0) {
+      log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
+      return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
+    }
 
     // ── Phase 3: Diff (cache check) ─────────────────────────────────
     // Per placement: a nested copy is checked at its own directory.
@@ -472,17 +500,11 @@ export class NpmInstaller {
 
     for (const target of hoistPlacements(hoistPlan)) {
       const { pkg } = target;
-      if (!pkg.tarballUrl) {
-        // Resolved metadata with no tarball cannot be installed. Silently
-        // dropping it here left the package absent from node_modules and
-        // absent from both outcome lists.
-        failed.push(`${pkg.name}@${pkg.version}`);
-        log(`npm ERR! ${pkg.name}@${pkg.version}: resolved metadata carries no tarball URL`);
-        continue;
-      }
-      // Check if already installed at the correct path
+      // Already installed at the placement: that version, and (where the
+      // lockfile records it) the same package, an alias's target included.
       const pkgJsonPath = nmDir + '/' + target.placement + '/package.json';
-      if (await project.exists(pkgJsonPath)) {
+      const locked = lockfile?.get(target.placement);
+      if (await project.exists(pkgJsonPath) && (locked === undefined || locked.integrity === pkg.integrity)) {
         try {
           const existing = JSON.parse(await project.readFileString(pkgJsonPath));
           if (existing.version === pkg.version) {
@@ -526,55 +548,46 @@ export class NpmInstaller {
     // transactions once summed to 0.0 ms with a 0.0 ms maximum). The count is
     // still the honest scale signal for the staged-write protocol.
     const commitsBefore = this.storageCommitCount();
+    const published: PackagePlacement[] = [];
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = engineDir !== null
         ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, opts.pid)
         : await this.fetchIntoMount(toFetch, nmDir, principal);
       totalFiles += batchResult.filesWritten;
+      published.push(...batchResult.installed);
       for (const { pkg } of batchResult.installed) installed.push(`${pkg.name}@${pkg.version}`);
-      // A placement that failed is a failure of the install when it is
-      // required; an optional one is left out with its optional set, as
-      // npm's reify handleOptionalFailure removes it.
-      const leftOut: string[] = [];
-      for (const { target, reason } of batchResult.failed) {
-        const set = plan?.fail(target.placement, reason) ?? null;
-        if (set === null) {
-          failed.push(`${target.pkg.name}@${target.pkg.version}`);
-          continue;
-        }
-        log(`[resolve-fanout] [skip] ${target.pkg.name} — optional: ${reason}`);
-        for (const at of set) {
-          const pkg = resolved.get(at) ?? nested.get(at);
-          if (!pkg) continue;
-          resolved.delete(at);
-          nested.delete(at);
-          const held = installed.indexOf(`${pkg.name}@${pkg.version}`);
-          if (held >= 0) installed.splice(held, 1);
-          leftOut.push(at);
-        }
-      }
-      // What an optional failure takes along goes from node_modules, as npm's reify removes it.
-      await withRecall(() => this.removePlacements(leftOut, hoistPlan, nmDir, project));
+      for (const { target, reason } of batchResult.failed) cannotInstall(target, reason);
     }
 
     phases['fetch+write'] = Date.now() - phaseStart;
     const commitCount = this.storageCommitCount() - commitsBefore;
 
+    // ── Prune ────────────────────────────────────────────────────────
+    // What an earlier install placed that this tree no longer holds is
+    // extraneous (a dependency the project dropped, or one a replacement no
+    // longer needs), and npm removes it on install, with what an optional
+    // failure left out. An install a required failure stopped removes nothing.
+    const pruned = failed.length === 0
+      ? await withRecall(() => this.pruneExtraneous([...(lockfile?.keys() ?? []), ...leftOut], hoistPlan, nmDir, project, log))
+      : 0;
+
     // ── Phase 6: Link bins ──────────────────────────────────────────
     phaseStart = Date.now();
     setInstallPhase('link-bins');
-    // The tree is the whole project's, so its root packages' bins are all of them.
+    // The tree is the whole project's, so its root packages' bins are all of
+    // them, but those of a package that failed.
     // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
-    await withRecall(() => this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, []));
+    const linked = failedAt.size === 0 ? resolved : new Map([...resolved].filter(([at]) => !failedAt.has(at)));
+    await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, []));
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
-    if (!usedLockfile || pruned > 0 || failed.length > 0) {
-      // The lockfile is the inventory pruning reads, so it keeps what is
-      // still on disk: a failed install removed nothing.
-      this.writeLockfile(projDir, hoistPlan, nmDir, failed.length > 0 ? lockfile : null);
-    }
+    // The lockfile is the inventory pruning reads, so it records what is on
+    // disk: the tree, or, after a required failure, what it held before with
+    // what this install published over it.
+    if (failed.length > 0) this.writeLockfile(projDir, published, nmDir, lockfile);
+    else if (!usedLockfile || pruned > 0) this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir);
 
     // ── Update package.json if explicit packages were added ─────────
     if (named.length > 0 && manifest !== null && failed.length === 0) {
@@ -626,9 +639,11 @@ export class NpmInstaller {
     if (failed.length > 0) {
       // Never claim success for a partial install: the next command is
       // where the missing package surfaces, as an unrelated-looking error.
+      // What it did publish is named, since the tree is not the one planned.
       log(
-        `npm ERR! install incomplete — ${installed.length} installed, ` +
-        `${failed.length} missing: ${failed.join(', ')}`,
+        `npm ERR! install incomplete — ${failed.length} failed: ${failed.join(', ')}; ` +
+        `${published.length} published: ${published.map(({ pkg }) => `${pkg.name}@${pkg.version}`).join(', ') || 'none'}; ` +
+        'nothing removed, package.json unchanged',
       );
     } else {
       const nestedNote = hoistPlan.nested.size > 0 ? ` (${hoistPlan.nested.size} nested)` : '';
@@ -818,7 +833,7 @@ export class NpmInstaller {
             const taskSpec: ResolveOneSpec = {
               name,
               range,
-              cachedEntries: this.cache.getRegistryVersions(name).slice(0, 16),
+              cachedEntries: this.cache.getRegistryVersions(parseRegistryRequest(name, range).registryName).slice(0, 16),
               fetchTimeoutMs: 15_000,
               retries: 3,
               registry,
@@ -1398,7 +1413,7 @@ export class NpmInstaller {
     if (await fs.exists(pkgJsonPath)) {
       try {
         const parsed: unknown = JSON.parse(await fs.readFileString(pkgJsonPath));
-        if (isJsonObject(parsed)) manifest = parsed;
+        if (isManifest(parsed)) manifest = parsed;
       } catch { /* corrupt package.json */ }
     }
     const named = namedPackages(manifest, opts.packages ?? [], opts);
@@ -1461,8 +1476,9 @@ export class NpmInstaller {
   // ── Lockfile ──────────────────────────────────────────────────────────
 
   /**
-   * A lockfile entry's registry record, read once however often the
-   * checks, the walk and the reconstruction of one install ask for it.
+   * A lockfile entry's registry record, read once however often one install
+   * asks for it: null where the cache has none of that package (an alias's
+   * name, retargeted, holds another's).
    */
   private lockRecords(): (entry: LockfileEntry) => RegistryCacheEntry | null {
     const read = new Map<string, RegistryCacheEntry | null>();
@@ -1473,23 +1489,24 @@ export class NpmInstaller {
         record = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
         read.set(key, record);
       }
-      return record;
+      return record !== null && record.integrity === entry.integrity ? record : null;
     };
   }
 
   /**
-   * Remove the placements `previous` (the last install's lockfile) holds and
-   * `plan` does not. Answers how many were removed.
+   * Remove the placements of `previous` (the last install's lockfile, and
+   * what an optional failure left out) that `plan` does not hold. Answers
+   * how many were removed.
    */
   private async pruneExtraneous(
-    previous: Map<string, LockfileEntry>,
+    previous: readonly string[],
     plan: HoistPlan,
     nmDir: string,
     project: ProjectFs,
     log: (msg: string) => void,
   ): Promise<number> {
     const kept = new Set(hoistPlacements(plan).map(({ placement }) => placement));
-    const removed = await this.removePlacements([...previous.keys()].filter((placement) => !kept.has(placement)), plan, nmDir, project);
+    const removed = await this.removePlacements([...new Set(previous)].filter((placement) => !kept.has(placement)), plan, nmDir, project);
     if (removed.length > 0) log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
     return removed.length;
   }
@@ -1670,12 +1687,12 @@ export class NpmInstaller {
    */
   private writeLockfile(
     projDir: string,
-    hoistPlan: HoistPlan,
+    placements: readonly PackagePlacement[],
     nmDir: string,
     base: Map<string, LockfileEntry> | null = null,
   ): void {
     const entries = new Map<string, LockfileEntry>(base ?? []);
-    for (const { placement, pkg } of hoistPlacements(hoistPlan)) {
+    for (const { placement, pkg } of placements) {
       entries.set(placement, {
         name: pkg.name,
         resolvedVer: pkg.version,
@@ -1764,11 +1781,8 @@ export class NpmInstaller {
     let pkgJson: unknown;
     try { pkgJson = JSON.parse(text); } catch { return; }
     // A document that is not an object cannot take a field.
-    if (!isJsonObject(pkgJson)) throw new TypeError('package.json is not an object');
-    const saved = saveNamed(pkgJson, named, (name) => {
-      const pkg = resolved.get(name);
-      return pkg ? { version: pkg.version, registryName: name } : null;
-    });
+    if (!isManifest(pkgJson)) throw new TypeError('package.json is not an object');
+    const saved = saveNamed(pkgJson, named, (name) => resolved.get(name)?.version ?? null);
     // `npm init` and npm-fast before 0.13.2 wrote package.json as root.
     await this.handKernelArtifact(principal, `/${pkgJsonPath}`);
     await fs.writeFile(pkgJsonPath, JSON.stringify(saved, null, 2) + '\n');

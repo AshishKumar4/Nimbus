@@ -1,35 +1,36 @@
 #!/usr/bin/env bun
 /**
- * Where each package lands in node_modules: npm's own install (arborist, the
- * npm that ships with node) against a local registry, the worker's resolver
- * walk (NpmInstaller over a fake fanout), and the shell's fallback npm (lifo
- * commands/system/npm.ts) against the same registry. The two engines share
- * one placement rule (core _shared/npm-tree.ts); each tree here must
- * give npm's placements and versions:
- *   - a version conflict, nested under the dependent the root copy fails;
- *   - a cycle through the nested copy (c@2 needs d, d needs c@2), which
- *     nests a second copy where the root's does not satisfy;
- *   - a peer the project does not name, installed at root, and one the tree
- *     already meets;
- *   - an optional dependency, and a range a root copy already satisfies.
- * And, installed one command after another into the same project, each
- * against npm's own real install of the same commands:
- *   - several roots named at once (`npm install xa xc@2.0.0`, xa needing
- *     xc@^1), planned together: xc@1 nests under xa;
- *   - a tree already installed (xa and xc@1), then `npm install xa@1
- *     xc@2.0.0`: the reused xa's edges are walked again, so xc@1 nests;
- *   - a replacement that fails its integrity check (bad@1, then bad@2.0.0
- *     whose tarball does not match): the install fails, and bad@1 and
- *     package.json stay as they were;
- *   - an optional dependency (oa→ox) whose own required dependency (oy)
- *     fails: ox is skipped with it, and the install succeeds;
- *   - a name both a dependency and an optional one (ob→oz) that fails: the
- *     optional entry wins, and oz is skipped;
- *   - an optional package already installed (pa→optional px→py) whose
- *     required child is gone and now fails: the warm install skips px's set,
- *     and removes px.
+ * The one install engine (core _shared/npm-tree.ts) against npm's own
+ * (arborist, the npm that ships with node), over a local registry. Both of
+ * its hosts run it: the worker's (NpmInstaller over a fake fanout) and the
+ * shell's fallback npm (lifo commands/system/npm.ts).
+ *
+ * One tree, planned whole: each host's placements and versions are npm's
+ * (a version conflict nested under its dependent; a cycle through a nested
+ * copy; a peer installed at root, and one the tree already meets; an
+ * optional dependency).
+ *
+ * Then install sequences, one command after another in one project, each
+ * against npm's own run of the same commands: after each, both hosts' exit
+ * status, tree and package.json are npm's. They cover several roots named
+ * at once; a reused tree; a replacement that fails its integrity check (the
+ * install fails, and nothing changes); optional dependencies whose own
+ * required dependency fails, at resolution or at download, on a fresh
+ * install and a warm one (the optional set goes, with a cycle in it); an
+ * explicit request an installed copy meets (`xc@latest`, an alias to
+ * another package), resolved anyway; a failed optional range beside a
+ * required one of the same name; a peer conflicting with the project's own
+ * dependency (ERESOLVE, then `--force`), and one the project's range
+ * allows; a copy only probed, not kept, pruned; a conflict placed at the
+ * highest ancestor it fits; a named optional dependency; a named
+ * replacement pruning what it no longer needs; a bare name keeping its
+ * declared range; devDependencies over dependencies; sibling order by
+ * name; `--save-dev`; an optional-only project whose dependency is missing;
+ * a package the lock records but disk has lost. And a global prefix,
+ * shallow: each top-level package's dependencies beneath it.
+ *
  * npm runs without a package-lock (the fallback keeps none), so it plans
- * from the tree on disk and the registry, as the fallback does.
+ * from the tree on disk and the registry, as the hosts do.
  */
 
 import assert from 'node:assert/strict';
@@ -42,8 +43,10 @@ import { Database } from 'bun:sqlite';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { resolveVersion } from '../../packages/core/src/_shared/npm-semver.ts';
+import { pickPackumentVersion } from '../../packages/core/src/_shared/npm-semver.ts';
+import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
+import { parseNpmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
@@ -71,26 +74,58 @@ const REGISTRY = {
   pa: { '1.0.0': { optionalDependencies: { px: '^1.0.0' } } },
   px: { '1.0.0': { dependencies: { py: '^1.0.0' } } },
   py: { '1.0.0': {} },
+  ra: { '1.0.0': {} },
+  rb: { '1.0.0': {} },
+  fa: { '1.0.0': { optionalDependencies: { fx: '^9.0.0' } } },
+  fb: { '1.0.0': { dependencies: { fx: '^1.0.0' } } },
+  fx: { '1.0.0': {} },
+  ph: { '1.0.0': { peerDependencies: { pp: '^1.0.0' } } },
+  pp: { '1.0.0': {}, '2.0.0': {} },
+  // oc needs ocm, which no registry has; ocb and occ need each other.
+  oc: { '1.0.0': { dependencies: { ocb: '1.0.0', ocm: '1.0.0' } } },
+  ocb: { '1.0.0': { dependencies: { occ: '1.0.0' } } },
+  occ: { '1.0.0': { dependencies: { ocb: '1.0.0' } } },
+  od: { '1.0.0': { dependencies: { odb: '1.0.0' } } },
+  odb: { '1.0.0': { dependencies: { odc: '1.0.0' } } },
+  odc: { '1.0.0': { dependencies: { odb: '1.0.0' } } },
+  qa: { '1.0.0': { dependencies: { qx: '2.0.0' } } },
+  qx: { '1.0.0': {}, '2.0.0': {} },
+  qt: { '1.0.0': {} },
+  na: { '1.0.0': { dependencies: { nc: '1.0.0', nd: '2.0.0' } } },
+  nb: { '1.0.0': { dependencies: { nc: '2.0.0' } } },
+  nc: { '1.0.0': {}, '2.0.0': { dependencies: { nd: '1.0.0' } } },
+  nd: { '1.0.0': {}, '2.0.0': {} },
+  ghost: { '1.0.0': {} },
+  rr: { '1.0.0': { dependencies: { rq: '1.0.0' } }, '2.0.0': {} },
+  rq: { '1.0.0': {} },
+  za: { '1.0.0': { dependencies: { zc: '1.0.0' } } },
+  zb: { '1.0.0': { dependencies: { zc: '2.0.0' } } },
+  zc: { '1.0.0': {}, '2.0.0': {} },
+  ga: { '1.0.0': { dependencies: { gb: '1.0.0' } } },
+  gb: { '1.0.0': {} },
+  gz: { '1.0.0': { dependencies: { gb: '1.0.0' } } },
 };
-// Tarballs a step of a sequence breaks from then on (their integrity names no bytes).
+// Tarballs whose bytes are not the ones their integrity names (and no
+// tarball's are, so npm's content-addressed cache cannot answer for them);
+// a step of a sequence breaks more from then on.
+const BROKEN = ['bad-2.0.0.tgz', 'oy-1.0.0.tgz', 'oz-1.0.0.tgz'];
 const brokenNow = new Set();
 const NO_BYTES = await sriOf(new TextEncoder().encode('no tarball has these bytes, broken now'));
 const ROOT = { a: '^1.0.0', b: '^1.0.0', host: '^1.0.0', shared: '1.0.0', user: '^1.0.0' };
 
 const manifest = (name, version) => ({ name, version, ...REGISTRY[name][version] });
 const tarballs = new Map();
+const manifests = new Map();
 for (const [name, versions] of Object.entries(REGISTRY)) {
   for (const version of Object.keys(versions)) {
+    manifests.set(`${name}-${version}.tgz`, manifest(name, version));
     tarballs.set(`${name}-${version}.tgz`, packageTarball({ 'package/package.json': JSON.stringify(manifest(name, version)) }));
   }
 }
 const integrity = new Map();
 for (const [file, bytes] of tarballs) integrity.set(file, await sriOf(bytes));
-// bad@2.0.0's tarball is not the one its integrity names (and no tarball is,
-// so npm's content-addressed cache cannot answer for it).
-for (const broken of ['bad-2.0.0.tgz', 'oy-1.0.0.tgz', 'oz-1.0.0.tgz']) {
-  integrity.set(broken, await sriOf(new TextEncoder().encode(`no tarball has these bytes: ${broken}`)));
-}
+for (const broken of BROKEN) integrity.set(broken, await sriOf(new TextEncoder().encode(`no tarball has these bytes: ${broken}`)));
+const isBroken = (file) => BROKEN.includes(file) || brokenNow.has(file);
 
 // The registry npm and the fallback both read: packuments and tarballs.
 const server = createServer((request, response) => {
@@ -120,7 +155,7 @@ const server = createServer((request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-/** placement → version, sorted, as each engine left the tree. */
+/** placement → version, sorted, as each engine left the tree (`name@version` where the package is not the one its placement names: an alias). */
 const sorted = (entries) => Object.fromEntries([...entries].sort(([x], [y]) => (x < y ? -1 : 1)));
 
 /** Every package under `dir`'s node_modules, at its placement (a dot entry is npm's own). */
@@ -131,13 +166,16 @@ function treeOf(readdir, readFile, exists, dir) {
       if (name.startsWith('.')) continue;
       if (name.startsWith('@')) { walk(`${at}/${name}`, `${prefix}${name}/`); continue; }
       const placement = prefix + name;
-      found.push([placement, JSON.parse(readFile(`${at}/${name}/package.json`)).version]);
+      const pkg = JSON.parse(readFile(`${at}/${name}/package.json`));
+      found.push([placement, pkg.name === name ? pkg.version : `${pkg.name}@${pkg.version}`]);
       if (exists(`${at}/${name}/node_modules`)) walk(`${at}/${name}/node_modules`, `${placement}/node_modules/`);
     }
   };
   if (exists(`${dir}/node_modules`)) walk(`${dir}/node_modules`, '');
   return sorted(found);
 }
+/** What package.json declares, as each engine left it. */
+const declared = (pkg) => ({ dependencies: pkg.dependencies ?? {}, devDependencies: pkg.devDependencies ?? {}, optionalDependencies: pkg.optionalDependencies ?? {} });
 
 /** `npm <args>` in `dir`, against the local registry (not spawnSync: it is served from this process). */
 const npmIn = (dir, args) => new Promise((resolve) => {
@@ -153,24 +191,84 @@ async function fallbackWorkspace() {
   const harness = createSqliteVfsTestHarness();
   const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel));
-  assert.equal((await ws.exec(`printf '%s' '{"name":"app","version":"1.0.0"}' > package.json`)).exitCode, 0);
   const fs = ws.vfs.as(CRED_KERNEL);
+  const write = (pkg) => fs.writeFile('/home/user/package.json', JSON.stringify({ name: 'app', version: '1.0.0', ...pkg }));
+  write({});
   return {
-    run: (args) => ws.exec(`NPM_REGISTRY=${base} npm ${args.join(' ')}`),
-    sh: (line) => ws.exec(line),
-    tree: () => treeOf((at) => fs.readdir(at).map(({ name }) => name), (path) => fs.readFileString(path), (path) => fs.exists(path), '/home/user'),
-    manifest: () => JSON.parse(fs.readFileString('/home/user/package.json')),
-    staged: () => fs.exists('/home/user/node_modules/.nimbus-staging'),
+    write,
+    run: async (args) => (await ws.exec(`NPM_REGISTRY=${base} npm ${args.map((arg) => `'${arg}'`).join(' ')}`)).exitCode === 0,
+    remove: async (name) => assert.equal((await ws.exec(`rm -rf node_modules/${name}`)).exitCode, 0),
+    tree: (dir = '/home/user') => treeOf((at) => fs.readdir(at).map(({ name }) => name), (path) => fs.readFileString(path), (path) => fs.exists(path), dir),
+    declared: () => declared(JSON.parse(fs.readFileString('/home/user/package.json'))),
+    leftovers: () => (fs.exists('/home/user/node_modules') ? fs.readdir('/home/user/node_modules').map(({ name }) => name).filter((name) => name.startsWith('.nimbus-')) : []),
+    close: () => harness.db.close(),
+  };
+}
+
+/** The worker's resolve task over REGISTRY: the version npm's pick takes, a missing name unresolved. */
+function resolveTask(name, spec) {
+  const request = parseRegistryRequest(name, spec.range);
+  const empty = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
+  const versions = REGISTRY[request.registryName];
+  const names = Object.keys(versions ?? {});
+  const version = versions ? pickPackumentVersion(versions, { latest: names.at(-1) }, request.range) : null;
+  if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${request.registryName} satisfies ${request.range}` } };
+  const fields = REGISTRY[request.registryName][version];
+  const file = `${request.registryName}-${version}.tgz`;
+  const pkg = {
+    name: request.installName, version, tarballUrl: `${base}/${file}`, integrity: isBroken(file) ? NO_BYTES : integrity.get(file),
+    dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, optionalDependencies: fields.optionalDependencies,
+    exports: null, main: 'index.js', module: '', bin: {},
+  };
+  return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
+}
+
+/** A fresh project `dir` the worker's NpmInstaller installs into, over a fake fanout serving REGISTRY. */
+function workerProject(dir = 'app') {
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  root.mkdir(`${dir}/node_modules`, { recursive: true });
+  const write = (pkg) => root.writeFile(`${dir}/package.json`, JSON.stringify({ name: 'app', version: '1.0.0', ...pkg }));
+  if (dir === 'app') write({});
+  const file = (p) => p.tarballUrl.slice(base.length + 1);
+  const env = makeFanoutEnv({
+    root, NM: `${dir}/node_modules`, resultFor: resolveTask,
+    failFor: (p) => (isBroken(file(p)) ? `integrity mismatch for ${file(p)}` : null),
+    manifestFor: (p) => manifests.get(file(p)),
+  });
+  const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
+  return {
+    installer, root, write,
+    run: async (args, options = {}) => {
+      const invocation = parseNpmInstallInvocation(args.slice(1));
+      try {
+        const result = await installer.install(dir, {
+          packages: invocation.packages.length > 0 ? invocation.packages : undefined,
+          saveDev: invocation.saveDev, saveOptional: invocation.saveOptional,
+          allowPeerConflicts: invocation.allowPeerConflicts, production: invocation.production,
+          ...options,
+        });
+        return result.failed.length === 0;
+      } catch {
+        return false;
+      }
+    },
+    remove: async (name) => root.removeRecursive(`${dir}/node_modules/${name}`),
+    tree: () => treeOf((at) => root.readdir(at).map(({ name }) => name), (path) => root.readFileString(path), (path) => root.exists(path), dir),
+    declared: () => declared(JSON.parse(root.readFileString(`${dir}/package.json`))),
     close: () => harness.db.close(),
   };
 }
 
 /**
- * `commands` run in order by npm itself and by the fallback, each in a
- * fresh project: npm's argument lists, and between them changes to the
- * world (`{ remove, break }`: a package removed from node_modules, a tarball
- * broken from then on). For each command, its exit status (as success or
- * failure), then the tree and package.json's dependencies after it.
+ * `commands` run in order by npm itself and by each host, each in a fresh
+ * project: npm's argument lists, and between them changes to the world
+ * (`{ manifest, remove, break }`: package.json's dependencies set, a package
+ * removed from node_modules, a tarball broken from then on). For each
+ * command, its exit status (as success or failure), then the tree and
+ * package.json's dependencies after it.
  */
 async function sequence(commands) {
   const dir = mkdtempSync(join(tmpdir(), 'npm-sequence-'));
@@ -180,6 +278,7 @@ async function sequence(commands) {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }));
     for (const args of commands) {
       if (!Array.isArray(args)) {
+        if (args.manifest) writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0', ...args.manifest }));
         if (args.remove) rmSync(join(dir, 'node_modules', args.remove), { recursive: true, force: true });
         if (args.break) brokenNow.add(args.break);
         continue;
@@ -188,34 +287,39 @@ async function sequence(commands) {
       npm.push({
         ok: status === 0,
         tree: treeOf((at) => readdirSync(at), (path) => readFileSync(path, 'utf8'), existsSync, dir),
-        dependencies: JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).dependencies ?? {},
+        declared: declared(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))),
       });
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  const ws = await fallbackWorkspace();
-  const fallback = [];
-  brokenNow.clear();
-  try {
-    for (const args of commands) {
-      if (!Array.isArray(args)) {
-        if (args.remove) assert.equal((await ws.sh(`rm -rf node_modules/${args.remove}`)).exitCode, 0);
-        if (args.break) brokenNow.add(args.break);
-        continue;
+  const hosts = {};
+  for (const [host, make] of [['fallback', fallbackWorkspace], ['worker', async () => workerProject()]]) {
+    const project = await make();
+    const steps = [];
+    brokenNow.clear();
+    try {
+      for (const args of commands) {
+        if (!Array.isArray(args)) {
+          if (args.manifest) project.write(args.manifest);
+          if (args.remove) await project.remove(args.remove);
+          if (args.break) brokenNow.add(args.break);
+          continue;
+        }
+        const ok = await project.run(args);
+        if (project.leftovers) assert.deepEqual(project.leftovers(), [], `${args.join(' ')}: no staging directory or journal is left`);
+        steps.push({ ok, tree: project.tree(), declared: project.declared() });
       }
-      const run = await ws.run(args);
-      assert.equal(ws.staged(), false, `${args.join(' ')}: no staging directory is left`);
-      fallback.push({ ok: run.exitCode === 0, tree: ws.tree(), dependencies: ws.manifest().dependencies ?? {} });
+    } finally {
+      project.close();
     }
-  } finally {
-    ws.close();
+    hosts[host] = steps;
   }
-  return { npm, fallback };
+  return { npm, ...hosts };
 }
 
 try {
-  // ── npm ──────────────────────────────────────────────────────────────────
+  // ── One tree, planned whole ──────────────────────────────────────────────
   const dir = mkdtempSync(join(tmpdir(), 'npm-placement-'));
   let npm;
   try {
@@ -241,85 +345,84 @@ try {
   assert.equal(npm['d/node_modules/c'], '2.0.0', 'the cycle through c@2 nests a second copy under d');
   assert.equal(npm['user/node_modules/shared'], '1.2.0', 'a dependency the root copy fails nests beside a peer the root copy meets');
 
-  // ── the worker's resolver walk ───────────────────────────────────────────
-  const worker = await (async () => {
-    const resultFor = (name, spec) => {
-      const versions = REGISTRY[name] ?? {};
-      const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
-      const empty = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-      if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
-      const fields = REGISTRY[name][version];
-      const pkg = {
-        name, version, tarballUrl: `${base}/${name}-${version}.tgz`, integrity: integrity.get(`${name}-${version}.tgz`),
-        dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, optionalDependencies: fields.optionalDependencies,
-        exports: null, main: 'index.js', module: '', bin: {},
-      };
-      return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
-    };
-    const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-    const vfs = new SqliteVFS(harness.sql, harness.ctx);
-    const root = vfs.as(CRED_KERNEL);
-    root.mkdir('app/node_modules', { recursive: true });
-    root.writeFile('app/package.json', JSON.stringify({ name: 'app', dependencies: ROOT }));
-    const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor });
-    const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-    const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
-    const result = await installer.install('app', { pid: 1 });
-    assert.deepEqual(result.failed, []);
-    return sorted([...installer.npmCache.readLockfile('app')].map(([placement, entry]) => [placement, entry.resolvedVer]));
-  })();
-  assert.deepEqual(worker, npm, "the worker's resolver walk places as npm does");
+  const worker = workerProject();
+  worker.write({ dependencies: ROOT });
+  assert.equal(await worker.run(['install']), true);
+  assert.deepEqual(sorted([...worker.installer.npmCache.readLockfile('app')].map(([placement, entry]) => [placement, entry.resolvedVer])), npm, "the worker's plan places as npm does");
+  assert.deepEqual(worker.tree(), npm, 'and installs it so');
+  worker.close();
 
-  // ── the shell's fallback npm ─────────────────────────────────────────────
-  const fallback = await (async () => {
-    const harness = createSqliteVfsTestHarness();
-    const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
-    try {
-      ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel));
-      assert.equal((await ws.exec(`printf '%s' '${JSON.stringify({ name: 'app', version: '1.0.0', dependencies: ROOT })}' > package.json`)).exitCode, 0);
-      const install = await ws.exec(`NPM_REGISTRY=${base} npm install`);
-      assert.equal(install.exitCode, 0, install.stderr);
-      // Every package under node_modules, at its placement.
-      const fs = ws.vfs.as(CRED_KERNEL);
-      const found = [];
-      const walk = (dir, prefix) => {
-        for (const { name } of fs.readdir(dir)) {
-          const placement = prefix + name;
-          found.push([placement, JSON.parse(fs.readFileString(`${dir}/${name}/package.json`)).version]);
-          if (fs.exists(`${dir}/${name}/node_modules`)) walk(`${dir}/${name}/node_modules`, `${placement}/node_modules/`);
-        }
-      };
-      walk('/home/user/node_modules', '');
-      return sorted(found);
-    } finally {
-      harness.db.close();
-    }
-  })();
-  assert.deepEqual(fallback, npm, "the shell's fallback npm places as npm does");
+  const fallback = await fallbackWorkspace();
+  fallback.write({ dependencies: ROOT });
+  assert.equal(await fallback.run(['install']), true);
+  assert.deepEqual(fallback.tree(), npm, "the shell's fallback npm places as npm does");
+  fallback.close();
 
-  // ── Several roots, a reused tree, a failed replacement ───────────────────
+  // ── Install sequences ────────────────────────────────────────────────────
   const scenarios = {
-    'several roots named at once': [['install', 'xa', 'xc@2.0.0']],
-    'a reused tree whose root copy is replaced': [['install', 'xa'], ['install', 'xa@1', 'xc@2.0.0']],
-    'a replacement that fails its integrity check': [['install', 'bad@1.0.0'], ['install', 'bad@2.0.0']],
-    'an optional dependency whose required dependency fails': [['install', 'oa']],
-    'a name both a dependency and an optional one': [['install', 'ob']],
-    'an optional package already installed whose required child breaks': [['install', 'pa'], { remove: 'py', break: 'py-1.0.0.tgz' }, ['install']],
+    'several roots named at once': [[['install', 'xa', 'xc@2.0.0']], { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' }],
+    'a reused tree whose root copy is replaced': [[['install', 'xa'], ['install', 'xa@1', 'xc@2.0.0']], { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' }],
+    'a replacement that fails its integrity check': [[['install', 'bad@1.0.0'], ['install', 'bad@2.0.0']], { bad: '1.0.0' }],
+    'an optional dependency whose required dependency fails': [[['install', 'oa']], { oa: '1.0.0' }],
+    'a name both a dependency and an optional one': [[['install', 'ob']], { ob: '1.0.0' }],
+    'an optional package already installed whose required child breaks': [[['install', 'pa'], { remove: 'py', break: 'py-1.0.0.tgz' }, ['install']], { pa: '1.0.0' }],
+    'an explicit tag an installed copy meets': [[['install', 'xc@1.0.0'], ['install', 'xc@latest']], { xc: '2.0.0' }],
+    'an explicit alias to another package': [[['install', 'slot@npm:ra@1.0.0'], ['install', 'slot@npm:rb@1.0.0']], { slot: 'rb@1.0.0' }],
+    'a failed optional range beside a required one of the same name': [[['install', 'fa', 'fb']], { fa: '1.0.0', fb: '1.0.0', fx: '1.0.0' }],
+    "a peer conflicting with the project's own dependency, then --force": [[['install', 'ph@1.0.0', 'pp@2.0.0'], ['install', 'ph@1.0.0', 'pp@2.0.0', '--force']], { ph: '1.0.0', pp: '2.0.0' }],
+    "a peer the project's range allows": [[{ manifest: { dependencies: { ph: '1.0.0', pp: '*' } } }, ['install']], { ph: '1.0.0', pp: '1.0.0' }],
+    'an optional set with a cycle, a member missing from the registry': [[{ manifest: { optionalDependencies: { oc: '1.0.0' } } }, ['install']], {}],
+    'an optional set with a cycle, its tarball broken': [[{ manifest: { optionalDependencies: { od: '1.0.0' } }, break: 'od-1.0.0.tgz' }, ['install']], {}],
+    'a copy only probed, not kept, is pruned': [[{ manifest: { dependencies: { qa: '1.0.0', qx: '1.0.0' } } }, ['install'], { manifest: { dependencies: { qa: '1.0.0', qt: '1.0.0' } } }, ['install']], { qa: '1.0.0', 'qa/node_modules/qx': '2.0.0', qt: '1.0.0' }],
+    'a conflict placed at the highest ancestor it fits': [[['install', 'na', 'nb']], { na: '1.0.0', nb: '1.0.0', 'nb/node_modules/nc': '2.0.0', 'nb/node_modules/nd': '1.0.0', nc: '1.0.0', nd: '2.0.0' }],
+    'a named optional dependency that cannot resolve': [[{ manifest: { optionalDependencies: { ghost: '^9.0.0' } } }, ['install', 'ghost@^9.0.0']], {}],
+    'a named replacement prunes what it no longer needs': [[['install', 'rr@1.0.0'], ['install', 'rr@2.0.0']], { rr: '2.0.0' }],
+    'a bare name keeps its declared range': [[{ manifest: { dependencies: { xc: '^1.0.0' } } }, ['install', 'xc']], { xc: '1.0.0' }],
+    'devDependencies over dependencies': [[{ manifest: { dependencies: { xc: '1.0.0' }, devDependencies: { xc: '2.0.0' } } }, ['install']], { xc: '2.0.0' }],
+    'siblings in name order': [[{ manifest: { dependencies: { zb: '1.0.0', za: '1.0.0' } } }, ['install']], { za: '1.0.0', zb: '1.0.0', 'zb/node_modules/zc': '2.0.0', zc: '1.0.0' }],
+    '--save-dev': [[['install', '--save-dev', 'xc@1.0.0']], { xc: '1.0.0' }],
+    'an optional-only project whose dependency is missing': [[{ manifest: { optionalDependencies: { nosuch: '1.0.0' } } }, ['install']], {}],
+    'a package the lock records but disk has lost': [[['install', 'xa@1.0.0'], { remove: 'xc' }, ['install', 'xa@1.0.0']], { xa: '1.0.0', xc: '1.0.0' }],
   };
-  const expected = {
-    'several roots named at once': { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' },
-    'a reused tree whose root copy is replaced': { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' },
-    'a replacement that fails its integrity check': { bad: '1.0.0' },
-    'an optional dependency whose required dependency fails': { oa: '1.0.0' },
-    'a name both a dependency and an optional one': { ob: '1.0.0' },
-    'an optional package already installed whose required child breaks': { pa: '1.0.0' },
-  };
-  for (const [label, commands] of Object.entries(scenarios)) {
-    const { npm: oracle, fallback: steps } = await sequence(commands);
-    assert.deepEqual(oracle.at(-1).tree, expected[label], `${label}: npm's own result, as the scenario means it`);
-    assert.deepEqual(steps, oracle, `${label}: the fallback's exit statuses, trees and package.json as npm's`);
+  for (const [label, [commands, expected]] of Object.entries(scenarios)) {
+    const { npm: oracle, fallback: shell, worker: engine } = await sequence(commands);
+    assert.deepEqual(oracle.at(-1).tree, expected, `${label}: npm's own result, as the scenario means it`);
+    assert.deepEqual(shell, oracle, `${label}: the fallback's exit statuses, trees and package.json as npm's`);
+    assert.deepEqual(engine, oracle, `${label}: the worker's exit statuses, trees and package.json as npm's`);
   }
-  console.log(`npm-placement-arborist: ${Object.keys(npm).length} placements, both engines, and ${Object.keys(scenarios).length} install sequences, as npm ${spawnSync('npm', ['--version'], { encoding: 'utf8' }).stdout.trim()}`);
+
+  // ── A global prefix: npm's shallow layout ────────────────────────────────
+  {
+    const prefix = mkdtempSync(join(tmpdir(), 'npm-global-'));
+    const oracle = [];
+    try {
+      for (const name of ['ga', 'gz']) {
+        assert.equal((await npmIn(prefix, ['install', '-g', `--prefix=${prefix}`, name])).status, 0);
+        oracle.push(treeOf((at) => readdirSync(at), (path) => readFileSync(path, 'utf8'), existsSync, join(prefix, 'lib')));
+      }
+    } finally {
+      rmSync(prefix, { recursive: true, force: true });
+    }
+    assert.deepEqual(oracle.at(-1), { ga: '1.0.0', 'ga/node_modules/gb': '1.0.0', gz: '1.0.0', 'gz/node_modules/gb': '1.0.0' }, "npm's own global layout");
+    const shell = await fallbackWorkspace();
+    const engine = workerProject('g/lib');
+    try {
+      const shellTrees = [];
+      const engineTrees = [];
+      for (const name of ['ga', 'gz']) {
+        assert.equal(await shell.run(['install', '-g', '--prefix=/home/user/g', name]), true);
+        shellTrees.push(shell.tree('/home/user/g/lib'));
+        assert.equal(await engine.run(['install', name], { global: true }), true);
+        engineTrees.push(engine.tree());
+      }
+      assert.deepEqual(shellTrees, oracle, "the fallback's global installs lay out as npm's");
+      assert.deepEqual(engineTrees, oracle, "the worker's global installs lay out as npm's");
+    } finally {
+      shell.close();
+      engine.close();
+    }
+  }
+  console.log(`npm-placement-arborist: ${Object.keys(npm).length} placements, both hosts, ${Object.keys(scenarios).length} install sequences and a global prefix, as npm ${spawnSync('npm', ['--version'], { encoding: 'utf8' }).stdout.trim()}`);
 } finally {
   server.close();
 }

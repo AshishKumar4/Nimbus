@@ -41,6 +41,8 @@ export function parseNpmInstallInvocation(args) {
         loglevel: parseNpmLogLevel(parsed.flags.loglevel),
         production: parsed.flags.production === true || omittedDependencyTypes(args).has('dev'),
         saveDev: parsed.flags['save-dev'] === true,
+        saveOptional: parsed.flags['save-optional'] === true,
+        allowPeerConflicts: parsed.flags.force === true || parsed.flags['legacy-peer-deps'] === true,
     };
 }
 /**

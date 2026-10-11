@@ -18,7 +18,6 @@ const spec = (overrides = {}) => ({
   name: 'which',
   range: '^2.0.0',
   cachedEntries: [],
-  isOptional: false,
   fetchTimeoutMs: 1_000,
   retries: 0,
   ...overrides,
@@ -93,16 +92,17 @@ const packument = (versions, distTags = {}) => JSON.stringify({
   console.log('  unsatisfiable range → unresolved');
 }
 
-// ── A deliberate policy skip is NOT a failure ────────────────────────────
+// ── What cannot run here is reported, not decided ───────────────────────
 //
-// An optional native binding shard is dropped on purpose — the resolved
-// package carries platform metadata, the classifier names it native, and
-// the `isOptional` task flag says the parent can live without it. That
-// must stay distinguishable from the failures above, or every install
-// with a platform shard somewhere in its tree would go red.
+// The task cannot tell whether a package is optional (only the complete
+// graph can), so it decides nothing by the edge that asked: a platform
+// refusal (npm's EBADPLATFORM) is a refusal, which the plan skips where the
+// placement is optional and fails where it is required; a native executable
+// resolves like any package, carrying why it cannot run here, which the plan
+// skips where optional and installs, with an advisory, where required.
 {
-  const res = await resolveOnePackumentInFacet(
-    spec({ name: '@esbuild/linux-x64', range: '0.21.5', isOptional: true }),
+  const platformBound = await resolveOnePackumentInFacet(
+    spec({ name: '@esbuild/linux-x64', range: '0.21.5' }),
     envReturning({
       json: packument({
         '0.21.5': {
@@ -114,11 +114,26 @@ const packument = (versions, distTags = {}) => JSON.stringify({
       source: 'network',
     }),
   );
-  assert.equal(res.pkg, null);
-  assert.equal(res.error, undefined, 'a policy skip carries no failure');
-  assert.equal(res.packumentSource, 'skipped');
-  assert.ok(res.messages.some((m) => /\[skip\].*esbuild\/linux-x64/.test(m)), 'and it says so');
-  console.log('  policy skip → skipped, no error');
+  assert.equal(platformBound.pkg, null);
+  assert.equal(platformBound.error?.type, 'w6-reject', 'a platform-bound package is a refusal');
+  assert.match(platformBound.error.reason, /os=\[linux\]/);
+
+  const nativeBin = await resolveOnePackumentInFacet(
+    spec({ name: 'which', range: '2.0.2' }),
+    envReturning({
+      json: packument({
+        '2.0.2': {
+          name: 'which', version: '2.0.2', bin: { which: 'bin/which.exe' },
+          dist: { tarball: 'https://registry.invalid/which-2.0.2.tgz', integrity: 'sha512-AAAA' },
+        },
+      }, { latest: '2.0.2' }),
+      source: 'network',
+    }),
+  );
+  assert.equal(nativeBin.pkg?.version, '2.0.2', 'a native executable resolves');
+  assert.equal(nativeBin.error, undefined, 'with no failure');
+  assert.match(nativeBin.nativeExecutable?.reason ?? '', /which\.exe/, 'and says why it cannot run here');
+  console.log('  platform-bound → refusal; native executable → resolved, with its reason');
 }
 
 // ── A resolvable package still resolves ──────────────────────────────────

@@ -47,8 +47,8 @@
  *   6. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
- *      events, packumentBytesDecoded, packumentSource, error?}.
+ *   7. Return {pkg, cacheWrites, messages, events, packumentBytesDecoded,
+ *      packumentSource, error?, nativeExecutable?}.
  */
 import { registryRecord, resolvedFromRecord } from './registry-record.js';
 /**
@@ -72,11 +72,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // (post-network-fetch). Threaded through `out()` into the result.
     const cacheStatEvents = [];
     let packumentElapsedMs = 0;
-    const out = (pkg, bytes, source, error) => ({
+    const out = (pkg, bytes, source, error, nativeExecutable) => ({
         pkg,
-        deps: pkg?.dependencies ?? {},
-        peerDeps: pkg?.peerDependencies ?? {},
-        optionalDeps: pkg?.optionalDependencies ?? {},
         cacheWrites,
         messages,
         events,
@@ -85,6 +82,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         packumentElapsedMs,
         cacheStatEvents,
         error,
+        nativeExecutable,
     });
     // npm parity: a table reject or a native-executable bin is a package
     // with no Workers-compatible build — real npm still installs it. The
@@ -113,28 +111,16 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             suggest: `${staged.from}@${newest}`,
         });
     };
-    const outNativeExecutableReject = (pkg, bytes, source) => {
+    // A native-executable bin is no failure (the package's JS tree installs);
+    // only an os/cpu/libc allowlist refuses it (EBADPLATFORM parity).
+    const outNativeExecutable = (pkg, bytes, source) => {
         const reject = NATIVE_EXECUTABLE_REJECT(pkg);
         if (!reject)
             return null;
-        if (spec.isOptional) {
-            messages.push(`[npm] [skip] ${spec.name} — ${reject.reason}`);
-            events.push({
-                type: 'transitive-skip',
-                from: spec.name,
-                reason: reject.reason,
-            });
-            return out(null, bytes, 'skipped');
-        }
-        // Only an os/cpu/libc allowlist fails the install (EBADPLATFORM
-        // parity); a native-executable bin is advisory — the package's JS
-        // tree installs and the reason is reported as an advisory.
         // @ts-ignore — preamble.
         const platformReject = NATIVE_PLATFORM_REJECT(pkg);
-        if (!platformReject) {
-            emitAdvisory(reject);
-            return null;
-        }
+        if (!platformReject)
+            return out(pkg, bytes, source, undefined, { from: reject.from, reason: reject.reason, suggest: reject.suggest });
         events.push({
             type: 'reject',
             from: platformReject.from,
@@ -430,9 +416,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     };
     const pkg = versionToResolved(vData);
     adviseStagedBindingVersion(pkg);
-    const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
-    if (nativeReject)
-        return nativeReject;
+    const native = outNativeExecutable(pkg, bytes, packumentSource);
+    if (native?.pkg === null)
+        return native;
     // 5. Stage cache writes.
     cacheWrites.push(registryRecord(pkg, Date.now()));
     // Top-5 sibling versions.
@@ -452,5 +438,5 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         }
         catch { /* skip malformed */ }
     }
-    return out(pkg, bytes, packumentSource);
+    return native ?? out(pkg, bytes, packumentSource);
 };

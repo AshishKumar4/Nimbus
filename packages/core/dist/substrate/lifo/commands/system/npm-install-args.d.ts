@@ -21,6 +21,10 @@ export interface NpmInstallInvocation {
      * in-process install path, which owns the package.json update itself.
      */
     saveDev: boolean;
+    /** `-O` / `--save-optional`: record the spec under optionalDependencies. */
+    saveOptional: boolean;
+    /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
+    allowPeerConflicts: boolean;
 }
 export declare function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation;
 //# sourceMappingURL=npm-install-args.d.ts.map

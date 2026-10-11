@@ -29,7 +29,6 @@ import { PACKAGE_ABI_POLICY } from '../../packages/worker/src/facets/wasm-swap-r
 
 const spec = (overrides = {}) => ({
   cachedEntries: [],
-  isOptional: false,
   fetchTimeoutMs: 1_000,
   retries: 0,
   ...overrides,

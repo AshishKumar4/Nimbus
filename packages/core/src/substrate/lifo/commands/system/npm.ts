@@ -10,8 +10,8 @@ import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import {
-	canonicalTreePath, depthOf, holdTree, namedPackages, placementName, planTree, projectRoots, requiredFailures, saveNamed,
-	type ProjectManifest, type TreePackage, type TreeResolution, type TreeRoot,
+	canonicalTreePath, depthOf, holdTree, isManifest, namedPackages, placementName, planTree, projectRoots, requiredFailures, saveNamed,
+	type ProjectManifest, type TreeNode, type TreePackage, type TreeResolution, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
 import { renameOutcome } from '../../../../vfs/vfs-error.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
@@ -199,10 +199,16 @@ async function readProjectPackageJson(vfs: VFS, cwd: string): Promise<PackageJso
 	const pkgPath = join(cwd, 'package.json');
 	try {
 		const pkg: unknown = JSON.parse(await vfs.readFileString(pkgPath));
-		return typeof pkg === 'object' && pkg !== null && !Array.isArray(pkg) ? pkg : null;
+		return isManifest(pkg) ? pkg : null;
 	} catch {
 		return null;
 	}
+}
+
+/** The manifest of the package installed at `dir`: null where there is none, or it names no version. */
+async function installedManifest(vfs: VFS, dir: string): Promise<PackageJson & { version: string } | null> {
+	const pkg = await readProjectPackageJson(vfs, dir);
+	return typeof pkg?.version === 'string' ? { ...pkg, version: pkg.version } : null;
 }
 
 async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson): Promise<void> {
@@ -309,6 +315,22 @@ interface Journal {
 	committed: boolean;
 }
 
+/** A journal as read back: null where it is not one. */
+function journalOf(value: unknown): Journal | null {
+	if (typeof value !== 'object' || value === null || !('run' in value) || !('steps' in value) || !('committed' in value)) return null;
+	const { run, steps, committed } = value;
+	if (typeof run !== 'string' || typeof committed !== 'boolean' || !Array.isArray(steps)) return null;
+	const read: JournalStep[] = [];
+	for (const step of steps) {
+		if (typeof step !== 'object' || step === null || !('kind' in step) || !('from' in step) || !('to' in step) || !('state' in step)) return null;
+		const { kind, from, to, state } = step;
+		if ((kind !== 'retire' && kind !== 'publish' && kind !== 'carry') || typeof from !== 'string' || typeof to !== 'string') return null;
+		if (state !== 'begun' && state !== 'done' && state !== 'none') return null;
+		read.push({ kind, from, to, state });
+	}
+	return { run, steps: read, committed };
+}
+
 /** The kernel-less shell's install queues are one namespace. */
 const NO_KERNEL = {};
 
@@ -318,9 +340,10 @@ const NO_KERNEL = {};
  * residue a rename left where it came from. A step that may have moved part
  * of an installed copy (begun, its outcome unknown, both names there) is
  * not guessed at: both are kept, and named. Answers whether every installed
- * copy is back where it was.
+ * copy is back where it was; `recovering`, an install that did not finish,
+ * says what it put back.
  */
-async function undoJournal(vfs: VFS, journal: Journal, stderr: CommandOutputStream): Promise<boolean> {
+async function undoJournal(vfs: VFS, journal: Journal, stderr: CommandOutputStream, recovering = false): Promise<boolean> {
 	let restored = true;
 	for (const step of [...journal.steps].reverse()) {
 		const { kind, from, to } = step;
@@ -346,6 +369,7 @@ async function undoJournal(vfs: VFS, journal: Journal, stderr: CommandOutputStre
 			await vfs.remove(from, { recursive: true, force: true });
 			await vfs.mkdir(dirname(from), { recursive: true });
 			await vfs.rename(to, from);
+			if (recovering) await stderr.write(`npm WARN restored ${from}, which an install that did not finish had moved\n`);
 		} catch (error) {
 			await stderr.write(`npm ERR! could not restore ${from}; its copy is kept at ${to}: ${describeError(error)}\n`);
 			restored = false;
@@ -409,8 +433,8 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 	// ── Recover ──
 	if (await vfs.exists(journalPath)) {
 		let journal: Journal | null = null;
-		try { journal = JSON.parse(await vfs.readFileString(journalPath)); } catch { journal = null; }
-		if (journal !== null && !journal.committed && !(await undoJournal(vfs, journal, stderr))) {
+		try { journal = journalOf(JSON.parse(await vfs.readFileString(journalPath))); } catch { journal = null; }
+		if (journal !== null && !journal.committed && !(await undoJournal(vfs, journal, stderr, true))) {
 			return await fail(targetBase, 'an install that did not finish could not be undone; its copies are kept as named above');
 		}
 		if (journal?.committed) {
@@ -442,10 +466,8 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 			return answers;
 		},
 		installed: (placements) => Promise.all(placements.map(async (placement): Promise<InstalledShellPackage | null> => {
-			try {
-				const pkg: PackageJson = JSON.parse(await vfs.readFileString(join(targetBase, placement, 'package.json')));
-				return typeof pkg.version === 'string' ? { ...pkg, name: placementName(placement), version: pkg.version } : null;
-			} catch { return null; }
+			const pkg = await installedManifest(vfs, join(targetBase, placement));
+			return pkg && { ...pkg, name: placementName(placement) };
 		})),
 		peerMismatch: async (edge, at, version) => {
 			await stderr.write(`npm WARN peer ${edge.name}@${edge.range} from ${edge.from} is met by ${at}@${version}\n`);
@@ -461,7 +483,13 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 	// ── Reify ──
 	const run = Math.random().toString(36).slice(2, 10);
 	const staging = join(targetBase, `.nimbus-staging-${run}`);
-	const planned = [...plan.nodes.values()].flatMap((node) => node.planned ? [node] : []);
+	// What the plan places is fetched, but where that version is installed already.
+	const planned: Array<Extract<TreeNode<ResolvedShellPackage, InstalledShellPackage>, { planned: true }>> = [];
+	for (const node of plan.nodes.values()) {
+		if (!node.planned) continue;
+		const current = await installedManifest(vfs, join(targetBase, node.at));
+		if (current?.version !== node.pkg.version || current.name !== node.pkg.info.name) planned.push(node);
+	}
 	const stagedAt = new Map(planned.map((node, i) => [node.at, join(staging, String(i))]));
 	try {
 		for (const node of planned) {
@@ -718,13 +746,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 				if (result.failed.length > 0 || project === null || named.length === 0) return result;
 				// What the command line named is saved to package.json, once it installed.
 				try {
-					const installedAs = async (name: string) => {
-						try {
-							const pkg: PackageJson = JSON.parse(await vfs.readFileString(join(targetBase, name, 'package.json')));
-							return typeof pkg.version === 'string' ? { version: pkg.version, registryName: pkg.name ?? name } : null;
-						} catch { return null; }
-					};
-					const versions = new Map(await Promise.all(named.map(async ({ name }) => [name, await installedAs(name)] as const)));
+					const versions = new Map(await Promise.all(named.map(async ({ name }) => [name, (await installedManifest(vfs, join(targetBase, name)))?.version ?? null] as const)));
 					await writeProjectPackageJson(vfs, spec.projectDir, saveNamed((await readProjectPackageJson(vfs, spec.projectDir)) ?? project, named, (name) => versions.get(name) ?? null));
 					return result;
 				} catch (error) {

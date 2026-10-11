@@ -1,29 +1,55 @@
 /**
- * npm-tree.ts — the plan of npm's one install engine: the tree a set of
- * roots needs, built as npm's arborist builds it, from what a host answers.
+ * npm-tree.ts — npm's one install engine: the ideal tree a project's roots
+ * need, built as npm's arborist builds it (build-ideal-tree, place-dep,
+ * can-place-dep, calc-dep-flags, optional-set), from what a host answers.
  * Both hosts install through it: the worker's (worker npm/installer.ts:
- * resolver facets a layer at a time, the lockfile for what is installed) and
- * the shell's own (lifo commands/system/npm.ts shellInstallPort: the registry
- * one package at a time, node_modules for what is installed).
+ * resolver facets a layer at a time, its lockfile for what is installed) and
+ * the shell's own (lifo commands/system/npm.ts shellInstallPort: the
+ * registry one package at a time, node_modules for what is installed).
  *
- * One breadth-first walk over every root's edges puts each package where the
- * rule both share says (npm-placement.ts). A package already installed is a
- * copy the walk sees and keeps when it meets an edge; a kept package's own
- * edges are walked again, so a replacement elsewhere in the tree (a root
- * upgraded past a dependent's range) nests the copy that dependent needs.
+ * Placements are paths relative to the project's node_modules: `react` at
+ * root, `pkg/node_modules/dep` nested. Node walks node_modules upward from
+ * the importer, so a nested copy is found by its dependent and what is
+ * beneath it, and by nobody else.
  *
- * A placement is required when a path of required edges reaches it from a
- * root; the rest is optional: every path to it passes through an
- * optionalDependencies edge (or an optional root). One that cannot be placed
- * (unresolved, refused, too deep) fails the install when required; when
- * optional it is skipped, with what needs it on the way and what only they
- * need, as arborist skips an optional dependency's set.
+ * The walk is breadth-first, a layer at a time, each layer's edges in npm's
+ * order (by the dependent's depth and path, then by name). An edge already
+ * met by the copy Node's walk finds from its dependent stays as it is; any
+ * other, and every edge the command line names (an explicit request), is
+ * resolved and placed as PlaceDep places it: from the dependent (a peer:
+ * from the dependent's parent) up toward the root, at the highest place
+ * where it does not conflict. A copy there that the new one may replace (it
+ * is no newer, and everything relying on it accepts the new one) is
+ * replaced; one that already meets the edge is kept; a copy the new one
+ * would shadow from something beneath that needs it is a conflict. What is
+ * installed is read as the walk reaches it: a copy no edge meets is not part
+ * of the tree, and goes.
+ *
+ * A request that cannot be met (unresolved, refused, too deep, a peer
+ * conflict with the project's own dependency) is a failure of that request,
+ * not of its place: another request for the same name places on its own. A
+ * placement is required when a path of required edges reaches it from the
+ * project; the rest is optional. A required failure fails the install; an
+ * optional one is left out with its optional set (optional-set.js): what
+ * needs it up to the optionalDependencies edges into the set, and what only
+ * those need.
  */
-import { type PlacementEdge } from './npm-placement.js';
-/** An edge of the tree: optional when it is an optionalDependencies entry (or an optional root). */
-export type TreeEdge = PlacementEdge & {
-    readonly optional: boolean;
-};
+/** `name` under `parent`; `''` is the project itself. */
+export declare function nestedPlacement(parent: string, name: string): string;
+/** The containing placement, `''` at root. */
+export declare function parentPlacement(placement: string): string;
+/** The package name a placement holds. */
+export declare function placementName(placement: string): string;
+/** How deep a placement is: 1 at root. */
+export declare function depthOf(placement: string): number;
+/** Placements Node's walk visits for `name` from inside `from`, nearest first, root last. */
+export declare function visiblePlacements(from: string, name: string): string[];
+/**
+ * A cycle with mutually incompatible ranges has no finite layout without
+ * links: a request that would nest deeper than this fails rather than
+ * nesting without end.
+ */
+export declare const MAX_NEST_DEPTH = 16;
 /** The fields of a manifest its edges are read from. */
 export interface TreeManifest {
     readonly dependencies?: Readonly<Record<string, string>>;
@@ -33,22 +59,98 @@ export interface TreeManifest {
         readonly optional?: boolean;
     } | undefined>>;
 }
-/** A package a host knows: its name, version and manifest. */
+/** A package a host knows: its name and version, and the manifest its edges are read from. */
 export interface TreePackage extends TreeManifest {
     readonly name: string;
     readonly version: string;
 }
+/** A dependency edge: `name` at `range` (an `npm:` alias's included), asked for by the package at `from` (`''`: the project). */
+export interface TreeEdge {
+    readonly name: string;
+    readonly range: string;
+    readonly from: string;
+    readonly kind: 'dep' | 'peer';
+    /** An optionalDependencies entry (or an optional root): its failure skips its set. */
+    readonly optional: boolean;
+    /** Named on the command line: resolved even where an installed copy already meets it. */
+    readonly explicit: boolean;
+}
 /**
- * The edges a manifest asks for from `from`, as npm reads them: one per name
- * among its dependencies and optional ones (an optionalDependencies entry
- * overrides a dependencies one), and the peers it requires.
+ * The edges a manifest asks for from `from`, as npm's Node loads them: the
+ * peers it requires, then its dependencies, then its optional dependencies
+ * (an optionalDependencies entry replaces a dependencies one).
  */
 export declare function manifestEdges(manifest: TreeManifest, from: string): TreeEdge[];
-/** What a host answers for an edge it resolves. */
+/** A root of the tree: an edge from the project. */
+export interface TreeRoot {
+    readonly name: string;
+    readonly range: string;
+    /** An optionalDependencies entry of the project. */
+    readonly optional?: boolean;
+    /** Named on the command line: resolved even where an installed copy meets it. */
+    readonly explicit?: boolean;
+}
+/** The project's manifest, as its roots and saves read it. */
+export interface ProjectManifest {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+    peerDependenciesMeta?: Record<string, {
+        optional?: boolean;
+    } | undefined>;
+    [field: string]: unknown;
+}
+/** Where a named package is saved: npm's save types. */
+export type SaveType = 'prod' | 'dev' | 'optional' | 'peer' | 'peerOptional';
+/** The save type npm infers for `name` from where the project declares it (add-rm-pkg-deps inferSaveType); prod when it does not. */
+export declare function inferSaveType(manifest: ProjectManifest | null, name: string): SaveType;
+/** A package named on the command line: `name`, the spec it gives (null: none), and where it is saved. */
+export interface NamedPackage {
+    readonly name: string;
+    readonly range: string | null;
+    readonly saveType: SaveType;
+}
+/**
+ * The packages a command line names, as npm adds them: each saved where the
+ * flags say (`--save-dev`, `--save-optional`), else where the project
+ * already declares it; a bare name (or `*`) the project declares keeps the
+ * declared spec.
+ */
+export declare function namedPackages(manifest: ProjectManifest | null, specs: readonly string[], flags?: {
+    saveDev?: boolean;
+    saveOptional?: boolean;
+}): NamedPackage[];
+/**
+ * A project's roots, as npm's Node loads its edges, the later replacing the
+ * earlier of one name: its required peers, its dependencies, its optional
+ * dependencies, its devDependencies (unless `production`); then the packages
+ * named on the command line, explicit requests, optional where they are
+ * saved as optional. `implicit`: names the project needs without declaring
+ * them (a global prefix's installed packages), each met by what is there.
+ */
+export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { production, implicit }?: {
+    production?: boolean;
+    implicit?: readonly string[];
+}): TreeRoot[];
+/**
+ * The project's manifest with what the command line named saved, as npm
+ * saves it after an install: each package that installed (`installed`: its
+ * version, and its registry name when that is not the name it installs
+ * under) under its save type, at `^version` unless the spec given is a range
+ * `^version` would widen; out of the fields its save type excludes; an
+ * optional one also under dependencies (npm's affordance for older npms).
+ * One that did not install keeps the spec given.
+ */
+export declare function saveNamed(manifest: ProjectManifest, named: readonly NamedPackage[], installed: (name: string) => {
+    version: string;
+    registryName: string;
+} | null): ProjectManifest;
+/** What a host answers for a request it resolves. */
 export type TreeResolution<P extends TreePackage> = 
 /**
- * The package for the edge; one of another name (the host swapped it) is
- * placed under that name. With `skipIfOptional`, the host leaves it out
+ * The package for the request; one of another name (the host swapped it)
+ * is placed under that name. With `skipIfOptional`, the host leaves it out
  * when it turns out optional (a native binding it cannot run), saying why.
  */
 {
@@ -67,87 +169,72 @@ export type TreeResolution<P extends TreePackage> =
  | {
     readonly omitted: string;
 };
-/** What the plan is built from. */
-export interface TreeHost<P extends TreePackage> {
-    /** Resolve a layer of edges, together, each for its placement (`at`); an answer per edge, in order. */
-    resolve(layer: ReadonlyArray<{
-        readonly edge: TreeEdge;
-        readonly at: string;
-    }>): Promise<ReadonlyArray<TreeResolution<P>>>;
-    /** The packages already at `placements`, before this install; null where there is none. */
-    installed(placements: readonly string[]): Promise<ReadonlyArray<P | null>>;
-    /** A peer met by a copy outside its range, as npm warns of one. */
+/** What the plan is built from: `P`, the packages it resolves; `I`, those already installed. */
+export interface TreeHost<P extends TreePackage, I extends TreePackage> {
+    /** Resolve requests together (each name and range once); an answer per request, in order. */
+    resolve(requests: ReadonlyArray<Pick<TreeEdge, 'name' | 'range' | 'optional'>>): Promise<ReadonlyArray<TreeResolution<P>>>;
+    /** The packages installed at `placements` before this install; null where there is none. */
+    installed(placements: readonly string[]): Promise<ReadonlyArray<I | null>>;
+    /** A peer met by a copy outside its range, which npm allows where the conflict is not the project's own. */
     peerMismatch?(edge: TreeEdge, at: string, version: string): void | Promise<void>;
 }
-/** A placement the plan could not fill. */
+/** A request the plan could not meet. */
 export interface TreeFailure {
     readonly edge: TreeEdge;
-    readonly at: string;
     readonly reason: string;
-    /** The host refused it; else it could not be resolved (or would nest too deep). */
+    /** The host refused it; else it could not be resolved, nest, or meet a peer. */
     readonly refused: boolean;
+    /** Its id in the plan's graph: `required`, `skipped` and `reasons` name it so. */
+    readonly id: string;
 }
-export interface TreePlan<P extends TreePackage> {
-    /** Packages to place, in the order the walk decided them; `at` is their placement. */
-    readonly planned: ReadonlyArray<{
-        readonly edge: TreeEdge;
-        readonly at: string;
-        readonly pkg: P;
-    }>;
-    /** Packages already installed that the tree keeps, by placement. */
-    readonly kept: ReadonlyMap<string, P>;
-    /** Placements that could not be filled; a required one fails the install. */
+/** A placement of the tree: a package placed by this install, or one installed before it that the tree keeps. */
+export type TreeNode<P extends TreePackage, I extends TreePackage> = {
+    readonly at: string;
+    readonly planned: true;
+    readonly pkg: P;
+    readonly edge: TreeEdge;
+} | {
+    readonly at: string;
+    readonly planned: false;
+    readonly pkg: I;
+};
+export interface TreePlan<P extends TreePackage, I extends TreePackage> {
+    /** The tree, by placement: placed and kept packages alike, the skipped among them. */
+    readonly nodes: ReadonlyMap<string, TreeNode<P, I>>;
+    /** Requests the plan could not meet. */
     readonly failures: readonly TreeFailure[];
-    /** Placements reached from a root by a path of required edges. */
+    /** Placements (and failure ids) a path of required edges reaches from the project. */
     readonly required: ReadonlySet<string>;
-    /**
-     * Placements left out: optional ones that failed or that their host leaves
-     * out when optional (`reasons`), what needs them, and what only those
-     * need. A kept package among them is removed.
-     */
+    /** Placements (and failure ids) left out: optional failures, what the host leaves out, and their optional sets. */
     readonly skipped: ReadonlySet<string>;
-    /** Why each optional placement that failed, or that its host left out, is skipped. */
+    /** Why each optional failure, or package its host leaves out, is left out (by placement or failure id). */
     readonly reasons: ReadonlyMap<string, string>;
+    /** Installed placements the tree does not keep (extraneous now). */
+    readonly extraneous: ReadonlySet<string>;
     /**
-     * Skip `at`, which failed after the plan (its download, its archive), with
-     * what it takes along; false, and nothing skipped, when it is required.
+     * Leave out `at`, which failed after the plan (its download, its
+     * archive), with its optional set: the placements left out (with any
+     * already left out), or null when it is required and fails the install.
      */
-    skip(at: string, reason: string): boolean;
+    fail(at: string, reason: string): ReadonlySet<string> | null;
 }
-/** A root of the tree: a project's dependency, or a package named to install. */
-export interface TreeRoot {
-    readonly name: string;
-    readonly range: string;
-    /** An optionalDependencies entry of the project. */
-    readonly optional?: boolean;
+/** The required failures of `plan`: any fails the install. */
+export declare function requiredFailures(plan: Pick<TreePlan<TreePackage, TreePackage>, 'failures' | 'required'>): TreeFailure[];
+export interface PlanOptions {
+    /** Global installs: dependencies stay beneath the package that needs them (npm's shallow strategy). */
+    readonly shallow?: boolean;
+    /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
+    readonly allowPeerConflicts?: boolean;
 }
-/**
- * A project's roots, as npm installs them: its dependencies, its
- * devDependencies (unless `production`; a name in both is a dependency), its
- * optionalDependencies (optional, over the same name elsewhere), and the
- * packages named on the command line, which win their names.
- */
-export declare function projectRoots(manifest: {
-    readonly dependencies?: Readonly<Record<string, string>>;
-    readonly devDependencies?: Readonly<Record<string, string>>;
-    readonly optionalDependencies?: Readonly<Record<string, string>>;
-} | null, named: ReadonlyArray<{
-    readonly name: string;
-    readonly range: string | null;
-}>, { production }?: {
-    production?: boolean;
-}): TreeRoot[];
 /** Plan the tree `roots` need, from what `host` answers. */
-export declare function planTree<P extends TreePackage>(roots: readonly TreeRoot[], host: TreeHost<P>): Promise<TreePlan<P>>;
-/** The required placements of `plan` that could not be filled: any fails the install. */
-export declare function requiredFailures(plan: Pick<TreePlan<TreePackage>, 'failures' | 'required'>): TreeFailure[];
+export declare function planTree<P extends TreePackage, I extends TreePackage>(roots: readonly TreeRoot[], host: TreeHost<P, I>, options?: PlanOptions): Promise<TreePlan<P, I>>;
 /**
  * Hold the tree at `canonical` in `namespace` for one install, and give it
  * back with the release this answers, once the install is done: at once
  * when no install holds it, else (a promise) once those before have given it
- * back.
+ * back. One that `signal` stops while it waits never holds it (an AbortError).
  */
-export declare function holdTree(namespace: object, canonical: string): (() => void) | Promise<() => void>;
+export declare function holdTree(namespace: object, canonical: string, signal?: AbortSignal): (() => void) | Promise<() => void>;
 /**
  * Where `path` is: its deepest existing ancestor resolved through symlinks
  * (`realpath`), and the rest of it, which does not exist yet.

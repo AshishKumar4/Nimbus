@@ -160,6 +160,11 @@ export interface ProjectManifest {
   [field: string]: unknown;
 }
 
+/** Whether a parsed package.json is a manifest: a JSON object (an array is not). */
+export function isManifest(value: unknown): value is ProjectManifest {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Where a named package is saved: npm's save types. */
 export type SaveType = 'prod' | 'dev' | 'optional' | 'peer' | 'peerOptional';
 
@@ -226,17 +231,17 @@ export function projectRoots(
 
 /**
  * The project's manifest with what the command line named saved, as npm
- * saves it after an install: each package that installed (`installed`: its
- * version, and its registry name when that is not the name it installs
- * under) under its save type, at `^version` unless the spec given is a range
- * `^version` would widen; out of the fields its save type excludes; an
- * optional one also under dependencies (npm's affordance for older npms).
- * One that did not install keeps the spec given.
+ * saves it after an install: each package that installed (`installed`: the
+ * version under its name) under its save type, at `^version` unless the
+ * spec given is a range `^version` would widen, an alias as the package it
+ * names; out of the fields its save type excludes; an optional one also
+ * under dependencies (npm's affordance for older npms). One that did not
+ * install keeps the spec given.
  */
 export function saveNamed(
   manifest: ProjectManifest,
   named: readonly NamedPackage[],
-  installed: (name: string) => { version: string; registryName: string } | null,
+  installed: (name: string) => string | null,
 ): ProjectManifest {
   const out: ProjectManifest = { ...manifest };
   const field = (type: SaveType): Record<string, string> => {
@@ -258,15 +263,15 @@ export function saveNamed(
     else if (saveType === 'optional') remove('peerDependencies', name);
     else { remove('dependencies', name); remove('optionalDependencies', name); }
     const spec = range ?? '*';
-    const got = installed(name);
+    const version = installed(name);
     let saved = spec;
-    if (got !== null) {
+    if (version !== null) {
       // reify.js #saveIdealTree: a range the saved `^version` would widen is kept as given.
-      const { range: requested, alias } = parseRegistryRequest(name, spec);
-      const prefixed = `^${got.version}`;
+      const { range: requested, alias, registryName } = parseRegistryRequest(name, spec);
+      const prefixed = `^${version}`;
       const isRange = isSemverRange(requested) && !isExactVersion(requested) && requested !== '*' && requested !== '' && requested !== 'latest';
       const range = isRange && !rangeSubset(prefixed, requested) ? requested : prefixed;
-      saved = alias || got.registryName !== name ? `npm:${got.registryName}@${range}` : range;
+      saved = alias ? `npm:${registryName}@${range}` : range;
     }
     const target = field(saveType);
     if (saved !== '*' || target[name] === undefined) target[name] = saved;

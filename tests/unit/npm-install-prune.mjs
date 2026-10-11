@@ -38,7 +38,7 @@ function resolveFromRegistry(name, spec) {
   const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
   if (!version) {
     return {
-      pkg: null, deps: {}, peerDeps: {}, optionalDeps: {},
+      pkg: null,
       cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
       error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` },
     };
@@ -49,7 +49,7 @@ function resolveFromRegistry(name, spec) {
     dependencies, exports: null, main: 'index.js', module: '', bin,
   };
   return {
-    pkg, deps: dependencies, peerDeps: {}, optionalDeps: {},
+    pkg,
     cacheWrites: [registryRecord(pkg, Date.now())],
     messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
@@ -100,14 +100,14 @@ assert.ok(root.exists(`${NM}/.bin/c-cli`), 'c links its bin');
   // d@1 is locked; the project now asks for d@2 itself.
   declare({ a: '^1.0.0', d: '^2.0.0' });
   await install();
-  assert.ok(log.some((line) => line.startsWith('Lockfile outdated')), `the tree is resolved again: ${log.join('\n')}`);
+  assert.ok(log.some((line) => line.startsWith('Resolving ')), `the tree is resolved again: ${log.join('\n')}`);
   assert.deepEqual(placements(), ['a', 'a/node_modules/d', 'b', 'd']);
   assert.equal(present('e'), false, 'e is removed');
   assert.equal(root.exists(`${NM}/.bin/e-cli`), false, 'and its bin');
   assert.equal(root.exists(`${NM}/.bin/.nimbus-bin-map.json`) && bins().includes('e-cli'), false, 'the bin manifest forgets it');
 }
 
-// ── `npm install <pkg>` adds and removes nothing else ──────────────────────
+// ── `npm install <pkg>` adds it, and removes nothing the project needs ─────
 {
   await install({ packages: ['e@^1.0.0'] });
   assert.ok(present('a') && present('b') && present('d') && present('e'), 'everything stays');
@@ -140,7 +140,7 @@ assert.ok(root.exists(`${NM}/.bin/c-cli`), 'c links its bin');
   assert.deepEqual(placements(), ['a', 'a/node_modules/d', 'b', 'e']);
 }
 
-// ── a declared package the resolver could not resolve is not pruned ────────
+// ── a declared package the resolver could not resolve changes nothing ──────
 {
   declare({ a: '^1.0.0', e: '^9.0.0' });
   const result = await installer.install(PROJ, { pid: 1 });

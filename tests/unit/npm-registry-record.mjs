@@ -21,7 +21,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 
-const spec = (overrides) => ({ cachedEntries: [], isOptional: false, fetchTimeoutMs: 1_000, retries: 0, registry: 'https://registry.invalid', ...overrides });
+const spec = (overrides) => ({ cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: 'https://registry.invalid', ...overrides });
 // What a value reads as once it has crossed a wire: an absent field and an undefined one alike.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 

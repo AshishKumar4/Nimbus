@@ -49,6 +49,8 @@ export interface NpmInstallResult {
     elapsed: number;
     cachedHits: number;
     phases: Record<string, number>;
+    /** The bins `whileHeld` linked. */
+    linkedBins?: number;
 }
 export declare class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */
@@ -97,6 +99,17 @@ export declare class NpmInstaller {
         npmLog?: NpmLogEmitter;
         onProgress?: (msg: string) => void;
         registry?: string;
+        /** `--save-dev` / `--save-optional`: where what is named is saved. */
+        saveDev?: boolean;
+        saveOptional?: boolean;
+        /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning. */
+        allowPeerConflicts?: boolean;
+        /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
+        global?: boolean;
+        /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
+        signal?: AbortSignal;
+        /** Run under the install's hold, once it has installed; answers the bins it linked. */
+        whileHeld?: (result: NpmInstallResult) => Promise<number>;
     }): Promise<NpmInstallResult>;
     private _installInner;
     /**
@@ -111,15 +124,15 @@ export declare class NpmInstaller {
      *
      * The walk is the install engine's plan (core _shared/npm-tree.ts): per
      * edge, not per name, each package placed by the rule npm's arborist
-     * places it by (npm-placement.ts; live case in
-     * tests/unit/npm-install-nested-conflict.mjs), what the lockfile says is
-     * installed kept where it meets an edge, and a placement required when a
-     * path of required edges reaches it, its failure then failing the install;
-     * an optional one that fails is skipped with what it takes along.
+     * places it by (live case in tests/unit/npm-install-nested-conflict.mjs),
+     * what the lockfile says is installed kept where it meets an edge, and a
+     * placement required when a path of required edges reaches it, its
+     * failure then failing the install; an optional one that fails is
+     * skipped with what it takes along.
      *
      * The supervisor answers the plan's layers and owns:
-     *   - X.5-G G1 optional-native skip (a binding the ABI policy cannot run,
-     *     left out where it is optional),
+     *   - what cannot run here (a native binding or executable the ABI
+     *     policy names), left out where the plan finds it optional,
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
      *     per-package task ALSO checks these for transitive correctness);
      *     a refusal fails a required placement,
@@ -173,7 +186,16 @@ export declare class NpmInstaller {
     private placeMountedPackage;
     /** An artifact this installer wrote as root in an earlier release, handed to its directory's owner (see handKernelArtifact). */
     private handKernelArtifact;
-    private buildSpecs;
+    /**
+     * The install's roots (core npm-tree.ts projectRoots): every declared
+     * dependency, and the packages named on the command line (`npm install
+     * react react-dom@18.2.0`), explicit requests saved where npm saves them
+     * (namedPackages); a global prefix's installed packages are its roots
+     * too. What cannot run here is named by the advisory pass below, and a
+     * swap rewrites a root's range to its target (applyW6Registry); nothing a
+     * project declares is quietly left out of node_modules.
+     */
+    private buildRoots;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
      * to a top-level spec map. Emits `[swap]` notices via onProgress.
@@ -202,23 +224,16 @@ export declare class NpmInstaller {
      */
     private lockRecords;
     /**
-     * Check if a lockfile is still valid against current package.json specs.
-     */
-    private isLockfileValid;
-    /**
-     * The placements of `lockfile` the project's specs reach through Node's
-     * walk: dependencies, optionalDependencies and required peers, each met
-     * by the placement nearest its dependent. A valid lockfile has every
-     * entry's registry record (isLockfileValid).
-     */
-    private reachableFromSpecs;
-    /**
      * Remove the placements `previous` (the last install's lockfile) holds and
-     * `plan` does not, with the bins they linked, as the invoking principal.
-     * A placement inside another removed one goes with it. Answers how many
-     * were removed.
+     * `plan` does not. Answers how many were removed.
      */
     private pruneExtraneous;
+    /**
+     * Remove `placements`, with the bins they linked, as the invoking
+     * principal; a placement inside another removed one goes with it, and a
+     * bin a package of `plan` links stays. Answers the placements removed.
+     */
+    private removePlacements;
     /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
      * records, checked against package.json first. The ABI policy the resolver
@@ -227,8 +242,6 @@ export declare class NpmInstaller {
      * at the locked version.
      */
     private treeFromPackageLock;
-    /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
-    private lockfileToResolved;
     /**
      * Write lockfile to SQLite.
      */
@@ -240,6 +253,14 @@ export declare class NpmInstaller {
      * principal's view (`fs`) for a mounted project.
      */
     private linkBins;
+    /**
+     * package.json with what the command line named saved, as npm saves it
+     * (core npm-tree.ts saveNamed): each under its save type, at `^version`
+     * unless the range given is one that would widen. `resolved` is keyed by
+     * the name the user typed — a swapped package resolves as an alias under
+     * that name (applySwaps), so `esbuild` is saved as `esbuild`, never the
+     * swap target.
+     */
     private updatePackageJson;
     /**
      * Pre-bundle ESM modules that are actually imported by the project source.

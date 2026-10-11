@@ -49,9 +49,6 @@ function resolvedResult(name, version, overrides = {}) {
       bin: {},
       ...overrides,
     },
-    deps: {},
-    peerDeps: {},
-    optionalDeps: {},
     cacheWrites: [],
     messages: [],
     events: [],
@@ -65,9 +62,6 @@ function resolvedResult(name, version, overrides = {}) {
 function unresolvedResult(reason) {
   return {
     pkg: null,
-    deps: {},
-    peerDeps: {},
-    optionalDeps: {},
     cacheWrites: [],
     messages: [],
     events: [],
@@ -127,11 +121,12 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
 
 // ── Case 1: a required dependency that cannot be resolved ───────────────
 //
-// Six top-level deps, as wide as the layer both live repros hit.
+// Six top-level deps, as wide as the layer both live repros hit. As npm
+// does, the failed install changes nothing: what was installed stays.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const deps = { ...ok, 'ghost-dep': '^2.0.0' };
-  const { installer, log } = makeInstaller(deps, ok, (name) =>
+  const { installer, log, root } = makeInstaller(deps, ok, (name) =>
     name === 'ghost-dep'
       ? unresolvedResult('registry returned HTTP 404 for ghost-dep')
       : resolvedResult(name, '1.0.0'));
@@ -143,7 +138,8 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
     result.failed.includes('ghost-dep'),
     `unresolved dependency must be reported as failed (failed=${JSON.stringify(result.failed)})`,
   );
-  assert.equal(result.installed.length, 5, 'the resolvable packages still install');
+  assert.deepEqual(result.installed, [], 'nothing is installed');
+  for (const name of Object.keys(ok)) assert.ok(root.exists(`${NM}/${name}/package.json`), `and ${name}, installed before, stays`);
   assert.ok(
     /could not resolve ghost-dep: registry returned HTTP 404/.test(output),
     `the failure must name the package and the reason:\n${output}`,
@@ -158,7 +154,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   );
   // The shell maps a non-empty `failed` to exit 1 (session/init.ts).
   assert.ok(result.failed.length > 0, 'exit-code contract: failed is non-empty');
-  console.log(`  case1: ghost-dep reported, ${result.installed.length} installed, no Done!`);
+  console.log('  case1: ghost-dep reported, nothing changed, no Done!');
 }
 
 // ── Case 2: resolved metadata that carries no tarball ────────────────────
@@ -219,9 +215,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   );
   const { installer, log } = makeInstaller(ok, ok, (name) => {
     if (name === 'ok-a') {
-      const r = resolvedResult(name, '1.0.0', { optionalDependencies: shards });
-      r.optionalDeps = shards;
-      return r;
+      return resolvedResult(name, '1.0.0', { optionalDependencies: shards });
     }
     if (name.startsWith('native-shard-')) {
       return unresolvedResult(`registry returned HTTP 404 for ${name}`);
@@ -247,14 +241,10 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const { installer, log } = makeInstaller(ok, ok, (name) => {
     if (name === 'ok-a') {
-      const r = resolvedResult(name, '1.0.0', { optionalDependencies: { opt: '^1.0.0' } });
-      r.optionalDeps = { opt: '^1.0.0' };
-      return r;
+      return resolvedResult(name, '1.0.0', { optionalDependencies: { opt: '^1.0.0' } });
     }
     if (name === 'opt') {
-      const r = resolvedResult(name, '1.0.0', { dependencies: { gone: '^1.0.0' } });
-      r.deps = { gone: '^1.0.0' };
-      return r;
+      return resolvedResult(name, '1.0.0', { dependencies: { gone: '^1.0.0' } });
     }
     if (name === 'gone') return unresolvedResult('registry returned HTTP 404 for gone');
     return resolvedResult(name, '1.0.0');

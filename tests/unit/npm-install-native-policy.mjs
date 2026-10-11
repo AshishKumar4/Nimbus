@@ -45,14 +45,13 @@ function resolvedResult(name, version, overrides = {}) {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
       dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
     },
-    deps: {}, peerDeps: {}, optionalDeps: {},
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }
 
 function rejectedResult(from, reason, suggest) {
   return {
-    pkg: null, deps: {}, peerDeps: {}, optionalDeps: {},
+    pkg: null,
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
     error: { type: 'w6-reject', from, reason, suggest },
   };
@@ -126,9 +125,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'opt-sharp', dependencies: ok },
     (name) => {
       if (name === 'ok-a') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optShards });
-        r.optionalDeps = optShards;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optShards });
       }
       if (name === 'sharp') {
         return advisedResult('sharp', '0.34.0', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
@@ -382,9 +379,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'opt-subtree', dependencies: { ...ok, x: '^1.0.0' } },
     (name) => {
       if (name === 'x') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
-        r.optionalDeps = optDeps;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
       }
       if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: yDeps });
       if (name === 'sharp') {
@@ -459,9 +454,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'opt-first', dependencies: { ...ok, a: '^1.0.0', x: '^1.0.0' } },
     (name) => {
       if (name === 'x') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
-        r.optionalDeps = optDeps;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
       }
       if (name === 'optional-root') return resolvedResult(name, '1.0.0', { dependencies: orDeps });
       if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: aDeps });
@@ -512,9 +505,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'shared-refusal', dependencies: { ...ok, x: '^1.0.0', y: '^1.0.0' } },
     (name) => {
       if (name === 'x') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
-        r.optionalDeps = optDeps;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
       }
       if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: reqDeps });
       if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
@@ -531,12 +522,10 @@ function makeInstaller(pkgJson, resultFor) {
 
 // ── Case N: a required refusal reports identically across installs ─────
 //
-// The lockfile written after a partial install must not launder the
-// refusal into `Done!` on the next run: the depsJson closure check
-// invalidates it (the gated package is absent from the locked tree), the
-// walk re-runs, and the refusal is reported again. Registry-cache writes
-// are populated the way a real walk does so the closure check has its
-// input.
+// A required refusal changes nothing, as npm's EBADPLATFORM does: no
+// package is installed and no lockfile is written, so nothing can launder
+// the refusal into `Done!` on the next run, which walks again and reports
+// it again. Registry-cache writes are populated the way a real walk does.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const appDeps = { 'native-gate': '^1.0.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
@@ -561,14 +550,15 @@ function makeInstaller(pkgJson, resultFor) {
   );
   const first = await installer.install(PROJ);
   assert.ok(first.failed.includes('native-gate'), `first install fails on the refusal (failed=${JSON.stringify(first.failed)})`);
+  assert.deepEqual(first.installed, [], 'and installs nothing');
+  assert.equal(installer.npmCache.readLockfile(PROJ), null, 'nor writes a lockfile');
   log.length = 0;
   const second = await installer.install(PROJ);
   const output = log.join('\n');
   assert.ok(second.failed.includes('native-gate'), `second install reports the same refusal (failed=${JSON.stringify(second.failed)})`);
-  assert.ok(/Lockfile outdated\. Re-resolving/.test(output), `the partial lockfile is invalidated, not trusted:\n${output}`);
   assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it again:\n${output}`);
   assert.ok(!/\bDone!/.test(output), 'no success line over a missing required package');
-  console.log('  caseN: a partial lockfile re-resolves and re-reports the required refusal');
+  console.log('  caseN: a required refusal changes nothing, and is reported again');
 }
 
 // ── Case O: a complete tree's second install still uses the lockfile ────
@@ -617,7 +607,6 @@ function makeInstaller(pkgJson, resultFor) {
           optionalDependencies: wranglerOptDeps,
           bin: { wrangler: 'bin/wrangler.js' },
         });
-        r.optionalDeps = wranglerOptDeps;
         return r;
       }
       if (name === '@cloudflare/vite-plugin') {
@@ -736,7 +725,7 @@ function makeInstaller(pkgJson, resultFor) {
     root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
     log.length = 0;
     const second = await installer.install(PROJ);
-    assert.ok(/Lockfile outdated/.test(log.join('\n')), `a changed range invalidates the lockfile:\n${log.join('\n')}`);
+    assert.ok(/Resolving /.test(log.join('\n')) && !/Lockfile valid/.test(log.join('\n')), `a changed range invalidates the lockfile:\n${log.join('\n')}`);
     console.log('  caseR: changed range re-resolves');
   }
 
