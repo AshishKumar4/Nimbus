@@ -58,6 +58,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private logs;
     /** Terminators for processes whose work is a promise this session owns. */
     private terminators;
+    /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
+    private readonly held;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     private logActivity;
     /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -69,6 +71,12 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private readonly endWaiters;
     /** Releases an ended process's filesystem binding; see setRelease. */
     private release;
+    /** Each ended pid's release, begun at its end: what a prune reports and waits for before it forgets the entry. */
+    private readonly releases;
+    /** Who waits for a pid's release to run (released), until it begins. */
+    private readonly releaseWaiters;
+    /** Each ended pid whose held work is still stopping: the bound on it (HELD_WORK_STOP_MS). */
+    private readonly stopBounds;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     private defaultSignalAction;
     /** Holds a process's output until its writes are published; see setOutputGate. */
@@ -148,12 +156,28 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     private forgetWaits;
     /**
-     * Register how to stop the work behind `pid`. Background jobs started
-     * through the programmatic API run as a promise held by this session, so
-     * `kill` has to abort them rather than only marking the table entry.
-     * Cleared once the process reaches a terminal state.
+     * Register how to stop the work behind `pid`: a program run elsewhere (a
+     * facet) whose run this session holds as a promise, so `kill` has to abort
+     * it rather than only marking the table entry. What such a process bound
+     * in the filesystem is its program's, and is released at its end. Cleared
+     * once the process reaches a terminal state.
      */
     setTerminator(pid: number, terminate: () => void): void;
+    /**
+     * This session runs work on `pid`'s own descriptors (a shell job, a
+     * command run in the session): `stop` ends it, and the function returned
+     * says it has stopped, its own cleanup done. A kill stops it rather than
+     * only marking the table entry.
+     *
+     * The work owns those descriptors while it runs and closes them itself, so
+     * the process's release (setRelease) comes after: once its end is marked
+     * and every piece of work held for it has stopped, whichever is last. A
+     * process with nothing held for it (a program run elsewhere, or one whose
+     * host was lost: nothing of it here is left to unwind) is released at its
+     * end.
+     */
+    holdWork(pid: number, stop: () => void): () => void;
+    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each. */
     private terminate;
     cred(pid: number): VfsCred;
     liveCred(pid: number): VfsCred;
@@ -188,43 +212,72 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     kill(pid: number, exitCode?: number): boolean;
     /**
-     * Clean up exited processes older than maxAge ms, each released first (see
-     * {@link setRelease}), as {@link reapTree} does: a session prunes its table
-     * this way rather than at each call's return, and an entry forgotten
-     * unreleased left its binding behind. With no release set nothing is
-     * reaped. A reaped pid whose logs hold no exit (a process killed around its
-     * log) is an orphan from here, which gives its logs a deadline.
+     * Clean up exited processes older than maxAge ms: each one's release (see
+     * {@link setRelease}) is waited for, then its entry forgotten, as
+     * {@link reapTree} does. A session prunes its table this way rather than
+     * at each call's return. With no release set nothing is reaped. A reaped
+     * pid whose logs hold no exit (a process killed around its log) is an
+     * orphan from here, which gives its logs a deadline.
      *
      * A prune serves whoever runs next, not the processes it removes, so a
-     * release that fails goes to that process's own stderr log, where its
-     * output is read; every expired entry is still released and forgotten.
-     * One whose end is still held from its observers has not ended to them,
-     * and waits for a prune after it is published.
+     * release that failed goes to that process's own stderr log, where its
+     * output is read; every expired entry is still forgotten. One whose end is
+     * still held from its observers has not ended to them, and waits for a
+     * prune after it is published; one whose work is still stopping (holdWork)
+     * waits for a prune after it has.
      */
     reap(maxAge?: number): Promise<number>;
     /**
      * How an ended process lets go of what it bound in the filesystem (its
-     * descriptor scope, its watches): the `releaseProcess` of the filesystem
-     * this table's processes bind to. One slot, set by the workspace composed
-     * over this table, which owns that filesystem; {@link reapTree} calls it
-     * for each entry before forgetting it.
+     * descriptor scope, its delegations, its watches): the `releaseProcess` of
+     * the filesystem this table's processes bind to. One slot, set by the
+     * workspace composed over this table, which owns that filesystem. It is
+     * called once per process, at its end, however it ends (exit, kill, a lost
+     * host: every end marks this table), so nothing it held outlives it to be
+     * found by the next caller, a destroy among them. A prune reports how it
+     * went (a descriptor's buffered bytes it lost) and forgets the entry.
      */
     setRelease(release: (pid: number) => Promise<void>): void;
     /**
      * Remove `pid` and every process under it that has ended, now, as a parent
      * that waited for its children does: what a caller ran to completion has
-     * nothing left to report. Each is released first (see {@link setRelease}),
-     * so what it bound goes with its entry rather than outliving it; with no
-     * release set this refuses. One still running, or whose end is still held
-     * from its observers, is kept. Logs are orphaned as by {@link reap}.
+     * nothing left to report. Each one's release is waited for (see
+     * {@link setRelease}) before its entry goes; with no release set this
+     * refuses. One still running, whose end is still held from its observers,
+     * or whose work is still stopping, is kept. Logs are orphaned as by
+     * {@link reap}.
      */
     reapTree(pid: number): Promise<number>;
     /**
-     * Release and forget each entry. A release that fails stops nothing:
-     * releaseProcess revokes everything before it reports what it could not
-     * do, so the entry is forgotten either way and the failure is returned.
+     * `pid` has ended and no work held for it is still stopping: its release
+     * begins now, in the turn that settled the last of them. One that ended
+     * before a release was set is released when it is pruned.
      */
-    private releaseAndForget;
+    private releaseEnded;
+    /**
+     * Settles once `pid`'s release has run, however it went; at once when
+     * nothing of it is still to be released (it has, or there is no release
+     * to wait for). What a caller that ended a process waits for before it
+     * relies on what the process held being gone (a destroy), bounded by
+     * HELD_WORK_STOP_MS for work that ignores its stop.
+     */
+    released(pid: number): Promise<void>;
+    /**
+     * The program behind `pid`, run elsewhere, says it has ended, ahead of
+     * the table hearing of it (its exit is told once its output is let out):
+     * what it bound is released now, so what its last closes flush goes with
+     * that output, unless work the session runs on the pid still holds it.
+     */
+    programEnded(pid: number): void;
+    /** `pid`'s release, begun once: how it went, a failure included. */
+    private releaseOf;
+    /**
+     * Forget each entry once its release is done. A release that failed stops
+     * nothing: releaseProcess revokes everything before it reports what it
+     * could not do, so the entry is forgotten either way and the failure is
+     * returned.
+     */
+    private forgetReleased;
     get stats(): ProcessTable['stats'];
     /** See ProcessTable.residentRunning — running long-running process count. */
     get residentRunning(): number;

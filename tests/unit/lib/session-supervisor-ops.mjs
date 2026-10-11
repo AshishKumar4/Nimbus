@@ -18,6 +18,5 @@ export function attachSupervisorOps(host, ops = buildSessionSupervisorOps(host))
   host.serveSupervisorOp = (envelope) => ops.dispatch(envelope);
   host.supervisorOp = (envelope) => answerSupervisorOp(host.serveSupervisorOp, envelope);
   host.supervisorBridge = (pid) => ops.bridge(pid);
-  host.supervisorForgetBridge = (pid) => ops.forget(pid);
   return host;
 }

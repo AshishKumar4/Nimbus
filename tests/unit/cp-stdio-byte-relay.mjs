@@ -166,7 +166,7 @@ console.log('  the child\'s reported text decodes split characters as one');
   const processes = new SessionProcessSupervisor();
   const entry = processes.spawn('node x.js', ['x.js'], '/home/user');
   const writes = [];
-  const host = { processes, terminal: { write: (s) => writes.push(s) }, nimbusDebug: false, supervisorForgetBridge: undefined };
+  const host = { processes, terminal: { write: (s) => writes.push(s) }, nimbusDebug: false };
   const snowman = new TextEncoder().encode('☃\n'); // e2 98 83 0a
   await _rpcStdout(host, entry.pid, snowman.subarray(0, 2));
   await _rpcStdout(host, entry.pid, snowman.subarray(2));

@@ -279,7 +279,15 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
             }
-            return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
+            // It runs here, on the child's own descriptors: a kill stops it.
+            const stop = new AbortController();
+            const stopped = self.processes.holdWork(pid, () => stop.abort());
+            try {
+                return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stop.signal)).status;
+            }
+            finally {
+                stopped();
+            }
         },
     };
     /**
@@ -297,16 +305,15 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         stdin,
         isFdTerminal: () => false,
     });
-    /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
-    const runBuiltin = async (cmd, name, args, io) => {
+    /** A registry command run as process `io.pid`, on `io`'s descriptors, until `signal` stops it, and how it ended. */
+    const runBuiltin = async (cmd, name, args, io, signal) => {
         const cred = self.processes.cred(io.pid);
-        const ac = new AbortController();
         const ctx = {
             ...io,
             cred,
             args,
             vfs: processView(io.pid, cred),
-            signal: ac.signal,
+            signal,
             setUmask: (mask) => { self.processes.setUmask(io.pid, mask); },
             runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
         };
@@ -343,9 +350,12 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         // workspace's runAs counts them).
         const endAwait = self.processes.beginAwait(parent.pid, child.pid);
         const endWork = self.processes.beginWork(child.pid);
+        // Its program is this session's work behind its pid: a kill stops it.
+        const stop = new AbortController();
+        const stopped = self.processes.holdWork(child.pid, () => stop.abort());
         let exitCode = 1;
         try {
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
+            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stop.signal);
             exitCode = ended.status;
             return ended;
         }
@@ -353,6 +363,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             endWork();
             endAwait();
             self.processes.exit(child.pid, exitCode);
+            stopped();
         }
     };
     // The Dynamic Worker ledger's wait-for edges are the session's own
@@ -383,6 +394,10 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 // lines on it would each save and restore the shell's cwd and
                 // variables over the other's. Its descriptors close as it ends.
                 const shell = workspace.shellFor(pid, { cwd: cwd || '/home/user', env });
+                // It runs here, on the child's own descriptors, until its shell has
+                // closed what it opened: a kill stops it.
+                const stop = new AbortController();
+                const stopped = self.processes.holdWork(pid, () => stop.abort());
                 try {
                     const result = await shell.execute(String(commandLine), {
                         onStdout: hooks.onStdout,
@@ -390,11 +405,17 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                         stdin,
                         commandContext: { pid, cred, setUmask },
                         runAs,
+                        signal: stop.signal,
                     });
                     return typeof result?.exitCode === 'number' ? result.exitCode : 0;
                 }
                 finally {
-                    await shell.closeDescriptors();
+                    try {
+                        await shell.closeDescriptors();
+                    }
+                    finally {
+                        stopped();
+                    }
                 }
             },
         },
