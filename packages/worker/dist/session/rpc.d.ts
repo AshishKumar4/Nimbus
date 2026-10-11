@@ -27,7 +27,7 @@ import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
 import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
@@ -332,7 +332,7 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown, pid?: nu
  * W7 — Streaming bulk-write entry point. Receives a
  * ReadableStream<Uint8Array> in the W7 v3 wire format (see
  * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
- * SqliteVFS.writeStream().
+ * the namespace's ingestion (WaveIngest), through the writeBatchStream op.
  *
  * Bypasses the 32 MiB structured-clone cap that constrained the
  * legacy writeBatch path — workerd flow-controls the byte stream

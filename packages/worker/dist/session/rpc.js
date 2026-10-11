@@ -762,7 +762,7 @@ export async function _rpcWriteBatch(self, payload, pid) {
         chunkId: c.chunkId,
         data: normalizeWriteBatchChunkData(c.data),
     }));
-    return self.sqliteFs.as(callerCred(self, pid)).writeBatchPlaced({
+    return self.getFilesystemAuthority().waves.writeBatch(self.sqliteFs.as(callerCred(self, pid)), {
         inodes,
         chunks,
         deletePaths,
@@ -789,7 +789,7 @@ function normalizeWriteBatchChunkData(value) {
  * W7 — Streaming bulk-write entry point. Receives a
  * ReadableStream<Uint8Array> in the W7 v3 wire format (see
  * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
- * SqliteVFS.writeStream().
+ * the namespace's ingestion (WaveIngest), through the writeBatchStream op.
  *
  * Bypasses the 32 MiB structured-clone cap that constrained the
  * legacy writeBatch path — workerd flow-controls the byte stream

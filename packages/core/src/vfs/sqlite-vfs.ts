@@ -2936,8 +2936,8 @@ export class SqliteVFS {
     directory: boolean,
     staged?: ReadonlyMap<string, { mode: number; gid: number; defaultAcl: number | null }>,
   ): { mode: number; gid: number; defaultAcl: number | null } {
-    const parentKey = parentKey(key);
-    const parent = staged?.get(parentKey) ?? this.inodes.get(parentKey);
+    const above = parentKey(key);
+    const parent = staged?.get(above) ?? this.inodes.get(above);
     const acl = parent?.defaultAcl ?? null;
     let mode = acl === null
       ? this.creationMode(requested, cred)

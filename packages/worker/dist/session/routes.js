@@ -927,7 +927,7 @@ async function routeFetch(self, request) {
                 kernel.chown(root, cred.uid, cred.gid);
                 const writer = self.ensureSqliteFs().as(cred);
                 const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {
-                    writeStream: (stream) => writer.writeStream(stream),
+                    writeStream: (stream) => self.getFilesystemAuthority().waves.writeStream(writer, stream),
                     sql: self.ctx.storage.sql,
                 });
                 return Response.json({ ...result, vfs: self.ensureSqliteFs().getStats().sql.phases });
@@ -1070,7 +1070,7 @@ async function routeFetch(self, request) {
             vfs.mkdir(`${root}/wire`, { recursive: true });
             await phase('vfsWriteStreamWire', async () => {
                 for (let i = 0; i < body.files; i += body.perWave) {
-                    const result = await vfs.writeStream(await wire('wire', i));
+                    const result = await self.getFilesystemAuthority().waves.writeStream(vfs, await wire('wire', i));
                     if (!result.ok)
                         throw new Error(result.error.message);
                 }
@@ -1078,7 +1078,7 @@ async function routeFetch(self, request) {
             vfs.mkdir(`${root}/stream`, { recursive: true });
             await phase('vfsWriteStream', async () => {
                 for (let i = 0; i < body.files; i += body.perWave) {
-                    const result = await vfs.writeStream(encodeWriteBatchStream(payload('stream', i)));
+                    const result = await self.getFilesystemAuthority().waves.writeStream(vfs, encodeWriteBatchStream(payload('stream', i)));
                     if (!result.ok)
                         throw new Error(result.error.message);
                 }

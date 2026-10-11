@@ -104,7 +104,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     }>;
     openWaveWriter(first?: boolean): Promise<string | null>;
     retireWaveWriter(writer: string): Promise<void>;
-    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: import("@nimbus-sh/platform/wave-writer.js").WaveFence, owner?: string): Promise<import("@nimbus-sh/core/vfs/sqlite-vfs.js").WriteBatchStreamResult>;
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: import("@nimbus-sh/platform/wave-writer.js").WaveFence, owner?: string): Promise<import("@nimbus-sh/core/runtime/wave-contracts.js").WriteBatchStreamResult>;
     putRegistryEntries(entries: any[]): Promise<{
         written: number;
         failed: number;

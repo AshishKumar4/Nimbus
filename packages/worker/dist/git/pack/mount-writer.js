@@ -1,4 +1,4 @@
-/** sqlite-vfs.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
+/** wave-contracts.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
 export const MOUNT_WAVE_FILE_MAX = 4 * 1024 * 1024;
 /** One write's bytes: well inside what one RPC carries. */
 const WRITE_PIECE_BYTES = 1024 * 1024;

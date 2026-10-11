@@ -27,9 +27,10 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
-import { type BatchWritePayload, type VfsInodeKind, type W7Attrs, type W7DataCall, type W7PathCall } from '@nimbus-sh/platform/w7-frame.js';
+import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
+import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
@@ -296,18 +297,14 @@ export interface CredentialedVfs {
         chunks: number;
     };
     /**
-     * writeBatch where the namespace places it (setWaveRouter): one atomic
-     * batch when every record lands on this filesystem; else the same records
-     * as a wave, each applied where it lands, in order, refused as a whole
-     * call is (its error) at the first refusal.
+     * A wave on this filesystem as this view's caller (WaveIngest): its
+     * delegations, its lease and whether it continues as it is answered,
+     * taken now, in the caller's turn; `work` applies the wave through the
+     * scope. Answered once what it committed is published, or held (`held`).
      */
-    writeBatchPlaced(payload: BatchWritePayload, options?: {
-        signal?: AbortSignal;
-    }): Promise<{
-        inodes: number;
-        chunks: number;
-    }>;
-    writeStream(stream: ReadableStream<Uint8Array>, options?: WriteStreamOptions): Promise<WriteBatchStreamResult>;
+    wave(options: WriteStreamOptions, work: (scope: WaveScope) => Promise<WriteBatchStreamResult>): Promise<WriteBatchStreamResult>;
+    /** `fn`, a lookup made on this view's caller's behalf: as its delegations, in this turn. */
+    asCaller<T>(fn: () => T): T;
     mkdirBatch(paths: string[]): number;
     revision(path?: string): number;
     /**
@@ -350,281 +347,7 @@ export interface CredentialedVfs {
      */
     readonly epoch: string;
 }
-export interface WriteBatchStreamProgress {
-    /** 1-based sequence of the last durable publish group; zero means none. */
-    committedGroupSequence: number;
-    committedPathCount: number;
-    /**
-     * The wave's operations committed, in order: each removal, directory,
-     * file, rename, truncate, attribute change and call counts one. On a
-     * refusal, the refused operation is the one at this index.
-     */
-    committedOps: number;
-    inodes: number;
-    chunks: number;
-    /** Each published file and link, by the path the stream named, as stat will report it. */
-    receipts: WriteStreamReceipt[];
-    /** A sequenced wave's answer (WriteStreamOptions.sequence). */
-    sequence?: WaveSequenceAnswer;
-    /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
-    mutations?: WaveMutation[];
-    /**
-     * Answered at its commit while a commit of its writer's is held for its
-     * publication (SqliteVFS.as's `continues`; its own, or, for a resend, the
-     * attempt's before it): what its writer's runtime waits for before an
-     * effect leaves by a way the session's gate does not see
-     * (RuntimeFsBridge.published).
-     */
-    held?: true;
-}
-/**
- * One op a wave committed (`index`, its place among the wave's ops, from 0):
- * its path's revision right before it and the session's right after, read
- * in the turn it committed, as a single call's receipt has them
- * (VfsMutationReceipt): a copy dated at or above `before` was current, and
- * with this op on it is current at `after`.
- */
-export interface WaveMutation {
-    index: number;
-    before: number;
-    after: number;
-}
-/**
- * A sequenced writer's wave (a process's filesystem client): its ops are
- * numbered `first`, `first + 1`, … in order, under `writer` (the pid and
- * writer epoch the session admits the wave under). The session keeps, per
- * writer, the highest number it has committed (its cursor), moved in the
- * transaction that commits that op, so an op a re-sent wave carries again
- * is answered, never applied twice. `ack`: the highest cursor the writer
- * has had answered; the refusal stored for it is dropped.
- */
-export interface WaveSequence {
-    writer: string;
-    first: number;
-    ack: number;
-    /** The process whose writer it is: what the session keeps of the process (its waves' open descriptions) is kept under it. */
-    pid: number;
-}
-/**
- * What a sequenced wave committed: every op up to `cursor`. `refused`: the
- * op the session refused (its number, its errno); nothing after it in the
- * wave was applied. The same answer comes back for a re-send of the wave.
- */
-export interface WaveSequenceAnswer {
-    cursor: number;
-    refused?: {
-        seq: number;
-        errno: string;
-        message: string;
-    };
-}
-/** A streamed file's stat as published: what a producer's git index entry records. */
-export interface WriteStreamReceipt {
-    path: string;
-    /** An `open` call's: the session's descriptor of the description it opened (WaveDescriptions.open). */
-    handle?: number;
-    ino: number;
-    mode: number;
-    size: number;
-    mtimeMs: number;
-    ctimeMs: number;
-    uid: number;
-    gid: number;
-    dev: number;
-    /** The session's revision once a call's file landed: what its writeFile answers. */
-    revision?: number;
-}
-/** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
-export declare const ROUTED_LINK_TARGET_MAX = 4096;
-/**
- * The largest file a wave writes to a mount. A routed file is one
- * whole-file writeFile, its bytes held until that call under credit its
- * record reserves whole when it is admitted (so an admitted record always
- * finishes; at most the shared write credit, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
- * and half of it, so a held file never starves the wave); a larger one is
- * refused (ENOTSUP, naming this) before anything is touched. A backend that
- * declares an atomic streaming write could take more; none does yet.
- */
-export declare const ROUTED_FILE_MAX: number;
-/**
- * The most bytes one data call (W7DataCall: a writeFile, appendFile or
- * write at an offset) carries. Its bytes are held until the call is made,
- * under credit its record reserves whole when it begins, as a routed
- * file's are; a client splits a larger write into pieces of this size
- * (process-fs-client's DATA_PIECE_BYTES, WAVE_BYTES). A larger call is
- * refused (EINVAL) before any of its bytes are read.
- */
-export declare const DATA_CALL_MAX: number;
-/**
- * A wave's record that the namespace places on a mount (WaveRouter.apply),
- * each the single call a program would make there. Paths are where the
- * namespace's lookup placed them ('/'-rooted, the directory's links
- * resolved). A link is made at `slot` beside its name first: a name the
- * wave owns (its id and the record's index), renamed over the link's.
- */
-export type RoutedWaveRecord = {
-    readonly type: 'delete';
-    readonly path: string;
-} | {
-    readonly type: 'directory';
-    readonly path: string;
-    readonly mode: number;
-} | {
-    readonly type: 'file';
-    readonly path: string;
-    readonly mode: number;
-    readonly bytes: Uint8Array;
-} | {
-    readonly type: 'symlink';
-    readonly path: string;
-    readonly target: string;
-    readonly slot: string;
-}
-/** A process's call (W7Call), made by the namespace's operation of that name, its data whole. */
- | {
-    readonly type: 'call';
-    readonly call: W7PathCall;
-} | {
-    readonly type: 'data-call';
-    readonly call: W7DataCall;
-    readonly path: string;
-    readonly mode: number;
-    readonly bytes: Uint8Array;
-    readonly offset?: number;
-}
-/** A process's rename, truncate or attribute change (W7 v4), made by the namespace's operation of that name. */
- | {
-    readonly type: 'rename';
-    readonly from: string;
-    readonly to: string;
-} | {
-    readonly type: 'truncate';
-    readonly path: string;
-    readonly size: number;
-} | {
-    readonly type: 'setattr';
-    readonly path: string;
-    readonly attrs: W7Attrs;
-};
-/** A routed name's stat once published: what its receipt reports. */
-export interface RoutedStat {
-    readonly ino: number;
-    readonly mode: number;
-    readonly size: number;
-    readonly mtimeMs: number;
-    readonly ctimeMs: number;
-    readonly uid: number;
-    readonly gid: number;
-    readonly dev: number;
-}
-/**
- * The namespace above this filesystem (SqliteVFS.setWaveRouter): every
- * record of every wave, whoever streams it, is placed by its lookup, and one
- * it places on a mount is applied there by its own operations. ProcessFiles
- * installs its CompositeVFS.
- */
-export interface WaveRouter {
-    /**
-     * The namespace path ('/'-rooted) directory `path` resolves to by the
-     * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
-     * that does not exist yet is kept as named, after the nearest ancestor
-     * that resolves. Synchronous while the lookup stays on synchronous
-     * backends, so a commit can recheck a placement in its own turn, and the
-     * engine runs it as the wave's holder (SqliteVFS.withHolds).
-     */
-    resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
-    /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
-    placement(path: string): string | null;
-    /** The namespace's mount-table generation (CompositeVFS.mountGeneration): a placement made under another may be stale. */
-    mounts(): number;
-    /**
-     * Whether resolved namespace path `path` is a directory the namespace
-     * composes (one above a mount point): a removal of it is EBUSY and a file
-     * or link at it EISDIR, before anything commits.
-     */
-    composes(path: string): boolean;
-    /**
-     * Apply `record` on the namespace as `cred`; `guard` runs right before
-     * each call to the backend (the wave's admission and cancellation). A
-     * refusal throws its errno. Answers the published name's stat, for its
-     * receipt (null for a removal). `owner`, the wave's exclusive-mutation
-     * lease, is presented to the namespace's lease check, as a group commit
-     * presents it here.
-     */
-    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
-}
-/**
- * How far an earlier attempt of the same fenced wave may have reached into
- * mounted records (`prior`: the highest record index, -1 for none), and how
- * this attempt notes its own (`note`, before the backend is called). A
- * mounted record cannot be deduplicated, so one an earlier attempt may have
- * applied is refused as outcome-unknown rather than applied again.
- */
-export interface WaveMountReach {
-    readonly prior: number;
-    note(index: number): void;
-}
-/** How a wave is applied (writeStream): its cancellation, lease, timing, admission and mount reach. */
-export interface WriteStreamOptions {
-    decodeDrainStartedAt?: number;
-    signal?: AbortSignal;
-    mutationOwner?: string;
-    /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
-    admit?: () => void;
-    /** Between committed groups: the isolate is given to whatever else it hosts (another session), never to this one. */
-    turn?: () => Promise<void>;
-    mountReach?: WaveMountReach;
-    sequence?: WaveSequence;
-    /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
-    descriptions?: WaveDescriptions;
-}
-/**
- * A process's open descriptions as its waves name them (W7Call
- * `description`): kept by the binding that serves the process, as its
- * descriptors are (SqliteRuntimeFsBridge), so the process reads, stats and
- * closes them as its own. Each one's access was decided at its open: a later
- * chmod, chown, rename or unlink never changes what it can do, and its file
- * lives until its last close.
- */
-export interface WaveDescriptions {
-    /**
-     * Open `id`, a description of the file `ino` numbers with `rights`, its
-     * access decided already (SqliteVFS.describeInode): the session's
-     * descriptor of it, or null when no file has that number any more.
-     */
-    adopt(id: string, ino: number, rights: {
-        read: boolean;
-        write: boolean;
-    }, path: string, cred: VfsCred): number | null;
-    /** The description `id` names, or undefined (never opened, or closed). */
-    node(id: string): VfsOpenDescription | undefined;
-    /** The session's descriptor of `id`, or undefined. */
-    handle(id: string): number | undefined;
-    close(id: string): void;
-}
-export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
-export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
-    ok: true;
-}) | (WriteBatchStreamProgress & {
-    ok: false;
-    error: {
-        code: 'ERR_WRITE_BATCH_STREAM';
-        phase: WriteBatchStreamFailurePhase;
-        message: string;
-        /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
-        errno?: string;
-    };
-});
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
-/**
- * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
- * is not in every runtime this code ships to, so the combination is a small
- * linked controller instead.
- */
-export declare function linkedSignal(signals: readonly (AbortSignal | undefined)[]): {
-    signal: AbortSignal;
-    dispose(): void;
-};
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
@@ -842,7 +565,7 @@ export declare class SqliteVFS {
     private activePipeline;
     /** Pipelines whose commits are held, not yet published: no read lease is granted until they are. */
     private readonly heldPipelines;
-    /** Each wave being read now (writeStream), to cut (cancelStreams). */
+    /** Each wave being read now (wave), to cut (cancelStreams). */
     private readonly streams;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
@@ -887,9 +610,9 @@ export declare class SqliteVFS {
     private readonly pageDigests;
     /** Snapshot generations by name, loaded on first use. */
     private snapshotGens;
-    /** writeStreams in flight, for snapshot's quiesce. */
+    /** Waves in flight, for snapshot's quiesce. */
     /**
-     * Work that spans awaits and changes the tree across them (writeStream,
+     * Work that spans awaits and changes the tree across them (wave,
      * restoreAsync, sliced copyTree), for snapshot's quiesce.
      */
     private readonly activeWork;
@@ -1063,7 +786,6 @@ export declare class SqliteVFS {
     /** Throw what writing `opened`'s held appends failed with, once. */
     private raiseAppendFailure;
     private now;
-    private parentPath;
     private blobToUint8Array;
     private copyBytes;
     /**
@@ -1097,7 +819,7 @@ export declare class SqliteVFS {
      */
     private lastResolution;
     private resolutionEpoch;
-    /** A wave's watch for its own commit's publication (consumeStream's ownFiles): called once, at it. */
+    /** A wave's watch for its own commit's publication (waveFiles' ownFiles): called once, at it. */
     private publishWatch;
     private readonly sharedDirectories;
     /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
@@ -1949,7 +1671,7 @@ export declare class SqliteVFS {
     /**
      * Pin the current tree under `name`: one row and pin_gen, in one
      * transaction, whatever the tree's size. Every synchronous operation runs
-     * inside one turn, so it cannot interleave with one; a `writeStream` spans
+     * inside one turn, so it cannot interleave with one; a `wave` spans
      * awaits, and without `quiesce` the snapshot holds its committed groups, the
      * state a reset would leave. `quiesce` waits for every stream first.
      */
@@ -2336,55 +2058,24 @@ export declare class SqliteVFS {
      * (ContentCutter holds at most one chunk of carry), so a streamed file is
      * stored exactly as the same bytes written any other way.
      */
-    private waveRouter;
-    /** The namespace that places every wave's records (ProcessFiles installs its CompositeVFS). */
-    setWaveRouter(router: WaveRouter | null): void;
     /**
-     * Whether the namespace places every one of `names` (as `cred` names
-     * them) on this filesystem, by lookups made in this turn: false when one
-     * lands on a mount or (unless `aboveMounts`) is a directory above a mount
-     * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
-     * namespace would.
+     * A wave on this filesystem as `cred`'s caller (WaveIngest): the
+     * delegations it holds and whether its view continues as it is answered,
+     * taken in the caller's turn; `work` applies the wave through the scope.
+     * Answered once what it committed is published, or held (`held`).
      */
-    placesHere(names: readonly string[], cred?: VfsCred, options?: {
-        aboveMounts?: boolean;
-        follow?: boolean;
-    }): boolean;
+    private wave;
+    /** The storage one wave composes: each operation as its writer (`holds`, `pipeline`) or its caller (`origin`, its lease). */
+    private waveScope;
+    /** A wave's op that lands here, applied by this filesystem's operation of that name: an open's or a data call's stat. */
+    private applyWaveOp;
     /**
-     * `aboveMounts`: a directory above a mount point counts as this
-     * filesystem's, as a directory record there is (making, reading or
-     * owning the root's directory); else it is the namespace's to answer.
-     * `follow`: each name is looked up whole, a link at it followed, as an
-     * operation that follows its name's link (stat, chown, writeFile) is
-     * placed; else by its directory, the name itself not followed.
+     * A wave's files on this filesystem (WaveFiles): a file whole enough for
+     * one group is held until its group commits and authorised there, with
+     * the group's other files; a larger one is authorised at its begin and
+     * stages its chunks as groups flush, publishing with its last.
      */
-    private placedHere;
-    /**
-     * writeBatch where the namespace places it. When every record is placed on
-     * this filesystem by lookups made in this turn, the batch commits here,
-     * atomic as before, in that same turn; otherwise (a record on a mount, or
-     * a lookup that left the synchronous backends) it goes as a wave, each
-     * record applied where it lands and rechecked at its commit. `signal`
-     * cancels it before anything commits.
-     */
-    private writeBatchPlaced;
-    /**
-     * Route `record` through `router` when the namespace places it on a mount,
-     * in its place in the wave: what the wave wrote here before it commits
-     * first (`at.settleBefore`), then the namespace's own operation, with its
-     * refusals (EROFS on a read-only mount, EACCES, ENOENT). A file's chunks
-     * are handed to the router as they arrive, each held by the wave's credit
-     * until the router has written it. True when the record was routed.
-     */
-    private routeRecord;
-    private writeStream;
-    /**
-     * A sequenced writer's state as its wave starts: its cursor, and the
-     * refusal it has not had answered (dropped once `ack` reaches it). Kept
-     * until its process is over and its log drained (forgetSequences). A
-     * wave that starts past the op after the cursor
-     * names ops the session never had: refused, ESTALE (they are lost).
-     */
+    private waveFiles;
     private openSequence;
     /**
      * A process's data call, made as the call of that name: a writeFile, an
@@ -2455,7 +2146,6 @@ export declare class SqliteVFS {
     private refuseInSequence;
     /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
     private withHolds;
-    private consumeStream;
     private _writeBatchWithRetry;
     /**
      * Estimate the byte cost of a writeBatch payload. Used by the W5
@@ -2674,8 +2364,6 @@ export declare class SqliteVFS {
      */
     /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
     private prepareBatchTransaction;
-    private validateFileChunks;
-    private validateInodeContentShape;
     private assertTransactionFits;
     private _writeBatchOnce;
     /**

@@ -28,7 +28,7 @@
  */
 import type { SupervisorOpDispatch } from './supervisor-op.js';
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from './supervisor-ops.js';
-import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
+import type { WaveMountReach } from '../runtime/wave-contracts.js';
 export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
 /**
  * The delivered mutation `op` names, as this module's own string — a receipt
