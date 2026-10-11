@@ -279,7 +279,9 @@ export interface PinnedName {
  * open files (VFS.openFile) its content operations reach that file wherever
  * it is named later; every other operation, and every one on a backend that
  * keeps none, goes by the name it was opened at, refused (ESTALE) once that
- * name holds another file (its backend's inode number changed) or none. A
+ * name holds another file (its backend's inode number changed) or none,
+ * asked in a change's turn among the namespace's observed changes, right
+ * before it (on a backend that awaits, that is a stat, then the change). A
  * backend that numbers no files cannot tell: there, the name is the file.
  * Its mutations are the opener's view's: refused on a read-only mount, asked
  * of the namespace's guard at its name, and observed (observeWrites) only
@@ -1262,15 +1264,24 @@ export class CompositeVFS implements VFS {
     return options.sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
   }
 
-  /** A pinned target's mutation: refused on a read-only mount and by the guard, `admit` right before the backend, observed while `still`. */
-  private changingOn<T>(target: PinTarget, run: () => Awaitable<T>, admit: (() => void) | undefined, written: Uint8Array | undefined, still: () => Awaitable<boolean>): Awaitable<T> {
+  /**
+   * A pinned target's mutation: refused on a read-only mount and by the
+   * guard, `admit` right before the backend, observed while `still`. `held`:
+   * the held file's own refusal (it is not the file at its name now), asked in
+   * the mutation's turn, after the mutations before it, before the guard.
+   */
+  private changingOn<T>(
+    target: PinTarget, run: () => Awaitable<T>, admit: (() => void) | undefined, written: Uint8Array | undefined,
+    still: () => Awaitable<boolean>, held?: () => Awaitable<void>,
+  ): Awaitable<T> {
     const { mount, name, rel, backend } = target;
     if (mount.options.readOnly) throw new Refusal('EROFS', name, `${mount.point} is mounted read-only`);
-    const guarded = (): Awaitable<T> => {
+    const admitted = (): Awaitable<T> => {
       this.guardMutation([name]);
       admit?.();
       return run();
     };
+    const guarded = held === undefined ? admitted : (): Awaitable<T> => andThen(held(), admitted);
     return this.reportWrite({ path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still, ...(written === undefined ? {} : { written }) }, guarded, target.sync);
   }
 
@@ -1380,9 +1391,14 @@ export class CompositeVFS implements VFS {
       throw new Refusal('ESTALE', this.target.name, 'the name this file was opened at holds another file now, or none');
     }
 
+    /** Refused (ESTALE) once its name holds another file, or none. */
+    private here(): Awaitable<void> {
+      return andThen(this.still(), (still) => (still ? undefined : this.stale()));
+    }
+
     /** `run` by its name, refused (ESTALE) once the name holds another file, or none. */
     private named<T>(run: () => Awaitable<T>): Awaitable<T> {
-      return andThen(this.still(), (still) => (still ? run() : this.stale()));
+      return andThen(this.here(), run);
     }
 
     private changing<T>(syscall: string, run: () => Awaitable<T>, admit: (() => void) | undefined, written?: Uint8Array): Awaitable<T> {
@@ -1413,7 +1429,7 @@ export class CompositeVFS implements VFS {
     write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<void> {
       const { file, target } = this;
       if (file !== null) return this.changing('write', () => file.write(offset, bytes), admit);
-      return this.call('write', () => this.named(() => this.host.changingOn(target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still())));
+      return this.call('write', () => this.host.changingOn(target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still(), () => this.here()));
     }
 
     /** By its name, the file there after it is this one: a backend may write a whole file as a new one (a new number) at its name. */
@@ -1421,8 +1437,8 @@ export class CompositeVFS implements VFS {
       const { file, target } = this;
       if (file !== null) return this.changing('write', () => andThen(file.truncate(0), () => file.write(0, bytes)), admit, bytes);
       const { backend, rel } = target;
-      return this.call('write', () => this.named(() => andThen(this.host.changingOn(target, () => backend.writeFile(rel, bytes), admit, bytes, () => true), () => (
-        this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined) this.ino = now.ino; })))));
+      return this.call('write', () => andThen(this.host.changingOn(target, () => backend.writeFile(rel, bytes), admit, bytes, () => true, () => this.here()), () => (
+        this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined) this.ino = now.ino; }))));
     }
 
     truncate(size: number, admit?: () => void): Awaitable<void> {
@@ -1446,7 +1462,7 @@ export class CompositeVFS implements VFS {
     /** A mutation at its name (refused once that holds another file): `run` on its backend. */
     private byName(syscall: string, run: (backend: VFS) => Awaitable<void>, admit: (() => void) | undefined): Awaitable<void> {
       const { target } = this;
-      return this.call(syscall, () => this.named(() => this.host.changingOn(target, () => run(target.backend), admit, undefined, () => this.still())));
+      return this.call(syscall, () => this.host.changingOn(target, () => run(target.backend), admit, undefined, () => this.still(), () => this.here()));
     }
 
     /** A mount point's entries: its backend root's, and the mount points the namespace puts in it while that mount is still there. */

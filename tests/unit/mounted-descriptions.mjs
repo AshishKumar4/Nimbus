@@ -646,6 +646,35 @@ await check('a description held by its name refuses (ESTALE) once the name holds
   }
 });
 
+await check('a description held by its name on an awaiting mount asks for its file in its change\'s turn, after a rename before it', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('old'));
+  let gate = null;
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/nr', asyncOnly(backend, { deep: true, beforeCall: (method) => (gate !== null && method === 'rename' ? (entered(), gate) : undefined) }));
+  const stop = files.vfs.observeWrites(() => {});
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = await proc.open('/nr/x', { read: true, write: true });
+    let release;
+    gate = new Promise((resolve) => { release = resolve; });
+    const renaming = proc.rename('/nr/x', '/nr/y');
+    await entering;
+    const writing = assert.rejects(async () => proc.write(fd.id, 0, enc.encode('NEW')), refused('ESTALE'));
+    release();
+    await renaming;
+    await writing;
+    assert.equal(backend.stat('/x'), null, 'nothing is made at the name');
+    assert.equal(dec.decode(backend.readFile('/y')), 'old');
+    await proc.close(fd.id);
+  } finally {
+    gate = null;
+    stop();
+    files.vfs.unmount('/nr');
+  }
+});
+
 await check('a write to a file a mount made since covers is not heard as a change to what is there now', async () => {
   const outer = new MemoryVFS({ uid: 1000, gid: 1000 });
   outer.mkdir('/sub');
