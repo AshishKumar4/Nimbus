@@ -1075,9 +1075,11 @@ export class CompositeVFS implements VFS {
    * before it writes lands where the operation would. Rejects as that
    * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
    * the lookup stays on synchronous backends. `creating`: as route's.
+   * `sync`: through the backends' synchronous faces only, as the `sync`
+   * view looks up (an asynchronous mount refuses).
    */
-  mutationRoute(path: string, options?: { follow?: boolean; creating?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
-    return reported({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, false, options?.creating === true), (at) => {
+  mutationRoute(path: string, options?: { follow?: boolean; creating?: boolean; sync?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
+    return reported({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, options?.sync === true, options?.creating === true), (at) => {
       this.present(at);
       const { mount } = this.locate(at);
       return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
