@@ -156,14 +156,15 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         this.#context.queued();
         this.#counted = true;
         const headers = [];
-        for (const name of this.getRawHeaderNames()) {
+        for (const name of this.getHeaderNames()) {
           const value = this.getHeader(name);
           if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
           else headers.push([name, String(value)]);
         }
+        const contentLength = this.getHeader("content-length");
         this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
-          headers, framed: this.hasHeader("content-length") || this.hasHeader("transfer-encoding"), contentLength: this.#contentLength, body: this.#completeBody };
-        if (this.hasHeader("content-length")) this._contentLength = Number(this.getHeader("content-length"));
+          headers, framed: contentLength !== undefined || this.hasHeader("transfer-encoding"), contentLength: this.#contentLength, body: this.#completeBody };
+        if (contentLength !== undefined) this._contentLength = Number(contentLength);
         this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
         this._headerSent = true;
       } catch (error) { this.destroy(error); this.#resume(); return; }
