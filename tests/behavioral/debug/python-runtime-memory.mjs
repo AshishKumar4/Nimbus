@@ -28,10 +28,12 @@ try {
   a.check('the CLI warms the already-installed runtime', warmed.exitCode === 0 && warmed.output.includes('[python] ready'));
   await snapshot('after warmup');
   const warmedMem = await diagMemory(sid);
-  // The 10.6 MiB interpreter image plus the stdlib are read once for the
-  // facet's module map; neither may stay pinned in the session's LRU.
+  // The 10.6 MiB interpreter image is read once for the facet's module map
+  // and never enters the session's LRU (14,887,665 B before the fix). The
+  // ~3.8 MiB that remains is the guest's own stdlib prefetch into its
+  // facet-side resident store, which its lifecycle owns, not the session.
   a.check('warm-up holds no runtime image in the session LRU',
-    (warmedMem.vfsDetail?.lruBytes ?? 0) < 5_000_000,
+    (warmedMem.vfsDetail?.lruBytes ?? 0) < 4_500_000,
     `lruBytes=${warmedMem.vfsDetail?.lruBytes}`);
   for (let index = 1; index <= 3; index++) {
     await sleep(30_000);
