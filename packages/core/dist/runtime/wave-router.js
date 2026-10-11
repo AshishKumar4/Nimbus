@@ -1,5 +1,5 @@
 /**
- * The namespace as every wave's router (SqliteVFS.setWaveRouter). A W7 wave
+ * The namespace as every wave's router (WaveIngest). A W7 wave
  * is streamed to the session's SQLite filesystem, whoever sends it (a
  * process's binding, or a command holding the engine), and each of its
  * records lands where the namespace puts a mutation of that name: its

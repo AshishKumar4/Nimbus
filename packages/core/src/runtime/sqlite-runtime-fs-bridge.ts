@@ -1,4 +1,6 @@
-import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription, type WaveDescriptions } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
+import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
@@ -109,6 +111,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     private readonly bufferedWriteBytes: number = BUFFERED_WRITE_BYTES,
+    /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
+    private readonly waves: WaveIngest = new WaveIngest(null),
   ) {
     this.vfs = vfs;
     this.mounted = namespace?.sync;
@@ -749,11 +753,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
   writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0], options?: { signal?: AbortSignal }) {
-    return this.vfs.writeBatchPlaced(payload, options);
+    return this.waves.writeBatch(this.vfs, payload, options);
   }
 
-  writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]) {
-    return this.vfs.writeStream(stream, { ...options, descriptions: this.waveDescriptions });
+  writeStream(stream: ReadableStream<Uint8Array>, options?: WriteStreamOptions) {
+    return this.waves.writeStream(this.vfs, stream, { ...options, descriptions: this.waveDescriptions });
   }
 
   /**

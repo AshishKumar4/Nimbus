@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { cloneFinish } from '../../packages/worker/src/git/pack/clone.ts';
 import { encodeIndexEntry } from '../../packages/worker/src/git/worktree/dircache.ts';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
@@ -17,6 +18,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
+const waves = new WaveIngest(null);
 const files = vfs.as(CRED_KERNEL);
 const dir = 'home/user/repo';
 files.mkdir(dir + '/.git/nimbus-clone', { recursive: true });
@@ -35,7 +37,7 @@ const context = {
     async fsTruncate() { throw new Error('unused'); },
     async rename() { throw new Error('unused'); },
   },
-  writer: () => createWaveWriter({ supervisor: { writeBatchStream: (stream) => files.writeStream(stream) }, root: null, base: dir }),
+  writer: () => createWaveWriter({ supervisor: { writeBatchStream: (stream) => waves.writeStream(files, stream) }, root: null, base: dir }),
   dir,
   url: 'https://example.invalid/repo.git',
   marker: { path: '.git/nimbus-clone-job', text: '{}' },

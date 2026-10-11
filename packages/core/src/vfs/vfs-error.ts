@@ -34,6 +34,24 @@ export const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>> = {
   ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116, EBADF: -9,
 };
 
+/**
+ * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which
+ * a layer that reports the error for its own call keeps (the runtime bridge,
+ * toVfsError). A `detail` given is the reason about the name `what` and is
+ * appended to the message; without one, `what` is the whole reason. Name a
+ * storage key only in `what`, never in the reason: the caller's layer names
+ * the caller's own path.
+ */
+export function vfsError(code: string, what: string, detail: string = what): Error & { code: string; detail: string } {
+  return Object.assign(new Error(detail === what ? `${code}: ${what}` : `${code}: ${what}: ${detail}`), { code, detail });
+}
+
+/** An error's errno (an `E…` code), if it carries one. */
+export function errnoCodeOf(error: unknown): string | undefined {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined;
+}
+
 /** What a VfsError carries besides its cause: Node's `err.syscall` and `err.dest`. */
 export interface VfsErrorOptions extends ErrorOptions {
   /** The call that failed (`open`, `scandir`, `rename`), as Node names it. */

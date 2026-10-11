@@ -8,16 +8,18 @@
 import assert from 'node:assert/strict';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
+const waves = new WaveIngest(null);
 const kernel = vfs.as(CRED_KERNEL);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const user = vfs.as(CRED_SESSION_USER);
-const supervisor = { writeBatchStream: (stream) => user.writeStream(stream) };
+const supervisor = { writeBatchStream: (stream) => waves.writeStream(user, stream) };
 
 const first = createWaveWriter({ supervisor, root: 'home/user', base: 'home/user' });
 await first.file('lock', 0o444, new TextEncoder().encode('stale\n'));

@@ -66,7 +66,7 @@ export const REPLAY_OPERATION_POLICY = {
     openWaveWriter: mutation,
     // Ends a write-wave epoch the session holds open for the process.
     retireWaveWriter: mutation,
-    putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
+    stdout: output, stderr: output, prefetch: read,
     registerPort: effect, allocatePort: effect, unregisterPort: effect,
     reportExit: output, routeLoopback: effect, transform: read,
     cpSpawn: effect, reportRuntimeCode: output, cpStdinWrite: effect,
@@ -77,7 +77,7 @@ export const REPLAY_OPERATION_POLICY = {
     getCachedTarball: read, getPackument: read, putCachedTarball: effect,
     cacheResult: control,
     cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
-    cpDrainOutput: read, cpKill: effect,
+    cpDrainOutput: read, cpCloseOutput: effect, cpKill: effect,
     cpBlocked: { kind: 'control' },
     cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
     fsFstat: read, fsDup: read, fsSeek: read,

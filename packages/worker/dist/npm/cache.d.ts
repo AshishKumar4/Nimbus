@@ -1,44 +1,4 @@
-export interface RegistryCacheEntry {
-    name: string;
-    version: string;
-    tarballUrl: string;
-    integrity: string;
-    depsJson: string;
-    /**
-     * JSON-encoded REQUIRED peerDependencies (X.5-F R2).
-     *
-     * Optional peers — those marked `peerDependenciesMeta.<name>.optional
-     * === true` in the source packument — are filtered out before this
-     * field is written. Storing only the required subset means downstream
-     * lockfile-validity checks can ask "is this peer in the tree?"
-     * without having to consult the meta field again.
-     *
-     * Defaults to '{}' for entries written by pre-X.5-F builds (the
-     * column was added via ALTER TABLE, see ensureSchema).
-     */
-    peerDepsJson?: string;
-    exportsJson: string;
-    main: string;
-    moduleField: string;
-    binJson: string;
-    /**
-     * JSON-encoded npm platform constraints — `{ os?, cpu?, libc? }`.
-     *
-     * Persisted so warm-cache resolution keeps the same ABI/platform
-     * decisions as a cold packument fetch (native-shard silent-skip and
-     * platform-native rejects are metadata-driven). '{}' means no
-     * constraints; rows written before the column existed read as '{}'
-     * (a metadata miss, matching pre-migration behavior).
-     */
-    platformJson?: string;
-    /**
-     * JSON-encoded `optionalDependencies`. Persisted so cached parents
-     * still enqueue their best-effort optional deps exactly like a cold
-     * resolve. Defaults to '{}' for pre-migration rows.
-     */
-    optionalDepsJson?: string;
-    fetchedAt: number;
-}
+import type { RegistryCacheEntry } from './registry-record.js';
 /**
  * One placement in a project's lockfile. The Map key is the placement path
  * (`name` at root, `<dependent>/node_modules/<name>` nested); it is what the

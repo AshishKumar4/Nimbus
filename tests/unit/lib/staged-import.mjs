@@ -5,6 +5,7 @@
 import { CHUNK_SIZE } from '../../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 /**
@@ -14,8 +15,9 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
  */
 export function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   rawVfs.getStats();
-  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL), baselineTransactions: harness.transactionCount };
+  return { harness, rawVfs, waves, vfs: rawVfs.as(CRED_KERNEL), baselineTransactions: harness.transactionCount };
 }
 
 /** The same database reopened, as a fresh isolate would find it. */

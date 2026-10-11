@@ -12,6 +12,7 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type CleanupBridge } from './clone-job.js';
 import { type ConfigOverrides } from './config-params.js';
@@ -107,7 +108,11 @@ export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet
 export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
 network?: WorkspaceNetwork, 
-/** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
+/**
+ * The session's filesystem authority: a host bridge on the namespace, for
+ * the cleanup of a clone on a mount, and the namespace's ingestion of the
+ * waves a repository's objects go in.
+ */
 filesystem?: {
     openHost(cred: VfsCred): {
         fs: {
@@ -115,6 +120,7 @@ filesystem?: {
         };
         dispose(): Promise<void>;
     };
+    readonly waves: WaveIngest;
 }, 
 /** The session's process table: a background clone runs as a process of its own. */
 processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>): Promise<number>;

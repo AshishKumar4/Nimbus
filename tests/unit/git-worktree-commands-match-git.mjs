@@ -612,7 +612,7 @@ try {
       readlink: async (path) => bridge.readlink(path),
       fsReadRange: async (path, offset, length) => bridge.readRange(path, offset, length),
       fsReadRangeUncached: async (path, offset, length) => bridge.readRange(path, offset, length, { cached: false }),
-      writeBatchStream: async (stream) => user.writeStream(stream),
+      writeBatchStream: async (stream) => files.waves.writeStream(user, stream),
       // The ranged calls git/pack/facet-packs.ts makes to store a fetched pack as it arrives.
       fsWriteRange: async (path, offset, bytes) => bridge.writeRange(path, offset, bytes),
       fsTruncate: async (path, size) => bridge.truncate(path, size),

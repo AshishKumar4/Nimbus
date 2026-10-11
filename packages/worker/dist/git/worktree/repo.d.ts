@@ -10,7 +10,7 @@
  * namespace. Configuration is cf-git's reading of .git/config, and for
  * core.excludesFile the global files git reads as well.
  */
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
 import { type SparseMatcher } from '../pack/sparse.js';

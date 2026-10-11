@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -33,16 +34,21 @@ async function settle(engine, log) {
 async function runCase(testCase) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const kernel = engine.as(CRED_KERNEL);
   const started = [];
   // Observe starts at the engine's own spanning entry points.
   const jobOf = new Map();
-  for (const method of ['consumeStream', 'restoreInSlices', 'copyTreeInSlices']) {
+  // A wave starts when its work does (after the engine admits it), keyed by its options.
+  const wave = engine.wave.bind(engine);
+  engine.wave = (options, work, ...rest) => wave(options, (scope) => {
+    started.push(jobOf.get(options));
+    return work(scope);
+  }, ...rest);
+  for (const method of ['restoreInSlices', 'copyTreeInSlices']) {
     const original = engine[method].bind(engine);
     engine[method] = (first, ...rest) => {
-      const id = method === 'consumeStream' ? jobOf.get(first)
-        : method === 'restoreInSlices' ? jobOf.get(rest[0]?.subtree)
-          : jobOf.get(first.dst);
+      const id = method === 'restoreInSlices' ? jobOf.get(rest[0]?.subtree) : jobOf.get(first.dst);
       started.push(id);
       return original(first, ...rest);
     };
@@ -93,11 +99,12 @@ async function runCase(testCase) {
           },
         });
         paths.set(step.id, path);
-        jobOf.set(stream, step.id);
+        const owner = step.owner === undefined ? undefined : leases[step.owner].owner;
+        const options = owner === undefined ? {} : { mutationOwner: owner };
+        jobOf.set(options, step.id);
         sources.set(step.id, close);
         kinds.set(step.id, 's');
-        const owner = step.owner === undefined ? undefined : leases[step.owner].owner;
-        const run = kernel.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
+        const run = waves.writeStream(kernel, stream, options);
         const outcome = { settled: false, result: undefined };
         run.then((result) => { outcome.settled = true; outcome.result = result; });
         results.set(step.id, outcome);

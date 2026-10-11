@@ -16,6 +16,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
@@ -36,7 +37,7 @@ function session() {
   files.vfs.mount('/shared', shared);
   const user = engine.as(CRED_SESSION_USER);
   /** A wave of `ops` under `writer`, numbered from `first`, straight to the engine. */
-  const send = (writer, first, ops, { ack = 0, stream } = {}) => user.writeStream(
+  const send = (writer, first, ops, { ack = 0, stream } = {}) => files.waves.writeStream(user,
     stream ?? encodeWriteBatchStream({ inodes: [], chunks: [], ops }),
     { sequence: { writer, first, ack } },
   );
@@ -187,6 +188,7 @@ async function cut(ops, keep) {
 {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const kernel = engine.as(CRED_KERNEL);
   kernel.mkdir('home/user/g', { recursive: true });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
@@ -204,7 +206,7 @@ async function cut(ops, keep) {
   const user = engine.as(CRED_SESSION_USER);
   const ops = Array.from({ length: 200 }, (_, i) => write(`home/user/g/f${i}`, `${i}`));
   const before = commits;
-  const grouped = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }), { sequence: { writer: 'g', first: 1, ack: 0 } });
+  const grouped = await waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops }), { sequence: { writer: 'g', first: 1, ack: 0 } });
   assert.equal(grouped.ok, true, JSON.stringify(grouped.error));
   assert.deepEqual(grouped.sequence, { cursor: 200 });
   assert.ok(commits - before <= 4, `200 writeFile calls took ${commits - before} commits`);
@@ -212,7 +214,7 @@ async function cut(ops, keep) {
   // A refusal in the middle of a group: those before it land, it and those after it do not.
   kernel.mkdir('home/user/g/taken');
   const mixed = [write('home/user/g/m0', 'a'), write('home/user/g/m1', 'b'), mkdir('home/user/g/taken'), write('home/user/g/m2', 'c')];
-  const refused = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: mixed }), { sequence: { writer: 'g', first: 201, ack: 200 } });
+  const refused = await waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops: mixed }), { sequence: { writer: 'g', first: 201, ack: 200 } });
   assert.equal(refused.ok, false);
   assert.equal(refused.error.errno, 'EEXIST');
   assert.equal(refused.sequence.refused.seq, 203);
@@ -273,7 +275,7 @@ for (const reported of ['ENOSPC', 'EIO', undefined]) {
       }
     },
   };
-  const wave = (first, ops, ack) => s.user.writeStream(
+  const wave = (first, ops, ack) => s.files.waves.writeStream(s.user,
     encodeWriteBatchStream({ inodes: [], chunks: [], ops }),
     { sequence: { writer: '9:w', first, ack, pid: 9 }, descriptions },
   );

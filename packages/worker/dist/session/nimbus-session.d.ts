@@ -401,10 +401,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         inodes: number;
         chunks: number;
     }>;
-    _rpcPutRegistryEntries(entries: any[]): Promise<{
-        written: number;
-        failed: number;
-    }>;
     _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
@@ -464,6 +460,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     }>;
     _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
     _rpcCpDrainOutput(childPid: number): Promise<any>;
+    _rpcCpCloseOutput(childPid: number, fd: 1 | 2): Promise<void>;
     _rpcCpKill(childPid: number, signal: string): Promise<boolean>;
     _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
     _rpcCpBlocked(pid: number, report: unknown): Promise<void>;

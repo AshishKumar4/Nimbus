@@ -251,6 +251,19 @@ export class Delegations {
     holdsAt(pid) {
         return this.byPid.get(pid);
     }
+    /**
+     * Process `pid` has ended: it reads nothing more, so its read lease ends
+     * now, asking it nothing (a recall would wait out its trust for an answer
+     * no one is left to give). What it delegated for writing stays until its
+     * release.
+     */
+    endReads(pid) {
+        for (const owner of [...this.heldBy(pid)]) {
+            const held = this.held.get(owner);
+            if (held?.read != null)
+                held.end();
+        }
+    }
     /** Process `pid` is over, and nothing it wrote is held: what is kept of it here goes. */
     retire(pid) {
         this.byPid.delete(pid);

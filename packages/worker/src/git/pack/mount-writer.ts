@@ -2,7 +2,7 @@
  * git/pack/mount-writer.ts — a clone's files on a mounted filesystem.
  *
  * A wave writes a file to a mount in one call, up to ROUTED_FILE_MAX bytes
- * (sqlite-vfs.ts); a larger one it refuses. So on a mount, a file within
+ * (wave-contracts.ts); a larger one it refuses. So on a mount, a file within
  * that goes in the wave as on the session's own filesystem, and a larger
  * one is written as git's checkout writes a file (entry.c write_entry),
  * through the session's file API under the clone's lease, once what the
@@ -20,10 +20,9 @@
  * which clean up what was started.
  */
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ROUTED_FILE_MAX } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { CloneReceipt, CloneWriter } from './clone.js';
 
-/** sqlite-vfs.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
-export const MOUNT_WAVE_FILE_MAX = 4 * 1024 * 1024;
 /** One write's bytes: well inside what one RPC carries. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 
@@ -259,14 +258,14 @@ export function mountWriter<W extends StreamingWriter>(writer: W, api: FileApi, 
   return {
     ...(streamed === undefined ? {} : {
       async fileChunks(path: string, mode: number, size: number, chunks: AsyncIterable<Uint8Array>) {
-        if (size <= MOUNT_WAVE_FILE_MAX) return await streamed.call(writer, path, mode, size, chunks);
+        if (size <= ROUTED_FILE_MAX) return await streamed.call(writer, path, mode, size, chunks);
         await writer.flush();
         await replaceStreamed(api, root + '/' + path, mode, chunks);
       },
     }),
     async file(path, mode, bytes) {
       const index = path === '.git/index';
-      if (!index && bytes.byteLength <= MOUNT_WAVE_FILE_MAX) return await writer.file(path, mode, bytes);
+      if (!index && bytes.byteLength <= ROUTED_FILE_MAX) return await writer.file(path, mode, bytes);
       // What the waves hold before it (its directory among them) lands first.
       await writer.flush();
       const at = root + '/' + path;

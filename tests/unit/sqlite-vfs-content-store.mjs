@@ -11,6 +11,7 @@ import { CHUNK_SIZE, MAX_TX_BLOB_BYTES } from '../../packages/platform/src/limit
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function open(harness = createSqliteVfsTestHarness()) {
@@ -236,10 +237,11 @@ for (const size of [5_000, CHUNK_SIZE * 5 + 17]) {
 // ── A streamed file is stored exactly as a written one ────────────────────
 {
   const { harness, vfs } = open();
+  const waves = new WaveIngest(null);
   const data = random(CHUNK_SIZE * 9 + 5, 21);
   vfs.writeFile('written.bin', data);
   const chunksBefore = storedChunks(harness);
-  const result = await vfs.writeStream(encodeWriteBatchStream({
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({
     inodes: [fileRecord('streamed.bin', data)],
     chunks: wireChunks('streamed.bin', data),
   }));

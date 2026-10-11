@@ -16,8 +16,7 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets; rpcPutRegistryEntries
- * uses self.ctx.storage.sql). The InitHost-style escape applies because
+ * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
@@ -27,7 +26,7 @@ import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
 import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
@@ -332,7 +331,7 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown, pid?: nu
  * W7 — Streaming bulk-write entry point. Receives a
  * ReadableStream<Uint8Array> in the W7 v3 wire format (see
  * src/_shared/w7-frame.ts) and hands the raw pull-controlled stream to
- * SqliteVFS.writeStream().
+ * the namespace's ingestion (WaveIngest), through the writeBatchStream op.
  *
  * Bypasses the 32 MiB structured-clone cap that constrained the
  * legacy writeBatch path — workerd flow-controls the byte stream
@@ -344,19 +343,6 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown, pid?: nu
  * the exact durable progress.
  */
 export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult>;
-/**
- * Bulk-write npm registry cache entries in ONE RPC. Used by the
- * resolver-facet to flush a wave of resolved packages back to the
- * supervisor without per-entry round-trips.
- *
- * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
- * Returns { written, failed } so the facet can surface partial-write
- * warnings to the install log.
- */
-export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): Promise<{
-    written: number;
-    failed: number;
-}>;
 export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
 export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
@@ -437,6 +423,7 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
 }>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
+export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
 /**
  * Process `pid` says whether its only remaining work is waiting on its

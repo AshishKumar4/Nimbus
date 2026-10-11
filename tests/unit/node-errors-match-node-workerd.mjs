@@ -8,14 +8,16 @@
 // its getters; an error Node gives no code has none; and an uncaught one
 // is headed as Node heads it. Before, each was a plain error with a `code` set
 // on it: `TypeError: Unknown option '--x'`. An ERR_INVALID_ARG_TYPE describes
-// the value as Node does (node-invalid-arg-type-matches-node).
+// the value as Node does (node-invalid-arg-type-matches-node). An error the
+// platform's own module makes (workerd's node:stream) has the platform's
+// shape where it differs, recorded in tests/fixtures/node-errors-gaps.json.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
@@ -88,10 +90,18 @@ try {
     const got = splitScenarioOutput(r.stdout).lines.filter((line) => line.startsWith('{'));
     const want = expected.stdout.trim().split('\n');
     assert.equal(got.length, want.length, `every case reports: ${r.stdout.slice(-2000)}`);
+    // Where the platform's own error differs from Node's (an error workerd's
+    // node:stream makes), what it gives instead: recorded exactly, so a gap
+    // the platform closes fails here and is taken off the list.
+    const GAPS = JSON.parse(readFileSync(new URL('../fixtures/node-errors-gaps.json', import.meta.url), 'utf8'));
     for (let i = 0; i < want.length; i++) {
-      assert.deepEqual(JSON.parse(got[i]), JSON.parse(want[i]), `${JSON.parse(want[i]).label} has Node's shape`);
-      console.log(`  ok  ${JSON.parse(want[i]).label}: ${JSON.parse(want[i]).header}`);
+      const node = JSON.parse(want[i]);
+      const gap = GAPS[node.label]?.platform;
+      if (gap !== undefined) assert.notDeepEqual({ ...node, ...gap }, node, `${node.label}: the recorded gap is one`);
+      assert.deepEqual(JSON.parse(got[i]), { ...node, ...gap }, `${node.label} has Node's shape${gap ? ', but for its recorded gap' : ''}`);
+      console.log(`  ok  ${node.label}: ${gap ? gap.header : node.header}`);
     }
+    for (const label of Object.keys(GAPS)) assert.ok(want.some((line) => JSON.parse(line).label === label), `the gap ${label} names a case`);
 
     // Uncaught: the error's first line is Node's. (The rest of Node's fatal
     // report, the source line and the error's own properties, is not this

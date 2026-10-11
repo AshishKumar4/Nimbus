@@ -801,7 +801,6 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcNetTls(action, token, payload, pid, run) { return _rpc._rpcNetTls(this, action, token, payload, pid, run); }
     async _rpcOutbound(action, payload, pid, run) { return _rpc._rpcOutbound(this, action, payload, pid, run); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
-    async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcStdout(pid, data, at, run) { return _rpc._rpcStdout(this, pid, data, at, run); }
     async _rpcStderr(pid, data, at, run) { return _rpc._rpcStderr(this, pid, data, at, run); }
     async _rpcReportExit(pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
@@ -864,6 +863,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpReadStdin(childPid, waitMs, acquire, pid, writerId, maxBytes) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid, writerId, maxBytes); }
     async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs, acquire, pid) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs, acquire, pid); }
     async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
+    async _rpcCpCloseOutput(childPid, fd) { return _rpc._rpcCpCloseOutput(this, childPid, fd); }
     async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }
     async _rpcCpWait(childPid, waitMs, acquire, pid, knownStarted) { return _rpc._rpcCpWait(this, childPid, waitMs, acquire, pid, knownStarted); }
     async _rpcCpBlocked(pid, report) { return _rpc._rpcCpBlocked(this, pid, report); }
@@ -1170,7 +1170,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // Idempotent: guarded by shouldSeedProject() which checks both a
         // sentinel file and the project dir. Safe to call on every boot.
         try {
-            seedProject(this.sqliteFs, { log: (msg) => console.log(msg) });
+            seedProject(this.getFilesystemAuthority(), { log: (msg) => console.log(msg) });
         }
         catch (e) {
             console.error('[nimbus] seedProject failed:', e?.message || e);

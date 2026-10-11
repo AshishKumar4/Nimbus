@@ -14,6 +14,7 @@ import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -155,9 +156,10 @@ function random(length, seed) {
 // ── A W7 stream's writes are its caller's, committed in later turns ──
 {
   const { raw, vfs } = open();
+  const waves = new WaveIngest(null);
   const { events } = record(raw);
   const data = enc.encode('streamed');
-  const result = await vfs.writeStream(encodeWriteBatchStream({
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({
     inodes: [{ path: 'home/user/s.txt', parentPath: 'home/user', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
     chunks: [{ path: 'home/user/s.txt', chunkId: 0, data }],
   }));
@@ -226,6 +228,7 @@ function wireChunks(path, data) {
 //    writes) between deliveries cannot take what a later event names ──
 for (const via of ['writeBatch', 'writeStream']) {
   const { raw, vfs } = open();
+  const waves = new WaveIngest(null);
   const oldA = random(CHUNK_SIZE * 2 + 1, 41);
   const oldB = random(CHUNK_SIZE * 2 + 5, 43);
   vfs.writeFile('home/user/A', oldA);
@@ -242,7 +245,7 @@ for (const via of ['writeBatch', 'writeStream']) {
     chunks: [...wireChunks('home/user/A', newA), ...wireChunks('home/user/B', newB)],
   };
   if (via === 'writeBatch') vfs.writeBatch(payload);
-  else assert.equal((await vfs.writeStream(encodeWriteBatchStream(payload))).ok, true);
+  else assert.equal((await waves.writeStream(vfs, encodeWriteBatchStream(payload))).ok, true);
   stop();
   assert.deepEqual(seen.get('home/user/A'), oldA);
   assert.deepEqual(seen.get('home/user/B'), oldB, `${via}: a later event's replaced content was collected during an earlier callback`);
