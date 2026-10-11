@@ -258,7 +258,12 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
     }
     if (name === 'gone') return unresolvedResult('registry returned HTTP 404 for gone');
     return resolvedResult(name, '1.0.0');
-  });
+  }, (shard) => ({
+    perPackage: shard.packages.map((p) => ({ name: p.name, version: p.version, fileCount: 1, bytesWritten: 1, elapsed: 1, warnings: [] })),
+    elapsed: 1,
+    facetCounters: { tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1, pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0 },
+    cacheStatEvents: [],
+  }));
 
   const result = await installer.install(PROJ);
   const output = log.join('\n');
