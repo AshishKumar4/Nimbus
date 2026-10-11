@@ -978,20 +978,20 @@ export async function rpcSpawnWorker(self, workerCode, command, cwd, opts = {}) 
  */
 export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
-    const p = String(path).replace(/^\/+/, '');
-    const vfs = self.sqliteFs.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
+    const p = `/${String(path).replace(/^\/+/, '')}`;
+    const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
     // A delegation it meets is recalled first.
     await withRecall(() => {
-        if (!vfs.exists(p))
+        if (!fs.exists(p))
             return;
-        if (vfs.isDirectory(p)) {
+        if (fs.isDirectory(p)) {
             if (!options.recursive)
-                vfs.rmdir(p);
+                fs.rmdir(p);
             else
-                vfs.removeRecursive(p);
+                fs.removeRecursive(p);
             return;
         }
-        vfs.unlink(p);
+        fs.unlink(p);
     });
 }
 export async function rpcDestroy(self, options = {}) {
@@ -1243,7 +1243,9 @@ async function resetInMemorySessionState(self) {
         self.terminal?.close?.();
     }
     catch { }
-    self.sqliteFs = null;
+    const filesystem = self.filesystem;
+    self.filesystem = null;
+    await filesystem?.close();
     self.kernel = null;
     self.shell = null;
     self.shellProcessPid = null;
@@ -1263,7 +1265,6 @@ async function resetInMemorySessionState(self) {
     self._cirrusHmrWsClients = null;
     self.nimbusWrangler = null;
     self.npmInstaller = null;
-    self._supervisorOps = null;
     self._cpRegistry = null;
     self._viteShimPid = null;
     self._viteShimPort = null;

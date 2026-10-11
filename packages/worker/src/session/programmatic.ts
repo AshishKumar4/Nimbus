@@ -15,6 +15,8 @@ import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SessionFilesystem } from './session-filesystem.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import {
@@ -86,7 +88,11 @@ export interface ProgrammaticHost extends TimerHost {
   readonly runtimeWorkspace: NimbusWorkspace | null;
   shell: ProgrammaticShell | null;
   shellProcessPid: number | null;
-  sqliteFs: SqliteVFS | null;
+  readonly sqliteFs: SqliteVFS | null;
+  /** The session's filesystem resource, where the host owns one (NimbusSession): a destroy closes it. */
+  filesystem?: SessionFilesystem | null;
+  /** The namespace every file the caller names is read and changed through. */
+  getFilesystemAuthority(): ProcessFiles;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
   facetManagerComposed: ComposedFacetManager | null;
@@ -107,7 +113,6 @@ export interface ProgrammaticHost extends TimerHost {
   bundlePool?: { dispose(): void } | null;
   nimbusWrangler?: unknown;
   npmInstaller?: unknown;
-  _supervisorOps?: { forget(pid: number): void } | null;
   sessionBasePath?: string;
   sessionBasePathHydrated?: boolean;
   /** The origin the session was last reached at — what a path-form URL is built on. */
@@ -1195,17 +1200,17 @@ export async function rpcDeleteFile(
   cred?: VfsCred,
 ): Promise<void> {
   await ensureProgrammaticReady(self);
-  const p = String(path).replace(/^\/+/, '');
-  const vfs = self.sqliteFs!.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
+  const p = `/${String(path).replace(/^\/+/, '')}`;
+  const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
   // A delegation it meets is recalled first.
   await withRecall(() => {
-    if (!vfs.exists(p)) return;
-    if (vfs.isDirectory(p)) {
-      if (!options.recursive) vfs.rmdir(p);
-      else vfs.removeRecursive(p);
+    if (!fs.exists(p)) return;
+    if (fs.isDirectory(p)) {
+      if (!options.recursive) fs.rmdir(p);
+      else fs.removeRecursive(p);
       return;
     }
-    vfs.unlink(p);
+    fs.unlink(p);
   });
 }
 
@@ -1400,7 +1405,9 @@ async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> 
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
   try { self.terminal?.close?.(); } catch {}
 
-  self.sqliteFs = null;
+  const filesystem = self.filesystem;
+  self.filesystem = null;
+  await filesystem?.close();
   self.kernel = null;
   self.shell = null;
   self.shellProcessPid = null;
@@ -1417,7 +1424,6 @@ async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> 
   self._cirrusHmrWsClients = null;
   self.nimbusWrangler = null;
   self.npmInstaller = null;
-  self._supervisorOps = null;
   self._cpRegistry = null;
   self._viteShimPid = null;
   self._viteShimPort = null;

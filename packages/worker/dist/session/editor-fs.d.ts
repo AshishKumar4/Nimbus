@@ -1,5 +1,5 @@
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-type EditorFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFile' | 'mkdir' | 'writeFile' | 'readdir'>;
+import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
+type EditorFs = Pick<NamespaceFs, 'exists' | 'isDirectory' | 'readFile' | 'mkdir' | 'writeFile' | 'readdir'>;
 /**
  * The frame answering `msg`, computed again once a delegation it meets is
  * recalled (withRecall): the editor's reads and writes wait for a process

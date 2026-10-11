@@ -22,7 +22,7 @@
  */
 import type {
   Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure,
-  VfsRevision, VfsStat, VfsUsage, VfsWriteEvent, VfsWriteObserver,
+  VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
@@ -452,6 +452,8 @@ interface ViewShare {
   owner?: string;
   /** The delegations this view's process holds: its backends' lookups recall none of them (VFS.as). */
   holds?: () => ReadonlySet<string>;
+  /** Its reads read what has landed (VFS.as): they ask no holder. */
+  landed?: boolean;
 }
 
 function principalKey(principal: Principal): string {
@@ -473,6 +475,8 @@ export class CompositeVFS implements VFS {
   private readonly owner: string | undefined;
   /** The delegations this view's process holds (scoped's `holds`): presented to every backend it reaches. */
   private readonly holds: (() => ReadonlySet<string>) | undefined;
+  /** Whether its reads read what has landed (as's `landed`): presented to every backend it reaches. */
+  private readonly landed: boolean;
   /**
    * Views per principal, held weakly: one per principal while someone holds
    * it, none once no one does (a table serving thousands of agents does not
@@ -489,6 +493,7 @@ export class CompositeVFS implements VFS {
     this.check = shared?.check;
     this.owner = shared?.owner;
     this.holds = shared?.holds;
+    this.landed = shared?.landed === true;
     if (shared) {
       this.table = shared.table;
       this.viewer = shared.principal;
@@ -1200,15 +1205,18 @@ export class CompositeVFS implements VFS {
       table: this.table, principal: this.viewer, views: this.views, viewed: held === this.holds ? this.viewed : new WeakMap(), check: composed,
       ...(lease === undefined ? {} : { owner: lease }),
       ...(held === undefined ? {} : { holds: held }),
+      ...(this.landed ? { landed: true } : {}),
     });
   }
 
-  as(cred: VfsCred, actor?: string, options?: { holds?: () => ReadonlySet<string> }): CompositeVFS {
+  as(cred: VfsCred, actor?: string, options?: VfsViewOptions): CompositeVFS {
     const principal: Principal = actor === undefined ? { cred } : { cred, actor };
-    // A process's view (its holds) is its own, never the cached one.
-    if (options?.holds !== undefined) {
+    // A process's view (its holds) and a landed one are their own, never the cached one.
+    if (options?.holds !== undefined || options?.landed === true) {
       return new CompositeVFS(this.table.mounts.get(ROOT_POINT)!.source, undefined, {
-        table: this.table, principal, views: this.views, viewed: new WeakMap(), holds: options.holds,
+        table: this.table, principal, views: this.views, viewed: new WeakMap(),
+        ...(options.holds === undefined ? {} : { holds: options.holds }),
+        ...(options.landed === true ? { landed: true } : {}),
       });
     }
     const key = principalKey(principal);
@@ -1292,7 +1300,13 @@ export class CompositeVFS implements VFS {
     if (cred === null || found.as === undefined) return found;
     let view = this.viewed.get(found);
     // The actor goes with the credential: a backend's write events name the principal (observeWrites).
-    if (view === undefined) this.viewed.set(found, view = found.as(cred, this.viewer.actor, this.holds === undefined ? undefined : { holds: this.holds }));
+    if (view === undefined) {
+      const options = this.holds === undefined && !this.landed ? undefined : {
+        ...(this.holds === undefined ? {} : { holds: this.holds }),
+        ...(this.landed ? { landed: true } : {}),
+      };
+      this.viewed.set(found, view = found.as(cred, this.viewer.actor, options));
+    }
     return view;
   }
 

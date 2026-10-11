@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsWriteObserver } from './vfs.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
@@ -217,6 +217,8 @@ interface ViewShare {
     owner?: string;
     /** The delegations this view's process holds: its backends' lookups recall none of them (VFS.as). */
     holds?: () => ReadonlySet<string>;
+    /** Its reads read what has landed (VFS.as): they ask no holder. */
+    landed?: boolean;
 }
 export declare class CompositeVFS implements VFS {
     private readonly table;
@@ -231,6 +233,8 @@ export declare class CompositeVFS implements VFS {
     private readonly owner;
     /** The delegations this view's process holds (scoped's `holds`): presented to every backend it reaches. */
     private readonly holds;
+    /** Whether its reads read what has landed (as's `landed`): presented to every backend it reaches. */
+    private readonly landed;
     /**
      * Views per principal, held weakly: one per principal while someone holds
      * it, none once no one does (a table serving thousands of agents does not
@@ -452,9 +456,7 @@ export declare class CompositeVFS implements VFS {
      * presented to the backends it reaches (their views are its own then).
      */
     scoped(check: () => void, owner?: string, holds?: () => ReadonlySet<string>): CompositeVFS;
-    as(cred: VfsCred, actor?: string, options?: {
-        holds?: () => ReadonlySet<string>;
-    }): CompositeVFS;
+    as(cred: VfsCred, actor?: string, options?: VfsViewOptions): CompositeVFS;
     /** Who this view acts as. */
     get principal(): Principal;
     get sync(): SyncVFS;
