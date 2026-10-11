@@ -9287,8 +9287,8 @@ export class SqliteVFS {
         // cannot all wait for more before their file-ends.
         const lease = await at.reserve(record.inode.size);
         at.file = {
-          streamContentId: record.streamContentId, named: record.inode.path, placed, link: record.inode.kind === 'symlink',
-          mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
+          named: record.inode.path, placed, link: record.inode.kind === 'symlink',
+          mode: record.inode.mode, size: record.inode.size, held: [], index: at.index,
           credit: { left: record.inode.size, lease },
           ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
           ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
@@ -9297,17 +9297,10 @@ export class SqliteVFS {
         return true;
       }
       case 'file-chunk': {
+        // The decoder yields a file's chunks in order, each its size, after
+        // its file-begin and before its file-end (decodeWriteBatchStream).
         const file = at.file;
         if (file === null) return false;
-        at.setPhase('validation');
-        if (record.streamContentId !== file.streamContentId || record.path !== file.named) {
-          throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-        }
-        if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.size) {
-          throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-        }
-        file.nextChunk++;
-        file.received += record.data.byteLength;
         // Held under the wave's credit until the file's call.
         file.held.push({ data: record.data, release: () => record.retention.release() });
         return true;
@@ -9315,13 +9308,6 @@ export class SqliteVFS {
       case 'file-end': {
         const file = at.file;
         if (file === null) return false;
-        at.setPhase('validation');
-        if (record.streamContentId !== file.streamContentId) {
-          throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-        }
-        if (file.received !== file.size) {
-          throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
-        }
         at.setPhase('publish');
         try {
           await at.settleBefore();
@@ -9657,13 +9643,9 @@ export class SqliteVFS {
     /** Staging contents this stream created and has not yet published. */
     const ownedStaging = new Set<StagingContent>();
     let activeFile = null as {
-      streamContentId: string;
       /** The path the stream names it by; `inode.path` is where it lands. */
       named: string;
       inode: BatchInodeEntry;
-      /** Bytes received and the next positional chunk expected. */
-      received: number;
-      nextChunk: number;
       cutter: ContentCutter;
       /** Whole-file mode: the file commits in one group, its chunks held until file-end. */
       held: Piece[] | null;
@@ -9678,7 +9660,6 @@ export class SqliteVFS {
     } | null;
     /** A call's file (W7DataCall), its bytes gathered until its end. */
     let callFile: {
-      streamContentId: string;
       path: string;
       call: W7DataCall;
       mode: number;
@@ -9688,8 +9669,6 @@ export class SqliteVFS {
       umask?: number;
       description?: string;
       parts: Uint8Array[];
-      received: number;
-      nextChunk: number;
       /** Its whole size, reserved when it began: its chunks draw on it, and it is given back once the call is made. */
       credit: { left: number; lease: CreditLease | null };
     } | null = null;
@@ -10430,37 +10409,25 @@ export class SqliteVFS {
           const lease = record.inode.size === 0 ? null : await acquireCredit(record.inode.size, options.signal);
           if (lease !== null) callLeases.add(lease);
           callFile = {
-            streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
+            path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
             ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
             ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
             ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
             ...(record.inode.description === undefined ? {} : { description: record.inode.description }),
-            parts: [], received: 0, nextChunk: 0,
+            parts: [],
             credit: { left: record.inode.size, lease },
           };
           continue;
         }
         if (callFile !== null && record.type === 'file-chunk') {
-          phase = 'validation';
-          if (record.streamContentId !== callFile.streamContentId || record.path !== callFile.path) {
-            throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-          }
-          if (record.chunkId !== callFile.nextChunk || callFile.received + record.data.byteLength > callFile.size) {
-            throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-          }
-          callFile.nextChunk++;
-          callFile.received += record.data.byteLength;
           // Copied out, and the chunk's credit given back.
           callFile.parts.push(record.data.slice());
           record.retention.release();
           continue;
         }
         if (callFile !== null && record.type === 'file-end') {
-          phase = 'validation';
           const file = callFile;
           callFile = null;
-          if (record.streamContentId !== file.streamContentId) throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-          if (file.received !== file.size) throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
           phase = 'publish';
           const bytes = concatBytes(file.parts);
           file.parts = [];
@@ -10509,7 +10476,6 @@ export class SqliteVFS {
               break;
             }
             case 'file-begin': {
-              if (activeFile) throw vfsError('EINVAL', `nested streamed file ${record.inode.path}`);
               phase = 'validation';
               this.validateInodeContentShape(record.inode);
               phase = 'publish';
@@ -10545,11 +10511,8 @@ export class SqliteVFS {
               }
               phase = 'stage';
               activeFile = {
-                streamContentId: record.streamContentId,
                 named: record.inode.path,
                 inode: placedInode,
-                received: 0,
-                nextChunk: 0,
                 cutter: new ContentCutter(),
                 held: whole ? [] : null,
                 heldLeases: [],
@@ -10561,19 +10524,10 @@ export class SqliteVFS {
               break;
             }
             case 'file-chunk': {
+              // The decoder yields a file's chunks in order, each its size,
+              // between its file-begin and file-end (decodeWriteBatchStream).
               decodedRecordLease = record.retention;
-              phase = 'validation';
-              const file = activeFile;
-              if (!file
-                || record.streamContentId !== file.streamContentId
-                || record.path !== file.named) {
-                throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-              }
-              if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
-                throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-              }
-              file.nextChunk++;
-              file.received += record.data.byteLength;
+              const file = activeFile!;
               phase = 'stage';
               if (file.inode.size <= CHUNK_SIZE) {
                 // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
@@ -10587,14 +10541,7 @@ export class SqliteVFS {
               break;
             }
             case 'file-end': {
-              phase = 'validation';
-              const file = activeFile;
-              if (!file || record.streamContentId !== file.streamContentId) {
-                throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-              }
-              if (file.received !== file.inode.size) {
-                throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
-              }
+              const file = activeFile!;
               phase = 'publish';
               let content: InodeContent;
               if (file.inode.size === 0) content = { type: 'none' };
@@ -13011,16 +12958,13 @@ class GcQueue {
   }
 }
 
-/** A routed file arriving: its stream identity, where it was placed, and its chunks held until its call. */
+/** A routed file arriving: where it was named and placed, and its chunks held until its call. */
 interface RoutedFile {
-  streamContentId: string;
   named: string;
   placed: string;
   link: boolean;
   mode: number;
   size: number;
-  received: number;
-  nextChunk: number;
   held: { data: Uint8Array; release(): void }[];
   index: number;
   /** What its record reserved when admitted (its whole size), and how much of it its chunks have not drawn yet. */
