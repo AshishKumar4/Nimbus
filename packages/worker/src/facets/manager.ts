@@ -191,6 +191,7 @@ import {
 } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
   type FacetBundleProfile,
@@ -1992,13 +1993,7 @@ export class NimbusProcess extends DurableObject {
     // Its write log is kept in its own store (process-fs-journal.ts).
     globalThis.__nimbusFsJournalSql = ctx.storage.sql;
   }
-  // Pending while this isolate lives: the coordinator learns of its death
-  // (out of memory, out of CPU) by this call's rejection. Its resolver is
-  // kept on the object, so a collection never finds the promise unsettleable
-  // (which the runtime answers by rejecting it: "Promise will never complete").
-  held() {
-    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });
-  }
+
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -5567,6 +5562,7 @@ export class FacetManager {
     this.learnedServers = new LearnedServers(ctx.storage);
     this.env = parseFacetManagerEnv(env);
     this.processes = processes;
+    this.processes.setWorkObservation(() => hostActivity(ctx).acquire());
     this.portRegistry = portRegistry;
     this.hooks = hooks;
     // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.

@@ -602,7 +602,7 @@ export class NimbusWorkspace {
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
         accountWork: (worker: number) => processes.beginWork(worker),
-        holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => processes.holdWork(worker, stop),
+        holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal) => processes.holdWork(worker, stop, signal),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
@@ -777,7 +777,7 @@ function workspaceShellIdentity(
     },
     runAs: runAsProcess,
     accountWork: (worker: number) => processes.beginWork(worker),
-    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => processes.holdWork(worker, stop),
+    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal) => processes.holdWork(worker, stop, signal),
   });
 
   return commandIdentityFor(shellProcess.pid);

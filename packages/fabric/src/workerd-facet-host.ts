@@ -14,6 +14,7 @@
  */
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { hostActivity, HOST_WATCH_HEADER, observeResidentConfig } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
@@ -87,8 +88,6 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
-  /** Pending for as long as the process's isolate lives (a journaling resident's class: ProcessHostParams.journal). */
-  held(): Promise<never>;
   handleHttpRequest(request: Request): Promise<Response>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
@@ -453,6 +452,7 @@ function spawnResident(
   // is gone. Both cases are reported instead.
   let evaluated = false;
   let released = false;
+  const watchCapability = crypto.randomUUID();
   let markLost: (error: Error) => void = () => {};
   const lost = new Promise<never>((_, reject) => { markLost = reject; });
   lost.catch(() => {});
@@ -466,7 +466,7 @@ function spawnResident(
       throw gone;
     }
     evaluated = true;
-    return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
+    return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) };
   };
   const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
@@ -500,10 +500,12 @@ function spawnResident(
   facetOfPid(ctx).set(params.pid, name);
 
   let disposed = false;
+  let stopObserving = () => {};
   const release = async () => {
     if (disposed) return;
     disposed = true;
     released = true;
+    stopObserving();
     facetOfPid(ctx).delete(params.pid);
     endResidency();
     try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
@@ -559,17 +561,10 @@ function spawnResident(
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
   started.catch(() => {});
-  // A facet's isolate dies on its own (out of memory, out of CPU) and this
-  // object goes on (measured: the journal probe, 2026-10-07). A journaling
-  // resident's class holds held() open while its isolate lives, from its
-  // creation (a lifetime run is watched while it runs): a platform reset of
-  // it is the process lost too. Anything else that ends the call is not: a
-  // run's own stop aborts the facet with its stop record, and a release ends it.
-  if (params.journal) {
-    Promise.resolve().then(() => facet.held()).catch((error: unknown) => {
-      if (!released && isHostReset(error)) markLost(error instanceof Error ? error : new Error(String(error)));
-    });
-  }
+  stopObserving = hostActivity(ctx).observe(
+    (signal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } })),
+    (error) => { if (!released) markLost(error); },
+  );
   return {
     started,
     lost,
@@ -613,6 +608,7 @@ function residentProcessClass(
   supervisor: ResidentSupervisorProps,
   params: ProcessHostParams,
   loaderKey: string,
+  watchCapability: string,
 ): unknown {
   const loader = env.LOADER;
   if (!loader || typeof loader.get !== 'function') {
@@ -622,7 +618,11 @@ function residentProcessClass(
     );
   }
   return loader
-    .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+    .get(facetLoaderKey('process', loaderKey), async () => {
+      const config = observeResidentConfig(await residentWorkerConfig(env, disk, supervisor, params.boot), watchCapability);
+      assertModuleMapWithinCodeLimit(configModules(config));
+      return applyFacetLimits('process', config);
+    })
     .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 

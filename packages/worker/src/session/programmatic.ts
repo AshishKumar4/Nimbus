@@ -12,6 +12,7 @@ import { PID_GEN_STRIDE, execIdField, parseExecId, type ProcessEntry } from '@ni
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
@@ -1243,6 +1244,7 @@ async function destroySession(
   // admits no process, and a request that would ready the session waits for
   // the one it makes again (rpcDestroy, ensureRuntimeReady).
   self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+  hostActivity(self.ctx).close();
   const reason = typeof options.reason === 'string' && options.reason.trim()
     ? options.reason.trim().slice(0, 200)
     : null;

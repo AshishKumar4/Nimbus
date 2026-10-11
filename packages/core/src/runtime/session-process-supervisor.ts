@@ -38,6 +38,12 @@ import { exitCodeForSignal, parseSignalName, signalDisposition, type SignalAbort
 import type { VfsCred } from './os-contracts.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
 
+export interface ProcessWorkObservation {
+  readonly ready?: Promise<void>;
+  release(): void;
+}
+export type HeldProcessWork = (() => void) & Pick<ProcessWorkObservation, 'ready'>;
+
 /**
  * How long work still held for an ended process (holdWork) has to stop: the
  * session's bound on a holder that does not let go when asked, the one a
@@ -86,7 +92,8 @@ export class SessionProcessSupervisor implements ProcessOutput {
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
   /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
-  private readonly held = new Map<number, Set<{ stop: (reason?: SignalAbortReason) => void; stopped: boolean }>>();
+  private readonly held = new Map<number, Set<{ stop: (reason?: SignalAbortReason) => void; stopped: boolean; observation?: ProcessWorkObservation }>>();
+  private observeWork: ((pid: number) => ProcessWorkObservation) | null = null;
   /** Fires after every appendOutput/markExit once log persistence is wired. */
   private logActivity: (() => void) | null = null;
   /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -328,20 +335,34 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * host was lost: nothing of it here is left to unwind) is released at its
    * end.
    */
-  holdWork(pid: number, stop: (reason?: SignalAbortReason) => void): () => void {
-    const work = { stop, stopped: false };
+  setWorkObservation(observe: (pid: number) => ProcessWorkObservation): void {
+    this.observeWork = observe;
+    for (const [pid, pieces] of this.held) for (const work of pieces) {
+      work.observation?.release();
+      if (!work.stopped) work.observation = observe(pid);
+    }
+  }
+
+  holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork {
+    const work = { stop, stopped: false, observation: this.observeWork?.(pid) };
+    const stopObserving = () => work.observation?.release();
+    signal?.addEventListener('abort', stopObserving, { once: true });
+    if (signal?.aborted) stopObserving();
     let pieces = this.held.get(pid);
     if (!pieces) this.held.set(pid, pieces = new Set());
     pieces.add(work);
     let done = false;
-    return () => {
+    const release = () => {
       if (done) return;
       done = true;
+      signal?.removeEventListener('abort', stopObserving);
+      stopObserving();
       const now = this.held.get(pid);
       now?.delete(work);
       if (now?.size === 0) this.held.delete(pid);
       this.releaseEnded(pid);
     };
+    return Object.defineProperty(release, 'ready', { get: () => work.observation?.ready });
   }
 
   /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
@@ -352,6 +373,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     for (const work of this.held.get(pid) ?? []) {
       if (work.stopped) continue;
       work.stopped = true;
+      work.observation?.release();
       try { work.stop(reason); } catch { /* the process is going away regardless */ }
     }
   }

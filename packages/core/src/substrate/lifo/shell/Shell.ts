@@ -1,4 +1,5 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
+import type { HeldProcessWork } from '../../../runtime/session-process-supervisor.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
@@ -119,7 +120,7 @@ export interface ShellCommandIdentity {
    * holdWork). What the pid bound is released after the line has closed
    * what it opened, however the process ends.
    */
-  holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
+  holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork;
 }
 
 export class Shell {
@@ -320,6 +321,10 @@ export class Shell {
   }
 
   private bindTerminalInput(): void {
+    const terminal = this.terminal;
+    terminal.signal?.addEventListener('abort', () => {
+      if (this.terminal === terminal) this.abortController?.abort();
+    }, { once: true });
     this.terminal.onData((data, submission) => this.handleInput(data, submission));
     this.terminal.onSubmission?.((data, id, deliver, repl) => {
       const submission = new ShellInputSubmission(id, (event) => this.terminal.shellIntegration?.(event));
@@ -450,8 +455,9 @@ export class Shell {
     }
 
     const identity = this.resolveCommandIdentity(options?.commandContext);
-    const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason));
+    const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
     try {
+      if (stopped?.ready) await stopped.ready;
       const exitCode = await this.interpreter.executeLine(
         cmd,
         options?.terminalStdin,
@@ -1186,8 +1192,9 @@ export class Shell {
     this.terminal.write(COMMAND_START);
     let status: number | null = null;
     const identity = this.resolveCommandIdentity(undefined);
-    const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason));
+    const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
     try {
+      if (stopped?.ready) await stopped.ready;
       // Saved beside the line, which does not wait for it: a reader's recall
       // the save meets (core README, process model) costs the line nothing.
       // A save that fails loses that line's history, not the line.
