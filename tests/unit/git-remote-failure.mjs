@@ -195,6 +195,9 @@ try {
     assert.match(echoed.stderr, /^remote: denied for Basic <redacted>; /m, echoed.stderr);
     assert.doesNotMatch(echoed.stderr, /TOKEN-9|hunter2/, `no credential printed: ${echoed.stderr}`);
     assert.match(echoed.stderr, /clone https:\/\/127\.0\.0\.1\/r\.git with <redacted>/);
+    const encoded = await session.git('/home/user', ['clone', `http://git:secret%2Dpass@127.0.0.1:${server.address().port}/echo.git`, '/home/user/echoed-encoded']);
+    assert.equal(encoded.code, 128, encoded.stderr);
+    assert.match(encoded.stderr, /^remote: denied for Basic <redacted>; /m, 'the redactor uses the decoded credentials the transport actually sent');
     const unicode = await session.git('/home/user', ['clone', `${base}/echo.git`, '/home/user/echoed-unicode'], { GIT_USERNAME: 'git', GIT_PASSWORD: 'secret-密码' });
     assert.equal(unicode.code, 128, unicode.stderr);
     assert.match(unicode.stderr, /^remote: denied for Basic <redacted>; /m, unicode.stderr);
