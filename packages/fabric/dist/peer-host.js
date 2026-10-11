@@ -201,8 +201,8 @@ export class PeerHost {
                 record.closed = true;
                 return releasing ??= (async () => {
                     for (const [socket, release] of record.watchers) {
-                        socket.close(1000, 'process released');
                         release();
+                        socket.close(1000, 'process released');
                     }
                     const facet = await opened.promise.catch(() => null);
                     await facet?.release();
@@ -249,8 +249,8 @@ export class PeerHost {
             facet.lost.catch((error) => {
                 record.failure = error instanceof Error ? error : new Error(String(error));
                 for (const [socket, release] of record.watchers) {
-                    socket.close(1011, 'process host lost');
                     release();
+                    socket.close(1011, 'process host lost');
                 }
             });
             await located;
@@ -412,11 +412,11 @@ export class PeerHost {
                 if (released)
                     return;
                 released = true;
-                request.signal.removeEventListener('abort', aborted);
+                request.signal.removeEventListener('abort', ended);
                 record.watchers.delete(held);
                 lease.release();
             };
-            const aborted = () => { held?.close(1000, 'watch aborted'); release(); };
+            const ended = () => { release(); held?.close(); };
             try {
                 await lease.ready;
                 request.signal.throwIfAborted();
@@ -427,10 +427,10 @@ export class PeerHost {
                 const [client, server] = Object.values(new WebSocketPair());
                 held = server;
                 record.watchers.set(server, release);
-                server.addEventListener('close', (event) => { server.close(event.code, event.reason); release(); });
-                server.addEventListener('error', release);
+                server.addEventListener('close', ended);
+                server.addEventListener('error', ended);
                 server.accept();
-                request.signal.addEventListener('abort', aborted, { once: true });
+                request.signal.addEventListener('abort', ended, { once: true });
                 return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
             }
             catch (error) {

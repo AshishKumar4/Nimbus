@@ -94,6 +94,7 @@ for (const code of [1000, 1005, 1006, 'error']) {
   const peer = [...t.peers.values()][0];
   const record = [...peer.peerHost.records.values()][0];
   const server = [...record.watchers.keys()][0];
+  assert.equal(hostActivity(peer.ctx).owners.size, 1);
   const replies = [], close = server.close.bind(server);
   server.close = (...args) => { replies.push({ args, owners: record.watchers.size }); close(...args); };
   // An incoming transport failure can carry a reserved code, or only an error.
@@ -103,6 +104,7 @@ for (const code of [1000, 1005, 1006, 'error']) {
   try {
     server.dispatchEvent(event);
     assert.equal(record.watchers.size, 0, 'every close/error releases the peer activity owner');
+    assert.equal(hostActivity(peer.ctx).owners.size, 0, 'the peer releases its own facet observation');
     assert.deepEqual(replies, [{ args: [], owners: 0 }], 'cleanup precedes an argument-free reply, never an echoed reserved code');
     server.dispatchEvent(event);
     assert.equal(record.watchers.size, 0, 'duplicate close/error is harmless');
