@@ -120,6 +120,32 @@ for (const [what, end] of [
   console.log(`  ${what} releases what the process held`);
 }
 
+// ── A lease a process takes for itself ends with it too ────────────────────
+// Red before: a plain (undelegated) exclusive lease was the engine's alone,
+// so a process killed holding one left its subtree held for the session's
+// life. Released by the process, it is gone at once and nothing is left to
+// end with it.
+{
+  const s = session();
+  const { pid } = s.processes.spawn('node build.js', [], '/home/user', { cred: user });
+  const kept = await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo'], pid });
+  assert.equal(s.engine.hasExclusiveMutation(), true, 'the process holds the subtree');
+  s.processes.kill(pid, 137);
+  assert.equal(s.engine.hasExclusiveMutation(), false, 'a killed holder leaves nothing held');
+  s.kernel.writeFile('home/user/repo/after', 'free');
+  assert.ok(kept.owner);
+
+  const { pid: other } = s.processes.spawn('node build.js', [], '/home/user', { cred: user });
+  const lease = await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo'], pid: other });
+  await s.op({ op: 'fsReleaseExclusiveMutation', args: [lease.owner], pid: other });
+  assert.equal(s.engine.hasExclusiveMutation(), false, 'one it gives back is gone');
+  const again = await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo'], pid: other });
+  s.processes.exit(other, 0);
+  assert.equal(s.engine.hasExclusiveMutation(), false, 'and one it still held at exit too');
+  assert.ok(again.owner);
+  console.log('  a lease a process takes for itself ends with it');
+}
+
 // ── A lost host ends a facet's process, which releases its delegation: the
 //    session's destroy that follows at once is not refused ──────────────────
 {

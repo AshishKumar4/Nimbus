@@ -44,6 +44,8 @@ function statOf(stat: SqliteStat, epoch: string): VfsStat {
 }
 
 export class SqliteFiles implements VFS {
+  /** VFS.storesWrites: a regular file holds what it was written. */
+  readonly storesWrites = true;
   readonly sync: SyncVFS = this as unknown as SyncVFS;
   /** The database's change feed, in this principal's view (names it could list). */
   readonly changes: VfsChanges;

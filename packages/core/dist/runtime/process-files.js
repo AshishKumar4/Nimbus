@@ -225,17 +225,35 @@ class GuardedProcessBridge {
     acquireExclusiveMutation(path, options) {
         this.guard();
         const delegate = options?.delegate;
-        if (delegate === undefined || this.pid === undefined)
+        if (this.pid === undefined)
             return this.target.acquireExclusiveMutation(path, options);
         // A delegation is the process's: it ends with the process's scope.
-        return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
+        if (delegate !== undefined)
+            return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
+        // So does a lease it takes for itself: a process that ends holding one
+        // (killed, its host lost) leaves no subtree held behind it.
+        const lease = this.target.acquireExclusiveMutation(path, options);
+        const end = () => {
+            this.scope.leases.delete(lease.owner);
+            this.target.releaseExclusiveMutation(lease.owner);
+        };
+        this.scope.leases.set(lease.owner, end);
+        this.scope.subscriptions.add(end);
+        return lease;
     }
     releaseExclusiveMutation(owner) {
         this.guard();
-        if (this.pid !== undefined && this.delegations.holds(this.pid, owner))
+        if (this.pid !== undefined && this.delegations.holds(this.pid, owner)) {
             this.delegations.release(this.pid, owner);
-        else
+            return;
+        }
+        const end = this.scope.leases.get(owner);
+        if (end === undefined) {
             this.target.releaseExclusiveMutation(owner);
+            return;
+        }
+        this.scope.subscriptions.delete(end);
+        end();
     }
     awaitRecall(owner, waitMs) {
         this.guard();
@@ -615,11 +633,6 @@ function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
-/**
- * The engine keys of `view`'s mount points, a source absent now included
- * (one can answer later, with no mount or unmount): none of what is at or
- * under one is the engine's.
- */
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {
     return view.mounts().some((mount) => isEmbedderMount(mount.point));
