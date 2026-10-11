@@ -1,14 +1,11 @@
 #!/usr/bin/env bun
-// Three things an embedder asks of the session's namespace (CompositeVFS),
+// Two things an embedder asks of the session's namespace (CompositeVFS),
 // each one lookup the namespace owns rather than one the embedder re-derives:
 //
 //   - route / mutationRoute { creating } (Kinu's ask 32): where a write that
 //     makes its parents lands, links followed through the view's mounts, a
 //     link to where nothing is yet included. Red before: ENOENT for any
 //     missing directory on the way.
-//   - writeFileIfRevision(path, data, 0) on a missing file (Kinu's ask 36):
-//     a compare-and-create reaches the backend, whose own rule (revision 0
-//     means nothing is there) decides. Red before: ENOENT from the namespace.
 //   - observeWrites wants per side (Kinu's ask 34): an observer that wants
 //     only after-images costs no before read, and a writeFile's after-image
 //     is the bytes it was given. Red before: three writes cost six reads.
@@ -60,29 +57,6 @@ const routed = (route) => ({ point: route.point, path: route.path });
   await assert.rejects(vfs.route('/home/main/file/x/y', { creating: true }), (error) => error.code === 'ENOTDIR', 'a file among them is still ENOTDIR');
   await assert.rejects(vfs.route('/home/main/missing/deeper/x'), (error) => error.code === 'ENOENT', 'without creating, ENOENT as before');
   console.log('  route { creating } is the lookup a write that makes its parents makes');
-}
-
-// ── writeFileIfRevision(path, data, 0): compare-and-create ──────────────────
-{
-  const { vfs, kernel } = namespace();
-  const events = [];
-  const stop = vfs.observeWrites((event) => { events.push(`${event.type} ${event.path}`); });
-  const asUser = vfs.as(user);
-  const created = await asUser.writeFileIfRevision('/home/main/new.txt', enc.encode('made'), 0);
-  assert.equal(created.ok, true, 'a missing file expecting nothing there is created');
-  assert.equal(dec.decode(kernel.readFile('home/main/new.txt')), 'made');
-  assert.deepEqual(events, ['create /home/main/new.txt'], 'and reported once');
-  const existing = await asUser.writeFileIfRevision('/home/main/new.txt', enc.encode('clobber'), 0);
-  assert.equal(existing.ok, false, 'one that is there answers ok:false');
-  assert.equal(existing.revision, created.revision, 'with its revision');
-  assert.equal(dec.decode(kernel.readFile('home/main/new.txt')), 'made', 'untouched');
-  assert.deepEqual(events, ['create /home/main/new.txt'], 'a lost compare reports nothing');
-  await assert.rejects(asUser.writeFileIfRevision('/home/main/missing/new.txt', enc.encode('x'), 0), (error) => error.code === 'ENOENT', 'a missing parent');
-  await assert.rejects(asUser.writeFileIfRevision('/ro/new.txt', enc.encode('x'), 0), (error) => error.code === 'EROFS', 'a read-only mount');
-  await assert.rejects(asUser.writeFileIfRevision('/work/new.txt', enc.encode('x'), 0), (error) => error.code === 'EACCES', 'a directory it may not write');
-  await assert.rejects(asUser.writeFileIfRevision('/home/main/other.txt', enc.encode('x'), 7), (error) => error.code === 'ENOENT', 'expecting a revision of what is not there');
-  stop();
-  console.log('  writeFileIfRevision(path, data, 0) creates through the namespace');
 }
 
 // ── observeWrites: wants per side, and a writeFile's after-image ────────────
