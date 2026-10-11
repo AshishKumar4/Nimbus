@@ -9805,6 +9805,145 @@ error: the Oxc transform crashed (${reason})`);
     }
   }
 
+  var PREFIX_END =   Symbol("prefix end");
+  var NODE_MODULE = { "node:module": true, module: true };
+  function isImportMetaUrl(node) {
+    return node.type === "MemberExpression" && !node.computed && node.object.type === "MetaProperty" && node.object.meta.name === "import" && node.property.type === "Identifier" && node.property.name === "url";
+  }
+  function isLiteral(node) {
+    if (node === null || node === void 0) return true;
+    if (node.type === "Literal") return true;
+    if (node.type === "TemplateLiteral") return node.expressions.length === 0;
+    if (node.type === "UnaryExpression") return (node.operator === "-" || node.operator === "+" || node.operator === "!") && node.argument.type === "Literal";
+    return false;
+  }
+  function hoistableRequires(code) {
+    if (!code.includes("createRequire")) return [];
+    const createRequires =   new Set();
+    const moduleNamespaces =   new Set();
+    const compileCaches =   new Set();
+    const requires =   new Set();
+    const found = [];
+    const isCreateRequire = (node) => {
+      if (node.type !== "CallExpression" || node.arguments.length !== 1 || !isImportMetaUrl(node.arguments[0])) return false;
+      const callee = node.callee;
+      if (callee.type === "Identifier") return createRequires.has(callee.name);
+      return callee.type === "MemberExpression" && !callee.computed && callee.object.type === "Identifier" && moduleNamespaces.has(callee.object.name) && callee.property.type === "Identifier" && callee.property.name === "createRequire";
+    };
+    const requireOf = (node) => {
+      if (node.type !== "CallExpression" || node.arguments.length !== 1) return null;
+      const argument = node.arguments[0];
+      if (argument.type !== "Literal" || typeof argument.value !== "string") return null;
+      const callee = node.callee;
+      if (callee.type === "Identifier" && requires.has(callee.name) || isCreateRequire(callee)) return argument.value;
+      return null;
+    };
+    const isCompileCache = (node) => {
+      if (node.type !== "CallExpression") return false;
+      if (!node.arguments.every((argument) => isLiteral(argument))) return false;
+      const callee = node.callee;
+      if (callee.type === "Identifier") return compileCaches.has(callee.name);
+      return callee.type === "MemberExpression" && !callee.computed && callee.object.type === "Identifier" && moduleNamespaces.has(callee.object.name) && callee.property.type === "Identifier" && callee.property.name === "enableCompileCache";
+    };
+    const quietClass = (node) => {
+      if (node.type !== "ClassDeclaration") return false;
+      if (node.superClass && node.superClass.type !== "Identifier") return false;
+      return node.body.body.every((member) => {
+        if (member.type === "StaticBlock") return false;
+        if (member.computed) return false;
+        if (member.type === "PropertyDefinition" && member.static) return isLiteral(member.value);
+        return true;
+      });
+    };
+    const quiet = (statement) => {
+      switch (statement.type) {
+        case "ImportDeclaration": {
+          const source = String(statement.source.value);
+          for (const specifier of statement.specifiers) {
+            if (!NODE_MODULE[source]) continue;
+            if (specifier.type === "ImportSpecifier") {
+              const imported = specifier.imported.type === "Identifier" ? specifier.imported.name : String(specifier.imported.value);
+              if (imported === "createRequire") createRequires.add(specifier.local.name);
+              else if (imported === "enableCompileCache") compileCaches.add(specifier.local.name);
+            } else {
+              moduleNamespaces.add(specifier.local.name);
+            }
+          }
+          return true;
+        }
+        case "ExportAllDeclaration":
+          return true;
+        case "ExportNamedDeclaration":
+          return statement.declaration ? quiet(statement.declaration) : true;
+        case "EmptyStatement":
+        case "FunctionDeclaration":
+          return true;
+        case "ClassDeclaration":
+          return quietClass(statement);
+        case "VariableDeclaration": {
+          for (const declarator of statement.declarations) {
+            const init = declarator.init;
+            if (isLiteral(init)) continue;
+            if (init && isCreateRequire(init)) {
+              if (declarator.id.type === "Identifier") requires.add(declarator.id.name);
+              continue;
+            }
+            const specifier = init ? requireOf(init) : null;
+            if (specifier === null) return false;
+            found.push(specifier);
+          }
+          return true;
+        }
+        case "ExpressionStatement": {
+          const expression = statement.expression;
+          if (expression.type === "Literal") return true;
+          if (isCompileCache(expression)) return true;
+          const specifier = requireOf(expression);
+          if (specifier === null) return false;
+          found.push(specifier);
+          return true;
+        }
+        default:
+          return false;
+      }
+    };
+    try {
+      parseStatements(code, MODULE_PARSE_OPTIONS, {
+        onStatement: (statement) => {
+          if (!quiet(statement)) throw PREFIX_END;
+        }
+      });
+    } catch (error) {
+      if (error !== PREFIX_END && !(error instanceof SyntaxError) && !(error instanceof RangeError)) throw error;
+    }
+    return found;
+  }
+  function hasTopLevelAwait(code) {
+    if (!code.includes("await")) return false;
+    const awaits = [];
+    try {
+      parseStatements(code, MODULE_PARSE_OPTIONS, {
+        onNode(node) {
+          if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
+          else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+            while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start) awaits.pop();
+          }
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof SyntaxError) && !(error instanceof RangeError)) throw error;
+      return false;
+    }
+    return awaits.length > 0;
+  }
+  function esModuleFacts(code) {
+    const requires = hoistableRequires(code);
+    return {
+      ...hasTopLevelAwait(code) ? { topLevelAwait: true } : {},
+      ...requires.length > 0 ? { requires } : {}
+    };
+  }
+
   var BUN_SCOPE_NAMES = ["require", "__filename", "__dirname"];
   function bunScopeNames(code) {
     const named = BUN_SCOPE_NAMES.filter((name) => code.includes(name));
@@ -9826,6 +9965,13 @@ error: the Oxc transform crashed (${reason})`);
     });
     for (const id of ids) declared.add(id.name);
     return named.filter((name) => !declared.has(name));
+  }
+  function readEsModule(code, scope) {
+    return {
+      ...readModuleImportSites(code),
+      ...esModuleFacts(code),
+      ...scope === "bun" ? { commonJsNames: bunScopeNames(code) } : {}
+    };
   }
 
   var NODE_RELEASE = "22.22.3";
@@ -10006,7 +10152,7 @@ error: the Oxc transform crashed (${reason})`);
     return btoa(binary);
   }
 
-  var runtime = { rewriteDynamicImports, readModuleImportSites, bunScopeNames, rewriteProvidedCommonJsModules, stripTypeScript };
+  var runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules, stripTypeScript };
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
     __nimbusTransformRuntime: runtime

@@ -67,10 +67,10 @@ export interface Interpreter {
     /**
      * The module cell for a file's text: Node's wrapper function of
      * (exports, require, module, __filename, __dirname). CommonJS text runs as
-     * that function's body; an ES module linked as the next launch's lowering
-     * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
+     * that function's body; an ES module is linked as runtime/esm-interop.ts
+     * says, with the host's moduleHelpers. `javaScript`: the text is
+     * JavaScript whatever the path's extension (a TypeScript file's emit).
      */
-    /** `javaScript`: the text is JavaScript whatever the path's extension (a TypeScript file's emit). */
     compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean): ModuleCell;
     /**
      * A function returning the value of the script `code` when it is one
@@ -91,14 +91,6 @@ export interface Interpreter {
  * import() prefetch (node-shims.ts) finds what to fetch with it.
  */
 export declare function moduleRequests(path: string, text: string): ModuleRequest[];
-/**
- * Whether an ES module's text awaits at its top level (an `await`, or a
- * `for await`, outside any function): the module's evaluation can suspend.
- * Text the parser cannot read as a module has none. The process asks only of
- * a module whose body began and has not completed (node-shims'
- * __nimbusEsmSuspends).
- */
-export declare function hasTopLevelAwait(text: string): boolean;
 /**
  * Where V8 would place a fatal error's report in `text`, a module's whole
  * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the

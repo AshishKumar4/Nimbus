@@ -19,7 +19,7 @@ import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
 import type { ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import {
-  builtinFacadeModule, commonJsFacadeModule, ESM_FACADE_DIR, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
+  builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
   stageEsModule, type StagedEsModule,
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
@@ -35,13 +35,19 @@ import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
  * a staged ES module (the cell at a VFS key) with the ids of the rows its
  * static imports load (-1 for a refused one), the facade of the CommonJS
  * cell at a key, the facade of a builtin or a package the process provides,
- * or the JSON module of the file at a key. Each names its map module.
+ * or the JSON module of the file at a key. A row's map module is its name
+ * (esmRowName): its cell's module for a staged module, else its facade by id.
  */
 export type EsmModuleRow =
-  | readonly [kind: 'module', key: string, name: string, targets: readonly number[], bunScope?: 1]
-  | readonly [kind: 'commonjs', key: string, name: string]
-  | readonly [kind: 'builtin', builtin: string, name: string]
-  | readonly [kind: 'json', key: string, name: string];
+  | readonly [kind: 'module', key: string, targets: readonly number[], flags?: number]
+  | readonly [kind: 'commonjs', key: string]
+  | readonly [kind: 'builtin', builtin: string]
+  | readonly [kind: 'json', key: string];
+
+/** The map module of row `id` (node-shims' __nimbusEsmName reads it so). */
+export function esmRowName(row: EsmModuleRow, id: number): string {
+  return row[0] === 'module' ? commonJsCellModuleName(row[1]) : `${ESM_FACADE_DIR}${id}.js`;
+}
 
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
@@ -62,6 +68,8 @@ export interface EsmStage {
   readonly table: EsmModuleRow[];
   /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
   readonly missing: EsmMissing[];
+  /** How long staging took, in milliseconds: the launch's debug line. */
+  readonly ms: number;
 }
 
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
@@ -91,6 +99,18 @@ function isNodeBuiltin(specifier: string): boolean {
 export interface EsmStageFs {
   readonly files: BridgeRequireFs;
   realpath(path: string): Promise<string>;
+  /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
+  held?(key: string): string | undefined;
+}
+
+/** `make()`'s promise, once per key of `cache`. */
+function once<T>(cache: Map<string, Promise<T>>, key: string, make: () => Promise<T>): Promise<T> {
+  let found = cache.get(key);
+  if (found === undefined) {
+    found = make();
+    cache.set(key, found);
+  }
+  return found;
 }
 
 /** A refusal's error, as the process rebuilds it. */
@@ -109,9 +129,11 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }: {
+  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
+    /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
+    typeScript?: boolean;
     conditions: readonly string[];
     /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
     scope?: ModuleScope;
@@ -122,6 +144,7 @@ export async function stageEsModules(
     gate: boolean;
   },
 ): Promise<EsmStage> {
+  const started = Date.now();
   const table: EsmModuleRow[] = [];
   const members: Record<string, string> = {
     [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
@@ -133,7 +156,8 @@ export async function stageEsModules(
   for (const [key, { sites }] of cells) {
     const targets: number[] = [];
     targetIds.push(targets);
-    table.push(sites.commonJsNames?.length ? ['module', key, commonJsCellModuleName(key), targets, 1] : ['module', key, commonJsCellModuleName(key), targets]);
+    const flags = (sites.commonJsNames?.length ? ESM_BUN_SCOPE : 0) | (sites.topLevelAwait ? ESM_TOP_LEVEL_AWAIT : 0);
+    table.push(flags === 0 ? ['module', key, targets] : ['module', key, targets, flags]);
   }
   const ids = new Map<string, number>();
   for (let id = 0; id < table.length; id++) ids.set(`module:${table[id]![1]}`, id);
@@ -143,32 +167,50 @@ export async function stageEsModules(
     let id = ids.get(`${kind}:${key}`);
     if (id === undefined) {
       id = table.length;
-      const name = `${ESM_FACADE_DIR}${id}.js`;
-      table.push([kind, key, name] as EsmModuleRow);
+      const row: EsmModuleRow = [kind, key];
+      const name = esmRowName(row, id);
+      table.push(row);
       members[name] = source(id, name);
       ids.set(`${kind}:${key}`, id);
     }
     return id;
   };
-  const readText = async (path: string): Promise<string | null> => {
-    try { return await fs.files.readFileString(stripLeadingSlashes(path)); } catch { return null; }
+  // Each filesystem question once per staging, the launch's own cells
+  // first: a graph's modules share their directories, packages and
+  // manifests, and asks them thousands of times.
+  const kinds = new Map<string, Promise<'file' | 'directory' | null>>();
+  const reals = new Map<string, Promise<string>>();
+  const texts = new Map<string, Promise<string | null>>();
+  const requires = new Map<string, Promise<string | null>>();
+  const readText = (path: string): Promise<string | null> => {
+    const key = stripLeadingSlashes(path);
+    return once(texts, key, async () => {
+      const held = fs.held?.(key);
+      if (held !== undefined) return held;
+      try { return await fs.files.readFileString(key); } catch { return null; }
+    });
   };
-  const requireResolve = async (specifier: string, fromPath: string): Promise<string | null> => {
+  const requireResolve = (specifier: string, fromPath: string): Promise<string | null> => {
     const fromDir = stripLeadingSlashes(fromPath.slice(0, fromPath.lastIndexOf('/')));
-    const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
-    return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+    return once(requires, `${fromDir}\n${specifier}`, async () => {
+      const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
+      return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+    });
   };
   const resolver = createEsmResolver({
-    async kind(path) {
+    kind(path) {
       const key = stripLeadingSlashes(path);
-      if (!(await fs.files.exists(key))) return null;
-      return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+      return once(kinds, key, async () => {
+        if (fs.held?.(key) !== undefined) return 'file';
+        if (!(await fs.files.exists(key))) return null;
+        return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+      });
     },
-    realpath: (path) => fs.realpath(path),
+    realpath: (path) => once(reals, path, () => fs.realpath(path)),
     readText,
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,
-  }, { conditions, cwd: () => cwd });
+  }, { conditions, cwd: () => cwd, stripTypes: typeScript });
   const exportNames = async (path: string) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
   const notStaged = (path: string) => Object.assign(
     new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED },
@@ -207,9 +249,10 @@ export async function stageEsModules(
     return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
   };
 
-  const modules = new Map<string, StagedEsModule>();
+  // Each module's static imports, as the registry links them.
+  const targetNames: string[][] = [];
   let id = 0;
-  for (const [key, { code, sites }] of cells) {
+  for (const [key, { sites }] of cells) {
     const parentUrl = new URL('file://');
     parentUrl.pathname = '/' + key;
     const targets: string[] = [];
@@ -229,17 +272,68 @@ export async function stageEsModules(
           });
         const row = await target(resolution, site.attributes);
         rowTargets.push(row);
-        targets.push(table[row]![2]);
+        targets.push(esmRowName(table[row]!, row));
       } catch (error) {
         rowTargets.push(-1);
         targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
         missing.push(refusal(error));
       }
     }
+    targetNames.push(targets);
+    id++;
+  }
+
+  // The require() calls a module's top level can make static imports
+  // (core runtime/esm-require-hoist.ts): each while its target is a staged
+  // ES module whose graph neither holds the module nor awaits at its top
+  // level, so the registry evaluates it, before the body, where Node's
+  // require() would. The first that cannot be hoisted is left to its call,
+  // and every later one with it, to keep Node's order.
+  const hoisted: string[][] = [];
+  id = 0;
+  for (const [key, { sites }] of cells) {
+    const names: string[] = [];
+    for (const specifier of sites.requires ?? []) {
+      const found = await requireResolve(specifier, '/' + key);
+      const target = found === null ? undefined : ids.get(`module:${stripLeadingSlashes(found)}`);
+      if (target === undefined || !hoistable(table, id, target)) break;
+      targetIds[id]!.push(target);
+      names.push(esmRowName(table[target]!, target));
+    }
+    hoisted.push(names);
+    id++;
+  }
+
+  const modules = new Map<string, StagedEsModule>();
+  id = 0;
+  for (const [key, { code, sites }] of cells) {
     modules.set(key, stageEsModule(code, sites, {
-      id, name: commonJsCellModuleName(key), targets, ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
+      id, name: commonJsCellModuleName(key), targets: targetNames[id]!,
+      ...(hoisted[id]!.length > 0 ? { hoisted: hoisted[id] } : {}),
+      ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
     }));
     id++;
   }
-  return { modules, members, table, missing };
+  return { modules, members, table, missing, ms: Date.now() - started };
+}
+
+/**
+ * Whether the module of row `requirer` may import row `target` in place of
+ * requiring it: no module of `target`'s graph is `requirer` or awaits at its
+ * top level.
+ */
+function hoistable(table: readonly EsmModuleRow[], requirer: number, target: number): boolean {
+  const seen = new Set<number>();
+  const stack = [target];
+  while (stack.length > 0) {
+    const at = stack.pop()!;
+    if (at < 0 || seen.has(at)) continue;
+    seen.add(at);
+    if (at === requirer) return false;
+    const row = table[at]!;
+    if (row[0] !== 'module') continue;
+    if (((row[3] ?? 0) & ESM_TOP_LEVEL_AWAIT) !== 0) return false;
+    stack.push(...row[2]);
+  }
+  return true;
 }

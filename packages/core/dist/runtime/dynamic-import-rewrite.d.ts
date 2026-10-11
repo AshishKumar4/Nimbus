@@ -26,8 +26,12 @@ export interface ImportSites {
     readonly statics: readonly StaticSpecifierSite[];
     /** An import or export declaration, or import.meta: the text is an ES module. */
     readonly moduleSyntax: boolean;
-    /** In Bun's scope, the CommonJS names its meta instance binds (native-esm.ts bunScopeNames). */
+    /** What staging reads beside the sites (native-esm.ts readEsModule): in Bun's scope, the CommonJS names its meta instance binds. */
     readonly commonJsNames?: readonly string[];
+    /** It awaits at its top level (esm-require-hoist.ts hasTopLevelAwait). */
+    readonly topLevelAwait?: true;
+    /** The require() calls of its top level staging may hoist (esm-require-hoist.ts hoistableRequires). */
+    readonly requires?: readonly string[];
 }
 /**
  * An ES module's import() calls, import.meta and static specifiers, as the

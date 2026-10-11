@@ -21,9 +21,12 @@ import { type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
  * a staged ES module (the cell at a VFS key) with the ids of the rows its
  * static imports load (-1 for a refused one), the facade of the CommonJS
  * cell at a key, the facade of a builtin or a package the process provides,
- * or the JSON module of the file at a key. Each names its map module.
+ * or the JSON module of the file at a key. A row's map module is its name
+ * (esmRowName): its cell's module for a staged module, else its facade by id.
  */
-export type EsmModuleRow = readonly [kind: 'module', key: string, name: string, targets: readonly number[], bunScope?: 1] | readonly [kind: 'commonjs', key: string, name: string] | readonly [kind: 'builtin', builtin: string, name: string] | readonly [kind: 'json', key: string, name: string];
+export type EsmModuleRow = readonly [kind: 'module', key: string, targets: readonly number[], flags?: number] | readonly [kind: 'commonjs', key: string] | readonly [kind: 'builtin', builtin: string] | readonly [kind: 'json', key: string];
+/** The map module of row `id` (node-shims' __nimbusEsmName reads it so). */
+export declare function esmRowName(row: EsmModuleRow, id: number): string;
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
     readonly name: string;
@@ -42,6 +45,8 @@ export interface EsmStage {
     readonly table: EsmModuleRow[];
     /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
     readonly missing: EsmMissing[];
+    /** How long staging took, in milliseconds: the launch's debug line. */
+    readonly ms: number;
 }
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
 export declare const ESM_MISSING_DIR = "nimbus/missing/";
@@ -56,6 +61,8 @@ export declare const ESM_NOT_STAGED = "ERR_NIMBUS_NOT_STAGED";
 export interface EsmStageFs {
     readonly files: BridgeRequireFs;
     realpath(path: string): Promise<string>;
+    /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
+    held?(key: string): string | undefined;
 }
 /**
  * Stage `cells`, the launch's ES modules (their code and import sites, by VFS
@@ -65,9 +72,11 @@ export interface EsmStageFs {
 export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string, {
     readonly code: string;
     readonly sites: ImportSites;
-}>, { conditions, cwd, isCode, gate, scope, stripsTypes }: {
+}>, { conditions, cwd, isCode, gate, scope, stripsTypes, typeScript }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
+    /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
+    typeScript?: boolean;
     conditions: readonly string[];
     /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
     scope?: ModuleScope;

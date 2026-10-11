@@ -17,8 +17,8 @@
 import assert from 'node:assert/strict';
 import { CASES, DIVERGENT } from '../fixtures/transform-differential/cases.mjs';
 import { generateTransformFacetRuntimeSource } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { rewriteDynamicImports, readModuleImportSites } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
-import { bunScopeNames } from '../../packages/core/src/runtime/native-esm.ts';
+import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
+import { readEsModule } from '../../packages/core/src/runtime/native-esm.ts';
 import { rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/provided-packages.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
@@ -26,7 +26,7 @@ import { oxcEngine } from './lib/oxc-engine.mjs';
 
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 // What the transform facet's preamble installs beside its engine.
-const runtime = { rewriteDynamicImports, readModuleImportSites, bunScopeNames, rewriteProvidedCommonJsModules };
+const runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules };
 
 // esbuild as Nimbus ran it: the browser build over the compiled wasm.
 const esbuild = await esbuildEngine();

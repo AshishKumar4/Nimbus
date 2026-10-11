@@ -77,6 +77,16 @@ const FILES = {
   'req/later.mjs': "import { createRequire } from 'node:module';\nconst ns = await import('./nodefault.mjs');\nconst required = createRequire(import.meta.url)('./nodefault.mjs');\nconsole.log(required === ns);\n",
   'req/cycle-a.mjs': "import './cycle-b.mjs';\nexport const a = 1;\n",
   'req/cycle-b.mjs': "import { createRequire } from 'node:module';\ntry { createRequire(import.meta.url)('./cycle-a.mjs'); } catch (e) { console.log(e.code); }\n",
+  // A bin that loads its program through require() first (pi's): staging
+  // imports it (esm-require-hoist.ts); one whose prefix is observable keeps
+  // the require at its call.
+  'hoist/bin.mjs': '#!/usr/bin/env node\nimport { createRequire, enableCompileCache } from "node:module";\n\nenableCompileCache();\ncreateRequire(import.meta.url)("./app.mjs");\n',
+  'hoist/app.mjs': "import { dep } from './dep.mjs';\nconsole.log('app', dep, typeof import.meta.url);\nexport const ready = true;\n",
+  'hoist/dep.mjs': "console.log('dep');\nexport const dep = 1;\n",
+  'hoist/observed.mjs': "import { createRequire } from 'node:module';\nconsole.log('before');\nconst ns = createRequire(import.meta.url)('./app2.mjs');\nconsole.log('after', ns.v, Object.keys(ns));\n",
+  'hoist/app2.mjs': "console.log('app2');\nexport default 1;\nexport const v = 2;\n",
+  // require() of an evaluated graph with top-level await still refuses it.
+  'req/tla-after.mjs': "import { createRequire } from 'node:module';\nawait import('./tla.mjs');\ntry { createRequire(import.meta.url)('./tla.mjs'); } catch (e) { console.log(e.code); }\n",
   // A throw stops the graph where Node's evaluation stops.
   'stop/c.mjs': "console.log('c');\n",
   'stop/thrower.mjs': "console.log('thrower');\nthrow new Error('boom');\n",
@@ -90,6 +100,10 @@ const FILES = {
   // CommonJS names in an ES module's scope; a typeless .js that is one by
   // syntax alone (a top-level declaration of a wrapper name).
   'scope/destructured.js': "const { __filename } = {};\nconsole.log(JSON.stringify(['destructured', typeof require, typeof module, typeof exports]));\n",
+  'scope/pattern.js': "let { a: [, exports] } = { a: [0, 4] };\nconsole.log(JSON.stringify(['pattern', typeof module, exports]));\n",
+  'scope/class.js': "class module {}\nconsole.log(JSON.stringify(['class', typeof require, typeof module]));\n",
+  'scope/awaits.js': "const v = [(await 1), f(await 2), true ? await 3 : 0];\nfunction f(x) { return x; }\nconsole.log(JSON.stringify(['awaits', v, typeof require]));\n",
+  'scope/escaped.js': "const requir\\u0065 = 3;\nconsole.log(JSON.stringify(['escaped', typeof module, require]));\n",
   'scope/declarators.js': "const a = 1, require = 2;\nconsole.log(JSON.stringify(['declarators', typeof module, require]));\n",
   'scope/req.mjs': "console.log(typeof require, typeof module, typeof __filename, this);\nrequire('fs');\n",
   // TypeScript Node strips, as an ES module.
@@ -105,7 +119,7 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node scope/destructured.js', 'node scope/declarators.js', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
+  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node scope/destructured.js', 'node scope/declarators.js', 'node scope/escaped.js', 'node scope/awaits.js', 'node scope/pattern.js', 'node scope/class.js', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];

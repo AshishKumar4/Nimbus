@@ -9,6 +9,7 @@ import { createEsmResolver, type EsmResolution } from '../../../_shared/esm-reso
 import { cjsModuleExportNames } from '../../../runtime/cjs-module-exports.js';
 import { NODE_BUILTIN_EXPORTS } from '../../../runtime/node-builtin-exports.js';
 import { escapedIdentifierNames, readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
+import { hasTopLevelAwait } from '../../../runtime/esm-require-hoist.js';
 import { applySourceEdits, containsModuleSyntax, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from '../../../runtime/javascript-ast.js';
 import {
 	builtinFacadeModule, bunScopeNames, commonJsFacadeModule, ESM_HOST_MODULE, ESM_META_MODULE,
@@ -34,6 +35,8 @@ interface ModuleRecord {
 	namespace?: Record<string, unknown>;
 	required?: object;
 	topLevelAwait?: boolean;
+	/** The module whose require() began its evaluation: who a cycle's refusal names, as Node's does. */
+	requirer?: string;
 }
 
 interface HookLoader {
@@ -114,18 +117,6 @@ interface BunPlugin {
 		onResolve(options: { filter: RegExp }, callback: (args: { path: string; importer: string }) => { path: string } | undefined): void;
 		onLoad(options: { filter: RegExp }, callback: (args: { path: string }) => { contents: string; loader: 'js' }): void;
 	}): void;
-}
-
-/** Await nodes are removed when their containing function finishes parsing. */
-function hasTopLevelAwait(source: string): boolean {
-	const awaits: number[] = [];
-	parseStatements(source, MODULE_PARSE_OPTIONS, { onNode(node) {
-		if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
-		else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-			while (awaits.length > 0 && awaits[awaits.length - 1]! >= node.start) awaits.pop();
-		}
-	} });
-	return awaits.length > 0;
 }
 
 /** Node's require(esm) result, over Bun's engine-evaluated namespace. */
@@ -297,19 +288,23 @@ export async function createNativeEsmLoader(
 
 	// Bun's require evaluates async graphs and tolerates require/ESM cycles.
 	// Reject those graphs before asking its engine to evaluate them; no body is emulated.
-	function checkRequireGraph(record: ModuleRecord, parent: string | undefined, seen = new Set<ModuleRecord>()): void {
+	function checkRequireGraph(record: ModuleRecord, parent: string | undefined, seen = new Set<ModuleRecord>(), root = record): void {
 		if (seen.has(record) || record.resolution.format !== 'module') return;
 		seen.add(record);
 		if (record.failure) throw record.failure.value;
 		const source = sourceOf(record);
+		// Node's texts: the graph's TLA names the require() and its module;
+		// a cycle names the require() that began the module's evaluation.
 		if (record.topLevelAwait ??= hasTopLevelAwait(source)) {
-			throw Object.assign(new Error(ASYNC_REQUIRE_MESSAGE), { code: 'ERR_REQUIRE_ASYNC_MODULE' });
+			const requiring = root.resolution.path ?? root.resolution.url;
+			throw Object.assign(new Error(`${ASYNC_REQUIRE_MESSAGE}\n  From ${parent ?? ''} \n  Requiring ${requiring} `), { code: 'ERR_REQUIRE_ASYNC_MODULE' });
 		}
 		if (record.state === 'entered' || record.state === 'loading') {
-			throw Object.assign(new Error(`Cannot require() ES Module ${record.resolution.path ?? record.resolution.url} in a cycle.${parent ? ` (from ${parent})` : ''}`), { code: 'ERR_REQUIRE_CYCLE_MODULE' });
+			const from = record.requirer ?? parent;
+			throw Object.assign(new Error(`Cannot require() ES Module ${record.resolution.path ?? record.resolution.url} in a cycle.${from ? ` (from ${from})` : ''}`), { code: 'ERR_REQUIRE_CYCLE_MODULE' });
 		}
 		for (const site of readModuleImportSites(source).statics) {
-			checkRequireGraph(resolveRecord(site.specifier, record.resolution.url, site.attributes), parent, seen);
+			checkRequireGraph(resolveRecord(site.specifier, record.resolution.url, site.attributes), parent, seen, root);
 		}
 	}
 
@@ -330,10 +325,11 @@ export async function createNativeEsmLoader(
 			try {
 				const path = filename === mainPath ? filename : context.filesystem().realpath(filename);
 				record = recordFor({ url: pathToFileURL(path).href, path, format: 'module' });
-				if (bun) checkRequireGraph(record, parentFilename);
 				const caller = parentFilename && parentFilename !== '[eval]' ? parentFilename
 					: context.filename === '[eval]' ? `${context.cwd}/[eval]` : context.filename;
+				if (bun) checkRequireGraph(record, caller);
 				evaluating = true;
+				if (record.state === 'new') record.requirer ??= caller;
 				const namespace = hostModule.createRequire(pathToFileURL(caller).href)(root + record.name) as Record<string, unknown>;
 				return bun ? requiredNamespace(record, record.namespace ?? namespace) : namespace;
 			} catch (error) { if (bun && evaluating) failedGraph(record, error); return explain(error); }

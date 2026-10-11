@@ -15,8 +15,8 @@ import { ESBUILD_FACET_RUNTIME_SOURCE, TRANSFORM_FACET_RUNTIME_SOURCE } from './
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
-import { readModuleImportSites, rewriteDynamicImports, type ImportSites } from './dynamic-import-rewrite.js';
-import { bunScopeNames } from './native-esm.js';
+import { rewriteDynamicImports, type ImportSites } from './dynamic-import-rewrite.js';
+import { readEsModule } from './native-esm.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import type { ModuleScope, PackageType } from './module-format.js';
@@ -300,8 +300,7 @@ async function transformWithEsbuild(
  */
 export interface TransformRuntime {
   rewriteDynamicImports(code: string, parentUrl: string): string;
-  readModuleImportSites(code: string): ImportSites;
-  bunScopeNames(code: string): string[];
+  readEsModule(code: string, scope: ModuleScope | undefined): ImportSites;
   rewriteProvidedCommonJsModules(source: string): string;
   stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
 }
@@ -310,7 +309,7 @@ export interface TransformRuntime {
  * One transform request as a transform host runs it. An ES module the
  * process's registry evaluates natively (native-esm.ts) answers with its
  * code and, as its map, the JSON of its import sites
- * (dynamic-import-rewrite.ts readModuleImportSites), which the session stages
+ * (native-esm.ts readEsModule), which the session stages
  * it by; TypeScript and JSX are compiled with their module syntax kept, and
  * staged so when they have some. CommonJS keeps its code, each dynamic
  * `import()` routed to the process's ESM loader. `engine` is null only before
@@ -323,11 +322,8 @@ export async function runTransformRequest(
   runtime: TransformRuntime,
 ): Promise<TransformResult | { error: string; typescript: TypeScriptRefusal }> {
   const parent = options?.dynamicImportParent;
-  // An ES module's import sites, as its map: in Bun's scope, with the CommonJS names it reads.
-  const sitesOf = (javaScript: string, scope: ModuleScope | undefined) => {
-    const sites = runtime.readModuleImportSites(javaScript);
-    return scope === 'bun' ? { ...sites, commonJsNames: runtime.bunScopeNames(javaScript) } : sites;
-  };
+  // An ES module's reading (native-esm.ts readEsModule), as its map.
+  const sitesOf = (javaScript: string, scope: ModuleScope | undefined) => runtime.readEsModule(javaScript, scope);
   if (options?.stripTypes) {
     if (runtime.stripTypeScript === undefined) throw new Error('a type strip where amaro is not loaded');
     const { stripTypes, packageType, stripOnly, ...rest } = options;
@@ -674,7 +670,7 @@ export class EsbuildService {
     this.transformHost = options.transformHost ?? null;
     this.buildHost = options.buildHost ?? null;
     this.engine = options.engine ?? null;
-    this.runtime = { rewriteDynamicImports, readModuleImportSites, bunScopeNames, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
+    this.runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
     this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
   }
 
