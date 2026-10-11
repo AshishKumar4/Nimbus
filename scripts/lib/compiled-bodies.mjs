@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
-import { builtinModules } from 'node:module';
-import { parse } from 'acorn';
+import { builtinModules, createRequire } from 'node:module';
+
+const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 
 const builtins = new Set(builtinModules.map((name) => name.replace(/^node:/, '')));
 
@@ -32,7 +33,7 @@ export async function compiledBodies({ entry, exports, contents, resolveDir = pr
   const result = await build({
     stdin: { contents: contents ?? `export { ${exports.join(', ')} } from ${JSON.stringify(entry)};`, resolveDir, sourcefile: 'compiled-bodies-entry.mjs', loader: 'js' },
     bundle: true, write: false, platform: 'neutral', format: 'esm', target, minify: true,
-    conditions: ['workspace', 'workerd', 'worker', 'import'], mainFields: ['module', 'main'], external, alias, plugins: [builtinImports()],
+    conditions: ['workspace', 'workerd', 'worker', 'import'], mainFields: ['module', 'main'], external: ['cloudflare:*', ...external], alias, plugins: [builtinImports()],
     legalComments: 'none', logLevel: 'warning',
   });
   const module = result.outputFiles[0].text;

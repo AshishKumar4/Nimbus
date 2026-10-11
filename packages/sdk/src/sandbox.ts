@@ -331,6 +331,7 @@ export class NimbusSandbox {
       _rpcReady: (options) => this.remoteRpc('ready', [options]),
       _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
       _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
+      _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
       _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
       // A credential rides the wire as a trailing `{ cred }` options object
       // so the payload names it explicitly; the remote dispatcher decides
@@ -439,7 +440,25 @@ export class NimbusSandbox {
    */
   async execStream(command: string, options: NimbusExecOptions = {}): Promise<NimbusExecStream> {
     await this.ready();
-    return decodeExecStream(await this.stub()._rpcExecStream(command, this.execOptions(options)));
+    const stub = this.stub();
+    const wire = this.execOptions(options);
+    const detach = options.detach;
+    if (!detach) return decodeExecStream(await stub._rpcExecStream(command, wire));
+    const detachId = wire.detachId ?? crypto.randomUUID();
+    const stream = decodeExecStream(await stub._rpcExecStream(command, { ...wire, detachId }));
+    // Register only after the start is acknowledged, so independent HTTP
+    // requests cannot deliver detach before the invocation exists. An abort
+    // that happened while awaiting start is sent immediately afterwards.
+    let rejectDetach!: (reason: unknown) => void;
+    const failedDetach = new Promise<never>((_resolve, reject) => { rejectDetach = reject; });
+    const leave = () => { this.rpc(stub._rpcDetachExec(detachId)).catch(rejectDetach); };
+    const forget = () => detach.removeEventListener('abort', leave);
+    const exit = Promise.race([stream.exit, failedDetach]);
+    exit.catch(() => {});
+    stream.exit.then(forget, forget);
+    if (detach.aborted) leave();
+    else detach.addEventListener('abort', leave, { once: true });
+    return { output: stream.output, exit };
   }
 
   /**
@@ -790,6 +809,8 @@ export class NimbusSandbox {
   private execOptions(options: NimbusExecOptions): SessionExecOptions {
     const shellId = options.shellId ?? this.options.shellId;
     const normalized: SessionExecOptions = { ...options, ...(shellId === undefined ? {} : { shellId }) };
+    // Signals are local capabilities; a detach crosses the wire by invocation id.
+    delete normalized.detach;
     if (typeof normalized.cwd === 'string') {
       // The session shell only understands absolute paths; a relative cwd
       // forwarded verbatim used to reach it anyway — `pwd` echoed the

@@ -88,6 +88,10 @@ export class HostedSession extends RpcTarget implements SessionRpc {
   async _rpcStartProcess(command: string, options?: SessionExecOptions) {
     return operations.rpcStartProcess(this.client(), command, this.exec(options));
   }
+  async _rpcDetachExec(detachId: string) {
+    if (this.scope !== null && this.scope.shellId === undefined) return { detached: false };
+    return operations.rpcDetachExec(this.client(), detachId, this.scope?.shellId);
+  }
   async _rpcRunCode(code: string, options?: SessionRunCodeOptions) { return operations.rpcRunCode(this.client(), code, this.exec(options)); }
 
   // The file methods keep the session's wire shape: the third slot is a

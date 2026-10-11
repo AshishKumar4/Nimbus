@@ -160,6 +160,7 @@ const SessionResultSchemas = {
   bootProbe: z.object({ ok: z.literal(true) }),
   exec: ExecOutputSchema,
   startProcess: SessionStartResultSchema,
+  detachExec: z.object({ detached: z.boolean() }),
   runCode: ExecOutputSchema,
   readFile: z.string().nullable(),
   readFileBytes: FileBytesSchema.nullable(),
@@ -231,6 +232,10 @@ export interface SessionExecOptions extends SessionReadyOptions {
   cred?: VfsCred;
   /** A caller's tag, inherited by descendant processes and reported by ports/apps. */
   execId?: string;
+  /** Invocation identity for _rpcDetachExec, separate from inherited execId attribution. */
+  detachId?: string;
+  /** Colocated only: release a named shell without killing the command; its stream and exit remain live. */
+  detach?: AbortSignal;
   /** startProcess only; spontaneous failures follow this restart policy. */
   restart?: SessionRestartPolicy;
 }
@@ -252,6 +257,7 @@ export interface SessionRpc {
   _rpcReady(options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
   _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>>;
   _rpcStartProcess(command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
+  _rpcDetachExec(detachId: string): Promise<SessionResult<'detachExec'>>;
   _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<SessionResult<'runCode'>>;
   _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFile'>>;
   _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFileBytes'>>;

@@ -1016,6 +1016,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return encodeExecStream(await _programmatic.rpcExecStream(this as any, command, options));
   }
   async _rpcStartProcess(command: string, options?: SessionExecOptions) { return _programmatic.rpcStartProcess(this as any, command, options); }
+  async _rpcDetachExec(detachId: string) { return _programmatic.rpcDetachExec(this as any, detachId); }
   async _rpcRunCode(code: string, options?: SessionRunCodeOptions) {
     return _programmatic.rpcRunCode(this as any, code, options);
   }

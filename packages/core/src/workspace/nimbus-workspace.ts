@@ -77,6 +77,8 @@ export interface WorkspaceExecOptions extends RunOptions {
    * digit. Omitted, the call runs in a shell of its own.
    */
   readonly shellId?: string;
+  /** Release a named shell without ending this process or saving its later state. */
+  readonly detach?: AbortSignal;
 }
 
 export interface NimbusWorkspaceOptions {
@@ -537,9 +539,9 @@ export class NimbusWorkspace {
    * ended, leave the process table when the result is returned.
    */
   exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
-    const { shellId, ...call } = options;
+    const { shellId, detach, ...call } = options;
     if (shellId === undefined) return this.runProcess(command, call, null);
-    return this.withNamedShell(shellId, {}, (named) => this.runProcess(command, call, named));
+    return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named));
   }
 
   private async runProcess(command: string, options: RunOptions, named: NamedShell | null): Promise<CommandResult> {
