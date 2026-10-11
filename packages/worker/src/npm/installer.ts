@@ -43,7 +43,7 @@ import {
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import { placementName, visiblePlacements } from '@nimbus-sh/core/_shared/npm-placement.js';
-import { planTree, projectRoots, type TreeResolution } from '@nimbus-sh/core/_shared/npm-tree.js';
+import { canonicalTreePath, planTree, projectRoots, withTreeLock, type TreeResolution } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -147,6 +147,8 @@ interface ResolvedTree {
   nested: Map<string, ResolvedPackage>;
   /** Dependency name → why it could not be resolved. */
   unresolved: Map<string, string>;
+  /** Skip a placement that failed after the plan, if it is optional (TreePlan.skip). */
+  skip?: (at: string, reason: string) => boolean;
   /**
    * Refusals the walk skipped: required packages whose own os/cpu/libc
    * allowlists exclude this platform (npm's EBADPLATFORM). `required`
@@ -253,36 +255,43 @@ export class NpmInstaller {
     const start = Date.now();
     const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
     const nmDir = projDir + '/node_modules';
-    // Per-invocation progress wins over whatever the ctor bound — the
-    // installer is shared, the terminal it should speak to is not.
-    const previousProgress = this.onProgress;
-    if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
-    // This invocation's terminal, while the command runs. Work that outlives
-    // it (the background pre-bundle) still logs through `log`, and once the
-    // command has returned and the prompt is back, that goes to the console
-    // instead: never into the next command's output, nor this one's prompt.
-    const progress = this.onProgress;
-    let returned = false;
-    const log = (msg: string) => {
-      if (!returned) {
-        progress?.(msg);
-        return;
-      }
-      try { console.log('[npm:late] ' + msg); } catch {}
-    };
-    this.npmLog = opts?.npmLog ?? (() => {});
+    // One install into a tree at a time (core npm-tree.ts withTreeLock): the
+    // tree's own state, and this installer's progress and log sinks, are the
+    // running install's until it returns.
+    const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
+    const canonical = await canonicalTreePath(async (path) => view.realpath(path), '/' + nmDir);
+    return withTreeLock(this.store, canonical, async () => {
+      // Per-invocation progress wins over whatever the ctor bound — the
+      // installer is shared, the terminal it should speak to is not.
+      const previousProgress = this.onProgress;
+      if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
+      // This invocation's terminal, while the command runs. Work that outlives
+      // it (the background pre-bundle) still logs through `log`, and once the
+      // command has returned and the prompt is back, that goes to the console
+      // instead: never into the next command's output, nor this one's prompt.
+      const progress = this.onProgress;
+      let returned = false;
+      const log = (msg: string) => {
+        if (!returned) {
+          progress?.(msg);
+          return;
+        }
+        try { console.log('[npm:late] ' + msg); } catch {}
+      };
+      this.npmLog = opts?.npmLog ?? (() => {});
 
-    // Reset phase to 'idle' on any exit path so /api/_diag/memory
-    // never reports a stale phase after a crash unwound the install.
-    // The DO reboot would zero this anyway; finally is defense against
-    // a non-fatal mid-install throw.
-    try { return await this._installInner(projDir, nmDir, opts, log, start); }
-    finally {
-      returned = true;
-      setInstallPhase('idle');
-      this.npmLog = () => {};
-      this.onProgress = previousProgress;
-    }
+      // Reset phase to 'idle' on any exit path so /api/_diag/memory
+      // never reports a stale phase after a crash unwound the install.
+      // The DO reboot would zero this anyway; finally is defense against
+      // a non-fatal mid-install throw.
+      try { return await this._installInner(projDir, nmDir, opts, log, start); }
+      finally {
+        returned = true;
+        setInstallPhase('idle');
+        this.npmLog = () => {};
+        this.onProgress = previousProgress;
+      }
+    });
   }
 
   private async _installInner(
@@ -354,6 +363,9 @@ export class NpmInstaller {
     let resolved: Map<string, ResolvedPackage>;
     let nested: Map<string, ResolvedPackage>;
     let usedLockfile = false;
+    // An optional placement that fails after the plan (its download) is
+    // skipped, not failed; with no plan (a lockfile kept whole), none is.
+    let skipOptional: (at: string, reason: string) => boolean = () => false;
     const recordOf = this.lockRecords();
 
     if (packageLock !== null) {
@@ -398,6 +410,7 @@ export class NpmInstaller {
       const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry, installed: lockedAt });
       resolved = tree.resolved;
       nested = tree.nested;
+      if (tree.skip) skipOptional = tree.skip;
       phases['resolve'] = Date.now() - phaseStart;
 
       // Transitive platform-gate refusals. Required ones join `failed`
@@ -513,7 +526,14 @@ export class NpmInstaller {
         : await this.fetchIntoMount(toFetch, nmDir, principal);
       totalFiles += batchResult.filesWritten;
       for (const name of batchResult.installed) installed.push(name);
-      for (const name of batchResult.failed) failed.push(name);
+      for (const name of batchResult.failed) {
+        const at = toFetch.find(({ pkg }) => `${pkg.name}@${pkg.version}` === name)?.placement;
+        if (at !== undefined && skipOptional(at, 'its download failed')) {
+          log(`[resolve-fanout] [skip] ${name} — optional: its download failed`);
+          continue;
+        }
+        failed.push(name);
+      }
     }
 
     phases['fetch+write'] = Date.now() - phaseStart;
@@ -944,7 +964,7 @@ export class NpmInstaller {
       (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''),
     );
 
-    return { resolved, nested, unresolved, rejected };
+    return { resolved, nested, unresolved, rejected, skip: plan.skip };
   }
 
   /**
