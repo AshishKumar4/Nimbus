@@ -5,6 +5,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A file on a mount is opened by one rule, and its open description is one
+  implementation (`vfs/mounted-description.js`), for a process's synchronous
+  face, its asynchronous one, and a wave's `open`; one descriptor numbering per
+  process (`runtime/descriptors.js`). Visible changes, Linux's answers:
+  an open asking no access reads; `O_NOFOLLOW` of a mounted link is `ELOOP`
+  (the synchronous face followed it); `O_CREAT|O_EXCL` of a link, even
+  dangling, is `EEXIST` before `ELOOP`; `O_CREAT|O_DIRECTORY` of an absent name
+  is `EINVAL` and makes nothing (one face made a file and failed, the other
+  opened it); a directory opened with write rights opens (the asynchronous face
+  refused it); `O_TRUNC` is the mount's truncate; an `O_APPEND` descriptor
+  starts at offset 0, on SQLite too, and each append leaves it at the end;
+  a mounted `fstat` carries the mount's revision, not the SQLite clock; a
+  negative offset reads from 0 and a seek to no integer is `EINVAL`;
+  `ftruncate` of a descriptor not open for writing is `EINVAL` (it was `EBADF`
+  on SQLite, and truncated on a synchronous mount); a mount whose `writeRange`
+  refuses with `ENOTSUP` holds the writes until fsync or close, as one without
+  `writeRange` does, and a descriptor that awaits writes them as it makes them.
+  Who may open a mounted file for what is the mount's own policy, as for every
+  other operation on it: the synchronous face no longer refuses an open with
+  `EACCES` by the mode a mount reports. The synchronous face refuses a
+  descriptor on an asynchronous mount with that mount's `EAGAIN`, not `EBADF`.
+  `CompositeVFS.writesInPlace` is removed.
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the
   namespace's `WaveIngest` (`@nimbus-sh/core/runtime/wave-ingest.js`,
   `ProcessFiles.waves`). `CredentialedVfs.writeStream` and `writeBatchPlaced`

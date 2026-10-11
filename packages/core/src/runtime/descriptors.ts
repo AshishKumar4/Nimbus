@@ -8,7 +8,7 @@
  * that one as it refuses its mount, before anything is done.
  */
 
-import { then, type Awaitable } from '../vfs/vfs.js';
+import { andThen, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
@@ -176,7 +176,7 @@ export class Descriptors {
     const { handle, node } = this.opened(id);
     if (!handle.flags.read) throw fsError('EBADF', 'read', handle.path);
     const start = offset == null ? handle.position : Math.max(0, offset);
-    return then(node.read(start, Math.max(0, length)), (out) => {
+    return andThen(node.read(start, Math.max(0, length)), (out) => {
       if (offset == null) handle.position = start + out.byteLength;
       return out;
     });
@@ -186,15 +186,15 @@ export class Descriptors {
     const { handle, node } = this.opened(id);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
     if (handle.flags.append && node.append) {
-      return then(node.append(bytes), (end) => {
+      return andThen(node.append(bytes), (end) => {
         handle.position = end;
         return bytes.byteLength;
       });
     }
     const start = handle.flags.append
-      ? node.end?.() ?? then(node.stat(), (stat) => stat.size)
+      ? node.end?.() ?? andThen(node.stat(), (stat) => stat.size)
       : offset == null ? handle.position : Math.max(0, offset);
-    return then(start, (at) => then(node.write(at, bytes), () => {
+    return andThen(start, (at) => andThen(node.write(at, bytes), () => {
       if (offset == null || handle.flags.append) handle.position = at + bytes.byteLength;
       return bytes.byteLength;
     }));
@@ -222,7 +222,7 @@ export class Descriptors {
 
   fstat(id: number): Awaitable<RuntimeVfsStat> {
     const node = this.opened(id).node;
-    return then(node.stat(), (stat) => (node.mounted ? stat as RuntimeVfsStat : { ...stat, revision: this.clock() }));
+    return andThen(node.stat(), (stat) => (node.mounted ? stat as RuntimeVfsStat : { ...stat, revision: this.clock() }));
   }
 
   dup(id: number): RuntimeFileHandle {
@@ -235,8 +235,8 @@ export class Descriptors {
 
   seek(id: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number> {
     const handle = this.opened(id).handle;
-    const base = whence === 'set' ? 0 : whence === 'current' ? handle.position : whence === 'end' ? then(this.fstat(id), (stat) => stat.size) : NaN;
-    return then(base, (from) => {
+    const base = whence === 'set' ? 0 : whence === 'current' ? handle.position : whence === 'end' ? andThen(this.fstat(id), (stat) => stat.size) : NaN;
+    return andThen(base, (from) => {
       const position = from + offset;
       if (!Number.isSafeInteger(position) || position < 0) throw fsError('EINVAL', 'seek', handle.path);
       handle.position = position;
