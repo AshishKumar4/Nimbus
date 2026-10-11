@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "447329d82fb0c3ec041a9f54212418bb621213abd9e73fd2620b191edab1d307",
+  "fingerprint": "23195a28a2e9eb56e179f44fedfe94bd2b160b12f46d513c04ad35422307ce5e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2279,7 +2279,7 @@
     "packages/worker/dist/npm/install-facet.js": "673b299556efd7ba53882396dc81e22a53fffdbb49366c5811c4169a8d613f78",
     "packages/worker/dist/npm/installer.d.ts": "047f52eb831cf18756e84dfbe92de5262ee50796e4f7ca84321d8d037c17faba",
     "packages/worker/dist/npm/installer.d.ts.map": "5578f9f378014d755745713042339f655e33a9d4e6a532fcb0f0d8db4852a17a",
-    "packages/worker/dist/npm/installer.js": "e630dd82dbb9957a2b4959377a2752a31a5272cf4918b1d601fde262fb873d08",
+    "packages/worker/dist/npm/installer.js": "d697fbebdcdfbf5a1a859085dbdf3a9c960036c775f8b851d5ccfc1be3e30599",
     "packages/worker/dist/npm/npx-install.d.ts": "0841e911fa3db94ae32bb08155c58b6304d77cc5ef2c22beb44c06b3e1fce854",
     "packages/worker/dist/npm/npx-install.d.ts.map": "70e126bebdca8a66eeeae76bdac5f42eb305141e7532bb66bf7113571ff57506",
     "packages/worker/dist/npm/npx-install.js": "4ce08acd8a7e6109cbc7a31a3c273c3a294a7119e491644b595539bd1912dd01",
@@ -2895,7 +2895,7 @@
     "packages/worker/src/npm/cache.ts": "7d8675a0720936d4d24ceb0aa70579d3347d7662ebdc4c6b1c8f1a176bdf25bd",
     "packages/worker/src/npm/install-batch-facet.ts": "b7c310534d539a1f77fdb2b559d30c442f1946231f0b2f7b4099c9aac98b54d6",
     "packages/worker/src/npm/install-facet.ts": "4541dacf209bf41f4083ca8281afe2eff15dbff62e37f96a4f9646b3d0a09e03",
-    "packages/worker/src/npm/installer.ts": "10ec1d169aea1bc71c051a88ed44cb98a4ea34deee5f8de64eb6f2cf51490bf2",
+    "packages/worker/src/npm/installer.ts": "e218b0253967cf4c291b9f6a664b126f5b2f72efd530a9c91f00062902000dbc",
     "packages/worker/src/npm/npx-install.ts": "cc2525820fbde07b02e6aa0f417cf10c4113c2066d54dc359f3c2fb75d012e44",
     "packages/worker/src/npm/package-lock.ts": "4c748b6dc38035197ba991a88c61b7ab51542ac7d80ceaf13dfa2a34ad78a5ac",
     "packages/worker/src/npm/pre-bundle-facet.ts": "3248498b2f74b99c20efd1cdc687347ed27bea2bd83559164144afef28af9b20",

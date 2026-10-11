@@ -236,14 +236,14 @@ export class NpmInstaller {
             log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout)...`);
             // What the lockfile says is installed is kept where it meets an edge
             // (its registry record says what it depends on); the rest resolves.
-            const installed = (at) => {
+            const lockedAt = (at) => {
                 const entry = lockfile?.get(at);
                 if (entry === undefined)
                     return null;
                 const record = recordOf(entry);
                 return record === null ? null : resolvedFromRecord(record);
             };
-            const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry, installed });
+            const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry, installed: lockedAt });
             resolved = tree.resolved;
             nested = tree.nested;
             phases['resolve'] = Date.now() - phaseStart;
