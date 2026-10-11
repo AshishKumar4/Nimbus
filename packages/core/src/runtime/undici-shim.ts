@@ -1,7 +1,7 @@
 /**
  * undici-shim.ts — the `undici` npm package, mapped onto the platform HTTP stack.
  *
- * Like streams.ts / sqlite-shim.ts, this emits a raw JS string embedded in the
+ * Like sqlite-shim.ts, this emits a raw JS string embedded in the
  * generated facet module (interpolated by node-shims.ts). It defines
  * `__undiciMod`, which node-shims registers as `builtins.undici`.
  *
