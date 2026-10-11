@@ -752,7 +752,8 @@ export class WaveIngest {
                 const mounted = options.descriptions?.mounted(description);
                 const receipt = mounted === undefined
                   ? scope.asWriter(() => scope.reopened(path, description))
-                  : await reopenedOnMount(path, mounted, options.descriptions?.handle(description));
+                  // Its mount's answer, which the wave's cut does not wait for (untilAborted), as every routed one.
+                  : await untilAborted(reopenedOnMount(path, mounted, options.descriptions?.handle(description)), scope.signal);
                 if (receipt !== null) progress.receipts.push(receipt);
               }
               continue;

@@ -1,10 +1,10 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type Description } from './descriptors.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import { andThen, readDeclaredSource, readRangeOrWhole, syncValue, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
+import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
 
@@ -52,11 +52,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     this.descriptors = new Descriptors(scope, () => rawVfs.revision(), true);
   }
 
-  dispose(): void {
+  dispose(): Awaitable<void> {
     const lost = closeDescriptions(this.scope);
     this.scope.closed = true;
     this.scope.abort.abort();
-    reportLost(lost);
+    return andThen(lost, reportLost);
   }
 
   /**
@@ -440,8 +440,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return syncValue(this.descriptors.write(handleId, offset, bytes));
   }
 
+  /** A description that awaits, closed by a caller that cannot wait: its backend's close answers no one (it holds no writes: each landed as made). */
   close(handleId: number): void {
-    this.descriptors.close(handleId);
+    const closed = this.descriptors.close(handleId);
+    if (isPromise(closed)) closed.catch(() => {});
   }
 
   readdir(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): RuntimeVfsDirEntry[] {
@@ -678,7 +680,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       return node === null ? null : this.keepWaveDescription(id, node, rights);
     },
     // Each write of a wave's description is in its mount before the wave is answered (sync).
-    describe: (id, file, ino, rights) => andThen(file.hold(rights), (held) => {
+    describe: (id, file, ino, rights) => andThen(file.hold(rights, ino), (held) => {
       // Released while its file was found: nothing would close it.
       if (this.scope.closed) {
         abandon(held);

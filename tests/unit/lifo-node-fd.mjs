@@ -115,6 +115,37 @@ check('readFileSync of a descriptor reads from its offset', () => {
 
 check('an unknown flag string is refused as Node refuses it', () => {
   assert.equal(code(() => fs.openSync('/t/r', 'bogus')), 'ERR_INVALID_ARG_VALUE');
+  assert.equal(code(() => fs.openSync('/t/r', 'toString')), 'ERR_INVALID_ARG_VALUE', 'a name every object has is no flag string');
+});
+
+check('a positional write to an O_APPEND descriptor lands at the end and leaves its offset', () => {
+  kernel.writeFile('t/a-plus', 'abc');
+  const fd = fs.openSync('/t/a-plus', 'a+');
+  fs.writeSync(fd, 'X', 0);
+  const buffer = Buffer.alloc(1);
+  assert.equal(fs.readSync(fd, buffer, 0, 1, null), 1);
+  assert.equal(buffer.toString(), 'a');
+  fs.closeSync(fd);
+  assert.equal(text('t/a-plus'), 'abcX');
+});
+
+check('ftruncateSync of a negative length truncates to 0, as Node clamps it', () => {
+  kernel.writeFile('t/clamp', 'abc');
+  const fd = fs.openSync('/t/clamp', 'r+');
+  fs.ftruncateSync(fd, -1);
+  fs.closeSync(fd);
+  assert.equal(text('t/clamp'), '');
+});
+
+check('a creat of a mode without write, by a user, writes what it made', () => {
+  kernel.mkdir('u', { recursive: true });
+  kernel.chown('u', 1000, 1000);
+  const user = createFs(synchronousFilesystem({ process: processBridge(rawVfs, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) })(), '/u');
+  const fd = user.openSync('/u/ro', 'wx', 0o444);
+  user.writeSync(fd, 'made');
+  user.closeSync(fd);
+  assert.equal(text('u/ro'), 'made');
+  assert.equal(code(() => user.openSync('/u/ro', 'r+')), 'EACCES', 'its mode governs a later open');
 });
 
 check('a standard stream is no descriptor of the filesystem\'s', () => {

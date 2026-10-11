@@ -25,6 +25,8 @@ export interface MountedFileDescription {
   readonly mounted: true;
   /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
   readonly awaits: boolean;
+  /** When it was opened, among every description: a process's held writes on one file apply in this order (VFS-PF-001). */
+  readonly order: number;
   readonly ino: number;
   path(): string;
   /** Which file it is (HeldFile.key): what its held writes overlay. */
@@ -126,12 +128,8 @@ function lastClose(node: Description): Awaitable<void> {
 
 /** This process's descriptions of the file `key` names (MountedFileDescription.key) that hold writes, in open order. */
 function holding(scope: DescriptorScope, key: string | null): MountedFileDescription[] {
-  const mine: MountedFileDescription[] = [];
-  if (key === null) return mine;
-  for (const { node } of scope.handles.values()) {
-    if (node.mounted && scope.held.has(node) && node.key() === key && !mine.includes(node)) mine.push(node);
-  }
-  return mine;
+  if (key === null) return [];
+  return [...scope.held].filter((node) => node.key() === key).sort((a, b) => a.order - b.order);
 }
 
 /**
@@ -162,20 +160,21 @@ export function settleHeldAt(scope: DescriptorScope, file: () => Awaitable<{ key
 
 /**
  * Closes every description `scope` holds, each whatever another's flush
- * answers, and empties it. The flushes that failed (lastClose's errors) are
- * returned, for the caller to report once the rest of its teardown is done
- * (reportLost): a teardown that stopped at the first one would keep the
+ * answers, and empties it at once. The closes that failed (lastClose's
+ * errors) are answered once every one has (an awaiting description's backend
+ * close awaits), for the caller to report once the rest of its teardown is
+ * done (reportLost): a teardown that stopped at the first one would keep the
  * scope, and everything it revokes, open.
  */
-export function closeDescriptions(scope: DescriptorScope): unknown[] {
+export function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]> {
   const lost: unknown[] = [];
+  const closing: Promise<void>[] = [];
   for (const opened of scope.handles.values()) {
     if (--opened.refs !== 0) continue;
     opened.handle.closed = true;
     try {
       const closed = lastClose(opened.node);
-      // An awaiting description holds nothing (its writes land as they are made): its backend's close is all that waits.
-      if (isPromise(closed)) closed.catch((error: unknown) => { lost.push(error); });
+      if (isPromise(closed)) closing.push(closed.catch((error: unknown) => { lost.push(error); }));
     } catch (error) {
       lost.push(error);
     }
@@ -183,17 +182,7 @@ export function closeDescriptions(scope: DescriptorScope): unknown[] {
   scope.handles.clear();
   scope.held.clear();
   scope.waveDescriptions.clear();
-  return lost;
-}
-
-/** `file`, opened for a scope released meanwhile: closed, unheard (nothing was written through it). */
-export function abandon(file: { close(): Awaitable<void> }): void {
-  try {
-    const closed = file.close();
-    if (isPromise(closed)) closed.catch(() => {});
-  } catch {
-    // Nothing was written through it.
-  }
+  return closing.length === 0 ? lost : Promise.all(closing).then(() => lost);
 }
 
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
@@ -282,8 +271,10 @@ export class Descriptors {
     const { handle, node } = this.answering(id);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
     if (offset != null && offset < 0) throw fsError('EINVAL', 'write', handle.path);
+    // A positional write moves no offset, O_APPEND's at the end included (pwrite(2) on Linux).
     if (handle.flags.append && node.mounted) {
       const end = node.append(bytes);
+      if (offset != null) return isPromise(end) ? end.then(() => bytes.byteLength) : bytes.byteLength;
       if (isPromise(end)) return end.then((at) => moved(handle, at, bytes));
       return moved(handle, end, bytes);
     }
@@ -294,15 +285,18 @@ export class Descriptors {
 
   private writeAt(handle: RuntimeFileHandle, node: Description, at: number, offset: number | null, bytes: Uint8Array): Awaitable<number> {
     const written = node.write(at, bytes);
-    if (offset != null && !handle.flags.append) return isPromise(written) ? written.then(() => bytes.byteLength) : bytes.byteLength;
+    if (offset != null) return isPromise(written) ? written.then(() => bytes.byteLength) : bytes.byteLength;
     if (isPromise(written)) return written.then(() => moved(handle, at + bytes.byteLength, bytes));
     return moved(handle, at + bytes.byteLength, bytes);
   }
 
-  close(id: number): void {
+  /** The last close of a description answers what it failed with (lastClose); an earlier one closes only the descriptor. */
+  close(id: number): Awaitable<void> {
     const opened = this.opened(id);
     this.scope.handles.delete(id);
-    if (--opened.refs === 0) { opened.handle.closed = true; lastClose(opened.node); }
+    if (--opened.refs !== 0) return;
+    opened.handle.closed = true;
+    return lastClose(opened.node);
   }
 
   /**

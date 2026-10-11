@@ -33,7 +33,7 @@ import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
+import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
@@ -64,7 +64,7 @@ import {
   type RuntimeMutationOwner,
 } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type DescriptorScope } from './descriptors.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
@@ -546,7 +546,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     try {
       // Its descriptors' last closes flush; one whose flush fails is reported
       // once the process is released all the same.
-      if (scope) this.closeScope(scope);
+      if (scope) await this.closeScope(scope);
     } finally {
       this.processes.delete(pid);
       this.retireWriter(pid);
@@ -559,7 +559,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.listings.delete(pid);
     const scope = this.processes.get(pid);
     try {
-      if (scope) this.closeScope(scope);
+      if (scope) await this.closeScope(scope);
     } finally {
       this.processes.delete(pid);
     }
@@ -615,14 +615,14 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * bridge on it). A flush that fails (an aborted binding's, a mount's
    * refusal) loses its bytes and is reported after the scope is closed.
    */
-  private closeScope(scope: DescriptorScope): void {
+  private closeScope(scope: DescriptorScope): Awaitable<void> {
     if (scope.closed) return;
     const lost = closeDescriptions(scope);
     for (const dispose of scope.subscriptions) dispose();
     scope.subscriptions.clear();
     scope.closed = true;
     scope.abort.abort();
-    reportLost(lost);
+    return andThen(lost, reportLost);
   }
 
   private bridgeFor(scope: DescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false): RuntimeFsBridge {

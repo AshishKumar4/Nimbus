@@ -36,18 +36,28 @@ published independently in the `@nimbus-sh` npm scope.
   unmount, a mount or a link changed at its name later moves neither its I/O
   nor its held writes, and a write through it is reported to `observeWrites`
   only while the namespace shows that file at that name. A backend may keep
-  open files (the new optional `VFS.openFile`, which `MemoryVFS` and
-  `SqliteFiles` implement): a description of one is that file across a rename
-  or an unlink; one of a backend that keeps none is held by its name, and
-  refuses with `ESTALE` once the name holds another file or none.
+  open files (the new optional `VFS.openFile` and `VfsOpenFile`, which
+  `SqliteFiles` implements; the unused `VFS.open`, `VfsHandle` and
+  `VfsOpenFlags` are removed): a description of one is that file across a
+  rename or an unlink, guarded by leases and observed at the name it has now;
+  one of a backend that keeps none is held by its name, and refuses with
+  `ESTALE` once the name holds another file or none. An open holds the file
+  it decided on: one put at its name meanwhile is `ESTALE`.
   `MemoryVFS` numbers its files (`ino`). Held writes are keyed by the file
-  (its device and number), not its mount and path, and are written before any
-  later change the process makes (a truncate, an `O_TRUNC` open, a write
-  through another descriptor), so nothing brings back what it cut; a flush
-  the process did not ask for that fails is reported by that descriptor's
-  next `fsync` or `close`. Not atomic on a mount that awaits: an `O_APPEND`
-  write (the end is read, then written at) and `O_CREAT|O_EXCL` (a stat, then
-  a create).
+  (its number on its backend), not its mount and path, apply in their
+  descriptions' open order, and a process's held writes on a file are
+  written before that process cuts it (a truncate, an `O_TRUNC` open, a
+  whole-file write), so nothing brings back what it cut; a flush the process
+  did not ask for that fails is reported by that descriptor's next `fsync` or
+  `close`. A close answers what the backend's close failed with, and
+  `releaseProcess` what every close of its descriptors did; a description
+  whose flush fails still closes its file. A positional write through an
+  `O_APPEND` descriptor lands at the end and leaves the offset where it was.
+  `SqliteVFS.openDescription` asks only search: the open that asks decided
+  the access (a creat(2) of a mode without write writes what it made). `EFBIG`
+  is a VFS error code. Not atomic on a mount that awaits: an `O_APPEND` write
+  (the end is read, then written at) and `O_CREAT|O_EXCL` (a stat, then a
+  create).
   A wave's `open` of a file on a mount keeps it as the process's description
   (`WaveDescriptions.describe`, `WaveRouter.open`): that description's
   writes, appends and truncates act on that file, not on whatever its name
@@ -60,6 +70,12 @@ published independently in the `@nimbus-sh` npm scope.
   path or descriptor, awaited ones included. The synchronous face refuses a
   descriptor on an asynchronous mount with that mount's `EAGAIN`, not
   `EBADF`. `CompositeVFS.writesInPlace` is removed.
+- The shell's built-in `node` keeps no descriptor table of its own: an `fs`
+  descriptor is the process's (`NodeFilesystem.open`, `read`, `write`,
+  `fstat`, `ftruncate`, `fsync`, `close`), shared with `fs/promises`, with
+  its file, offset, rights and `O_APPEND`; Node's flag strings and `O_EXCL`,
+  `O_DIRECTORY`, `O_NOFOLLOW`, `O_SYNC` are honored, and an unknown flag
+  string is `ERR_INVALID_ARG_VALUE`.
 - `CompositeVFS.route` and `mutationRoute` take `{ report: true }`: the answer
   then carries the links the lookup traversed, in order, and a lookup that
   refuses (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENXIO`, `EACCES`) answers its refusal

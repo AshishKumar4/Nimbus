@@ -138,6 +138,15 @@ export class SqliteFiles implements VFS {
       return described;
     });
     return {
+      path: () => {
+        try {
+          return absolute(node.path());
+        } catch (error) {
+          const converted = toVfsError(error, 'fstat', path);
+          if (converted instanceof VfsError && converted.code === 'ENOENT') return null;
+          throw converted;
+        }
+      },
       stat: () => this.run('fstat', path, () => statOf(node.stat(), view.epoch)),
       read: (offset, length) => this.run('read', path, () => node.read(offset, length)),
       write: (offset, bytes) => { this.run('write', path, () => node.write(offset, bytes)); },

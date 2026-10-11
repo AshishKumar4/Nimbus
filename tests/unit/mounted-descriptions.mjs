@@ -199,6 +199,15 @@ const unranged = (vfs) => new Proxy(vfs, {
   has: (target, key) => key !== 'writeRange' && key in target,
 });
 
+/** A SqliteFiles backend of its own (a credentialed mount), `/x` seeded with `text`, owned by the user. */
+const credentialed = (text = 'x') => {
+  const other = createSqliteVfsTestHarness();
+  const backend = sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL);
+  backend.writeFile('/x', enc.encode(text));
+  backend.chown('/x', 1000, 1000);
+  return backend;
+};
+
 // An O_SYNC description's own writes are flushed as made; it reads the
 // process's other descriptions' held writes all the same.
 await check('an O_SYNC descriptor reads what another descriptor holds', async () => {
@@ -600,6 +609,59 @@ await check('held writes overlay the file of the backend they were made on, not 
   }
 });
 
+await check('held writes apply in their descriptions\' open order, whatever dups of them are closed', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('----'));
+  files.vfs.mount('/oo', unranged(backend));
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const a = proc.open('/oo/x', { read: true, write: true });
+    const b = proc.open('/oo/x', { read: true, write: true });
+    proc.write(a.id, 0, enc.encode('AA'));
+    proc.write(b.id, 0, enc.encode('BB'));
+    const dup = proc.dup(a.id);
+    proc.close(a.id);
+    assert.equal(dec.decode(proc.readFile('/oo/x')), 'BB--', 'the later open\'s write is over the earlier\'s');
+    proc.ftruncate(b.id, 2);
+    assert.equal(dec.decode(backend.readFile('/x')), 'BB', 'and they are written in that order before the cut');
+    proc.close(dup.id);
+    proc.close(b.id);
+  } finally {
+    files.vfs.unmount('/oo');
+  }
+});
+
+await check('held writes overlay their own database\'s file, not another database\'s of the same number', async () => {
+  /** `vfs` that writes no range and keeps no open file, in every view of it: a description holds its writes. */
+  const holding = (vfs) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'writeRange' || key === 'openFile') return undefined;
+      if (key === 'sync') return holding(target);
+      if (key === 'as') return (...args) => holding(target.as(...args));
+      const value = target[key];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    has: (target, key) => key !== 'writeRange' && key !== 'openFile' && key in target,
+  });
+  const [first, second] = [credentialed('first'), credentialed('second')];
+  const [fromFirst, fromSecond] = [holding(first), holding(second)];
+  assert.equal(first.stat('/x').ino, second.stat('/x').ino, 'the two files have one number, each in its own database');
+  let current = fromFirst;
+  files.vfs.mount('/db', () => current);
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/db/x', { read: true, write: true });
+    proc.write(fd.id, 0, enc.encode('FI'));
+    current = fromSecond;
+    assert.equal(dec.decode(proc.readFile('/db/x')), 'second');
+    proc.close(fd.id);
+    assert.equal(dec.decode(first.readFile('/x')), 'FIrst');
+    assert.equal(dec.decode(second.readFile('/x')), 'second');
+  } finally {
+    files.vfs.unmount('/db');
+  }
+});
+
 // ── A description holds its file, not its name ──
 await check('a description of a file its mount keeps open is that file across a rename, and the new file at its name is another', async () => {
   const other = createSqliteVfsTestHarness();
@@ -792,6 +854,131 @@ await check('a wave\'s change through a description does not reach its mount onc
     gate = null;
     stop();
     files.vfs.unmount('/k');
+  }
+});
+
+// ── A file a backend keeps open: the one the open decided on, guarded where it is named now, closed whatever happens ──
+/** `vfs` with its open files' operations replaced by `file`'s (each given the backend's own open file). */
+const reopening = (vfs, file, sync = true) => new Proxy(vfs, {
+  get(target, key) {
+    if (key === 'sync') return sync ? reopening(target, file, sync) : undefined;
+    if (key === 'as') return () => reopening(target, file, sync);
+    if (key === 'openFile') return (path, rights) => andThenSync(target.openFile(path, rights), (opened) => ({ ...opened, ...file(opened, path) }));
+    const value = target[key];
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+  has: (target, key) => (key === 'sync' ? sync : key in target),
+});
+const andThenSync = (value, then) => (value instanceof Promise ? value.then(then) : then(value));
+
+await check('an open holds the file it decided on: one put at its name while the backend opened it is ESTALE, never read', async () => {
+  const backend = credentialed('public');
+  backend.chmod('/x', 0o644);
+  backend.chown('/x', 0, 0);
+  let gate = null;
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/ho', asyncOnly(backend, { deep: true, beforeCall: (method) => (gate !== null && method === 'openFile' ? (entered(), gate) : undefined) }));
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    let release;
+    gate = new Promise((resolve) => { release = resolve; });
+    const opening = assert.rejects(async () => proc.open('/ho/x', { read: true }), refused('ESTALE'));
+    await entering;
+    backend.unlink('/x');
+    backend.writeFile('/x', enc.encode('secret'));
+    backend.chmod('/x', 0o000);
+    release();
+    await opening;
+  } finally {
+    gate = null;
+    files.vfs.unmount('/ho');
+  }
+});
+
+await check('a file its mount keeps open is guarded where it is named now: a lease on the directory it was renamed into refuses its writes', async () => {
+  const backend = credentialed();
+  for (const dir of ['/free', '/leased']) { backend.mkdir(dir); backend.chown(dir, 1000, 1000); }
+  backend.rename('/x', '/free/x');
+  files.vfs.mount('/lm', backend);
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/lm/free/x', { read: true, write: true });
+    proc.rename('/lm/free/x', '/lm/leased/x');
+    const lease = files.engine.acquireExclusiveMutation('lm/leased');
+    try {
+      assert.throws(() => proc.write(fd.id, 0, enc.encode('NO')), refused('EBUSY'));
+      assert.throws(() => proc.ftruncate(fd.id, 0), refused('EBUSY'));
+      assert.equal(dec.decode(backend.readFile('/leased/x')), 'x');
+    } finally {
+      files.engine.releaseExclusiveMutation(lease.owner);
+    }
+    proc.write(fd.id, 0, enc.encode('Y'));
+    proc.close(fd.id);
+    assert.equal(dec.decode(backend.readFile('/leased/x')), 'Y');
+  } finally {
+    files.vfs.unmount('/lm');
+  }
+});
+
+await check('a close, and a release, answer what the backend\'s close of its open file failed with', async () => {
+  const failing = (opened, path) => ({ close: async () => { await opened.close(); throw new VfsError('EIO', 'the backend failed its close', path); } });
+  files.vfs.mount('/cf', reopening(credentialed(), failing, false));
+  try {
+    const procPid = ++pid;
+    const proc = files.bind({ pid: procPid, cred: USER });
+    const fd = await proc.open('/cf/x', { read: true });
+    await assert.rejects(async () => proc.close(fd.id), refused('EIO'));
+    await proc.open('/cf/x', { read: true });
+    await assert.rejects(files.releaseProcess(procPid), refused('EIO'));
+  } finally {
+    files.vfs.unmount('/cf');
+  }
+});
+
+await check('a description whose flush fails still closes the file its backend holds open', async () => {
+  let closed = 0;
+  const unwritable = (opened, path) => ({
+    write: () => { throw new VfsError('ENOTSUP', 'not in place', path); },
+    close: () => { closed++; return opened.close(); },
+  });
+  const backend = credentialed('kept');
+  files.vfs.mount('/uf', reopening(backend, unwritable));
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/uf/x', { read: true, write: true });
+    proc.write(fd.id, 0, enc.encode('ab'));
+    assert.throws(() => proc.close(fd.id), refused('ENOTSUP'));
+    assert.equal(closed, 1, 'its backend\'s open file is closed');
+    assert.equal(dec.decode(backend.readFile('/x')), 'kept', 'and a failed whole-file write left the file as it was');
+  } finally {
+    files.vfs.unmount('/uf');
+  }
+});
+
+await check('a re-sent open of a description on an awaiting mount stops with its process', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('x'));
+  let gate = null;
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/rs', asyncOnly(backend, { deep: true, beforeCall: (method) => (gate !== null && method === 'stat' ? (entered(), gate) : undefined) }));
+  const procPid = ++pid;
+  const send = waveOf(files.bind({ pid: procPid, cred: USER }), { sequence: { writer: `${procPid}:w`, first: 1, ack: 0, pid: procPid } });
+  const open = [{ type: 'call', call: { call: 'open', path: 'rs/x', mode: 0o644, read: true, description: 'd1' } }];
+  let release = () => {};
+  try {
+    assert.equal((await send(open)).ok, true);
+    gate = new Promise((resolve) => { release = resolve; });
+    const resent = send(open);
+    await entering;
+    await files.releaseProcess(procPid).catch(() => {});
+    const answer = await Promise.race([resent, new Promise((resolve) => setTimeout(() => resolve('stuck'), 1000))]);
+    assert.notEqual(answer, 'stuck', 'the re-sent open answers once its process is released');
+  } finally {
+    release();
+    gate = null;
+    files.vfs.unmount('/rs');
   }
 });
 
