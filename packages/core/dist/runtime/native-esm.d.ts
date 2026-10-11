@@ -39,7 +39,7 @@
  * (node-shims' adoption).
  */
 import { type ImportSites } from './dynamic-import-rewrite.js';
-import type { SourceEdit } from './javascript-ast.js';
+import { type SourceEdit } from './javascript-ast.js';
 /** The map module every staged module binds import.meta, import(), its check and its registration from. */
 export declare const ESM_META_MODULE = "nimbus/meta.js";
 /** The map module the runner fills with the functions ESM_META_MODULE's instances ask for. */
@@ -82,6 +82,13 @@ export interface EsModuleLink {
  * line's prologue (`head`) and specifiers whose length changed (`columns`).
  */
 export declare function stageEsModule(text: string, sites: ImportSites, link: EsModuleLink): StagedEsModule;
+/**
+ * The CommonJS names an ES module in Bun's scope may read and does not
+ * declare at its top level: the ones its meta instance binds for it. A name
+ * the text only mentions (in a string, a comment) is bound unread, which is
+ * harmless; one it declares is its own.
+ */
+export declare function bunScopeNames(code: string): string[];
 /**
  * The facade an ES module imports CommonJS module `id` through (Node's
  * createCJSModuleWrap): it loads the module as require() does, at its place

@@ -40,7 +40,6 @@ import { DYNAMIC_IMPORT_HELPER } from './dynamic-import-rewrite.js';
 import { ESM_EXPORTS_HELPER, ESM_INTEROP_HELPER, ESM_NAMESPACE_HELPER, ESM_STAR_HELPER, esmLink, esmRecord, } from './esm-interop.js';
 import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { bindingScope, list, namesBinding, programNames, scoped, stringOf } from './javascript-scope.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleSource } from './module-format.js';
 /** The emitter's lists: ordinary arrays. */
 const ARRAYS = { list: () => [], push: (list, value) => { list.push(value); } };
 /** `text` as spaces, its line breaks kept. */
@@ -78,44 +77,6 @@ function generatedLookingNames(source) {
             throw error;
     }
     return names;
-}
-/** `esm` lowered to the CommonJS function body of an async module. */
-export function lowerAsyncModule(esm) {
-    return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
-}
-/**
- * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts), at
- * `parentUrl`: the one lowering, which the transform facet runs for a module
- * under bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the
- * session for a larger one, read a statement at a time (bounded memory). Its
- * import.meta is the cell's module's, its import() the process loader's. In
- * Node's `scope` a free use of a CommonJS wrapper name binds nothing
- * (module-format.ts ES_MODULE_UNBOUND_NAMES; its typeof is 'undefined'); in
- * Bun's the module keeps them. `map` is the emit's EsModuleMap. Throws
- * acorn's SyntaxError for a module that does not parse.
- */
-export function lowerEsModule(source, scope, parentUrl) {
-    const module = esModuleSource(source);
-    const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = readEsmModule(module);
-    const unbound = [];
-    if (scope === 'node')
-        for (const [name, references] of wrapperUses) {
-            const to = ES_MODULE_UNBOUND_NAMES[name];
-            for (const { start, end, use } of references) {
-                unbound.push({ start, end, text: use === 'typeof' ? '(void 0)' : use === 'shorthand' ? `${name}: ${to}` : to });
-            }
-        }
-    const { code, head, end, columns } = emitModule(module, records, {
-        body: topLevelAwait ? 'async' : 'sync',
-        names: generatedNames(module, names),
-        exportsObject: 'arguments[2].exports',
-        requireFunction: 'arguments[1]',
-        edits: unbound,
-        bind: { metadata: 'arguments[2].__nimbusImportMeta', parentUrl, metas, dynamicImports },
-        sourceLength: source.length,
-    });
-    const map = { head, tail: code.length - end, columns };
-    return { code, map: JSON.stringify(map), warnings: [] };
 }
 /**
  * The import and export declarations of ES module `source`, in source order,

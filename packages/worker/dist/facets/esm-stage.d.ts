@@ -22,7 +22,7 @@ import { type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolution
  * cell at a key, the facade of a builtin or a package the process provides,
  * or the JSON module of the file at a key. Each names its map module.
  */
-export type EsmModuleRow = readonly [kind: 'module', key: string, name: string, targets: readonly number[]] | readonly [kind: 'commonjs', key: string, name: string] | readonly [kind: 'builtin', builtin: string, name: string] | readonly [kind: 'json', key: string, name: string];
+export type EsmModuleRow = readonly [kind: 'module', key: string, name: string, targets: readonly number[], bunScope?: 1] | readonly [kind: 'commonjs', key: string, name: string] | readonly [kind: 'builtin', builtin: string, name: string] | readonly [kind: 'json', key: string, name: string];
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
     readonly name: string;

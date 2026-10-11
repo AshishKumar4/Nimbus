@@ -57,10 +57,10 @@ export async function stageEsModules(fs, cells, { conditions, isCode, gate }) {
     const missing = [];
     // A cell's id is its place among `cells`: the table's first rows, its targets filled as it is staged.
     const targetIds = [];
-    for (const key of cells.keys()) {
+    for (const [key, { sites }] of cells) {
         const targets = [];
         targetIds.push(targets);
-        table.push(['module', key, commonJsCellModuleName(key), targets]);
+        table.push(sites.commonJsNames?.length ? ['module', key, commonJsCellModuleName(key), targets, 1] : ['module', key, commonJsCellModuleName(key), targets]);
     }
     const ids = new Map();
     for (let id = 0; id < table.length; id++)
@@ -161,7 +161,9 @@ export async function stageEsModules(fs, cells, { conditions, isCode, gate }) {
                 missing.push(refusal(error));
             }
         }
-        modules.set(key, stageEsModule(code, sites, { id, name: commonJsCellModuleName(key), targets }));
+        modules.set(key, stageEsModule(code, sites, {
+            id, name: commonJsCellModuleName(key), targets, ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
+        }));
         id++;
     }
     return { modules, members, table, missing };

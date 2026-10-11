@@ -1,6 +1,5 @@
 import { type EsmImportBinding, type EsmRecord } from './esm-interop.js';
 import { type SourceEdit } from './javascript-ast.js';
-import { type ModuleScope } from './module-format.js';
 /** An import's binding (esm-interop.ts), a named one with its `references`: where the module uses it. */
 export type EsmUsedBinding = Extract<EsmImportBinding, {
     kind: 'namespace';
@@ -65,34 +64,6 @@ export interface CommonJsEmitOptions {
 interface Span {
     readonly start: number;
     readonly end: number;
-}
-/** `esm` lowered to the CommonJS function body of an async module. */
-export declare function lowerAsyncModule(esm: string): string;
-/**
- * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts), at
- * `parentUrl`: the one lowering, which the transform facet runs for a module
- * under bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the
- * session for a larger one, read a statement at a time (bounded memory). Its
- * import.meta is the cell's module's, its import() the process loader's. In
- * Node's `scope` a free use of a CommonJS wrapper name binds nothing
- * (module-format.ts ES_MODULE_UNBOUND_NAMES; its typeof is 'undefined'); in
- * Bun's the module keeps them. `map` is the emit's EsModuleMap. Throws
- * acorn's SyntaxError for a module that does not parse.
- */
-export declare function lowerEsModule(source: string, scope: ModuleScope, parentUrl: string): {
-    code: string;
-    map: string;
-    warnings: [];
-};
-/**
- * What a lowered ES module's frames read back as its source's places: where
- * the module's own text starts (`head`) and ends (`tail` from the emit's end)
- * in its emit, and the ColumnMap of its edits.
- */
-export interface EsModuleMap {
-    readonly head: number;
-    readonly tail: number;
-    readonly columns: ColumnMap;
 }
 /**
  * The import and export declarations of ES module `source`, in source order,

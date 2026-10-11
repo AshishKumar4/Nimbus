@@ -14,6 +14,7 @@ import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { readModuleImportSites, rewriteDynamicImports } from './dynamic-import-rewrite.js';
+import { bunScopeNames } from './native-esm.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import { rewriteProvidedCommonJsModules } from './provided-packages.js';
@@ -187,6 +188,11 @@ async function transformWithEsbuild(esbuildApi, code, options) {
  */
 export async function runTransformRequest(engine, code, options, runtime) {
     const parent = options?.dynamicImportParent;
+    // An ES module's import sites, as its map: in Bun's scope, with the CommonJS names it reads.
+    const sitesOf = (javaScript, scope) => {
+        const sites = runtime.readModuleImportSites(javaScript);
+        return scope === 'bun' ? { ...sites, commonJsNames: runtime.bunScopeNames(javaScript) } : sites;
+    };
     if (options?.stripTypes) {
         if (runtime.stripTypeScript === undefined)
             throw new Error('a type strip where amaro is not loaded');
@@ -199,7 +205,7 @@ export async function runTransformRequest(engine, code, options, runtime) {
         // JavaScript now: its bundled records of provided packages bound, as the session binds JavaScript's (preparedTransformSource).
         const javaScript = runtime.rewriteProvidedCommonJsModules(stripped.code);
         if (stripped.format === 'module')
-            return { code: javaScript, map: JSON.stringify(runtime.readModuleImportSites(javaScript)), warnings: [], esModule: 'node' };
+            return { code: javaScript, map: JSON.stringify(sitesOf(javaScript, 'node')), warnings: [], esModule: 'node' };
         return { code: parent === undefined ? javaScript : runtime.rewriteDynamicImports(javaScript, parent), map: '', warnings: [] };
     }
     if (options?.rewriteOnly) {
@@ -209,7 +215,7 @@ export async function runTransformRequest(engine, code, options, runtime) {
     }
     const compiled = options?.loader !== undefined && options.loader !== 'js';
     if (options?.esModule && !compiled) {
-        return { code, map: JSON.stringify(runtime.readModuleImportSites(code)), warnings: [], esModule: options.esModule };
+        return { code, map: JSON.stringify(sitesOf(code, options.esModule)), warnings: [], esModule: options.esModule };
     }
     const esbuildApi = typeof engine === 'function' ? await engine() : engine;
     if (esbuildApi === null)
@@ -225,7 +231,7 @@ export async function runTransformRequest(engine, code, options, runtime) {
             tsconfigRaw: options.tsconfigRaw, define: options.define, sourcefile: options.sourcefile,
             supported: { 'dynamic-import': true, 'import-meta': true },
         })).code;
-        const sites = runtime.readModuleImportSites(compiledCode);
+        const sites = sitesOf(compiledCode, options.esModule);
         if (sites.moduleSyntax)
             return { code: compiledCode, map: JSON.stringify(sites), warnings: [], esModule: options.esModule };
         return { code: parent === undefined ? compiledCode : runtime.rewriteDynamicImports(compiledCode, parent), map: '', warnings: [] };
@@ -419,7 +425,7 @@ export class EsbuildService {
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
         this.engine = options.engine ?? null;
-        this.runtime = { rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
+        this.runtime = { rewriteDynamicImports, readModuleImportSites, bunScopeNames, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
         this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
     /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */

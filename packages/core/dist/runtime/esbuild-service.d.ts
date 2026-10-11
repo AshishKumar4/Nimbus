@@ -166,6 +166,7 @@ type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
 export interface TransformRuntime {
     rewriteDynamicImports(code: string, parentUrl: string): string;
     readModuleImportSites(code: string): ImportSites;
+    bunScopeNames(code: string): string[];
     rewriteProvidedCommonJsModules(source: string): string;
     stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
 }

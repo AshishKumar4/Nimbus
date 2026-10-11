@@ -26,6 +26,8 @@ export interface ImportSites {
     readonly statics: readonly StaticSpecifierSite[];
     /** An import or export declaration, or import.meta: the text is an ES module. */
     readonly moduleSyntax: boolean;
+    /** In Bun's scope, the CommonJS names its meta instance binds (native-esm.ts bunScopeNames). */
+    readonly commonJsNames?: readonly string[];
 }
 /**
  * An ES module's import() calls, import.meta and static specifiers, as the

@@ -38,7 +38,9 @@
  * interpreter, which evaluates the module where the registry cannot
  * (node-shims' adoption).
  */
+import { bindingIdentifiers } from './binding-pattern.js';
 import { escapedIdentifierNames } from './dynamic-import-rewrite.js';
+import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 /** The map module every staged module binds import.meta, import(), its check and its registration from. */
 export const ESM_META_MODULE = 'nimbus/meta.js';
 /** The map module the runner fills with the functions ESM_META_MODULE's instances ask for. */
@@ -168,6 +170,42 @@ export function stageEsModule(text, sites, link) {
     }
     body += source.slice(at);
     return { text: prologue + body + tail, head: prologue.length, tail: tail.length, hashbang, columns: columnMap(source, edits) };
+}
+/** The CommonJS names Bun's module scope binds (module-format.ts ModuleScope). */
+const BUN_SCOPE_NAMES = ['require', '__filename', '__dirname'];
+/**
+ * The CommonJS names an ES module in Bun's scope may read and does not
+ * declare at its top level: the ones its meta instance binds for it. A name
+ * the text only mentions (in a string, a comment) is bound unread, which is
+ * harmless; one it declares is its own.
+ */
+export function bunScopeNames(code) {
+    const named = BUN_SCOPE_NAMES.filter((name) => code.includes(name));
+    if (named.length === 0)
+        return [];
+    const declared = new Set();
+    const ids = [];
+    parseStatements(code, MODULE_PARSE_OPTIONS, {
+        onStatement: (statement) => {
+            const declaration = statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportDefaultDeclaration' ? statement.declaration : statement;
+            if (declaration === null || declaration === undefined)
+                return;
+            if (declaration.type === 'VariableDeclaration') {
+                for (const declarator of declaration.declarations)
+                    bindingIdentifiers(declarator.id, ids);
+            }
+            else if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
+                declared.add(declaration.id.name);
+            }
+            else if (declaration.type === 'ImportDeclaration') {
+                for (const specifier of declaration.specifiers)
+                    declared.add(specifier.local.name);
+            }
+        },
+    });
+    for (const id of ids)
+        declared.add(id.name);
+    return named.filter((name) => !declared.has(name));
 }
 /** What ESM_META_MODULE exports a Bun module's CommonJS names as. */
 const COMMONJS_NAME_EXPORTS = { require: 'q', __filename: 'f', __dirname: 'd' };

@@ -9781,6 +9781,53 @@ error: the Oxc transform crashed (${reason})`);
     return code;
   }
 
+  function bindingIdentifiers(pattern, out) {
+    if (pattern === null) return out;
+    switch (pattern.type) {
+      case "Identifier":
+        out[out.length] = pattern;
+        return out;
+      case "ObjectPattern":
+        for (let i = 0; i < pattern.properties.length; i++) {
+          const property = pattern.properties[i];
+          bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
+        }
+        return out;
+      case "ArrayPattern":
+        for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
+        return out;
+      case "RestElement":
+        return bindingIdentifiers(pattern.argument, out);
+      case "AssignmentPattern":
+        return bindingIdentifiers(pattern.left, out);
+      default:
+        return out;
+    }
+  }
+
+  var BUN_SCOPE_NAMES = ["require", "__filename", "__dirname"];
+  function bunScopeNames(code) {
+    const named = BUN_SCOPE_NAMES.filter((name) => code.includes(name));
+    if (named.length === 0) return [];
+    const declared =   new Set();
+    const ids = [];
+    parseStatements(code, MODULE_PARSE_OPTIONS, {
+      onStatement: (statement) => {
+        const declaration = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? statement.declaration : statement;
+        if (declaration === null || declaration === void 0) return;
+        if (declaration.type === "VariableDeclaration") {
+          for (const declarator of declaration.declarations) bindingIdentifiers(declarator.id, ids);
+        } else if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
+          declared.add(declaration.id.name);
+        } else if (declaration.type === "ImportDeclaration") {
+          for (const specifier of declaration.specifiers) declared.add(specifier.local.name);
+        }
+      }
+    });
+    for (const id of ids) declared.add(id.name);
+    return named.filter((name) => !declared.has(name));
+  }
+
   var NODE_RELEASE = "22.22.3";
   var NODE_VERSION = `v${NODE_RELEASE}`;
   var VFS_CAPACITY = 10 * 1024 * 1024 * 1024;
@@ -9959,7 +10006,7 @@ error: the Oxc transform crashed (${reason})`);
     return btoa(binary);
   }
 
-  var runtime = { rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules, stripTypeScript };
+  var runtime = { rewriteDynamicImports, readModuleImportSites, bunScopeNames, rewriteProvidedCommonJsModules, stripTypeScript };
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
     __nimbusTransformRuntime: runtime

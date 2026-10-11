@@ -1,0 +1,155 @@
+// @serial
+// @tier slow — drives a local workerd session through every scenario.
+// ES modules as the registry evaluates them (core runtime/native-esm.ts,
+// worker facets/esm-stage.ts), against host Node 22.22.3: evaluation order,
+// cycles and their TDZ, microtask order, live bindings, top-level await,
+// import.meta, import() identity, CommonJS and builtin namespaces, JSON,
+// resolution under exports/imports conditions and its refusals,
+// require(esm)'s values and refusals, a throw that stops a graph, top-level
+// I/O (sync fs, timers, randomness, the clock) and TypeScript Node strips.
+// stdout, stderr and the exit code are host Node's, with the place it ran
+// named W and Node's own frames left out.
+//
+// Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
+// generated artifacts before testing a runner change.
+
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
+import { withoutInternalArrow } from './lib/node-report.mjs';
+
+const W = '/home/user/nesm';
+const json = (value) => JSON.stringify(value, null, 2);
+const order = (name, deps) => [
+  ...deps.map((dep) => `import { v_${dep} } from './${dep}.mjs';`),
+  `export let v_${name} = '${name}';`,
+  `globalThis.log.push('body:${name}' + [${deps.map((dep) => `(() => { try { return ':' + v_${dep}; } catch { return ':TDZ'; } })()`).join(', ')}].join(''));`,
+  `Promise.resolve().then(() => globalThis.log.push('mt:${name}'));`,
+].join('\n') + '\n';
+const GRAPH = { main: ['a', 'b'], a: ['c'], b: ['c', 'd'], c: [], d: ['e'], e: ['f'], f: ['e', 'c'] };
+const FILES = {
+  ...Object.fromEntries(Object.entries(GRAPH).map(([name, deps]) => [`order/${name}.mjs`, order(name, deps)])),
+  'order/run.mjs': "globalThis.log = [];\nPromise.resolve().then(() => log.push('pre-mt'));\nawait import('./main.mjs');\nlog.push('imported');\nsetTimeout(() => console.log(log.join(' ')), 10);\n",
+  // Live bindings, and a namespace's shape.
+  'live/counter.mjs': 'export let count = 0;\nexport function inc() { count++; }\nexport default function named() {}\n',
+  'live/main.mjs': "import { count, inc } from './counter.mjs';\nimport * as ns from './counter.mjs';\nconsole.log(count); inc(); console.log(count, ns.count);\nconsole.log(Object.keys(ns), Object.prototype.toString.call(ns), Object.isExtensible(ns), ns.default.name);\nconst again = await import('./counter.mjs');\nconsole.log(again === ns);\n",
+  // Top-level await and its order against a sibling.
+  'tla/slow.mjs': "globalThis.log.push('slow:start');\nawait new Promise((resolve) => setTimeout(resolve, 5));\nglobalThis.log.push('slow:end');\nexport const slow = 1;\n",
+  'tla/fast.mjs': "globalThis.log.push('fast');\nexport const fast = 2;\n",
+  'tla/main.mjs': "globalThis.log = [];\nconst { slow } = await import('./both.mjs');\nconsole.log(log.join(' '), slow);\n",
+  'tla/both.mjs': "import { slow } from './slow.mjs';\nimport { fast } from './fast.mjs';\nglobalThis.log.push('both');\nexport { slow, fast };\n",
+  // import.meta, as Node gives it.
+  'meta/sub/m.mjs': "console.log(Object.keys(import.meta), import.meta.url.endsWith('/meta/sub/m.mjs'), import.meta.filename.endsWith('/meta/sub/m.mjs'), import.meta.dirname.endsWith('/meta/sub'));\nconsole.log(import.meta.resolve('./x.js').endsWith('/meta/sub/x.js'), import.meta.resolve('node:fs'), typeof import.meta.resolve);\n",
+  // CommonJS imported: its namespace's names and values, default as module.exports.
+  'cjs/lib.cjs': "exports.a = 1;\nObject.defineProperty(exports, 'hidden', { enumerable: true, get() { return 'getter'; } });\nmodule.exports.later = 2;\nexports.default = 'own default';\nsetTimeout(() => { exports.a = 99; }, 0);\n",
+  'cjs/fn.cjs': 'module.exports = function f() { return 7; };\nmodule.exports.x = 1;\n',
+  'cjs/reexport.cjs': "module.exports = require('./lib.cjs');\n",
+  'cjs/main.mjs': "import * as lib from './lib.cjs';\nimport def, { a } from './lib.cjs';\nimport f, { x } from './fn.cjs';\nimport * as re from './reexport.cjs';\nconsole.log(Object.keys(lib), def.default, a, lib.default === def);\nconsole.log(f(), x, Object.keys(re));\nsetTimeout(() => console.log('later', lib.a, a, def.a), 5);\n",
+  'cjs/missing.mjs': "import { nope } from './lib.cjs';\nconsole.log(nope);\n",
+  // Builtins: default and named, and syncBuiltinESMExports.
+  'builtin/main.mjs': "import fs, { readFileSync } from 'node:fs';\nimport * as path from 'path';\nimport module from 'node:module';\nconsole.log(fs.readFileSync === readFileSync, typeof path.join, path.default === path.default, 'sep' in path);\nfs.readFileSync = () => 'patched';\nmodule.syncBuiltinESMExports();\nconst again = await import('node:fs');\nconsole.log(again.readFileSync(), readFileSync());\n",
+  // JSON with its attribute, and without it.
+  'json/data.json': '{ "a": 1, "__proto__": { "b": 2 } }\n',
+  'json/main.mjs': "import data from './data.json' with { type: 'json' };\nconsole.log(data.a, Object.keys(data), Object.getPrototypeOf(data) === Object.prototype);\nconst again = await import('./data.json', { with: { type: 'json' } });\nconsole.log(again.default === data);\n",
+  'json/bare.mjs': "import data from './data.json';\nconsole.log(data);\n",
+  // Resolution: exports and imports under conditions, type, refusals.
+  'res/node_modules/pkg/package.json': json({ name: 'pkg', type: 'module', exports: { '.': { import: './esm.js', require: './cjs.cjs' }, './sub': './sub.js' }, imports: { '#inner': { node: './inner.js' } } }),
+  'res/node_modules/pkg/esm.js': "import inner from '#inner';\nexport default 'esm:' + inner;\n",
+  'res/node_modules/pkg/cjs.cjs': "module.exports = 'cjs';\n",
+  'res/node_modules/pkg/sub.js': "export const sub = 'sub';\n",
+  'res/node_modules/pkg/inner.js': "export default 'inner';\n",
+  'res/node_modules/pkg/hidden.js': "export default 'hidden';\n",
+  'res/main.mjs': "import pkg from 'pkg';\nimport { sub } from 'pkg/sub';\nimport { createRequire } from 'node:module';\nconsole.log(pkg, sub, createRequire(import.meta.url)('pkg'));\n",
+  'res/hidden.mjs': "import hidden from 'pkg/hidden.js';\nconsole.log(hidden);\n",
+  'res/absent.mjs': "import absent from 'no-such-package';\nconsole.log(absent);\n",
+  'res/noext.mjs': "import { sub } from './node_modules/pkg/sub';\nconsole.log(sub);\n",
+  'res/dir.mjs': "import x from './node_modules/pkg';\nconsole.log(x);\n",
+  'res/dynamic.mjs': "try { await import('no-such-package'); } catch (e) { console.log(e.code, e.message); }\ntry { await import('pkg/hidden.js'); } catch (e) { console.log(e.code, e.message); }\nconsole.log((await import('pkg')).default);\n",
+  // require(esm): values, the facade, refusals.
+  'req/esm.mjs': "export const named = 1;\nexport default 'dflt';\n",
+  'req/nodefault.mjs': "export const only = 1;\n",
+  'req/exportsas.mjs': "const v = { y: 1 };\nexport { v as 'module.exports' };\nexport const z = 3;\n",
+  'req/tla.mjs': "globalThis.ranTla = true;\nawait 0;\nexport const t = 1;\n",
+  'req/main.cjs': "const esm = require('./esm.mjs');\nconsole.log(esm.__esModule, esm.default, esm.named, Object.keys(esm));\nconst none = require('./nodefault.mjs');\nconsole.log(Object.keys(none), none.__esModule);\nconsole.log(require('./exportsas.mjs'));\ntry { require('./tla.mjs'); } catch (e) { console.log(e.code); }\n",
+  'req/later.mjs': "import { createRequire } from 'node:module';\nconst ns = await import('./nodefault.mjs');\nconst required = createRequire(import.meta.url)('./nodefault.mjs');\nconsole.log(required === ns);\n",
+  'req/cycle-a.mjs': "import './cycle-b.mjs';\nexport const a = 1;\n",
+  'req/cycle-b.mjs': "import { createRequire } from 'node:module';\ntry { createRequire(import.meta.url)('./cycle-a.mjs'); } catch (e) { console.log(e.code); }\n",
+  // A throw stops the graph where Node's evaluation stops.
+  'stop/c.mjs': "console.log('c');\n",
+  'stop/thrower.mjs': "console.log('thrower');\nthrow new Error('boom');\n",
+  'stop/after.mjs': "console.log('after');\n",
+  'stop/bad.mjs': "import './c.mjs';\nimport './thrower.mjs';\nimport './after.mjs';\nconsole.log('bad');\n",
+  'stop/run.mjs': "try { await import('./bad.mjs'); } catch (e) { console.log('rejected', e.message); }\ntry { await import('./bad.mjs'); } catch (e) { console.log('again', e.message); }\nawait import('./after.mjs');\nconsole.log('after imported');\n",
+  // What a module's top level may do: sync fs, timers, randomness, the clock.
+  'io/data.txt': 'payload\n',
+  'io/leaf.mjs': "import { readFileSync, statSync } from 'node:fs';\nimport { randomUUID } from 'node:crypto';\nexport const text = readFileSync(new URL('./data.txt', import.meta.url), 'utf8').trim();\nexport const size = statSync(new URL('./data.txt', import.meta.url)).size;\nexport const uuid = randomUUID().length;\nexport const now = Date.now() > 1e12;\nexport const timer = await new Promise((resolve) => setTimeout(() => resolve('fired'), 1));\n",
+  'io/main.mjs': "import { text, size, uuid, now, timer } from './leaf.mjs';\nconsole.log(text, size, uuid, now, timer, crypto.getRandomValues(new Uint8Array(2)).length);\n",
+  // CommonJS names in an ES module's scope.
+  'scope/req.mjs': "console.log(typeof require, typeof module, typeof __filename, this);\nrequire('fs');\n",
+  // TypeScript Node strips, as an ES module.
+  'ts/package.json': json({ type: 'module' }),
+  'ts/lib.ts': "export function twice(n: number): number { return n * 2; }\nexport type T = string;\n",
+  'ts/main.ts': "import { twice, type T } from './lib.ts';\nconst label: T = 'twice';\nconsole.log(label, twice(21), import.meta.url.endsWith('/ts/main.ts'));\n",
+  // An uncaught error's report.
+  'fatal/main.mjs': "import { sep } from 'node:path';\nconst x = sep.length;\nthrow new TypeError('fatal ' + x);\n",
+  'fatal/syntax.mjs': "import './broken.mjs';\nconsole.log('never');\n",
+  'fatal/broken.mjs': "export const a = 1;\nconst = 2;\n",
+};
+const COMMANDS = [
+  'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
+  'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
+  'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
+  'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
+  `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
+  `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
+];
+
+const host = realpathSync(mkdtempSync(join(tmpdir(), 'native-esm-')));
+process.on('exit', () => rmSync(host, { recursive: true, force: true }));
+for (const [name, text] of Object.entries(FILES)) {
+  mkdirSync(dirname(join(host, name)), { recursive: true });
+  writeFileSync(join(host, name), text);
+}
+const shown = (text, from) => text.split(from).join(W)
+  .split('\n').filter((line) => !/^\s+at /.test(line) || line.includes(`${W}/`)).join('\n');
+const run = (command) => `${command} > out.txt 2> err.txt; echo $? > code.txt`;
+const read = `node -e "const fs = require('fs'); process.stdout.write(JSON.stringify({ out: fs.readFileSync('out.txt').toString('base64'), err: fs.readFileSync('err.txt').toString('base64'), code: fs.readFileSync('code.txt', 'utf8') }))"`;
+const hostRead = (name) => spawnSync('cat', [name], { cwd: host, encoding: 'utf8' }).stdout;
+
+console.log('native-esm-matches-node-workerd: starting local workerd');
+const probe = await startLocalProbe({ runtimes: [] });
+const failures = [];
+try {
+  const session = await localTerminal(probe, { install: [] });
+  try {
+    const dirs = [...new Set(Object.keys(FILES).map((name) => dirname(`${W}/${name}`)))];
+    await session.run(`mkdir -p ${dirs.join(' ')}`, 30_000);
+    for (const [name, text] of Object.entries(FILES)) await session.writeFile(`${W}/${name}`, text);
+    for (const command of COMMANDS) {
+      assert.equal(spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
+      const want = { out: shown(hostRead('out.txt'), host), err: withoutInternalArrow(shown(hostRead('err.txt'), host)), code: hostRead('code.txt').trim() };
+      await session.run(`cd ${W} && ${run(command)}`, 120_000);
+      const r = await session.run(`cd ${W} && ${read}`, 60_000);
+      const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
+      assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);
+      const got = JSON.parse(line);
+      const decode = (b64) => shown(Buffer.from(b64, 'base64').toString('utf8'), W);
+      const seen = { out: decode(got.out), err: decode(got.err), code: got.code.trim() };
+      const same = seen.out === want.out && seen.err === want.err && seen.code === want.code;
+      console.log(`  ${same ? 'ok ' : 'BAD'} ${command.slice(0, 70)}: exit ${want.code}`);
+      if (!same) failures.push({ command, want, seen });
+    }
+  } finally {
+    await session.close().catch(() => {});
+  }
+} finally {
+  await probe.stop();
+}
+for (const { command, want, seen } of failures) {
+  console.log(`--- ${command}\n  want: ${JSON.stringify(want)}\n  seen: ${JSON.stringify(seen)}`);
+}
+assert.deepEqual(failures.map((f) => f.command), [], 'every program runs as Node runs it');
+console.log(`native-esm-matches-node-workerd: ${COMMANDS.length} programs as Node runs them`);
