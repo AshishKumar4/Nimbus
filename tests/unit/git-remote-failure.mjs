@@ -51,6 +51,13 @@ assert.equal(remoteFailureText('http://127.0.0.1/auth.git', { kind: 'status', st
   "fatal: Authentication failed for 'http://127.0.0.1/auth.git/'\n", 'a single-letter secret does not redact the protocol spelling');
 assert.deepEqual(selectRemoteCredentials('https://h?query=x@y', { username: 'caller', password: 'pass' }),
   { username: 'caller', password: 'pass' }, 'query data is not URL userinfo');
+for (const password of ['/', ':', '@', '://']) {
+  const url = `https://u:${encodeURIComponent(password)}@h:8443/repo.git`;
+  assert.equal(remoteFailureText(url, { kind: 'status', status: 403 }, { username: 'u', password: true }, [password]),
+    "fatal: unable to access 'https://h:8443/repo.git/': The requested URL returned error: 403\n", 'URL delimiters are not password data');
+}
+assert.equal(remoteFailureText('https://u@h:8443/repo.git', { kind: 'status', status: 401 }, { username: 'u', password: false }, ['@', '/', ':']),
+  "fatal: could not read Password for 'https://u@h:8443': terminal prompts disabled\n", 'credential-prompt delimiters remain intact');
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 /** A server answering each repository's discovery with a failure. */
@@ -235,5 +242,5 @@ console.log('git-remote-failure: ok');
 for (const failure of [{ kind: 'status', status: 403 }, { kind: 'status', status: 401 }, { kind: 'status', status: 404 }, { kind: 'transport', detail: 'unreachable' }]) {
   const message = remoteFailureText('https://h/TOKEN-9/r.git?access_token=TOKEN-9', failure, { username: '', password: true }, ['TOKEN-9']);
   assert.doesNotMatch(message, /TOKEN-9/, 'known secrets in the destination path/query are not printed');
-  assert.match(message, /<redacted>/);
+  assert.match(message, /(?:<redacted>|%3Credacted%3E)/);
 }
