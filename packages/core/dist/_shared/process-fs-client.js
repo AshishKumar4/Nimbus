@@ -41,7 +41,7 @@
  * session refused is not asked for again.
  */
 import { encodeWriteBatch } from '@nimbus-sh/platform/w7-frame.js';
-import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, sendWaveAttempts, waveAttemptsOf } from '@nimbus-sh/platform/wave-writer.js';
+import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import { memoryJournal } from './process-fs-journal.js';
@@ -332,7 +332,8 @@ export function processFsClient(options) {
         // one the session cannot be told of yet is told before the next wave.
         await retirePending();
         const openedAt = now();
-        const writer = await session.openWriter(counters.epochs === 0);
+        const first = counters.epochs === 0;
+        const writer = await openWaveEpoch(() => session.openWriter(first), { ...(options.retry === undefined ? {} : { retry: options.retry }), timers });
         epoch = { writer, openedAt, numbering: null };
         counters.epochs++;
         ack = 0;
@@ -1130,7 +1131,10 @@ export async function drainProcessFsJournal(options) {
     // Entries no numbering covers (the process died before its first wave): a fresh writer numbers them.
     const numberings = await journal.numberings();
     if (numberings.length === 0 || numberings[0].jid > held[0].jid) {
-        const writer = await session.openWriter(false);
+        const writer = await openWaveEpoch(() => session.openWriter(false), {
+            ...(options.retry === undefined ? {} : { retry: options.retry }),
+            ...(options.timers === undefined ? {} : { timers: options.timers }),
+        });
         const numbering = { writer, seq: 1, jid: held[0].jid };
         await journal.number(numbering);
         numberings.unshift(numbering);

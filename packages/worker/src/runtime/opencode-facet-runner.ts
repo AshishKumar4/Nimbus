@@ -152,6 +152,12 @@ const BUILTIN_BRIDGES: readonly BuiltinBridge[] = [
   { specifier: 'node:os', builtin: 'os', names: OS_NAMES },
   // node:sqlite is not in nodejs_compat; bridge to the VFS-backed sql.js shim.
   { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
+  { specifier: 'node:http', builtin: 'http', names: [
+    'Agent', 'ClientRequest', 'IncomingMessage', 'OutgoingMessage', 'Server', 'ServerResponse',
+    'METHODS', 'STATUS_CODES', 'globalAgent', 'maxHeaderSize', 'createServer', 'request', 'get',
+    'validateHeaderName', 'validateHeaderValue', 'setMaxIdleHTTPParsers', '_connectionListener',
+  ] },
+  { specifier: 'node:https', builtin: 'https', names: ['Agent', 'Server', 'globalAgent', 'createServer', 'request', 'get'] },
 ];
 
 // node:process public surface opencode/OpenTUI consume by name. The bundle uses
@@ -804,8 +810,7 @@ __pendingIO.push = (p) => {
 ${nodeFacetSource(opts.sources, 'shims')}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
-// Patch native HTTP listen/close before the staged ESM graph links. Its
-// node:http imports and the shims' require now share the native Server.
+// Install the HTTP transport before the staged graph's builtin bridges link.
 void builtins.http;
 // Capture workerd's real process.memoryUsage BEFORE the shim process takes over
 // (the shim's memoryUsage is a stub returning zeros). workerd exposes a working
