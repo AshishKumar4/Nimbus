@@ -7,7 +7,7 @@
  * lookup, before anything has changed; or the namespace itself.
  */
 import { type Description, type DescriptorScope } from '../runtime/descriptors.js';
-import type { RuntimeFileHandle, VfsCred } from '../runtime/os-contracts.js';
+import type { RuntimeFileHandle } from '../runtime/os-contracts.js';
 import { type Awaitable, type VFS, type VfsStat } from './vfs.js';
 /** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export declare const BUFFERED_WRITE_BYTES: number;
@@ -18,7 +18,6 @@ export interface MountedOpen {
     /** The name opened, in the namespace. */
     name: string;
     flags: RuntimeFileHandle['flags'];
-    cred: VfsCred;
     refuse: Refuse;
     /** The mode a file this open makes is made with. */
     mode?: number;
@@ -28,10 +27,11 @@ export interface MountedOpen {
  * POSIX differ: O_CREAT|O_EXCL is EEXIST on the name itself, a link
  * included; O_NOFOLLOW of a link is ELOOP; an absent name without O_CREAT is
  * ENOENT, and with O_DIRECTORY EINVAL; O_DIRECTORY of anything else is
- * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); the access
- * asked is checked against the file's mode (EACCES); and only then is the
- * file made (whatever its mode, as creat(2) makes it) or truncated. Answers
- * the file's stat. `describes`: whether the open keeps a description, whose
+ * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); and only
+ * then is the file made, or truncated. Answers the file's stat. Who may
+ * open a file for what is the mount's own policy, as for every operation on
+ * it: a backend that takes a caller's credential (VFS.as) enforces modes; a
+ * backend of one identity has none. `describes`: whether the open keeps a description, whose
  * write rights a directory may carry (a WASI guest asks a capability set);
  * an open that keeps none (a wave's) is an open to write, which a directory
  * refuses. `settled` runs right before the answer, or the change.

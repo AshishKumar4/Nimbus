@@ -78,7 +78,7 @@ export function namespaceWaveRouter(namespace, credential) {
             const ns = view(cred, guard, owner);
             // Removing its own slot after a failure is the record's own: not admitted again, under the same lease.
             const cleanup = view(cred, undefined, owner);
-            return applyRecord(ns, cleanup, record, pinsOf(ns, record), credential(cred));
+            return applyRecord(ns, cleanup, record, pinsOf(ns, record));
         },
     };
 }
@@ -140,7 +140,7 @@ function pinOf(ns, dir) {
  * that takes credentials applies it as it applies any (a default ACL
  * instead, where one is set); one that takes none stores what it is given.
  */
-async function applyRecord(ns, cleanup, record, pinned, cred) {
+async function applyRecord(ns, cleanup, record, pinned) {
     switch (record.type) {
         case 'directory':
             await pinned();
@@ -216,7 +216,7 @@ async function applyRecord(ns, cleanup, record, pinned, cred) {
             else if (call.call === 'open') {
                 // open(2) to write, as the namespace's open decides it for every caller.
                 return statOf(await openOnMount({
-                    files: ns, name: call.path, cred, mode: call.mode,
+                    files: ns, name: call.path, mode: call.mode,
                     flags: openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true }),
                     refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
                 }, false, pinned));

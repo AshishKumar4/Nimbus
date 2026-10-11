@@ -6,7 +6,6 @@
  * (CompositeVFS.sync), which refuses an asynchronous mount at the first
  * lookup, before anything has changed; or the namespace itself.
  */
-import { modeAllows } from '../runtime/beneath-walk.js';
 import { processView } from '../runtime/descriptors.js';
 import { runtimeStatOf } from './composite.js';
 import { isPromise, readRangeOrWhole, then } from './vfs.js';
@@ -18,10 +17,11 @@ export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
  * POSIX differ: O_CREAT|O_EXCL is EEXIST on the name itself, a link
  * included; O_NOFOLLOW of a link is ELOOP; an absent name without O_CREAT is
  * ENOENT, and with O_DIRECTORY EINVAL; O_DIRECTORY of anything else is
- * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); the access
- * asked is checked against the file's mode (EACCES); and only then is the
- * file made (whatever its mode, as creat(2) makes it) or truncated. Answers
- * the file's stat. `describes`: whether the open keeps a description, whose
+ * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); and only
+ * then is the file made, or truncated. Answers the file's stat. Who may
+ * open a file for what is the mount's own policy, as for every operation on
+ * it: a backend that takes a caller's credential (VFS.as) enforces modes; a
+ * backend of one identity has none. `describes`: whether the open keeps a description, whose
  * write rights a directory may carry (a WASI guest asks a capability set);
  * an open that keeps none (a wave's) is an open to write, which a directory
  * refuses. `settled` runs right before the answer, or the change.
@@ -45,8 +45,6 @@ export function openOnMount(open, describes, settled) {
                     throw refuse('ENOTDIR', 'open');
                 if (there.type === 'directory' && (flags.truncate || flags.append || (flags.write && !describes)))
                     throw refuse('EISDIR', 'open');
-                if (!modeAllows(there, (flags.read ? 4 : 0) | (flags.write && there.type !== 'directory' ? 2 : 0), open.cred))
-                    throw refuse('EACCES', 'open');
             }
             return then(settled?.(), () => {
                 if (there !== null && !flags.truncate)
@@ -83,12 +81,12 @@ function mountedDescription(options, stat) {
     let pending = [];
     let held = 0;
     const whole = () => then(files.stat(name), (there) => (there === null ? new Uint8Array(0) : files.readFile(name)));
-    // `file` with the pending writes applied in order (an append at the end
-    // as it then is): what a flush writes, and what this process reads.
-    const applyPending = (base) => {
+    // `file` with `writes` applied in order (an append at the end as it then
+    // is): what a flush writes, and what this process reads.
+    const apply = (writes, base) => {
         // A copy: a backend may hand out its own buffer, which must not change before the flush.
         let file = base.slice();
-        for (const write of pending) {
+        for (const write of writes) {
             const at = write.offset ?? file.byteLength;
             if (at + write.bytes.byteLength > file.byteLength) {
                 const grown = new Uint8Array(at + write.bytes.byteLength);
@@ -99,15 +97,14 @@ function mountedDescription(options, stat) {
         }
         return file;
     };
+    // A flush that fails loses what it held (lastClose says so): taken before it reads.
     const flush = () => {
         if (pending.length === 0)
             return;
-        return then(whole(), (file) => {
-            const next = applyPending(file);
-            pending = [];
-            held = 0;
-            return files.writeFile(name, next);
-        });
+        const writes = pending;
+        pending = [];
+        held = 0;
+        return then(whole(), (file) => files.writeFile(name, apply(writes, file)));
     };
     const hold = (offset, bytes) => {
         if (held + bytes.byteLength > options.bufferedWriteBytes)
@@ -116,21 +113,22 @@ function mountedDescription(options, stat) {
         held += bytes.byteLength;
         return immediate ? then(flush(), () => bytes.byteLength) : bytes.byteLength;
     };
-    // This process's view of the file while it holds writes to it (processView).
-    const viewed = () => (inPlace || immediate ? undefined : processView(scope, () => {
+    // This process's view of the file while it holds writes to it, by any of its descriptions (processView).
+    const viewed = () => (immediate ? undefined : processView(scope, () => {
         const file = whole();
         return isPromise(file) ? null : file;
     }, name));
-    const write = (offset, bytes) => {
+    // In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written.
+    const inPlaceOr = (offset, bytes, otherwise) => {
         if (!inPlace || files.writeRange === undefined) {
             inPlace = false;
-            return hold(offset, bytes);
+            return otherwise();
         }
         const cannot = (error) => {
             if (!isVfsError(error, 'ENOTSUP'))
                 throw error;
             inPlace = false;
-            return hold(offset, bytes);
+            return otherwise();
         };
         let written;
         try {
@@ -139,7 +137,7 @@ function mountedDescription(options, stat) {
         catch (error) {
             return cannot(error);
         }
-        return isPromise(written) ? written.then(() => bytes.byteLength, cannot) : bytes.byteLength;
+        return isPromise(written) ? written.then(() => offset + bytes.byteLength, cannot) : offset + bytes.byteLength;
     };
     const statNow = () => then(files.stat(name), (there) => {
         if (there === null)
@@ -159,9 +157,12 @@ function mountedDescription(options, stat) {
             const view = viewed();
             return view ? view.slice(offset, offset + length) : readRangeOrWhole(files, name, offset, length);
         },
-        write,
-        // At the end as it is then: a held append goes at the end as it stands at the flush.
-        append: (bytes) => then(inPlace ? then(files.stat(name), (there) => write(there?.size ?? 0, bytes)) : hold(null, bytes), () => then(statNow(), (now) => now.size)),
+        write: (offset, bytes) => then(inPlaceOr(offset, bytes, () => hold(offset, bytes)), () => bytes.byteLength),
+        // At the end as it is then; a held one goes at the end as it stands at the flush.
+        append: (bytes) => {
+            const held = () => then(hold(null, bytes), () => then(statNow(), (now) => now.size));
+            return inPlace ? then(files.stat(name), (there) => inPlaceOr(there?.size ?? 0, bytes, held)) : held();
+        },
         truncate: op(files.truncate, 'ftruncate'),
         readdir: () => then(files.readdir(name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type }))),
         chmod: op(files.chmod, 'fchmod'),
@@ -170,7 +171,7 @@ function mountedDescription(options, stat) {
         flush,
         close: flush,
         pendingBytes: () => held,
-        applyPending,
+        applyPending: (base) => apply(pending, base),
     };
 }
 /** A mount's optional operation, or ENOTSUP when it has none. */
