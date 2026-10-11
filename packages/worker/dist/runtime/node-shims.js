@@ -12139,9 +12139,12 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // a query or a fragment, always).
   const esmId = __nimbusEsmId("module", normalizedPath);
   const adopted = esmId !== -1 && evaluationKey === resolvedPath;
-  const cached = __NodeModule._cache[cacheKey];
+  // An ES module an import loaded is the ES loader's; require.cache has it
+  // once a require() loads it (require(esm)), as Node's has.
+  const cached = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
   if (cached !== undefined) {
     __nimbusUpdateChildren(parent, cached, true);
+    if (required) __NodeModule._cache[cacheKey] ??= cached;
     const record = adopted ? __nimbusEsmRecords[esmId] : undefined;
     return required && record?.namespace ? __nimbusEsmRequired(record) : cached.exports;
   }
@@ -12156,6 +12159,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
     if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
+    if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
     const siblings = parent?.children;
     const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
     if (at !== -1) siblings.splice(at, 1);
@@ -12180,9 +12184,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     return mod.exports;
   }
 
-  // JS — the cell's wrapper, called with the module's require.
+  // JS — the cell's wrapper, called with the module's require: an ES
+  // module's links its static imports, as Node's ESM loader resolves them.
   const modDir = __pathMod.dirname(filename);
-  const scopedRequire = __nimbusMakeRequire(mod, modDir, esmId === -1);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
   // URL shim null-base fallback (in node-shims url module) can compose
@@ -12217,6 +12221,11 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
+    const scopedRequire = __nimbusMakeRequire(mod, modDir, cell.esModule !== true);
+    if (cell.esModule === true && !required) {
+      delete __NodeModule._cache[cacheKey];
+      __nimbusEsmInstances.set(cacheKey, mod);
+    }
     // A CommonJS module's \`this\` is its exports, as Node calls its wrapper.
     const evaluation = __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
     // A module with top-level await completes later: an import() waits for
@@ -12262,6 +12271,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // An adopted ES module's namespace: its own names, live; a require()'s, Node's shape of it.
   if (adopted) {
     const record = __nimbusEsmRecord(esmId);
+    record.module = mod;
     const exports = mod.exports;
     record.namespace = __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
     if (required) return __nimbusEsmRequired(record);
@@ -12410,12 +12420,16 @@ function __nimbusEsmId(kind, key) {
 const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
 const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
-  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined };
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined };
 }
 // What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
 const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
-// How often the interpreter evaluated a staged module instead (adoption).
-globalThis.__nimbusEsmAdoptions = 0;
+// How often the interpreter evaluated a staged module instead (adoption): the exit's diagnostics.
+let __nimbusEsmAdoptions = 0;
+// The ES modules the interpreter evaluated for an import (a query's or a
+// fragment's instance, an adopted module, a file outside the map), by
+// evaluation key: the ES loader's, never require.cache's until required.
+const __nimbusEsmInstances = new Map();
 // The batch the meta instances evaluating now join: one evaluation's, which
 // runs every meta instance it links in one synchronous turn, and ends with it.
 let __nimbusEsmOpenBatch = null;
@@ -12529,7 +12543,25 @@ function __nimbusEsmTainted(id) {
 // evaluate it (its record given up), else Node's refusal.
 function __nimbusEsmRequire(id, required) {
   const record = __nimbusEsmRecord(id);
-  if (record.state === __ESM_DONE) return required ? __nimbusEsmRequired(record) : record.namespace;
+  if (record.state === __ESM_DONE) {
+    if (!required) return record.namespace;
+    // Node's require(esm) leaves a Module in require.cache, and takes it again after a delete.
+    const filename = "/" + __nimbusEsm.table[id][1];
+    if (record.module === undefined) {
+      record.module = new __NodeModule(filename, null);
+      record.module.filename = filename;
+      record.module.paths = __NodeModule._nodeModulePaths(__pathMod.dirname(filename));
+      record.module.exports = __nimbusEsmRequired(record);
+      record.module.loaded = true;
+    }
+    __NodeModule._cache[filename] ??= record.module;
+    return record.module.exports;
+  }
+  // Evaluated by the interpreter already: its result, its Module in require.cache again.
+  if (record.state === __ESM_ADOPTED && record.module !== undefined && record.namespace !== null) {
+    if (required) __NodeModule._cache[record.module.filename] ??= record.module;
+    return required ? __nimbusEsmRequired(record) : record.module.exports;
+  }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
   if (record.state === __ESM_BEGAN) {
@@ -12544,7 +12576,11 @@ function __nimbusEsmRequire(id, required) {
   if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop;
   if (record.state !== __ESM_ADOPTED) {
     record.state = __ESM_ADOPTED;
-    globalThis.__nimbusEsmAdoptions++;
+    __nimbusEsmAdoptions++;
+    // NIMBUS_DIAG_ESM=1: each adoption named on stderr, to count them in a workload.
+    if (__processMod.env.NIMBUS_DIAG_ESM === "1") {
+      try { __processMod.stderr.write("nimbus-esm: adopted /" + __nimbusEsm.table[id][1] + (required ? " (require)" : " (import)") + "\\n"); } catch {}
+    }
   }
   return null;
 }
@@ -12574,7 +12610,7 @@ async function __nimbusEsmImport(id) {
   const row = __nimbusEsm.table[id];
   if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
   try {
-    return await import("/bundle/" + row[2]);
+    return await import(__NIMBUS_BUNDLE_URL + row[2]);
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
     // took a module of it; an earlier evaluation stopped at a sibling's
@@ -13014,13 +13050,11 @@ function __nimbusModuleRequests(path, text) {
 }
 
 // Where a request from the module at importer leads, by the loader's own
-// rule, the one place it is decided: import() resolves under import's
-// conditions (__nimbusDynamicImport); a static import or export-from is
-// evaluated through the module's scoped require (core/interpreter
-// modules.ts, and esbuild's lowering of a cell), so it resolves as require
-// does, under require's conditions (__requireFrom), as require() itself.
+// rule, the one place it is decided: import() and a static import or
+// export-from resolve as Node's ESM loader does (__nimbusDynamicImport,
+// __requireFrom for an interpreted ES module); require() as require does.
 function __nimbusRequestTarget(kind, specifier, importer) {
-  if (kind === "dynamic") {
+  if (kind === "dynamic" || kind === "static") {
     const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
     return resolution && resolution.path ? resolution.path : null;
   }
@@ -13310,17 +13344,23 @@ function __requireFrom(id, fromDir, parent, required = true) {
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
 
-  const resolved = __resolveFrom(id, fromDir);
-  if (!resolved) throw __nimbusModuleNotFound(id, parent);
-  // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
-  if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved) && !__nimbusEsmJobCached(resolved)) {
+  // An interpreted ES module's static import is the ES loader's: Node's
+  // ESM resolution, which refuses before the importer runs (no arrow of the importer's).
+  if (!required) {
+    const parentUrl = builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\\/+/, "") + "/[import]").href;
+    let resolution;
     try {
-      __esmResolver.assertLoadable({ format: "unknown", path: "/" + String(resolved).replace(/^\\/+/, "") });
+      resolution = __esmResolver.resolveSync(id, parentUrl);
+      __nimbusAssertLoadable(resolution, undefined);
     } catch (error) {
       __nimbusDecorated.add(error);
       throw error;
     }
+    if (resolution.format === "builtin") return builtins[resolution.builtin];
+    return __loadModule(resolution.path.replace(/^\\/+/, ""), resolution.path.replace(/^\\/+/, ""), false, parent);
   }
+  const resolved = __resolveFrom(id, fromDir);
+  if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
 }
 

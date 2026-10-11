@@ -73,20 +73,24 @@ export function columnMap(source, edits) {
     }
     return entries;
 }
-/** The map's root as module URLs name it. */
-const MAP_ROOT = 'file:///bundle/';
+/** The map's root as module URLs name it: workerd's, under which a Worker Loader map's modules live. */
+export const MAP_ROOT = 'file:///bundle/';
+/** The specifier that names map module `name` from anywhere under `root`: a root-absolute path under workerd's. */
+function absoluteSpecifier(root, name) {
+    return root === MAP_ROOT ? '/bundle/' + name : root + name;
+}
 /**
  * The specifier that names map module `target` from map module `from`: as
  * written when the registry already resolves it there, else the shorter of a
  * relative path and a root-absolute one.
  */
-function mapSpecifier(written, from, target) {
+function mapSpecifier(written, from, target, root) {
     // Nimbus's own modules by their one name: what a link error names maps back by it (node-shims).
     if (target.startsWith('nimbus/'))
-        return '/bundle/' + target;
-    const base = MAP_ROOT + from;
+        return absoluteSpecifier(root, target);
+    const base = root + from;
     try {
-        if (new URL(written, base).href === MAP_ROOT + target)
+        if (new URL(written, base).href === root + target)
             return written;
     }
     catch {
@@ -99,7 +103,7 @@ function mapSpecifier(written, from, target) {
         common++;
     const up = fromDir.length - common;
     const relative = (up === 0 ? './' : '../'.repeat(up)) + parts.slice(common).join('/');
-    const absolute = '/bundle/' + target;
+    const absolute = absoluteSpecifier(root, target);
     return relative.length <= absolute.length ? relative : absolute;
 }
 /**
@@ -119,8 +123,8 @@ function freshNames(text, length) {
     };
 }
 /** The import of a module's meta instance, as the appended line has it: `bindings` are `export as local` pairs. */
-function metaImport(id, bindings) {
-    return `import{${bindings.map(([exported, local]) => `${exported} as ${local}`).join(',')}}from${JSON.stringify(`/bundle/${ESM_META_MODULE}?${id}`)};`;
+function metaImport(id, bindings, root = MAP_ROOT) {
+    return `import{${bindings.map(([exported, local]) => `${exported} as ${local}`).join(',')}}from${JSON.stringify(`${absoluteSpecifier(root, ESM_META_MODULE)}?${id}`)};`;
 }
 /**
  * The module the registry evaluates for ES module `text`, read as `sites`,
@@ -139,7 +143,7 @@ export function stageEsModule(text, sites, link) {
         const target = link.targets[index];
         if (target === undefined)
             throw new Error(`no target for specifier ${JSON.stringify(site.specifier)}`);
-        const specifier = mapSpecifier(site.specifier, link.name, target);
+        const specifier = mapSpecifier(site.specifier, link.name, target, link.root ?? MAP_ROOT);
         if (specifier === site.specifier)
             return;
         // A literal written over lines (a line continuation) keeps them: the
@@ -174,7 +178,8 @@ export function stageEsModule(text, sites, link) {
     for (const name of link.commonJsNames ?? [])
         bindings.push([COMMONJS_NAME_EXPORTS[name] ?? name, name]);
     const prologue = `${check}();`;
-    const tail = `\n;${metaImport(link.id, bindings)}import*as ${self} from${JSON.stringify('/bundle/' + link.name)};${register}(${self});`;
+    const root = link.root ?? MAP_ROOT;
+    const tail = `\n;${metaImport(link.id, bindings, root)}import*as ${self} from${JSON.stringify(absoluteSpecifier(root, link.name))};${register}(${self});`;
     let body = '';
     let at = 0;
     for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
@@ -267,7 +272,7 @@ function attributesClause(source, from) {
 /** What ESM_META_MODULE exports a Bun module's CommonJS names as. */
 const COMMONJS_NAME_EXPORTS = { require: 'q', __filename: 'f', __dirname: 'd' };
 /** The facade of a builtin or CommonJS module: its exports, read from what its meta instance's `l` loads. */
-function facadeModule(id, names, resync) {
+function facadeModule(id, names, resync, root) {
     const exported = names.filter((name) => name !== 'default');
     const lines = [
         'c();',
@@ -288,7 +293,7 @@ function facadeModule(id, names, resync) {
         if (resync)
             lines.push(`s(() => { ${exported.map((name, i) => `$${i} = ${read(name)};`).join(' ')} });`);
     }
-    lines.push('r();', metaImport(id, [['c', 'c'], ['l', 'l'], ['r', 'r'], ...(resync ? [['s', 's']] : [])]));
+    lines.push('r();', metaImport(id, [['c', 'c'], ['l', 'l'], ['r', 'r'], ...(resync ? [['s', 's']] : [])], root));
     return lines.join('\n') + '\n';
 }
 /**
@@ -297,8 +302,8 @@ function facadeModule(id, names, resync) {
  * in the graph's evaluation; `default` is module.exports and each of `names`
  * (cjs-module-exports.ts) its own property's value then.
  */
-export function commonJsFacadeModule(id, names) {
-    return facadeModule(id, names, false);
+export function commonJsFacadeModule(id, names, root = MAP_ROOT) {
+    return facadeModule(id, names, false, root);
 }
 /**
  * The facade an ES module imports builtin `id` through (Node's
@@ -306,8 +311,8 @@ export function commonJsFacadeModule(id, names) {
  * gives, and each of `names` (node-builtin-exports.ts) its value, until
  * module.syncBuiltinESMExports() reads them again.
  */
-export function builtinFacadeModule(id, names) {
-    return facadeModule(id, names, true);
+export function builtinFacadeModule(id, names, root = MAP_ROOT) {
+    return facadeModule(id, names, true, root);
 }
 /**
  * ESM_META_MODULE: one instance per staged module (`?<id>`). Its evaluation
@@ -316,9 +321,9 @@ export function builtinFacadeModule(id, names) {
  * module's gate (`await`, see the header); a host with no request context to
  * reach has none, so its graphs stay synchronous for require().
  */
-export function metaModuleSource(gate) {
+export function metaModuleSource(gate, root = MAP_ROOT) {
     return [
-        `import { host } from ${JSON.stringify('/bundle/' + ESM_HOST_MODULE)};`,
+        `import { host } from ${JSON.stringify(absoluteSpecifier(root, ESM_HOST_MODULE))};`,
         'export const { m, i, c, r, l, s, q, f, d } = host.enter(import.meta.url);',
         gate ? 'await 0;' : '',
     ].join('\n');

@@ -15,6 +15,7 @@
 import type { ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { type StagedEsModule } from '@nimbus-sh/core/runtime/native-esm.js';
 import { type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 /**
  * One row of a launch's ES module table, by id (a meta instance's query):
  * a staged ES module (the cell at a VFS key) with the ids of the rows its
@@ -64,8 +65,12 @@ export interface EsmStageFs {
 export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string, {
     readonly code: string;
     readonly sites: ImportSites;
-}>, { conditions, cwd, isCode, gate }: {
+}>, { conditions, cwd, isCode, gate, scope, stripsTypes }: {
+    /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
+    stripsTypes?: boolean;
     conditions: readonly string[];
+    /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
+    scope?: ModuleScope;
     /** The process's working directory (EsmResolverOptions.cwd). */
     cwd: string;
     isCode(key: string): boolean;

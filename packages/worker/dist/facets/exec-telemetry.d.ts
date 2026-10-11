@@ -59,6 +59,12 @@ export interface ExecTelemetryRecord {
      *  read costs one per READ_STREAM_CHUNK_BYTES, so this is the count that
      *  moves when reads are batched, coalesced or pipelined. */
     fsRpcReads: number;
+    /**
+     * Staged ES modules the interpreter evaluated instead of the registry
+     * (node-shims' adoption: a require() of a module not yet evaluated, and
+     * what then imports it).
+     */
+    esmAdoptions: number;
     /** Whether the prefetch bundle was served from cache (no VFS walk). */
     cacheHit: boolean;
     /**

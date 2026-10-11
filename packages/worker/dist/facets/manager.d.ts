@@ -132,6 +132,7 @@ export interface FacetExecResult {
         rpcWrites: number;
         fsRpcReads: number;
         namespaceRefusals?: number;
+        esmAdoptions?: number;
     };
 }
 /**

@@ -19,6 +19,9 @@ import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-ex
 import { builtinFacadeModule, commonJsFacadeModule, ESM_FACADE_DIR, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource, stageEsModule, } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
 import { resolveRequireEx } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { typeScriptUnderNodeModules } from '@nimbus-sh/core/runtime/module-format.js';
+import { nodeModulesRefusal } from '@nimbus-sh/core/runtime/typescript-refusal.js';
+import { stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
 export const ESM_MISSING_DIR = 'nimbus/missing/';
@@ -49,7 +52,7 @@ function refusal(error) {
  * key), resolving under the program's `conditions`. `isCode(key)` is whether
  * the launch carries the cell at a key as code.
  */
-export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate }) {
+export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }) {
     const table = [];
     const members = {
         [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
@@ -123,6 +126,11 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate 
         if (resolution.path === undefined)
             throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
         const key = stripLeadingSlashes(resolution.path);
+        // Node's loader refuses to strip a TypeScript file under node_modules when it loads it.
+        if (stripsTypes && stripsTypeScript(key) && typeScriptUnderNodeModules(key)) {
+            const refused = nodeModulesRefusal(resolution.path);
+            throw Object.assign(new Error(refused.message), { code: refused.code });
+        }
         const staged = ids.get(`module:${key}`);
         if (staged !== undefined)
             return staged;
@@ -151,7 +159,15 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate 
                 // A provided package by its bare name is the process's own, never an installed copy.
                 const resolution = FACET_PROVIDED_PACKAGES.includes(site.specifier)
                     ? { url: site.specifier, format: 'builtin', builtin: site.specifier }
-                    : await resolver.resolve(site.specifier, parentUrl.href);
+                    : await resolver.resolve(site.specifier, parentUrl.href).catch(async (error) => {
+                        // Bun's resolution probes what Node's refuses (a `.js` naming its `.ts`, an extensionless path).
+                        const probed = scope === 'bun' ? await requireResolve(site.specifier, parentUrl.pathname) : null;
+                        if (probed === null)
+                            throw error;
+                        const url = new URL('file://');
+                        url.pathname = probed;
+                        return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' : 'commonjs' };
+                    });
                 const row = await target(resolution, site.attributes);
                 rowTargets.push(row);
                 targets.push(table[row][2]);

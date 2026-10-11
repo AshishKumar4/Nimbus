@@ -1,16 +1,24 @@
 /**
- * modules.ts — an ES module as a launch's map runs one: Node's CommonJS
- * wrapper function, linked as runtime/esm-interop.ts says, the way the next
- * launch's cell (async-module-lowering.ts) links the same text. Its imports
- * are requires and its exports the getters of module.exports. compile.ts
- * makes the plan (Compiler.modulePlan); this runs it, with the interop
- * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
+ * modules.ts — an ES module the interpreter evaluates (one a program produced
+ * after its launch began, or a staged one the registry could not evaluate
+ * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
+ * function, linked as runtime/esm-interop.ts says. Its imports are calls of
+ * the require it is given, which resolves them as Node's ESM loader does,
+ * and its exports the getters of module.exports. compile.ts makes the plan
+ * (Compiler.modulePlan); this runs it, with the interop helpers the launch
+ * compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env } from './runtime.js';
-/** A module cell: Node's CommonJS wrapper function. */
-export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
+/**
+ * A module cell: Node's CommonJS wrapper function. An ES module's is marked
+ * `esModule`: the require it is called with links its static imports, which
+ * the loader resolves as Node's ESM loader does (node-shims' __requireFrom).
+ */
+export type ModuleCell = ((exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown) & {
+    esModule?: true;
+};
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
     readonly exports: NativeFunction;

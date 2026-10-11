@@ -5,15 +5,13 @@ export function moduleCell(plan, ops, helpers) {
     const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
     const bs = body.s;
     const bg = body.g;
-    return (exportsArg, requireArg, moduleArg, filename, dirname) => {
+    const cell = (exportsArg, requireArg, moduleArg, filename, dirname) => {
         const env = withElement(frame, 0, ROOT_ENV);
         env[exportsSlot] = exportsArg;
         env[requireSlot] = requireArg;
         env[moduleSlot] = moduleArg;
         env[filenameSlot] = filename;
         env[dirnameSlot] = dirname;
-        // A cell's module is always an ES module's: the next launch lowers
-        // esModuleSource's text, which declares an export.
         const exportsObject = ops.get(moduleArg, 'exports');
         const define = reflectApply(helpers.exports, undefined, [exportsObject]);
         // Instantiation, before any import is evaluated: an import that
@@ -22,8 +20,8 @@ export function moduleCell(plan, ops, helpers) {
         if (instantiate !== null)
             instantiate(env);
         // The module is linked where the body runs: a module that suspends
-        // (top-level await) rejects for a failure linking it, as its lowered
-        // cell's async body does, rather than throwing.
+        // (top-level await) rejects for a failure linking it, rather than
+        // throwing.
         if (bg === null) {
             link(plan, env, requireArg, helpers, exportsObject, define);
             bs(env);
@@ -34,6 +32,8 @@ export function moduleCell(plan, ops, helpers) {
             return bg(env);
         });
     };
+    cell.esModule = true;
+    return cell;
 }
 /** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
 function link(plan, env, requireArg, helpers, exportsObject, define) {
