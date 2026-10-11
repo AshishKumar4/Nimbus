@@ -707,10 +707,10 @@ export function buildRuntimeHandler(
 
     // ── Module format ──
     //
-    // A node facet runs every entry script as a CommonJS module body
-    // (core/_shared/commonjs-cell.ts), so one Node runs as an ES module is
-    // lowered first, decided as a real `node script.js` decides
-    // (module-format.ts isEsModuleFile):
+    // An entry Node runs as an ES module is the launch's staged module of it
+    // (native-esm.ts), else a CommonJS module body
+    // (core/_shared/commonjs-cell.ts), decided as a real `node script.js`
+    // decides (module-format.ts isEsModuleFile):
     //
     //   - .mjs          → always ESM
     //   - .cjs          → always CJS
@@ -730,13 +730,6 @@ export function buildRuntimeHandler(
     // crashes immediately with "Cannot use import statement outside
     // a module" because their bin entry is `index.js` and the
     // package.json declares `type: module`.
-    //
-    // We transform to CJS (format: 'cjs') so the facet runs it as a CJS
-    // module body — same path that the bundle's `transformEsmInBundle`
-    // (W3.5 Fix B) takes for sub-module ESM files. esbuild's CJS output
-    // emits __require / module.exports / exports.X, ordinary CJS source.
-    // The guest's registry could take the ES module itself, but not resolve
-    // its package imports or give it the file's own URL (commonjs-cell.ts).
     const scriptExt = vfsPathExtension(resolvedPath);
     // The package scope's "type", through the resolver's own lookup.
     const packageType = scriptExt === '.js' || scriptExt === '' || stripsTypeScript(resolvedPath)

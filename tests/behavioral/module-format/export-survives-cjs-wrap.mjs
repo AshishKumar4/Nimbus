@@ -169,12 +169,19 @@ export * from './sub.js';
 console.log('STAR_LOAD=' + (typeof join) + '_tla=' + _t);
 `;
 await t.writeFile('/home/user/ex-star/sib.mjs', starSrc);
-await t.writeFile('/home/user/ex-star/consumer.js', "require('./sib.mjs');");
+// A module with top-level await is import()ed: require() of one throws
+// ERR_REQUIRE_ASYNC_MODULE, as Node's does.
+await t.writeFile('/home/user/ex-star/consumer.js', "import('./sib.mjs').then((ns) => console.log('STAR_NAMES=' + Object.keys(ns).join(',')));");
 const starResult = await t.run('cd /home/user/ex-star && node consumer.js', 30_000);
 const starOut = starResult.output;
 A.check(
   're-export star: module body executes',
   /STAR_LOAD=function_tla=3/.test(starOut),
+  starOut.slice(-700),
+);
+A.check(
+  're-export star: the CommonJS names come through the star',
+  /STAR_NAMES=bar,foo/.test(starOut),
   starOut.slice(-700),
 );
 A.check(

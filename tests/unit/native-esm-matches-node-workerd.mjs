@@ -87,7 +87,9 @@ const FILES = {
   'io/data.txt': 'payload\n',
   'io/leaf.mjs': "import { readFileSync, statSync } from 'node:fs';\nimport { randomUUID } from 'node:crypto';\nexport const text = readFileSync(new URL('./data.txt', import.meta.url), 'utf8').trim();\nexport const size = statSync(new URL('./data.txt', import.meta.url)).size;\nexport const uuid = randomUUID().length;\nexport const now = Date.now() > 1e12;\nexport const timer = await new Promise((resolve) => setTimeout(() => resolve('fired'), 1));\n",
   'io/main.mjs': "import { text, size, uuid, now, timer } from './leaf.mjs';\nconsole.log(text, size, uuid, now, timer, crypto.getRandomValues(new Uint8Array(2)).length);\n",
-  // CommonJS names in an ES module's scope.
+  // CommonJS names in an ES module's scope; a typeless .js that is one by
+  // syntax alone (a top-level declaration of a wrapper name).
+  'scope/destructured.js': "const { __filename } = {};\nconsole.log(JSON.stringify(['destructured', typeof require, typeof module, typeof exports]));\n",
   'scope/req.mjs': "console.log(typeof require, typeof module, typeof __filename, this);\nrequire('fs');\n",
   // TypeScript Node strips, as an ES module.
   'ts/package.json': json({ type: 'module' }),
@@ -102,7 +104,7 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
+  'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node scope/destructured.js', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];

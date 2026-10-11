@@ -1,31 +1,29 @@
 /**
  * esm-interop.ts — an ES module's import and export declarations, and how
- * they link as CommonJS: the one model both of a module's lowerings share.
- * async-module-lowering.ts writes it as a module cell's source, and the
- * interpreter (interpreter/modules.ts) binds it to a module's slots when a
- * program produces the module after its launch began, which the next launch
- * then compiles from that cell. So the two agree by construction:
+ * the interpreter (interpreter/modules.ts) links them as CommonJS when it
+ * evaluates an ES module: one a program produced after its launch began, or
+ * a staged one the registry could not evaluate with Node's semantics
+ * (node-shims' adoption). The registry evaluates every other ES module
+ * itself (native-esm.ts). The linking:
  *
  *   - the export getters are installed first, on the CommonJS exports object
  *     (ESM_EXPORTS_HELPER: `__esModule`, a `Module` tag, live enumerable
  *     getters in exported-name order), so a module in a cycle with this one
  *     finds them;
- *   - every requested module is then required in source order, a default
- *     import's interop (ESM_INTEROP_HELPER) made as its module is required;
+ *   - every requested module is then loaded in source order (ESM_LOAD_HELPER:
+ *     the importer's require, resolving it as an import), a default
+ *     import's interop (ESM_INTEROP_HELPER) made as its module is required:
+ *     an ES module's as it is (one marked `__esModule`, or a namespace the
+ *     registry made), a CommonJS module's exports as `default`;
  *   - then each namespace (ESM_NAMESPACE_HELPER) an import or `export * as`
  *     names, once;
  *   - last, each `export *` copies its module's names (ESM_STAR_HELPER).
  *
- * The helpers are source text: a lowered cell carries them, and a launch's
- * runtime compiles the same text for its interpreter (ESM_MODULE_HELPERS,
- * commonjs-cell.ts), so what a launch runs before and after its code is
- * staged is the same code. Each is one line: the lowering puts them on the
- * module's first line, which keeps its lines where they were.
- * They reach Object, and Symbol.toStringTag (AsyncFunction.prototype's one
- * own symbol), through literals: in a lowered module without top-level
- * await they share the module's scope, where it may declare either name.
- * The exports object is tagged `Module`, as Node's namespace is, so a call
- * on it reads `Module.f` in a stack.
+ * The helpers are source text a launch's runtime compiles for its
+ * interpreter (ESM_MODULE_HELPERS, commonjs-cell.ts). They reach Object,
+ * and Symbol.toStringTag (AsyncFunction.prototype's one own symbol),
+ * through literals. The exports object is tagged `Module`, as Node's
+ * namespace is, so a call on it reads `Module.f` in a stack.
  *
  * The interpreter runs this module after a program may have replaced
  * built-ins, so it names none (tests/unit/interpreter-primordials.mjs), and
@@ -63,8 +61,19 @@ export const ESM_NAMESPACE_HELPER = `(m) => { if (${ES_MODULE_TEST}) return m; c
 /** `export *`: each name of the module but `default` and those already exported, read through. */
 export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
 
-/** The four helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER} }`;
+/**
+ * What a module's require is passed beside a static import's specifier: the
+ * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
+ * not as require() does. A require of a module takes its first argument
+ * alone, as Node's does.
+ */
+export const ESM_STATIC_IMPORT = 'nimbus:static-import';
+
+/** A static import's module: the importer's require, told the request is an import. */
+export const ESM_LOAD_HELPER = `(require, source) => require(source, ${JSON.stringify(ESM_STATIC_IMPORT)})`;
+
+/** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
+export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
 
 /**
  * One name an import binds: the module's namespace, or one of its exports

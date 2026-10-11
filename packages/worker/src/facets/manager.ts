@@ -978,6 +978,22 @@ export function entryEsModuleKey(filename: string | undefined, cwd: string): str
  */
 function entryModule(
   userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
+  preamble?: string,
+): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
+  const entry = programEntry(userCode, filename, cwd, esModule, bundleSource);
+  if (preamble === undefined) return entry;
+  // The preamble, a module of its own, then the entry: `(preamble, entry)`.
+  const name = commonJsEntryModuleName('[preamble]');
+  const importer = entryImporterUrl(filename, cwd);
+  return {
+    ...entry,
+    modules: { ...entry.modules, [name]: wrapCommonJsCell(preamble).text },
+    evaluate: `(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)})({}, __nimbusMakeRequire(mod), mod, filename || "/home/user/script.js", dirname || "/home/user"), ${entry.evaluate})`,
+  };
+}
+
+function programEntry(
+  userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
 ): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
   const key = entryEsModuleKey(filename, cwd);
   const cell = commonJsCellModuleName(key);
@@ -1191,9 +1207,10 @@ export async function generateEntrypointCode(
   filename?: string,
   cwd: string = DEFAULT_HOME,
   esModule?: boolean,
+  preamble?: string,
 ): Promise<GeneratedNodeFacetCode> {
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
-  const entry = entryModule(userCode, filename, cwd, esModule, bundleSource);
+  const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble);
   const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   const source = moduleSource`
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
@@ -1544,6 +1561,8 @@ export async function generateLongRunningNodeCode(
     filename?: string;
     dirname?: string;
     esModule?: boolean;
+    /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+    preamble?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -1555,7 +1574,7 @@ export async function generateLongRunningNodeCode(
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
   const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource);
+  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     nodeCommandLine: opts.node ?? null,
@@ -4377,7 +4396,7 @@ export interface PrefetchBundleOptions {
   scriptPath?: string;
   cwd: string;
   entryCode: string;
-  /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+  /** The module pass's transform host (transformBundleModules); absent, ES modules and TypeScript stage as diagnostics. */
   esbuild?: EsbuildService;
   bundleProfile?: FacetBundleProfile;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
@@ -4464,9 +4483,8 @@ export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: st
  * If required content still exceeds the per-module encoded ceiling, Worker
  * Loader side modules carry the bundle without truncating the closure.
  *
- * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
- * If `esbuild` is not provided, the pass is skipped (preserves prior
- * behaviour for code paths that don't have esbuild handy).
+ * The module pass (transformBundleModules) runs on `esbuild`; without it,
+ * ES modules and TypeScript stage as diagnostics.
  *
  */
 export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState> {
@@ -4950,7 +4968,7 @@ export function evictedReaders(cells: Readonly<Record<string, string | Uint8Arra
   const readers: string[] = [];
   for (const [path, cell] of Object.entries(cells)) {
     if (readers.length >= EVICTED_READERS_MAX) break;
-    // \`Sync\` and not \`Sync(\`: a lowered module calls \`(0, import_fs.readFileSync)(…)\`.
+    // \`Sync\` and not \`Sync(\`: a bundled module calls \`(0, import_fs.readFileSync)(…)\`.
     if (typeof cell === 'string' && /\.[cm]?js$/.test(path) && SYNC_CALL_NAME.test(cell)) readers.push(stripLeadingSlashes(path));
   }
   return readers;
@@ -5134,6 +5152,8 @@ export interface ResidentSpawnOptions {
   dirname?: string;
   /** The program is an ES module (RuntimeRunOpts.esModule). */
   esModule?: boolean;
+  /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+  preamble?: string;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   command?: string;
@@ -5452,7 +5472,7 @@ export class FacetManager {
   /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
   private readonly residentProfileOffers = new Map<number, { staged: StagedProfileEntry[]; unresolved: string[] }>();
   /**
-   * The service the bundle's ESM→CJS pass transforms with. composeFacetManager
+   * The service the bundle's module pass transforms with. composeFacetManager
    * sets it: the host's own, or one whose transforms run in the session's
    * transform facet. Never one of this isolate: a transform engine's wasm
    * memory only grows.
@@ -5461,7 +5481,7 @@ export class FacetManager {
 
   /**
    * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
-   * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+   * walk + greedy oversample + the module pass on EVERY foreground
    * exec — dominant wall-clock on large node_modules. This memoizes the
    * result (including the serialized facet bundle) keyed on
    * (bundleProfile, cwd, scriptPath, entryCode identity).
@@ -5961,7 +5981,7 @@ export class FacetManager {
     return this.filesystem!.bind({ pid, cred: CRED_KERNEL }).synchronous!;
   }
 
-  /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
+  /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
   /**
@@ -6019,7 +6039,7 @@ export class FacetManager {
    * the entry, the working directory and the process they build for; that is
    * all they supply. Everything else — the revision-keyed cache and its stale
    * eviction, the residency profile a previous miss learned, the reachable-set
-   * walk and its enrichment passes, the ESM→CJS transform, the manifest and
+   * walk and its enrichment passes, the module pass, the manifest and
    * metadata, the module-map serialization with its side-module split, the
    * `node:sqlite` answer, and the release of the raw cells once they are
    * serialized — happens here, once, and yields the turn whenever a chunk's
@@ -7006,6 +7026,8 @@ export class FacetManager {
       invokerPid?: number;
       /** The program is an ES module (RuntimeRunOpts.esModule). */
       esModule?: boolean;
+      /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+      preamble?: string;
       /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
       moduleScope?: ModuleScope;
       bundleProfile?: FacetBundleProfile;
@@ -7440,7 +7462,7 @@ export class FacetManager {
     try {
       await this.spawnNode(code, {
         argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
-        esModule: opts.esModule, moduleScope: opts.moduleScope,
+        esModule: opts.esModule, moduleScope: opts.moduleScope, preamble: opts.preamble,
         command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
         ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
         skipSpawn: true, callerPid: pid, resume,
@@ -7993,7 +8015,7 @@ export class FacetManager {
             const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
             const generatedWorker = await this._generateUnderCeiling(
               entry.pid, vfsState, moduleMemberBytes({ ...sqliteModules, ...wasmModules, ...stagedModules }) + ONE_SHOT_HOST_ENTRY_BYTES,
-              (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule),
+              (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble),
             );
             const codeModules: Record<string, { cjs: string } | { js: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };

@@ -3,7 +3,8 @@
  * after its launch began, or a staged one the registry could not evaluate
  * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
  * function, linked as runtime/esm-interop.ts says. Its imports are calls of
- * the require it is given, which resolves them as Node's ESM loader does,
+ * the require it is given, told each is an import (ESM_LOAD_HELPER), which
+ * the loader resolves as Node's ESM loader does,
  * and its exports the getters of module.exports. compile.ts makes the plan
  * (Compiler.modulePlan); this runs it, with the interop helpers the launch
  * compiled from esm-interop.ts's text (InterpreterHost).
@@ -13,12 +14,8 @@ import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env, ROOT_ENV, TDZ, tdzError } from './runtime.js';
 
-/**
- * A module cell: Node's CommonJS wrapper function. An ES module's is marked
- * `esModule`: the require it is called with links its static imports, which
- * the loader resolves as Node's ESM loader does (node-shims' __requireFrom).
- */
-export type ModuleCell = ((exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown) & { esModule?: true };
+/** A module cell: Node's CommonJS wrapper function. */
+export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
 
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
@@ -26,6 +23,7 @@ export interface ModuleHelpers {
   readonly interop: NativeFunction;
   readonly namespace: NativeFunction;
   readonly star: NativeFunction;
+  readonly load: NativeFunction;
 }
 
 /**
@@ -66,7 +64,7 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
   const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
   const bs = body.s;
   const bg = body.g;
-  const cell: ModuleCell = (exportsArg, requireArg, moduleArg, filename, dirname) => {
+  return (exportsArg, requireArg, moduleArg, filename, dirname) => {
     const env = withElement(frame, 0, ROOT_ENV);
     env[exportsSlot] = exportsArg;
     env[requireSlot] = requireArg;
@@ -92,8 +90,6 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
       return bg(env);
     });
   };
-  cell.esModule = true;
-  return cell;
 }
 
 /** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
@@ -102,7 +98,7 @@ function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHe
   for (let i = 0; i < exports.length; i++) reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
   for (let i = 0; i < requests.length; i++) {
     const { source, module, interop } = requests[i];
-    const m: unknown = reflectApply(requireArg as NativeFunction, undefined, [source]);
+    const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source]);
     if (module >= 0) env[module] = m;
     if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
   }

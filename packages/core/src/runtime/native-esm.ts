@@ -107,44 +107,33 @@ export interface EsModuleLink {
   readonly targets: readonly string[];
   /** Bun's scope: the CommonJS names (`require`, `__filename`, `__dirname`) it reads but does not declare. */
   readonly commonJsNames?: readonly string[];
-  /**
-   * The URL the map's names are under, ending in `/`: MAP_ROOT on workerd;
-   * another host's loader serves the same staged text under a root of its
-   * own (lifo's node).
-   */
-  readonly root?: string;
 }
 
 /** The map's root as module URLs name it: workerd's, under which a Worker Loader map's modules live. */
 export const MAP_ROOT = 'file:///bundle/';
 
-/** The specifier that names map module `name` from anywhere under `root`: a root-absolute path under workerd's. */
-function absoluteSpecifier(root: string, name: string): string {
-  return root === MAP_ROOT ? '/bundle/' + name : root + name;
-}
-
 /**
- * The specifier that names map module `target` from map module `from`: as
- * written when the registry already resolves it there, else the shorter of a
- * relative path and a root-absolute one.
+ * The relative specifier that names map module `target` from map module
+ * `from`. Every specifier a stage writes is relative, so the staged text
+ * names the same modules under any root its host serves the map from.
  */
-function mapSpecifier(written: string, from: string, target: string, root: string): string {
-  // Nimbus's own modules by their one name: what a link error names maps back by it (node-shims).
-  if (target.startsWith('nimbus/')) return absoluteSpecifier(root, target);
-  const base = root + from;
-  try {
-    if (new URL(written, base).href === root + target) return written;
-  } catch {
-    // Not a URL the registry reads: rewritten below.
-  }
+export function relativeSpecifier(from: string, target: string): string {
   const fromDir = from.split('/').slice(0, -1);
   const parts = target.split('/');
   let common = 0;
   while (common < fromDir.length && common < parts.length - 1 && fromDir[common] === parts[common]) common++;
   const up = fromDir.length - common;
-  const relative = (up === 0 ? './' : '../'.repeat(up)) + parts.slice(common).join('/');
-  const absolute = absoluteSpecifier(root, target);
-  return relative.length <= absolute.length ? relative : absolute;
+  return (up === 0 ? './' : '../'.repeat(up)) + parts.slice(common).join('/');
+}
+
+/** The specifier that names map module `target` from map module `from`: as written when the registry already resolves it there. */
+function mapSpecifier(written: string, from: string, target: string): string {
+  try {
+    if (new URL(written, MAP_ROOT + from).href === MAP_ROOT + target) return written;
+  } catch {
+    // Not a URL the registry reads: rewritten below.
+  }
+  return relativeSpecifier(from, target);
 }
 
 /**
@@ -163,9 +152,9 @@ function freshNames(text: string, length: number): () => string {
   };
 }
 
-/** The import of a module's meta instance, as the appended line has it: `bindings` are `export as local` pairs. */
-function metaImport(id: number, bindings: ReadonlyArray<readonly [string, string]>, root = MAP_ROOT): string {
-  return `import{${bindings.map(([exported, local]) => `${exported} as ${local}`).join(',')}}from${JSON.stringify(`${absoluteSpecifier(root, ESM_META_MODULE)}?${id}`)};`;
+/** The import, from map module `from`, of a module's meta instance: `bindings` are `export as local` pairs. */
+function metaImport(from: string, id: number, bindings: ReadonlyArray<readonly [string, string]>): string {
+  return `import{${bindings.map(([exported, local]) => `${exported} as ${local}`).join(',')}}from${JSON.stringify(`${relativeSpecifier(from, ESM_META_MODULE)}?${id}`)};`;
 }
 
 /**
@@ -185,7 +174,7 @@ export function stageEsModule(text: string, sites: ImportSites, link: EsModuleLi
   sites.statics.forEach((site, index) => {
     const target = link.targets[index];
     if (target === undefined) throw new Error(`no target for specifier ${JSON.stringify(site.specifier)}`);
-    const specifier = mapSpecifier(site.specifier, link.name, target, link.root ?? MAP_ROOT);
+    const specifier = mapSpecifier(site.specifier, link.name, target);
     if (specifier === site.specifier) return;
     // A literal written over lines (a line continuation) keeps them: the
     // same continuations before its closing quote.
@@ -212,8 +201,7 @@ export function stageEsModule(text: string, sites: ImportSites, link: EsModuleLi
   if (load !== null) bindings.push(['i', load]);
   for (const name of link.commonJsNames ?? []) bindings.push([COMMONJS_NAME_EXPORTS[name] ?? name, name]);
   const prologue = `${check}();`;
-  const root = link.root ?? MAP_ROOT;
-  const tail = `\n;${metaImport(link.id, bindings, root)}import*as ${self} from${JSON.stringify(absoluteSpecifier(root, link.name))};${register}(${self});`;
+  const tail = `\n;${metaImport(link.name, link.id, bindings)}import*as ${self} from${JSON.stringify(relativeSpecifier(link.name, link.name))};${register}(${self});`;
   let body = '';
   let at = 0;
   for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
@@ -294,7 +282,7 @@ function attributesClause(source: string, from: number): { start: number; end: n
 const COMMONJS_NAME_EXPORTS: Readonly<Record<string, string>> = { require: 'q', __filename: 'f', __dirname: 'd' };
 
 /** The facade of a builtin or CommonJS module: its exports, read from what its meta instance's `l` loads. */
-function facadeModule(id: number, names: readonly string[], resync: boolean, root: string): string {
+function facadeModule(name: string, id: number, names: readonly string[], resync: boolean): string {
   const exported = names.filter((name) => name !== 'default');
   const lines = [
     'c();',
@@ -317,7 +305,7 @@ function facadeModule(id: number, names: readonly string[], resync: boolean, roo
     // module.syncBuiltinESMExports() reads a builtin's names again.
     if (resync) lines.push(`s(() => { ${exported.map((name, i) => `$${i} = ${read(name)};`).join(' ')} });`);
   }
-  lines.push('r();', metaImport(id, [['c', 'c'], ['l', 'l'], ['r', 'r'], ...(resync ? [['s', 's'] as const] : [])], root));
+  lines.push('r();', metaImport(name, id, [['c', 'c'], ['l', 'l'], ['r', 'r'], ...(resync ? [['s', 's'] as const] : [])]));
   return lines.join('\n') + '\n';
 }
 
@@ -327,8 +315,8 @@ function facadeModule(id: number, names: readonly string[], resync: boolean, roo
  * in the graph's evaluation; `default` is module.exports and each of `names`
  * (cjs-module-exports.ts) its own property's value then.
  */
-export function commonJsFacadeModule(id: number, names: readonly string[], root = MAP_ROOT): string {
-  return facadeModule(id, names, false, root);
+export function commonJsFacadeModule(name: string, id: number, names: readonly string[]): string {
+  return facadeModule(name, id, names, false);
 }
 
 /**
@@ -337,8 +325,8 @@ export function commonJsFacadeModule(id: number, names: readonly string[], root 
  * gives, and each of `names` (node-builtin-exports.ts) its value, until
  * module.syncBuiltinESMExports() reads them again.
  */
-export function builtinFacadeModule(id: number, names: readonly string[], root = MAP_ROOT): string {
-  return facadeModule(id, names, true, root);
+export function builtinFacadeModule(name: string, id: number, names: readonly string[]): string {
+  return facadeModule(name, id, names, true);
 }
 
 /**
@@ -348,9 +336,9 @@ export function builtinFacadeModule(id: number, names: readonly string[], root =
  * module's gate (`await`, see the header); a host with no request context to
  * reach has none, so its graphs stay synchronous for require().
  */
-export function metaModuleSource(gate: boolean, root = MAP_ROOT): string {
+export function metaModuleSource(gate: boolean): string {
   return [
-    `import { host } from ${JSON.stringify(absoluteSpecifier(root, ESM_HOST_MODULE))};`,
+    `import { host } from ${JSON.stringify(relativeSpecifier(ESM_META_MODULE, ESM_HOST_MODULE))};`,
     'export const { m, i, c, r, l, s, q, f, d } = host.enter(import.meta.url);',
     gate ? 'await 0;' : '',
   ].join('\n');

@@ -82,7 +82,8 @@ export interface Interpreter {
    * that function's body; an ES module linked as the next launch's lowering
    * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
    */
-  compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
+  /** `javaScript`: the text is JavaScript whatever the path's extension (a TypeScript file's emit). */
+  compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean): ModuleCell;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -413,8 +414,8 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
     },
 
-    compileModule(path, text, origin) {
-      if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
+    compileModule(path, text, origin, javaScript = false) {
+      if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
       const moduleHost = unitHost(host, origin, parentUrl);
       const parsed = moduleProgram(text);
