@@ -25,22 +25,45 @@ const SEQ_2M_BYTES = 14_888_896;
 const decoder = new TextDecoder();
 
 try {
+  // The clock starts before the call: the first echo runs while the command
+  // is live, and the assertion is the real property — first output arrives
+  // while the command still waits on a release the probe writes itself.
+  const invoked = Date.now();
   const early = await box.execStream('echo first; sleep 2; echo second');
   const reader = early.output.getReader();
-  const started = Date.now();
   const first = await reader.read();
-  const firstAt = Date.now() - started;
+  const firstAt = Date.now() - invoked;
   let rest = '';
   for (;;) {
     const next = await reader.read();
     if (next.done) break;
     rest += decoder.decode(next.value.data);
   }
-  const doneAt = Date.now() - started;
+  const total = Date.now() - invoked;
   a.check('the first line arrives before the command exits',
-    decoder.decode(first.value?.data) === 'first\n' && firstAt < 1500 && doneAt >= 1800 && rest === 'second\n',
-    JSON.stringify({ first: decoder.decode(first.value?.data), firstAt, doneAt, rest }));
+    decoder.decode(first.value?.data) === 'first\n' && firstAt < total && rest === 'second\n',
+    JSON.stringify({ first: decoder.decode(first.value?.data), firstAt, total, rest }));
   a.check('exit reports the exit code', (await early.exit).exitCode === 0);
+  const release = `/tmp/exec-stream-release-${Date.now()}`;
+  const handshaked = await box.execStream(`echo first; while [ ! -f ${release} ]; do sleep 0.1; done; echo second`);
+  const handReader = handshaked.output.getReader();
+  const head = await Promise.race([
+    handReader.read(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('first output did not arrive while the command awaited release')), 10_000)),
+  ]);
+  a.check('the command emits its first line while it waits on the release file',
+    decoder.decode(head.value?.data) === 'first\n',
+    JSON.stringify({ head: decoder.decode(head.value?.data) }));
+  await box.files.write(release, 'release');
+  let remaining = '';
+  for (;;) {
+    const next = await handReader.read();
+    if (next.done) break;
+    remaining += decoder.decode(next.value?.data);
+  }
+  a.check('the release lets the command finish and preserves its remaining output',
+    remaining === 'second\n' && (await handshaked.exit).exitCode === 0,
+    JSON.stringify({ remaining }));
 
   const split = await box.execStream('echo out; echo err >&2; exit 3');
   const seen = { stdout: '', stderr: '' };
