@@ -1395,32 +1395,57 @@ export async function execGitNetwork(
 
       const invocationId = crypto.randomUUID();
       const startedAt = Date.now();
-      const remaining = outerDeadline - startedAt;
-      if (remaining <= 0) {
-        throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
-      }
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)),
-          remaining,
-        );
-      });
-      const call = entrypoint.fetch(new Request('http://git/op', {
-        method: 'POST',
-        body: remotePushPack ? framedGitBody({ ...facetOpts, invocationId }, remotePushPack) : JSON.stringify({ ...facetOpts, invocationId }),
-        ...(remotePushPack ? { headers: { [GIT_FRAMED_HEADER]: '1' } } : {}),
-        signal,
-      })).then(async (response: Response) => {
-        try {
-          return await response.json() as FacetInvocationResult;
-        } finally {
-          disposeRpcResource(response);
+      /** One invocation of the facet, within what is left of the operation's time. */
+      const invoke = async (options: typeof facetOpts & { invocationId: string }): Promise<FacetInvocationResult> => {
+        const remaining = outerDeadline - Date.now();
+        if (remaining <= 0) {
+          throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
         }
-      });
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)),
+            remaining,
+          );
+        });
+        const call = entrypoint.fetch(new Request('http://git/op', {
+          method: 'POST',
+          body: remotePushPack ? framedGitBody(options, remotePushPack) : JSON.stringify(options),
+          ...(remotePushPack ? { headers: { [GIT_FRAMED_HEADER]: '1' } } : {}),
+          signal,
+        })).then(async (response: Response) => {
+          try {
+            return await response.json() as FacetInvocationResult;
+          } finally {
+            disposeRpcResource(response);
+          }
+        });
+        try {
+          return await unlessCancelled(Promise.race([call, timeout]), signal);
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+      };
       let result: FacetInvocationResult;
       try {
-        result = await unlessCancelled(Promise.race([call, timeout]), signal);
+        result = await invoke({ ...facetOpts, invocationId });
+        const remoteFetch = facetOpts.remoteFetch;
+        if (opts.op === 'remote-fetch' && remoteFetch !== undefined) {
+          // A pack past one invocation's decoding budget: the same facet goes on with it.
+          let files = nonNegativeCounter(result.filesWritten);
+          let bytes = nonNegativeCounter(result.bytesWritten);
+          const rpc = parseSupervisorRpcCounters(result.supervisorRpc);
+          for (;;) {
+            const remote = result.success === true ? result.remote : undefined;
+            const pending = remote !== undefined && 'pending' in remote ? remote.pending : null;
+            if (pending === null) break;
+            result = await invoke({ ...facetOpts, invocationId: crypto.randomUUID(), remoteFetch: { ...remoteFetch, resume: pending } });
+            files += nonNegativeCounter(result.filesWritten);
+            bytes += nonNegativeCounter(result.bytesWritten);
+            addSupervisorRpcCounters(rpc, result.supervisorRpc);
+          }
+          result = { ...result, filesWritten: files, bytesWritten: bytes, supervisorRpc: rpc };
+        }
       } catch (error) {
         if (!(error instanceof GitNetworkCancelled)) throw error;
         // A fetch, pull or push stopped: what its facet wrote stays, as git's interrupted fetch leaves its objects.
@@ -1434,8 +1459,6 @@ export async function execGitNetwork(
           supervisorRpc: createSupervisorRpcCounters(),
           metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
         };
-      } finally {
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       }
       const endedAt = Date.now();
       const diagnostic = parsePhaseDiagnostic(result.diagnostic, {

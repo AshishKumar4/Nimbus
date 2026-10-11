@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // The git build's verify entrypoint uses core's import contract, without a
 // compiler or a rebuild. Refuse unknown namespaces and a build missing the
-// filesystem extension; the same verifier serves CPython's two variants.
+// filesystem extension.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

@@ -20,6 +20,9 @@ try {
     assert.ok(stats.client.readLeases > 0, 'the guest holds actual authority read delegations');
     assert.ok((stats.delegated.open ?? 0) < 20, 'walking forty directories does not open each one through RPC');
     assert.ok((stats.delegated.fstat ?? 0) < 20, 'directory fstat is answered from the admitted namespace');
+    assert.ok(stats.delegated.readDirectories <= 4, `forty directories, opened in walk order, take a few batches: ${stats.delegated.readDirectories}`);
+    assert.ok(stats.lookups + stats.treeListings <= 8, `the index's forty files are stat'ed from one listing of the tree: ${stats.lookups} lookups, ${stats.treeListings} tree listings`);
+    assert.equal(stats.delegated.access ?? 0, 0, 'access(2) of a configuration file is answered from the namespace');
   } finally { await terminal.close(); }
 } finally { await probe.stop(); }
 console.log('wasi-directory-locality-workerd: real directory descriptions under read delegations');

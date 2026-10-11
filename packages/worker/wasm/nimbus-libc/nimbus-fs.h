@@ -3,8 +3,8 @@
  * give: a file's mode and owner, chmod, and the credential the process runs
  * as. One implementation (nimbus-fs.c) over the host's extension imports
  * (nimbus_fs: core runtime/wasi/types.ts NimbusFsImports; nimbus_proc ids),
- * linked into each image built here: git (wasm/git) and CPython
- * (wasm/python). An image's force-included compat header maps the libc names
+ * linked into each image built here (git, wasm/git). An image's
+ * force-included compat header maps the libc names
  * onto these (stat to nimbus_stat, and so on); a program that is not rebuilt
  * keeps preview1's answers.
  */

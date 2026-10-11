@@ -95,10 +95,8 @@ after the shared input channel can express its existing process semantics.
 
 ## Runtime contracts
 
-Git's first build names `GIT_RUNNER`; CPython's new extension build is
-`cpython/3.13.14-1` and names `CPYTHON_RUNNER` (`cpython-runner@2`). Both
-build verifiers read the single `WASI_RUNTIME_IMPORT_MODULES` constant from
-core's committed dist. No catalog or npm publication is part of this audit.
+Git's first build names `GIT_RUNNER`. Its build verifier reads the single
+`WASI_RUNTIME_IMPORT_MODULES` constant from core's committed dist.
 
 Clang's compiler, linker and sysroot have not been rebuilt and get no new
 runner key or catalog/npm version. Its output's executable bit is a host

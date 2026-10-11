@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -194,7 +194,8 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-git',
       summary: 'Git 2.53.0, cross-compiled to wasm32-wasi',
-      core: '>=0.15.1',
+      // The first core that registers GIT_RUNNER (core 0.17.0 does not).
+      core: '>=0.18.0',
     },
     files: [
       { src: 'git.wasm', vfs: 'share/git/git.wasm' },
@@ -232,10 +233,6 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
-      // The core this tree builds, the first whose runner is CPYTHON_RUNNER
-      // once released; a core without the runner refuses the package at
-      // create, by name. The release raises it with core's version.
-      core: '>=0.15.1',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
@@ -262,8 +259,8 @@ export const SPECS = {
       // at this. Mozilla's bundle, as published by curl.se.
       { src: 'cacert.pem',     vfs: 'etc/ssl/cert.pem' },
       { src: 'STDLIB_MARKER', vfs: 'lib/python3.13/os.py' },
-      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python' },
-      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python3' },
+      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
+      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
     ],
     license_text: PSF_LICENSE_NOTICE(),
     /** Source 'BIN_MARKER' is synthesised, not fetched. */

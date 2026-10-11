@@ -81,6 +81,7 @@ export function makeGitRunnerFactory(deps: {
     let image: Promise<ArrayBuffer> | null = null;
 
     return async function gitBinHandler(ctx: CommandContext): Promise<number> {
+      const started = Date.now();
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
       const notHydrated = await gateSyncLaunch(ctx.vfs.process, cwd, null, argv);
@@ -124,6 +125,7 @@ export function makeGitRunnerFactory(deps: {
         live: (ctx as { __nimbusBinSpawn?: unknown }).__nimbusBinSpawn !== undefined,
       };
       let result: GitFacetResult;
+      const submitted = Date.now();
       try {
         result = await facet.submit(GIT_CALL_TASK, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
       } catch (error) {
@@ -131,9 +133,15 @@ export function makeGitRunnerFactory(deps: {
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
         return 1;
       }
+      const returned = Date.now();
       await writeOut(ctx.stdout, result.stdout);
       await writeOut(ctx.stderr, result.stderr);
-      if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') ctx.stderr.write(`[wasi-fs] git ${JSON.stringify(result.fsStats ?? null)}\n`);
+      if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') {
+        // Milliseconds from the command's start: the host's clock, and the facet's where it moved.
+        const at = (time: number | undefined) => (time === undefined ? null : time - started);
+        const phases = { submitted: at(submitted), entered: at(result.clock?.entered), instantiated: at(result.clock?.instantiated), exited: at(result.clock?.exited), returned: at(returned) };
+        ctx.stderr.write(`[wasi-fs] git ${JSON.stringify({ ...result.fsStats, phases })}\n`);
+      }
       if (result.error) {
         ctx.stderr.write(`${binName}: ${result.error}\n`);
         return result.exitCode || 1;
@@ -162,6 +170,7 @@ function errorMessage(error: unknown): string {
 const GIT_RUNNER_PREAMBLE_TAIL = `
 // ── BEGIN: git-runner preamble ────────────────────────────────────────
 globalThis.__gitRun = async function __gitRun(args) {
+  const entered = Date.now();
   const stdout = [];
   const stderr = [];
   const joined = (parts) => {
@@ -199,7 +208,9 @@ globalThis.__gitRun = async function __gitRun(args) {
     return { exitCode: 1, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git.wasm instantiate failed: ' + (e && e.message) };
   }
   memory = instance.exports.memory;
+  const instantiated = Date.now();
   const run = await __wasiRunStartAsync(instance, { memory });
+  const exited = Date.now();
   // git waits for its children; one it left running runs on without it.
   wasi.procDispose();
   const lost = live ? await live.drain() : null;
@@ -209,6 +220,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     stderr: joined(stderr),
     error: run.error || (lost ? 'output lost: ' + lost : undefined),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
+    clock: { entered, instantiated, exited },
   };
 };
 // ── END: git-runner preamble ──────────────────────────────────────────

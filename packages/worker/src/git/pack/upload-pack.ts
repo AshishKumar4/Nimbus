@@ -164,13 +164,23 @@ function requestCapabilities(advertised: Set<string>, request: PackRequest): str
   const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])].filter((capability) => advertised.has(capability));
   if (!advertised.has('side-band-64k')) throw new UploadPackError('the server does not offer side-band-64k');
   if (request.thin && advertised.has('thin-pack')) capabilities.push('thin-pack');
-  if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
+  const deepens = request.depth !== undefined || request.deepenSince !== undefined || (request.deepenNot?.length ?? 0) > 0;
+  if (deepens || (request.shallows?.length ?? 0) > 0) {
     if (!advertised.has('shallow')) throw new UploadPackError('the server does not support shallow fetches');
     capabilities.push('shallow');
   }
   if (request.relative) {
     if (!advertised.has('deepen-relative')) throw new UploadPackError('the server does not support --deepen');
     capabilities.push('deepen-relative');
+  }
+  // fetch-pack.c: the server must offer each deepen option the request uses.
+  for (const [used, capability] of [
+    [request.deepenSince !== undefined, 'deepen-since'],
+    [(request.deepenNot?.length ?? 0) > 0, 'deepen-not'],
+  ] as const) {
+    if (!used) continue;
+    if (!advertised.has(capability)) throw new UploadPackError('the server does not support ' + capability);
+    capabilities.push(capability);
   }
   if (request.filter !== undefined) {
     if (!advertised.has('filter')) throw new UploadPackError('the server does not support --filter');
