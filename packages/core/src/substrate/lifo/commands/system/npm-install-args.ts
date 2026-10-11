@@ -25,8 +25,10 @@ export interface NpmInstallInvocation {
   saveDev: boolean;
   /** `-O` / `--save-optional`: record the spec under optionalDependencies. */
   saveOptional: boolean;
-  /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
-  allowPeerConflicts: boolean;
+  /** `-f` / `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+  force: boolean;
+  /** `--legacy-peer-deps`: peers are neither installed nor checked, as npm 6 did. */
+  legacyPeerDeps: boolean;
 }
 
 const INSTALL_ARG_SPEC = {
@@ -72,7 +74,8 @@ export function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation 
     production: parsed.flags.production === true || omittedDependencyTypes(args).has('dev'),
     saveDev: parsed.flags['save-dev'] === true,
     saveOptional: parsed.flags['save-optional'] === true,
-    allowPeerConflicts: parsed.flags.force === true || parsed.flags['legacy-peer-deps'] === true,
+    force: parsed.flags.force === true,
+    legacyPeerDeps: parsed.flags['legacy-peer-deps'] === true,
   };
 }
 

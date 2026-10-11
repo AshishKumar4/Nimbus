@@ -18,7 +18,7 @@
  *      composition.ts) and forwards it as `env.SUPERVISOR` to every facet,
  *      same pattern as git/network-facet.ts. Callers can add more bindings
  *      via `extraBindings`.
- *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
+ *   4. **Fail-loud defaults**: timeout 60s, retries 0, a map rejects on its first failure, once all it started have settled.
  *      Caller opts in to leniency.
  *
  * The vendored directory contains only the upstream serialization, error,
@@ -265,19 +265,14 @@ export interface IsolateCallOptions {
   wasmModules?: Record<string, ArrayBuffer>;
 }
 
-/** Per-map override. Adds onError strategy for partial failures. */
+/** Per-map override. */
 export interface IsolateMapOptions extends IsolateCallOptions {
   /** Concurrency override for this call. Defaults to pool's concurrency. */
   concurrency?: number;
-  /**
-   * What to do when an individual item fails:
-   *   - 'throw' (default): reject whole map on first failure.
-   *   - 'null': replace failed items with null in the result array.
-   *   - 'skip': omit failed items from the result array.
-   * We default to 'throw' — install-time failures are not silently ignored.
-   */
-  onError?: 'throw' | 'null' | 'skip';
 }
+
+/** One item's outcome: its value, or what it failed with. */
+export type Settled<R> = { readonly ok: true; readonly value: R } | { readonly ok: false; readonly error: Error };
 
 interface ResolvedResilience {
   timeoutMs: number;
@@ -1079,19 +1074,30 @@ export class IsolatePool {
 
   /**
    * Run `fn` on every item in `items`, at most `concurrency` at a time,
-   * pinned to stable slots so warm isolates are reused.
-   *
-   * Results are returned in input order. Failure handling per `onError`.
+   * pinned to stable slots so warm isolates are reused. Results are in input
+   * order. After an item fails no item starts, and the map rejects with the
+   * first failure once every item that started has settled: nothing it
+   * dispatched is still running when it returns.
    */
   async map<T, R>(
     fn: FacetTaskSource<T, R>,
     items: T[],
     opts?: IsolateMapOptions,
-  ): Promise<Array<Awaited<R> | null>> {
+  ): Promise<Array<Awaited<R>>> {
     if (items.length === 0) return [];
-
     const { fnSource, fnHash } = this.#prepare(fn);
-    return this.#mapInternal<T, R>(fnSource, fnHash, items, opts);
+    return valuesOf(await this.#mapInternal<T, R>(fnSource, fnHash, items, opts, true));
+  }
+
+  /** `map`, where every item runs whatever the others do: each item's outcome. */
+  async mapSettled<T, R>(
+    fn: FacetTaskSource<T, R>,
+    items: T[],
+    opts?: IsolateMapOptions,
+  ): Promise<Array<Settled<Awaited<R>>>> {
+    if (items.length === 0) return [];
+    const { fnSource, fnHash } = this.#prepare(fn);
+    return this.#mapInternal<T, R>(fnSource, fnHash, items, opts, false);
   }
 
   /**
@@ -1102,33 +1108,30 @@ export class IsolatePool {
     fnSource: string,
     items: T[],
     opts?: IsolateMapOptions,
-  ): Promise<Array<Awaited<R> | null>> {
+  ): Promise<Array<Awaited<R>>> {
     if (items.length === 0) return [];
     const fnHash = hashSource(fnSource);
-    return this.#mapInternal<T, R>(fnSource, fnHash, items, opts);
+    return valuesOf(await this.#mapInternal<T, R>(fnSource, fnHash, items, opts, true));
   }
 
   async #mapInternal<T, R>(
     fnSource: string,
     fnHash: string,
     items: T[],
-    opts?: IsolateMapOptions,
-  ): Promise<Array<Awaited<R> | null>> {
+    opts: IsolateMapOptions | undefined,
+    stopOnFailure: boolean,
+  ): Promise<Array<Settled<Awaited<R>>>> {
     const resilience = this.#resolve(opts);
     const concurrency = Math.max(
       1,
       Math.min(opts?.concurrency ?? this.concurrency, items.length),
     );
-    const onError: 'throw' | 'null' | 'skip' = opts?.onError ?? 'throw';
-
-    type Settled =
-      | { ok: true; value: Awaited<R> }
-      | { ok: false; error: Error };
-    const settled: Settled[] = new Array(items.length);
+    const settled: Array<Settled<Awaited<R>>> = new Array(items.length);
     let cursor = 0;
+    let failed = false;
 
     const runSlot = async (slotIndex: number): Promise<void> => {
-      while (true) {
+      while (!(stopOnFailure && failed)) {
         const idx = cursor++;
         if (idx >= items.length) return;
         try {
@@ -1142,9 +1145,8 @@ export class IsolatePool {
           )) as Awaited<R>;
           settled[idx] = { ok: true, value };
         } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          if (onError === 'throw') throw error;
-          settled[idx] = { ok: false, error };
+          settled[idx] = { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
+          failed = true;
         }
       }
     };
@@ -1152,17 +1154,10 @@ export class IsolatePool {
     await Promise.all(
       Array.from({ length: concurrency }, (_, slotIndex) => runSlot(slotIndex)),
     );
-
-    if (onError === 'null') {
-      return settled.map((s) => (s.ok ? s.value : null));
+    for (let idx = 0; idx < items.length; idx++) {
+      settled[idx] ??= { ok: false, error: new Error('not started: an earlier item failed') };
     }
-    if (onError === 'skip') {
-      return settled
-        .filter((s): s is { ok: true; value: Awaited<R> } => s.ok)
-        .map((s) => s.value);
-    }
-    // onError === 'throw' — all slots succeeded.
-    return settled.map((s) => (s as { ok: true; value: Awaited<R> }).value);
+    return settled;
   }
 
   /**
@@ -1189,4 +1184,11 @@ export class IsolatePool {
     // Prevent double-dispose from re-running the loop.
     this.bindings = undefined;
   }
+}
+
+/** Every value of `settled`, or (once all have settled) the first failure. */
+export function valuesOf<R>(settled: ReadonlyArray<Settled<R>>): R[] {
+  const failure = settled.find((outcome) => !outcome.ok);
+  if (failure && !failure.ok) throw failure.error;
+  return settled.flatMap((outcome) => (outcome.ok ? [outcome.value] : []));
 }

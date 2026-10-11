@@ -12,13 +12,17 @@
  */
 
 export interface ResolvedPackage {
+  /** The name it installs under (an alias's). */
   name: string;
   version: string;
+  /** The registry package it is (an alias's target); unknown for records written before it was kept. */
+  registryName?: string;
   tarballUrl: string;
   integrity: string;
   dependencies: Record<string, string>;
-  /** Required peer dependencies surfaced for automatic installation. */
+  /** Peer dependencies: installed with the package, but an optional one (peerDependenciesMeta), which only constrains. */
   peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   /** Optional dependencies installed on a best-effort basis. */
   optionalDependencies?: Record<string, string>;
   /** Platform constraints declared by the registry package metadata. */
