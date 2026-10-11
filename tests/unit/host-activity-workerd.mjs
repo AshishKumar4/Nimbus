@@ -10,6 +10,17 @@ import { join } from 'node:path';
 
 const main = `import {DurableObject} from 'cloudflare:workers';
 import {HostActivity,observeResidentConfig,HOST_WATCH_HEADER} from './activity.js';
+export class Peer extends DurableObject {
+  watches=new Set();
+  fetch(request) {
+    if(new URL(request.url).pathname==='/count') return Response.json(this.watches.size);
+    const [client,server]=Object.values(new WebSocketPair());
+    this.watches.add(server);
+    server.addEventListener('close',event=>{server.close(event.code,event.reason);this.watches.delete(server);});
+    server.accept();
+    return new Response(null,{status:101,webSocket:client,headers:{'x-nimbus-host-incarnation':'peer'}});
+  }
+}
 const CODE={compatibilityDate:'2026-09-26',mainModule:'leaf.js',modules:{'leaf.js':\`import {DurableObject} from 'cloudflare:workers';
 export class NimbusProcess extends DurableObject { startProcess(){return 'booted';} fetch(){return new Response('user response');} }\`}};
 export class Host extends DurableObject {
@@ -40,7 +51,20 @@ export class Host extends DurableObject {
     this.ctx.facets.abort('idle',new Error('platform reset idle actor'));
     let admitted=false,error='';
     try{await idle.activity.run(()=>{admitted=true;});}catch(e){error=e.message;}
-    return {shared,afterCancel,activeLost:active.lost,idleLost:idle.lost,admitted,error};
+    const activity=new HostActivity();
+    activity.observe(async(signal)=>{
+      const stub=this.env.PEER.get(this.env.PEER.idFromName('peer'));
+      signal.addEventListener('abort',()=>stub[Symbol.dispose]?.(),{once:true});
+      return stub.fetch(new Request('https://peer.invalid/',{signal,headers:{Upgrade:'websocket'}}));
+    },()=>{});
+    const lease=activity.acquire();await lease.ready;lease.release();
+    let peerWatches;
+    for(let i=0;i<100;i++){
+      peerWatches=await(await this.env.PEER.get(this.env.PEER.idFromName('peer')).fetch(new Request('https://peer.invalid/count'))).json();
+      if(peerWatches===0)break;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    return {shared,afterCancel,activeLost:active.lost,idleLost:idle.lost,admitted,error,peerWatches};
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
@@ -53,8 +77,8 @@ const free=net.createServer();await new Promise(r=>free.listen(0,'127.0.0.1',r))
 const port=free.address().port;await new Promise(r=>free.close(r));
 writeFileSync(join(dir,'config.capnp'),`using Workerd=import "/workerd/workerd.capnp";
 const config:Workerd.Config=(services=[(name="main",worker=(modules=[(name="main.js",esModule=embed"main.js"),(name="activity.js",esModule=embed"activity.js")],
-compatibilityDate="2026-09-26",durableObjectNamespaces=[(className="Host",uniqueKey="host-activity",enableSql=true)],durableObjectStorage=(inMemory=void),
-bindings=[(name="HOST",durableObjectNamespace="Host"),(name="LOADER",workerLoader=())]))],
+compatibilityDate="2026-09-26",durableObjectNamespaces=[(className="Host",uniqueKey="host-activity",enableSql=true),(className="Peer",uniqueKey="host-activity-peer",enableSql=true)],durableObjectStorage=(inMemory=void),
+bindings=[(name="HOST",durableObjectNamespace="Host"),(name="PEER",durableObjectNamespace="Peer"),(name="LOADER",workerLoader=())]))],
 sockets=[(name="http",address="127.0.0.1:${port}",http=(),service="main")]);`);
 const child=spawn(binary,['serve','config.capnp','--experimental'],{cwd:dir,stdio:['ignore','pipe','pipe']});
 let logs='';child.stderr.on('data',part=>logs+=part);child.stdout.on('data',part=>logs+=part);
@@ -74,5 +98,6 @@ try{
   assert.equal(result.admitted,false,'a reset while idle is rejected before work');
   assert.match(result.error,/restarted|reset/i);
   assert.equal(result.idleLost.length,1);
+  assert.equal(result.peerWatches,0,'a cancelled service-binding watch releases its hosting actor');
   console.log('host-activity-workerd: native abort, shared watch, active reset and idle incarnation change');
 }finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}

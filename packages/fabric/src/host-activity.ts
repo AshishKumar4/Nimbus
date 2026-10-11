@@ -75,17 +75,37 @@ export class HostActivity {
     if (observation.current) return observation.current.ready;
     const abort = new AbortController();
     const ready = Promise.resolve().then(() => observation.open(abort.signal)).then(async (response) => {
-      if (abort.signal.aborted) { await response.body?.cancel(); throw abort.signal.reason; }
+      const socket = response.webSocket;
+      const close = async () => {
+        if (socket) { socket.accept(); socket.close(1000, 'watch released'); }
+        else await response.body?.cancel();
+      };
+      if (abort.signal.aborted) { await close(); throw abort.signal.reason; }
       const incarnation = response.headers.get(HOST_INCARNATION_HEADER);
-      if (response.status !== 200 || !incarnation || !response.body) {
-        await response.body?.cancel();
+      if (!incarnation || !((response.status === 101 && socket) || (response.status === 200 && response.body))) {
+        await close();
         throw new Error('Nimbus: the process host did not validate its incarnation');
       }
       if (observation.incarnation !== undefined && observation.incarnation !== incarnation) {
-        await response.body.cancel();
+        await close();
         throw new Error('Nimbus: the process host restarted without its process');
       }
       observation.incarnation = incarnation;
+      if (socket) {
+        const cancel = () => socket.close(1000, 'watch released');
+        const ended = () => {
+          abort.signal.removeEventListener('abort', cancel);
+          socket.removeEventListener('close', ended);
+          socket.removeEventListener('error', ended);
+          if (!abort.signal.aborted) this.failed(observation, abort, new Error('Nimbus: the process host ended its active watch'));
+        };
+        socket.addEventListener('close', ended);
+        socket.addEventListener('error', ended);
+        abort.signal.addEventListener('abort', cancel, { once: true });
+        socket.accept();
+        return;
+      }
+      if (!response.body) throw new Error('Nimbus: the process host has no watch body');
       const reader = response.body.getReader();
       const cancel = () => { void reader.cancel().catch(() => {}); };
       abort.signal.addEventListener('abort', cancel, { once: true });
