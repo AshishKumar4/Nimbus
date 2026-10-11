@@ -27,6 +27,7 @@
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
@@ -139,6 +140,45 @@ try {
     assert.ok(unrefPid > 0, unref.stdout);
     assert.equal(await ended(unrefPid), 'exited(0)', 'an unrefed native listener does not keep the process alive');
     console.log('workerd native listen/unref natural exit: ' + Math.round(performance.now() - unrefStart) + 'ms');
+
+    const beforeExitSource = String.raw`
+const events = [];
+const server = require('http').createServer((_request, response) => { response.end('closed'); server.close(); });
+function broken() { throw new Error('resident beforeExit failure'); }
+process.on('beforeExit', broken);
+process.on('uncaughtException', (error, kind) => {
+  events.push([error.message, kind]);
+  process.removeListener('beforeExit', broken);
+  setTimeout(() => { events.push('continued'); process.exitCode = 7; }, 0);
+});
+process.on('exit', (code) => console.log('BEFORE_RESULT ' + JSON.stringify({ code, events })));
+server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOUND:' + server.address().port));
+`;
+    const hostBefore = await new Promise((resolve, reject) => {
+      const child = spawn('node', ['-e', beforeExitSource], { env: { ...process.env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '', error = '', closing = false;
+      const deadline = setTimeout(() => child.kill(), 30000);
+      child.stdout.on('data', (part) => {
+        output += part;
+        const port = /BOUND:(\d+)/.exec(output)?.[1];
+        if (port && !closing) { closing = true; void fetch('http://127.0.0.1:' + port + '/close').catch(reject); }
+      });
+      child.stderr.on('data', (part) => { error += part; });
+      child.on('error', reject);
+      child.on('close', (code) => { clearTimeout(deadline); resolve({ code, output, error }); });
+    });
+    assert.equal(hostBefore.code, 7, hostBefore.error);
+    const expectedBefore = JSON.parse(/BEFORE_RESULT ([^\r\n]+)/.exec(hostBefore.output)[1]);
+    await terminal.writeFile(W + '/resident-before.js', beforeExitSource);
+    const launchedBefore = await terminal.run('cd ' + W + ' && PORT=7073 node resident-before.js');
+    const beforePid = Number(/pid=(\d+)/.exec(launchedBefore.stdout)?.[1]);
+    assert.ok(beforePid > 0, launchedBefore.stdout);
+    await terminal.run('curl -s http://127.0.0.1:7073/close');
+    assert.equal(await ended(beforePid), 'exited(' + hostBefore.code + ')', 'a handled resident beforeExit throw releases its natural-exit check');
+    const beforeLogs = (await terminal.run('logs ' + beforePid)).stdout;
+    const actualBefore = /BEFORE_RESULT ([^\r\n]+)/.exec(beforeLogs)?.[1];
+    assert.ok(actualBefore, beforeLogs);
+    assert.deepEqual(JSON.parse(actualBefore), expectedBefore, 'resident exception kind and continuation match Node');
   } finally {
     await terminal.close().catch(() => {});
   }
