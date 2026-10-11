@@ -18,10 +18,9 @@ interface Observation {
 }
 export declare class HostActivity {
     private readonly observations;
-    private owners;
-    private generation;
-    observe(open: Observation['open'], lost: Observation['lost']): () => void;
-    acquire(): HostActivityLease;
+    private readonly owners;
+    observe(open: Observation['open'], lost: Observation['lost'], incarnation?: string): () => void;
+    acquire(signal?: AbortSignal): HostActivityLease;
     run<T>(work: () => T | Promise<T>, signal?: AbortSignal): Promise<T>;
     /** End every old lease; a reused session starts with a fresh ownership epoch. */
     close(): void;

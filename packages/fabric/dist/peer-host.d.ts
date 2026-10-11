@@ -46,6 +46,7 @@ export type HostProcessOpts = z.infer<typeof HostProcessOptsSchema>;
  * and a live SSE body still streams.
  */
 export interface HostedHttpRequest {
+    capability: string;
     method: string;
     url: string;
     headers: [string, string][];
@@ -57,6 +58,11 @@ export interface HostedHttpResponse {
     headers: [string, string][];
     body: ReadableStream | null;
 }
+export type HostedReply<T> = T | {
+    hostLost: string;
+};
+export declare const HOSTED_WATCH_HEADER = "x-nimbus-hosted-watch";
+export declare const HOSTED_FAILURE_HEADER = "x-nimbus-hosted-failure";
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
  * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
@@ -75,6 +81,7 @@ export declare const HOSTED_WEBSOCKET_CAPABILITY_HEADER = "x-nimbus-hosted-webso
  * the object's own.
  */
 export declare function isHostedWebSocket(request: Request): boolean;
+export declare function isHostedWatch(request: Request): boolean;
 /** What the object hosting processes supplies: the two things the fabric cannot know. */
 export interface PeerHostOptions {
     /**
@@ -83,17 +90,7 @@ export interface PeerHostOptions {
      * what it boots.
      */
     bootSpec: z.ZodType<ResidentBootSpec>;
-    /**
-     * Arm the hosting watch through the object's own scheduler: a session's
-     * timer mux, or an embedder's lifecycle, which owns its alarm.
-     */
-    scheduleWatch(at: number): Promise<void>;
 }
-/**
- * How often a host holding a process looks for its own reset: the resident
- * keep-alive's cadence, so the session learns of it within one cadence.
- */
-export declare const HOSTING_WATCH_MS = 5000;
 /**
  * The processes this Durable Object hosts for its siblings, and every leg a
  * coordinator's {@link PeerProcessHost} calls on it. One per object: its
@@ -103,6 +100,7 @@ export declare const HOSTING_WATCH_MS = 5000;
 export declare class PeerHost {
     private readonly ctx;
     private readonly options;
+    private readonly incarnation;
     private readonly records;
     private readonly waiters;
     private readonly env;
@@ -132,9 +130,10 @@ export declare class PeerHost {
      * released in the `finally` below, and the process dies with it: a hosting
      * peer never outlives its parent session.
      */
-    host(boot: unknown, opts: unknown): Promise<{
+    host(boot: unknown, opts: unknown): Promise<HostedReply<{
         ok: boolean;
-    }>;
+        incarnation: string;
+    }>>;
     /**
      * Settle once the process is OPEN on this peer, or reject with whatever
      * stopped it from opening.
@@ -145,18 +144,19 @@ export declare class PeerHost {
      * coordinator would return a handle for a process that never existed and only
      * discover it later, through `done`.
      */
-    awaitOpen(workerKey: string): Promise<{
+    awaitOpen(workerKey: string): Promise<HostedReply<{
         ok: boolean;
-    }>;
+        incarnation: string;
+    }>>;
     /**
      * Read back the runner's startProcess payload. `host` started it; this
      * never starts anything, so a coordinator asking twice gets the same answer
      * a local facet would have returned inline — and for a `lifetime` runner it
      * settles at exit, exactly as the local one does.
      */
-    awaitBoot(workerKey: string): Promise<{
+    awaitBoot(workerKey: string): Promise<HostedReply<{
         payload: unknown;
-    }>;
+    }>>;
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
      *
@@ -172,7 +172,7 @@ export declare class PeerHost {
      * isolate before it is returned, for the same reason the parts exist at all:
      * what leaves here must not be an object the loaded worker owns.
      */
-    routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
+    routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**
      * The peer end of the upgrade hop (isHostedWebSocket). Reached by `fetch`
      * rather than RPC, so the 101 and its live socket travel back as
@@ -195,20 +195,11 @@ export declare class PeerHost {
     cancel(workerKey: string): Promise<{
         cancelled: boolean;
     }>;
-    /**
-     * The hosting alarm. A row whose process this incarnation does not hold is
-     * one the platform reset this object under (a new incarnation remembers
-     * nothing of the processes it held, and the held leg that would have said so
-     * may stay open, measured 2026-10-07): the session is told at once, and the
-     * row is dropped once the session has answered, whatever it answered. A row
-     * the session did not hear about is kept, and so is the watch: the next
-     * alarm tells it again. A failure to read or drop the rows is retried the
-     * same way, since the dispatcher forgets a reason whose handler throws.
-     * Answers when to look again, or null when nothing is left to watch.
-     */
-    watchFired(): Promise<number | null>;
-    /** One that cannot be armed throws, and the host refuses the process rather than hold one nothing would report the loss of. */
-    private armWatch;
+    /** One abortable observation bridges coordinator activity to this actor. */
+    watch(request: Request): Promise<Response>;
+    private authorized;
+    private gone;
+    private answer;
     private register;
     /**
      * The record for `workerKey`, waiting briefly if the host leg has not landed

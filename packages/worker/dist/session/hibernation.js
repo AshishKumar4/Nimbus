@@ -437,7 +437,7 @@ export function scheduleHibFlush(host, ctx) {
  *     a host holding processes for other sessions tells them of its own
  *     reset; re-arms while it holds one.
  */
-export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostingWatch) {
+export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo) {
     return timers(host, ctx).dispatch({
         'w9-flush': () => {
             host.processes.flushLogs();
@@ -455,11 +455,6 @@ export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostin
         },
         'resident-keepalive': (now) => {
             const rearmAt = residentKeepaliveFired(host, now);
-            if (rearmAt !== null)
-                return { rearmAt };
-        },
-        'hosting-watch': async () => {
-            const rearmAt = await hostingWatch?.() ?? null;
             if (rearmAt !== null)
                 return { rearmAt };
         },

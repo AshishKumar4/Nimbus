@@ -282,21 +282,31 @@ export class SessionProcessSupervisor {
      * end.
      */
     holdWork(pid, stop, signal) {
-        const work = { stop, stopped: false, signal, observation: signal?.aborted ? undefined : this.observeWork?.(pid) };
-        const stopObserving = () => work.observation?.release();
-        signal?.addEventListener('abort', stopObserving, { once: true });
+        const owner = new AbortController();
+        const abort = () => owner.abort(signal?.reason);
+        signal?.addEventListener('abort', abort, { once: true });
         if (signal?.aborted)
-            stopObserving();
+            abort();
+        const work = {
+            stop: (reason) => { owner.abort(reason); stop(reason); },
+            stopped: false, signal: owner.signal,
+            observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
+        };
+        const stopObserving = () => work.observation?.release();
+        owner.signal.addEventListener('abort', stopObserving, { once: true });
         let pieces = this.held.get(pid);
         if (!pieces)
             this.held.set(pid, pieces = new Set());
         pieces.add(work);
         let done = false;
+        let cancelValidation;
         const release = () => {
             if (done)
                 return;
             done = true;
-            signal?.removeEventListener('abort', stopObserving);
+            signal?.removeEventListener('abort', abort);
+            owner.signal.removeEventListener('abort', stopObserving);
+            cancelValidation?.();
             stopObserving();
             const now = this.held.get(pid);
             now?.delete(work);
@@ -304,7 +314,30 @@ export class SessionProcessSupervisor {
                 this.held.delete(pid);
             this.releaseEnded(pid);
         };
-        return Object.defineProperty(release, 'ready', { get: () => work.observation?.ready });
+        let source, ready;
+        return Object.defineProperty(Object.assign(release, { signal: owner.signal }), 'ready', { get: () => {
+                const validation = work.observation?.ready;
+                if (!validation)
+                    return undefined;
+                if (source !== validation) {
+                    source = validation;
+                    ready = new Promise((resolve, reject) => {
+                        const cancelled = () => {
+                            owner.signal.removeEventListener('abort', cancelled);
+                            reject(owner.signal.aborted ? owner.signal.reason : new DOMException('Work validation aborted', 'AbortError'));
+                        };
+                        cancelValidation = cancelled;
+                        if (done || owner.signal.aborted) {
+                            cancelled();
+                            return;
+                        }
+                        owner.signal.addEventListener('abort', cancelled, { once: true });
+                        validation.then(resolve, reject).finally(() => owner.signal.removeEventListener('abort', cancelled));
+                    });
+                    ready.catch(() => { });
+                }
+                return ready;
+            } });
     }
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     terminate(pid, reason) {

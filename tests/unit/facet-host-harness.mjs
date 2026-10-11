@@ -255,9 +255,8 @@ import {
   _rpcRouteHostedHttp,
   peerHostFor,
 } from '../../packages/worker/src/session/rpc.ts';
-import { isolateToken } from '../../packages/fabric/src/peer-host.ts';
+import { isolateToken, isHostedWatch } from '../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { sqlJournal } from '../../packages/core/src/_shared/process-fs-journal.ts';
@@ -361,7 +360,8 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       };
       // The held host leg is the peer's life. `die()` severs it exactly as a
       // Durable Object reset severs an inbound call.
-      peer.death = new Promise((_, reject) => { peer.die = reject; });
+      peer.deathSignal = new AbortController();
+      peer.death = new Promise((_, reject) => { peer.die = (error) => { peer.deathSignal.abort(error); reject(error); }; });
       peer.death.catch(() => {});
       // `reset(error)` is the reset Cloudflare was measured doing (2026-10-07):
       // the held leg stays open, and every later call to the peer fails with
@@ -369,7 +369,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       peer.resetBy = null;
       peer.reset = (error) => { peer.resetBy = error; };
       // A session arms its hosting watch on its own timer mux (NimbusSession.peerHost).
-      peer.peerHost = peerHostFor(ctx, peer.env, (at) => timers(peer, ctx).arm('hosting-watch', at));
+      peer.peerHost = peerHostFor(ctx, peer.env);
       onPeer?.(peer);
       peers.set(name, peer);
     }
@@ -394,6 +394,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // to the same real handler the production entrypoint calls first.
         async fetch(request) {
           if (peer.resetBy) throw peer.resetBy;
+          if (isHostedWatch(request)) return peer.peerHost.watch(new Request(request, { signal: AbortSignal.any([request.signal, peer.deathSignal.signal]) }));
           return peer.peerHost.routeWebSocket(request);
         },
         // The host forwards one envelope op; the arm still exercises the
@@ -401,12 +402,16 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // supervisorOp first, exactly as the shipped host does.
         supervisorOp(envelope) {
           const { op, args } = envelope;
-          if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
+          if (peer.resetBy && op === 'cancelHostProcess') {
+            peer.resetBy = null;
+            peer.ctx = createFacetCtx(world, name, peer.ctx.storage.rows);
+            peer.peerHost = peerHostFor(peer.ctx, peer.env);
+          } else if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
           switch (op) {
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
             case 'awaitHostedOpen': return _rpcAwaitHostedOpen(peer, args[0]);
-            case 'awaitHostedBoot': return _rpcAwaitHostedBoot(peer, args[0]);
+            case 'awaitHostedBoot': return Promise.race([_rpcAwaitHostedBoot(peer, args[0]), peer.death]);
             case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]);
             case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);
             default: return Promise.reject(new Error(`peer stub: unserved op ${op}`));

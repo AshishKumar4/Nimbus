@@ -213,6 +213,9 @@ export function deleteFacetStorage(ctx, name) {
     if (sql)
         forgetFacetStorage(sql, name);
 }
+export function abortFacet(ctx, name, reason) {
+    facetContainer(ctx).abort(name, reason);
+}
 /**
  * The process surface of one hosting actor: how a resident process comes
  * into existence on workerd, and how a one-shot program runs to completion.
@@ -326,6 +329,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     if (explicit)
         book.live.add(name);
     // A journaling process: the session holds its facet's name until its log is drained.
+    params.created?.(name);
     params.journal?.opened(name);
     // The facet's worker is one Dynamic Worker in flight for as long as the
     // process is resident, not only while a call is open: its WebSockets and

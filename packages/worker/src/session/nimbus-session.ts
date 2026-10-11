@@ -941,16 +941,16 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _rpcProcessHostProbe(): { isolateToken: string } {
     return _rpc._rpcProcessHostProbe(this);
   }
-  async _rpcHostProcess(boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
+  async _rpcHostProcess(boot: unknown, opts: unknown): ReturnType<typeof _rpc._rpcHostProcess> {
     return _rpc._rpcHostProcess(this, boot, opts);
   }
-  async _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean }> {
+  async _rpcAwaitHostedOpen(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedOpen> {
     return _rpc._rpcAwaitHostedOpen(this, workerKey);
   }
-  async _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }> {
+  async _rpcAwaitHostedBoot(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedBoot> {
     return _rpc._rpcAwaitHostedBoot(this, workerKey);
   }
-  async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
+  async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): ReturnType<typeof _rpc._rpcRouteHostedHttp> {
     return _rpc._rpcRouteHostedHttp(this, workerKey, request);
   }
   async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {

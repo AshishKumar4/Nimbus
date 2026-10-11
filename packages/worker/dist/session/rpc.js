@@ -1352,8 +1352,8 @@ const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
  * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
  * the hosting watch armed through the object's own scheduler.
  */
-export function peerHostFor(ctx, env, scheduleWatch) {
-    return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema, scheduleWatch });
+export function peerHostFor(ctx, env) {
+    return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema });
 }
 export function _rpcProcessHostProbe(self) {
     return self.peerHost.probe();

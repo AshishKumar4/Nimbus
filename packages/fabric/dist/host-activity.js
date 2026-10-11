@@ -3,48 +3,54 @@ export const HOST_INCARNATION_HEADER = 'x-nimbus-host-incarnation';
 export const HOST_WATCH_MODULE = '__nimbus_host_watch.js';
 export class HostActivity {
     observations = new Set();
-    owners = 0;
-    generation = 0;
-    observe(open, lost) {
-        const observation = { open, lost, failed: null };
+    owners = new Set();
+    observe(open, lost, incarnation) {
+        const observation = { open, lost, incarnation, failed: null };
         this.observations.add(observation);
-        if (this.owners)
+        if (this.owners.size)
             this.start(observation);
         return () => { this.observations.delete(observation); observation.current?.abort.abort(); };
     }
-    acquire() {
-        const generation = this.generation;
-        this.owners++;
-        let released = false;
-        const ready = this.observations.size ? Promise.all([...this.observations].map((observation) => this.start(observation))).then(() => undefined) : undefined;
-        ready?.catch(() => { });
-        return { ready, release: () => {
-                if (released)
-                    return;
-                released = true;
-                if (generation !== this.generation || --this.owners !== 0)
-                    return;
+    acquire(signal) {
+        signal?.throwIfAborted();
+        let rejectReady;
+        const cancel = () => {
+            signal?.removeEventListener('abort', release);
+            rejectReady?.(signal?.aborted ? signal.reason : new DOMException('Host validation aborted', 'AbortError'));
+        };
+        const release = () => {
+            if (!this.owners.delete(cancel))
+                return;
+            cancel();
+            if (this.owners.size === 0)
                 this.stop();
-            } };
+        };
+        this.owners.add(cancel);
+        const ready = this.observations.size ? new Promise((resolve, reject) => {
+            rejectReady = reject;
+            Promise.all([...this.observations].map((observation) => this.start(observation))).then(() => resolve(), reject);
+        }) : undefined;
+        ready?.catch(() => { });
+        signal?.addEventListener('abort', release, { once: true });
+        return { ready, release };
     }
     async run(work, signal) {
         signal?.throwIfAborted();
-        const lease = this.acquire();
-        signal?.addEventListener('abort', lease.release, { once: true });
+        const lease = this.acquire(signal);
         try {
             await lease.ready;
             signal?.throwIfAborted();
             return await work();
         }
         finally {
-            signal?.removeEventListener('abort', lease.release);
             lease.release();
         }
     }
     /** End every old lease; a reused session starts with a fresh ownership epoch. */
     close() {
-        this.generation++;
-        this.owners = 0;
+        for (const cancel of this.owners)
+            cancel();
+        this.owners.clear();
         this.stop();
     }
     stop() {

@@ -7498,6 +7498,7 @@ export class FacetManager {
         while (this.launchTasks.size > 0)
             await Promise.allSettled([...this.launchTasks]);
         await Promise.all(this.rowAmendments.values());
+        await this.processHost.close?.();
     }
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     _allocateLoopbackPort() {

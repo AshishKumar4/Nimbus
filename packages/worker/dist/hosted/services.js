@@ -281,9 +281,12 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             }
             // It runs here, on the child's own descriptors: a kill stops it.
             const stop = new AbortController();
-            const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
+            const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
             try {
-                return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stop.signal)).status;
+                if (stopped.ready)
+                    await stopped.ready;
+                stopped.signal.throwIfAborted();
+                return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stopped.signal)).status;
             }
             finally {
                 stopped();
@@ -352,10 +355,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         const endWork = self.processes.beginWork(child.pid);
         // Its program is this session's work behind its pid: a kill stops it.
         const stop = new AbortController();
-        const stopped = self.processes.holdWork(child.pid, (reason) => stop.abort(reason));
+        const stopped = self.processes.holdWork(child.pid, (reason) => stop.abort(reason), stop.signal);
         let exitCode = 1;
         try {
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stop.signal);
+            if (stopped.ready)
+                await stopped.ready;
+            stopped.signal.throwIfAborted();
+            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stopped.signal);
             exitCode = ended.status;
             return ended;
         }

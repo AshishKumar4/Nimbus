@@ -1010,6 +1010,8 @@ async function destroySession(self, options) {
     if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
         throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
     }
+    // A cold DELETE must also close peer placements left by the previous incarnation.
+    self.ensureFacetManager();
     // Past this it completes, and nothing starts meanwhile: the table it stops
     // admits no process, and a request that would ready the session waits for
     // the one it makes again (rpcDestroy, ensureRuntimeReady).

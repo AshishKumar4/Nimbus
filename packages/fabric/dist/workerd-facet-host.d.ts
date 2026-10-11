@@ -124,6 +124,7 @@ export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>
 /** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
+export declare function abortFacet(ctx: DurableObjectState, name: string, reason: Error): void;
 /**
  * What `processes(ctx, env).spawn` hands back: a running process, minus its placement.
  *

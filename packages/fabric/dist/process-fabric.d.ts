@@ -298,6 +298,8 @@ export interface ProcessHostParams {
     writerId: string;
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs: unknown;
+    /** Record the physical child before its first call can publish side effects. */
+    created?(facet: string): void;
     /**
      * Set only by the coordinator's durable-application path: an explicit facet
      * name (`app-slot-<n>`) allocated from DO storage, plus the release split
@@ -525,6 +527,8 @@ export interface OneShotParams {
     outbound?: boolean;
 }
 export interface ProcessHost {
+    /** Release persistent host placements, including a previous coordinator incarnation's. */
+    close?(): Promise<void>;
     /** What this substrate can and cannot deliver, for operators and callers. */
     readonly imageDelivery: ProcessImageDelivery;
     /**

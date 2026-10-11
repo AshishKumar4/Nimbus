@@ -547,7 +547,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * (retention sweep), 'resident-launch' and 'resident-keepalive'.
      */
     async alarm(alarmInfo) {
-        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo, () => this.peerHost.watchFired());
+        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo);
     }
     /**
      * Grant the fresh turn a suspended launch asked for.
@@ -827,7 +827,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // resident process on THIS object (fabric PeerHost).
     _peerHost = null;
     get peerHost() {
-        return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env, (at) => timers(this, this.ctx).arm('hosting-watch', at));
+        return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env);
     }
     _rpcProcessHostProbe() {
         return _rpc._rpcProcessHostProbe(this);

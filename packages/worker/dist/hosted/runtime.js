@@ -3,6 +3,7 @@ import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { isHostedWatch, isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
@@ -124,6 +125,7 @@ class RuntimeOwner {
             if (saved.env)
                 Object.assign(this.shell.getEnv(), saved.env);
             await registerHostedCommands(this, this.options.workspace);
+            await this.ensureFacetManager().pumpLaunches();
             await this.options.workspace.start();
         })();
         return this.readyPromise;
@@ -149,12 +151,7 @@ class RuntimeOwner {
      * this object's alarm, and its `onScheduled('hosting-watch')` hands it back.
      */
     get peerHost() {
-        return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env, (at) => this.scheduleHostingWatch(at));
-    }
-    scheduleHostingWatch(at) {
-        const pending = this.schedule('hosting-watch', at);
-        this.options.lifecycle.waitUntil(pending);
-        return pending;
+        return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env);
     }
     _scheduleLaunchTurn(notBefore = Date.now()) {
         const pending = this.schedule('resident-launch', Math.max(Date.now(), notBefore));
@@ -250,10 +247,8 @@ class RuntimeOwner {
             this.processes.flushLogs();
         }
         else if (task === 'hosting-watch') {
-            // A failure to look again throws to the embedder's alarm, which retries it.
-            const next = await this.peerHost.watchFired();
-            if (next !== null)
-                await this.scheduleHostingWatch(next);
+            // Consume a scheduler entry left by the old polling watch, without rearming it.
+            return;
         }
         else {
             const next = logJanitorFired(this);
@@ -419,6 +414,14 @@ export async function composeHostedRuntime(options) {
         runtimes: owner.runtimeManager,
         ...client,
         supervisorOp: (envelope) => owner.supervisorOp(envelope),
+        /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
+        hostedFetch: (request) => {
+            if (isHostedWatch(request))
+                return owner.peerHost.watch(request);
+            if (isHostedWebSocket(request))
+                return owner.peerHost.routeWebSocket(request);
+            return Promise.resolve(null);
+        },
         /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
         session: (scope = {}) => {
             owner.assertOpen();
