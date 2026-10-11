@@ -469,7 +469,7 @@ export class R2CacheClient {
         // Only small values can enter the local store. Snapshot those BEFORE
         // awaiting verification: the writer still owns and may mutate its input.
         // Larger values retain the existing external-only path without a copy.
-        const view = supplied.byteLength <= LOCAL_TARBALL_MAX_BYTES ? supplied.slice() : supplied;
+        const view = supplied.byteLength <= LOCAL_TARBALL_MAX_BYTES ? new Uint8Array(supplied) : supplied;
         if (view.length > MAX_R2_TARBALL_BYTES)
             return false;
         if (!await bytesMatchAddress(view, address))
