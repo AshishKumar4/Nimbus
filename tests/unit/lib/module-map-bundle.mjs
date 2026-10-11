@@ -15,7 +15,7 @@ import { residentLoaderConfig } from '../../../packages/fabric/src/process-fabri
 import { readImmutableModuleSource } from '../../../packages/core/src/_shared/staged-source.ts';
 import { stagedAssets } from './staged-assets.mjs';
 import { createRequire as nativeCreateRequire, isBuiltin } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { adaptHttpImports } from './node-http-platform.mjs';
 
@@ -110,7 +110,8 @@ const REGISTRY_STAND_IN = 'const __nimbusCreateRequire = globalThis.__nimbusTest
  * `rewrite(name, source)` may adapt a module for this runtime (the
  * `cloudflare:workers` import, say). The entry's registry is the stand-in
  * above, so its `{ cjs }` modules load as the guest loads them. Native `{ js }`
- * members are files too; `/bundle/` specifiers name this directory on disk.
+ * members are written byte-for-byte: the runtime's offsets read their source
+ * back, and staging already uses relative specifiers the host resolves.
  */
 export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source) {
   mkdirSync(dir, { recursive: true });
@@ -119,14 +120,15 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
   const names = new Set(Object.keys(modules));
   const local = (source) => source.replace(/(\bfrom\s*|\bimport\s*)"([^"./][^"]*)"/g,
     (whole, lead, spec) => (names.has(spec) ? `${lead}"./${spec}"` : whole));
-  const bundleRoot = resolve(dir) + '/';
-  const onDisk = (source) => source.replace(/(["'])\/bundle\//g, (_whole, quote) => quote + bundleRoot);
   for (const [name, member] of Object.entries(modules)) {
-    const source = typeof member === 'string' ? member : jsText(member);
-    if (source !== undefined) {
+    if (typeof member === 'string') {
       const file = join(dir, decodeURIComponent(name));
       mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, onDisk(adaptHttpImports(local(rewrite(name, source))).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN)));
+      writeFileSync(file, adaptHttpImports(local(rewrite(name, member))).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN));
+    } else if (jsText(member) !== undefined) {
+      const file = join(dir, decodeURIComponent(name));
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, member.js);
     } else if (cjsText(member) !== undefined) {
       // A module name is a URL path: the file is where the registry's URL
       // resolution — the stand-in's fileURLToPath — finds it.

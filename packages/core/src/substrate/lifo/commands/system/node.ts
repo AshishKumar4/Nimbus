@@ -4,58 +4,19 @@ import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
-import { declaredPackageType, isEsModuleFile, type PackageType } from '../../../../runtime/module-format.js';
+import { declaredPackageType, isEsModuleFile, isEsModuleInput, type PackageType } from '../../../../runtime/module-format.js';
 import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
+import { pathToFileURL } from '../../node-compat/url.js';
+import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
 import { runNodeInRealm } from './node-realm.js';
 
 const NODE_VERSION = 'v20.0.0';
-
-// ── Rollup / esbuild CJS-ESM interop helpers ──
-// Bundled npm packages (Vite, Rollup, etc.) reference these helpers at the module
-// scope.  When our ESM→CJS transform converts imports, the helpers may lose their
-// binding.  Making them available on globalThis acts as a fallback – if the module
-// defines its own copy the local declaration naturally shadows the global.
-//
-// Complete set from @rollup/plugin-commonjs interop:
-const _rollupHelpers: Record<string, (...args: unknown[]) => unknown> = {
-	getDefaultExportFromCjs(x: unknown): unknown {
-		const o = x as Record<string, unknown>;
-		return o && o.__esModule && Object.prototype.hasOwnProperty.call(o, 'default') ? o.default : o;
-	},
-	getDefaultExportFromNamespaceIfPresent(n: unknown): unknown {
-		const o = n as Record<string, unknown>;
-		return o && Object.prototype.hasOwnProperty.call(o, 'default') && Object.keys(o).length === 1 ? o.default : o;
-	},
-	getAugmentedNamespace(n: unknown): unknown {
-		const o = n as Record<string, unknown>;
-		if (o.__esModule) return o;
-		const a: Record<string, unknown> = Object.defineProperty({}, '__esModule', { value: true });
-		Object.keys(o).forEach(function (k) {
-			const d = Object.getOwnPropertyDescriptor(o, k);
-			Object.defineProperty(a, k, d && d.get ? d : { enumerable: true, get() { return o[k]; } });
-		});
-		a.default = n;
-		return Object.freeze(a);
-	},
-	_mergeNamespaces(n: unknown, ...ms: unknown[]): unknown {
-		const o = n as Record<string, unknown>;
-		const modules = ms.flat() as Array<Record<string, unknown>>;
-		for (const m of modules) {
-			for (const k of Object.keys(m)) {
-				if (k !== 'default' && !(k in o)) {
-					Object.defineProperty(o, k, { enumerable: true, get: () => m[k] });
-				}
-			}
-		}
-		return Object.freeze(o);
-	},
-};
 
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
 async function mainPackageType(filename: string, vfs: ProcessView): Promise<PackageType> {
@@ -93,7 +54,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			await ctx.stdout.write('  -e, --eval <code>   evaluate code\n');
 			await ctx.stdout.write('  -v, --version       print version\n\n');
 			await ctx.stdout.write('Limitations:\n');
-			await ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
+			await ctx.stdout.write('  - Native ES modules (Node >= 22.15 or Bun with Bun.plugin)\n');
 			await ctx.stdout.write('  - No native modules\n');
 			await ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
 			return 0;
@@ -117,6 +78,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			const scriptPath = resolve(ctx.cwd, ctx.args[0]);
 			try {
 				source = await ctx.vfs.readFileString(scriptPath);
+				filename = await ctx.vfs.realpath(scriptPath);
 			} catch (e) {
 				const reason = scriptReadDiagnostic(e);
 				if (reason !== null) {
@@ -125,7 +87,6 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				}
 				throw e;
 			}
-			filename = scriptPath;
 			scriptArgs = ctx.args.slice(1);
 		} else {
 			// No args -- print usage hint
@@ -177,7 +138,7 @@ export interface NodeProgramEnd {
 
 /**
  * Run `program` in the current realm, which is the program's own: its globals
- * (process, Buffer, console, the bundlers' interop helpers) are installed on
+ * (process, Buffer, console) are installed on
  * globalThis for good. Resolves once the main script has run (an ES module's
  * top-level await included). What it left (timers, servers, requests) runs on
  * in the realm's own event loop, which owns how long the process lives.
@@ -211,26 +172,30 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		const main = scope();
 		const module = { exports: {} as Record<string, unknown> };
 		const cleanMainSource = stripShebang(source);
-		const isEsm = isEsModuleFile(filename, cleanMainSource, () => mainType);
-		// The realm is the program's: npm bundles that reach globalThis.process
-		// (not the wrapper param) find the program's, and the bundlers' interop
-		// helpers are its globals too.
+		const isEsm = filename === '[eval]' ? isEsModuleInput(cleanMainSource, undefined) : isEsModuleFile(filename, cleanMainSource, () => mainType);
+		// Capture the host's module API before replacing the program's globals.
+		// Hooks supply VFS sources, but all ESM bindings and evaluation are native.
+		let native: Awaited<ReturnType<typeof createNativeEsmLoader>>;
+		try {
+			native = await createNativeEsmLoader(nodeCtx, loader, isEsm ? { filename, source: cleanMainSource } : undefined);
+		} catch (error) {
+			await ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+			return { code: 1, ended: true };
+		}
+		// The realm is the program's: a module that reaches globalThis.process
+		// (not a CommonJS wrapper parameter) finds the program's.
 		const ga = globalThis as Record<string, unknown>;
 		ga.process = main.process;
 		ga.Buffer = Buffer;
 		ga.console = main.console;
 		ga.global = globalThis;
-		for (const k of Object.keys(_rollupHelpers)) ga[k] = _rollupHelpers[k];
 
 		try {
-			// An ES module runs as an async function (its top-level await), strict; one that does not parse is a SyntaxError here.
-			const fn = new Function(`return ${moduleWrapper(cleanMainSource, isEsm, `file://${filename}`, isEsm)}`)();
-			const result = fn(...loader.wrapperArguments(filename, module, main));
-
-			// Await if ESM (async IIFE returns a promise)
-			if (isEsm && result && typeof result.then === 'function') {
-				await result;
-			}
+			if (isEsm) await native.importMain();
+			else if (filename === '[eval]') {
+				const fn = new Function(`return ${moduleWrapper(cleanMainSource, pathToFileURL(`${program.cwd}/[eval]`).href)}`)();
+				fn(...loader.wrapperArguments(filename, module, main));
+			} else loader.load(filename, { source: cleanMainSource, esm: false });
 
 			return { code: 0, ended: false };
 		} catch (e) {

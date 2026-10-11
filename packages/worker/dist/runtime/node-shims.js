@@ -56,6 +56,7 @@ import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
@@ -10524,7 +10525,7 @@ function __nimbusArrowOf(module, text, start, end) {
     from -= module.head;
     to -= module.head;
   }
-  // A lowered ES module's line and places as its source has them.
+  // A staged ES module's line and places as its source has them.
   if (to > from) to = __nimbusSourceColumn(module, line, to);
   from = __nimbusSourceColumn(module, line, from + 1) - 1;
   if (to <= from) to = from + 1;
@@ -11092,8 +11093,9 @@ function __nimbusModuleNotFound(request, parent) {
 // resolving from \`fromDir\` (its file's directory). \`required\` false is an
 // ES module's, which only its static imports call.
 function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
+  // An interpreted ES module's static import passes its marker (esm-interop.ts ESM_LOAD_HELPER).
   const require = function require(id) {
-    return __requireFrom(id, fromDir, module, required);
+    return __requireFrom(id, fromDir, module, required && !(arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STATIC_IMPORT)}));
   };
   function resolve(request, options) {
     if (typeof request !== "string") throw invalidArgType("request", "string", request);
@@ -12124,11 +12126,13 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
-// \`required\`: loaded by a require() call, not by an interpreted ES module's
-// static import (core interpreter/modules.ts links it through its require).
+// \`required\`: loaded by a require() call, not by an import (an interpreted
+// ES module's static import, core interpreter/modules.ts, or import()).
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
 // only when the interpreter evaluates it instead.
-function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
+// \`esModule\`: an ES module an import loads, which require.cache does not
+// hold until a require() loads it.
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined, esModule = false) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\\/+/, "");
   const normalizedPath = filename.slice(1);
@@ -12156,7 +12160,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const mod = new __NodeModule(filename, parent);
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
-  __NodeModule._cache[cacheKey] = mod;
+  if (esModule && !required) __nimbusEsmInstances.set(cacheKey, mod);
+  else __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
     if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
     if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
@@ -12204,7 +12209,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     if (esmId !== -1) {
       // The staged module's own text, as it was before it was staged.
       compiledText = __nimbusEsmSourceText(esmId);
-      cell = __nimbusRuntimeModule(normalizedPath, compiledText);
+      cell = __nimbusAdoptedModule(normalizedPath, compiledText);
     } else if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
       // its closure. Kept apart from the read ledger, which settles reads. By
@@ -12221,11 +12226,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
-    const scopedRequire = __nimbusMakeRequire(mod, modDir, cell.esModule !== true);
-    if (cell.esModule === true && !required) {
-      delete __NodeModule._cache[cacheKey];
-      __nimbusEsmInstances.set(cacheKey, mod);
-    }
+    const scopedRequire = __nimbusMakeRequire(mod, modDir);
     // A CommonJS module's \`this\` is its exports, as Node calls its wrapper.
     const evaluation = __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
     // A module with top-level await completes later: an import() waits for
@@ -12288,8 +12289,8 @@ function __resolveFrom(id, fromDir) {
   // portable way to load a path a resolver just handed back, and it is what
   // every package that resolves before it imports emits — @nuxt/cli's
   // loadKit does \`import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)\`.
-  // The ESM→CJS transform funnels those imports through this one resolver, so
-  // the scheme has to come off before the specifier is classified: with it on,
+  // A require() of one comes through this one resolver too, so the scheme
+  // has to come off before the specifier is classified: with it on,
   // the file: URL misses the absolute-path branch below and gets looked up as
   // if it were the name of a package.
   if (typeof id === "string" && id.startsWith("file:")) {
@@ -12635,7 +12636,7 @@ async function __nimbusEsmInterpret(id) {
   const pending = (async () => {
     let exports;
     try {
-      exports = __loadModule(key, key, false);
+      exports = __loadModule(key, key, false, undefined, true);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
       throw e;
@@ -12739,8 +12740,12 @@ function __nimbusEsmExportError(error, id, requested, name) {
     } else if (!staged.includes("'" + requested + "'") && !staged.includes(JSON.stringify(requested))) {
       continue;
     }
-    const target = __nimbusEsm.table[__nimbusEsm.table[at][3].find((t) => t >= 0 && "/bundle/" + __nimbusEsm.table[t][2] === requested) ?? -1];
-    error.message = target !== undefined && target[0] === "commonjs"
+    // The module the importer's specifier names, as the registry resolved it.
+    let requestedUrl = null;
+    try { requestedUrl = new URL(requested, __NIMBUS_BUNDLE_URL + module.name).href; } catch {}
+    const target = __nimbusEsm.table[__nimbusEsm.table[at][3].find((t) => t >= 0 && __NIMBUS_BUNDLE_URL + __nimbusEsm.table[t][2] === requestedUrl) ?? -1];
+    if (target === undefined) continue;
+    error.message = target[0] === "commonjs"
       ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\\nCommonJS modules can always be imported via the default export, for example using:\\n\\nimport pkg from '" + specifier + "';\\nconst { " + name + " } = pkg;\\n"
       : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
     // Node's arrow: the imported name, on the declaration's line.
@@ -12891,7 +12896,7 @@ function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
     // explained as Node's loader explains it.
     let exports;
     try {
-      exports = __loadModule(key, evaluationKey, !esm);
+      exports = __loadModule(key, evaluationKey, !esm, undefined, esm);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
       throw e;
@@ -13357,7 +13362,9 @@ function __requireFrom(id, fromDir, parent, required = true) {
       throw error;
     }
     if (resolution.format === "builtin") return builtins[resolution.builtin];
-    return __loadModule(resolution.path.replace(/^\\/+/, ""), resolution.path.replace(/^\\/+/, ""), false, parent);
+    const key = resolution.path.replace(/^\\/+/, "");
+    const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
+    return __loadModule(key, key, false, parent, esModule);
   }
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);

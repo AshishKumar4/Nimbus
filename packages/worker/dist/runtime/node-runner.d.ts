@@ -108,6 +108,8 @@ export interface RunFreshOpts {
     moduleScope?: ModuleScope;
     /** A node program's command line (RuntimeRunOpts.node). */
     node?: NodeLaunch;
+    /** CommonJS the runner evaluates before the entry, in the entry's scope (bun-runner.ts BUN_SHIM_PREAMBLE). */
+    preamble?: string;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;

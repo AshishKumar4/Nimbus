@@ -128,6 +128,7 @@ export async function runFresh(facetMgr, code, opts) {
             dirname: opts.dirname,
             ...(opts.esModule ? { esModule: true } : {}),
             ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
+            ...(opts.preamble ? { preamble: opts.preamble } : {}),
             command,
             port,
             attachedTty: opts.attachedTty,

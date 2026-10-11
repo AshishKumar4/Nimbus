@@ -40,10 +40,9 @@ export declare function columnMapModuleName(name: string): string;
  * scope — for code whose provenance is unknown: an entry script as the
  * runtime prepared it, or runtime code. Parsed, not matched: a declaration
  * inside a string or template is not one. Parsed as a script, and failing
- * that as a module (a lowered module may still read `import.meta`); a source
- * that parses as neither gets `false` (its SyntaxError surfaces under either
- * scope), and one too large to parse cheaply gets `true`, the scope every
- * lowered module needs.
+ * that as a module; a source that parses as neither gets `false` (its
+ * SyntaxError surfaces under either scope), and one too large to parse
+ * cheaply gets `true`, the scope that runs either.
  */
 export declare function declaresWrapperBinding(source: string): boolean;
 /**

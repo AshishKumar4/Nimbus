@@ -227,7 +227,7 @@ export declare function entryEsModuleKey(filename: string | undefined, cwd: stri
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, preamble?: string): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -278,6 +278,8 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     filename?: string;
     dirname?: string;
     esModule?: boolean;
+    /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+    preamble?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -833,7 +835,7 @@ export interface PrefetchBundleOptions {
     scriptPath?: string;
     cwd: string;
     entryCode: string;
-    /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+    /** The module pass's transform host (transformBundleModules); absent, ES modules and TypeScript stage as diagnostics. */
     esbuild?: EsbuildService;
     bundleProfile?: FacetBundleProfile;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
@@ -883,9 +885,8 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  * If required content still exceeds the per-module encoded ceiling, Worker
  * Loader side modules carry the bundle without truncating the closure.
  *
- * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
- * If `esbuild` is not provided, the pass is skipped (preserves prior
- * behaviour for code paths that don't have esbuild handy).
+ * The module pass (transformBundleModules) runs on `esbuild`; without it,
+ * ES modules and TypeScript stage as diagnostics.
  *
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
@@ -1072,6 +1073,8 @@ export interface ResidentSpawnOptions {
     dirname?: string;
     /** The program is an ES module (RuntimeRunOpts.esModule). */
     esModule?: boolean;
+    /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+    preamble?: string;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     command?: string;
@@ -1254,7 +1257,7 @@ export declare class FacetManager {
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
     private readonly residentProfileOffers;
     /**
-     * The service the bundle's ESM→CJS pass transforms with. composeFacetManager
+     * The service the bundle's module pass transforms with. composeFacetManager
      * sets it: the host's own, or one whose transforms run in the session's
      * transform facet. Never one of this isolate: a transform engine's wasm
      * memory only grows.
@@ -1262,7 +1265,7 @@ export declare class FacetManager {
     private esbuild;
     /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
-     * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+     * walk + greedy oversample + the module pass on EVERY foreground
      * exec — dominant wall-clock on large node_modules. This memoizes the
      * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
@@ -1444,7 +1447,7 @@ export declare class FacetManager {
      * (SqliteVFS.readRecallAt) is its to read before it is published.
      */
     private _kernelFor;
-    /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
+    /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**
      * The entry script as the facet compiles it: each dynamic `import()` routed
@@ -1483,7 +1486,7 @@ export declare class FacetManager {
      * the entry, the working directory and the process they build for; that is
      * all they supply. Everything else — the revision-keyed cache and its stale
      * eviction, the residency profile a previous miss learned, the reachable-set
-     * walk and its enrichment passes, the ESM→CJS transform, the manifest and
+     * walk and its enrichment passes, the module pass, the manifest and
      * metadata, the module-map serialization with its side-module split, the
      * `node:sqlite` answer, and the release of the raw cells once they are
      * serialized — happens here, once, and yields the turn whenever a chunk's
@@ -1750,6 +1753,8 @@ export declare class FacetManager {
         invokerPid?: number;
         /** The program is an ES module (RuntimeRunOpts.esModule). */
         esModule?: boolean;
+        /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+        preamble?: string;
         /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
         moduleScope?: ModuleScope;
         bundleProfile?: FacetBundleProfile;

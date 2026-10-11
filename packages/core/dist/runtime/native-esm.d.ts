@@ -75,15 +75,15 @@ export interface EsModuleLink {
     readonly targets: readonly string[];
     /** Bun's scope: the CommonJS names (`require`, `__filename`, `__dirname`) it reads but does not declare. */
     readonly commonJsNames?: readonly string[];
-    /**
-     * The URL the map's names are under, ending in `/`: MAP_ROOT on workerd;
-     * another host's loader serves the same staged text under a root of its
-     * own (lifo's node).
-     */
-    readonly root?: string;
 }
 /** The map's root as module URLs name it: workerd's, under which a Worker Loader map's modules live. */
 export declare const MAP_ROOT = "file:///bundle/";
+/**
+ * The relative specifier that names map module `target` from map module
+ * `from`. Every specifier a stage writes is relative, so the staged text
+ * names the same modules under any root its host serves the map from.
+ */
+export declare function relativeSpecifier(from: string, target: string): string;
 /**
  * The module the registry evaluates for ES module `text`, read as `sites`,
  * linked as `link` says. Lines and columns stay the file's but for the first
@@ -103,14 +103,14 @@ export declare function bunScopeNames(code: string): string[];
  * in the graph's evaluation; `default` is module.exports and each of `names`
  * (cjs-module-exports.ts) its own property's value then.
  */
-export declare function commonJsFacadeModule(id: number, names: readonly string[], root?: string): string;
+export declare function commonJsFacadeModule(name: string, id: number, names: readonly string[]): string;
 /**
  * The facade an ES module imports builtin `id` through (Node's
  * getESMFacade): `default` is the builtin itself, the object require()
  * gives, and each of `names` (node-builtin-exports.ts) its value, until
  * module.syncBuiltinESMExports() reads them again.
  */
-export declare function builtinFacadeModule(id: number, names: readonly string[], root?: string): string;
+export declare function builtinFacadeModule(name: string, id: number, names: readonly string[]): string;
 /**
  * ESM_META_MODULE: one instance per staged module (`?<id>`). Its evaluation
  * hands the module its bindings from the runner (ESM_HOST_MODULE's `host`),
@@ -118,7 +118,7 @@ export declare function builtinFacadeModule(id: number, names: readonly string[]
  * module's gate (`await`, see the header); a host with no request context to
  * reach has none, so its graphs stay synchronous for require().
  */
-export declare function metaModuleSource(gate: boolean, root?: string): string;
+export declare function metaModuleSource(gate: boolean): string;
 /** ESM_HOST_MODULE: what the runner fills before the program's first import. */
 export declare const ESM_HOST_SOURCE = "export const host = Object.create(null);\n";
 //# sourceMappingURL=native-esm.d.ts.map

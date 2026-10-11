@@ -77,7 +77,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             id = table.length;
             const name = `${ESM_FACADE_DIR}${id}.js`;
             table.push([kind, key, name]);
-            members[name] = source(id);
+            members[name] = source(id, name);
             ids.set(`${kind}:${key}`, id);
         }
         return id;
@@ -109,19 +109,19 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     }, { conditions, cwd: () => cwd });
     const exportNames = async (path) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
     const notStaged = (path) => Object.assign(new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED });
-    /** The row an import with `attributes` of what `resolution` names loads. */
-    const target = async (resolution, attributes) => {
+    /** The row an import with `attributes`, from the module at `importer`, of what `resolution` names loads. */
+    const target = async (resolution, attributes, importer) => {
         resolver.validateAttributes(resolution.url, resolution.format, attributes);
         resolver.assertLoadable(resolution);
         if (resolution.format === 'builtin') {
             const builtin = (resolution.builtin ?? resolution.url).replace(/^node:/, '');
             if (!FACET_PROVIDED_PACKAGES.includes(builtin)) {
-                return member('builtin', builtin, (id) => builtinFacadeModule(id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
+                return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
             }
             // A package the process provides loads as the process's own, with the names Node finds in its installed copy.
-            const installed = await requireResolve(builtin, resolution.url.startsWith('file:') ? new URL(resolution.url).pathname : '/');
+            const installed = await requireResolve(builtin, importer);
             const exported = installed === null ? [] : await exportNames(installed);
-            return member('builtin', builtin, (id) => builtinFacadeModule(id, exported));
+            return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, exported));
         }
         if (resolution.path === undefined)
             throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
@@ -145,7 +145,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         if (!isCode(key))
             throw notStaged(resolution.path);
         const exported = await exportNames(resolution.path);
-        return member('commonjs', key, (id) => commonJsFacadeModule(id, exported));
+        return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
     };
     const modules = new Map();
     let id = 0;
@@ -168,7 +168,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                         url.pathname = probed;
                         return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' : 'commonjs' };
                     });
-                const row = await target(resolution, site.attributes);
+                const row = await target(resolution, site.attributes, parentUrl.pathname);
                 rowTargets.push(row);
                 targets.push(table[row][2]);
             }

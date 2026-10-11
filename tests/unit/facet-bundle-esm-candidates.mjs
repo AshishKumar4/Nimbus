@@ -197,7 +197,9 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     'home/user/package.json': JSON.stringify({ name: 'prepass-test' }),
     [`${root}/package.json`]: JSON.stringify({ name: 'prepass-esm', type: 'module' }),
     [`${root}/cli.js`]: 'import "./unreadable.js";\nimport "./dep.js";\n',
-    [`${root}/unreadable.js`]: 'export const ok = 1;\nimport, and otherwise;\n',
+    // A malformed specifier defeats the import-sites lexer and its grammar
+    // fallback. Other invalid JavaScript can still have readable import sites.
+    [`${root}/unreadable.js`]: 'export const ok = 1;\nimport "./unterminated\n',
     [`${root}/dep.js`]: 'export const dep = 2;\n',
   };
   const sent = [];
@@ -220,7 +222,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     assert.ok(state.esm?.modules.has(cell), `${cell} is staged despite its unreadable sibling`);
   }
   assert.throws(() => new Function(moduleOf(state, `${root}/unreadable.js`))(),
-    /esbuild transform failed for .*unreadable\.js: Unexpected token/,
+    /esbuild transform failed for .*unreadable\.js: Unterminated string constant/,
     'the unreadable cell throws its own reason when required');
 }
 

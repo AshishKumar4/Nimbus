@@ -8,9 +8,10 @@
  * registry compiles a module when it is first required and not before, so a
  * cell the program never loads costs no compile and no heap
  * (workerd docs/reference/detail/new-module-registry.md, "Fully lazy").
- * That laziness is all Nimbus takes from it for a program's own modules. The
- * registry cannot load a Node program's graph itself, for four reasons of the
- * platform, each verified against workerd 1.20260928.1:
+ * The registry evaluates a program's ES modules itself, staged so it links
+ * them as Node's loader would (core runtime/native-esm.ts). For CommonJS it
+ * gives laziness only, for reasons of the platform, each verified against
+ * workerd 1.20260928.1:
  *   - Resolution is URL resolution and nothing more. A `{ cjs }` module's own
  *     `require("lodash")` resolves to `file:///bundle/<dir>/lodash` and fails
  *     "Module not found": no node_modules walk, no package.json exports or
@@ -18,15 +19,11 @@
  *     (require-resolver.ts, the shims' __resolveFrom) stays.
  *   - Every `file:` module lives under `file:///bundle/` (modules-new.c++
  *     normalizeModuleName / isValidBundleModuleUrl), so the registry's own
- *     `import.meta.url` could never be the VFS path a program hands to
- *     fileURLToPath. import.meta stays module metadata the shims supply.
- *   - A Worker Loader `{ cjs }` module takes no named exports
- *     (worker-loader.c++ extractSource), so an ES module could not import a
- *     CommonJS package's names from one. ESM stays lowered to CommonJS.
+ *     module identity is never the VFS path a program reads in __filename.
  *   - The map is fixed at load; a program writes and requires files the load
  *     never saw. See RUNTIME CODE below for those.
- * So every cell is CommonJS by the time it is wrapped here, and it is the
- * shims' `require` that asks the registry for it by the module name below.
+ * So a CommonJS cell is wrapped here, and it is the shims' `require` that
+ * asks the registry for it by the module name below.
  *
  * THE WRAPPER
  * ───────────
@@ -46,26 +43,16 @@
  * of the wrapper, so the wrapper's `arguments` are Node's five and a cell
  * may declare its own `Function` at its top level.
  *
- * An ES module lowered to CommonJS (esbuild, or the bounded rewrite of a large
- * bundle) is the one exception. As an ES module it could declare its own
- * top-level `const __dirname = …`, `class exports {}` or — kept by the
- * bounded rewrite — `const require = createRequire(import.meta.url)`, and a
- * lexical declaration of a parameter's name in a function body is a
- * SyntaxError. Such a cell sits in a BLOCK inside the function, where the
- * declaration shadows the parameter, which is what the module meant:
+ * `-e` code is the one exception: Node runs it as a script, where it may
+ * declare a wrapper name lexically (`const require = …`), a SyntaxError in a
+ * function body. Such code sits in a BLOCK inside the function, where the
+ * declaration shadows the parameter (declaresWrapperBinding decides):
  *
  *   module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
  *   }}; });
  *
- * Only a lowered module gets the block, because the block is not a function
- * body: a top-level function declaration in it is lexical, so `var f; function
- * f() {}`, or a strict cell declaring one function twice, is a SyntaxError
- * there that Node's wrapper accepts. An ES module can never contain either
- * (both are early errors in module code), and a CommonJS file can never
- * declare a parameter's name lexically (Node rejects it), so each form is
- * exact for what it wraps. A block is not a directive prologue, so a lowered
- * cell that opens with "use strict" has the directive restated in the
- * function body, where it applies.
+ * A block is not a directive prologue, so code that opens with "use strict"
+ * has the directive restated in the function body, where it applies.
  *
  * The wrapper is on the cell's first line, so a stack frame carries the
  * cell's own line numbers under the module's `file:///bundle/vfs/<name>`
@@ -100,7 +87,7 @@
  * as `gen/<sha256>.js` modules, compiled on first use. A key is the SHA-256 of
  * what decides the module (runtimeCodeKeySource): a constructor's arguments,
  * or a file's text together with its directory and extension, which decide
- * how it is lowered and what its relative imports mean — not its name, so a
+ * how it is read and what its relative imports mean — not its name, so a
  * file written under a fresh name each run still converges. Text that
  * changes every run (an edit, then the module runner's transform of it) is
  * interpreted each time. Code the interpreter refuses (TypeScript or JSX
@@ -228,10 +215,9 @@ const WRAPPER_BINDING_PARSE_MAX = 2 * 1024 * 1024;
  * scope — for code whose provenance is unknown: an entry script as the
  * runtime prepared it, or runtime code. Parsed, not matched: a declaration
  * inside a string or template is not one. Parsed as a script, and failing
- * that as a module (a lowered module may still read `import.meta`); a source
- * that parses as neither gets `false` (its SyntaxError surfaces under either
- * scope), and one too large to parse cheaply gets `true`, the scope every
- * lowered module needs.
+ * that as a module; a source that parses as neither gets `false` (its
+ * SyntaxError surfaces under either scope), and one too large to parse
+ * cheaply gets `true`, the scope that runs either.
  */
 export function declaresWrapperBinding(source) {
     if (!LEXICAL_WRAPPER_NAME.test(source))
@@ -972,6 +958,13 @@ function __nimbusRuntimeCodeCompile(entry, describe, origin) {
 function __nimbusRuntimeModule(path, text) {
   const __origin = globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path));
   return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'", __origin);
+}
+// A staged ES module the interpreter evaluates instead of the registry
+// (node-shims' adoption), from its text before it was staged: JavaScript,
+// whatever its file's extension, and the launch's own, so not recorded for
+// the next one.
+function __nimbusAdoptedModule(path, text) {
+  return __nimbusRuntimeInterpreter().compileModule(path, text, globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path)), true);
 }
 globalThis.__nimbusRuntimeCode = Object.freeze({
   // A constructor's code, from the origin the constructor carries (node-shims.ts).

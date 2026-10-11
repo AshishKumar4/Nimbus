@@ -343,8 +343,8 @@ export function createInterpreter(hostOps, host) {
             releaseScopes(root);
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileModule(path, text, origin) {
-            if (UNPARSED_EXTENSIONS[extensionOf(path)])
+        compileModule(path, text, origin, javaScript = false) {
+            if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
             const moduleHost = unitHost(host, origin, parentUrl);

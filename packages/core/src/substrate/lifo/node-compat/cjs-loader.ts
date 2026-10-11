@@ -9,21 +9,19 @@
  * node_modules up from the requiring module's directory, then the global
  * /usr/lib/node_modules and the legacy /usr/share/pkg/node_modules, its
  * entry from "exports" (by the shared resolver, _shared/exports-resolver.ts,
- * under require's conditions and then `import`), else "main", then
+ * under require's conditions), else "main", then
  * index.js; a `#` name likewise from "imports". A module runs once, cached
  * by its path before it runs (so a cycle sees its partial exports); an ES
- * module (.mjs, a .js under "type": "module", or ESM syntax) is lowered to
- * CommonJS and runs as strict code.
+ * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
+ * realm's native ES module loader, not the CommonJS wrapper.
  */
 import type { NodeFilesystem } from './filesystem.js';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
 import { Buffer } from './buffer.js';
-import { emitCommonJs, generatedNames, readEsmModule } from '../../../runtime/async-module-lowering.js';
-import { rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
+import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
 import { declaredPackageType, isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
-import { fileURLToPath } from './url.js';
-import { scanCjsExports } from '../../../runtime/cjs-export-names.js';
+import { fileURLToPath, pathToFileURL } from './url.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
 import {
 	DEFAULT_CJS_CONDITIONS,
@@ -32,12 +30,7 @@ import {
 	type ResolvablePackageJson,
 } from '../../../_shared/exports-resolver.js';
 
-/**
- * The conditions this loader resolves "exports" and "imports" with: require's,
- * then `import`, since it also requires what a lowered ES module imports (an
- * ESM-only package declares only `import`).
- */
-const REQUIRE_CONDITIONS = [...DEFAULT_CJS_CONDITIONS, 'import'];
+const REQUIRE_CONDITIONS = [...DEFAULT_CJS_CONDITIONS, 'module-sync'];
 
 /** Node's error for a module `require` cannot find: its message and its code. */
 export function moduleNotFound(name: string): Error {
@@ -65,42 +58,22 @@ function packageType(filename: string, vfs: NodeFilesystem): PackageType {
 
 
 // The wrapper every module runs in: CommonJS's five names and the globals a
-// module may find as free variables, then the loader's own values, under
-// names moduleWrapper draws for each module (wrapperArguments passes them in
-// this order).
+// module may find as free variables, then import()'s loader under a name the
+// source does not hold (wrapperArguments passes them in this order).
 const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global';
 
 /**
- * `source` as the module wrapper's function text: a CommonJS body as written
- * but for its import() calls (rewriteDynamicImports), or an ES module lowered
- * (ESM when `esm`) from its one reading (readEsmModule). Either one's
- * import() loads through this loader, from the workspace, as the module at
- * `parentUrl`.
- *
- * The loader's values reach the body under names drawn, with the emitter's
- * own, from one generatedNames over the source, so none is a name the
- * source holds: import.meta, import(), and the require and module the
- * lowering's lines use. A lowered module is one block, so its own bindings
- * (`const __dirname`, `import process from`, `const require =
- * createRequire(...)`) shadow the wrapper's parameters as module scope does.
- *
- * Throws a SyntaxError for an ES module that does not parse.
+ * A CommonJS body as written, but for import() calls routed to the native
+ * loader. The extra parameter cannot collide with a source's own name,
+ * including a Unicode-escaped spelling.
  */
-export function moduleWrapper(source: string, esm: boolean, parentUrl: string, async = false): string {
-	const module = esm ? readEsmModule(source) : null;
-	const names = generatedNames(source, module?.names);
-	const loader = { importMeta: names(), importDynamic: names(), require: names(), module: names() };
-	const body = module
-		? `"use strict";\n{\n${emitCommonJs(source, module.records, {
-			body: 'sync',
-			names,
-			requireFunction: loader.require,
-			exportsObject: `${loader.module}.exports`,
-			bind: { metadata: loader.importMeta, parentUrl, metas: module.metas, dynamicImports: module.dynamicImports, loader: loader.importDynamic },
-		})}\n}`
-		: `\n${rewriteDynamicImports(source, parentUrl, loader.importDynamic)}`;
-	const params = `${WRAPPER_PARAMS}, ${loader.importMeta}, ${loader.importDynamic}, ${loader.require}, ${loader.module}`;
-	return `(${async ? 'async ' : ''}function(${params}) {${body}\n})`;
+export function moduleWrapper(source: string, parentUrl: string): string {
+	const escaped = source.includes('\\u') ? escapedIdentifierNames(source) : new Set<string>();
+	let index = 0;
+	let loader: string;
+	do { loader = `__lifoImport${index++}`; } while (source.includes(loader) || escaped.has(loader));
+	const body = rewriteDynamicImports(source, parentUrl, loader);
+	return `(function(${WRAPPER_PARAMS}, ${loader}) {\n${body}\n})`;
 }
 
 /** What one module's wrapper receives as console and process. */
@@ -109,27 +82,10 @@ export interface ModuleScope {
 	readonly process: unknown;
 }
 
-/**
- * A module namespace as Node builds one for a CommonJS module or a built-in:
- * `default` is `exports`, each other name its value on `exports` when it
- * has one as its own (undefined otherwise, and when reading it throws), in
- * code-unit order, on a frozen null-prototype object tagged `Module`.
- */
-function namespaceObject(exports: unknown, names: readonly string[]): object {
-	const namespace: Record<string | symbol, unknown> = Object.create(null);
-	const values = new Map<string, unknown>([['default', exports]]);
-	for (const name of names) {
-		if (name === 'default' || values.has(name)) continue;
-		let value: unknown;
-		const holder = (typeof exports === 'object' && exports !== null) || typeof exports === 'function' ? exports : null;
-		try {
-			if (holder !== null && Object.hasOwn(holder, name)) value = Reflect.get(holder, name);
-		} catch { /* a throwing getter reads as undefined, as Node's does */ }
-		values.set(name, value);
-	}
-	for (const name of [...values.keys()].sort()) namespace[name] = values.get(name);
-	Object.defineProperty(namespace, Symbol.toStringTag, { value: 'Module' });
-	return Object.freeze(namespace);
+/** The native loader installed for this CommonJS loader's module graph. */
+export interface NativeModuleLoader {
+	importModule(specifier: string, parentUrl: string, options?: unknown): Promise<unknown>;
+	requireModule(filename: string, parentFilename?: string): unknown;
 }
 
 export interface CjsLoader {
@@ -137,6 +93,10 @@ export interface CjsLoader {
 	readonly moduleMap: Record<string, () => unknown>;
 	/** `require` as a module in `dir` has it. */
 	requireFrom(dir: string): RequireFunction;
+	/** A resolver or facade uses the same cache and builtins as require(). */
+	resolveFilename(specifier: string, dir: string): string | null;
+	/** Installed before a node program runs; lifo commands install it in their own URL scope. */
+	setNativeLoader(loader: NativeModuleLoader): void;
 	/**
 	 * The module at `filename`, run once and cached. `preread` is its source,
 	 * and whether it is an ES module, when the caller has read it already (a
@@ -176,20 +136,17 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	const filesystem = context.filesystem;
 	const moduleMap = createModuleMap(context);
 	const builtins = new Map<string, unknown>();
-	/** The files this loader ran as ES modules: their exports are their namespaces. */
-	const lowered = new Set<string>();
-	/** import()'s namespace of each CommonJS module and built-in, by its filename or `node:` name. */
-	const namespaces = new Map<string, object>();
+	let native: NativeModuleLoader | undefined;
 	const cache: Record<string, unknown> = Object.create(null);
 
 	// createRequire(filename) is require as a module at `filename` has it: a path, or a file: URL's decoded path.
 	moduleMap.module = () => createModuleShim(moduleMap, (filename) => {
 		const path = filename instanceof URL || String(filename).startsWith('file:') ? fileURLToPath(filename) : String(filename);
-		return requireFrom(dirname(path));
+		return requireFrom(dirname(path), path);
 	});
 
-	function requireFrom(dir: string): RequireFunction {
-		const req = ((id: string) => requireModule(id, dir)) as RequireFunction;
+	function requireFrom(dir: string, parentFilename?: string): RequireFunction {
+		const req = ((id: string) => requireModule(id, dir, parentFilename)) as RequireFunction;
 		req.resolve = (id: string) => {
 			const name = id.startsWith('node:') ? id.slice(5) : id;
 			if (moduleMap[name]) return name;
@@ -201,14 +158,14 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		return req;
 	}
 
-	function requireModule(id: string, dir: string): unknown {
+	function requireModule(id: string, dir: string, parentFilename?: string): unknown {
 		const name = id.startsWith('node:') ? id.slice(5) : id;
 		if (moduleMap[name]) {
 			if (!builtins.has(name)) builtins.set(name, moduleMap[name]());
 			return builtins.get(name);
 		}
 		const path = resolveFilename(name, dir);
-		if (path !== null) return load(path);
+		if (path !== null) return load(path, undefined, parentFilename);
 		if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
 		throw moduleNotFound(name);
 	}
@@ -300,66 +257,23 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 
 	function wrapperArguments(filename: string, module: { exports: unknown }, moduleScope: ModuleScope): unknown[] {
 		const dir = filename === '[eval]' ? context.cwd : dirname(filename);
-		const require = requireFrom(dir);
-		const importMeta = {
-			url: `file://${filename}`,
-			dirname: dir,
-			filename,
-			require,
-			resolve: (specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); },
-		};
-		// import() as Node's: a promise of the module's namespace, rejected (never thrown) when it cannot load.
-		const importDynamic = (_parentUrl: string, specifier: string) => Promise.resolve().then(() => importNamespace(specifier, dir));
+		const require = requireFrom(dir, filename);
+		// Resolution failures reject import()'s promise; none are thrown by the call itself.
+		const importDynamic = (parentUrl: string, specifier: string, options?: unknown) => Promise.resolve().then(() => {
+			if (!native) throw new Error('Native ES modules require a lifo native module loader');
+			return native.importModule(specifier, parentUrl, options);
+		});
 		return [
 			module.exports, require, module, filename, dir,
 			moduleScope.console, moduleScope.process, Buffer,
 			globalThis.setTimeout, globalThis.setInterval,
 			globalThis.clearTimeout, globalThis.clearInterval,
 			{ process: moduleScope.process, Buffer, console: moduleScope.console },
-			importMeta, importDynamic, require, module,
+			importDynamic,
 		];
 	}
 
-	/**
-	 * What import() of `id` from `dir` answers, as Node's: an ES module's own
-	 * namespace (its lowered exports); for a built-in or a CommonJS module, a
-	 * namespace whose `default` is module.exports, with the names Node gives
-	 * it, read off module.exports once it has run (a built-in's own keys; a
-	 * CommonJS module's statically detected exports, its reexports' followed).
-	 */
-	function importNamespace(id: string, dir: string): unknown {
-		const exports = requireModule(id, dir);
-		const name = id.startsWith('node:') ? id.slice(5) : id;
-		const filename = moduleMap[name] ? null : resolveFilename(name, dir);
-		if (!moduleMap[name] && (filename === null || lowered.has(filename))) return exports;
-		// One namespace per module, however import() names it, as Node's module map keeps it.
-		const key = filename ?? `node:${name}`;
-		const cached = namespaces.get(key);
-		if (cached) return cached;
-		const names = filename === null
-			? (typeof exports === 'object' && exports !== null ? Object.keys(exports) : [])
-			: filename.endsWith('.json') ? [] : [...cjsExportNames(filename, new Set())];
-		const namespace = namespaceObject(exports, names);
-		namespaces.set(key, namespace);
-		return namespace;
-	}
-
-	/** A CommonJS module's export names as Node's ESM loader detects them (cjs-module-lexer), reexports followed. */
-	function cjsExportNames(filename: string, seen: Set<string>): Set<string> {
-		const names = new Set<string>();
-		if (seen.has(filename)) return names;
-		seen.add(filename);
-		const found = scanCjsExports(filesystem().readFileString(filename));
-		for (const specifier of found.reexports) {
-			const resolved = resolveFilename(specifier, dirname(filename));
-			if (resolved === null || resolved.endsWith('.json') || resolved.endsWith('.node')) continue;
-			for (const reexported of cjsExportNames(resolved, seen)) names.add(reexported);
-		}
-		for (const exported of found.names) names.add(exported);
-		return names;
-	}
-
-	function load(filename: string, preread?: { readonly source: string; readonly esm: boolean }): unknown {
+	function load(filename: string, preread?: { readonly source: string; readonly esm: boolean }, parentFilename?: string): unknown {
 		if (filename in cache) return cache[filename];
 		const source = preread?.source ?? filesystem().readFileString(filename);
 		if (filename.endsWith('.json')) {
@@ -367,19 +281,23 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			return cache[filename];
 		}
 
+		const clean = stripShebang(source);
+		const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => packageType(filename, filesystem()));
+		if (esm) {
+			if (!native) throw new Error('Native ES modules require a lifo native module loader');
+			return native.requireModule(filename, parentFilename);
+		}
+
 		const module = { exports: {} as unknown };
 		const initialExports = module.exports;
 		// Cached before it runs, so a cycle sees its partial exports (Node.js behaviour).
 		cache[filename] = initialExports;
 
-		const clean = stripShebang(source);
-		const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => packageType(filename, filesystem()));
-		if (esm) lowered.add(filename);
 		let fn: (...args: unknown[]) => void;
 		try {
-			// A module that does not compile, lowered or as written, names its file.
-			fn = new Function(`return ${moduleWrapper(clean, esm, `file://${filename}`)}`)();
+			fn = new Function(`return ${moduleWrapper(clean, pathToFileURL(filename).href)}`)();
 		} catch (e) {
+			delete cache[filename];
 			const err = e instanceof Error ? e : new Error(String(e));
 			err.message = `[${filename}] ${err.message}`;
 			throw err;
@@ -387,8 +305,10 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		try {
 			fn(...wrapperArguments(filename, module, scope(filename)));
 		} catch (e) {
+			delete cache[filename];
 			if (e instanceof ProcessExitError) throw e;
 			const err = e instanceof Error ? e : new Error(String(e));
+			if (Reflect.get(err, 'code') === 'ERR_REQUIRE_ASYNC_MODULE' || Reflect.get(err, 'code') === 'ERR_REQUIRE_CYCLE_MODULE') throw err;
 			if (!err.message.includes('[/')) err.message = `[${filename}] ${err.message}`;
 			throw err;
 		}
@@ -397,5 +317,5 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		return module.exports;
 	}
 
-	return { moduleMap, requireFrom, load, wrapperArguments };
+	return { moduleMap, requireFrom, resolveFilename, load, wrapperArguments, setNativeLoader: (loader) => { native = loader; } };
 }

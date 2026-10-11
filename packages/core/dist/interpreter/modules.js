@@ -5,7 +5,7 @@ export function moduleCell(plan, ops, helpers) {
     const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
     const bs = body.s;
     const bg = body.g;
-    const cell = (exportsArg, requireArg, moduleArg, filename, dirname) => {
+    return (exportsArg, requireArg, moduleArg, filename, dirname) => {
         const env = withElement(frame, 0, ROOT_ENV);
         env[exportsSlot] = exportsArg;
         env[requireSlot] = requireArg;
@@ -32,8 +32,6 @@ export function moduleCell(plan, ops, helpers) {
             return bg(env);
         });
     };
-    cell.esModule = true;
-    return cell;
 }
 /** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
 function link(plan, env, requireArg, helpers, exportsObject, define) {
@@ -42,7 +40,7 @@ function link(plan, env, requireArg, helpers, exportsObject, define) {
         reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
     for (let i = 0; i < requests.length; i++) {
         const { source, module, interop } = requests[i];
-        const m = reflectApply(requireArg, undefined, [source]);
+        const m = reflectApply(helpers.load, undefined, [requireArg, source]);
         if (module >= 0)
             env[module] = m;
         if (interop >= 0)

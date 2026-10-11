@@ -87,21 +87,35 @@ console.log('bundled provided packages: scoped binding, identity, aliases, synta
 {
   const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
   const { rewriteDynamicImports, readModuleImportSites } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { parseJavaScriptModule } = await import('../../packages/core/src/runtime/javascript-ast.ts');
   const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
   const typed = `${commonJs}
     const load = __commonJS({"node_modules/undici/index.js"(exports, module) { module.exports = { transport: 'native' }; }});
     export const transport: unknown = load();`;
+  const stripped = typed.replace(': unknown', '         ');
+  const bound = rewriteProvidedCommonJsModules(stripped);
+  assert.notEqual(bound, stripped, 'premise: the stripped fixture has a provided-package record to bind');
   const runtime = {
     rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules,
-    stripTypeScript: async (code) => ({ code: code.replace(': unknown', '         '), format: 'module' }),
+    stripTypeScript: async (code) => {
+      assert.equal(code, typed, 'the strip receives the original TypeScript');
+      return { code: stripped, format: 'module' };
+    },
   };
   const options = { stripTypes: { mode: 'strip-only', sourceMap: false }, packageType: null, sourcefile: '/app/bundle.mts', dynamicImportParent: 'file:///app/bundle.mts' };
   const { code, map, esModule } = await runTransformRequest(null, typed, options, runtime);
   assert.equal(esModule, 'node');
   assert.equal(JSON.parse(map).moduleSyntax, true);
+  assert.equal(code, bound, 'the native staged source binds the stripped record before reading its import sites');
+  // The subject is the pipeline's record binding, not Bun's data-URL loader.
+  // Run this fixture's exported declaration as an initializer, using its AST
+  // range rather than changing any other source text or lowering a module.
+  const exported = parseJavaScriptModule(code).body.find((statement) => statement.type === 'ExportNamedDeclaration');
+  assert.equal(exported.declaration.type, 'VariableDeclaration');
+  const initializer = code.slice(0, exported.start) + code.slice(exported.declaration.start, exported.declaration.end);
   calls = [];
-  const module = await import('data:text/javascript,' + encodeURIComponent(code));
+  const transport = new Function(initializer + '\nreturn transport;')();
   assert.deepEqual(calls, ['undici']);
-  assert.equal(module.transport, provided, 'the stripped module runs the provided package');
+  assert.equal(transport, provided, 'the stripped initializer runs the provided package');
 }
 console.log('bundled provided packages: stripped TypeScript is bound before it is staged natively');

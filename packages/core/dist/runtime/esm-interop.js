@@ -23,8 +23,17 @@ export const ESM_NAMESPACE_HELPER = `(m) => { if (${ES_MODULE_TEST}) return m; c
     + 'O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }';
 /** `export *`: each name of the module but `default` and those already exported, read through. */
 export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
-/** The four helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER} }`;
+/**
+ * What a module's require is passed beside a static import's specifier: the
+ * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
+ * not as require() does. A require of a module takes its first argument
+ * alone, as Node's does.
+ */
+export const ESM_STATIC_IMPORT = 'nimbus:static-import';
+/** A static import's module: the importer's require, told the request is an import. */
+export const ESM_LOAD_HELPER = `(require, source) => require(source, ${JSON.stringify(ESM_STATIC_IMPORT)})`;
+/** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
+export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
 /** A ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`. */
 function exportName(node) {
     return node.type === 'Identifier' ? node.name : `${node.value}`;
