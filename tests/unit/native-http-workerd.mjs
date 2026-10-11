@@ -8,12 +8,17 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-http.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
 import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
+import { httpFetchCases } from './lib/http-fetch-cases.mjs';
+import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
+import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { generateNodeLibModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
+import { opencodeBuiltinBridgeModules } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -124,15 +129,19 @@ async function exercise(http, serve) {
 
 const node = spawnSync('node', ['--input-type=module', '-e', `
   import http from 'node:http';
+  import dns from 'node:dns';
+  import net from 'node:net';
   const exercise = ${exercise.toString()};
+  const httpFetchCases = ${httpFetchCases.toString()};
+  const httpFetchReviewCases = ${httpFetchReviewCases.toString()};
   const result = await exercise(http, (port, request) => {
     const url = new URL(request.url); url.hostname = '127.0.0.1'; url.port = String(port);
     return fetch(url, { method: request.method, headers: request.headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, duplex: 'half' });
   });
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify({ result, client: await httpFetchCases(http), review: await httpFetchReviewCases(http, dns, net) }));
 `], { encoding: 'utf8', timeout: 30000 });
 assert.equal(node.status, 0, node.stderr);
-const expected = JSON.parse(node.stdout);
+const { result: expected, client: expectedClient, review: expectedReview } = JSON.parse(node.stdout);
 assert.equal(expected.duplicateCode, 'EADDRINUSE');
 assert.equal(expected.allocated, true);
 assert.deepEqual(expected.stream, ['first', 'second']);
@@ -194,12 +203,22 @@ const probePort = net.createServer(); probePort.listen(0, '127.0.0.1', portReady
 await portReady.promise;
 const port = probePort.address().port;
 const released = Promise.withResolvers(); probePort.close(released.resolve); await released.promise;
+writeFileSync(join(dir, 'node-lib.js'), generateNodeLibModule());
+writeFileSync(join(dir, 'node-dns.js'), generateNodeDnsModule());
+const httpBridges = opencodeBuiltinBridgeModules('attached');
+writeFileSync(join(dir, 'http-bridge.js'), httpBridges['node:http'].js);
+writeFileSync(join(dir, 'https-bridge.js'), httpBridges['node:https'].js);
 writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
+const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
-import * as __real_http from 'node:http';
-import * as __real_https from 'node:https';
+const __real_http = globalThis.process.getBuiltinModule('http');
+const __real_https = globalThis.process.getBuiltinModule('https');
 import * as __real_net from 'node:net';
+import * as __real_util from 'node:util';
+import * as __real_url from 'node:url';
+import * as __real_buffer from 'node:buffer';
+import __real_process from 'node:process';
+import lib from './node-lib.js';
 import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
 const builtins = {}, __pendingIO = [], registered = new Map();
 let nextPort = 49152;
@@ -213,9 +232,26 @@ const __nimbusInboundBarrier = async () => {};
 const __nimbusReplay = null;
 const __nimbusProcessExitPromise = Promise.withResolvers().promise;
 globalThis.__nimbusRawSetTimeout = setTimeout;
+const previousHttp = { ...__real_http, request: __real_http.request };
+const previousAddress = __real_http.Server.prototype.address;
+const previousListen = __real_http.Server.prototype.listen;
+${NODE_ERROR_PREAMBLE}
+const primordials = {};
+lib.primordialsOf(primordials, globalThis);
+const nodeLib = lib.createNodeLib({
+  util: __real_util.default, Buffer: __real_buffer.Buffer, process: __real_process, url: __real_url.default,
+  primordials, sources: lib.sources, errors: { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable },
+  slots: lib.createWorkerdSlots(__real_util.default), builtinObjects: lib.builtinObjects, uvErrors: lib.uvErrors,
+  optionValue: () => undefined, fetch: fetch.bind(globalThis), timers: { setTimeout, clearTimeout },
+  createCaresBinding: lib.createCaresBinding,
+});
+builtins.dns = nodeLib.require('dns');
 ${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
+globalThis.__nimbusOpencodeBuiltins = builtins;
 const exercise = ${exercise.toString()};
+const httpFetchCases = ${httpFetchCases.toString()};
+const httpFetchReviewCases = ${httpFetchReviewCases.toString()};
 const clientLifetime = ${clientLifetime.toString()};
 const pendingListenLifetime = ${pendingListenLifetime.toString()};
 const pendingCloseLifetime = ${pendingCloseLifetime.toString()};
@@ -225,6 +261,28 @@ export default { async fetch(request) {
   if (new URL(request.url).pathname === '/ready') return new Response('ready');
   const http = builtins.http;
   const mode = new URL(request.url).searchParams.get('case');
+  if (mode === 'client-parity' || mode === 'client-esm' || mode === 'review-parity' || mode === 'review-previous') {
+    const nativeFetch = globalThis.fetch;
+    globalThis.fetch = (url, init) => {
+      const incoming = new Request(url, init);
+      const headers = new Headers(incoming.headers);
+      headers.set('X-Nimbus-Port', new URL(incoming.url).port);
+      return globalThis.__nimbusServeHttp(new Request(incoming, { headers }));
+    };
+    try {
+      if (mode === 'client-esm') {
+        const { request, get, ClientRequest, default: defaultHttp } = await import('node:http');
+        const { request: httpsRequest, default: defaultHttps } = await import('node:https');
+        if (request !== http.request || get !== http.get || ClientRequest !== http.ClientRequest || request !== defaultHttp.request || httpsRequest !== defaultHttps.request || httpsRequest !== builtins.https.request) throw new Error('HTTP ESM exports bypass the canonical transport');
+        if (httpsRequest.length !== request.length || defaultHttps.get.length !== get.length) throw new Error('HTTPS factory arity differs from HTTP');
+        return Response.json(await httpFetchCases({ ...defaultHttp, request, get, ClientRequest }));
+      }
+      if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, builtins.dns, __real_net.default, (server) => previousAddress.call(server), (server, callback) => previousListen.call(server, 0, '::1%lo', callback)));
+      if (mode === 'review-parity') return Response.json(await httpFetchReviewCases(http, builtins.dns, __real_net.default));
+      return Response.json(await httpFetchCases(http));
+    }
+    finally { globalThis.fetch = nativeFetch; }
+  }
   if (mode === 'client' || mode === 'error' || mode === 'cancel') return Response.json(await clientLifetime(builtins.https, __nimbusRunEntrypointToExit, mode));
   if (mode === 'pending') return Response.json(await pendingListenLifetime(http, __nimbusRunEntrypointToExit, __supervisor, drain));
   if (mode === 'close') return Response.json(await pendingCloseLifetime(http, __supervisor, registered, drain));
@@ -255,6 +313,23 @@ try {
   const actual = await response.json();
   assert.deepEqual(actual.result, expected, logs);
   assert.deepEqual(actual.registered, [], 'closing native servers releases Nimbus ports');
+  const clientResponse = await fetch(`http://127.0.0.1:${port}/run?case=client-parity`, { signal: AbortSignal.timeout(15000) });
+  assert.equal(clientResponse.status, 200, logs);
+  const actualClient = await clientResponse.json();
+  console.log('HTTP_CLIENT_PARITY ' + JSON.stringify({ node: expectedClient, ours: actualClient }));
+  assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
+  const esmClient = await (await fetch(`http://127.0.0.1:${port}/run?case=client-esm`, { signal: AbortSignal.timeout(15000) })).json();
+  console.log('HTTP_ESM_PARITY ' + JSON.stringify({ node: expectedClient, nimbus: esmClient }));
+  // Compare both reviewed paths before asserting, so a red prints all the evidence.
+  const gaps = JSON.parse(readFileSync(new URL('../fixtures/node-http-fetch-gaps.json', import.meta.url), 'utf8'));
+  assert.deepEqual({ node: expectedClient.gaps, nimbus: actualClient.gaps }, gaps, 'physical socket gaps stay pinned until Outbound TCP');
+  let previous;
+  try { previous = await (await fetch(`http://127.0.0.1:${port}/run?case=review-previous`, { signal: AbortSignal.timeout(10000) })).json(); }
+  catch (error) { throw new Error(logs, { cause: error }); }
+  const review = await (await fetch(`http://127.0.0.1:${port}/run?case=review-parity`, { signal: AbortSignal.timeout(10000) })).json();
+  console.log('HTTP_REVIEW_PARITY ' + JSON.stringify({ node: expectedReview, previous, nimbus: review }));
+  assert.deepEqual(esmClient.parity, expectedClient.parity, 'native ESM named imports join the same HTTP client transport');
+  assert.deepEqual(review, expectedReview, 'review regressions match host Node and are compared with the previous native shim');
   const snapshots = {};
   for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {
     const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
