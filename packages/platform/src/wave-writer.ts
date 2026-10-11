@@ -820,7 +820,9 @@ export class WaveWriter<Meta = undefined> {
   /**
    * The epoch this writer's waves are fenced under: opened before its first
    * wave, and again once half of WAVE_EPOCH_TTL_MS has passed, so a wave is
-   * never sent under an epoch about to close.
+   * never sent under an epoch about to close. Opened under the lost-call
+   * policy (openWaveEpoch); an open that failed even so is not the writer's
+   * epoch, and the next wave opens again.
    */
   private async currentEpoch(): Promise<string | null> {
     const supervisor = this.options.supervisor;
@@ -830,7 +832,15 @@ export class WaveWriter<Meta = undefined> {
     if (held === null || (held.writer !== null && now - held.openedAt >= WAVE_EPOCH_TTL_MS / 2)) {
       // Called as a method of the supervisor, never through .call/.apply:
       // on an RPC stub those are remote method names too.
-      this.epoch = supervisor.openWaveWriter().then((writer) => ({ writer, openedAt: now }));
+      const opening = openWaveEpoch(() => supervisor.openWaveWriter!(), {
+        ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
+        resent: (lost) => {
+          this.counters.retries++;
+          this.options.onResend?.(lost);
+        },
+      }).then((writer) => ({ writer, openedAt: now }));
+      this.epoch = opening;
+      opening.catch(() => { if (this.epoch === opening) this.epoch = null; });
     }
     return (await this.epoch!).writer;
   }
@@ -939,6 +949,39 @@ export async function sendWaveAttempts(options: WaveAttempts): Promise<unknown> 
       await new Promise<void>((resolve) => { timers.setTimeout(resolve, retryDelayMs(backoffMs, attempt)); });
     } finally {
       attemptStream.settle();
+    }
+  }
+}
+
+/**
+ * Open a writer epoch (`open`: the supervisor's openWaveWriter, or a
+ * process's openWriter), again while the call is lost or shed, under a
+ * wave's lost-call policy and budget (isLostFencedCall,
+ * LOST_CALL_RESEND_BACKOFF_MS). Re-opening is safe: an open the session
+ * never ran issued nothing, and one whose answer was lost issued an epoch
+ * nothing is sent under, which closes at WAVE_EPOCH_TTL_MS. Anything else
+ * it answered is its verdict. A shed open would otherwise fail every write
+ * the epoch was for, unsent: measured, create-next-app lost 31 of 42
+ * packages to one.
+ */
+export async function openWaveEpoch(
+  open: () => Promise<string | null>,
+  options: { retry?: { backoffMs: readonly number[] }; resent?: (lost: Record<string, string | number>) => void; timers?: WaveTimers } = {},
+): Promise<string | null> {
+  const backoffMs = options.retry?.backoffMs ?? LOST_CALL_RESEND_BACKOFF_MS;
+  const timers = options.timers ?? GLOBAL_TIMERS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await open();
+    } catch (error) {
+      if (!isLostFencedCall(error) || attempt >= backoffMs.length) throw error;
+      options.resent?.(lostCallAttributes({
+        operation: 'openWaveWriter',
+        attempt: attempt + 1,
+        of: backoffMs.length,
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+      await new Promise<void>((resolve) => { timers.setTimeout(resolve, retryDelayMs(backoffMs, attempt)); });
     }
   }
 }
