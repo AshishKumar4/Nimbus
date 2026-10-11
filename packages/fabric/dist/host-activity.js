@@ -167,16 +167,14 @@ export async function hostResponse(ctx, observation, request, dispatch) {
         }
         const declared = request.method === 'HEAD' ? null : response.headers.get('Content-Length');
         const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-        const cancelled = new AbortController();
-        const signal = AbortSignal.any([request.signal, cancelled.signal]);
         // Native identity pipes notice a disconnected reader on the next write.
         // The terminal's cancellation algorithm also ends a stalled source now.
         const { readable, writable } = new TransformStream({
-            cancel(reason) { cancelled.abort(reason); },
+            cancel: lease.release,
             ...(Number.isSafeInteger(length) ? { expectedLength: length } : {}),
         });
-        const body = Number.isSafeInteger(length) ? response.body.pipeThrough(new FixedLengthStream(length), { signal }) : response.body;
-        ctx.waitUntil(body.pipeTo(writable, { signal }).finally(lease.release).catch(() => { }));
+        const body = Number.isSafeInteger(length) ? response.body.pipeThrough(new FixedLengthStream(length), { signal: request.signal }) : response.body;
+        ctx.waitUntil(body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => { }));
         return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
     }
     catch (error) {
