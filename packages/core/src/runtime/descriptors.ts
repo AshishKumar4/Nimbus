@@ -12,6 +12,7 @@ import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { PinnedFile } from '../vfs/composite.js';
 
 type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
 type EngineDescription = Omit<VfsOpenDescription, 'path'>;
@@ -130,27 +131,29 @@ export function reportLost(lost: readonly unknown[]): void {
 
 /**
  * A mounted file as this process sees it while it holds buffered writes to
- * it (VFS-PF-001 viewAs, page-cache semantics): the file `file` names
- * (PinnedFile.key) with each of this process's descriptions of it applied,
- * in open order. Undefined when it holds none pending: then the mount's own
- * file is the answer. Another process's pending writes are never in it, nor
- * a file that only shares its name. `file` is asked only once some
+ * it (VFS-PF-001 viewAs, page-cache semantics): `file` (pinned where its
+ * name led, CompositeVFS.pin) read through its pin, with each of this
+ * process's descriptions of that same file (PinnedFile.key) applied, in open
+ * order. Undefined when it holds none pending for it: then the file's own
+ * content is the answer. Another process's pending writes are never in it,
+ * nor a file that only shares its name. `file` is pinned only once some
  * description holds writes.
  */
-export function processView(scope: DescriptorScope, read: () => Uint8Array | null, file: string | (() => string)): Uint8Array | undefined {
-  let view: Uint8Array | undefined;
-  let key: string | undefined;
-  const seen = new Set<Description>();
+export function processView(scope: DescriptorScope, file: PinnedFile | (() => Awaitable<PinnedFile>)): Awaitable<Uint8Array | undefined> {
+  let holding: Description[] | undefined;
   for (const opened of scope.handles.values()) {
     const node = opened.node;
-    if (seen.has(node) || node.applyPending === undefined || (node.pendingBytes?.() ?? 0) === 0) continue;
-    key ??= typeof file === 'string' ? file : file();
-    if (node.key?.() !== key) continue;
-    seen.add(node);
-    view ??= read() ?? new Uint8Array(0);
-    view = node.applyPending(view);
+    if (node.applyPending === undefined || (node.pendingBytes?.() ?? 0) === 0 || holding?.includes(node)) continue;
+    (holding ??= []).push(node);
   }
-  return view;
+  if (holding === undefined) return undefined;
+  const writers = holding;
+  return andThen(typeof file === 'function' ? file() : file, ({ files, path, key }) => {
+    const mine = writers.filter((node) => node.key?.() === key);
+    if (mine.length === 0) return undefined;
+    return andThen(files.stat(path), (there) => andThen(there === null ? new Uint8Array(0) : files.readFile(path), (base) => (
+      mine.reduce((view, node) => node.applyPending!(view), base))));
+  });
 }
 
 /** The descriptor operations, over a scope: answered in the caller's turn unless the description awaits. */

@@ -1,9 +1,9 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, openFollows, openMounted } from '../vfs/mounted-description.js';
 import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
-import { runtimeStatOf, type CompositeVFS, type PinnedFile } from '../vfs/composite.js';
+import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { isPromise, readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
@@ -173,9 +173,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
-  private processView(located: { mount: SyncVFS; namespace: CompositeVFS; path: string }, follow: boolean): Uint8Array | undefined {
-    const { mount, namespace, path } = located;
-    return processView(this.scope, () => (mount.stat(path) === null ? null : mount.readFile(path)), () => (namespace.pin(path, { follow, sync: true }) as PinnedFile).key);
+  private processView(located: { namespace: CompositeVFS; path: string }, follow: boolean): Uint8Array | undefined {
+    // The synchronous face pins through synchronous faces only: every answer is a value.
+    return processView(this.scope, () => located.namespace.pin(located.path, { follow, sync: true })) as Uint8Array | undefined;
   }
 
   writeFile(
@@ -372,16 +372,18 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const mutates = normalizedFlags.write || normalizedFlags.create ||
         normalizedFlags.truncate || normalizedFlags.append;
       const owner = mutates ? options.mutationOwner : undefined;
+      // The name is looked up as the open decides it (openFollows): O_CREAT|O_EXCL answers for the name itself.
+      const follows = openFollows(normalizedFlags);
       const located = mutates
-        ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open', owner)
-        : this.locate(path, normalizedFlags.followSymlinks);
+        ? this.locateMutation(path, follows, 'open', owner)
+        : this.locate(path, follows);
       if (located === null) throw fsError('ELOOP', 'open', path);
       if (located.mount) {
         const namespace = located.namespace;
         const node = openMounted({
           name: located.path, flags: normalizedFlags, mode: flags.mode,
           refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
-          awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+          sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
         });
         // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.
         if (isPromise(node)) throw new Error('internal: a mounted open on the synchronous face awaited');
@@ -389,6 +391,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       const p = located.path;
       if (p === '') return this.openRoot(path, normalizedFlags);
+      // O_CREAT|O_EXCL of a name that is there, a link included, is EEXIST,
+      // before O_NOFOLLOW's ELOOP: Linux's order, and the mounted open's.
+      if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p))) throw fsError('EEXIST', 'open', path);
       // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
       // open on the link itself, and what it points at is exactly what the
       // caller declined to open.
@@ -396,7 +401,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       this.assertExpectedRevision(p, normalizedFlags.expectedRevision);
 
       const exists = this.vfs.exists(p);
-      if (normalizedFlags.exclusive && normalizedFlags.create && exists) throw fsError('EEXIST', 'open', path);
       if (normalizedFlags.directory && (!exists || !this.vfs.isDirectory(p))) throw fsError('ENOTDIR', 'open', path);
       if (!exists && !normalizedFlags.create) throw fsError('ENOENT', 'open', path);
       // A directory opens for reading whatever rights were asked for: a WASI

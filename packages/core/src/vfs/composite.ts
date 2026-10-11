@@ -210,6 +210,8 @@ export interface PinnedFile {
   readonly name: string;
   /** Which file it is (its mount, and the path there): the same for every pin of it, whatever name reached it. */
   readonly key: string;
+  /** Its backend answers only by awaiting. */
+  readonly awaits: boolean;
 }
 
 /** What a pin captured: the mount its lookup landed on, that backend as its principal sees it, and the paths. */
@@ -975,6 +977,8 @@ export class CompositeVFS implements VFS {
             : stores ? this.keep(held, 'file', written.slice())
               : capture(wantsAfter);
           return andThen(after, (now) => {
+            // A mount that left its point while the write was in flight: no change to what is there now.
+            if (this.table.mounts.get(route.mount.point) !== route.mount) { release(); return result; }
             const known = (ref: VfsContentRef | null | false): VfsContentRef | null | undefined => (ref === false ? undefined : ref);
             if (kind === 'remove') {
               const heard = landed.map((at) => this.deliverWrite({
@@ -1117,11 +1121,13 @@ export class CompositeVFS implements VFS {
     const run = (): Awaitable<PinnedFile> => andThen(this.resolve(path, options.follow, sync), (at) => {
       this.present(at);
       const point = this.table.mounts.get(at);
-      if (point === undefined && this.isStructural(at)) return { files: sync ? this.sync : this, path: at, name: at, key: at };
+      if (point === undefined && this.isStructural(at)) return { files: sync ? this.sync : this, path: at, name: at, key: at, awaits: !sync };
       const route = this.locate(at);
       return andThen(this.reachable(at, sync), (): PinnedFile => {
-        const files = new CompositeVFS.Pinned(this, { mount: route.mount, backend: this.ops(route, sync) as VFS, rel: route.rel, name: at, root: point !== undefined }, sync);
-        return { files, path: route.rel, name: at, key: files.key };
+        // Found by awaiting, a file on a backend that answers at once is held as one: its description need not await.
+        const synchronous = sync || this.backend(route.mount)?.sync !== undefined;
+        const files = new CompositeVFS.Pinned(this, { mount: route.mount, backend: this.ops(route, synchronous) as VFS, rel: route.rel, name: at, root: point !== undefined }, synchronous);
+        return { files, path: route.rel, name: at, key: files.key, awaits: !synchronous };
       });
     });
     return sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);

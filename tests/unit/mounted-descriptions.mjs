@@ -375,6 +375,79 @@ await check('a mount point opened is its mount\'s root, after an unmount and a m
   files.vfs.unmount('/d');
 });
 
+// ── The class, closed: an O_EXCL open answers for the name; a write in flight; reads that only await ──
+await check('O_CREAT|O_EXCL of a dangling link, following links, is EEXIST on every filesystem and makes nothing', async () => {
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  kernel.symlink('/home/user/sq-target', 'home/user/sq-link');
+  for (const [face, wrap] of [['sync', (vfs) => vfs], ['async', (vfs) => asyncOnly(vfs, { deep: true })]]) {
+    const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+    backend.symlink('/target', '/link');
+    files.vfs.mount('/x1', wrap(backend));
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    await assert.rejects(async () => proc.open('/x1/link', { write: true, create: true, exclusive: true }), refused('EEXIST'), face);
+    assert.equal(backend.stat('/target'), null, `${face}: nothing made`);
+    files.vfs.unmount('/x1');
+  }
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  await assert.rejects(async () => proc.open('/home/user/sq-link', { write: true, create: true, exclusive: true }), refused('EEXIST'), 'sqlite');
+  await assert.rejects(async () => proc.open('/home/user/sq-link', { write: true, create: true, exclusive: true, followSymlinks: false }), refused('EEXIST'), 'sqlite: EEXIST before ELOOP');
+  assert.equal(kernel.exists('home/user/sq-target'), false, 'sqlite: nothing made');
+});
+
+await check('a write in flight when its mount leaves its point is not heard as a change to what is there now', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/f1', asyncOnly(first, { deep: true, beforeCall: (method) => (method === 'writeRange' ? (entered(), held) : undefined) }));
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const fd = await proc.open('/f1/x', { read: true, write: true });
+  const heard = [];
+  const stop = files.vfs.observeWrites((event) => { if (event.path.startsWith('/f1')) heard.push(event.path); });
+  try {
+    const writing = proc.write(fd.id, 0, enc.encode('FI'));
+    await entering;
+    files.vfs.unmount('/f1');
+    files.vfs.mount('/f1', second);
+    release();
+    await writing;
+    await proc.close(fd.id);
+    assert.deepEqual(heard, []);
+    assert.equal(dec.decode(first.readFile('/x')), 'FIrst');
+  } finally {
+    stop();
+    files.vfs.unmount('/f1');
+  }
+});
+
+await check('held writes are read back through an asynchronous mount above their file, by path and by a descriptor', async () => {
+  const inner = new MemoryVFS({ uid: 1000, gid: 1000 });
+  inner.writeFile('/x', enc.encode('0123456789'));
+  files.vfs.mount('/outer/inner', unranged(inner));
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const writer = proc.open('/outer/inner/x', { read: true, write: true });
+  proc.write(writer.id, 0, enc.encode('ab'));
+  files.vfs.mount('/outer', asyncOnly(new MemoryVFS({ uid: 1000, gid: 1000 }), { deep: true }));
+  try {
+    assert.equal(dec.decode(await proc.readFile('/outer/inner/x')), 'ab23456789', 'a path read');
+    assert.equal((await proc.stat('/outer/inner/x')).size, 10);
+    const reader = await proc.open('/outer/inner/x', { read: true });
+    assert.equal(dec.decode(await proc.read(reader.id, 0, 10)), 'ab23456789', 'a descriptor opened by awaiting');
+    // Found by awaiting, on a mount that answers at once: the synchronous face serves it.
+    assert.equal(dec.decode(proc.synchronous.read(reader.id, 0, 2)), 'ab');
+    await proc.close(reader.id);
+  } finally {
+    proc.close(writer.id);
+    files.vfs.unmount('/outer');
+    files.vfs.unmount('/outer/inner');
+  }
+  assert.equal(dec.decode(inner.readFile('/x')), 'ab23456789');
+});
+
 {
   const proc = files.bind({ pid: ++pid, cred: USER });
   proc.writeFile('/home/user/sq.log', '12345');

@@ -101,8 +101,6 @@ export interface MountedDescriptionOptions extends MountedOpen {
   scope: DescriptorScope;
   /** The file `name` leads to now (CompositeVFS.pin): what the open and its description hold, whatever later moves at the name. */
   pin(name: string, follow: boolean): Awaitable<PinnedFile>;
-  /** Its files answer only by awaiting (an asynchronous mount). */
-  awaits: boolean;
   /** O_SYNC: each write in the mount before it returns. */
   sync: boolean;
   /** What a description holds unwritten before a write is EFBIG. */
@@ -133,40 +131,36 @@ class MountedDescription implements Description {
   private readonly files: PinnedFiles;
   /** The path they are handed. */
   private readonly at: string;
-  /** The namespace's name for it, when it was opened. */
-  private readonly name: string;
-  /** Which file it is (PinnedFile.key): whose held writes this process's reads of it overlay (processView). */
-  private readonly file: string;
   private readonly immediate: boolean;
   private inPlace = true;
   private pending: Held[] = [];
   private held = 0;
 
-  constructor(private readonly options: MountedDescriptionOptions, file: PinnedFile, stat: VfsStat) {
+  constructor(private readonly options: MountedDescriptionOptions, private readonly pinned: PinnedFile, stat: VfsStat) {
     this.ino = stat.ino ?? 0;
-    if (options.awaits) this.awaits = true;
-    this.files = file.files;
-    this.at = file.path;
-    this.name = file.name;
-    this.file = file.key;
-    this.immediate = options.sync || options.awaits;
+    if (pinned.awaits) this.awaits = true;
+    this.files = pinned.files;
+    this.at = pinned.path;
+    this.immediate = options.sync || pinned.awaits;
   }
 
-  path(): string { return this.name; }
-  key(): string { return this.file; }
+  /** The namespace's name for it, when it was opened. */
+  path(): string { return this.pinned.name; }
+  /** Which file it is (PinnedFile.key): whose held writes this process's reads of it overlay (processView). */
+  key(): string { return this.pinned.key; }
 
   stat(): Awaitable<RuntimeVfsStat> {
     return andThen(this.files.stat(this.at), (there) => {
       if (there === null) throw this.options.refuse('ENOENT', 'fstat');
       const now = runtimeStatOf(there);
-      const view = this.viewed();
-      return view ? { ...now, size: view.byteLength } : now;
+      return andThen(this.viewed(), (view) => (view ? { ...now, size: view.byteLength } : now));
     });
   }
 
   read(offset: number, length: number): Awaitable<Uint8Array> {
     const view = this.viewed();
-    return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.at, offset, length);
+    if (view === undefined) return readRangeOrWhole(this.files, this.at, offset, length);
+    return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : readRangeOrWhole(this.files, this.at, offset, length)));
   }
 
   write(offset: number, bytes: Uint8Array): Awaitable<number> {
@@ -222,11 +216,8 @@ class MountedDescription implements Description {
    * its descriptions (processView): this one's own O_SYNC governs only its
    * writes.
    */
-  private viewed(): Uint8Array | undefined {
-    return processView(this.options.scope, () => {
-      const file = this.whole();
-      return isPromise(file) ? null : file;
-    }, this.file);
+  private viewed(): Awaitable<Uint8Array | undefined> {
+    return processView(this.options.scope, this.pinned);
   }
 
   private heldAppend(bytes: Uint8Array): Awaitable<number> {
