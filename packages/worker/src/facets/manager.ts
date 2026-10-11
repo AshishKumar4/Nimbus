@@ -18,7 +18,7 @@
 
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
-import { buildOpenCodeTransportPlan, type OpenCodeTransportPlan } from '../shell/npm-bin-entrypoints.js';
+import { buildOpenCodeTransportPlan, type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 import { RESIDENCY_MISS_REPORT_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import {
   commonJsCellModuleName,

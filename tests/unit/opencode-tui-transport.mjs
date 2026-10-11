@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { classifyStagedArtifact, buildOpenCodeTransportPlan, parseOpenCodeArgv } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
+import { classifyStagedArtifact } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
+import { buildOpenCodeTransportPlan } from '../../packages/worker/src/runtime/opencode-invocation.ts';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
 const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
