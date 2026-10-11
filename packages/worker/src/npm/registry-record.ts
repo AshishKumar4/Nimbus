@@ -51,18 +51,33 @@ export interface RegistryCacheEntry {
   fetchedAt: number;
 }
 
-/** `json`'s value; `fallback` for none, or one that does not parse. */
-function parsed<T>(json: string | undefined, fallback: T): T {
+// The shapes a record's JSON fields have.
+type Platform = { os?: unknown; cpu?: unknown; libc?: unknown };
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isStringMap = (value: unknown): value is Record<string, string> =>
+  isObject(value) && Object.values(value).every((v) => typeof v === 'string');
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === 'string');
+const isAnyJson = (value: unknown): value is unknown => true;
+
+/**
+ * `json`'s value when it has the field's shape (`shape`); `fallback` for
+ * none, one that does not parse, or one of another shape (a malformed row
+ * reads as an empty one, never as a failure).
+ */
+function decoded<T>(json: string | undefined, shape: (value: unknown) => value is T, fallback: T): T {
   if (!json) return fallback;
   // Most of a record's maps are empty: no parse for those.
   if (json === '{}') return {} as T;
-  try { return JSON.parse(json) as T; } catch { return fallback; }
+  let value: unknown;
+  try { value = JSON.parse(json); } catch { return fallback; }
+  return shape(value) ? value : fallback;
 }
 
 /** A JSON-encoded name → range map; undefined when it names none. */
 function ranges(json: string | undefined): Record<string, string> | undefined {
   if (!json || json === '{}') return undefined;
-  const map = parsed<Record<string, string>>(json, {});
+  const map = decoded(json, isStringMap, {});
   return Object.keys(map).length > 0 ? map : undefined;
 }
 
@@ -88,32 +103,31 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
 /** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
 export function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, 'dependencies' | 'peerDependencies' | 'optionalDependencies'> {
   return {
-    dependencies: parsed<Record<string, string>>(record.depsJson, {}),
+    dependencies: decoded(record.depsJson, isStringMap, {}),
     peerDependencies: ranges(record.peerDepsJson),
     optionalDependencies: ranges(record.optionalDepsJson),
   };
 }
 
-const NO_PLATFORM: { os?: unknown; cpu?: unknown; libc?: unknown } = Object.freeze({});
+const NO_PLATFORM: Platform = Object.freeze({});
 
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage {
-  const platform = record.platformJson === '{}' ? NO_PLATFORM
-    : parsed<{ os?: unknown; cpu?: unknown; libc?: unknown }>(record.platformJson, NO_PLATFORM);
+  const platform: Platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
   return {
     name: record.name,
     version: record.version,
     tarballUrl: record.tarballUrl,
     integrity: record.integrity,
-    dependencies: parsed<Record<string, string>>(record.depsJson, {}),
+    dependencies: decoded(record.depsJson, isStringMap, {}),
     peerDependencies: ranges(record.peerDepsJson),
     optionalDependencies: ranges(record.optionalDepsJson),
-    os: Array.isArray(platform.os) ? platform.os : undefined,
-    cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
-    libc: Array.isArray(platform.libc) ? platform.libc : undefined,
-    exports: parsed<unknown>(record.exportsJson, null),
+    os: isStringList(platform.os) ? platform.os : undefined,
+    cpu: isStringList(platform.cpu) ? platform.cpu : undefined,
+    libc: isStringList(platform.libc) ? platform.libc : undefined,
+    exports: decoded(record.exportsJson, isAnyJson, null),
     main: record.main,
     module: record.moduleField,
-    bin: parsed<Record<string, string>>(record.binJson, {}),
+    bin: decoded(record.binJson, isStringMap, {}),
   };
 }

@@ -6,8 +6,10 @@
 //     dependencies and platform included, so the ABI policy decides alike;
 //   - the installer's lockfile reconstruction answers that package too.
 //     Red before: it dropped the peers, optional dependencies and platform;
-//   - a record from before those columns, or a field that does not parse,
-//     reads as none.
+//   - a record from before those columns, or a field that does not parse or
+//     has another shape (a 'null' platform, a list of peers), reads as none:
+//     a valid-lockfile install over it goes on. Red before: a 'null'
+//     platform failed the lockfile's reconstruction.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -85,6 +87,33 @@ console.log('  ok  a warm resolve answers what the cold one did');
     dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
   }, 'a pre-migration or malformed record reads as no peers, optional dependencies or platform');
   console.log('  ok  a pre-migration or malformed record reads as none');
+}
+
+{
+  const record = {
+    name: 'odd', version: '1.0.0', tarballUrl: 'https://registry.invalid/odd-1.0.0.tgz', integrity: 'sha512-odd',
+    depsJson: '{"a":1}', peerDepsJson: '["react"]', optionalDepsJson: '"x"', platformJson: 'null',
+    exportsJson: 'null', main: 'index.js', moduleField: '', binJson: '5', fetchedAt: 0,
+  };
+  assert.deepEqual(plain(resolvedFromRecord(record)), {
+    name: 'odd', version: '1.0.0', tarballUrl: 'https://registry.invalid/odd-1.0.0.tgz', integrity: 'sha512-odd',
+    dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+  }, 'every field of another shape reads as its empty value');
+  assert.deepEqual(plain(resolvedFromRecord({ ...record, platformJson: '{"os":"linux","cpu":["x64",1]}' })).os, undefined, 'a platform list of another shape reads as none');
+
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  root.mkdir('app/node_modules', { recursive: true });
+  const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor: () => null });
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx: { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage } });
+  installer.npmCache.putRegistryEntries([record]);
+  const lockfile = new Map([['odd', { name: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]);
+  const recordOf = installer.lockRecords();
+  assert.equal(installer.isLockfileValid(lockfile, { odd: '1.0.0' }, recordOf), true, 'a malformed record still answers the check');
+  const { resolved } = installer.lockfileToResolved(installer.reachableFromSpecs(lockfile, { odd: '1.0.0' }, recordOf), recordOf);
+  assert.equal(resolved.get('odd')?.version, '1.0.0', 'and the reconstruction');
+  console.log('  ok  a record of another shape reads as none, and a valid-lockfile install over it goes on');
 }
 
 console.log('npm-registry-record: ok');
