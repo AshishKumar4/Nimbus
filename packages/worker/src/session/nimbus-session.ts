@@ -1338,7 +1338,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // relaxed for the methods (default-public; was async/private).
 
   private terminalInputDispatcher: ((frame: string, terminalId: string) => Promise<void>) | null = null;
-  readonly dispatchTerminalInput = (frame: string): void => {
+  dispatchTerminalInput(frame: string): void {
     const terminal = this.terminal;
     if (!terminal || terminal.signal.aborted) return;
     if (!this.terminalInputDispatcher) {
@@ -1351,7 +1351,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
         terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
-  };
+  }
 
   _rpcTerminalInput(frame: string, terminalId: string): Promise<void> {
     return terminalInput(this, frame, terminalId);
