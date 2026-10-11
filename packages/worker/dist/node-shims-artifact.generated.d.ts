@@ -48,10 +48,6 @@ export declare const NODE_LIB_REST_SHA256: string;
 export declare const NODE_DNS_ENTRY: string;
 export declare const NODE_DNS_BUILD_ID: string;
 export declare const NODE_DNS_SHA256: string;
-/** dist/runtime/node-esm-module.js generateNodeEsmModule() */
-export declare const NODE_ESM_ENTRY: string;
-export declare const NODE_ESM_BUILD_ID: string;
-export declare const NODE_ESM_SHA256: string;
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
 export declare const NODE_REGISTRY_ENTRY: string;
 export declare const NODE_REGISTRY_BUILD_ID: string;

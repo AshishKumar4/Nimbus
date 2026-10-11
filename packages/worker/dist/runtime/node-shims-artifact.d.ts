@@ -11,7 +11,6 @@ interface NodeSourceTexts {
     parser: string;
     nodeLib: string;
     nodeLibRest: string;
-    nodeEsm: string;
     nodeDns: string;
 }
 /** Generators accept inline test sources and digest-verified deployed sources through the same path. */

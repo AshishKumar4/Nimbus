@@ -50,7 +50,7 @@ export function createEsmResolver(host, options = {}) {
         },
     };
     const codeOf = (error) => error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
-    const filePath = (url) => decodeURIComponent(new URL(String(url)).pathname);
+    const filePath = (url) => decodeURIComponent((typeof url === 'string' ? new URL(url) : url).pathname);
     const fileUrl = (path) => {
         const url = new URL('file://');
         url.pathname = path;
@@ -64,7 +64,17 @@ export function createEsmResolver(host, options = {}) {
         return specifier[1] === '.' && (specifier.length === 2 || specifier[2] === '/');
     }
     const isRelativeOrAbsolute = (specifier) => specifier !== '' && (specifier[0] === '/' || isRelativeSpecifier(specifier));
+    // Each package.json read once, as Node's reader holds the ones it read for
+    // the process (src/node_modules.cc GetPackageJSON): a graph's modules share
+    // their scopes, and asked them again per import (a launch over pi's 1074
+    // modules). Like Node's, it holds no absence (a package.json written later
+    // is read), and one that does not parse is read again, its refusal naming
+    // each import.
+    const packageConfigs = new Map();
     function* readPackageConfig(pjsonPath, specifier, base) {
+        const known = packageConfigs.get(pjsonPath);
+        if (known !== undefined)
+            return known;
         const text = (yield* ask.kind(pjsonPath)) === 'file' ? yield* ask.readText(pjsonPath) : null;
         if (text === null)
             return { exists: false, pjsonPath, type: 'none' };
@@ -78,6 +88,7 @@ export function createEsmResolver(host, options = {}) {
                 (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : '') + '.');
         }
         const config = { exists: true, pjsonPath, type: 'none' };
+        packageConfigs.set(pjsonPath, config);
         if (parsed === null || typeof parsed !== 'object')
             return config;
         if (typeof parsed.name === 'string')

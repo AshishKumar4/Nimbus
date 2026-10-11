@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-ae713f714cb7479d.js";
-export const NODE_SHIMS_BUILD_ID = "ae713f714cb7479d";
-export const NODE_SHIMS_SHA256 = "ae713f714cb7479d5ac459c8b1ce95176241d5d125e9e47a61a0cfca9f2099ec";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-e960b081fbb72188.js";
+export const NODE_SHIMS_BUILD_ID = "e960b081fbb72188";
+export const NODE_SHIMS_SHA256 = "e960b081fbb72188043489b3fd4b64ca531f13582df787c4dc5f5da28daa1a72";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-676daf190edbf75d.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "676daf190edbf75d";
@@ -48,10 +48,6 @@ export const NODE_LIB_REST_SHA256 = "f11f64906eddd5c3b42a6b1e9dd04327ef04b5e2344
 export const NODE_DNS_ENTRY = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
 export const NODE_DNS_BUILD_ID = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256 = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
-/** dist/runtime/node-esm-module.js generateNodeEsmModule() */
-export const NODE_ESM_ENTRY = "/_assets/runtime/node-esm-0cfda511c0543bb7.js";
-export const NODE_ESM_BUILD_ID = "0cfda511c0543bb7";
-export const NODE_ESM_SHA256 = "0cfda511c0543bb7526a340f15dce949a1bfeb4d4bcf38d8e85b1e96fd1de229";
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
 export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-1051973f316a7152.js";
 export const NODE_REGISTRY_BUILD_ID = "1051973f316a7152";
