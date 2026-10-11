@@ -22,7 +22,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -79,6 +79,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     private runtimeReady;
     get runtimeManager(): RuntimeManager;
     routeLoopback(port: number, request: Request): Promise<Response | null>;
+    /** The destroy running (programmatic.ts rpcDestroy), until it is answered. */
+    destroying: Promise<SessionDestroyResult> | null;
     ensureRuntimeReady(): Promise<void>;
     /** The session's filesystem (SessionFilesystem): opened on first use, closed whole by a destroy. */
     filesystem: SessionFilesystem | null;

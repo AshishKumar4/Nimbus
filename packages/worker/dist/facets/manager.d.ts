@@ -20,6 +20,7 @@ import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js'
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -2166,8 +2167,9 @@ export declare class FacetManager {
      * Kill a running process by PID. Given the signal that ends it (a name
      * without `SIG`), it exits with that signal's status, 128+signo, and its
      * exit names `SIG<name>`; without one it is SIGKILL's 137, `killed`.
+     * `reason` is what the work held for it is stopped with (a destroy's).
      */
-    kill(pid: number, signal?: string): boolean;
+    kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
     /**
      * Remove a durable application: the ONLY path that deletes durable facet
      * storage. Owner-checked by construction — `freeDurableFacetSlot` answers

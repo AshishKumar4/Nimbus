@@ -38,7 +38,7 @@ import type { EsModuleMap } from '@nimbus-sh/core/runtime/async-module-lowering.
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
@@ -429,6 +429,8 @@ interface ProcessEnding {
   cause?: string;
   /** Ended by a kill: the table records it killed, and its terminator runs. */
   killed?: boolean;
+  /** A kill's: what the work held for it is stopped with (SessionProcessSupervisor.kill). */
+  reason?: SignalAbortReason;
   /** What a request to one of its ports is told from now on (PortRegistry.ended). */
   portEnding?: string;
 }
@@ -5668,7 +5670,7 @@ export class FacetManager {
     }
     const record = () => {
       if (this.processes.get(pid)?.state !== 'running') return;
-      if (ending.killed) this.processes.kill(pid, ending.code);
+      if (ending.killed) this.processes.kill(pid, ending.code, ending.reason);
       else this.processes.exit(pid, ending.code);
       if (ending.cause !== undefined) {
         this.processes.markExit(pid, ending.code, ending.cause);
@@ -9727,11 +9729,15 @@ export class FacetManager {
    * Kill a running process by PID. Given the signal that ends it (a name
    * without `SIG`), it exits with that signal's status, 128+signo, and its
    * exit names `SIG<name>`; without one it is SIGKILL's 137, `killed`.
+   * `reason` is what the work held for it is stopped with (a destroy's).
    */
-  kill(pid: number, signal?: string): boolean {
+  kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
-    this._end(pid, { code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true });
+    this._end(pid, {
+      code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true,
+      ...(reason === undefined ? {} : { reason }),
+    });
     return true;
   }
 

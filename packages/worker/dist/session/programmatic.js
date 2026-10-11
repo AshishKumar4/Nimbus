@@ -5,6 +5,7 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
+import { SESSION_DESTROYED } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -162,9 +163,9 @@ function startShellJob(self, command, options, job, named) {
     const controller = new AbortController();
     // The job is this session's work behind the pid: a kill stops it, and the
     // pid's release waits for its shell to close what it opened.
-    const stopped = self.processes.holdWork(pid, () => {
+    const stopped = self.processes.holdWork(pid, (reason) => {
         try {
-            controller.abort();
+            controller.abort(reason);
         }
         catch { /* already settled */ }
     });
@@ -994,15 +995,24 @@ export async function rpcDeleteFile(self, path, options = {}, cred) {
         fs.unlink(p);
     });
 }
-export async function rpcDestroy(self, options = {}) {
+/** One destroy at a time: one asked for while another runs is answered by it. */
+export function rpcDestroy(self, options = {}) {
+    return self.destroying ??= destroySession(self, options).finally(() => { self.destroying = null; });
+}
+async function destroySession(self, options) {
     self.ensureSqliteFs();
     const guardedVfs = self.sqliteFs;
-    const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
-    // A holder's exclusive mutation refuses the destroy before anything is
-    // stopped, unless the holder is one of the processes it stops: a subtree
-    // delegated to a process goes when that process ends.
-    if (guardedVfs.hasExclusiveMutation({ delegations: false }))
-        throw busy();
+    // A lease that stopping the session's processes does not end refuses the
+    // destroy before anything is stopped: a refused destroy leaves the session
+    // as it was. What their work holds goes as it stops (a delegation with its
+    // process, a clone's lease with its clone).
+    if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
+        throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
+    }
+    // Past this it completes, and nothing starts meanwhile: the table it stops
+    // admits no process, and a request that would ready the session waits for
+    // the one it makes again (rpcDestroy, ensureRuntimeReady).
+    self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
     const reason = typeof options.reason === 'string' && options.reason.trim()
         ? options.reason.trim().slice(0, 200)
         : null;
@@ -1010,6 +1020,8 @@ export async function rpcDestroy(self, options = {}) {
     let killed = 0;
     const running = self.processes.getAll()
         .filter((p) => p.state === 'running');
+    // Each one's work stops as a destroy's (SESSION_DESTROYED): what it would
+    // still write into the storage about to be wiped, it does not.
     for (const entry of running) {
         const pid = Number(entry.pid);
         try {
@@ -1027,12 +1039,12 @@ export async function rpcDestroy(self, options = {}) {
                 self._viteShimPid = null;
                 self._viteShimPort = null;
             }
-            else if (self.facetManager?.kill?.(pid)) {
+            else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
                 // facetManager.kill already marks process state and unregisters ports.
             }
             else {
                 try {
-                    self.processes.kill(pid);
+                    self.processes.kill(pid, undefined, SESSION_DESTROYED);
                 }
                 catch { }
             }
@@ -1050,7 +1062,7 @@ export async function rpcDestroy(self, options = {}) {
         }
         catch {
             try {
-                self.processes.kill(pid);
+                self.processes.kill(pid, undefined, SESSION_DESTROYED);
             }
             catch { }
             try {
@@ -1061,7 +1073,8 @@ export async function rpcDestroy(self, options = {}) {
     }
     // What they held goes once the work stopping on them has closed what it
     // opened (SessionProcessSupervisor.released, bounded for work that ignores
-    // its stop): their delegations among it.
+    // its stop): their delegations and leases among it (a clone releases its
+    // lease as it stops).
     await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
     // Its processes stopped, every wave still being read is cut, which ends
     // the commits it held open: each is then published once its reader
@@ -1074,11 +1087,20 @@ export async function rpcDestroy(self, options = {}) {
             break;
         await held;
     }
-    if (guardedVfs.hasExclusiveMutation())
-        throw busy();
-    const destroyLease = guardedVfs.acquireGlobalExclusiveMutation();
+    // What work that ignored its stop still holds, the destroy takes over:
+    // nothing of that work reaches the session it leaves. Its processes'
+    // calls name their pids, which are no longer live (liveCred: ESRCH), and
+    // the recreated session's table never issues them again; its writes under
+    // a lease present the lease, which ends here (ESTALE); and a clone stopped
+    // with SESSION_DESTROYED writes nothing more (its record and junk are the
+    // wipe's).
+    const destroyLease = guardedVfs.seizeGlobalExclusiveMutation();
     let destroyed = false;
     try {
+        // A launch suspended for a turn waits on the alarm the wipe deletes, in
+        // the manager the reset drops: closed, it ends now, and what it holds
+        // (its build's share of the isolate's allocation credit) goes back.
+        await self.facetManager?.closeLaunches();
         try {
             self.processes.flushLogs();
         }

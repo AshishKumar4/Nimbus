@@ -102,6 +102,7 @@ const ctx = {
   env: {},
   stdout: { write() {} },
   stderr: { write() {} },
+  signal: new AbortController().signal,
   vfs: new ProcessView(new ProcessFiles(raw).bind({ pid: 7, cred: A })),
 };
 const doCtx = { id: { toString: () => 'do-confined-clone' }, waitUntil() {}, storage: memoryStorage() };

@@ -176,6 +176,8 @@ export function createMirror(label) {
     }
     const code = await runGitCommand({
       pid: 1,
+      // Its stop, never given here.
+      signal: new AbortController().signal,
       cred: CRED_SESSION_USER,
       args,
       cwd,
