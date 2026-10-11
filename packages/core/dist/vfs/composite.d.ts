@@ -337,8 +337,6 @@ export declare class CompositeVFS implements VFS {
      * is held in `held`, let go when the observers are done.
      */
     private capture;
-    /** Every point something is mounted at, root first, in mount order: whether or not its source answers this principal now. */
-    mountPoints(): readonly string[];
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts(): readonly MountInfo[];
     /** The mount point `path` is on ('/' for the root), whether or not its source is present. */

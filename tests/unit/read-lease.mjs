@@ -72,17 +72,13 @@ function sequenced(bridge, pid, key, first) {
   }), { sequence: { writer: `${pid}:w`, first, ack: first - 1, pid } });
 }
 
-// ── What a lease vouches for: all but its namespace's mounts, at or under them, and the names above them ──
+// ── A mount or an unmount ends a read lease; a feed the engine's cursor does not follow grants none; the session's stores ──
 {
   const s = session();
   s.files.vfs.mount('/mnt/drive', new MemoryVFS());
-  // A source that answers no one yet, and can later, with no mount or unmount.
-  let laptop = null;
-  s.files.vfs.mount('/pc/laptop', () => laptop);
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { readLease } = barrier(s, reader);
-  assert.deepEqual([...readLease.uncovered].sort(), ['dev', 'mnt/drive', 'pc/laptop', 'proc']);
-  laptop = new MemoryVFS();
+  assert.ok(readLease, 'no lease granted');
   // A mount moves what is the engine's: the lease ends, its holder told.
   s.files.vfs.mount('/mnt/other', new MemoryVFS());
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
@@ -96,11 +92,6 @@ function sequenced(bridge, pid, key, first) {
   const fed = barrier(s, s.files.bind({ pid: 11, cred: USER }));
   assert.equal(fed.readLease, undefined, 'a lease was granted over a feed it does not follow');
   assert.equal(fed.poison, true);
-  const covers = (key, listing = false) => readLeaseCovers(key, listing, readLease.uncovered);
-  assert.deepEqual(['dev', 'dev/null', 'proc', 'proc/self', 'mnt/drive', 'mnt/drive/f'].filter((key) => covers(key)), []);
-  assert.deepEqual(['', 'mnt'].filter((key) => covers(key, true)), []);
-  assert.deepEqual(['', '.nimbus/images/x', 'var/lib/nimbus', 'devices', 'process', 'mnt', 'mnt/drive2', 'home/user/a'].filter((key) => !covers(key)), []);
-  assert.deepEqual(['var', 'devices', 'home', 'mnt/other'].filter((key) => !covers(key, true)), []);
   // Where a synchronous write is held rather than refused (SqliteVFS.readRecallAt): the stores, and the directories they are made in.
   const store = (key) => !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS);
   assert.deepEqual(['', 'var', 'var/lib', 'var/lib/nimbus', 'var/lib/nimbus/staged/x', '.nimbus', '.nimbus/images/x'].filter((key) => !store(key)), []);

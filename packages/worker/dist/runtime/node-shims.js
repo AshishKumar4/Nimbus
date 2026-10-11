@@ -47,7 +47,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, READ_LEASE_COVER_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
@@ -295,9 +295,9 @@ async function __nimbusUseRpcResultUnref(promise, use) {
  * The barrier is installed by the fs module, which is evaluated after this
  * point; a facet with no supervisor has none and nothing to be coherent with.
  */
-async function __nimbusInboundBarrier(delivered) {
+async function __nimbusInboundBarrier(delivered, viaIo = false) {
   const acquire = globalThis.__nimbusVfsAcquireBarrier;
-  if (typeof acquire === "function") await acquire(delivered);
+  if (typeof acquire === "function") await acquire(delivered, viaIo);
 }
 
 /**
@@ -642,9 +642,9 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // of the process; a response with no body has nothing to carry.
   const __foreignBodies = new WeakSet();
   let __foreignOpen = 0;
-  const __resumeCoherent = async (pending, own = false) => {
+  const __resumeCoherent = async (pending, own = false, viaIo = false) => {
     const value = await pending;
-    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier();
+    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier(undefined, viaIo);
     return value;
   };
   const __barriered = async (input, init) => {
@@ -670,7 +670,7 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof release === "function") await release();
     const published = __nimbusNetworkGate();
     if (published !== null) await published;
-    const pending = __resumeCoherent(__dispatch(input, init)).then(async (response) => {
+    const pending = __resumeCoherent(__dispatch(input, init), false, true).then(async (response) => {
       const raw = response && response.webSocket ? __nimbusRawSocket() : null;
       if (raw !== null) await raw;
       if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
@@ -699,6 +699,8 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // It is also a second resumption from the network, so it takes the same
   // ACQUIRE: a program that reads a file after parsing a response body is no
   // less entitled to current bytes than one that reads after the headers.
+  // Not \`viaIo\`: a body already received, or one the program made, ends
+  // with no I/O, so a read lease does not answer for it (_acquireBarrier).
   for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
     const __orig = Response.prototype[__name];
     if (typeof __orig !== "function") continue;
@@ -1142,21 +1144,6 @@ const __fsMod = (() => {
     return null;
   }
 
-  // What the view answers for under a trusted read lease, compiled from
-  // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
-  // declares readLeaseCovers (and SESSION_KERNEL_ROOTS).
-${READ_LEASE_COVER_PREAMBLE}
-  /** While a leased answer is made (_leasedRead): what its lease does not vouch for, and whether a lookup landed on any of it. */
-  let _leasedUncovered = null;
-  let _landedUncovered = false;
-  /** \`__nsResolve\`, where it landed noted: \`k\`'s entry, or with \`listing\` its names, through any link. */
-  function _nsResolveViewed(k, follow, listing) {
-    const found = __nsLookup(k, follow);
-    if (found === "ELOOP") return found;
-    if (_leasedUncovered !== null && !readLeaseCovers(found.path, listing, _leasedUncovered)) _landedUncovered = true;
-    return found.row !== undefined ? found : null;
-  }
-
   /**
    * The key an operation that follows symlinks lands on: every link on \`k\`
    * followed, the last one too, as open(2) and chmod(2) follow them; null on
@@ -1249,7 +1236,7 @@ ${READ_LEASE_COVER_PREAMBLE}
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = _nsResolveViewed(renamed && renamed.alias !== undefined ? renamed.alias : k, follow, false);
+      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -1257,7 +1244,7 @@ ${READ_LEASE_COVER_PREAMBLE}
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = _nsResolveViewed(_nsMovedEntry(k, own), false, false);
+      const found = __nsResolve(_nsMovedEntry(k, own), false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -1265,7 +1252,7 @@ ${READ_LEASE_COVER_PREAMBLE}
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, follow, false);
+      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -1286,7 +1273,7 @@ ${READ_LEASE_COVER_PREAMBLE}
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, true, true);
+      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
       if (real && real !== "ELOOP") {
         for (const child of __nsChildren(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
@@ -2067,8 +2054,6 @@ ${READ_LEASE_COVER_PREAMBLE}
       barrierFailures: 0, lastBarrierFailure: "",
       // Barriers a trusted read lease answered, asking nothing (_acquireBarrier).
       leasedBarriers: 0,
-      // Async stats and listings the sync view answered under a trusted read lease (_leasedView).
-      leasedReads: 0,
       // Barriers that held their resumption on an own write's acknowledgement
       // (_awaitReportedOwnWrites).
       ownWriteWaits: 0,
@@ -2489,13 +2474,18 @@ ${READ_LEASE_COVER_PREAMBLE}
    * before a peer overwrote them. Nothing is waited on unless such a report
    * exists.
    */
-  async function _acquireBarrier(supervisor, delivered) {
+  async function _acquireBarrier(supervisor, delivered, viaIo = false) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
     // Under a trusted read lease nothing this process holds has changed: a
     // change waits for the lease's recall, and the recall untrusts it first
-    // (ProcessFsClient.readTrusted). A delivered answer is still applied,
-    // and a store owed a repair still asks.
-    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    // (ProcessFsClient.readTrusted). That trust is measured on workerd's
+    // clock, which moves only with I/O (a timer fires at the time it was set
+    // for), so the lease answers only a barrier \`viaIo\`: one taken where
+    // I/O just arrived, which moved the clock to real time (a response, a
+    // relayed frame, a child's or a terminal's input, a request). Every other
+    // barrier asks (a timer's, a body's end, one made before a read), and so
+    // do a delivered answer, applied, and a store owed a repair.
+    if (viaIo && !delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
@@ -2744,8 +2734,8 @@ ${READ_LEASE_COVER_PREAMBLE}
    * server 50 reads per request while a peer's refetch of 50 files ran: 500
    * reads over ten resumptions, and under steady load the set never drained.
    */
-  async function _acquireAndRefetch(supervisor, delivered) {
-    const stale = await _acquireBarrier(supervisor, delivered);
+  async function _acquireAndRefetch(supervisor, delivered, viaIo) {
+    const stale = await _acquireBarrier(supervisor, delivered, viaIo);
     // Plus what an own-mutation lease dropped since the last resumption:
     // the same debt this function exists to settle, owed by an eviction
     // that had no barrier to report it (see _owedRefetch).
@@ -2821,10 +2811,10 @@ ${READ_LEASE_COVER_PREAMBLE}
    * delivers (\`__nimbusInboundBarrier\`, with the answer it delivered) — are
    * handed to the program by code outside this closure.
    */
-  async function _resumptionAcquire(delivered) {
+  async function _resumptionAcquire(delivered, viaIo) {
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
-    await _acquireAndRefetch(supervisor, delivered);
+    await _acquireAndRefetch(supervisor, delivered, viaIo);
   }
 
   /**
@@ -3582,7 +3572,8 @@ ${READ_LEASE_COVER_PREAMBLE}
       return rpc(supervisor[op](...args));
     }
     const acquired = answer ? answer.acquired : undefined;
-    await _acquireBarrier(supervisor, acquired);
+    // Taken as its answer arrives.
+    await _acquireBarrier(supervisor, acquired, true);
     if (fill) {
       const dated = acquired && acquired.answer;
       if (dated && dated.poison !== true && typeof dated.rev === "number"
@@ -3596,65 +3587,11 @@ ${READ_LEASE_COVER_PREAMBLE}
     return answer ? answer.value : null;
   }
 
-  /**
-   * Whether the sync view answers an async metadata call (a stat, a
-   * listing) in the session's place: under a trusted read lease nothing has
-   * changed since the barrier that confirmed it, and nothing of the
-   * process's own since (ProcessFsClient.readTrusted), so the namespace is
-   * what the session would answer. Where the process's own effects are over
-   * a path (its overlay, a write parked there), the session answers it.
-   */
-  function _leasedView() {
-    return !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted();
-  }
-  /** Whether the process's own effects are at \`k\` (or its landing, \`follow\`): what the session answers, not the view. */
-  function _ownAt(k, follow) {
-    if (_nsOwnView(k) !== null || (__vfsWrites && k in __vfsWrites) || _pendingModes.has(k)) return true;
-    if (!follow) return false;
-    const landing = _nsLandingKey(k);
-    return landing !== null && landing !== k && _ownAt(landing, false);
-  }
-  /** Whether the process's own effects are at \`k\` or anywhere under it. */
-  function _ownUnder(k) {
-    if (_ownAt(k, false)) return true;
-    const prefix = k ? k + "/" : "";
-    for (const own of _nsOwn.keys()) if (own.startsWith(prefix)) return true;
-    for (const local of Object.keys(__vfsWrites || {})) if (local.startsWith(prefix)) return true;
-    for (const local of Object.keys(__vfsDirs || {})) if (local === k || local.startsWith(prefix)) return true;
-    return false;
-  }
-  /**
-   * \`read\`, the sync view's answer under a lease that does not vouch for
-   * \`uncovered\`, counted; undefined when the view cannot say (EAGAIN: a
-   * mount it did not list) or it landed there (a link out of what is vouched for).
-   */
-  function _leasedRead(uncovered, read) {
-    _leasedUncovered = uncovered;
-    _landedUncovered = false;
-    try {
-      const value = read();
-      if (_landedUncovered) return undefined;
-      _stats.leasedReads++;
-      return value;
-    } catch (error) {
-      if ((error && error.code === "EAGAIN") || _landedUncovered) return undefined;
-      _stats.leasedReads++;
-      throw error;
-    } finally {
-      _leasedUncovered = null;
-    }
-  }
-
   async function _statAsync(p) { return _statAsyncAs("stat", p); }
   async function _lstatAsync(p) { return _statAsyncAs("lstat", p); }
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
-    if (uncovered !== null && readLeaseCovers(_strip(absPath), false, uncovered) && !_ownAt(_strip(absPath), syscall === "stat")) {
-      const local = _leasedRead(uncovered, () => (syscall === "stat" ? statSync(p) : lstatSync(p)));
-      if (local !== undefined) return local;
-    }
     if (supervisor && typeof supervisor[syscall] === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
@@ -3674,12 +3611,6 @@ ${READ_LEASE_COVER_PREAMBLE}
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    const uncovered = supervisor && _leasedView() ? __nimbusProcessFs().readUncovered() : null;
-    if (uncovered !== null && readLeaseCovers(_strip(absPath), true, uncovered) && !_ownUnder(_strip(absPath))) {
-      const local = _leasedRead(uncovered, () => readdirSync(p, opts));
-      // In the order the session's listing is given in.
-      if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
-    }
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
@@ -6523,7 +6454,7 @@ ${READ_LEASE_COVER_PREAMBLE}
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = _nsResolveViewed(key, true, false);
+          const found = __nsResolve(key, true);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
@@ -6652,7 +6583,7 @@ function __nimbusRefusal(supervisor, refused) {
         for (const event of events) {
           if (cancelled) return;
           // Its bytes are an inbound delivery, as a frame is.
-          await __nimbusInboundBarrier();
+          await __nimbusInboundBarrier(undefined, true);
           if (event.kind === "message" && event.bytes) {
             if (consumer) consumer.chunk(event.bytes);
             else pending.push(event.bytes);
@@ -6783,7 +6714,7 @@ const __NimbusRelayedWebSocket = (() => {
           // The barrier the whole relay exists for. Every frame is now a
           // supervisor reply, so it can carry the invalidation delta, and
           // user code runs only after the resident set has caught up.
-          await __nimbusInboundBarrier();
+          await __nimbusInboundBarrier(undefined, true);
           this._deliver(event);
         }
       }
@@ -8557,7 +8488,7 @@ const __childProcessMod = (() => {
           (result) => result,
         );
         const chunks = r && Array.isArray(r.chunks) ? r.chunks : [];
-        if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier(r.acquired);
+        if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier(r.acquired, true);
         if (chunks.length > 0) {
           backoff = 100;  // reset — child is producing
           // A child that has output has started: 'spawn' and its pid come
@@ -8679,7 +8610,7 @@ const __childProcessMod = (() => {
           __supervisor.cpWait(child._brokerPid, 1000, __nimbusVfsAcquireArgs(), child._started),
           (result) => result,
         );
-        if (r && (r.done || r.started)) await __nimbusInboundBarrier(r.acquired);
+        if (r && (r.done || r.started)) await __nimbusInboundBarrier(r.acquired, true);
         const settled = _applyWait(child, r);
         _applyNews(r);
         if (settled) break;
@@ -9954,7 +9885,7 @@ function __makeProcessStdin() {
       // costs nothing.
       if (packet && (packet.resize || packet.signal || packet.ended
           || (packet.data && packet.data.byteLength > 0))) {
-        await __nimbusInboundBarrier(packet.acquired);
+        await __nimbusInboundBarrier(packet.acquired, true);
       }
       if (packet && packet.resize) {
         __nimbusTtyColumns = Number(packet.resize.columns) || __nimbusTtyColumns;

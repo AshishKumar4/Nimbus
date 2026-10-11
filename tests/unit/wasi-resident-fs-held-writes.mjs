@@ -209,7 +209,7 @@ await check('a revision pinned for two descriptors is one buffer, charged once a
 
 await check('the barrier stays owed until one lands', async () => {
   let failNext = false;
-  const flaky = { ...view, ready: () => view.ready(), entry: (key) => view.entry(key), children: (key) => view.children(key), barrier: (lease) => (failNext ? (failNext = false, Promise.resolve({ ok: false })) : view.barrier(lease)) };
+  const flaky = { ...view, ready: () => view.ready(), entry: (key) => view.entry(key), children: (key) => view.children(key), barrier: () => (failNext ? (failNext = false, Promise.resolve(false)) : view.barrier()) };
   Object.defineProperty(flaky, 'device', { get: () => view.device });
   const fs = residentFilesystem(authority, flaky);
   await kernel.writeFile(k('fresh.txt'), enc.encode('one'));

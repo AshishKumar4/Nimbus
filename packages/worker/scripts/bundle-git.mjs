@@ -51,11 +51,15 @@ type Remove = Parameters<typeof Upstream.remove>[0];
 type Commit = Parameters<typeof Upstream.commit>[0];
 type Matrix = Parameters<typeof Upstream.statusMatrix>[0];
 type Checkout = Parameters<typeof Upstream.checkout>[0];
-export declare const git: Omit<typeof Upstream, 'add' | 'remove' | 'commit' | 'statusMatrix'> & {
+type Fetch = Parameters<typeof Upstream.fetch>[0];
+export declare const git: Omit<typeof Upstream, 'add' | 'remove' | 'commit' | 'statusMatrix' | 'fetch'> & {
   add(options: Omit<Add, 'filepath'> & { filepath: string | string[] }): ReturnType<typeof Upstream.add>;
   remove(options: Omit<Remove, 'filepath'> & { filepath: string | string[] }): ReturnType<typeof Upstream.remove>;
   commit(options: Commit & { rawMessage?: boolean }): ReturnType<typeof Upstream.commit>;
   statusMatrix(options: Matrix & { deferRefresh?: boolean }): ReturnType<typeof Upstream.statusMatrix>;
+  fetch(options: Fetch & {
+    uploadPack: { discover(...args: never[]): Promise<unknown>; requestPack(...args: never[]): Promise<unknown> };
+  }): ReturnType<typeof Upstream.fetch>;
   stage(options: Pick<Add, 'fs' | 'dir' | 'gitdir' | 'cache' | 'force' | 'parallel'> & {
     add?: string[]; remove?: string[];
   }): Promise<void>;
