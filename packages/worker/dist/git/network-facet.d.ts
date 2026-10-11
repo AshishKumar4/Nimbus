@@ -112,6 +112,12 @@ export interface GitNetworkOpts {
      * facets may still make is refused. Never sent to the dynamic worker.
      */
     rotateMutationOwner?: () => string;
+    /**
+     * The operation's stop (a Ctrl-C, a kill, a destroy): no further piece
+     * starts, the one in flight is let go, and a clone's facets lose their
+     * writes before it answers `cancelled`. Never sent to the dynamic worker.
+     */
+    signal?: AbortSignal;
     /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
     relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
@@ -175,6 +181,10 @@ export interface GitNetworkResult {
     budget?: GitCloneBudgetDiagnostic;
     /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
     cleanup?: boolean;
+    /** It was stopped (GitNetworkOpts.signal): the stop's reason. */
+    cancelled?: {
+        reason: unknown;
+    };
     /** fetch-objects: objects the promisor pack holds. */
     fetchedObjects?: number;
     /** For graph-filters: the step's answer. */

@@ -24,6 +24,7 @@ import { type ProcessInputPacket } from './process-input.js';
 import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
+import { type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
 export interface ProcessSpawnOptions {
     /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -165,9 +166,10 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     setTerminator(pid: number, terminate: () => void): void;
     /**
      * This session runs work on `pid`'s own descriptors (a shell job, a
-     * command run in the session): `stop` ends it, and the function returned
-     * says it has stopped, its own cleanup done. A kill stops it rather than
-     * only marking the table entry.
+     * command run in the session): `stop` ends it, given the kill's reason
+     * when it has one (SESSION_DESTROYED for a destroy's), and the function
+     * returned says it has stopped, its own cleanup done. A kill stops it
+     * rather than only marking the table entry.
      *
      * The work owns those descriptors while it runs and closes them itself, so
      * the process's release (setRelease) comes after: once its end is marked
@@ -176,8 +178,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * host was lost: nothing of it here is left to unwind) is released at its
      * end.
      */
-    holdWork(pid: number, stop: () => void): () => void;
-    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each. */
+    holdWork(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
+    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     private terminate;
     cred(pid: number): VfsCred;
     liveCred(pid: number): VfsCred;
@@ -208,9 +210,10 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     /**
      * Mark a process as killed and tear down its input channel so queued
      * stdin can't outlive the process. `exitCode` is the ending signal's
-     * status; SIGKILL's 137 when absent.
+     * status; SIGKILL's 137 when absent. `reason` is what its held work is
+     * stopped with (holdWork).
      */
-    kill(pid: number, exitCode?: number): boolean;
+    kill(pid: number, exitCode?: number, reason?: SignalAbortReason): boolean;
     /**
      * Clean up exited processes older than maxAge ms: each one's release (see
      * {@link setRelease}) is waited for, then its entry forgotten, as

@@ -248,9 +248,10 @@ export class SessionProcessSupervisor {
     }
     /**
      * This session runs work on `pid`'s own descriptors (a shell job, a
-     * command run in the session): `stop` ends it, and the function returned
-     * says it has stopped, its own cleanup done. A kill stops it rather than
-     * only marking the table entry.
+     * command run in the session): `stop` ends it, given the kill's reason
+     * when it has one (SESSION_DESTROYED for a destroy's), and the function
+     * returned says it has stopped, its own cleanup done. A kill stops it
+     * rather than only marking the table entry.
      *
      * The work owns those descriptors while it runs and closes them itself, so
      * the process's release (setRelease) comes after: once its end is marked
@@ -277,8 +278,8 @@ export class SessionProcessSupervisor {
             this.releaseEnded(pid);
         };
     }
-    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each. */
-    terminate(pid) {
+    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
+    terminate(pid, reason) {
         const terminator = this.terminators.get(pid);
         this.terminators.delete(pid);
         try {
@@ -290,7 +291,7 @@ export class SessionProcessSupervisor {
                 continue;
             work.stopped = true;
             try {
-                work.stop();
+                work.stop(reason);
             }
             catch { /* the process is going away regardless */ }
         }
@@ -369,14 +370,15 @@ export class SessionProcessSupervisor {
     /**
      * Mark a process as killed and tear down its input channel so queued
      * stdin can't outlive the process. `exitCode` is the ending signal's
-     * status; SIGKILL's 137 when absent.
+     * status; SIGKILL's 137 when absent. `reason` is what its held work is
+     * stopped with (holdWork).
      */
-    kill(pid, exitCode) {
+    kill(pid, exitCode, reason) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         const killed = this.table.kill(pid, exitCode);
         this.releaseEnded(pid);
         this.publishEnd(pid, wasRunning);
-        this.terminate(pid);
+        this.terminate(pid, reason);
         this.input.close(pid);
         this.fireTerminal(pid, wasRunning);
         return killed;

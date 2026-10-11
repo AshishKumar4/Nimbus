@@ -21,6 +21,7 @@ export interface ProgrammaticShell {
 type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
     kill(pid: number): boolean;
+    closeLaunches(): Promise<void>;
     hasResidentProcess(pid: number): boolean;
     removeDurableApp(owner: string): Promise<boolean>;
     residentIdentity(pid: number): Promise<ResidentIdentity | null>;

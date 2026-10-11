@@ -53,6 +53,13 @@ export function signalAbortReason(signal) {
     const name = normalized ?? 'TERM';
     return { kind: 'signal', signal: name, exitCode: exitCodeForSignal(name) };
 }
+/**
+ * The stop a session's destroy gives the work it runs
+ * (SessionProcessSupervisor.kill): SIGKILL's, as this one value, so work that
+ * must not write into the storage the destroy wipes (a clone's cleanup and
+ * its record) knows it by identity.
+ */
+export const SESSION_DESTROYED = Object.freeze(signalAbortReason('KILL'));
 export function exitCodeForAbortSignal(signal, fallback = 130) {
     return isSignalAbortReason(signal.reason) ? signal.reason.exitCode : fallback;
 }

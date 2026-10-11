@@ -159,6 +159,33 @@ function parsePhaseDiagnostic(value, fallback, result) {
         waves: parseWaveDiagnostic(diagnostic.waves),
     };
 }
+/** The operation's stop (GitNetworkOpts.signal) ended it: what a piece throws instead of trying again. */
+class GitNetworkCancelled extends Error {
+    reason;
+    constructor(reason) {
+        super('git network operation stopped');
+        this.reason = reason;
+    }
+}
+/** Throws GitNetworkCancelled once `signal` has stopped the operation. */
+function throwIfCancelled(signal) {
+    if (signal?.aborted)
+        throw new GitNetworkCancelled(signal.reason);
+}
+/** A promise that rejects GitNetworkCancelled when `signal` stops the operation; `off` lets it go. */
+function cancellation(signal) {
+    if (signal === undefined)
+        return { stopped: new Promise(() => { }), off: () => { } };
+    let off = () => { };
+    const stopped = new Promise((_, reject) => {
+        const onAbort = () => reject(new GitNetworkCancelled(signal.reason));
+        if (signal.aborted)
+            return onAbort();
+        signal.addEventListener('abort', onAbort, { once: true });
+        off = () => signal.removeEventListener('abort', onAbort);
+    });
+    return { stopped, off };
+}
 class GitClonePhaseError extends Error {
     phase;
     diagnostic;
@@ -211,7 +238,8 @@ async function hashCloneOptions(opts) {
 function phaseErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
-async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline, phaseLimitMs, budgetContext) {
+async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline, phaseLimitMs, budgetContext, signal) {
+    throwIfCancelled(signal);
     const startedAt = Date.now();
     const remaining = outerDeadline - startedAt;
     const timeoutMs = Math.min(phaseLimitMs, remaining);
@@ -262,6 +290,7 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
             }
         }, timeoutMs);
     });
+    const stop = cancellation(signal);
     try {
         const call = entrypoint.fetch(new Request(`http://git/git/${phase}/${encodeURIComponent(invocationId)}`, {
             method: 'POST',
@@ -272,7 +301,7 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
                 disposeRpcResource(response);
             return response;
         });
-        const response = await Promise.race([call, timeout]);
+        const response = await Promise.race([call, timeout, stop.stopped]);
         let result;
         try {
             result = await response.json();
@@ -295,6 +324,11 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
     catch (error) {
         if (error instanceof GitClonePhaseError)
             throw error;
+        if (error instanceof GitNetworkCancelled) {
+            // The facet's call is let go; what it may still write loses its authority with the clone's lease.
+            controller.abort(error.reason);
+            throw error;
+        }
         const endedAt = Date.now();
         const message = phaseErrorMessage(error);
         const diagnostic = {
@@ -311,6 +345,7 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
         throw new GitClonePhaseError(phase, message, diagnostic);
     }
     finally {
+        stop.off();
         if (timeoutHandle !== undefined)
             clearTimeout(timeoutHandle);
     }
@@ -390,10 +425,10 @@ async function invokeClonePhase(phase, opts, run) {
         try {
             invocation = await invokeFacet(run.facets.entrypoint, phase, crypto.randomUUID(), { ...opts, attempt }, run.outerDeadline, phase === 'clone-finish'
                 ? CLONE_PHASE_TIMEOUT_MS
-                : positiveSafeInteger(opts.pieceTimeoutMs, CLONE_PIECE_TIMEOUT_MS, 'piece timeout'), run.budgetContext);
+                : positiveSafeInteger(opts.pieceTimeoutMs, CLONE_PIECE_TIMEOUT_MS, 'piece timeout'), run.budgetContext, run.signal);
         }
         catch (error) {
-            // A piece that hung (or whose facet call broke) throws rather than answers.
+            // A piece that hung (or whose facet call broke) throws rather than answers; a stopped clone tries nothing again.
             if (!(error instanceof GitClonePhaseError) || error instanceof GitCloneBudgetExceededError ||
                 phase === 'clone-finish' || attempt === CLONE_PIECE_ATTEMPTS ||
                 !transientPieceFailure(error.diagnostic, error.message)) {
@@ -411,6 +446,7 @@ async function invokeClonePhase(phase, opts, run) {
                 await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
             }
             await retryDelay(attempt - 1);
+            throwIfCancelled(run.signal);
             continue;
         }
         run.phases.push(invocation.diagnostic);
@@ -426,6 +462,7 @@ async function invokeClonePhase(phase, opts, run) {
         }
         if (attempt < CLONE_PIECE_ATTEMPTS)
             await retryDelay(attempt - 1);
+        throwIfCancelled(run.signal);
     }
     if (invocation.result.success !== true) {
         throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic, undefined, typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined);
@@ -670,7 +707,8 @@ export async function execGitNetwork(ctx, env, opts, /**
                 metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
-        const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, ...facetOpts } = opts;
+        const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, ...facetOpts } = opts;
+        throwIfCancelled(signal);
         const ctxExports = getCtxExports();
         // One run for every binding this operation mints, a fence's included.
         const writerId = crypto.randomUUID();
@@ -762,7 +800,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 };
                 try {
                     const prepareInvocationId = crypto.randomUUID();
-                    const prepare = await invokeFacet(entrypoint, 'clone-prepare', prepareInvocationId, { ...facetOpts, jobId, optionsHash }, outerDeadline, CLONE_PHASE_TIMEOUT_MS, budgetContext);
+                    const prepare = await invokeFacet(entrypoint, 'clone-prepare', prepareInvocationId, { ...facetOpts, jobId, optionsHash }, outerDeadline, CLONE_PHASE_TIMEOUT_MS, budgetContext, signal);
                     phases.push(prepare.diagnostic);
                     accountResult(prepare.result);
                     if (prepare.result.success !== true ||
@@ -777,8 +815,10 @@ export async function execGitNetwork(ctx, env, opts, /**
                     const prepared = prepare.result.prepared;
                     // A partial clone's objects are in once its filtered pack is: its
                     // batches are git's lazy fetch of what the checkout writes.
-                    if (facetOpts.filter !== undefined && prepared.fast !== undefined)
+                    if (facetOpts.filter !== undefined && prepared.fast !== undefined) {
+                        throwIfCancelled(signal);
                         await onCloneCheckoutPhase?.();
+                    }
                     const run = {
                         facets,
                         outerDeadline,
@@ -787,6 +827,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         accountResult,
                         progress: opts.quiet ? null : supervisorBinding,
                         checkoutErrors: new Map(),
+                        signal,
                     };
                     const identity = { jobId, optionsHash };
                     let fast = prepared.fast;
@@ -796,6 +837,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         // A server without wants by id sent one pack: finish decoding it, then plan the checkout from it.
                         fast = await runCloneSnapshot(facetOpts, identity, prepared.stream, run, tagsFound);
                         // The one pack is stored: what comes next only checks it out.
+                        throwIfCancelled(signal);
                         await onCloneCheckoutPhase?.();
                     }
                     if (fast === undefined)
@@ -813,8 +855,10 @@ export async function execGitNetwork(ctx, env, opts, /**
                             graph = records;
                     }
                     // A clone that is not partial has every object once its batches (and history) are in.
-                    if (prepared.fast !== undefined && facetOpts.filter === undefined)
+                    if (prepared.fast !== undefined && facetOpts.filter === undefined) {
+                        throwIfCancelled(signal);
                         await onCloneCheckoutPhase?.();
+                    }
                     const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
                     // A file a batch could not write: as git, every object fetched first, the clone
                     // finished but its index, then the checkout's failure with git's errors (its repository kept).
@@ -847,6 +891,23 @@ export async function execGitNetwork(ctx, env, opts, /**
                     };
                 }
                 catch (error) {
+                    if (error instanceof GitNetworkCancelled) {
+                        // Its facets' writes lose their authority before it answers (as a fence's, with no facet loaded):
+                        // what they wrote is its caller's to clean up, or not.
+                        rotateMutationOwner?.();
+                        return {
+                            success: false,
+                            error: error.message,
+                            cancelled: { reason: error.reason },
+                            cleanup: true,
+                            elapsed: Date.now() - start,
+                            filesWritten,
+                            bytesWritten,
+                            supervisorRpc,
+                            metadataOverlay,
+                            phases,
+                        };
+                    }
                     const phaseError = error instanceof GitClonePhaseError
                         ? error
                         : new GitClonePhaseError('clone-prepare', phaseErrorMessage(error), {
@@ -946,6 +1007,7 @@ export async function execGitNetwork(ctx, env, opts, /**
             const call = entrypoint.fetch(new Request('http://git/op', {
                 method: 'POST',
                 body: JSON.stringify({ ...facetOpts, invocationId }),
+                signal,
             })).then(async (response) => {
                 try {
                     return await response.json();
@@ -954,11 +1016,28 @@ export async function execGitNetwork(ctx, env, opts, /**
                     disposeRpcResource(response);
                 }
             });
+            const stop = cancellation(signal);
             let result;
             try {
-                result = await Promise.race([call, timeout]);
+                result = await Promise.race([call, timeout, stop.stopped]);
+            }
+            catch (error) {
+                if (!(error instanceof GitNetworkCancelled))
+                    throw error;
+                // A fetch, pull or push stopped: what its facet wrote stays, as git's interrupted fetch leaves its objects.
+                return {
+                    success: false,
+                    error: error.message,
+                    cancelled: { reason: error.reason },
+                    elapsed: Date.now() - start,
+                    filesWritten: 0,
+                    bytesWritten: 0,
+                    supervisorRpc: createSupervisorRpcCounters(),
+                    metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
+                };
             }
             finally {
+                stop.off();
                 if (timeoutHandle !== undefined)
                     clearTimeout(timeoutHandle);
             }
@@ -1013,6 +1092,7 @@ export async function execGitNetwork(ctx, env, opts, /**
         return {
             success: false,
             error: e?.message || String(e),
+            ...(e instanceof GitNetworkCancelled ? { cancelled: { reason: e.reason } } : {}),
             elapsed: Date.now() - start,
             filesWritten: 0,
             bytesWritten: 0,
