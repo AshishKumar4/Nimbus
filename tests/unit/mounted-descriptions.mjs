@@ -235,6 +235,146 @@ await check('a description holds its file across an unmount and a mount at its n
   }
 });
 
+// ── The open resolves once: everything it and its description do is the file it found ──
+const text = (ref) => (ref === null || ref === undefined ? ref : dec.decode(ref.read()));
+const unranged = (vfs) => new Proxy(vfs, {
+  get(target, key) {
+    if (key === 'writeRange') return undefined;
+    if (key === 'sync') return unranged(target);
+    const value = target[key];
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+  has: (target, key) => key !== 'writeRange' && key in target,
+});
+
+await check('a mount made at the name while the open awaits its access check is not what it truncates', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  let release;
+  const asked = new Promise((resolve) => { release = resolve; });
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/w', asyncOnly(first, { deep: true, methods: { access() {} }, beforeCall: (method) => (method === 'access' ? (entered(), asked) : undefined) }));
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const opening = proc.open('/w/x', { read: true, write: true, truncate: true });
+  await entering;
+  files.vfs.unmount('/w');
+  files.vfs.mount('/w', asyncOnly(second, { deep: true }));
+  release();
+  const fd = await opening;
+  assert.equal(first.readFile('/x').byteLength, 0, 'the file it found is truncated');
+  assert.equal(dec.decode(second.readFile('/x')), 'second', 'the one mounted since is untouched');
+  assert.equal((await proc.read(fd.id, 0, 10)).byteLength, 0, 'and its descriptor reads the file it truncated');
+  await proc.close(fd.id);
+  files.vfs.unmount('/w');
+});
+
+await check('held writes overlay the file they are for, not one that has its name since', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  files.vfs.mount('/v', unranged(first));
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const fd = proc.open('/v/x', { read: true, write: true });
+  proc.write(fd.id, 0, enc.encode('FI'));
+  files.vfs.unmount('/v');
+  files.vfs.mount('/v', unranged(second));
+  assert.equal(dec.decode(proc.readFile('/v/x')), 'second', 'a path read of the new mount');
+  const other = proc.open('/v/x', { read: true });
+  assert.equal(dec.decode(proc.read(other.id, 0, 10)), 'second', 'a descriptor on the new mount');
+  assert.equal(dec.decode(proc.read(fd.id, 0, 10)), 'FIrst', 'the old descriptor still sees its own');
+  proc.close(other.id);
+  proc.close(fd.id);
+  assert.equal(dec.decode(first.readFile('/x')), 'FIrst');
+  assert.equal(dec.decode(second.readFile('/x')), 'second');
+  files.vfs.unmount('/v');
+});
+
+await check('fstat of a mounted file has the identity its stat has', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('x'));
+  files.vfs.mount('/i', backend);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const fd = proc.open('/i/x', { read: true });
+  const [st, fst] = [proc.stat('/i/x'), proc.fstat(fd.id)];
+  assert.deepEqual([fst.dev, fst.ino], [st.dev, st.ino]);
+  assert.ok(st.ino !== 0 && st.dev !== 0);
+  proc.close(fd.id);
+  files.vfs.unmount('/i');
+});
+
+await check('a write through a descriptor is heard as the file the mount resolved, not its link text', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/real', enc.encode('real'));
+  backend.symlink('/real', '/alias');
+  files.vfs.mount('/r2', backend, { resolvesPaths: true });
+  const heard = [];
+  const stop = files.vfs.observeWrites((event) => { if (event.path.startsWith('/r2')) heard.push([event.path, text(event.before), text(event.after)]); });
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/r2/alias', { read: true, write: true });
+    proc.write(fd.id, 0, enc.encode('RE'));
+    proc.close(fd.id);
+    assert.deepEqual(heard, [['/r2/alias', 'real', 'REal']]);
+  } finally {
+    stop();
+    files.vfs.unmount('/r2');
+  }
+});
+
+await check('a write to a file whose mount left its point is not heard as a change to what is there now', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  files.vfs.mount('/u', first);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const fd = proc.open('/u/x', { read: true, write: true });
+  files.vfs.unmount('/u');
+  files.vfs.mount('/u', second);
+  const heard = [];
+  const stop = files.vfs.observeWrites((event) => { if (event.path.startsWith('/u')) heard.push(event.path); });
+  try {
+    proc.write(fd.id, 0, enc.encode('FI'));
+    proc.close(fd.id);
+    assert.deepEqual(heard, []);
+    assert.equal(dec.decode(first.readFile('/x')), 'FIrst');
+  } finally {
+    stop();
+    files.vfs.unmount('/u');
+  }
+});
+
+await check('a pin cannot reach what the namespace hides under a directory it makes', async () => {
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  kernel.mkdir('real', { recursive: true });
+  kernel.writeFile('real/hidden', 'covered');
+  kernel.symlink('/real', 'parent');
+  files.vfs.mount('/parent/mounted', new MemoryVFS({ uid: 1000, gid: 1000 }));
+  const view = files.vfs.as(USER);
+  assert.equal(await view.stat('/parent/hidden'), null, 'the namespace shows nothing there');
+  assert.throws(() => view.pin('/parent/hidden', { follow: true, sync: true }), refused('ENOENT'));
+  files.vfs.unmount('/parent/mounted');
+});
+
+await check('a mount point opened is its mount\'s root, after an unmount and a mount there too', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/in-first', enc.encode('1'));
+  second.writeFile('/in-second', enc.encode('2'));
+  files.vfs.mount('/d', first);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const fd = proc.open('/d', { read: true, directory: true });
+  files.vfs.unmount('/d');
+  files.vfs.mount('/d', second);
+  assert.deepEqual(proc.readdirHandle(fd.id).map((entry) => entry.name), ['in-first']);
+  proc.close(fd.id);
+  files.vfs.unmount('/d');
+});
+
 {
   const proc = files.bind({ pid: ++pid, cred: USER });
   proc.writeFile('/home/user/sq.log', '12345');

@@ -11,7 +11,7 @@
 import { processView, type Description, type DescriptorScope } from '../runtime/descriptors.js';
 import type { RuntimeFileHandle, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import { runtimeStatOf, type PinnedFile, type PinnedFiles } from './composite.js';
-import { andThen, isPromise, readRangeOrWhole, type Awaitable, type VFS, type VfsDirentType, type VfsStat } from './vfs.js';
+import { andThen, isPromise, readRangeOrWhole, type Awaitable, type VfsDirentType, type VfsStat } from './vfs.js';
 import { isVfsError } from './vfs-error.js';
 
 /** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
@@ -21,9 +21,6 @@ export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 export type Refuse = (code: string, syscall: string) => Error;
 
 export interface MountedOpen {
-  files: VFS;
-  /** The name opened, in the namespace. */
-  name: string;
   flags: RuntimeFileHandle['flags'];
   refuse: Refuse;
   /** The mode a file this open makes is made with. */
@@ -31,31 +28,42 @@ export interface MountedOpen {
 }
 
 /**
- * open(2) of `name`, one rule for every caller, Linux's where Linux and
- * POSIX differ: O_CREAT|O_EXCL is EEXIST on the name itself, a link
- * included; O_NOFOLLOW of a link is ELOOP; an absent name without O_CREAT is
- * ENOENT, and with O_DIRECTORY EINVAL; O_DIRECTORY of anything else is
- * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); and only
- * then is the file made, or truncated. Answers the file's stat. Who may
- * open a file for what is the mount's own policy, as for every operation on
- * it (VFS.access, which `authorize` asks of a file that is there, before
- * anything changes): a backend that takes a caller's credential enforces
- * modes; a backend of one identity has none. `describes`: whether the open
- * keeps a description, whose write rights a directory may carry (a WASI
- * guest asks a capability set); an open that keeps none (a wave's) is an
- * open to write, which a directory refuses. `settled` runs right before the
- * answer, or the change.
+ * Where an open looks its name up (CompositeVFS.pin): through a link at it,
+ * unless it declines to (O_NOFOLLOW) or answers for the name itself
+ * (O_CREAT|O_EXCL).
  */
-export function openOnMount(
-  open: MountedOpen,
-  describes: boolean,
-  hooks: { authorize(there: VfsStat): Awaitable<void>; settled?(): Awaitable<void> },
-): Awaitable<VfsStat> {
-  const { files, name, flags, refuse } = open;
-  return andThen(files.stat(name, { follow: false }), (named) => {
+export function openFollows(flags: RuntimeFileHandle['flags']): boolean {
+  return flags.followSymlinks && !(flags.create && flags.exclusive);
+}
+
+/**
+ * open(2) of `file` (pinned where its name was looked up, openFollows), one
+ * rule for every caller, Linux's where Linux and POSIX differ: O_CREAT|O_EXCL
+ * is EEXIST on the name itself, a link included; O_NOFOLLOW of a link is
+ * ELOOP; an absent name without O_CREAT is ENOENT, and with O_DIRECTORY
+ * EINVAL; O_DIRECTORY of anything else is ENOTDIR; a directory refuses
+ * O_TRUNC and O_APPEND (EISDIR); and only then is the file made, or
+ * truncated, there. Answers the file's stat. Who may open a file for what is
+ * its mount's own policy, as for every operation on it (VFS.access, asked of
+ * a file that is there before anything changes): a backend that takes a
+ * caller's credential enforces modes; a backend of one identity has none.
+ * `describes`: whether the open keeps a description, whose write rights a
+ * directory may carry (a WASI guest asks a capability set); an open that
+ * keeps none (a wave's) is an open to write, which a directory refuses.
+ * `settled` runs right before the answer, or the change.
+ */
+export function openOnMount(file: PinnedFile, open: MountedOpen, describes: boolean, settled?: () => Awaitable<void>): Awaitable<VfsStat> {
+  const { files, path } = file;
+  const { flags, refuse } = open;
+  const statAfter = (): Awaitable<VfsStat> => andThen(files.stat(path), (after) => {
+    if (after === null) throw refuse('ENOENT', 'open');
+    return after;
+  });
+  return andThen(files.stat(path, { follow: false }), (named) => {
     if (named !== null && flags.create && flags.exclusive) throw refuse('EEXIST', 'open');
     if (named?.type === 'symlink' && !flags.followSymlinks) throw refuse('ELOOP', 'open');
-    return andThen(named?.type === 'symlink' ? files.stat(name) : named, (there) => {
+    // A link a backend resolves itself (MountOptions.resolvesPaths) is followed by that backend.
+    return andThen(named?.type === 'symlink' ? files.stat(path) : named, (there) => {
       if (there === null) {
         if (!flags.create) throw refuse('ENOENT', 'open');
         if (flags.directory) throw refuse('EINVAL', 'open');
@@ -63,37 +71,37 @@ export function openOnMount(
         if (flags.directory && there.type !== 'directory') throw refuse('ENOTDIR', 'open');
         if (there.type === 'directory' && (flags.truncate || flags.append || (flags.write && !describes))) throw refuse('EISDIR', 'open');
       }
-      return andThen(there === null ? undefined : hooks.authorize(there), () => andThen(hooks.settled?.(), () => {
+      const access = there === null ? undefined : files.access?.(path, openAccess(flags, there, describes));
+      return andThen(access, () => andThen(settled?.(), () => {
         if (there !== null && !flags.truncate) return there;
         if (there !== null) {
           // A description needs only the file's inode, which truncating keeps; a wave answers the stat after.
-          const truncated = need(files.truncate, refuse, 'open').call(files, name, 0);
-          return describes ? andThen(truncated, () => there) : andThen(truncated, () => statAfter(open));
+          const truncated = need(files.truncate, refuse, 'open').call(files, path, 0);
+          return describes ? andThen(truncated, () => there) : andThen(truncated, statAfter);
         }
-        return andThen(files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), () => statAfter(open));
+        return andThen(files.writeFile(path, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), statAfter);
       }));
     });
   });
 }
 
-/** The access an open asks of a file that is there (VFS.access's mode): a directory's write rights are a capability, not an access. */
-export function openAccess(flags: RuntimeFileHandle['flags'], there: VfsStat): number {
-  return (flags.read ? 4 : 0) | (flags.write && there.type !== 'directory' ? 2 : 0);
-}
-
-function statAfter({ files, name, refuse }: MountedOpen): Awaitable<VfsStat> {
-  return andThen(files.stat(name), (after) => {
-    if (after === null) throw refuse('ENOENT', 'open');
-    return after;
-  });
+/**
+ * The access an open asks of a file that is there (VFS.access's mode). A
+ * description's write rights on a directory are a capability, not an
+ * access; a wave's open is to write.
+ */
+function openAccess(flags: RuntimeFileHandle['flags'], there: VfsStat, describes: boolean): number {
+  return (flags.read ? 4 : 0) | (flags.write && (!describes || there.type !== 'directory') ? 2 : 0);
 }
 
 export interface MountedDescriptionOptions extends MountedOpen {
+  /** The name opened, in the namespace. */
+  name: string;
   /** The descriptors' scope: whose pending writes this process reads (processView). */
   scope: DescriptorScope;
-  /** The file the opened name leads to now (CompositeVFS.pin): what the description holds, whatever later moves at the name. */
-  pin(name: string): Awaitable<PinnedFile>;
-  /** `files` answers only by awaiting (the namespace itself, for an asynchronous mount). */
+  /** The file `name` leads to now (CompositeVFS.pin): what the open and its description hold, whatever later moves at the name. */
+  pin(name: string, follow: boolean): Awaitable<PinnedFile>;
+  /** Its files answer only by awaiting (an asynchronous mount). */
   awaits: boolean;
   /** O_SYNC: each write in the mount before it returns. */
   sync: boolean;
@@ -101,13 +109,9 @@ export interface MountedDescriptionOptions extends MountedOpen {
   bufferedWriteBytes: number;
 }
 
-/** open(2) of a mounted file, and the description its descriptors share. */
+/** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export function openMounted(options: MountedDescriptionOptions): Awaitable<Description> {
-  // A file that is there is pinned to be asked; one the open makes, once it is made.
-  let pinned: PinnedFile | undefined;
-  const pin = (): Awaitable<PinnedFile> => pinned ?? andThen(options.pin(options.name), (file) => (pinned = file));
-  const authorize = (there: VfsStat): Awaitable<void> => andThen(pin(), (file) => file.files.access?.(file.path, openAccess(options.flags, there)));
-  return andThen(openOnMount(options, true, { authorize }), (stat) => andThen(pin(), (file) => new MountedDescription(options, file, stat)));
+  return andThen(options.pin(options.name, openFollows(options.flags)), (file) => andThen(openOnMount(file, options, true), (stat) => new MountedDescription(options, file, stat)));
 }
 
 type Held = { offset: number | null; bytes: Uint8Array };
@@ -129,8 +133,10 @@ class MountedDescription implements Description {
   private readonly files: PinnedFiles;
   /** The path they are handed. */
   private readonly at: string;
-  /** The namespace's name for it: what this process's path reads overlay (processView). */
+  /** The namespace's name for it, when it was opened. */
   private readonly name: string;
+  /** Which file it is (PinnedFile.key): whose held writes this process's reads of it overlay (processView). */
+  private readonly file: string;
   private readonly immediate: boolean;
   private inPlace = true;
   private pending: Held[] = [];
@@ -142,10 +148,12 @@ class MountedDescription implements Description {
     this.files = file.files;
     this.at = file.path;
     this.name = file.name;
+    this.file = file.key;
     this.immediate = options.sync || options.awaits;
   }
 
   path(): string { return this.name; }
+  key(): string { return this.file; }
 
   stat(): Awaitable<RuntimeVfsStat> {
     return andThen(this.files.stat(this.at), (there) => {
@@ -218,7 +226,7 @@ class MountedDescription implements Description {
     return processView(this.options.scope, () => {
       const file = this.whole();
       return isPromise(file) ? null : file;
-    }, this.name);
+    }, this.file);
   }
 
   private heldAppend(bytes: Uint8Array): Awaitable<number> {

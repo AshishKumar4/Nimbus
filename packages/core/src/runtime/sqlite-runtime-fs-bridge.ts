@@ -3,7 +3,7 @@ import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js
 import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
-import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
+import { runtimeStatOf, type CompositeVFS, type PinnedFile } from '../vfs/composite.js';
 import { isPromise, readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
@@ -115,7 +115,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located === null) throw fsError('ELOOP', 'stat', path);
       if (located.mount) {
         const stat = located.mount.stat(located.path, { follow: followSymlinks });
-        const viewed = stat !== null && stat.type === 'file' ? this.processView(located.mount, located.path) : undefined;
+        const viewed = stat !== null && stat.type === 'file' ? this.processView(located, followSymlinks) : undefined;
         if (viewed) return { ...runtimeStatOf(stat!), size: viewed.byteLength };
         return stat === null ? null : runtimeStatOf(stat);
       }
@@ -164,7 +164,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
             ? this.vfs.readFileUncached(located.path)
             : this.vfs.readFile(located.path);
         }
-        return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
+        return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
       } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
@@ -173,8 +173,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
-  private processView(mount: SyncVFS, name: string): Uint8Array | undefined {
-    return processView(this.scope, () => (mount.stat(name) === null ? null : mount.readFile(name)), name);
+  private processView(located: { mount: SyncVFS; namespace: CompositeVFS; path: string }, follow: boolean): Uint8Array | undefined {
+    const { mount, namespace, path } = located;
+    return processView(this.scope, () => (mount.stat(path) === null ? null : mount.readFile(path)), () => (namespace.pin(path, { follow, sync: true }) as PinnedFile).key);
   }
 
   writeFile(
@@ -235,7 +236,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         if (options.expectedEpoch !== undefined) throw fsError('ESTALE', 'read', path);
         const mount = located.mount;
-        const viewed = this.processView(mount, located.path);
+        const viewed = this.processView(located, options.followSymlinks !== false);
         if (viewed) return viewed.slice(offset, offset + length);
         return readRangeOrWhole(mount, located.path, offset, length);
       }
@@ -378,8 +379,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         const namespace = located.namespace;
         const node = openMounted({
-          files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
-          refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name) => namespace.pin(name, { follow: true, sync: true }),
+          name: located.path, flags: normalizedFlags, mode: flags.mode,
+          refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
           awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
         });
         // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.
