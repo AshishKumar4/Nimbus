@@ -42,17 +42,13 @@ export interface OpencodeTreeSitterWasms {
 }
 export declare const OPENCODE_TREE_SITTER_WASMS: OpencodeTreeSitterWasms | null;
 /**
- * Staged TUI worker bundle filenames. The opencode TUI client spawns its API
- * server (`server`) and OpenTUI its syntax-highlight parser (`parser`) via
- * `new Worker(...)`; the in-isolate Worker polyfill imports these from the
- * facet module map (FacetManager.opencodeWorkerModuleEntries). Null when the
- * artifact is unstaged or the workers were not built.
+ * Staged OpenTUI parser worker bundle. OpenTUI spawns its syntax-highlight
+ * parser via `new Worker(...)`; the in-isolate Worker polyfill imports it from
+ * the facet module map. opencode's own API-server worker is never built — a
+ * Nimbus TUI attaches to an `opencode serve` facet over HTTP — and the polyfill
+ * fails loud if anything spawns it. Null when the artifact is unstaged.
  */
-export interface OpencodeTuiWorkers {
-    readonly server: string;
-    readonly parser: string;
-}
-export declare const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null;
+export declare const OPENCODE_TUI_PARSER_WORKER: string | null;
 /**
  * Staged yoga-layout wasm filename. OpenTUI lays out every TUI frame with
  * yoga; the runner pre-registers this as a pre-compiled WebAssembly.Module on
@@ -62,10 +58,9 @@ export declare const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null;
 export declare const OPENCODE_YOGA_WASM: string | null;
 /**
  * Staged chunk-pack filename: one JSON asset mapping every split-build
- * `chunk-<hash>.js` module name to its ESM source. index.js and worker.js
- * share these chunks (code-splitting deduplicates the API-server code that,
- * bundled twice, pushed the TUI facet over the Worker memory limit); the
- * supervisor expands the pack into facet module-map entries per spawn. Null
+ * `chunk-<hash>.js` module name to its ESM source. index.js imports these
+ * chunks from its lazy command handlers; the supervisor expands the pack into
+ * facet module-map entries per spawn. Null
  * when the artifact is unstaged.
  */
 export declare const OPENCODE_CHUNKS_PACK: string | null;

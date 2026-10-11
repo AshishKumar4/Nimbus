@@ -9,6 +9,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { z } from 'zod/v4';
+import { classifyOpenCodeInvocation, buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 /** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
 export function isRuntimeInstallHint(command) {
     return '__nimbusRuntimeInstallHint' in command && command.__nimbusRuntimeInstallHint === true;
@@ -167,6 +168,23 @@ export function installNpmBinFallbackResolver(registry, deps) {
 }
 async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, disposition) {
     const shellLine = `${name} ${argv.join(' ')}`.trim();
+    let plan;
+    if (disposition === 'dual') {
+        const planned = buildOpenCodeTransportPlan(argv, cwd, ctx.env ?? {});
+        if ('error' in planned) {
+            ctx.stderr.write(`${name}: ${planned.error}\n`);
+            return 1;
+        }
+        try {
+            plan = { ...planned, cwd: await ctx.vfs.realpath(planned.cwd) };
+            if ((await ctx.vfs.stat(plan.cwd))?.type !== 'directory')
+                throw new Error(`not a directory: ${plan.cwd}`);
+        }
+        catch (error) {
+            ctx.stderr.write(`${name}: ${formatError(error)}\n`);
+            return 1;
+        }
+    }
     const startedAt = Date.now();
     const fm = deps.getFacetManager();
     // Piped stdin is not yet wired for staged artifacts; the interactive TUI reads
@@ -177,7 +195,7 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, dispositi
     try {
         // Same contract as the node-bin path: a user-invoked program runs to
         // its own exit; the shell does not bound the wait.
-        result = await stagedArtifactWork(fm, artifact, base, disposition);
+        result = await stagedArtifactWork(fm, artifact, base, disposition, plan);
     }
     catch (e) {
         ctx.stderr.write(`${name}: ${formatError(e)}\n`);
@@ -206,10 +224,10 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, dispositi
     deps.emitShellExecDone(result.pid, shellLine, result.exitCode, Date.now() - startedAt);
     return result.exitCode;
 }
-function stagedArtifactWork(fm, artifact, base, disposition) {
+function stagedArtifactWork(fm, artifact, base, disposition, plan) {
     switch (disposition) {
         case 'dual':
-            return fm.execStagedArtifactDual(artifact, base);
+            return fm.execStagedArtifactDual(artifact, { ...base, plan });
         case 'server':
             return fm.execStagedArtifactServer(artifact, base);
         case 'attached':
@@ -225,21 +243,10 @@ function stagedArtifactWork(fm, artifact, base, disposition) {
 export function classifyStagedArtifact(artifact, argv) {
     if (artifact !== 'opencode')
         return 'oneshot';
-    if (argv.some(isNonInteractiveArg))
-        return 'oneshot';
     if (argv.includes(OPENCODE_TREE_SITTER_DIAG_ARG))
         return 'oneshot';
-    const sub = argv.find((a) => !a.startsWith('-'));
-    if (sub === undefined)
-        return 'dual'; // bare `opencode` → serve + attach
-    if (OPENCODE_SERVER_SUBCOMMANDS.has(sub))
-        return 'server';
-    if (OPENCODE_TUI_SUBCOMMANDS.has(sub))
-        return 'attached';
-    return 'oneshot';
+    return classifyOpenCodeInvocation(argv);
 }
-const OPENCODE_SERVER_SUBCOMMANDS = new Set(['serve', 'web']);
-const OPENCODE_TUI_SUBCOMMANDS = new Set(['attach']);
 function formatError(error) {
     if (error instanceof Error)
         return error.stack || error.message;

@@ -317,33 +317,35 @@ process.on("SIGWINCH", () => {
 });
 `;
 /**
- * In-isolate Web Worker polyfill for the opencode TUI client/server split.
+ * In-isolate Web Worker polyfill for OpenTUI's syntax-highlight parser.
  *
- * opencode's TUI (the bare `opencode` process) is a CLIENT that spawns its API
- * SERVER as `new Worker("./worker.js", {env})` and talks to it over birpc
- * (cli/cmd/tui/worker.ts). OpenTUI's syntax-highlight tree-sitter parser
- * likewise runs in `new Worker("./parser.worker.js")`. On a real platform each
- * is a separate OS thread / V8 isolate; on workerd there is one isolate per
- * facet and no real `Worker` global (node-shims stubs worker_threads.Worker as
- * a no-op), so `client.call(...)` hangs forever before the renderer mounts.
+ * OpenTUI runs its tree-sitter parser as `new Worker("./parser.worker.js")`. On
+ * a real platform that is a separate OS thread / V8 isolate; on workerd there is
+ * one isolate per facet and no real `Worker` global (node-shims stubs
+ * worker_threads.Worker as a no-op), so the parser's first message would hang
+ * forever. This polyfill runs the parser module in the client's isolate,
+ * cooperating over an in-memory channel. `new Worker(file, opts)`:
  *
- * This polyfill runs BOTH the client and the worker module in the same isolate,
- * cooperating over an in-memory MessageChannel. `new Worker(file, opts)`:
- *
- *   1. Maps the worker `file` (`./worker.js` / `./parser.worker.js`) to its
- *      staged module-map specifier.
- *   2. Builds a worker-side context (the `__nimbusWorker` the worker bundle's
+ *   1. Maps the worker `file` to its staged module-map specifier.
+ *   2. Builds a worker-side context (the `__nimbusWorker` the parser bundle's
  *      build-time banner claims via globalThis.__nimbusWorkerClaim) carrying
  *      the worker's own `postMessage` (→ the Worker instance's message
  *      listeners) and `onmessage` (← messages the client posts). `self` members
  *      other than messaging fall through to globalThis.
  *   3. Parks that context for the claim, then dynamically imports the staged
- *      worker module — running its top-level (Rpc.listen / OTUI parser setup),
- *      which installs `context.onmessage`.
+ *      parser module — running its top-level, which installs `context.onmessage`.
  *   4. Bridges the two directions: the Worker instance's postMessage delivers to
  *      the worker context's onmessage; the worker's postMessage delivers to the
  *      instance's message listeners. Messages sent before the worker installs
  *      its handler are buffered and flushed on install.
+ *
+ * opencode's own API-server worker (upstream `cli/cmd/tui/worker.ts`) is not
+ * part of this. A Nimbus TUI attaches over HTTP to a dedicated `opencode serve`
+ * facet, so no supported path — serve, attach, explicit attach, or a one-shot
+ * subcommand — spawns it; it is neither built nor staged. Naming it is a
+ * fail-loud sentinel (see __nimbusWorkerSpecifier): it means the default command
+ * regressed to upstream's local-worker shape, whose split chunk graph also kills
+ * the production workerd process when imported into a live facet (defect #20).
  *
  * The Worker instance exposes the EventEmitter + DOM surface opencode uses:
  * `onmessage`, `onerror`, `postMessage`, `terminate`, and `on/once/off/
@@ -360,9 +362,12 @@ export const WORKER_POLYFILL_SRC = `
     globalThis.__nimbusWorkerImport = (specifier) => import(specifier);
   }
 
-  // Map a Worker spec (a baked "./worker.js" string, a URL, or a file URL the
-  // bundle constructs) to its staged module-map specifier. Fail loud on an
-  // unrecognized worker so a future opencode worker is not silently no-op'd.
+  // Map a Worker spec (a string, a URL, or a file URL the bundle constructs) to
+  // its staged module-map specifier. The parser is the only worker a supported
+  // path spawns. Upstream's API-server worker is unreachable by construction —
+  // its two possible target names (the built worker.js, and the worker.ts
+  // source URL its resolver falls back to when the built file is absent) both
+  // fail loud, as does any name Nimbus has never staged.
   const __nimbusWorkerSpecifier = (spec) => {
     let s = "";
     if (typeof spec === "string") s = spec;
@@ -370,8 +375,14 @@ export const WORKER_POLYFILL_SRC = `
     else if (spec && typeof spec.pathname === "string") s = spec.pathname;
     else s = String(spec);
     const base = s.split(/[\\\\/]/).pop() || s;
-    if (base === "worker.js") return "worker.js";
     if (base === "parser.worker.js") return "parser.worker.js";
+    if (base === "worker.js" || base === "worker.ts") {
+      throw new Error(
+        "Nimbus: opencode's API-server worker (" + s + ") is never built or staged — " +
+        "a Nimbus TUI attaches to the 'opencode serve' facet over HTTP. Spawning it means " +
+        "the default command regressed to upstream's local-worker shape"
+      );
+    }
     throw new Error("Nimbus: unsupported in-isolate Worker target: " + s);
   };
 
@@ -409,58 +420,6 @@ export const WORKER_POLYFILL_SRC = `
     });
   };
 
-  // In-polyfill replacement for worker.js's RPC surface (opencode's
-  // cli/cmd/tui/worker.ts, spoken over the Rpc JSON protocol). The attach
-  // facet's HTTP already flows to the remote serve facet, so the local
-  // worker's only load-bearing method here is the fetch proxy; server()
-  // must never be called (the serve facet owns the port), and the
-  // upgrade/reload/shutdown lifecycle belongs to the serve facet too.
-  async function __nimbusStubWorkerRpc(worker, event) {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
-    if (!msg || msg.type !== "rpc.request") return;
-    const reply = (payload) => {
-      queueMicrotask(() => worker.__nimbusDeliverToClient(JSON.stringify(payload)));
-    };
-    try {
-      let result;
-      switch (msg.method) {
-        case "fetch": {
-          const req = msg.input || {};
-          const res = await fetch(req.url, {
-            method: req.method,
-            headers: req.headers,
-            body: req.body,
-          });
-          result = {
-            status: res.status,
-            headers: Object.fromEntries(res.headers.entries()),
-            body: await res.text(),
-          };
-          break;
-        }
-        case "server":
-          throw new Error(
-            "Nimbus: the attach facet does not host the opencode server — " +
-            "it attaches to the dedicated 'opencode serve' facet"
-          );
-        case "snapshot":
-          result = null;
-          break;
-        case "checkUpgrade":
-        case "reload":
-        case "shutdown":
-          result = void 0;
-          break;
-        default:
-          throw new Error("Nimbus: unsupported TUI worker RPC: " + String(msg.method));
-      }
-      reply({ type: "rpc.result", result, id: msg.id });
-    } catch (e) {
-      reply({ type: "rpc.error", error: e instanceof Error ? e.message : String(e), id: msg.id });
-    }
-  }
-
   class NimbusWorker {
     constructor(spec, opts) {
       this.onmessage = null;
@@ -472,25 +431,7 @@ export const WORKER_POLYFILL_SRC = `
       this.__inbox = [];
       this.__ctx = __nimbusWorkerCtx(this);
       const specifier = __nimbusWorkerSpecifier(spec);
-      // worker.js is the TUI's LOCAL API server. A Nimbus attach facet
-      // always talks to a REMOTE opencode-serve facet instead (the dual
-      // split), and dynamically importing worker.js's split-build chunk
-      // graph into a live facet kills the production workerd process
-      // outright — supervisor DO included (defect #20; a workerd platform
-      // bug, see scratchpad/oc-attach-reset-rootcause.md). So the worker is
-      // answered by an in-polyfill RPC stub and its bundle is NEVER
-      // imported. parser.worker.js (flat, no chunk graph) loads for real.
-      if (specifier === "worker.js") {
-        this.__ctx.onmessage = (o) => { void __nimbusStubWorkerRpc(this, o); };
-        queueMicrotask(() => {
-          const pending = this.__inbox;
-          this.__inbox = null;
-          if (pending) for (const m of pending) this.__deliverToWorker(m);
-        });
-        this.__ready = Promise.resolve();
-        return;
-      }
-      // The worker bundle's banner reads this synchronously at module-init.
+      // The parser bundle's banner reads this synchronously at module-init.
       globalThis.__nimbusWorkerClaim = () => this.__ctx;
       this.__ready = (async () => {
         try {
@@ -754,12 +695,10 @@ if (${resident ? 'true' : 'false'}) {
   try { globalThis.process = __processMod; } catch {}
 }
 ${attachedTty ? generateOpenTUIBackendBootCode() : ''}
-// Interactive TUI: install the in-isolate Worker polyfill so opencode's TUI
-// client can spawn its API server (cli/cmd/tui/worker.ts → ./worker.js) and
-// OpenTUI its syntax-highlight parser (./parser.worker.js) inside this facet.
-// Without it \`new Worker(...)\` is a no-op and the client's first RPC hangs
-// before the renderer mounts. One-shot \`opencode run\` never reaches the TUI
-// command, so the polyfill is attachedTty-only.
+// Interactive TUI: install the in-isolate Worker polyfill so OpenTUI can spawn
+// its syntax-highlight parser (./parser.worker.js) inside this facet. Without
+// it \`new Worker(...)\` is a no-op and the parser's first message never lands.
+// Only the attached renderer highlights, so the polyfill is attachedTty-only.
 if (${attachedTty ? 'true' : 'false'}) {
 ${WORKER_POLYFILL_SRC}
 }

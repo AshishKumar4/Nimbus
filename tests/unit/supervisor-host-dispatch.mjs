@@ -100,7 +100,6 @@ const INPUTS = {
   writeFileStat: [wPath, content],
   stat: [path, options],
   lstat: [linkPath],
-  hasLegacySymlinkUnder: [path],
   utimes: [utimesPath, atimeMs, mtimeMs],
   chmod: [chmodPath, mode],
   access: [path, rOk],
@@ -330,7 +329,6 @@ const nativeAssert = {
   },
   stat: (r) => assert.equal(r.type, 'file', 'stat'),
   lstat: (r) => assert.equal(r.type, 'symlink', 'lstat'),
-  hasLegacySymlinkUnder: (r) => assert.equal(r, false, 'hasLegacySymlinkUnder'),
   utimes: async (r) => {
     assertReceipt(r, 'utimes answers a mutation receipt');
     const stat = kernelVfs.stat('home/user/utimes');
