@@ -34,6 +34,8 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
 const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 export class SessionProcessSupervisor {
     table = new ProcessTable();
+    /** Why no process is admitted any more (closeAdmission); null while they are. */
+    refusal = null;
     input = new ProcessInputStore();
     logs = new ProcessLogStore();
     /** Terminators for processes whose work is a promise this session owns. */
@@ -74,12 +76,21 @@ export class SessionProcessSupervisor {
     // ── Lifecycle / PID authority ─────────────────────────────────────────
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, opts = {}) {
+        if (this.refusal !== null)
+            throw this.refusal;
         const entry = this.table.spawn(command, argv, cwd, opts);
         if (opts.longRunning)
             this.table.setLongRunning(entry.pid);
         if (opts.attachedTty)
             this.table.setAttachedTty(entry.pid);
         return entry;
+    }
+    /**
+     * Admit no process from now on: each spawn throws `reason`. A destroy's,
+     * before it takes the processes it stops, so none starts behind it.
+     */
+    closeAdmission(reason) {
+        this.refusal = reason;
     }
     /** Mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid) {

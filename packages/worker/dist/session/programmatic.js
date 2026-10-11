@@ -958,16 +958,24 @@ export async function rpcDeleteFile(self, path, options = {}, cred) {
         fs.unlink(p);
     });
 }
-export async function rpcDestroy(self, options = {}) {
+/** One destroy at a time: one asked for while another runs is answered by it. */
+export function rpcDestroy(self, options = {}) {
+    return self.destroying ??= destroySession(self, options).finally(() => { self.destroying = null; });
+}
+async function destroySession(self, options) {
     self.ensureSqliteFs();
     const guardedVfs = self.sqliteFs;
     // A lease that stopping the session's processes does not end refuses the
     // destroy before anything is stopped: a refused destroy leaves the session
     // as it was. What their work holds goes as it stops (a delegation with its
-    // process, a clone's lease with its clone). Past this, it completes.
+    // process, a clone's lease with its clone).
     if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
         throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
     }
+    // Past this it completes, and nothing starts meanwhile: the table it stops
+    // admits no process, and a request that would ready the session waits for
+    // the one it makes again (rpcDestroy, ensureRuntimeReady).
+    self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
     const reason = typeof options.reason === 'string' && options.reason.trim()
         ? options.reason.trim().slice(0, 200)
         : null;

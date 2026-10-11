@@ -55,6 +55,8 @@ export interface ProcessTerminalDescriptor {
 }
 export declare class SessionProcessSupervisor implements ProcessOutput {
     private readonly table;
+    /** Why no process is admitted any more (closeAdmission); null while they are. */
+    private refusal;
     private readonly input;
     private logs;
     /** Terminators for processes whose work is a promise this session owns. */
@@ -94,6 +96,11 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private readonly unpublishedEnds;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
+    /**
+     * Admit no process from now on: each spawn throws `reason`. A destroy's,
+     * before it takes the processes it stops, so none starts behind it.
+     */
+    closeAdmission(reason: Error): void;
     /** Mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid: number): void;
     /** Mark an existing entry as an attached terminal process. Idempotent. */

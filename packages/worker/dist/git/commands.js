@@ -3022,7 +3022,7 @@ processes) {
                             result = { success: false, error: String(error?.message ?? error), cleanup: true, elapsed: 0, filesWritten: 0, bytesWritten: 0 };
                         }
                         if (result.success) {
-                            await deleteCloneJob(doCtx.storage, job.dir);
+                            await deleteCloneJob(doCtx.storage, job);
                             progress.write(`\n[git] clone complete (${result.filesWritten} files, ` +
                                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                             cloned = true;
@@ -3039,7 +3039,7 @@ processes) {
                         if (result.cancelled?.reason === SESSION_DESTROYED)
                             return code;
                         if (result.cleanup !== true) {
-                            await deleteCloneJob(doCtx.storage, job.dir);
+                            await deleteCloneJob(doCtx.storage, job);
                             return code;
                         }
                         // As git's remove_junk: in the DO, under the clone's lease (its

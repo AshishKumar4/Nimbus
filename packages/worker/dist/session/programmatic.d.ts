@@ -49,6 +49,8 @@ interface ProgrammaticCirrusServer {
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
+    /** The destroy running (rpcDestroy), until it is answered. */
+    destroying?: Promise<SessionDestroyResult> | null;
     _w1SessionDestroyed: boolean;
     /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
     _w1JanitorAt: number | null;
@@ -287,6 +289,7 @@ export declare function rpcSpawnWorker(self: ProgrammaticHost, workerCode: strin
 export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, options?: {
     recursive?: boolean;
 }, cred?: VfsCred): Promise<void>;
+/** One destroy at a time: one asked for while another runs is answered by it. */
 export declare function rpcDestroy(self: ProgrammaticHost, options?: SessionDestroyOptions): Promise<SessionDestroyResult>;
 /**
  * A session's process supervisor: the one way one is made, so each is
