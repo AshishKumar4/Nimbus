@@ -61,6 +61,8 @@ export declare const ESM_NOT_STAGED = "ERR_NIMBUS_NOT_STAGED";
 export interface EsmStageFs {
     readonly files: BridgeRequireFs;
     realpath(path: string): Promise<string>;
+    /** A directory's entries by name with their types (readdir's), or null: one listing answers for every file in it. */
+    entries?(dir: string): Promise<ReadonlyMap<string, string> | null>;
     /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
     held?(key: string): string | undefined;
 }
