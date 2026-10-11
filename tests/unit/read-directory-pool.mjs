@@ -137,4 +137,14 @@ function fixture() {
   await s.close();
   assert.equal(s.held.size, 0);
 }
+// An admission failure still owes every descriptor the server already issued.
+{
+  const s = fixture();
+  s.admission = async () => { throw new Error('store admission refused'); };
+  await assert.rejects(() => s.pool.open('/d0', 'd0', async () => ['/d1']), /store admission refused/);
+  assert.equal(s.held.size, 2);
+  s.admission = null;
+  await s.close();
+  assert.equal(s.held.size, 0, 'no received ID was lost between receipt and admission');
+}
 console.log('read-directory-pool: original ask, recall ordering, final namespace, late parks and bounded lifetime');
