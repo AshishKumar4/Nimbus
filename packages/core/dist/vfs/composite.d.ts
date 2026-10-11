@@ -143,6 +143,8 @@ export interface MountInfo {
 }
 interface Mount {
     point: string;
+    /** `point` and a slash: what a path under it starts with. */
+    under: string;
     source: VfsSource;
     options: MountOptions;
     /**
