@@ -7,7 +7,7 @@
  *   - os/process: Linux edge environment simulation
  *   - Buffer: Uint8Array wrapper with encoding support
  *   - events: workerd's native node:events
- *   - stream: real Readable/Writable/Transform/Duplex with backpressure
+ *   - stream: the platform's node:stream; every stream here is one of its classes
  *   - crypto, zlib, tls, vm, repl, async_hooks, diagnostics_channel,
  *     inspector, string_decoder, perf_hooks: the platform's own, through the
  *     one native provider (__nativeBuiltin), with Nimbus's adapters over them
@@ -40,7 +40,6 @@
  *     or undefined where a host passes none
  *   - stdout, stderr, exitCode: capture variables
  */
-import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
@@ -66,7 +65,6 @@ import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
-const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
 const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
@@ -6389,7 +6387,15 @@ const __fsMod = (() => {
         } catch (e) { cb(e); }
       }
       open() {}
-      close(cb) { if (cb) cb(); }
+      // lib/internal/fs/streams.js: ends the stream, \`cb\` once it has closed.
+      close(cb) {
+        if (cb) {
+          if (this.closed) { queueMicrotask(cb); return; }
+          this.on("close", cb);
+        }
+        if (!this._writableState.autoDestroy) this.on("finish", this.destroy);
+        this.end();
+      }
     };
     return __WriteStreamClass;
   }
@@ -6419,41 +6425,7 @@ const __fsMod = (() => {
     },
     F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
     createReadStream: (p, opts) => new (__getReadStream())(p, opts),
-    createWriteStream: (p, opts) => {
-      // binary-fs: chunks may arrive as Uint8Array OR string. Keep
-      // each chunk in its native shape; on final, if any chunk is
-      // bytes the merged write is bytes; otherwise string-concat
-      // (the hot path for ASCII text streams).
-      const chunks = [];
-      let anyBytes = false;
-      const ws = new __streamMod.Writable({
-        ...__fsStreamLifecycle(opts),
-        write(chunk, enc, cb) {
-          if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
-          else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
-          cb();
-        },
-        final(cb) {
-          if (anyBytes) {
-            // Sum byteLength across mixed chunks; concat to one Uint8Array.
-            let total = 0;
-            for (const c of chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
-            const out = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) {
-              const b = (c instanceof Uint8Array) ? c : _enc.encode(c);
-              out.set(b, off);
-              off += b.byteLength;
-            }
-            writeFileSync(p, out);
-          } else {
-            writeFileSync(p, chunks.join(""));
-          }
-          cb();
-        },
-      });
-      return ws;
-    },
+    createWriteStream: (p, opts) => new (__getWriteStream())(p, opts),
     // fs.watch() — returns a watcher object that emits 'change' events.
     // In the facet context, changes to __vfsBundle/Writes are detected
     // via polling since we don't have the supervisor's event emitter.
@@ -7108,9 +7080,11 @@ const __osMod = {
 const __eventsMod = __nativeBuiltin("events");
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  stream module (real, with backpressure) ────────────────────────
+// ──  stream module: the platform's node:stream ──────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-${STREAMS_CODE}
+// Every stream here is one of its classes: the files', the children's, the
+// terminal's, HTTP's and zlib's alike.
+const __streamMod = __nativeBuiltin("stream");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  node:sqlite module (sql.js-backed) ─────────────────────────────
@@ -8053,8 +8027,7 @@ const __childProcessMod = (() => {
    * text. It used to default to utf8 for the cross-spawn / husky pattern;
    * that pattern reads \`String(chunk)\` and works on a Buffer, and the
    * default turned every byte above 0x7f into U+FFFD for everyone else.
-   * Flowing-mode resumption and encoding are the Readable base class's job —
-   * see streams.ts.
+   * Flowing-mode resumption and encoding are the Readable base class's job.
    */
   function _makeReadable() {
     return new __streamMod.PassThrough();
@@ -8387,6 +8360,8 @@ const __childProcessMod = (() => {
           // before its first byte, as in Node.
           _markSpawned(child);
           for (const c of chunks) {
+            // Ended by the exit-time drain meanwhile: what is left was its.
+            if (stream.writableEnded) return;
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
             const written = stream.write(__BufferMod.from(c.data));
@@ -8450,11 +8425,12 @@ const __childProcessMod = (() => {
   function _flushStdio(child) {
     queueMicrotask(() => {
       for (const stream of [child.stdout, child.stderr]) {
-        // A stream a consumer owns in readable mode (a 'readable' listener,
-        // an async iterator) is left to it, as Node's flushStdio leaves one
-        // whose readableListening is set: resuming it would hand its next
-        // chunks to no one.
-        if (!stream || stream._readableState?.readableListening) continue;
+        // A stream done with, or one a consumer owns in readable mode (a
+        // 'readable' listener, an async iterator), is left as it is, as
+        // Node's flushStdio leaves one that is no longer readable or whose
+        // readableListening is set: resuming it would hand its next chunks
+        // to no one.
+        if (!stream || !stream.readable || stream._readableState.readableListening) continue;
         try { stream.resume(); } catch {}
       }
     });
@@ -8540,6 +8516,8 @@ const __childProcessMod = (() => {
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
+    // As Node's onexit for a spawn that failed: the streams drain, so they end.
+    _flushStdio(child);
     _maybeFireClose(child);
   }
 
@@ -8948,11 +8926,12 @@ const __childProcessMod = (() => {
           );
           // Output means it started: 'spawn' before its first byte.
           if (r && ((r.stdout && r.stdout.byteLength > 0) || (r.stderr && r.stderr.byteLength > 0))) _markSpawned(child);
-          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout) {
-            try { child.stdout.write(__BufferMod.from(r.stdout)); } catch {}
+          // What the pump has not delivered, to a stream it has not ended.
+          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout && !child.stdout.writableEnded) {
+            child.stdout.write(__BufferMod.from(r.stdout));
           }
-          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr) {
-            try { child.stderr.write(__BufferMod.from(r.stderr)); } catch {}
+          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr && !child.stderr.writableEnded) {
+            child.stderr.write(__BufferMod.from(r.stderr));
           }
           // Force-close streams so listeners receive 'end'. The 'end'
           // event listeners in _makeChild flip _stdoutEnded/_stderrEnded.
@@ -10734,16 +10713,6 @@ builtins.os = __osMod;
 builtins.constants = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
-// X.5-R: real Node's \`require('stream')\` re-exports EventEmitter
-// (verified: \`require('stream').EventEmitter === require('events').EventEmitter\`
-// in Node 20). Older CJS code reads EE off the stream module instead of
-// events — e.g., @redis/client/dist/lib/client/cache.js:301:
-// \`class ClientSideCacheProvider extends stream_1.EventEmitter {}\` where
-// \`stream_1 = require("stream")\`. Without this re-export, \`stream_1.EventEmitter\`
-// is undefined and \`class … extends undefined\` throws "Class extends value
-// Idempotent guard so a future streams.ts revision that already exposes
-// EventEmitter doesn't get clobbered.
-if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = __bufferModule;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
@@ -11503,79 +11472,16 @@ builtins["inspector/promises"] = __nativeBuiltin("inspector/promises");
 builtins["fs/promises"] = __fsMod.promises;
 builtins["readline/promises"] = builtins.readline.promises;
 
-// stream/promises — promise-wrapped versions of pipeline + finished.
-// Surfaced by sv (svelte CLI, the new replacement for create-svelte
-// v6.x) at /tmp/.npx-cache/node_modules/sv/dist/bin.mjs — it imports
-// 'node:stream/promises' for promise-style pipeline composition.
-// signal-exit, gulp's vinyl streams, tar-fs, and many node-only build
-// scripts use this subpath too.
-//
-// Real Node's stream/promises wraps the callback-style pipeline/
-// finished from 'stream' into Promise-returning variants. The
-// __streamMod above already ships pipeline() and finished() in their
-// callback form (src/runtime/streams.ts:339/361); the promise wrapper
-// is a thin shim that returns a Promise resolving on success +
-// rejecting on the callback's err arg.
-builtins["stream/promises"] = (() => {
-  const promisifyOp = (op) => (...args) => new Promise((res, rej) => {
-    // op signature: op(...streamsOrTarget, callback)
-    op(...args, (err, value) => {
-      if (err) rej(err);
-      else res(value);
-    });
-  });
-  return {
-    pipeline: promisifyOp(__streamMod.pipeline),
-    finished: promisifyOp(__streamMod.finished),
-  };
-})();
-
-// stream/consumers — Promise-returning helpers that drain a Readable.
-// Node 16.7+. Used by undici, tar-stream, multiple "consume the whole
-// body" patterns. Each helper takes a readable stream and returns a
-// Promise<Buffer | string | object | array>.
-builtins["stream/consumers"] = (() => {
-  function readAll(stream) {
-    return new Promise((res, rej) => {
-      const chunks = [];
-      stream.on('data', (chunk) => chunks.push(chunk));
-      stream.on('end', () => res(chunks));
-      stream.on('error', rej);
-    });
-  }
-  return {
-    buffer: async (stream) => {
-      const chunks = await readAll(stream);
-      // Concat Buffers / Uint8Arrays / strings.
-      if (chunks.length === 0) return __BufferMod.alloc(0);
-      if (typeof chunks[0] === 'string') {
-        return __BufferMod.from(chunks.join(''));
-      }
-      return __BufferMod.concat(chunks);
-    },
-    text: async (stream) => {
-      const chunks = await readAll(stream);
-      if (chunks.length === 0) return '';
-      if (typeof chunks[0] === 'string') return chunks.join('');
-      return __BufferMod.concat(chunks).toString('utf8');
-    },
-    json: async (stream) => {
-      const chunks = await readAll(stream);
-      const text = typeof chunks[0] === 'string'
-        ? chunks.join('')
-        : __BufferMod.concat(chunks).toString('utf8');
-      return JSON.parse(text);
-    },
-    arrayBuffer: async (stream) => {
-      const chunks = await readAll(stream);
-      const buf = __BufferMod.concat(chunks);
-      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    },
-    blob: async () => {
-      throw new Error('stream/consumers.blob not implemented');
-    },
-  };
-})();
+builtins["stream/promises"] = __streamMod.promises;
+// Taken the first time a program requires it, few do.
+Object.defineProperty(builtins, "stream/consumers", {
+  get() {
+    const consumers = __nativeBuiltin("stream/consumers");
+    Object.defineProperty(builtins, "stream/consumers", { value: consumers, writable: true, enumerable: true, configurable: true });
+    return consumers;
+  },
+  enumerable: true, configurable: true,
+});
 
 // stream/web: Node's names, each the platform's global class, as Node's are.
 builtins["stream/web"] = Object.fromEntries([
