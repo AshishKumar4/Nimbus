@@ -67,7 +67,7 @@ try {
   assert.equal(stamped.ino, 123);
   assert.equal(stamped.revision, 23, 'a mounted backend numeric revision survives the namespace and wire');
 } finally {
-  lease.release();
+  await lease.dispose();
   await box.ws.close();
   box.close();
 }
