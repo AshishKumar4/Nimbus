@@ -65,6 +65,10 @@ for (const url of ['https://h/r?TOKEN-9=public', 'https://h/r?%54OKEN%2d9=public
   assert.equal(message.includes('TOKEN-9'), false, 'secret-bearing query names are redacted');
   assert.equal(message.includes('%54OKEN%2d9'), false, 'raw and percent-encoded forms are redacted without canonicalizing unrelated text');
 }
+for (const [secret, data] of [['%', '%25'], ['%25', '%2525'], ['x%y', 'x%y'], ['x%y', '%78%25%79']]) {
+  const message = remoteFailureText(`https://h/r?access=${data}`, { kind: 'status', status: 403 }, none, [secret]);
+  assert.match(message, /access=<redacted>/, 'percent secrets are matched as decoded bytes, not shadowed by a shorter raw alternative');
+}
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-remote-failure-'));
