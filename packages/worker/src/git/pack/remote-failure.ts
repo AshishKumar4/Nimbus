@@ -107,30 +107,52 @@ function redactSecrets(text: string, secrets: readonly string[]): string {
   return out;
 }
 
-/** Match raw characters or their UTF-8 percent encoding, without changing other bytes. */
-function secretPattern(secret: string): RegExp {
-  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const hex = (byte: number): string => byte.toString(16).padStart(2, '0').replace(/[a-f]/g, (letter) => `[${letter}${letter.toUpperCase()}]`);
+/** Decode a data span to bytes and retain the original character range of every byte. */
+function redactUrlSpan(text: string, secrets: readonly Uint8Array[]): string {
   const encoder = new TextEncoder();
-  return new RegExp([...secret].map((character) => `(?:${escape(character)}|${[...encoder.encode(character)].map((byte) => '%' + hex(byte)).join('')})`).join(''), 'g');
+  const bytes: number[] = [], starts: number[] = [], ends: number[] = [];
+  const hex = (code: number): number => code >= 48 && code <= 57 ? code - 48
+    : code >= 65 && code <= 70 ? code - 55 : code >= 97 && code <= 102 ? code - 87 : -1;
+  for (let at = 0; at < text.length;) {
+    const begin = at;
+    const high = hex(text.charCodeAt(at + 1)), low = hex(text.charCodeAt(at + 2));
+    if (text[at] === '%' && high >= 0 && low >= 0) {
+      at += 3;
+      bytes.push(high * 16 + low); starts.push(begin); ends.push(at);
+    } else {
+      const character = String.fromCodePoint(text.codePointAt(at)!);
+      at += character.length;
+      for (const byte of encoder.encode(character)) { bytes.push(byte); starts.push(begin); ends.push(at); }
+    }
+  }
+  const matches: Array<{ start: number; end: number }> = [];
+  for (const secret of secrets) {
+    if (secret.length === 0) continue;
+    for (let at = 0; at <= bytes.length - secret.length; at++) {
+      let size = 0;
+      while (size < secret.length && bytes[at + size] === secret[size]) size++;
+      if (size === secret.length) matches.push({ start: starts[at], end: ends[at + size - 1] });
+    }
+  }
+  matches.sort((a, b) => a.start - b.start || a.end - b.end);
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const match of matches) {
+    const last = ranges.at(-1);
+    if (last && match.start <= last.end) last.end = Math.max(last.end, match.end);
+    else ranges.push({ ...match });
+  }
+  let output = '', copied = 0;
+  for (const range of ranges) { output += text.slice(copied, range.start) + '<redacted>'; copied = range.end; }
+  return output + text.slice(copied);
 }
 
 /** Mask original data spans; path slashes, query separators and authority syntax never enter a match. */
 function redactDestination(url: string, secrets: readonly string[], credentialPrompt = false): string {
   const parts = originalUrlParts(url);
   if (!parts) return '<invalid remote URL>';
-  const patterns = secrets.filter((secret) => secret.length > 0).map(secretPattern);
-  const mask = (data: string): string => patterns.reduce((text, pattern) => {
-    // A raw match cannot begin/end inside an escape: the "2" in %20 is
-    // encoding syntax, not the character "2" or any part of the secret.
-    const boundaries = new Set([0]);
-    for (let at = 0; at < text.length;) {
-      at += /^%[0-9a-fA-F]{2}/.test(text.slice(at, at + 3)) ? 3 : 1;
-      boundaries.add(at);
-    }
-    return text.replace(pattern, (match: string, offset: number) =>
-      boundaries.has(offset) && boundaries.has(offset + match.length) ? '<redacted>' : match);
-  }, data);
+  const encoder = new TextEncoder();
+  const secretBytes = secrets.filter((secret) => secret.length > 0).map((secret) => encoder.encode(secret));
+  const mask = (data: string): string => redactUrlSpan(data, secretBytes);
   const at = parts.authority.lastIndexOf('@');
   const host = parts.authority.slice(at + 1);
   const username = at < 0 ? '' : parts.authority.slice(0, at).split(':', 1)[0];
