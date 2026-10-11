@@ -61,6 +61,7 @@ interface Binding {
   readonly place: (path: RuntimeFsPath, handle: RuntimeFileHandle) => Awaitable<string | null>;
 }
 const scopes = new WeakMap<Scope, Budget>();
+const endedScopes = new WeakSet<Scope>();
 const bridges = new WeakMap<RuntimeFsBridge, Binding>();
 
 /** Called only by ProcessFiles where each face is bound to its actual descriptor scope. */
@@ -73,6 +74,7 @@ export function directoryReadHandleClosed(scope: Scope, id: number): void { scop
 
 /** The authoritative scope closes descriptions; drop accounting at that same lifetime boundary. */
 export function disposeDirectoryReadScope(scope: Scope): void {
+  endedScopes.add(scope);
   const budget = scopes.get(scope);
   if (!budget) return;
   budget.ended = true;
@@ -97,12 +99,10 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
   const bound = bridges.get(fs);
   if (!bound) throw refusal('ENOTSUP', 'directory prefetch needs a process descriptor scope');
   const { scope } = bound;
-  if (scope.closed) throw refusal('ESTALE', 'directory descriptor scope ended');
-  let budget = scopes.get(scope);
-  if (!budget) {
-    budget = { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
-    scopes.set(scope, budget);
-  }
+  if (scope.closed || endedScopes.has(scope)) throw refusal('ESTALE', 'directory descriptor scope ended');
+  const budget: Budget = scopes.get(scope)
+    ?? { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
+  scopes.set(scope, budget);
   const live = (): void => { if (scope.closed || budget.ended) throw refusal('ESTALE', 'directory descriptor scope ended'); };
   const run = async (): Promise<ReadDirectoryBatchResult> => {
     live();
