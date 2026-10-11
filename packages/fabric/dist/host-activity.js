@@ -165,19 +165,8 @@ export async function hostResponse(ctx, observation, request, dispatch) {
             lease.release();
             return response;
         }
-        const declared = request.method === 'HEAD' ? null : response.headers.get('Content-Length');
-        const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-        // Keep native framing; only the terminal pipe owns this activity lease.
-        const { readable, writable } = new TransformStream({
-            ...(Number.isSafeInteger(length) ? { expectedLength: length } : {}),
-        });
-        let body = response.body;
-        if (Number.isSafeInteger(length)) {
-            const fixed = new FixedLengthStream(length);
-            void body.pipeTo(fixed.writable, { signal: request.signal }).catch(() => { });
-            body = fixed.readable;
-        }
-        ctx.waitUntil(body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => { }));
+        const { readable, writable } = new TransformStream();
+        ctx.waitUntil(response.body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => { }));
         return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
     }
     catch (error) {

@@ -8295,8 +8295,9 @@ export class FacetManager {
         if (opts.resident && !opts.durable) {
             opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
         }
-        if (opts.durable)
+        if (opts.durable && (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner))) {
             this.processHost.assertDurableStorage();
+        }
         await this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
