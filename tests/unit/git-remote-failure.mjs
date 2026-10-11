@@ -56,6 +56,13 @@ for (const password of ['/', ':', '@', '://']) {
 }
 assert.equal(remoteFailureText('https://u@h:8443/repo.git', { kind: 'status', status: 401 }, { username: 'u', password: false }, ['@', '/', ':']),
   "fatal: could not read Password for 'https://u@h:8443': terminal prompts disabled\n", 'credential-prompt delimiters remain intact');
+assert.equal(remoteFailureText('https://HOST.Example:443/repo.git', { kind: 'status', status: 403 }, none),
+  "fatal: unable to access 'https://HOST.Example:443/repo.git/': The requested URL returned error: 403\n", 'native git preserves host case and explicit default port spelling');
+for (const url of ['https://h/r?TOKEN-9=public', 'https://h/r?%54OKEN%2d9=public', 'https://h/%54OKEN%2d9/r']) {
+  const message = remoteFailureText(url, { kind: 'status', status: 403 }, none, ['TOKEN-9']);
+  assert.equal(message.includes('TOKEN-9'), false, 'secret-bearing query names are redacted');
+  assert.equal(message.includes('%54OKEN%2d9'), false, 'raw and percent-encoded forms are redacted without canonicalizing unrelated text');
+}
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-remote-failure-'));
