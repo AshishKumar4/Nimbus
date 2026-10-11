@@ -12088,8 +12088,18 @@ const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
   return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, required: undefined, error: undefined, module: undefined, requirer: undefined };
 }
-// What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
-const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
+// What a body Nimbus stops throws, and a batch Nimbus cancels rejects with:
+// made the first time one is. An Error made as the shims start cost every
+// launch 10 to 19 ms, a program that never meets an ES module's included
+// (its stack's capture; ThinGerbil's paired measurement).
+let __nimbusEsmStopped = null;
+function __nimbusEsmStop() {
+  return __nimbusEsmStopped ??= new Error("Nimbus: this module was not evaluated by the registry");
+}
+// Whether \`error\` is that stop, never making it.
+function __nimbusIsEsmStop(error) {
+  return __nimbusEsmStopped !== null && error === __nimbusEsmStopped;
+}
 // How often the interpreter evaluated a staged module instead (adoption): the exit's diagnostics.
 let __nimbusEsmAdoptions = 0;
 // The ES modules the interpreter evaluated for an import (a query's or a
@@ -12153,7 +12163,7 @@ function __nimbusEsmCheck(record) {
   if (batch.stop === null) {
     for (const began of batch.running) {
       if (__nimbusEsmSuspends(began)) continue;
-      batch.stop = __nimbusEsmStop;
+      batch.stop = __nimbusEsmStop();
       batch.thrower = began;
       began.state = __ESM_FAILED;
       break;
@@ -12267,7 +12277,7 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // Linked into an evaluation that has not reached it: that evaluation is
   // cancelled (each body yet to begin stops), and the module is the interpreter's.
-  if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop;
+  if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop();
   if (record.state !== __ESM_ADOPTED) {
     record.state = __ESM_ADOPTED;
     // Who began it, for a cycle's refusal: a require()'s module, or none for an import.
@@ -12349,7 +12359,7 @@ async function __nimbusEsmImport(id) {
     // took a module of it; an earlier evaluation stopped at a sibling's
     // throw), or it links to a module the launch did not stage: the
     // interpreter's.
-    if (row[0] === "module" && (error === __nimbusEsmStop || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
+    if (row[0] === "module" && (__nimbusIsEsmStop(error) || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
       return __nimbusEsmInterpret(id);
     }
     // The body that threw: one its evaluation began and did not complete
