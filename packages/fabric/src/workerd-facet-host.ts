@@ -456,6 +456,7 @@ function spawnResident(
   // is gone. Both cases are reported instead.
   let evaluated = false;
   let released = false;
+  let refused: { error: unknown } | undefined;
   const watchCapability = crypto.randomUUID();
   let markLost: (error: Error) => void = () => {};
   const lost = new Promise<never>((_, reject) => { markLost = reject; });
@@ -464,13 +465,15 @@ function spawnResident(
     if (released) {
       throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
     }
+    if (refused) throw refused.error;
     if (evaluated) {
       const gone = new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost)`);
       markLost(gone);
       throw gone;
     }
     evaluated = true;
-    return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) };
+    try { return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) }; }
+    catch (error) { refused = { error }; throw error; }
   };
   const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
@@ -559,6 +562,7 @@ function spawnResident(
     if (ledger !== null && row !== null) ledger.reportSize(name, row);
     return payload;
   }, (error) => {
+    refused = { error };
     // A start that rejects after its release is the process ending or being
     // ended as it booted (json-server --version), not a failure to start.
     throw released ? error : startFailure(error, name, params.pid);

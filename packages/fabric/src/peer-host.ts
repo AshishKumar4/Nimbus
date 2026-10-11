@@ -333,6 +333,7 @@ export class PeerHost {
         for (const [controller, release] of record.watchers) { controller.error(record.failure); release(); }
       });
       await located;
+      if (record.closed) throw new Error('Nimbus: the peer process was cancelled while opening');
       return { ok: true, incarnation: this.incarnation };
     } catch (e) {
       opened.reject(e);

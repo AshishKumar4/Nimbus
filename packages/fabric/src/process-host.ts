@@ -348,7 +348,10 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
-    return this.reconcile().then(() => processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume));
+    return this.reconcile().then(() => {
+      if (this.closed) throw new Error('Nimbus: the process host is closed');
+      return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
+    });
   }
   async open(params: ProcessHostParams): Promise<HostedProcess> {
     if (this.closed) throw new Error('Nimbus: the process host is closed');
@@ -374,7 +377,9 @@ class PeerProcessHost implements ProcessHost {
     let started: Promise<unknown>;
     this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
     try {
+    if (this.closed) throw new Error('Nimbus: the process host is closed');
     await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { workerKey: params.workerKey, peerName: placement.peerName } satisfies PeerOwner);
+    if (this.closed) throw new Error('Nimbus: the process host is closed');
     const opened = await placement.stub._rpcHostProcess(params.boot, {
       coordinatorDoId: supervisor.doId,
       route: supervisor.route,
@@ -387,6 +392,7 @@ class PeerProcessHost implements ProcessHost {
       webSocketCapability,
       startArgs: params.startArgs,
     });
+    if (this.closed) throw new Error('Nimbus: the process host is closed');
     stopObserving = hostActivity(this.ctx).observe(async (signal) => {
       const response = await placement.stub.fetch(new Request('https://nimbus-process.invalid/', {
         signal, headers: { [HOSTED_WATCH_HEADER]: params.workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: webSocketCapability },
