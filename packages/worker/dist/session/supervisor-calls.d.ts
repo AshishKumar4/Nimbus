@@ -539,6 +539,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         stdoutClosed: boolean;
         stderrClosed: boolean;
     }>;
+    /** The parent closes its read end of the child's fd 1 or 2: the child's writes there fail, EPIPE. */
+    cpCloseOutput(childPid: number, fd: 1 | 2): Promise<void>;
     cpKill(childPid: number, signal: string): Promise<boolean>;
     /**
      * The child's end; with `knownStarted` false, also its start, as soon as

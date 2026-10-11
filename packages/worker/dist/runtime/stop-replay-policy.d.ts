@@ -236,6 +236,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     cpDrainOutput: {
         readonly kind: "observation";
     };
+    cpCloseOutput: {
+        readonly kind: "effect";
+    };
     cpKill: {
         readonly kind: "effect";
     };
