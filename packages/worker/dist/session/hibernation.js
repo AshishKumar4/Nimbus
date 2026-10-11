@@ -339,8 +339,8 @@ export function armResidentKeepalive(host, schedule) {
  * abandoned dev server did exactly that. The next resident spawn, or the
  * client's return, re-arms the cycle.
  */
-export function residentKeepaliveFired(host, ctx, now) {
-    if (host.processes.residentRunning > 0 && residentClientPresent(host, ctx, now)) {
+export function residentKeepaliveFired(host, now) {
+    if (!host._w1SessionDestroyed && host.processes.residentRunning > 0 && residentClientPresent(host, now)) {
         return now + RESIDENT_KEEPALIVE_MS;
     }
     host._w1KeepaliveArmed = false;
@@ -381,15 +381,13 @@ export function ensureHibSchema(host, ctx) {
     }
 }
 /**
- * Whether a client is here: a hibernatable socket attached (terminal,
- * process log, file watch) or a request within the detached grace. The
- * keep-alive re-arms on this and on a running resident, never on the
- * resident alone.
+ * Only traffic delivered through this runtime's client boundaries counts.
+ * A host's socket table belongs to its embedder, not to Nimbus, and even an
+ * attached runtime terminal cannot renew an alarm forever without traffic.
+ * Attach/input/port requests renew this bounded interest; alarms and facet
+ * supervisor calls never do.
  */
-export function residentClientPresent(host, ctx, now) {
-    const sockets = typeof ctx?.getWebSockets === 'function' ? ctx.getWebSockets() : [];
-    if (sockets.length > 0)
-        return true;
+export function residentClientPresent(host, now) {
     return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 /** W1: a client reached the session DO (see noteResidentClient). */
@@ -456,7 +454,7 @@ export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostin
                 return { rearmAt };
         },
         'resident-keepalive': (now) => {
-            const rearmAt = residentKeepaliveFired(host, ctx, now);
+            const rearmAt = residentKeepaliveFired(host, now);
             if (rearmAt !== null)
                 return { rearmAt };
         },

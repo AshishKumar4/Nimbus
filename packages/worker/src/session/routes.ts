@@ -1693,7 +1693,7 @@ async function handleCacheTestEndpoint(
     let nullCount = 0;
     for (let i = 0; i < n; i++) {
       const t0 = performance.now();
-      const got = await r2.getTarball(integrity);
+      const got = await r2.getSharedTarball(integrity);
       const t1 = performance.now();
       latencies.push(t1 - t0);
       if (!got) nullCount++;

@@ -16,7 +16,7 @@
  */
 import { createHash } from 'node:crypto';
 import { crc32, deflateSync, inflateSync } from 'node:zlib';
-import { ByteLru } from './byte-lru.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import { OBJ_OFS_DELTA, OBJ_REF_DELTA, PACK_HEADER_BYTES, PACK_TRAILER_BYTES, PackFormatError, applyDelta, deflateBound, inflateChunkSize, encodeObjectHeader, encodePackHeader, objectIdPrefix, oidFromHex, oidToHex, parseObjectHeader, parsePackHeader, typeCode, typeName, } from './format.js';
 import { ENTRY_BYTES, entryOffset, sortEntries, writeEntry } from './idx.js';
 import { ENTRY_PROBE_BYTES, MissingBaseError, PackObjectResolver, runAsync, } from './reader.js';

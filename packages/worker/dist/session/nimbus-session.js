@@ -54,7 +54,7 @@ import { initSession as _w11InitSession } from './init.js';
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing } from './ws.js';
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
@@ -315,8 +315,8 @@ export class NimbusSession extends CloudflareDurableObject {
      *  recurring event that holds this object in memory for as long as a
      *  resident process runs (hibernation.ts ensureResidentKeepalive). */
     _w1KeepaliveArmed = false;
-    /** W1: when a client last reached this session over HTTP; the keep-alive
-     *  holds the object only while one is attached or was here within
+    /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
+     *  holds the object only while traffic was observed within
      *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
     _w1LastClientActivityAt = 0;
     /** Destroyed-session tombstone (SESSION_DESTROYED_KEY), hydrated at boot.
@@ -1177,6 +1177,9 @@ export class NimbusSession extends CloudflareDurableObject {
     // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
     // relaxed for the methods (default-public; was async/private).
     async webSocketMessage(ws, message) {
+        const { kind } = wsKind(ws);
+        if (kind === 'shell' || kind === 'process-logs' || kind === 'cirrus-hmr')
+            noteClientActivity(this, this.ctx);
         return _wsDoMessage(this, ws, message);
     }
     async webSocketClose(ws, code, reason, wasClean) {
