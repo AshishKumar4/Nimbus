@@ -85,7 +85,7 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
   };
 }
 
-/** A record's edges: its dependencies, required peers and optional dependencies. */
+/** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
 export function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, 'dependencies' | 'peerDependencies' | 'optionalDependencies'> {
   return {
     dependencies: parsed<Record<string, string>>(record.depsJson, {}),
@@ -94,18 +94,20 @@ export function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, '
   };
 }
 
+const NO_PLATFORM: { os?: unknown; cpu?: unknown; libc?: unknown } = Object.freeze({});
+
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage {
-  const platform = parsed<{ os?: unknown; cpu?: unknown; libc?: unknown }>(record.platformJson, {});
-  const edges = recordEdges(record);
+  const platform = record.platformJson === '{}' ? NO_PLATFORM
+    : parsed<{ os?: unknown; cpu?: unknown; libc?: unknown }>(record.platformJson, NO_PLATFORM);
   return {
     name: record.name,
     version: record.version,
     tarballUrl: record.tarballUrl,
     integrity: record.integrity,
-    dependencies: edges.dependencies,
-    peerDependencies: edges.peerDependencies,
-    optionalDependencies: edges.optionalDependencies,
+    dependencies: parsed<Record<string, string>>(record.depsJson, {}),
+    peerDependencies: ranges(record.peerDepsJson),
+    optionalDependencies: ranges(record.optionalDepsJson),
     os: Array.isArray(platform.os) ? platform.os : undefined,
     cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
     libc: Array.isArray(platform.libc) ? platform.libc : undefined,
