@@ -235,7 +235,8 @@ const FILES = {
   // order, pipeline and its errors, stream/promises, stream/consumers,
   // destroy, fs's read and write streams (a write stream owns what it has
   // acknowledged; a read stream's close callback comes after its 'close'),
-  // and a child whose stdout a failing pipeline destroys still closes, as a
+  // and a child whose stdout a failing pipeline destroys still closes, and one
+  // that keeps writing to a stdout its parent destroyed gets EPIPE, as a
   // transcript node writes the same.
   'stream-lifecycle.js': [
     'const { Readable, Writable, Transform, PassThrough } = require("stream");',
@@ -290,17 +291,23 @@ const FILES = {
     '  });',
     '  await tick(5);',
     '  log.push("cp:" + ends.sort().join(","));',
+    '  const writer = require("child_process").spawn("node", ["-e", "process.stdout.on(\\"error\\", (e) => process.exit(e.code === \\"EPIPE\\" ? 42 : 1)); setInterval(() => process.stdout.write(\\"y\\".repeat(1024)), 1);"]);',
+    '  writer.stdout.once("data", () => writer.stdout.destroy());',
+    '  writer.stderr.resume();',
+    '  log.push("epipe:" + await new Promise((resolve) => writer.on("close", (code) => resolve(code))));',
     '  console.log("STREAMS " + JSON.stringify(log));',
     '})();',
   ].join('\n'),
   // The terminal's classes a program constructs itself: a ReadStream reads
-  // the process's stdin, a WriteStream writes its stdout or stderr.
+  // the process's stdin (and, destroyed, leaves it as it was), a WriteStream
+  // writes its stdout or stderr.
   'tty.js': [
     'const tty = require("tty");',
     'const input = new tty.ReadStream(0);',
     'let got = "";',
     'input.on("data", (c) => { got += c; });',
-    'input.on("end", () => { new tty.WriteStream(2).write("TTY-ERR\\n"); new tty.WriteStream(1).write("TTY " + JSON.stringify(got) + "\\n"); });',
+    'input.on("end", () => { input.destroy(); });',
+    'input.on("close", () => { new tty.WriteStream(2).write("TTY-ERR\\n"); new tty.WriteStream(1).write("TTY " + JSON.stringify(got) + " " + process.stdin.listenerCount("data") + "\\n"); });',
   ].join('\n'),
   'url.js': [
     'const url = require("url");',
@@ -446,12 +453,12 @@ try {
     const hostStreams = spawnSync('node', ['-e', FILES['stream-lifecycle.js']], { encoding: 'utf8', cwd: hostDir });
     rmSync(hostDir, { recursive: true, force: true });
     assert.equal(hostStreams.status, 0, hostStreams.stderr);
-    assert.match(hostStreams.stdout, /^STREAMS \[.*"fsw:pq","own:a","rs-close","rs-cb:ERR_STREAM_PREMATURE_CLOSE","cp:close:0,pipe:sink"\]$/m, hostStreams.stdout);
+    assert.match(hostStreams.stdout, /^STREAMS \[.*"fsw:pq","own:a","rs-close","rs-cb:ERR_STREAM_PREMATURE_CLOSE","cp:close:0,pipe:sink","epipe:42"\]$/m, hostStreams.stdout);
     assert.equal(/^STREAMS .*$/m.exec(streamsRun.stdout)?.[0], /^STREAMS .*$/m.exec(hostStreams.stdout)?.[0],
       `streams run as node's do: ${streamsRun.stdout}`);
 
     const ttyRun = await terminal.run(`cd ${W} && echo TTY-IN | node tty.js`);
-    assert.match(ttyRun.stdout, /^TTY "TTY-IN\\n"$/m, `a tty.ReadStream reads stdin, a tty.WriteStream writes stdout: ${JSON.stringify(ttyRun)}`);
+    assert.match(ttyRun.stdout, /^TTY "TTY-IN\\n" 0$/m, `a tty.ReadStream reads stdin and lets go of it, a tty.WriteStream writes stdout: ${JSON.stringify(ttyRun)}`);
     assert.match(`${ttyRun.stdout}${ttyRun.stderr ?? ''}`, /TTY-ERR/, 'and fd 2 its stderr');
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);

@@ -8279,12 +8279,12 @@ const __childProcessMod = (() => {
     if (child.stdout) {
       const done = () => { child._stdoutEnded = true; _maybeFireClose(child); };
       child.stdout.on("end", done);
-      child.stdout.on("close", done);
+      child.stdout.on("close", () => { if (!child.stdout.readableEnded) _closeChildOutput(child, 1); done(); });
     }
     if (child.stderr) {
       const done = () => { child._stderrEnded = true; _maybeFireClose(child); };
       child.stderr.on("end", done);
-      child.stderr.on("close", done);
+      child.stderr.on("close", () => { if (!child.stderr.readableEnded) _closeChildOutput(child, 2); done(); });
     }
 
     child.kill = function(signal) {
@@ -8365,6 +8365,20 @@ const __childProcessMod = (() => {
     if (r && Array.isArray(r.news)) globalThis.__nimbusApplyNews(r.news);
   }
 
+  /**
+   * Its consumer destroyed the child's stdout or stderr before its end (a
+   * pipeline's failing sink): the parent's read end closes, so the child's
+   * writes there fail, EPIPE, as they do to a Node pipe with no reader. Sent
+   * once the broker knows the child; its read loop sends it otherwise.
+   */
+  function _closeChildOutput(child, fd) {
+    if (!HAS_SUPERVISOR || !child._brokerPid || child._exitFired) return;
+    const closed = child._closedOutputs ??= new Set();
+    if (closed.has(fd)) return;
+    closed.add(fd);
+    __nimbusUseRpcResult(__supervisor.cpCloseOutput(child._brokerPid, fd), () => undefined).catch(() => {});
+  }
+
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
     // to 1500ms cap. Reset to 100ms whenever a chunk arrives. Caps
@@ -8374,6 +8388,7 @@ const __childProcessMod = (() => {
     let backoff = 100;
     const BACKOFF_MAX = 1500;
     while (HAS_SUPERVISOR && child._brokerPid && !child._streamsClosed) {
+      if (stream.destroyed) { _closeChildOutput(child, fd); return; }
       try {
         const r = await _childPoll(
           __supervisor.cpReadOutput(child._brokerPid, fd, sinceSeqRef.value, backoff, __nimbusVfsAcquireArgs()),
@@ -8389,12 +8404,10 @@ const __childProcessMod = (() => {
           for (const c of chunks) {
             // Ended by the exit-time drain meanwhile: what is left was its.
             if (stream.writableEnded) return;
-            // Destroyed by its consumer (a pipeline's failing sink), it takes
-            // nothing more; what the child writes still drains, so the child
-            // is never held on it.
+            if (stream.destroyed) { _closeChildOutput(child, fd); return; }
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
-            const written = stream.destroyed || stream.write(__BufferMod.from(c.data));
+            const written = stream.write(__BufferMod.from(c.data));
             if (written && typeof written.then === 'function') await written;
             else if (written === false && stream.writableNeedDrain) {
               await new Promise((resolve) => {
@@ -10905,10 +10918,20 @@ builtins.tty = {
       const stdin = __processMod.stdin;
       if (this._stdin === undefined) {
         this._stdin = stdin;
-        stdin.on("data", (chunk) => { if (!this.push(chunk)) stdin.pause(); });
-        stdin.once("end", () => this.push(null));
+        this._onData = (chunk) => { if (!this.push(chunk)) stdin.pause(); };
+        this._onEnd = () => this.push(null);
+        stdin.on("data", this._onData);
+        stdin.once("end", this._onEnd);
       }
       stdin.resume();
+    }
+    // Destroyed, it stops reading stdin, which stays as it is for its other readers.
+    _destroy(error, callback) {
+      if (this._stdin !== undefined) {
+        this._stdin.removeListener("data", this._onData);
+        this._stdin.removeListener("end", this._onEnd);
+      }
+      callback(error);
     }
   },
   WriteStream: class extends __streamMod.Writable {

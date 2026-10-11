@@ -1106,7 +1106,12 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
         })
         .then(() => __supervisor[method](__rpcBatchBytes(__batch), __batch.at, __batch.run))
         .then(() => __nimbusStopReplay.ackedRun(__batch.chunks))
-        .catch((e) => __onRpcDrop(__batch.size, e));
+        .catch((e) => {
+          __onRpcDrop(__batch.size, e);
+          // Its reader has gone (a parent closed its end of this child's
+          // pipe): the writes fail, EPIPE, as Node's do (__nimbusWriteLiveOutput).
+          if (e && e.code === "EPIPE") throw e;
+        });
       __batch.task = __task;
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
@@ -1346,7 +1351,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     if (__residencyReport) {
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
-      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport))?.catch(() => {});
     }
     // A run after a stop that ended before printing all the stopped run had
     // printed did not retrace it: what it printed past that is not the
