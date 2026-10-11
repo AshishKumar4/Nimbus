@@ -875,19 +875,23 @@ export class SqliteRuntimeFsBridge {
         },
     };
     /**
-     * A lease, or with `terms` a delegation (made by the process that holds
-     * it: ProcessFiles' bridge, which answers its recalls). This bridge serves
-     * no process, so it delegates nothing itself (`delegate`: EINVAL).
+     * A lease; with `held`, a process's own (ProcessFiles' bridge), which ends
+     * with the process; with its `terms`, a delegation, whose recalls that
+     * bridge answers. This bridge serves no process, so it delegates nothing
+     * itself (`delegate`: EINVAL).
      */
-    acquireExclusiveMutation(path, options, terms) {
+    acquireExclusiveMutation(path, options, held) {
         return called({ syscall: 'acquireExclusiveMutation', path }, () => {
+            const terms = held?.terms;
             if (options?.delegate !== undefined && terms === undefined)
                 throw fsError('EINVAL', 'acquireExclusiveMutation', path);
             const p = this.sqlitePath(path, false, 'acquireExclusiveMutation');
             const parent = parentVfsPath(p);
             if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent)))
                 this.vfs.access(parent, 0o3);
-            const lease = this.vfs.acquireExclusiveMutation(p, { includeMissingAncestors: options?.includeMissingAncestors, delegation: terms });
+            const lease = this.vfs.acquireExclusiveMutation(p, {
+                includeMissingAncestors: options?.includeMissingAncestors, delegation: terms, stoppable: held !== undefined,
+            });
             return terms === undefined ? lease : { ...lease, umask: this.vfs.cred.umask };
         });
     }

@@ -224,10 +224,10 @@ class GuardedProcessBridge {
             return this.target.acquireExclusiveMutation(path, options);
         // A delegation is the process's: it ends with the process's scope.
         if (delegate !== undefined)
-            return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
+            return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, { terms }), this.scope);
         // So does a lease it takes for itself: a process that ends holding one
         // (killed, its host lost) leaves no subtree held behind it.
-        const lease = this.target.acquireExclusiveMutation(path, options);
+        const lease = this.target.acquireExclusiveMutation(path, options, {});
         const end = () => {
             this.scope.leases.delete(lease.owner);
             this.target.releaseExclusiveMutation(lease.owner);

@@ -55,9 +55,9 @@ export interface InodeRange {
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
     /**
-     * Its holder is work a process runs (a clone's job), which lets it go when
-     * that process is stopped, as a delegation goes with its process: a caller
-     * about to stop every process does not count it (hasExclusiveMutation).
+     * Its holder is a process, or work one runs (a clone's job), which lets it
+     * go when that process is stopped, as a delegation goes with its process: a
+     * caller about to stop every process does not count it (hasExclusiveMutation).
      */
     readonly stoppable?: boolean;
     /**
