@@ -108,7 +108,21 @@ return {
       const env = takeFrame(arguments);
       if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      return finish(fi, yield* drainSync(env, it, step(env, it, "next", undefined)));
+      let r = step(env, it, "next", undefined);
+      for (;;) {
+        if (r.done) return finish(fi, r.value);
+        let value, ok = true, resumed = false;
+        try { value = yield r.value; resumed = true; }
+        catch (e) { ok = false; value = e; resumed = true; }
+        finally {
+          if (!resumed) {
+            const end = step(env, it, "return", MARK);
+            const result = end.done ? end.value : yield* drainSync(env, it, end);
+            if (result !== MARK) return finish(fi, result);
+          }
+        }
+        r = step(env, it, ok ? "next" : "throw", value);
+      }
     });
     return f;
   },
@@ -248,7 +262,21 @@ return {
       const env = takeFrame(arguments);
       if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      return finish(fi, yield* drainSync(env, it, step(env, it, "next", undefined)));
+      let r = step(env, it, "next", undefined);
+      for (;;) {
+        if (r.done) return finish(fi, r.value);
+        let value, ok = true, resumed = false;
+        try { value = yield r.value; resumed = true; }
+        catch (e) { ok = false; value = e; resumed = true; }
+        finally {
+          if (!resumed) {
+            const end = step(env, it, "return", MARK);
+            const result = end.done ? end.value : yield* drainSync(env, it, end);
+            if (result !== MARK) return finish(fi, result);
+          }
+        }
+        r = step(env, it, ok ? "next" : "throw", value);
+      }
     });
     return f;
   },

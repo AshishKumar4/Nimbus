@@ -29,9 +29,9 @@ export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-43ba7225edf
 export const JS_INTERPRETER_BUILD_ID = "43ba7225edf6c018";
 export const JS_INTERPRETER_SHA256 = "43ba7225edf6c018927d4470c3b20e2e3dc49e294c4460531f4e43c6976715bf";
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
-export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-9f9bdc42b46d31d6.js";
-export const JS_INTERPRETER_OPS_BUILD_ID = "9f9bdc42b46d31d6";
-export const JS_INTERPRETER_OPS_SHA256 = "9f9bdc42b46d31d690408afa54ec17242e6a83ff2349aeeb48a3f35c85c69005";
+export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-b456989de0336aed.js";
+export const JS_INTERPRETER_OPS_BUILD_ID = "b456989de0336aed";
+export const JS_INTERPRETER_OPS_SHA256 = "b456989de0336aed095ac728c699771f53803a80274fa3cb2cb7042f3e000883";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-12b4803c53369862.js";
 export const NODE_LIB_BUILD_ID = "12b4803c53369862";
@@ -41,6 +41,6 @@ export const NODE_DNS_ENTRY = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
 export const NODE_DNS_BUILD_ID = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256 = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-b69a7e608a6de2bd.js";
-export const NODE_REGISTRY_BUILD_ID = "b69a7e608a6de2bd";
-export const NODE_REGISTRY_SHA256 = "b69a7e608a6de2bd8a2d0a1c49b02103593a519d11c707d1cd4185e837065cac";
+export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-b27d428a39226d7d.js";
+export const NODE_REGISTRY_BUILD_ID = "b27d428a39226d7d";
+export const NODE_REGISTRY_SHA256 = "b27d428a39226d7db11bcae3e37feb0ba504fa2d780068c23ee2f6f9bddc4801";
