@@ -122,6 +122,7 @@ function callFilesystem(fs, method, args) {
         case 'isDirectory': return fs.isDirectory(pathArg(a));
         case 'stat': return fs.stat(pathArg(a));
         case 'lstat': return fs.lstat(pathArg(a));
+        case 'realpath': return fs.realpath(pathArg(a));
         case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
         case 'readdir': return fs.readdir(pathArg(a));
         case 'unlink': return fs.unlink(pathArg(a));

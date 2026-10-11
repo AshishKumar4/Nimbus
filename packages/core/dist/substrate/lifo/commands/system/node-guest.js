@@ -79,6 +79,7 @@ const filesystem = {
     isDirectory: (path) => flagOf(call({ op: 'fs', method: 'isDirectory', args: [path] }), 'isDirectory'),
     stat: (path) => stat(call({ op: 'fs', method: 'stat', args: [path] }), 'stat'),
     lstat: (path) => stat(call({ op: 'fs', method: 'lstat', args: [path] }), 'lstat'),
+    realpath: (path) => text(call({ op: 'fs', method: 'realpath', args: [path] }), 'realpath'),
     mkdir: (path, options) => { call({ op: 'fs', method: 'mkdir', args: [path, options] }); },
     readdir: (path) => {
         const entries = call({ op: 'fs', method: 'readdir', args: [path] });

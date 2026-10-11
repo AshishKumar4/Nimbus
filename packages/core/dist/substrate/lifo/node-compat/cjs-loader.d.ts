@@ -5,32 +5,30 @@ export declare function moduleNotFound(name: string): Error;
 /** Strip a shebang line (`#!/usr/bin/env node`), leaving a blank line so line numbers hold. */
 export declare function stripShebang(src: string): string;
 /**
- * `source` as the module wrapper's function text: a CommonJS body as written
- * but for its import() calls (rewriteDynamicImports), or an ES module lowered
- * (ESM when `esm`) from its one reading (readEsmModule). Either one's
- * import() loads through this loader, from the workspace, as the module at
- * `parentUrl`.
- *
- * The loader's values reach the body under names drawn, with the emitter's
- * own, from one generatedNames over the source, so none is a name the
- * source holds: import.meta, import(), and the require and module the
- * lowering's lines use. A lowered module is one block, so its own bindings
- * (`const __dirname`, `import process from`, `const require =
- * createRequire(...)`) shadow the wrapper's parameters as module scope does.
- *
- * Throws a SyntaxError for an ES module that does not parse.
+ * A CommonJS body as written, but for import() calls routed to the native
+ * loader. The extra parameter cannot collide with a source's own name,
+ * including a Unicode-escaped spelling.
  */
-export declare function moduleWrapper(source: string, esm: boolean, parentUrl: string, async?: boolean): string;
+export declare function moduleWrapper(source: string, parentUrl: string): string;
 /** What one module's wrapper receives as console and process. */
 export interface ModuleScope {
     readonly console: unknown;
     readonly process: unknown;
+}
+/** The native loader installed for this CommonJS loader's module graph. */
+export interface NativeModuleLoader {
+    importModule(specifier: string, parentUrl: string, options?: unknown): Promise<unknown>;
+    requireModule(filename: string, parentFilename?: string): unknown;
 }
 export interface CjsLoader {
     /** The built-ins `require` serves; `module`'s createRequire is this loader's. */
     readonly moduleMap: Record<string, () => unknown>;
     /** `require` as a module in `dir` has it. */
     requireFrom(dir: string): RequireFunction;
+    /** A resolver or facade uses the same cache and builtins as require(). */
+    resolveFilename(specifier: string, dir: string): string | null;
+    /** Installed before a node program runs; lifo commands install it in their own URL scope. */
+    setNativeLoader(loader: NativeModuleLoader): void;
     /**
      * The module at `filename`, run once and cached. `preread` is its source,
      * and whether it is an ES module, when the caller has read it already (a
