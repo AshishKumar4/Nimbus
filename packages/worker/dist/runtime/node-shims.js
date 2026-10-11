@@ -12210,8 +12210,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     let cell = esmId === -1 ? __nimbusModuleCell(normalizedPath) : null;
     let compiledText = null;
     if (esmId !== -1) {
-      // The staged module's own text, as it was before it was staged.
-      __nimbusEsmWarnTypeless(esmId);
+      // The staged module's own text, as it was before it was staged. Node's
+      // ES loader warns of a typeless one it loads; its require() does not.
+      if (!required) __nimbusEsmWarnTypeless(esmId);
       compiledText = __nimbusEsmSourceText(esmId);
       cell = __nimbusAdoptedModule(normalizedPath, compiledText);
     } else if (!cell) {
