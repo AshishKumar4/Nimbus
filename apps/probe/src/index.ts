@@ -26,7 +26,7 @@ import {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { processHostMode } from '@nimbus-sh/worker/loaders/process-host.js';
+import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
