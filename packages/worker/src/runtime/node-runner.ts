@@ -43,8 +43,10 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
+import { stdinBytesOf } from '@nimbus-sh/core/shell/stdin-adapter.js';
+import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
-import type { StdinBytes } from '../facets/manager.js';
 
 /**
  * Argv long-running detection. Signals we honour:
@@ -71,6 +73,7 @@ export interface RunFreshResult {
 }
 
 export interface RunFreshOpts {
+  output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
   argv?: string[];
   env?: Record<string, string>;
   cwd?: string;
@@ -86,12 +89,9 @@ export interface RunFreshOpts {
    *  notice + /api/processes listing. */
   command?: string;
   /**
-   * G4 (runtime-pkg wave): caller has already allocated a
-   * process supervisor PID for this invocation; runFresh / facetMgr.exec
-   * should reuse it instead of spawning a duplicate. Used by the
-   * .bin handler in src/session/init.ts to keep `ps` showing ONE
-   * row per bin invocation instead of two (the wrapper + the inner
-   * node script).
+   * The caller has already allocated the process supervisor PID for this
+   * invocation (a child_process broker's child, a launch wrapper's process);
+   * runFresh / facetMgr.exec reuse it instead of spawning another.
    */
   skipSpawn?: boolean;
   callerPid?: number;
@@ -99,6 +99,8 @@ export interface RunFreshOpts {
   invokerPid?: number;
   forceLongRunning?: boolean;
   attachedTty?: boolean;
+  /** RuntimeRunOpts.server. */
+  server?: ServerIdentity;
   /** Its launcher writes and ends its stdin (RuntimeRunOpts.stdinWriter). */
   stdinWriter?: boolean;
   bundleProfile?: FacetBundleProfile;
@@ -107,6 +109,12 @@ export interface RunFreshOpts {
   signal?: AbortSignal;
   /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
   launchesServer?: boolean;
+  /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+  esModule?: boolean;
+  /** RuntimeRunOpts.esModuleMap. */
+  esModuleMap?: string;
+  /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+  moduleScope?: ModuleScope;
   /** A node program's command line (RuntimeRunOpts.node). */
   node?: NodeLaunch;
 }
@@ -122,12 +130,14 @@ export async function runFresh(
   // A program that starts a server runs in the keyed long-running facet even
   // without --watch: only its route stub is re-resolvable across requests
   // (the one-shot facet is LOADER.load, unkeyed), so only there is the port it
-  // binds reachable. The runtime handler judges that from the code this
-  // invocation runs (server-launch.ts), its arguments included. .bin wrapper
-  // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
-  // their PID accounting assumes a single foreground exec.
+  // binds reachable. The runtime handler judges that from a bin's hints or the
+  // code this invocation runs (server-launch.ts), its arguments included; one
+  // it misses runs on as a resident once it listens (FacetManager._promote).
+  // A process a launcher reserved (skipSpawn) is its launcher's to judge. A
+  // program attached to the terminal holds it until it exits.
   const wantsLongRunning =
     opts.forceLongRunning ||
+    opts.attachedTty === true ||
     // Node's options are its execArgv now, not its argv (node-cli.ts).
     isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
     (!opts.skipSpawn && opts.launchesServer === true);
@@ -146,7 +156,11 @@ export async function runFresh(
     const { stdin, stdinFile, ...execOpts } = opts;
     const stdinOpts = stdinFile ? { stdinFile: { ...stdinFile, syncRead: false } }
       : stdin ? { stdinPipe: stdinBytesOf(stdin) } : {};
-    const r: FacetExecResult = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
+    const r: FacetExecResult = await facetMgr.exec(code, { ...execOpts, ...stdinOpts,
+      ...(opts.output ? { captureOutput: false, foreground: { signal: opts.signal ?? new AbortController().signal, write: opts.output } } : {}),
+    });
+    // It listened, and runs on as a resident, whose start was said (FacetManager._promote).
+    if (r.promotedPid !== undefined) return residentStarted(facetMgr, r.promotedPid, '');
     return {
       exitCode: r.exitCode,
       stdout: r.stdout,
@@ -180,6 +194,9 @@ export async function runFresh(
       cwd,
       filename: opts.filename,
       dirname: opts.dirname,
+      ...(opts.esModule ? { esModule: true } : {}),
+      ...(opts.esModuleMap ? { esModuleMap: opts.esModuleMap } : {}),
+      ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
       command,
       port,
       attachedTty: opts.attachedTty,
@@ -199,46 +216,20 @@ export async function runFresh(
       longRunning: true,
     };
   }
-  // A server-shaped program that finished during its boot (`--version`,
-  // `--help`, a one-shot run of a CLI that also serves) is an ordinary
-  // completed command: its own exit code, no "started" notice.
-  const finished = facetMgr.processExitCode?.(spawned.pid) ?? null;
-  if (finished !== null) {
-    return { exitCode: finished, stdout: '', stderr: '', longRunning: false };
-  }
-  const noticeLine = opts.skipSpawn
-    ? ''
-    : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`;
-  return {
-    exitCode: 0,
-    stdout: noticeLine,
-    stderr: '',
-    spawnedPid: spawned.pid,
-    longRunning: true,
-  };
+  // A process a launcher reserved is its to announce; one attached to the
+  // terminal has it already.
+  return residentStarted(facetMgr, spawned.pid, opts.skipSpawn || opts.attachedTty
+    ? '' : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`);
 }
 
-function isByteStream(stream: NonNullable<RunFreshOpts['stdin']>): stream is NonNullable<RunFreshOpts['stdin']> & StdinBytes {
-  return !!stream.readBytes;
-}
-
-/** A shell stream's bytes: exact through readBytes, else its text encoded. */
-function stdinBytesOf(stream: NonNullable<RunFreshOpts['stdin']>): StdinBytes {
-  if (isByteStream(stream)) return { readBytes: (maxLength) => stream.readBytes(maxLength) };
-  // A text-only stream: at most `maxLength` bytes a read, as readBytes gives,
-  // so a piece is never more than the pump asked for.
-  const encoder = new TextEncoder();
-  let rest: Uint8Array | null = null;
-  return {
-    readBytes: async (maxLength) => {
-      if (rest === null) {
-        const text = await stream.read();
-        if (text === null) return null;
-        rest = encoder.encode(text);
-      }
-      const piece = rest.subarray(0, maxLength);
-      rest = piece.byteLength < rest.byteLength ? rest.subarray(piece.byteLength) : null;
-      return piece;
-    },
-  };
+/**
+ * Resident `pid` started, said by `notice`. A server-shaped program that
+ * finished during its boot (`--version`, `--help`, a one-shot run of a CLI
+ * that also serves) is an ordinary completed command: its own exit code, no
+ * notice.
+ */
+function residentStarted(facetMgr: FacetManager, pid: number, notice: string): RunFreshResult {
+  const finished = facetMgr.processExitCode?.(pid) ?? null;
+  if (finished !== null) return { exitCode: finished, stdout: '', stderr: '', longRunning: false };
+  return { exitCode: 0, stdout: notice, stderr: '', spawnedPid: pid, longRunning: true };
 }

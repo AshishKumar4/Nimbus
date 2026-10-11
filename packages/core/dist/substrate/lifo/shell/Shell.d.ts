@@ -1,14 +1,18 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView } from '../../../runtime/process-files.js';
-import { type CommandRegistry } from '../commands/registry.js';
+import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream } from '../commands/types.js';
 import type { ChildExit, CommandRunAsHost } from '../commands/types.js';
 import { type NimbusFilesystemAuthority, type VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
-import { type ProgramSpec, type ShellOptions, type TerminalFdState } from './interpreter.js';
+import { type ProgramSpec, type TerminalFdState } from './interpreter.js';
+import { type ShellOptions } from './state.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
-import { type HostProcessSignals } from '../commands/system/kill.js';
+import { type SignalAbortReason } from './signals.js';
+import type { HostProcessSignals } from '../commands/system/kill.js';
+import { ShellInputSubmission, type ShellQueuedInput } from '../../../shell/input-submission.js';
+import type { ProcessExitNotice, ProcessExitNoticeSource } from '../../../runtime/process-exit-notices.js';
 export declare function formatShellPrompt(env: Record<string, string>, cwd: string): string;
 export interface ExecuteOptions {
     cwd?: string;
@@ -54,15 +58,21 @@ export interface ShellCommandIdentity {
      * shell runs it, so no command of a process goes uncounted.
      */
     accountWork?(pid: number): () => void;
+    /**
+     * A line this shell runs on process `pid`'s descriptors, until the
+     * returned function is called: `stop` ends it (SessionProcessSupervisor
+     * holdWork). What the pid bound is released after the line has closed
+     * what it opened, however the process ends.
+     */
+    holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;
     private terminal;
     private get vfs();
     private registry;
-    cwd: string;
-    env: Record<string, string>;
-    private aliases;
+    /** The shell's own state (state.ts): what its builtins act on, and its child shells copy. */
+    private readonly state;
     lineBuffer: string;
     cursorPos: number;
     screenCursorRow: number;
@@ -75,25 +85,21 @@ export declare class Shell {
     private stdinLineBuffer;
     private stdinCursorPos;
     private interpreter;
-    private interpreterConfig;
     private historyManager;
-    private jobTable;
     private processRegistry;
     /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
     private hostProcessSignals;
     private builtins;
-    /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
-    private ownBuiltins;
-    /** A child shell's view of this Shell, one per forked state. */
-    private readonly forkViews;
-    private shellOptions;
-    private traps;
-    private readonlyNames;
-    /** Indexed arrays; `env` holds the scalars. A name lives in exactly one. */
-    private arrays;
     private commandIdentity;
     private tabCount;
-    pasteQueue: string[];
+    pasteQueue: ShellQueuedInput[];
+    private lineSubmission;
+    private activeInput;
+    private lineInputs;
+    private promptMode;
+    private readonly exitNotices;
+    private exitNoticeSource;
+    private renderExitNotice;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -108,14 +114,8 @@ export declare class Shell {
      * whatsoever. Held as whole chunks so a multi-byte escape sequence replays
      * as one keystroke rather than three.
      */
-    typeAhead: string[];
+    typeAhead: ShellQueuedInput[];
     constructor(terminal: ITerminal, filesystem: NimbusFilesystemAuthority, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
-    /**
-     * The Shell a builtin acts on: this one, or for a child shell (a subshell,
-     * pipeline element, `$( )` or background job) a view whose variables, cwd,
-     * options, traps, readonly names and aliases are that child's.
-     */
-    private forContext;
     /**
      * The command history, oldest first: the one store (HistoryManager, kept
      * in ~/.bash_history) that Up/Down, reverse search, Alt+. and the history
@@ -124,7 +124,6 @@ export declare class Shell {
     get history(): readonly string[];
     /** The names this shell runs itself, as help and completion list them. */
     builtinNames(): string[];
-    private registerBuiltins;
     getJobTable(): JobTable;
     /**
      * Let `kill` signal the host's processes: a numeric pid this shell's own
@@ -142,6 +141,9 @@ export declare class Shell {
     /** Transfer terminal I/O without replacing shell state or sourcing login files. */
     bindTerminal(terminal: ITerminal): void;
     takeQueuedInput(): string[];
+    queuePasteInput(data: string, submission?: ShellInputSubmission): void;
+    rejectQueuedInput(): void;
+    private bindTerminalInput;
     /**
      * The `runAs` host this shell re-credentials through. A caller building a
      * second Shell over the same kernel needs it, or its commands lose the
@@ -182,7 +184,11 @@ export declare class Shell {
     start(): Promise<void>;
     private sourceRcFiles;
     printPrompt(): void;
-    handleInput(data: string): Promise<void>;
+    /** A newly attached client learns current readiness, never a replayed completion. */
+    announcePrompt(): void;
+    printContinuationPrompt(): void;
+    queueProcessExitNotice(notice: ProcessExitNotice, source: ProcessExitNoticeSource, render: (notice: ProcessExitNotice, source: ProcessExitNoticeSource) => string): boolean;
+    handleInput(data: string, submission?: ShellInputSubmission): Promise<void>;
     private handleTab;
     private handleStdinInput;
     private applyCompletion;
@@ -215,55 +221,9 @@ export declare class Shell {
      * both characters; a quoted join keeps the newline in the string.
      */
     private acceptLine;
-    executeLine(line: string): Promise<void>;
-    private builtinCd;
-    private builtinPwd;
-    private builtinEcho;
-    private builtinClear;
-    private builtinExport;
-    private builtinSet;
-    private builtinShift;
-    private builtinTrap;
-    private builtinHash;
-    private printShellOptions;
-    private setShellOptionByName;
-    private setShellOptionByFlag;
-    private setPositionals;
-    private currentPositionals;
-    private builtinReadonly;
-    private builtinRead;
-    private builtinWait;
-    /**
-     * `unset [-f] [-v] [-n] [name ...]`, as bash: -f removes functions, -v
-     * (and -n, as this shell has no namerefs) variables, and with neither a
-     * name is a variable, or a function when no variable has that name.
-     */
-    private builtinUnset;
-    /**
-     * `local name`, `local name=value`, `local name=(word …)` and the `declare` /
-     * `typeset` spellings. `local` binds each name to the running function, so
-     * the value it had outside comes back when the function returns; `declare`
-     * only does so when it is itself inside a function, matching bash.
-     *
-     * Attribute flags (-a -A -i -r -x -g) are accepted. Only -r has an effect —
-     * the rest describe types this shell does not distinguish.
-     */
-    private builtinDeclare;
-    /** The right-hand side of a declaration: `(word …)` is an array literal. */
-    private assignDeclared;
-    private assignEnv;
-    private variableStore;
-    private snapshotShellState;
-    private restoreShellState;
-    private builtinExit;
-    private builtinJobs;
-    private builtinFg;
-    private builtinBg;
-    private builtinHistory;
+    executeLine(line: string, submission?: ShellInputSubmission | undefined): Promise<void>;
+    private consumeQueuedStdin;
     sourceFile(path: string): Promise<void>;
-    private builtinSource;
-    private builtinAlias;
-    private builtinUnalias;
     private writeToTerminal;
 }
 //# sourceMappingURL=Shell.d.ts.map

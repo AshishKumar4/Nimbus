@@ -11,9 +11,8 @@
  *   - Buffer every stdout/stderr chunk in a fixed-byte ring, keyed by PID.
  *   - Split oversize chunks at 4 KB so no single write can swamp a PID's
  *     allotted 64 KB.
- *   - Tag binary chunks (null bytes / high non-printable ratio) as
- *     `{type: 'binary', size: N}` so replay shows `[N bytes of binary
- *     output]` instead of garbled terminal state.
+ *   - Store raw bytes once; text log readers may render a binary placeholder,
+ *     while foreground pipes and subscribers always receive exact bytes.
  *   - Track process exit separately from the append stream so `logs` can
  *     print a clean footer and `_emitExitDump` can fire exactly once.
  *   - Retain logs for `retainAfterExitMs` (default 10 min) past exit —
@@ -22,10 +21,7 @@
  *   - Provide pub-sub via `subscribe(pid, cb)` so `logs -f` is O(1) per
  *     chunk, not a poll loop.
  *
- * Non-goals:
- *   - Holding raw Uint8Array. The RPC boundary carries bytes
- *     (SupervisorRPC.stdout(data: Uint8Array)); the supervisor decodes them
- *     at its edge, per (pid, stream), and this ring holds text lines.
+ * Text is a derived read-time view, never another stored output path.
  *
  * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
@@ -43,21 +39,19 @@
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
 import { type PersistedLogPid } from './process-log-retention.js';
+import type { SessionProcessLogChunk, SessionProcessExit, SessionProcessLogsOptions } from './session-protocol.js';
 export type { PersistedLogPid };
-export type LogStream = 'stdout' | 'stderr';
-export interface LogChunk {
+export type LogStream = SessionProcessLogChunk['stream'];
+/** A derived text view of the independently retained byte log. */
+export type LogChunk = Omit<SessionProcessLogChunk, 'seq'>;
+export type SequencedLogChunk = SessionProcessLogChunk;
+/** The stored and relayed log is bytes; text is a read-time view only. */
+export interface ByteLogChunk {
     ts: number;
     stream: LogStream;
-    /**
-     * `data` is the raw chunk content (ANSI escapes preserved). For
-     * binary-detected chunks it's a placeholder like
-     * `[237 bytes of binary output]\n`; the original bytes are dropped.
-     */
-    data: string;
-    /** Set for chunks we flagged as binary — lets UI render differently. */
-    binary?: boolean;
+    data: Uint8Array;
 }
-export interface SequencedLogChunk extends LogChunk {
+export interface SequencedByteLogChunk extends ByteLogChunk {
     seq: number;
 }
 /**
@@ -65,21 +59,15 @@ export interface SequencedLogChunk extends LogChunk {
  * number the adapter stored alongside it; hydration falls back to array
  * position for a row that carries none.
  */
-export interface PersistedLogChunk extends LogChunk {
+export interface PersistedLogChunk {
+    ts: number;
+    stream: LogStream;
+    data: string | Uint8Array;
+    binary?: boolean;
     seq?: number;
 }
-export interface ProcessLogReadOptions {
-    cursor?: number;
-    lines?: number;
-    bytes?: number;
-}
-export interface ProcessExitInfo {
-    code: number;
-    /** When the exit was recorded (ms epoch). */
-    at: number;
-    /** Optional synthetic reason, used by external-exit path (timeout/abort). */
-    reason?: string;
-}
+export type ProcessLogReadOptions = SessionProcessLogsOptions;
+export type ProcessExitInfo = SessionProcessExit;
 /**
  * live in NimbusSession (production: ctx.storage.sql) and in test
  * harnesses (functional probes: in-memory mock).
@@ -111,7 +99,7 @@ export interface PersistAdapter {
     } | null;
     persistChunks(pid: number, rows: {
         seq: number;
-        chunk: LogChunk;
+        chunk: ByteLogChunk;
     }[]): void;
     persistExit(pid: number, info: ProcessExitInfo): void;
     dropPid(pid: number): void;
@@ -220,6 +208,7 @@ export declare class ProcessLogStore {
     setBroadcast(onChunk: (pid: number, chunk: LogChunk) => void, onExit: (pid: number, exit: ProcessExitInfo) => void): void;
     /** Is there ANY state for this pid (including exit-only)? */
     has(pid: number): boolean;
+    retains(pid: number): boolean;
     /** Current buffered bytes for this PID (post-eviction). */
     size(pid: number): number;
     getExit(pid: number): ProcessExitInfo | null;
@@ -236,6 +225,7 @@ export declare class ProcessLogStore {
      * needed. Notifies any `subscribe()`rs for this pid.
      */
     append(pid: number, stream: LogStream, data: string): void;
+    appendBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void>;
     /** W9: shared insert path — assigns a seq, marks dirty, evicts, fans out. */
     private _appendChunk;
     /**
@@ -246,6 +236,11 @@ export declare class ProcessLogStore {
      */
     read(pid: number, opts?: ProcessLogReadOptions): {
         chunks: SequencedLogChunk[];
+        cursor: number;
+        truncated: boolean;
+    };
+    readBytes(pid: number, opts?: ProcessLogReadOptions): {
+        chunks: SequencedByteLogChunk[];
         cursor: number;
         truncated: boolean;
     };
@@ -266,6 +261,8 @@ export declare class ProcessLogStore {
      * `all()` stays the right call for a pid that may predate this isolate.
      */
     buffered(pid: number): LogChunk[];
+    private readonly broadcastDecoders;
+    private _render;
     /** Record exit. Idempotent: second call is ignored (preserves first). */
     markExit(pid: number, code: number, reason?: string): void;
     /**
@@ -275,6 +272,7 @@ export declare class ProcessLogStore {
      * subscriber sees pre-hibernate context in the next backlog frame.
      */
     subscribe(pid: number, cb: (c: LogChunk) => void): () => void;
+    subscribeBytes(pid: number, cb: (c: ByteLogChunk) => void | Promise<void>): () => void;
     /** Subscribe to the exit event. Fires once. */
     subscribeExit(pid: number, cb: (e: ProcessExitInfo) => void): () => void;
     /**

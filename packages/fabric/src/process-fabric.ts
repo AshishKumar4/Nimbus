@@ -74,10 +74,13 @@
  * `ResidentDiskReader` it was given.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub } from './vendor/types.js';
 
 /**
@@ -105,6 +108,9 @@ export type StartContract = 'lifetime' | 'boot';
  * and read when the facet loads, so the bytes are transient rather than
  * resident in the coordinator's heap.
  */
+const ModuleSourceAssetSchema = z.object({ path: z.string().startsWith('/'), sha256: z.string().regex(/^[0-9a-f]{64}$/) });
+const ModuleSourceRecipeSchema = z.array(z.union([z.string(), ModuleSourceAssetSchema]));
+
 export const ResidentCodeSpecSchema = z.object({
   compatibilityDate: z.string().min(1),
   compatibilityFlags: z.array(z.string()),
@@ -134,6 +140,10 @@ export const ResidentCodeSpecSchema = z.object({
    * image store below and the spec names it.
    */
   vfsTextModules: z.record(z.string(), z.string()).optional(),
+  /** Process-owned source recipes whose immutable pieces are read only on a Loader cache miss. */
+  vfsComposedModules: z.record(z.string(), z.string()).optional(),
+  /** Runtime libraries are immutable deployment assets, never per-process images. */
+  assetModules: z.record(z.string(), z.object({ kind: z.enum(['js', 'cjs']), source: ModuleSourceAssetSchema })).optional(),
   /**
    * VFS paths of generated CommonJS PACKS (encodeCommonJsPack): each image
    * carries many `{ cjs }` modules, and the map gains every one of them at
@@ -273,8 +283,33 @@ export interface ResidentDiskReader {
 export async function residentLoaderConfig(
   spec: ResidentCodeSpec,
   disk: ResidentDiskReader,
+  readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>,
 ): Promise<Record<string, unknown>> {
-  const resolved: Record<string, string | { wasm: ArrayBuffer } | { cjs: string }> = {};
+  const resolved: Record<string, string | { wasm: ArrayBuffer } | { cjs: string } | { js: string }> = {};
+  // The loader is handed every module at once, so the session holds them all
+  // while the facet loads. A pack is read first, and its bytes let go once
+  // its modules are decoded, before any other image is in hand: read after
+  // the wasm images, an astro project's second launch held its 38 MiB of
+  // wasm, its pack's 25.7 MB of bytes and their 48 MiB decoded at once, and
+  // reset the session's isolate.
+  for (const path of spec.vfsCommonJsPacks ?? []) {
+    Object.assign(resolved, decodeCommonJsPackBytes(await readFacetImageBytes(disk, path)));
+  }
+  const immutable = (source: z.infer<typeof ModuleSourceAssetSchema>) => {
+    if (!readAsset) throw new Error('Nimbus: this module map requires an immutable source reader');
+    return readAsset(source);
+  };
+  await Promise.all([
+    ...Object.entries(spec.assetModules ?? {}).map(async ([name, member]) => {
+      const text = await immutable(member.source);
+      resolved[name] = member.kind === 'cjs' ? { cjs: text } : { js: text };
+    }),
+    ...Object.entries(spec.vfsComposedModules ?? {}).map(async ([name, path]) => {
+      const recipe = ModuleSourceRecipeSchema.parse(JSON.parse(new TextDecoder().decode(await readFacetImageBytes(disk, path))));
+      const parts = await Promise.all(recipe.map((part) => typeof part === 'string' ? part : immutable(part)));
+      resolved[name] = parts.join('');
+    }),
+  ]);
   for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
     const bytes = await disk.readFile(path);
     // The read's own buffer when it fits exactly, and only otherwise a copy.
@@ -290,10 +325,7 @@ export async function residentLoaderConfig(
     };
   }
   for (const [moduleName, path] of Object.entries(spec.vfsTextModules ?? {})) {
-    resolved[moduleName] = await readFacetImage(disk, path);
-  }
-  for (const path of spec.vfsCommonJsPacks ?? []) {
-    Object.assign(resolved, decodeCommonJsPack(await readFacetImage(disk, path)));
+    resolved[moduleName] = new TextDecoder().decode(await readFacetImageBytes(disk, path));
   }
   return {
     compatibilityDate: spec.compatibilityDate,
@@ -308,8 +340,8 @@ export async function residentLoaderConfig(
 /**
  * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
  * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
- * units, the unit the decoded text is sliced in, so decoding copies nothing:
- * each module is a slice of the one string read.
+ * units, each module's length as a string (decodeCommonJsPackBytes reads the
+ * bytes they end at).
  *
  * Encoded as its parts, in order, never joined: the image store encodes them
  * straight into the image's bytes, and a joined copy would be a second full
@@ -326,41 +358,67 @@ export function encodeCommonJsPack(modules: Record<string, string>): string[] {
   return parts;
 }
 
-export function decodeCommonJsPack(pack: string): Record<string, { cjs: string }> {
-  const newline = pack.indexOf('\n');
-  const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(pack.slice(0, newline)));
+/**
+ * A pack's modules decoded from its UTF-8 bytes, each from its own: decoded
+ * whole, one non-Latin-1 character makes the pack's string two-byte
+ * throughout, and every module a slice holding it alive (an astro project's
+ * 24.2 M characters: 48 MiB, where its modules apart are 33.6). The index
+ * counts UTF-16 units, so each module's bytes end where its units do: a
+ * four-byte sequence is two units, any other lead byte one.
+ */
+export function decodeCommonJsPackBytes(pack: Uint8Array): Record<string, { cjs: string }> {
+  const newline = pack.indexOf(0x0a);
+  if (newline < 0) throw new Error('Nimbus: a CommonJS pack has no index');
+  // A module's text is what the index counts, a leading byte order mark included.
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+  const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(decoder.decode(pack.subarray(0, newline))));
   const modules: Record<string, { cjs: string }> = {};
   let offset = newline + 1;
   for (const [name, length] of index) {
-    modules[name] = { cjs: pack.slice(offset, offset + length) };
-    offset += length;
+    let end = offset;
+    for (let units = 0; units < length && end < pack.length; end++) {
+      const byte = pack[end]!;
+      if ((byte & 0xc0) !== 0x80) units += byte >= 0xf0 ? 2 : 1;
+    }
+    // The rest of the last character: its continuation bytes.
+    while (end < pack.length && (pack[end]! & 0xc0) === 0x80) end++;
+    const text = decoder.decode(pack.subarray(offset, end));
+    if (text.length !== length) throw new Error(`Nimbus: CommonJS pack module '${name}' decodes to ${text.length} units, its index says ${length}`);
+    modules[name] = { cjs: text };
+    offset = end;
   }
   if (offset !== pack.length) throw new Error(`Nimbus: CommonJS pack holds ${pack.length - offset} bytes its index does not name`);
   return modules;
 }
 
-/**
- * Read one content-addressed facet image and verify it against the digest its
- * path claims. Content addressing is only a guarantee if the bytes are checked
- * against the name they arrived under: an image that was truncated, or
- * replaced by something the generator never wrote, would otherwise be loaded
- * as the program and fail somewhere inside it with no way back to the cause.
- */
-async function readFacetImage(disk: ResidentDiskReader, path: string): Promise<string> {
+/** One content-addressed facet image, verified against the digest its path claims. */
+async function readFacetImageBytes(disk: ResidentDiskReader, path: string): Promise<Uint8Array> {
   const expected = facetImagePathDigest(path);
   if (!expected) {
     throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
   }
-  // Verified from the bytes read, and decoded only after: re-encoding the decoded string held a third copy of the largest member.
+  return readContentBlob(disk, path, expected);
+}
+
+/**
+ * Read a content-addressed blob (image-store.ts storeContentBlob) and verify
+ * it against `digest`, the one it is named by. Content addressing is only a
+ * guarantee if the bytes are checked against the name they arrived under: a
+ * blob that was truncated, or replaced by something the generator never
+ * wrote, would otherwise be loaded as the program and fail somewhere inside
+ * it with no way back to the cause.
+ */
+export async function readContentBlob(disk: ResidentDiskReader, path: string, digest: string): Promise<Uint8Array> {
+  // Verified from the bytes read, and decoded by the caller: re-encoding the decoded string held a third copy of the largest member.
   const bytes = await disk.readFile(path);
   const actual = await facetImageDigest(bytes);
-  if (actual !== expected) {
+  if (actual !== digest) {
     throw new Error(
-      `Nimbus: facet image '${path}' does not match its digest (read ${actual}); `
+      `Nimbus: '${path}' does not match its digest (read ${actual}); `
         + 'the image store is corrupt and the process cannot boot from it',
     );
   }
-  return new TextDecoder().decode(bytes);
+  return bytes;
 }
 
 // ── The hosting substrate ───────────────────────────────────────────────────
@@ -392,8 +450,8 @@ export interface ProcessHostParams {
   /**
    * Set only by the coordinator's durable-application path: an explicit facet
    * name (`app-slot-<n>`) allocated from DO storage, plus the release split
-   * that keeps its SQLite across aborts. Absent, the host allocates an
-   * ephemeral `proc-slot-<n>` name from its in-memory free list and deletes
+   * that keeps its SQLite across aborts. Absent, the host takes the next
+   * ephemeral `proc-slot-<n>` name from its in-memory slot book and deletes
    * the store on release.
    */
   facet?: { name: string; durable: boolean };
@@ -404,6 +462,31 @@ export interface ProcessHostParams {
    * the storage limit.
    */
   storageBytes?: number;
+  /**
+   * The process logs its changes in its facet's store (process-fs-journal.ts):
+   * the session is told the facet's name when it opens (`opened`), and
+   * `drain` is handed the store's journal when the process is released,
+   * before the store goes. A drain that throws keeps the store and its name.
+   * Its class holds `held()` open while its isolate lives, so a death after
+   * its boot (out of memory, CPU) is the process's `lost`.
+   */
+  journal?: {
+    opened(facet: string): void;
+    drain(journal: ProcessFsJournalSource): Promise<void>;
+  };
+}
+
+/**
+ * The platform reset the Durable Object a running process was hosted on, and
+ * the process ended with it. Only a host that is not the coordinator can
+ * report this (process-host.ts `peer`); the platform's own words, which may
+ * name a cause that did not happen ("its code was updated"), are the cause.
+ */
+export class ProcessHostLost extends Error {
+  constructor(cause: unknown) {
+    super(`its host was reset by the platform (${errorText(cause)})`, { cause });
+    this.name = 'ProcessHostLost';
+  }
 }
 
 /**
@@ -416,12 +499,13 @@ export interface HostedProcess {
    * The runner's startProcess payload. The runner is started as part of
    * opening the host, so this is a handle on that one boot — awaiting it twice
    * is safe and never re-starts anything. A `lifetime` runner settles it at
-   * exit; a host that dies before then rejects it.
+   * exit; a host that dies before then rejects it with {@link ProcessHostLost}.
    */
   readonly started: Promise<unknown>;
   /**
-   * Rejects if the HOST dies under a process that is already up — the one
-   * failure a substrate can suffer that the process itself never reports.
+   * Rejects, with {@link ProcessHostLost}, if the HOST dies under a process
+   * that is already up — the one failure a substrate can suffer that the
+   * process itself never reports.
    *
    * It is not symmetric, and pretending otherwise is what leaks a process. A
    * facet dies only with the Durable Object that owns it, which takes the
@@ -535,6 +619,13 @@ export interface OneShotCodeSpec {
 }
 
 /**
+ * A one-shot's program: its module map, or a stage the composed assembler
+ * (stagedBootAssembler) turns into one in a stateless isolate, on that
+ * loader's miss, so a map as large as opencode's is never built in the host.
+ */
+export type OneShotCode = OneShotCodeSpec | { stage: unknown };
+
+/**
  * Everything a host needs to run one program to completion.
  *
  * Separate from {@link ProcessHostParams} because the two differ in whether
@@ -561,7 +652,7 @@ export interface OneShotParams {
    * of the caller's frame, which would otherwise hold a second full copy of the
    * program for as long as the program runs.
    */
-  code(): Promise<OneShotCodeSpec>;
+  code(): Promise<OneShotCode>;
   /** The invocation. Its body carries argv/env/cwd; its signal bounds the run. */
   request: Request;
   /**
@@ -604,6 +695,14 @@ export interface ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
   open(params: ProcessHostParams): Promise<HostedProcess>;
+  /**
+   * The actor hosting `workerKey` found, in a new incarnation, that it no
+   * longer holds the process (a peer's own alarm, `hostLost` op), and proved
+   * it hosted it with the capability minted for that open. The process is
+   * lost ({@link ProcessHostLost}). False when this host has no such open.
+   * A facet's host is the coordinator itself, so it never hears this.
+   */
+  hostLost?(workerKey: string, capability: string): boolean;
 }
 
 /**
@@ -625,7 +724,18 @@ export type ProcessHostFactory = (
   env: unknown,
   disk: () => ResidentDiskReader,
   network: () => WorkspaceNetwork,
+  supervise?: Supervise,
 ) => ProcessHost;
+
+/**
+ * The host's own SUPERVISOR for a one-shot, minted with its binding's props:
+ * a capability the program is handed in the call that runs it, answered
+ * inside the host (the worker's ProcessSupervisor). Calls on it are not
+ * requests to the host, so they never become the host's front request, whose
+ * subrequest depth every later call of the host inherits. A host that
+ * supplies none hands each one-shot its binding (bindingSupervisor).
+ */
+export type Supervise = (props: SupervisorBindingProps) => object;
 
 // ── Handle ──────────────────────────────────────────────────────────────────
 
@@ -637,7 +747,8 @@ export type ProcessHostFactory = (
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
  * held-open startProcess settling (resolve on exit, reject on host death);
- * for a `boot` runner it is the kill that releases the host.
+ * for a `boot` runner it is the kill that releases the host. A host that
+ * dies under either rejects it with {@link ProcessHostLost}.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other
@@ -725,6 +836,13 @@ export interface ResidentProcessSpawn {
   /** See {@link ProcessHostParams.storageBytes}. */
   storageBytes?: number;
   /**
+   * A Nimbus runtime's process (node, python, ruby, opencode), whose class
+   * logs its changes in its facet's store and holds `held()` open while its
+   * isolate lives (ProcessHostParams.journal). Never an application's own
+   * class, whose store is its own.
+   */
+  journaled?: boolean;
+  /**
    * Called before any concrete host capability can expose this writer.
    * A spawn must not proceed unless the supervisor accepts the authority.
    */
@@ -741,7 +859,15 @@ function heldUntilKilled(): { promise: Promise<void>; release: () => void } {
 }
 
 export class ProcessFabric {
-  constructor(private readonly host: ProcessHost) {}
+  /**
+   * `journalFor`: the write-log hooks of a resident process's facet
+   * (ProcessHostParams.journal), when its coordinator keeps them: every
+   * resident it starts logs its changes in its facet's store.
+   */
+  constructor(
+    private readonly host: ProcessHost,
+    private readonly options: { journalFor?: (pid: number) => ProcessHostParams['journal'] } = {},
+  ) {}
 
   /**
    * Boot a resident process on this deployment's substrate and return its
@@ -758,6 +884,7 @@ export class ProcessFabric {
     // after the host is released; a later incarnation must use a fresh one.
     const writerId = crypto.randomUUID();
     spawn.onWriterActivated(writerId);
+    const journal = spawn.journaled ? this.options.journalFor?.(spawn.pid) : undefined;
 
     let hosted: HostedProcess;
     try {
@@ -769,6 +896,7 @@ export class ProcessFabric {
         startArgs: spawn.startArgs,
         ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
         ...(spawn.storageBytes !== undefined ? { storageBytes: spawn.storageBytes } : {}),
+        ...(journal !== undefined ? { journal } : {}),
       });
     } catch (error) {
       spawn.onWriterRetired(writerId);
@@ -795,7 +923,9 @@ export class ProcessFabric {
     // on its host, so residency ends at a kill — or at the host dying, which
     // is the same thing happening to the process without anyone asking for it.
     const done = (spawn.startContract === 'lifetime'
-      ? hosted.started.then(() => undefined)
+      // A lifetime run ends with its start: a platform reset, said by the
+      // start or by the host, is its host lost; its own stop is not one.
+      ? Promise.race([hosted.started.then(() => undefined, (error: unknown) => { throw isHostReset(error) ? new ProcessHostLost(error) : error; }), hosted.lost])
       : hosted.started.then(() => Promise.race([held.promise, hosted.lost]))
     ).finally(() => release());
     done.catch(() => {});

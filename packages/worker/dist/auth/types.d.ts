@@ -152,7 +152,5 @@ export declare class NimbusSessionPinError extends NimbusAuthError {
     readonly attempted: string;
     constructor(pinnedTo: string, attempted: string);
 }
-/** Compact identifier rule for tenants, subjects, session pins, and SDK sandbox IDs. */
-export declare const ID_COMPONENT_RE: RegExp;
-export declare function isNimbusIdComponent(value: unknown): value is string;
+export { ID_COMPONENT_RE, isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
 //# sourceMappingURL=types.d.ts.map

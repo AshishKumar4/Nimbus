@@ -41,6 +41,8 @@
  * program that wrote a file and then raised still wrote the file.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { CPYTHON_RUN_TASK } from './compiled-bodies.generated.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
@@ -50,6 +52,7 @@ import { buildPipInvocation, pythonSitePackages, sessionUsesSciVariant, } from '
 import { DEFAULT_HOME } from '../constants.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */
@@ -159,28 +162,6 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
 }
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
-}
-/**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
- */
-async function cpythonRunFacetFn(args, facetEnv) {
-    const run = Reflect.get(globalThis, '__cpythonRun');
-    if (typeof run !== 'function') {
-        return {
-            stdout: '', stderr: '', exitCode: 127,
-            error: 'cpython preamble missing: __cpythonRun not in scope',
-        };
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where the boot re-adopts it after the mount: adopting only here
-    // would be undone by __wasiInitFS, which clears it on purpose.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-    adopt?.(supervisor);
-    return run(args);
 }
 export function makeCPythonRunnerFactory(deps) {
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
@@ -316,7 +297,8 @@ export function makeCPythonRunnerFactory(deps) {
             if (!userEnv.SSL_CERT_FILE && cacertVfs)
                 userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
             const facetArgs = {
-                userCode: `${prelude}\n${userCode}`,
+                bootstrapCode: prelude,
+                userCode,
                 pyArgv,
                 userEnv,
                 progName,
@@ -342,7 +324,7 @@ export function makeCPythonRunnerFactory(deps) {
                     return 1;
                 }
                 const command = [binName, ...argv].map((part) => (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid });
+                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
                 if (spawnResult.stdout)
                     ctx.stdout.write(spawnResult.stdout);
                 if (spawnResult.stderr)
@@ -352,48 +334,48 @@ export function makeCPythonRunnerFactory(deps) {
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's write credential.
-            const facet = deps.facets.open({
-                // The variant is in the tag because a host's constructor-time wasm
-                // fingerprint is name:length:first-byte:last-byte, not a content hash.
-                // Two variants differ by megabytes so they would not collide today, but
-                // a warm slot serving the wrong interpreter is not a failure worth
-                // leaving to a size coincidence.
-                tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
-                concurrency: 1,
-                // Never absent. Without the capability the facet reads its seed and can
-                // never write anything back — the program appears to run and its output
-                // never reaches the session.
-                syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
-                preamble: buildCPythonPreamble(),
-                wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
-            });
-            let result;
+            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin' });
+            facetArgs.supervisorPid = stdio.pid;
+            let exitCode = 1;
+            let facet = null;
             try {
-                result = await facet.submit(cpythonRunFacetFn, facetArgs, {
-                    timeoutMs: 120_000,
-                    // A kill or Ctrl-C ends the facet too, where the host can.
-                    signal: ctx.signal,
+                facet = deps.facets.open({
+                    // The variant is in the tag because a host's constructor-time wasm
+                    // fingerprint is name:length:first-byte:last-byte, not a content hash.
+                    // Two variants differ by megabytes so they would not collide today, but
+                    // a warm slot serving the wrong interpreter is not a failure worth
+                    // leaving to a size coincidence.
+                    tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
+                    concurrency: 1,
+                    // Never absent. Without the capability the facet reads its seed and can
+                    // never write anything back — the program appears to run and its output
+                    // never reaches the session.
+                    syscalls: stdio.syscalls,
+                    preamble: buildCPythonPreamble(),
+                    wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
                 });
+                const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
+                    signal: stdio.signal,
+                });
+                exitCode = result.error ? result.exitCode || 1 : result.exitCode;
+                if (result.error)
+                    await ctx.stderr.write(`${binName}: ${result.error}\n`);
+                return exitCode;
             }
             catch (e) {
                 // Killed: the program ends as an interrupted one does.
-                if (ctx.signal.aborted)
-                    return exitCodeForAbortSignal(ctx.signal);
+                if (stdio.signal.aborted) {
+                    // What it may have lost is said however it ended (unsettledEnd).
+                    ctx.stderr.write(unsettledNoteOf(e));
+                    return exitCode = exitCodeForAbortSignal(stdio.signal);
+                }
                 ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
                 return 1;
             }
             finally {
-                facet.dispose();
+                facet?.dispose();
+                stdio.finish(exitCode);
             }
-            if (result.stdout)
-                ctx.stdout.write(result.stdout);
-            if (result.stderr)
-                ctx.stderr.write(result.stderr);
-            if (result.error) {
-                ctx.stderr.write(`${binName}: ${result.error}\n`);
-                return result.exitCode || 1;
-            }
-            return result.exitCode;
         };
     };
 }

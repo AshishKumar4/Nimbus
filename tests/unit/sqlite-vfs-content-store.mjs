@@ -160,6 +160,42 @@ function wireChunks(path, data) {
   }
 }
 
+// ── An uncached read neither consults nor fills the content cache ─────────
+{
+  const { raw, vfs } = open();
+  const data = random(CHUNK_SIZE * 4 + 11, 31);
+  vfs.writeFile('blob.bin', data);
+  vfs.writeFile('small.bin', data.subarray(0, 100));
+  raw.evictAll();
+  const before = raw.getStats().cache;
+  assert.deepEqual(vfs.readFileUncached('blob.bin'), data);
+  assert.deepEqual(vfs.readRangeUncached('blob.bin', CHUNK_SIZE - 5, CHUNK_SIZE + 10), data.subarray(CHUNK_SIZE - 5, CHUNK_SIZE * 2 + 5));
+  assert.deepEqual(vfs.readFileUncached('small.bin'), data.subarray(0, 100));
+  const after = raw.getStats().cache;
+  assert.equal(after.entries, before.entries, 'an uncached read filled the content cache');
+  assert.equal(after.hits + after.misses, before.hits + before.misses, 'an uncached read consulted the content cache');
+  // A runtime image assembled range-by-range fills nothing either: the LRU
+  // stays empty while the caller holds the only copy of the 10.6 MiB image.
+  raw.evictAll();
+  const empty = raw.getStats().cache;
+  const chunks = [];
+  for (let offset = 0; offset < data.length; offset += 65536) {
+    chunks.push(vfs.readRangeUncached('blob.bin', offset, Math.min(65536, data.length - offset)));
+  }
+  const image = new Uint8Array(data.length);
+  let at = 0;
+  for (const chunk of chunks) { image.set(chunk, at); at += chunk.length; }
+  assert.deepEqual(image, data);
+  const held = raw.getStats().cache;
+  assert.equal(held.entries, empty.entries, 'a ranged image assembly filled the content cache');
+  assert.equal(held.hits + held.misses, empty.hits + empty.misses, 'a ranged image assembly consulted the content cache');
+  // A cached read fills it, and what it hands back is the caller's to change.
+  const read = vfs.readFile('blob.bin');
+  assert.ok(raw.getStats().cache.entries > after.entries);
+  read.fill(0);
+  assert.deepEqual(vfs.readFile('blob.bin'), data, 'a cached read handed back the cached bytes');
+}
+
 // ── A write to shared content leaves the other sharer byte-identical ──────
 for (const size of [5_000, CHUNK_SIZE * 5 + 17]) {
   const { raw, vfs } = open();

@@ -65,7 +65,7 @@
 
 import * as budgets from '../../../packages/fabric/src/budgets.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
-import { CHILD_NEWS_SOURCE } from '../../../packages/worker/src/runtime/child-news.ts';
+import { CHILD_NEWS_SOURCE } from '../../../packages/core/src/runtime/child-news.ts';
 import { WorkThread } from '../../../packages/core/src/substrate/lifo/shell/work-thread.ts';
 
 const { beginLoaderFetch, beginLoaderFetchWhenFree, bindProcessTable, DO_DYNAMIC_WORKER_LIMIT, issueProcessNews, loaderLedgerStats, setProcessBlocked } = budgets;

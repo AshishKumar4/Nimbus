@@ -143,8 +143,9 @@ await t.run(heredocCommand('/home/user/install.sh', [
 }
 
 {
-  const { output } = await t.run('cat <<\'NIMBUS_TEST\' | sed \'s/b/\\&/\'\nabc\nNIMBUS_TEST\ncat <<\'NIMBUS_TEST\' | sed \'s/a/$1/\'\nabc\nNIMBUS_TEST', 20_000);
-  const stripped = stripAnsi(output);
+  const ampersand = await t.run('cat <<\'NIMBUS_TEST\' | sed \'s/b/\\&/\'\nabc\nNIMBUS_TEST', 20_000);
+  const dollar = await t.run('cat <<\'NIMBUS_TEST\' | sed \'s/a/$1/\'\nabc\nNIMBUS_TEST', 20_000);
+  const stripped = stripAnsi(ampersand.output + '\n' + dollar.output);
   a.check('sed replacements preserve escaped ampersands and literal dollars',
     hasOutputLine(stripped, 'a&c') && hasOutputLine(stripped, '$1bc'),
     JSON.stringify(stripped.slice(-800)));

@@ -12,7 +12,7 @@ const a = makeAsserter('editor/monaco/new/monaco-themed-properly');
 console.log(`editor/monaco/new/monaco-themed-properly — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 // CSS — panel background matches VSCode (#1e1e1e).

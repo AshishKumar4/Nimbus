@@ -144,8 +144,8 @@ const loader = runnerLoader('dynamic-import');
 const manager = oneShotManager('one-shot-dynamic-import', { host, rawVfs, loader });
 // The engine the transform facet runs (lib/oxc-engine.mjs); the service's
 // in-isolate path runs the same transform-then-rewrite.
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+const esbuild = new EsbuildService(undefined, oxcTransforms);
 manager.setEsbuildService(esbuild);
 
 for (const [rel, text] of Object.entries(files)) {

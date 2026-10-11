@@ -64,10 +64,13 @@ setTimeout(() => { srv.close(); process.exit(0); }, 14_000);
 `.trim();
 
 await t.run('cd /home/user/example-app', 10_000);
-await t.run(heredocCommand('/home/user/example-app/server.js', serverJs), 15_000);
+// example-app's package.json is "type": "module" (the Vite starter), where a .js
+// file is an ES module and has no require: the CommonJS server is a .cjs, as
+// it must be under real node.
+await t.run(heredocCommand('/home/user/example-app/server.cjs', serverJs), 15_000);
 
 t.reset();
-t.cmd('node /home/user/example-app/server.js');
+t.cmd('node /home/user/example-app/server.cjs');
 // A long-running fork emits "[started (long-running)…]" notice OR a "LISTENING <port>" line.
 // We accept either. The shell may or may not return immediately depending on impl.
 let serverStarted = false;
@@ -78,7 +81,7 @@ try {
   // If the marker never appears, the test continues to the curl step
   // (which will fail fast and report).
 }
-a.check('node server.js produced started-marker (LISTENING or [started (long-running)])', serverStarted);
+a.check('node server.cjs produced started-marker (LISTENING or [started (long-running)])', serverStarted);
 
 // Wait briefly for OS-level bind on the port.
 await sleep(1_500);

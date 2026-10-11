@@ -58,13 +58,13 @@ try {
     'console.log("ESM_IMPORT=" + self.kind);',
   ].join('\n') + '\n'), 10_000);
 
-  const cjs = await t.run('node lib/use-cjs.js; echo "CJS_EXIT=$?"', 30_000);
+  const cjs = await t.run('node lib/use-cjs.js', 30_000);
   const cjsOut = stripAnsi(cjs.output);
   a.check("require('<name>') resolves through the package's own exports", /CJS_SELF=self-cjs/.test(cjsOut), JSON.stringify(cjsOut.slice(-500)));
   a.check("require('<name>/sub') resolves through the exports subpath", /CJS_SUBPATH=self-util/.test(cjsOut), JSON.stringify(cjsOut.slice(-500)));
-  a.check('the CommonJS entry exits 0', /CJS_EXIT=0/.test(cjsOut), JSON.stringify(cjsOut.slice(-500)));
+  a.check('the CommonJS entry exits 0', cjs.exitCode === 0, JSON.stringify(cjsOut.slice(-500)));
 
-  const esm = await t.run('node lib/use-esm.mjs; echo "ESM_EXIT=$?"', 30_000);
+  const esm = await t.run('node lib/use-esm.mjs', 30_000);
   const esmOut = stripAnsi(esm.output);
   a.check('createRequire(<name>) resolves from an ESM file', /ESM_REQUIRE=self-cjs/.test(esmOut), JSON.stringify(esmOut.slice(-500)));
   a.check('createRequire(<name>/sub) resolves from an ESM file', /ESM_SUBPATH=self-util/.test(esmOut), JSON.stringify(esmOut.slice(-500)));
@@ -72,7 +72,7 @@ try {
   // both conditions answers with the `require` target; what is asserted is
   // that the self-reference resolves and prints an exported value.
   a.check("await import('<name>') resolves from an ESM file", /ESM_IMPORT=self-(cjs|esm)/.test(esmOut), JSON.stringify(esmOut.slice(-500)));
-  a.check('the ESM entry exits 0', /ESM_EXIT=0/.test(esmOut), JSON.stringify(esmOut.slice(-500)));
+  a.check('the ESM entry exits 0', esm.exitCode === 0, JSON.stringify(esmOut.slice(-500)));
 
   // ── No exports → no self-reference (Node parity) ──
   await t.run('cd ~ && mkdir -p noexports/lib && cd noexports', 10_000);

@@ -26,7 +26,7 @@ console.log(`exec-performance/exec-telemetry-shape — ${BASE}`);
 const sid = await mintSession();
 async function execDiag(path = '/api/_diag/exec', init = {}) {
   const r = await fetch(`${BASE}/s/${sid}/${path.replace(/^\//, '')}`, {
-    headers: requestHeaders(), ...init,
+    headers: requestHeaders({}, sid), ...init,
   });
   return r;
 }

@@ -32,9 +32,10 @@
  * (git-wasi-compat.c) turns that into errno.
  */
 
-import { filesystemErrno } from './filesystem.js';
+import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
+import type { Awaitable } from '../os-contracts.js';
 
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, PIPE: 64, SRCH: 71 } as const satisfies Record<string, Errno>;
@@ -133,7 +134,7 @@ export interface ProcessHostOptions {
   supervisor(): WasiSupervisorStub | null;
   pid: number;
   /** An injected broker-bounded read of this process's stdin channel. */
-  input?: (maxBytes: number) => Promise<WasiInputPacket>;
+  input?: (maxBytes: number) => Awaitable<WasiInputPacket>;
   /** The guest's stdout and stderr, where a child's output that joins them goes. */
   output(fd: 1 | 2, bytes: Uint8Array): void | Promise<void>;
   /** Before an observation: what the guest holds of its writes goes to the session. */
@@ -566,7 +567,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       let room = 0;
       for (let i = 0; i < iovsLen; i++) room += view().getUint32(iovs + i * 8 + 4, true);
       if (room === 0) { view().setUint32(nread, 0, true); return E.SUCCESS; }
-      return opts.input(room).then((packet) => {
+      const finish = (packet: WasiInputPacket): Errno => {
         if (!(packet.data instanceof Uint8Array) || packet.data.byteLength > room) return E.IO;
         if (packet.data.byteLength > 0) {
           const moved = scatter({ chunks: [packet.data] }, iovs, iovsLen);
@@ -577,7 +578,12 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
         if (packet.signal || !packet.ended) return E.INTR;
         view().setUint32(nread, 0, true);
         return E.SUCCESS;
-      }, () => E.IO);
+      };
+      try {
+        const packet = opts.input(room);
+        return packet && typeof (packet as PromiseLike<WasiInputPacket>).then === 'function'
+          ? Promise.resolve(packet).then(finish, () => E.IO) : finish(packet as WasiInputPacket);
+      } catch { return E.IO; }
     }
     const entry = pipeEntry(fd);
     if (!entry) return null;

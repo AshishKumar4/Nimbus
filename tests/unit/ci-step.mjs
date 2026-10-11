@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { OUTPUT_CAP, step } from '../../scripts/ci/lib/step.mjs';
+
+let forwarded = '';
+const options = { write: chunk => { forwarded += String(chunk); } };
+const success = await step('success', process.cwd(), process.execPath, ['-e', 'process.stdout.write("out\\n");process.stderr.write("err\\n")'], options);
+assert.equal(success.name, 'success');
+assert.equal(success.exitCode, 0);
+assert.equal(success.output, forwarded);
+assert.match(success.output, /out/);
+assert.match(success.output, /err/);
+const tail = await step('tail', process.cwd(), process.execPath, ['-e', `process.stdout.write('x'.repeat(${OUTPUT_CAP + 100}));process.stdout.write('END')`], { write() {} });
+assert.equal(tail.output.length, OUTPUT_CAP);
+assert.ok(tail.output.endsWith('END'));
+const missing = await step('missing', process.cwd(), '/no-such-nimbus-command', [], { write() {} });
+assert.notEqual(missing.exitCode, 0);
+assert.match(missing.output, /could not start/);
+const killed = await step('signal', process.cwd(), process.execPath, ['-e', 'process.kill(process.pid,"SIGTERM")'], { write() {} });
+assert.equal(killed.exitCode, 128);
+assert.match(killed.output, /killed by SIGTERM/);
+assert.ok(killed.seconds >= 0);
+console.log('ci-step: streams, bounded tails, launch errors and signals have one verdict boundary');

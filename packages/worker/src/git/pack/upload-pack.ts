@@ -10,13 +10,9 @@
  */
 
 import { retrying } from '@nimbus-sh/platform/retry.js';
-import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
 import { PackFormatError } from './format.js';
-
-export interface GitTransportAuth {
-  username: string;
-  password: string;
-}
+import { plainTextMessage, type RemoteFailure } from './remote-failure.js';
 
 export interface UploadPackOptions {
   url: string;
@@ -48,15 +44,11 @@ export interface PackRequest {
   /** The receiver's shallow commits (its .git/shallow). */
   shallows?: readonly string[];
   depth?: number;
-  /** deepen-since: history after this time (seconds since the epoch). */
+  /** Deepen from the receiver's shallow boundary rather than from the tips (git fetch --deepen). */
+  relative?: boolean;
   deepenSince?: number;
-  /** deepen-not: history not reachable from these refs. */
-  deepenNot?: readonly string[];
-  /** deepen-relative: `depth` counts from the receiver's shallow boundary. */
-  deepenRelative?: boolean;
+  deepenNot?: string[];
   filter?: string;
-  /** include-tag: annotated tags of the objects sent come with them (on unless false). */
-  includeTag?: boolean;
   /** Ask for a thin pack: deltas against `haves` the server need not send. */
   thin?: boolean;
 }
@@ -69,7 +61,7 @@ export interface PackResponse {
 }
 
 export class UploadPackError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(message: string, readonly status?: number, readonly failure?: RemoteFailure) {
     super(UPLOAD_PACK_ERROR_PREFIX + message);
     this.name = 'UploadPackError';
   }
@@ -79,7 +71,7 @@ const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export function pktLine(text: string): Uint8Array {
+function pktLine(text: string): Uint8Array {
   const body = encoder.encode(text);
   const out = new Uint8Array(body.byteLength + 4);
   out.set(encoder.encode((body.byteLength + 4).toString(16).padStart(4, '0')));
@@ -87,30 +79,28 @@ export function pktLine(text: string): Uint8Array {
   return out;
 }
 
-export function headers(options: UploadPackOptions, extra: Record<string, string>): Record<string, string> {
-  const result: Record<string, string> = { 'user-agent': 'git/nimbus', ...extra };
-  if (options.auth && (options.auth.username || options.auth.password)) {
-    result.authorization = 'Basic ' + btoa(options.auth.username + ':' + options.auth.password);
-  }
-  return result;
-}
-
-export function repoUrl(url: string): string {
-  return url.endsWith('/') ? url.slice(0, -1) : url;
-}
-
+/**
+ * The repository's URL without credentials, and the credentials to send: a
+ * URL's own (https://user:password@host/repo.git), as git takes them, else
+ * the options'.
+ */
 /** A request whose transient failures are retried before any byte is read (transport.ts). */
-async function send(options: UploadPackOptions, path: string, init: RequestInit): Promise<Response> {
+async function send(options: UploadPackOptions, path: string, init: RequestInit & { headers: Record<string, string> }): Promise<Response> {
   const doFetch = options.fetch ?? fetch;
+  const { url, auth } = gitHttpRemote(options);
+  const request = { ...init, headers: gitHttpHeaders(auth, init.headers) };
   // Headers that do not come within the stall time are a stall too.
   const stallMs = options.stallMs ?? STALL_MS;
   const attempt = async (): Promise<Response> => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const stalled = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
+      timer = setTimeout(() => {
+        const detail = 'no response for ' + Math.round(stallMs / 1000) + ' s';
+        reject(new UploadPackError(detail, undefined, { kind: 'transport', detail }));
+      }, stallMs);
     });
     try {
-      return await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
+      return await Promise.race([doFetch(url + path, { ...request, signal: options.signal }), stalled]);
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
@@ -125,14 +115,16 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit)
       discard: (response) => response.body?.cancel(),
     });
   } catch (error) {
-    throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
+    if (error instanceof UploadPackError) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new UploadPackError('the request failed: ' + detail, undefined, { kind: 'transport', detail });
   }
 }
 
 export { STALL_MS };
 
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
-export class PktReader {
+class PktReader {
   private buffer: Uint8Array = new Uint8Array(0);
   private done = false;
 
@@ -200,27 +192,27 @@ export class PktReader {
   }
 }
 
-export function text(payload: Uint8Array): string {
+function text(payload: Uint8Array): string {
   const line = decoder.decode(payload);
   return line.endsWith('\n') ? line.slice(0, -1) : line;
 }
 
-/** The refs and capabilities `service` (upload-pack for a fetch, receive-pack for a push) advertises. */
-export async function discover(options: UploadPackOptions, service: 'git-upload-pack' | 'git-receive-pack' = 'git-upload-pack'): Promise<Advertisement> {
-  const response = await send(options, '/info/refs?service=' + service, {
-    headers: headers(options, { accept: 'application/x-' + service + '-advertisement' }),
+export async function discover(options: UploadPackOptions): Promise<Advertisement> {
+  const response = await send(options, '/info/refs?service=git-upload-pack', {
+    headers: { accept: 'application/x-git-upload-pack-advertisement' },
   });
-  if (response.status === 401 || response.status === 403) {
-    await response.body?.cancel();
-    throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status);
-  }
   if (!response.ok || !response.body) {
-    await response.body?.cancel();
-    throw new UploadPackError('discovery answered HTTP ' + response.status, response.status);
+    // The server's text, as git shows it, with the status.
+    const message = await plainTextMessage(response.headers.get('content-type'), response.body);
+    const failure: RemoteFailure = { kind: 'status', status: response.status, ...(message === undefined ? {} : { message }) };
+    if (response.status === 401 || response.status === 403) {
+      throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status, failure);
+    }
+    throw new UploadPackError('discovery answered HTTP ' + response.status, response.status, failure);
   }
   const reader = new PktReader(response.body.getReader(), options.stallMs);
   const first = await reader.next();
-  if (!first || text(first) !== '# service=' + service) throw new UploadPackError('not a smart HTTP server');
+  if (!first || text(first) !== '# service=git-upload-pack') throw new UploadPackError('not a smart HTTP server');
   if (await reader.next() !== null) throw new UploadPackError('advertisement header lacks its flush');
   const advertisement: Advertisement = { refs: new Map(), symrefs: new Map(), capabilities: new Set() };
   let firstRef = true;
@@ -256,24 +248,16 @@ export async function discover(options: UploadPackOptions, service: 'git-upload-
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised: Set<string>, request: PackRequest): string[] {
   // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
-  const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])]
-    .filter((capability) => advertised.has(capability));
+  const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
   if (!advertised.has('side-band-64k')) throw new UploadPackError('the server does not offer side-band-64k');
   if (request.thin && advertised.has('thin-pack')) capabilities.push('thin-pack');
-  const deepens = request.depth !== undefined || request.deepenSince !== undefined || (request.deepenNot?.length ?? 0) > 0;
-  if (deepens || (request.shallows?.length ?? 0) > 0) {
+  if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
     if (!advertised.has('shallow')) throw new UploadPackError('the server does not support shallow fetches');
     capabilities.push('shallow');
   }
-  // fetch-pack.c: the server must offer each deepen option the request uses.
-  for (const [used, capability] of [
-    [request.deepenSince !== undefined, 'deepen-since'],
-    [(request.deepenNot?.length ?? 0) > 0, 'deepen-not'],
-    [request.deepenRelative === true, 'deepen-relative'],
-  ] as const) {
-    if (!used) continue;
-    if (!advertised.has(capability)) throw new UploadPackError('the server does not support ' + capability);
-    capabilities.push(capability);
+  if (request.relative) {
+    if (!advertised.has('deepen-relative')) throw new UploadPackError('the server does not support --deepen');
+    capabilities.push('deepen-relative');
   }
   if (request.filter !== undefined) {
     if (!advertised.has('filter')) throw new UploadPackError('the server does not support --filter');
@@ -309,10 +293,10 @@ export async function requestPack(options: UploadPackOptions, advertised: Set<st
   const response = await send(options, '/git-upload-pack', {
     method: 'POST',
     body,
-    headers: headers(options, {
+    headers: {
       'content-type': 'application/x-git-upload-pack-request',
       accept: 'application/x-git-upload-pack-result',
-    }),
+    },
   });
   if (!response.ok || !response.body) {
     const detail = response.body ? (await response.text()).slice(0, 300) : '';

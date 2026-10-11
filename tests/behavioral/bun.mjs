@@ -86,12 +86,8 @@ await t.run(heredocCommand('/home/user/bun-probe/server.js', serverJs), 15_000);
 }
 
 // Wait for the shell prompt to return after the server self-exits.
-// `waitForPrompt` polls the WS (which keeps it alive) and asserts the
-// prompt is at the buffer tail — i.e. the bun process really exited
-// and the shell is back. The probe-exit at +5s may complete BEFORE
-// this call, so we use `waitForPrompt` (matches current tail) rather
-// than `waitForNewPrompt` (which requires buf to grow further and
-// would deadlock if the prompt is already present).
+// waitForPrompt observes the first B after the server command, even if
+// that prompt already arrived before this call.
 // SERVER_TTL_MS (5s) + 10s buffer = 15s timeout.
 await t.waitForPrompt(SERVER_TTL_MS + 10_000);
 

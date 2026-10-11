@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // Dynamic Worker accounting against the documented per-DO model.
 //
 // A Durable Object may have DO_DYNAMIC_WORKER_LIMIT distinct Dynamic Workers
@@ -23,6 +24,7 @@ import {
   beginLoaderFetch,
   DO_DYNAMIC_WORKER_LIMIT,
   dynamicWorkerHeadroom,
+  launchWorkerKey,
   loaderLedgerStats,
 } from '../../packages/fabric/src/budgets.ts';
 import { classifyMessage } from '../../packages/platform/src/oom-classify.ts';
@@ -63,7 +65,7 @@ assert.equal(
     },
   };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, concurrency: 2 });
-  await pool.map((value) => value, ['a', 'b', 'c', 'd']);
+  await pool.map(facetTaskSource("(value) => value"), ['a', 'b', 'c', 'd']);
 
   const afterMap = loaderLedgerStats(ctx);
   assert.equal(midFlight, 2, 'both slots were distinct workers in flight at once');
@@ -102,7 +104,7 @@ assert.equal(
   };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   await assert.rejects(
-    pool.submit((value) => value, 'payload'),
+    pool.submit(facetTaskSource("(value) => value"), 'payload'),
     (error) => {
       assert.ok(error.message.startsWith(CAP_MESSAGE), error.message);
       assert.ok(error.message.includes('nimbus-process:resident-7'), 'the failure names the worker holding a slot');
@@ -131,7 +133,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
       load() {
         return {
           getEntrypoint: () => ({
-            async fetch() {
+            async run() {
               if (refuseOneShot) throw new Error(CAP_MESSAGE);
               oneShotMidFlight = loaderLedgerStats(ctx).inFlightWorkers;
               return new Response('ran');
@@ -163,7 +165,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   await handle.booted();
   const resident = loaderLedgerStats(ctx).inFlightWorkers;
   assert.equal(resident.length, 1, 'a booted resident process holds one worker, idle or not');
-  assert.ok(resident[0].startsWith('nimbus-process:resident-ledger-do:7'), 'keyed by its loader id');
+  assert.deepEqual(resident, [launchWorkerKey(7)], 'keyed as its process\'s one worker');
   assert.equal(dynamicWorkerHeadroom(ctx), DO_DYNAMIC_WORKER_LIMIT - 1);
   handle.kill();
   await handle.done;

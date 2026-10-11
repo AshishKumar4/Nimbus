@@ -14,7 +14,7 @@
 // own tab the app reports crossOriginIsolated and completes a
 // SharedArrayBuffer + Worker + Atomics round trip.
 
-import { AUTH_TOKEN, deleteSession, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
+import { deleteSession, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
 import {
   applyProbeCookies,
   exchangeAttachCookie,
@@ -89,8 +89,8 @@ try {
   await t.close();
 
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message || String(error)));
 

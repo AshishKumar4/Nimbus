@@ -73,8 +73,9 @@ function serviceWith(transform) {
   );
 }
 
-// transformMany is positional: a request the pre-pass cannot parse is its own
-// { error }, and the others still reach the host and keep their places.
+// transformMany is positional: a request the pre-pass cannot parse (one
+// binding __commonJS, which it reads) is its own { error }, and the others
+// still reach the host and keep their places.
 for (const hosted of [true, false]) {
   const sent = [];
   const transform = async (code) => { sent.push(code); return { code: `T(${code})`, map: '', warnings: [] }; };
@@ -84,7 +85,7 @@ for (const hosted of [true, false]) {
   const options = { loader: 'js', format: 'cjs' };
   const outcomes = await service.transformMany([
     { code: 'export const a = 1;', options },
-    { code: 'export const b = 2;\nimport, and otherwise;', options },
+    { code: 'import { __commonJS } from "./chunk.js";\nimport, and otherwise;', options },
     { code: 'export const c = 3;', options },
   ]);
   assert.equal(outcomes.length, 3);
@@ -95,3 +96,34 @@ for (const hosted of [true, false]) {
 }
 
 console.log('esbuild-transform-routing: ok');
+
+// An ES module is lowered without the engine; one nested past the lowering's
+// parse loads it, for the engine's CommonJS.
+{
+  let loads = 0;
+  const service = new EsbuildService(undefined, {
+    engine: async () => {
+      loads++;
+      return { transform: async (code, options) => ({ code: `ENGINE(${options.format})`, map: '', warnings: [] }) };
+    },
+  });
+  const at = { esModule: 'node', dynamicImportParent: 'file:///app/m.mjs' };
+  const shallow = await service.transform('export const a = 1;', at);
+  assert.match(shallow.code, /__esModule/);
+  assert.equal(loads, 0, 'a lowered ES module loads no engine');
+  const deep = await service.transform(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, at);
+  assert.equal(deep.code, 'ENGINE(cjs)', 'one nested past the lowering is the engine\'s');
+  assert.equal(loads, 1);
+}
+console.log('esbuild-transform-routing: deep ES modules load the engine');
+
+// A data: URL module nested past the lowering stages from the engine's emit, which has no map.
+{
+  const { stagedDataUrlModule } = await import('../../packages/worker/src/facets/manager.ts');
+  const service = new EsbuildService(undefined, {
+    engine: async () => ({ transform: async () => ({ code: 'module.exports.x = 1;', map: '', warnings: [] }) }),
+  });
+  const staged = await stagedDataUrlModule(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, 'node', service);
+  assert.match(staged, /module\.exports\.x = 1;/);
+}
+console.log('esbuild-transform-routing: a deep data: module stages');

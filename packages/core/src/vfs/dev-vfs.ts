@@ -12,10 +12,9 @@
  * the shell resolves them to the process's own descriptors before any read.
  * /dev/tcp is the WASI socket prefix, not a node here.
  */
-import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
+import { S_IFCHR, type SyncVFS, type VFS, type VfsDirent, type VfsStat } from './vfs.js';
 import { syscallError } from './vfs-error.js';
 
-const S_IFCHR = 0o020000;
 const DEV_MODE = S_IFCHR | 0o666;
 /** Largest buffer one read produces; fewer bytes than asked is ordinary read(2). */
 const MAX_DEVICE_READ = 1024 * 1024;

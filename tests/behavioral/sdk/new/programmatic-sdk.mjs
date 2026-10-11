@@ -12,6 +12,7 @@ const { defineNimbusConfig } = await import('../../../../packages/config/src/ind
 const calls = [];
 const processLogChunks = [];
 let processLogCursor = 0;
+let fileRevision = 0;
 const stub = {
   async _rpcReady(options) {
     calls.push(['ready', options]);
@@ -26,8 +27,8 @@ const stub = {
     return {
       command,
       pid: 7,
-      process: { pid: 7, command, argv: command.split(/\s+/), cwd: options.cwd, state: 'running', exitCode: null, startTime: 1, endTime: null, longRunning: true },
-      ports: [{ port: 3000, pid: 7, registeredAt: 1 }],
+      process: { pid: 7, command, argv: command.split(/\s+/), cwd: options.cwd, state: 'running', exitCode: null, startTime: 1, endTime: null, longRunning: true, attachedTty: false },
+      ports: [{ port: 3000, pid: 7, registeredAt: 1, capability: 'test-port' }],
       startedAt: 1,
     };
   },
@@ -37,7 +38,7 @@ const stub = {
   },
   async _rpcReadFile(path) { calls.push(['readFile', path]); return 'file'; },
   async _rpcReadFileBytes(path) { calls.push(['readFileBytes', path]); return new Uint8Array([1, 2]); },
-  async _rpcWriteFile(path, content) { calls.push(['writeFile', path, content]); },
+  async _rpcWriteFile(path, content) { calls.push(['writeFile', path, content]); return ++fileRevision; },
   async _rpcStat(path) { calls.push(['stat', path]); return { type: 'file', size: 4, mtime: 1, mode: 0o644 }; },
   async _rpcLstat(path) { calls.push(['lstat', path]); return { type: 'symlink', size: 4, mtime: 1, mode: 0o777 }; },
   async _rpcRename(from, to) { calls.push(['rename', from, to]); },
@@ -47,8 +48,8 @@ const stub = {
   async _rpcExists(path) { calls.push(['exists', path]); return true; },
   async _rpcMkdir(path) { calls.push(['mkdir', path]); },
   async _rpcDeleteFile(path, options) { calls.push(['deleteFile', path, options]); },
-  async _rpcInstallRuntime(spec, options) { calls.push(['installRuntime', spec, options]); return { spec, exitCode: 0 }; },
-  async _rpcEnsureRuntimes(specs, options) { calls.push(['ensureRuntimes', specs, options]); return specs.map((spec) => ({ spec, exitCode: 0 })); },
+  async _rpcInstallRuntime(spec, options) { calls.push(['installRuntime', spec, options]); return { spec, exitCode: 0, stdout: '', stderr: '' }; },
+  async _rpcEnsureRuntimes(specs, options) { calls.push(['ensureRuntimes', specs, options]); return specs.map((spec) => ({ spec, exitCode: 0, stdout: '', stderr: '' })); },
   async _rpcListRuntimes() {
     calls.push(['listRuntimes']);
     return {
@@ -80,8 +81,8 @@ const stub = {
       exit: null,
     };
   },
-  async _rpcListPorts() { calls.push(['listPorts']); return [{ port: 3000, pid: 7, registeredAt: 1 }]; },
-  async _rpcExposePort(port) { calls.push(['exposePort', port]); return { port, listening: true, pid: 7, registeredAt: 1 }; },
+  async _rpcListPorts() { calls.push(['listPorts']); return [{ port: 3000, pid: 7, registeredAt: 1, capability: 'test-port' }]; },
+  async _rpcExposePort(port) { calls.push(['exposePort', port]); return { port, listening: true, pid: 7, registeredAt: 1, capability: 'test-port' }; },
   async _rpcUnexposePort(port) { calls.push(['unexposePort', port]); return { port, ok: true }; },
   async _rpcDestroy(options) { calls.push(['destroy', options]); return { ok: true, killed: 0, destroyedAt: 1, reason: options?.reason ?? null }; },
 };

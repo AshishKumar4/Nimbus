@@ -28,18 +28,18 @@ async function runCase(name, csrc, binName, expectedStdout, expectedRc) {
   await t.run('nimbus install clang', 300_000);
   await t.run(heredocCommand(`${binName}.c`, csrc), 10_000);
   await t.run(`clang ${binName}.c -o ${binName}`, 240_000);
-  const r = await t.run(`./${binName} ; echo RUN_EXIT=$?`, 30_000);
+  const r = await t.run(`./${binName}`, 30_000);
   const out = stripAnsi(r.output);
   a.check(`${name} → ${expectedStdout} printed`,
     new RegExp(expectedStdout).test(out), JSON.stringify(out.slice(-300)));
-  a.check(`${name} → RUN_EXIT=${expectedRc}`,
-    new RegExp(`RUN_EXIT=${expectedRc}\\b`).test(out), JSON.stringify(out.slice(-200)));
+  a.check(`${name} → exit ${expectedRc}`,
+    r.exitCode === expectedRc, JSON.stringify(out.slice(-200)));
   await t.close();
 }
 
-await runCase('return 0', '#include <stdio.h>\nint main(void){printf("Z\\n");return 0;}\n', 'z', 'Z', '0');
-await runCase('return 7', '#include <stdio.h>\nint main(void){printf("S\\n");return 7;}\n', 's', 'S', '7');
-await runCase('return 137', '#include <stdio.h>\nint main(void){printf("H\\n");return 137;}\n', 'h', 'H', '137');
+await runCase('return 0', '#include <stdio.h>\nint main(void){printf("Z\\n");return 0;}\n', 'z', 'Z', 0);
+await runCase('return 7', '#include <stdio.h>\nint main(void){printf("S\\n");return 7;}\n', 's', 'S', 7);
+await runCase('return 137', '#include <stdio.h>\nint main(void){printf("H\\n");return 137;}\n', 'h', 'H', 137);
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

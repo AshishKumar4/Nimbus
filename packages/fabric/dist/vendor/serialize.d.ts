@@ -1,4 +1,3 @@
-export declare function serializeFunction(fn: Function): string;
 /**
  * djb2 over a string's UTF-16 code units, as an unsigned 32-bit integer:
  * fast, deterministic, not cryptographic. Behind loader cache keys and peer

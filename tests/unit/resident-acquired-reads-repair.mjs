@@ -30,8 +30,14 @@ const listHeld = Promise.withResolvers();
 const listGate = Promise.withResolvers();
 const readHeld = Promise.withResolvers();
 const readGate = Promise.withResolvers();
+// Every barrier here asks: the session grants no read lease (the repair's race is what this is about).
+const asked = ([epoch, cursor, options]) => {
+  if (options?.lease !== true) return options === undefined ? [epoch, cursor] : [epoch, cursor, options];
+  const { lease: _lease, ...rest } = options;
+  return [epoch, cursor, rest];
+};
 const handle = facetSupervisor(authority, {
-  fsAcquire: (...args) => (drop ? Promise.reject(new Error('Network connection lost.')) : forward('fsAcquire', args)),
+  fsAcquire: (...args) => (drop ? Promise.reject(new Error('Network connection lost.')) : forward('fsAcquire', asked(args))),
   fsList: async (...args) => {
     if (holdList) {
       holdList = false;

@@ -23,19 +23,25 @@ import { ProcessTable } from './process-table.js';
 import { ProcessInputStore } from './process-input.js';
 import { ProcessLogStore, } from './process-logs.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
-import { StreamTextDecoders } from '../_shared/bytes.js';
+import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
+/**
+ * How long work still held for an ended process (holdWork) has to stop: the
+ * session's bound on a holder that does not let go when asked, the one a
+ * delegation's recall has (delegations.ts). Past it the work is stopped
+ * again and the process released all the same; work that ignored its stop
+ * meets a closed scope.
+ */
+const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 export class SessionProcessSupervisor {
     table = new ProcessTable();
+    /** Why no process is admitted any more (closeAdmission); null while they are. */
+    refusal = null;
     input = new ProcessInputStore();
     logs = new ProcessLogStore();
-    /**
-     * The log ring holds text lines; a process's output arrives as bytes. One
-     * streaming decoder per (pid, stream) is this text consumer's edge, so a
-     * character split across two chunks survives. Dropped at markExit.
-     */
-    outputDecoders = new StreamTextDecoders();
     /** Terminators for processes whose work is a promise this session owns. */
     terminators = new Map();
+    /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
+    held = new Map();
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     logActivity = null;
     /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -44,19 +50,47 @@ export class SessionProcessSupervisor {
     isLogOrphan = (pid) => !this.table.get(pid);
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
+    endWaiters = new Map();
     /** Releases an ended process's filesystem binding; see setRelease. */
     release = null;
+    /** Each ended pid's release, begun at its end: what a prune reports and waits for before it forgets the entry. */
+    releases = new Map();
+    /** Who waits for a pid's release to run (released), until it begins. */
+    releaseWaiters = new Map();
+    /** Each ended pid whose held work is still stopping: the bound on it (HELD_WORK_STOP_MS). */
+    stopBounds = new Map();
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     defaultSignalAction = null;
+    /** Holds a process's output until its writes are published; see setOutputGate. */
+    outputGate = null;
+    /** Each pid's latest output still held: what its next output goes after. */
+    heldOutput = new Map();
+    /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
+    releasing = new Set();
+    /**
+     * The pids whose end is decided but not yet published: observers are told
+     * they run. A pid's own slot, kept until its end is published, whatever
+     * becomes of its table entry.
+     */
+    unpublishedEnds = new Set();
     // ── Lifecycle / PID authority ─────────────────────────────────────────
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, opts = {}) {
+        if (this.refusal !== null)
+            throw this.refusal;
         const entry = this.table.spawn(command, argv, cwd, opts);
         if (opts.longRunning)
             this.table.setLongRunning(entry.pid);
         if (opts.attachedTty)
             this.table.setAttachedTty(entry.pid);
         return entry;
+    }
+    /**
+     * Admit no process from now on: each spawn throws `reason`. A destroy's,
+     * before it takes the processes it stops, so none starts behind it.
+     */
+    closeAdmission(reason) {
+        this.refusal = reason;
     }
     /** Mark an existing entry as long-running. Idempotent. */
     setLongRunning(pid) {
@@ -69,8 +103,29 @@ export class SessionProcessSupervisor {
     setForeground(pid, foreground) {
         this.table.setForeground(pid, foreground);
     }
+    /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
     get(pid) {
         return this.table.get(pid);
+    }
+    /**
+     * `pid`'s status as observers are told it (ps, process listings, a parent
+     * waiting on it): its end once published, after the output before it
+     * (releaseOutput); running until then.
+     */
+    published(pid) {
+        const entry = this.table.get(pid);
+        return entry && this.asPublished(entry);
+    }
+    /** Every process, as observers are told it (see {@link published}). */
+    publishedAll() {
+        return this.table.getAll().map((entry) => this.asPublished(entry));
+    }
+    asPublished(entry) {
+        return this.unpublishedEnds.has(entry.pid) ? { ...entry, state: 'running', exitCode: null, endTime: null } : entry;
+    }
+    /** Whether `pid`'s end is decided and still held from its observers (see {@link published}). */
+    endHeld(pid) {
+        return this.unpublishedEnds.has(pid);
     }
     getRunning() {
         return this.table.getRunning();
@@ -193,26 +248,70 @@ export class SessionProcessSupervisor {
         this.onWaitChange?.();
     }
     /**
-     * Register how to stop the work behind `pid`. Background jobs started
-     * through the programmatic API run as a promise held by this session, so
-     * `kill` has to abort them rather than only marking the table entry.
-     * Cleared once the process reaches a terminal state.
+     * Register how to stop the work behind `pid`: a program run elsewhere (a
+     * facet) whose run this session holds as a promise, so `kill` has to abort
+     * it rather than only marking the table entry. What such a process bound
+     * in the filesystem is its program's, and is released at its end. Cleared
+     * once the process reaches a terminal state.
      */
     setTerminator(pid, terminate) {
         this.terminators.set(pid, terminate);
     }
-    terminate(pid) {
+    /**
+     * This session runs work on `pid`'s own descriptors (a shell job, a
+     * command run in the session): `stop` ends it, given the kill's reason
+     * when it has one (SESSION_DESTROYED for a destroy's), and the function
+     * returned says it has stopped, its own cleanup done. A kill stops it
+     * rather than only marking the table entry.
+     *
+     * The work owns those descriptors while it runs and closes them itself, so
+     * the process's release (setRelease) comes after: once its end is marked
+     * and every piece of work held for it has stopped, whichever is last. A
+     * process with nothing held for it (a program run elsewhere, or one whose
+     * host was lost: nothing of it here is left to unwind) is released at its
+     * end.
+     */
+    holdWork(pid, stop) {
+        const work = { stop, stopped: false };
+        let pieces = this.held.get(pid);
+        if (!pieces)
+            this.held.set(pid, pieces = new Set());
+        pieces.add(work);
+        let done = false;
+        return () => {
+            if (done)
+                return;
+            done = true;
+            const now = this.held.get(pid);
+            now?.delete(work);
+            if (now?.size === 0)
+                this.held.delete(pid);
+            this.releaseEnded(pid);
+        };
+    }
+    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
+    terminate(pid, reason) {
         const terminator = this.terminators.get(pid);
-        if (!terminator)
-            return;
         this.terminators.delete(pid);
         try {
-            terminator();
+            terminator?.();
         }
         catch { /* the process is going away regardless */ }
+        for (const work of this.held.get(pid) ?? []) {
+            if (work.stopped)
+                continue;
+            work.stopped = true;
+            try {
+                work.stop(reason);
+            }
+            catch { /* the process is going away regardless */ }
+        }
     }
     cred(pid) {
         return this.table.credOf(pid);
+    }
+    liveCred(pid) {
+        return this.table.liveCred(pid);
     }
     setUmask(pid, umask) {
         return this.table.setUmask(pid, umask);
@@ -231,10 +330,38 @@ export class SessionProcessSupervisor {
     setOnTerminal(cb) {
         this.onTerminalCb = cb;
     }
+    /**
+     * `pid`'s exit status once it leaves `running`, however it leaves: what a
+     * caller whose program ran on as a resident (FacetManager._promote) waits
+     * on for that program's exit.
+     */
+    whenEnded(pid) {
+        const entry = this.table.get(pid);
+        if (entry?.state !== 'running')
+            return Promise.resolve(entry?.exitCode ?? 0);
+        return new Promise((resolve) => {
+            const waiters = this.endWaiters.get(pid);
+            if (waiters)
+                waiters.push(resolve);
+            else
+                this.endWaiters.set(pid, [resolve]);
+        });
+    }
+    /** A decided end is told to observers (published) once the output before it is. */
+    publishEnd(pid, wasRunning) {
+        if (!wasRunning || this.table.get(pid)?.state === 'running')
+            return;
+        this.unpublishedEnds.add(pid);
+        void this.releaseOutput(pid, () => { this.unpublishedEnds.delete(pid); });
+    }
     fireTerminal(pid, wasRunning) {
         if (!wasRunning || this.table.get(pid)?.state === 'running')
             return;
         this.forgetWaits(pid);
+        const waiters = this.endWaiters.get(pid);
+        this.endWaiters.delete(pid);
+        for (const resolve of waiters ?? [])
+            resolve(this.table.get(pid)?.exitCode ?? 0);
         if (!this.onTerminalCb)
             return;
         try {
@@ -246,49 +373,60 @@ export class SessionProcessSupervisor {
     exit(pid, exitCode) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         this.table.exit(pid, exitCode);
+        this.releaseEnded(pid);
+        this.publishEnd(pid, wasRunning);
         this.terminators.delete(pid);
         this.fireTerminal(pid, wasRunning);
     }
     /**
      * Mark a process as killed and tear down its input channel so queued
      * stdin can't outlive the process. `exitCode` is the ending signal's
-     * status; SIGKILL's 137 when absent.
+     * status; SIGKILL's 137 when absent. `reason` is what its held work is
+     * stopped with (holdWork).
      */
-    kill(pid, exitCode) {
+    kill(pid, exitCode, reason) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         const killed = this.table.kill(pid, exitCode);
-        this.terminate(pid);
+        this.releaseEnded(pid);
+        this.publishEnd(pid, wasRunning);
+        this.terminate(pid, reason);
         this.input.close(pid);
         this.fireTerminal(pid, wasRunning);
         return killed;
     }
     /**
-     * Clean up exited processes older than maxAge ms, each released first (see
-     * {@link setRelease}), as {@link reapTree} does: a session prunes its table
-     * this way rather than at each call's return, and an entry forgotten
-     * unreleased left its binding behind. With no release set nothing is
-     * reaped. A reaped pid whose logs hold no exit (a process killed around its
-     * log) is an orphan from here, which gives its logs a deadline.
+     * Clean up exited processes older than maxAge ms: each one's release (see
+     * {@link setRelease}) is waited for, then its entry forgotten, as
+     * {@link reapTree} does. A session prunes its table this way rather than
+     * at each call's return. With no release set nothing is reaped. A reaped
+     * pid whose logs hold no exit (a process killed around its log) is an
+     * orphan from here, which gives its logs a deadline.
      *
      * A prune serves whoever runs next, not the processes it removes, so a
-     * release that fails goes to that process's own stderr log, where its
-     * output is read; every expired entry is still released and forgotten.
+     * release that failed goes to that process's own stderr log, where its
+     * output is read; every expired entry is still forgotten. One whose end is
+     * still held from its observers has not ended to them, and waits for a
+     * prune after it is published; one whose work is still stopping (holdWork)
+     * waits for a prune after it has.
      */
     async reap(maxAge) {
-        const release = this.release;
-        if (!release)
+        if (!this.release)
             return 0;
-        const { reaped, failures } = await this.releaseAndForget(release, this.table.expired(maxAge));
+        const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+        const { reaped, failures } = await this.forgetReleased(expired);
         for (const { pid, error } of failures)
             this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
         return reaped;
     }
     /**
      * How an ended process lets go of what it bound in the filesystem (its
-     * descriptor scope, its watches): the `releaseProcess` of the filesystem
-     * this table's processes bind to. One slot, set by the workspace composed
-     * over this table, which owns that filesystem; {@link reapTree} calls it
-     * for each entry before forgetting it.
+     * descriptor scope, its delegations, its watches): the `releaseProcess` of
+     * the filesystem this table's processes bind to. One slot, set by the
+     * workspace composed over this table, which owns that filesystem. It is
+     * called once per process, at its end, however it ends (exit, kill, a lost
+     * host: every end marks this table), so nothing it held outlives it to be
+     * found by the next caller, a destroy among them. A prune reports how it
+     * went (a descriptor's buffered bytes it lost) and forgets the entry.
      */
     setRelease(release) {
         this.release = release;
@@ -296,18 +434,19 @@ export class SessionProcessSupervisor {
     /**
      * Remove `pid` and every process under it that has ended, now, as a parent
      * that waited for its children does: what a caller ran to completion has
-     * nothing left to report. Each is released first (see {@link setRelease}),
-     * so what it bound goes with its entry rather than outliving it; with no
-     * release set this refuses. One still running is kept. Logs are
-     * orphaned as by {@link reap}.
+     * nothing left to report. Each one's release is waited for (see
+     * {@link setRelease}) before its entry goes; with no release set this
+     * refuses. One still running, whose end is still held from its observers,
+     * or whose work is still stopping, is kept. Logs are orphaned as by
+     * {@link reap}.
      */
     async reapTree(pid) {
-        const release = this.release;
-        if (!release)
+        if (!this.release)
             throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
         const ended = [this.table.get(pid), ...this.table.descendantsOf(pid)]
-            .filter((entry) => entry !== undefined && entry.state !== 'running');
-        const { reaped, failures } = await this.releaseAndForget(release, ended);
+            .filter((entry) => entry !== undefined && entry.state !== 'running'
+            && !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+        const { reaped, failures } = await this.forgetReleased(ended);
         // The caller waited for this tree: it hears every failure, once all of it is gone.
         if (failures.length === 1)
             throw failures[0].error;
@@ -316,22 +455,101 @@ export class SessionProcessSupervisor {
         return reaped;
     }
     /**
-     * Release and forget each entry. A release that fails stops nothing:
-     * releaseProcess revokes everything before it reports what it could not
-     * do, so the entry is forgotten either way and the failure is returned.
+     * `pid` has ended and no work held for it is still stopping: its release
+     * begins now, in the turn that settled the last of them. One that ended
+     * before a release was set is released when it is pruned.
      */
-    async releaseAndForget(release, entries) {
+    releaseEnded(pid) {
+        const entry = this.table.get(pid);
+        if (entry === undefined || entry.state === 'running')
+            return;
+        if (!this.held.has(pid)) {
+            void this.releaseOf(pid);
+            return;
+        }
+        if (this.stopBounds.has(pid))
+            return;
+        this.stopBounds.set(pid, setTimeout(() => {
+            this.stopBounds.delete(pid);
+            if (!this.held.has(pid))
+                return;
+            this.terminate(pid);
+            this.held.delete(pid);
+            void this.releaseOf(pid);
+        }, HELD_WORK_STOP_MS));
+    }
+    /**
+     * Settles once `pid`'s release has run, however it went; at once when
+     * nothing of it is still to be released (it has, or there is no release
+     * to wait for). What a caller that ended a process waits for before it
+     * relies on what the process held being gone (a destroy), bounded by
+     * HELD_WORK_STOP_MS for work that ignores its stop.
+     */
+    released(pid) {
+        const begun = this.releases.get(pid);
+        if (begun !== undefined)
+            return begun.then(() => { });
+        const entry = this.table.get(pid);
+        if (this.release === null || entry === undefined || entry.state === 'running' || !this.held.has(pid))
+            return Promise.resolve();
+        return new Promise((resolve) => {
+            const waiting = this.releaseWaiters.get(pid);
+            if (waiting)
+                waiting.push(resolve);
+            else
+                this.releaseWaiters.set(pid, [resolve]);
+        });
+    }
+    /**
+     * The program behind `pid`, run elsewhere, says it has ended, ahead of
+     * the table hearing of it (its exit is told once its output is let out):
+     * what it bound is released now, so what its last closes flush goes with
+     * that output, unless work the session runs on the pid still holds it.
+     */
+    programEnded(pid) {
+        if (this.table.get(pid) === undefined || this.held.has(pid))
+            return;
+        void this.releaseOf(pid);
+    }
+    /** `pid`'s release, begun once: how it went, a failure included. */
+    releaseOf(pid) {
+        let released = this.releases.get(pid);
+        if (released !== undefined)
+            return released;
+        const release = this.release;
+        if (release === null)
+            return Promise.resolve(null);
+        try {
+            released = release(pid).then(() => null, (error) => ({ error }));
+        }
+        catch (error) {
+            released = Promise.resolve({ error });
+        }
+        this.releases.set(pid, released);
+        const bound = this.stopBounds.get(pid);
+        if (bound !== undefined)
+            clearTimeout(bound);
+        this.stopBounds.delete(pid);
+        const waiting = this.releaseWaiters.get(pid);
+        this.releaseWaiters.delete(pid);
+        for (const resolve of waiting ?? [])
+            void released.then(resolve);
+        return released;
+    }
+    /**
+     * Forget each entry once its release is done. A release that failed stops
+     * nothing: releaseProcess revokes everything before it reports what it
+     * could not do, so the entry is forgotten either way and the failure is
+     * returned.
+     */
+    async forgetReleased(entries) {
         const failures = [];
         for (const entry of entries) {
-            try {
-                await release(entry.pid);
-            }
-            catch (error) {
-                failures.push({ pid: entry.pid, error });
-            }
-            finally {
-                this.table.forget(entry.pid);
-            }
+            const failed = await this.releaseOf(entry.pid);
+            if (failed !== null)
+                failures.push({ pid: entry.pid, error: failed.error });
+            this.releases.delete(entry.pid);
+            this.table.forget(entry.pid);
         }
         if (entries.length > 0)
             this.logRetention?.();
@@ -345,6 +563,9 @@ export class SessionProcessSupervisor {
         return this.table.residentRunning;
     }
     /** See ProcessTable.setPidBase — generation-unique pid allocation. */
+    onPidStride(listener) {
+        this.table.onPidStride(listener);
+    }
     setPidBase(base) {
         this.table.setPidBase(base);
     }
@@ -357,6 +578,8 @@ export class SessionProcessSupervisor {
     openInput(pid) {
         this.input.open(pid);
     }
+    inheritInput(pid, parentPid) { this.input.inherit(pid, parentPid); }
+    pumpInput(pid, source) { return this.input.pump(pid, source); }
     hasInput(pid) {
         return this.input.has(pid);
     }
@@ -367,6 +590,8 @@ export class SessionProcessSupervisor {
     writeInputBytes(pid, data) {
         return this.input.writeBytes(pid, data);
     }
+    writeInputBytesWait(pid, data) { return this.input.writeBytesWait(pid, data); }
+    endInputAfterWrites(pid) { return this.input.endAfterWrites(pid); }
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
     whenInputWritable(pid) {
         return this.input.whenWritable(pid);
@@ -379,8 +604,8 @@ export class SessionProcessSupervisor {
     closeInput(pid) {
         this.input.close(pid);
     }
-    readInput(pid, waitMs) {
-        return this.input.read(pid, waitMs);
+    readInput(pid, waitMs, maxBytes) {
+        return this.input.read(pid, waitMs, maxBytes);
     }
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid, packets) {
@@ -446,25 +671,72 @@ export class SessionProcessSupervisor {
         };
     }
     // ── Output / exit records ─────────────────────────────────────────────
-    appendOutput(pid, stream, data) {
-        this.logs.append(pid, stream, data);
-        this.logActivity?.();
+    /**
+     * Hold each process's output (its log and live sinks, a pipe to another
+     * process, the terminal, its exit) until `gate` lets it through. One slot.
+     */
+    setOutputGate(gate) {
+        this.outputGate = gate;
     }
-    /** A process's own output: bytes on the relay, decoded at this edge. */
-    appendOutputBytes(pid, stream, data) {
-        const text = this.outputDecoders.decode(`${pid}:${stream}`, data);
-        if (text.length > 0)
-            this.appendOutput(pid, stream, text);
+    /** `pid`'s output leaves, from now on, by a way no gate sees (a socket an answer of its hands over): its gate is told. */
+    escapeOutput(pid) {
+        this.outputGate?.escaped?.(pid);
     }
-    /** Record exit in the log store. Idempotent: the first record wins. */
-    markExit(pid, code, reason) {
-        for (const stream of ['stdout', 'stderr']) {
-            const tail = this.outputDecoders.drop(`${pid}:${stream}`);
-            if (tail.length > 0)
-                this.logs.append(pid, stream, tail);
+    /**
+     * `deliver` once `pid`'s output may reach its observers: now, when the
+     * gate holds nothing of pid's, else after the gate and after pid's output
+     * before it, in the order the process made it. Every observer of a
+     * process's output and its exit is reached through here.
+     */
+    releaseOutput(pid, deliver) {
+        if ((this.outputGate === null && this.heldOutput.size === 0) || this.releasing.has(pid))
+            return deliver();
+        const prior = this.heldOutput.get(pid);
+        const gated = this.outputGate?.before(pid) ?? null;
+        const turn = prior === undefined ? gated : gated === null ? prior : Promise.all([prior, gated]);
+        if (turn === null)
+            return this.deliverOutput(pid, deliver);
+        let delivery;
+        const admitted = turn.then(() => { delivery = this.deliverOutput(pid, deliver); });
+        // What comes after waits for this to be let through, not for its readers.
+        const held = admitted.then(() => { }, () => { });
+        this.heldOutput.set(pid, held);
+        void held.then(() => { if (this.heldOutput.get(pid) === held)
+            this.heldOutput.delete(pid); });
+        return (async () => {
+            await admitted;
+            return await delivery;
+        })();
+    }
+    deliverOutput(pid, deliver) {
+        this.releasing.add(pid);
+        try {
+            return deliver();
         }
-        this.logs.markExit(pid, code, reason);
-        this.logActivity?.();
+        finally {
+            this.releasing.delete(pid);
+        }
+    }
+    appendOutput(pid, stream, data) {
+        void this.releaseOutput(pid, () => {
+            this.logs.append(pid, stream, data);
+            this.logActivity?.();
+        });
+    }
+    /** Store bytes once, and await the live byte sink's pipe backpressure. */
+    appendOutputBytes(pid, stream, data) {
+        return this.releaseOutput(pid, () => {
+            const delivery = this.logs.appendBytes(pid, stream, data);
+            this.logActivity?.();
+            return delivery;
+        });
+    }
+    /** Record exit in the log store, after the output before it. Idempotent: the first record wins. */
+    markExit(pid, code, reason) {
+        void this.releaseOutput(pid, () => {
+            this.logs.markExit(pid, code, reason);
+            this.logActivity?.();
+        });
     }
     getExit(pid) {
         return this.logs.getExit(pid);
@@ -472,6 +744,7 @@ export class SessionProcessSupervisor {
     hasLogs(pid) {
         return this.logs.has(pid);
     }
+    retainsLogs(pid) { return this.logs.retains(pid); }
     logSize(pid) {
         return this.logs.size(pid);
     }
@@ -494,6 +767,7 @@ export class SessionProcessSupervisor {
     subscribeLogs(pid, cb) {
         return this.logs.subscribe(pid, cb);
     }
+    subscribeOutputBytes(pid, cb) { return this.logs.subscribeBytes(pid, cb); }
     subscribeExit(pid, cb) {
         return this.logs.subscribeExit(pid, cb);
     }

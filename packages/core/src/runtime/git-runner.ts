@@ -28,7 +28,9 @@
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView } from './process-files.js';
 import type { Command, CommandContext, CommandOutputStream } from '../substrate/lifo/commands/types.js';
-import type { FacetBindings, FacetHost } from './facet-host.js';
+import type { FacetHost } from './facet-host.js';
+import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
+import type { GitFacetArgs, GitFacetResult } from './git-facet-task.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
 import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
@@ -123,7 +125,7 @@ export function makeGitRunnerFactory(deps: {
       };
       let result: GitFacetResult;
       try {
-        result = await facet.submit(gitFacetCall, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
+        result = await facet.submit(GIT_CALL_TASK, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
       } catch (error) {
         if (ctx.signal.aborted) return 130;
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
@@ -143,36 +145,6 @@ export function makeGitRunnerFactory(deps: {
 
 /** A git command may run as long as a facet invocation may. */
 const GIT_TIMEOUT_MS = 300_000;
-
-interface GitFacetArgs {
-  argv: string[];
-  env: Record<string, string>;
-  cred: WasiCred;
-  /** The session pid git runs as: the parent of the children it starts. */
-  pid: number;
-  /** Its output goes to the session as it is written (SupervisorRPC stdout/stderr), not back in the result. */
-  live: boolean;
-}
-
-interface GitFacetResult {
-  exitCode: number;
-  stdout: Uint8Array;
-  stderr: Uint8Array;
-  error?: string;
-  /** git's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
-  fsStats?: ResidentFilesystemStats | null;
-}
-
-/** Runs in the facet: hands the compiled image and the capability to the preamble's __gitRun. */
-async function gitFacetCall(args: GitFacetArgs, facetEnv: FacetBindings): Promise<GitFacetResult> {
-  const modules = Reflect.get(globalThis, '__NIMBUS_WASM') as Record<string, unknown> | undefined;
-  const gitMod = modules?.['git.wasm'];
-  const run = Reflect.get(globalThis, '__gitRun') as ((a: unknown) => Promise<GitFacetResult>) | undefined;
-  if (!gitMod || typeof run !== 'function') {
-    return { exitCode: 127, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git-runner: the facet has no git image or no __gitRun' };
-  }
-  return await run({ ...args, gitMod, supervisor: facetEnv?.SUPERVISOR });
-}
 
 /** Bytes to a sink that takes them as they are, else as text decoded once, whole. */
 async function writeOut(sink: CommandOutputStream, bytes: Uint8Array): Promise<void> {

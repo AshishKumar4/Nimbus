@@ -20,6 +20,7 @@
  * routed through it would silently acquire all of that.
  */
 
+import type { SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -36,7 +37,7 @@ import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '.
 import { runCommand, type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
 import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
@@ -77,6 +78,8 @@ export interface WorkspaceExecOptions extends RunOptions {
    * digit. Omitted, the call runs in a shell of its own.
    */
   readonly shellId?: string;
+  /** Release a named shell without ending this process or saving its later state. */
+  readonly detach?: AbortSignal;
 }
 
 export interface NimbusWorkspaceOptions {
@@ -174,7 +177,7 @@ export interface NimbusWorkspaceOptions {
   readonly ctxExports?: CtxExports;
   /** The process table that allocated supervisor-binding pids. */
   readonly processes?: SessionProcessSupervisor;
-  readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   readonly filesystemNamespace?: string;
   /**
    * The namespace and process bindings, when the host made them before the
@@ -349,9 +352,11 @@ export class NimbusWorkspace {
     // Only a supervisor this workspace created gets its pid base set here; a
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
-    // Its processes bind to this filesystem, so a reap releases them here:
-    // the one place the table and the filesystem meet.
+    // Its processes bind to this filesystem, so a reap releases them here,
+    // and their output waits for what they wrote to be published: the one
+    // place the table and the filesystem meet.
     processes.setRelease((pid) => filesystem.releaseProcess(pid));
+    filesystem.holdOutput(processes);
 
     const env = { ...defaultEnv(home), ...options.env };
 
@@ -536,9 +541,9 @@ export class NimbusWorkspace {
    * ended, leave the process table when the result is returned.
    */
   exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
-    const { shellId, ...call } = options;
+    const { shellId, detach, ...call } = options;
     if (shellId === undefined) return this.runProcess(command, call, null);
-    return this.withNamedShell(shellId, {}, (named) => this.runProcess(command, call, named));
+    return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named));
   }
 
   private async runProcess(command: string, options: RunOptions, named: NamedShell | null): Promise<CommandResult> {
@@ -548,9 +553,15 @@ export class NimbusWorkspace {
     // shell takes them for the call only: passed as its state they would pin
     // it there, and its `cd` would not survive the call.
     const shell = named?.open(pid) ?? this.shellFor(pid, { cwd, env: options.env });
+    // The call is this workspace's work behind the pid until its shell has
+    // closed what it opened: a kill stops it, and only then is what it bound
+    // released.
+    const stop = new AbortController();
+    const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
+    const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason));
     let exitCode = 1;
     try {
-      const result = await runCommand(shell, command, named ? options : { ...options, cwd: undefined, env: undefined });
+      const result = await runCommand(shell, command, { ...(named ? options : { ...options, cwd: undefined, env: undefined }), signal });
       exitCode = result.exitCode;
       return result;
     } finally {
@@ -560,6 +571,7 @@ export class NimbusWorkspace {
       try {
         await shell.closeDescriptors();
       } finally {
+        stopped();
         await this.processes.reapTree(pid);
       }
     }
@@ -591,6 +603,7 @@ export class NimbusWorkspace {
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
         accountWork: (worker: number) => processes.beginWork(worker),
+        holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => processes.holdWork(worker, stop),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
@@ -661,19 +674,9 @@ export class NimbusWorkspace {
   }
 }
 
-/**
- * Open the durable filesystem for a host that has not opened one itself.
- *
- * The revocation is here rather than in `create` because it is the act of
- * OPENING that carries it: pids at or below this generation's floor belong to
- * an instance that is gone, and their append capabilities must stop being
- * honoured before the first read. A host that opened the filesystem itself has
- * already done this, at the same seam, for the same reason.
- */
+/** Open the durable filesystem for a host that has not opened one itself. */
 function openFilesystem(options: NimbusWorkspaceOptions): SqliteVFS {
-  const vfs = new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
-  vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
-  return vfs;
+  return new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
 }
 
 /**
@@ -736,6 +739,9 @@ function workspaceShellIdentity(
     // them doing nothing but await a program (SessionProcessSupervisor).
     const endAwait = processes.beginAwait(parent.pid, child.pid);
     const endWork = processes.beginWork(child.pid);
+    // Its program is this workspace's work behind its pid: a kill stops it.
+    const stop = new AbortController();
+    const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason));
     let exitCode = 1;
     try {
       // The child inherits its parent's descriptors, environment and directory.
@@ -749,7 +755,7 @@ function workspaceShellIdentity(
         terminalStdin: parent.terminalStdin,
         isFdTerminal: parent.isFdTerminal,
         isFdPipe: parent.isFdPipe,
-        signal: parent.signal,
+        signal: parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal,
         runAs: runAsProcess,
       });
       exitCode = ended.status;
@@ -758,6 +764,7 @@ function workspaceShellIdentity(
       endWork();
       endAwait();
       processes.exit(child.pid, exitCode);
+      stopped();
     }
   };
 
@@ -771,6 +778,7 @@ function workspaceShellIdentity(
     },
     runAs: runAsProcess,
     accountWork: (worker: number) => processes.beginWork(worker),
+    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => processes.holdWork(worker, stop),
   });
 
   return commandIdentityFor(shellProcess.pid);
@@ -837,20 +845,20 @@ function registerWasmRuntimes(deps: {
   };
   const runners: Record<string, RunnerFactory> = {
     [BASH_RUNNER]: lazy(async () => (await import('../runtime/bash-runner.js'))
-      .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+      .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
     // No `startResident`: a workspace owns no actor that could outlive the
     // call, so a program that keeps serving is refused by name rather than
     // run as a one-shot that dies with it. Same for ruby, where a script is
     // the shape that may bind a port.
     // The stock build and the one importing the Nimbus extensions (CPYTHON_RUNNER) run on the same runner.
     'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-      .makeCPythonRunnerFactory({ facets: deps.facets, network: deps.network })),
+      .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
     [CPYTHON_RUNNER]: lazy(async () => (await import('../runtime/cpython-runner.js'))
-      .makeCPythonRunnerFactory({ facets: deps.facets, network: deps.network })),
+      .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
     'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
+      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
-      .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+      .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
     [GIT_RUNNER]: lazy(async () => {
       const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
         import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
@@ -888,27 +896,8 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
  * drops them itself, and only once their columns prove they are its own.
  */
 const WORKSPACE_TABLES = [
-  'vfs_append_receipts_v2',
-  'vfs_append_writer_state_v2',
-  'vfs_append_module_state_v2',
-  'vfs_append_pid_revocations_v2',
-  'vfs_append_acked_gaps_v2',
-  'vfs_state',
-  'vfs_inodes',
-  'vfs_chunks',
-  'vfs_contents',
-  'vfs_content_chunks',
-  'vfs_inode_history',
-  'vfs_gc_queue',
-  'vfs_jobs',
-  'vfs_snapshots',
-  'vfs_tombstones',
-  'vfs_cold_trash',
-  'vfs_append_receipts',
-  'vfs_append_writer_state',
-  'vfs_append_module_state',
-  'vfs_append_pid_revocations',
-  'vfs_append_acked_gaps',
+  // The store's own, as it keeps them.
+  ...STORE_TABLES,
   SHELLS_TABLE,
 ] as const;
 

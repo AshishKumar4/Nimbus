@@ -310,7 +310,6 @@ assert.ok(![...profiles.values()][0].includes('home/user'), 'package-relative');
 assert.equal(entriesOf()['private/late.js'].seen.length, 1);
 const nextSession = (name, principal) => {
   // Another session over the same files: its pids start again at 1.
-  for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
   manager = session(name, principal);
 };
 // Another session of the same principal is no second observer: session ids

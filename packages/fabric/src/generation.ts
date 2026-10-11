@@ -48,6 +48,8 @@ export interface GenerationContext {
 interface GenerationState {
   value: number;
   adopted: boolean;
+  /** The highest stride this incarnation raised the persisted counter to (raiseGeneration). */
+  raised?: number;
   /** Deferred reconciliation tasks, drained by {@link runColdStart}. */
   coldStart: Array<() => Promise<unknown>>;
   /** Serializes drains so two callers never run one task twice. */
@@ -70,11 +72,36 @@ export function generation(ctx: object): number {
   return states.get(ctx)?.value ?? 0;
 }
 
-/** Increment + persist the generation counter once per fresh isolate. */
+/**
+ * This incarnation minted pids into `stride` (PID_GEN_STRIDE wide): the
+ * persisted counter is raised to it, so the next incarnation's generation,
+ * and its pid range, lies past every pid minted here.
+ */
+export function raiseGeneration(ctx: GenerationContext, stride: number): Promise<void> {
+  const state = stateOf(ctx);
+  if (stride <= (state.raised ?? state.value)) return Promise.resolve();
+  state.raised = stride;
+  return Promise.resolve(ctx.storage.put(GENERATION_KEY, stride)).catch((e) => {
+    console.warn('[nimbus/W9] generation raise failed:', errorText(e));
+  });
+}
+
+/** What the next incarnation must start past: this one's generation, or the stride its pids reached (raiseGeneration). */
+export function generationFloor(ctx: object): number {
+  const state = states.get(ctx);
+  return Math.max(state?.value ?? 0, state?.raised ?? 0);
+}
+
+/**
+ * Increment + persist the generation counter once per incarnation: past the
+ * persisted one, and past every pid this context minted before (its
+ * generationFloor, after releaseGeneration).
+ */
 export async function adoptGeneration(ctx: GenerationContext): Promise<void> {
   const state = stateOf(ctx);
   if (state.adopted) return;
   state.adopted = true;
+  const floor = generationFloor(ctx);
   try {
     const prev = (await ctx.storage.get(GENERATION_KEY)) as number | undefined;
     // Adopt the persisted truth first, and adopt the bump only after the
@@ -90,13 +117,18 @@ export async function adoptGeneration(ctx: GenerationContext): Promise<void> {
     // keeps a pid from generation N from escaping before N is durable, which
     // is why marking this put `allowUnconfirmed` is not a free speedup — see
     // scratchpad/coldstart-s1.md.
-    state.value = typeof prev === 'number' ? prev : 0;
+    state.value = Math.max(typeof prev === 'number' ? prev : 0, floor);
     const next = state.value + 1;
     await ctx.storage.put(GENERATION_KEY, next);
     state.value = next;
   } catch (e) {
     console.warn('[nimbus/W9] generation bump failed:', errorText(e));
   }
+}
+
+/** This context takes a new incarnation: the next adoptGeneration reserves a generation past all of this one's. */
+export function releaseGeneration(ctx: object): void {
+  stateOf(ctx).adopted = false;
 }
 
 /**

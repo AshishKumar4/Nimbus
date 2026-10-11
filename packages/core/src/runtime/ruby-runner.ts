@@ -45,6 +45,7 @@
  */
 
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { RUBY_CALL_TASK } from './compiled-bodies.generated.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView, type ProcessView as CredentialedVfs } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
@@ -67,6 +68,9 @@ import {
 } from './ruby-gems.js';
 import { exists } from '../vfs/vfs.js';
 import { errorText } from '../_shared/error-text.js';
+import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
@@ -86,6 +90,7 @@ type RubyRunnerFactory = (
 export function makeRubyRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
+  processes: SessionProcessSupervisor;
   registry?: {
     register(name: string, handler: Command): void;
     resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
@@ -234,9 +239,10 @@ export function makeRubyRunnerFactory(deps: {
         progName,
         binName,
         cwd,
+        cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] },
       };
 
-      let result: RubyFacetResult;
+      let result: RubyFacetResult = { exitCode: 1, stdout: '', stderr: '' };
       if (needsResidentProcess(parsed)) {
         if (!deps.startResident) {
           ctx.stderr.write(
@@ -253,11 +259,14 @@ export function makeRubyRunnerFactory(deps: {
           argv: [binName, ...argv],
           invokerPid: ctx.pid,
           signal: ctx.signal,
-          write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
+          write: runtimeOutput(ctx),
         });
       } else {
-        result = await dispatchRubyFacet(
-          deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid, ctx.signal);
+        const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
+        try {
+          result = await dispatchRubyFacet(
+            deps.facets, stdio.syscalls, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), stdio.pid, stdio.signal);
+        } finally { stdio.finish(result?.exitCode ?? 1); }
       }
 
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -586,6 +595,8 @@ interface RubyFacetArgs {
   /** The command that ran it (ruby, ruby3, gem, ...): what its own refusals name. */
   binName: string;
   cwd: string;
+  /** The credential it runs as: with it, its filesystem is its resident one (WasiInitOptions.cred). */
+  cred: { uid: number; gid: number; groups: number[] };
 }
 
 /** What one invocation hands the VM. Identical for both process shapes. */
@@ -596,6 +607,9 @@ export interface RubyFacetCallArgs {
   progName: string;
   binName: string;
   cwd: string;
+  supervisorPid?: number;
+  outputControls?: import('./wasi/output-control.js').OutputControlFrame[];
+  cred: { uid: number; gid: number; groups: number[] };
 }
 
 export interface RubyFacetResult {
@@ -603,6 +617,7 @@ export interface RubyFacetResult {
   stdout: string;
   stderr: string;
   error?: string;
+  control?: Record<string, string>;
 }
 
 /**
@@ -625,7 +640,7 @@ export type RubyResidentStart = (spawn: {
   invokerPid: number;
   /** The launching command: what the program prints until it binds or exits, and its interrupt. */
   signal: AbortSignal;
-  write(stream: 'stdout' | 'stderr', text: string): void;
+  write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }) => Promise<RubyFacetResult>;
 
 const RubyFacetResultSchema = z.object({
@@ -633,6 +648,7 @@ const RubyFacetResultSchema = z.object({
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
+  control: z.record(z.string(), z.string()).optional(),
 }).passthrough();
 
 /**
@@ -647,6 +663,7 @@ export function normalizeRubyFacetResult(raw: unknown): RubyFacetResult | null {
     stdout: parsed.data.stdout || '',
     stderr: parsed.data.stderr || '',
     error: parsed.data.error,
+    control: parsed.data.control,
   };
 }
 
@@ -659,12 +676,13 @@ function toRubyCallArgs(args: RubyFacetArgs): RubyFacetCallArgs {
     progName: args.progName,
     binName: args.binName,
     cwd: args.cwd,
+    cred: args.cred,
   };
 }
 
 async function dispatchRubyFacet(
   facets: FacetHost,
-  vfs: import('./os-contracts.js').RuntimeFsBridge,
+  syscalls: import('./facet-host.js').FacetSyscalls,
   args: RubyFacetArgs,
   image: ArrayBuffer,
   pid: number,
@@ -683,43 +701,17 @@ async function dispatchRubyFacet(
     // Never absent. The supervisor derives the write credential from the pid,
     // so a facet given the capability without one has a filesystem it can read
     // and never write — every write-back rejected as an unauthorized process.
-    syscalls: { vfs, pid },
+    syscalls,
     preamble: buildRubyPreamble(),
   });
 
-  const facetFn = async function rubyFacetCall(
-    inArgs: RubyFacetCallArgs,
-    facetEnv: { SUPERVISOR?: unknown },
-  ): Promise<unknown> {
-    const fn = Reflect.get(globalThis, '__rubyRun');
-    if (typeof fn !== 'function') {
-      return { exitCode: 127, stdout: '', stderr: '',
-        error: 'ruby-runner preamble missing: __rubyRun not in scope' };
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
-      ((s: unknown) => void) | undefined;
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where __rubyRun re-adopts it after the mount; adopting only
-    // here would be undone by __wasiInitFS.
-    if (supervisor) Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
-    adopt?.(supervisor);
-    return fn({
-      userCode: inArgs.userCode,
-      rbArgv: inArgs.rbArgv,
-      userEnv: inArgs.userEnv,
-      progName: inArgs.progName,
-      binName: inArgs.binName,
-      cwd: inArgs.cwd,
-    });
-  };
-
   try {
-    const rawResult = await facet.submit<RubyFacetCallArgs, unknown>(facetFn, toRubyCallArgs(args), {
+    const rawResult = await facet.submit<RubyFacetCallArgs, unknown>(RUBY_CALL_TASK, { ...toRubyCallArgs(args), supervisorPid: pid }, {
       wasmModules: {
         'ruby+stdlib.wasm': image,
       },
-      timeoutMs: 300_000,
-      // A kill or Ctrl-C ends the facet too, where the host can.
+      // No deadline: a process runs until it exits or is killed. A kill or
+      // Ctrl-C ends the facet too, where the host can.
       signal,
     });
     return normalizeRubyFacetResult(rawResult) || {
@@ -730,7 +722,8 @@ async function dispatchRubyFacet(
     };
   } catch (e: unknown) {
     // Killed: the program ends as an interrupted one does.
-    if (signal.aborted) return { exitCode: 130, stdout: '', stderr: '' };
+    // What it may have lost is said however it ended (unsettledEnd).
+    if (signal.aborted) return { exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) };
     return {
       exitCode: 1,
       stdout: '',
@@ -796,21 +789,49 @@ export function buildRubyPreamble(): string {
 export const RUBY_RUNNER_PREAMBLE_TAIL = `
 // ── BEGIN: ruby-runner preamble (Ruby 3.3.4, Nimbus v1) ─────────────
 
-// Capture buffers shared across the bootstrap and per-call paths. The
-// preamble's WASI imports route fd_write stdout/stderr into these via
-// __wasiMakeImports({stdoutWrite, stderrWrite}). Per-call __rubyRun
-// slices from these to isolate output per invocation.
-globalThis.__nimbusRubyStdout = globalThis.__nimbusRubyStdout || [];
-globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
+// One byte relay; the interpreter's private control frames are bounded
+// metadata and never a second stored stdout/stderr representation.
+let __nimbusRubyOutput = null;
+let __nimbusRubyStdoutControl = null;
+let __nimbusRubyStderrControl = null;
+function __nimbusRubyBindOutput(args) {
+  const supervisor = globalThis.__nimbusRubySupervisor;
+  __nimbusRubyStdoutControl = args.outputControls?.length ? globalThis.__wasiOutputControl(args.outputControls) : null;
+  __nimbusRubyStderrControl = globalThis.__wasiOutputControl([
+    { key: 'resumed', prefix: '__NIMBUS_RESUMED_', suffix: '\\n' },
+    { key: 'exit', prefix: '__NIMBUS_RUBY_EXIT_', suffix: '\\n' },
+  ]);
+  __nimbusRubyOutput = globalThis.__wasiSupervisorOutput({
+    stdout: (bytes) => supervisor.stdout(bytes),
+    stderr: (bytes) => supervisor.stderr(bytes),
+  });
+}
+function __nimbusRubyWriteOutput(stream, bytes) {
+  // Scheduling/control metadata is local to the VM, never queued behind
+  // ordinary log RPCs. Waiting for those RPCs shifted every Ruby deadline.
+  const control = stream === 'stdout' ? __nimbusRubyStdoutControl : __nimbusRubyStderrControl;
+  const data = control ? control.feed(bytes) : bytes;
+  if (data.length) return __nimbusRubyOutput[stream + 'Bytes'](data);
+}
+globalThis.__nimbusRubyWriteDiagnostic = function(text) {
+  return __nimbusRubyOutput.stderrBytes(new TextEncoder().encode(text));
+};
+globalThis.__nimbusRubyDrainOutput = async function() {
+  const failed = __nimbusRubyOutput ? await __nimbusRubyOutput.drain() : null;
+  if (failed) throw new Error(failed);
+};
 
 // Whether this facet can suspend the VM mid-syscall, asked of the engine
 // rather than passed in: the answer is a property of where this scope was
 // built, and the scope is the only thing that knows.
 const __nimbusRubyParking = typeof WebAssembly.promising === 'function' ? 'jspi' : 'none';
 
-function __nimbusInstallRubyFs() {
+function __nimbusInstallRubyFs(cred, pid) {
   // The VM sees the whole session tree at '/'; /tmp and /home are preopened
-  // as well because ruby.wasm's stdlib resolves them by preopen name.
+  // as well because ruby.wasm's stdlib resolves them by preopen name. With
+  // its credential the process answers what it can from its own store and
+  // sends its changes as waves (wasi/resident-filesystem.ts); without, every
+  // call is a round trip to the session.
   __wasiInitFS({
     root: '',
     preopens: [
@@ -818,6 +839,8 @@ function __nimbusInstallRubyFs() {
       { wasiPath: '/tmp',  vfsPath: 'tmp' },
       { wasiPath: '/home', vfsPath: 'home' },
     ],
+    pid,
+    cred,
   });
 }
 
@@ -881,8 +904,8 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     parking: __nimbusRubyParking,
     getMemory: () => memRef,
     // A resident process also streams what it writes; see ruby-resident.ts.
-    stdoutWrite: (s) => { globalThis.__nimbusRubyStdout.push(s); globalThis.__nimbusRubyEmit?.('stdout', s); },
-    stderrWrite: (s) => { globalThis.__nimbusRubyStderr.push(s); globalThis.__nimbusRubyEmit?.('stderr', s); },
+    stdoutBytes: (bytes) => __nimbusRubyWriteOutput('stdout', bytes),
+    stderrBytes: (bytes) => __nimbusRubyWriteOutput('stderr', bytes),
   });
 
   // canonical_abi imports — 3 resource lifecycle fns. The Slab is
@@ -1159,7 +1182,7 @@ async function __nimbusRubyEval(boot, rubyCode) {
 globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
   const boot = await globalThis.__rubyBootstrap;
   if (!boot.ok) return { resumed: false, alive: false, hostDriven: false, wakeAfter: null };
-  const stderrStart = globalThis.__nimbusRubyStderr.length;
+  delete __nimbusRubyStderrControl.values.resumed;
   await __nimbusRubyEval(boot, [
     '$__nimbus_resumed = ($__nimbus_main && $__nimbus_main.alive?) ? (begin; $__nimbus_main.resume; true; ' +
       'rescue Exception => e; $stderr.write(e.full_message(highlight: false, order: :top)); $__nimbus_exit = 1; false; end) : false',
@@ -1168,18 +1191,12 @@ globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
       ' + "_" + ((defined?(Nimbus::Threading) && Nimbus::Threading.host_driven) ? "1" : "0")' +
       ' + "_" + ($__nimbus_wake_after ? $__nimbus_wake_after.to_s : "nil") + "\\n")',
   ].join("\\n"));
-  // Scrub the marker so it never reaches the user's stderr, keeping whatever
-  // the resumed program itself wrote.
-  const written = globalThis.__nimbusRubyStderr.slice(stderrStart).join('');
-  globalThis.__nimbusRubyStderr.length = stderrStart;
-  const scrubbed = written.replace(/__NIMBUS_RESUMED_(true|false)_[^\\n]*\\n?/g, '');
-  if (scrubbed) globalThis.__nimbusRubyStderr.push(scrubbed);
-  const marker = /__NIMBUS_RESUMED_(true|false)_([01])_([01])_([^\\n]*)/.exec(written);
-  const wake = marker && marker[4] !== 'nil' ? Number(marker[4]) : NaN;
+  const marker = __nimbusRubyStderrControl.values.resumed?.split('_');
+  const wake = marker && marker[3] !== 'nil' ? Number(marker[3]) : NaN;
   return {
-    resumed: !!marker && marker[1] === 'true',
-    alive: !!marker && marker[2] === '1',
-    hostDriven: !!marker && marker[3] === '1',
+    resumed: !!marker && marker[0] === 'true',
+    alive: !!marker && marker[1] === '1',
+    hostDriven: !!marker && marker[2] === '1',
     wakeAfter: Number.isFinite(wake) ? wake : null,
   };
 };
@@ -1221,21 +1238,36 @@ globalThis.__nimbusRubyDriveBoot = async function __nimbusRubyDriveBoot() {
 };
 
 globalThis.__rubyRun = async function __rubyRun(args) {
-  const stdoutStart = globalThis.__nimbusRubyStdout.length;
-  const stderrStart = globalThis.__nimbusRubyStderr.length;
+  __nimbusRubyBindOutput(args);
+  const result = await __rubyRunOnce(args);
+  await __nimbusRubyOutput.drain();
+  const stdoutControl = __nimbusRubyStdoutControl;
+  const stderrControl = __nimbusRubyStderrControl;
+  __nimbusRubyStdoutControl = null;
+  __nimbusRubyStderrControl = null;
+  const stdoutTail = stdoutControl?.finish();
+  const stderrTail = stderrControl?.finish();
+  if (stdoutTail?.length) __nimbusRubyOutput.stdoutBytes(stdoutTail);
+  if (stderrTail?.length) __nimbusRubyOutput.stderrBytes(stderrTail);
+  const lost = await __nimbusRubyOutput.drain();
+  __nimbusRubyStderrControl = stderrControl;
+  if (stdoutControl) result.control = stdoutControl.values;
+  return lost ? { ...result, exitCode: result.exitCode || 1, error: result.error ? result.error + '; ' + lost : lost } : result;
+};
+async function __rubyRunOnce(args) {
 
   const boot = await globalThis.__rubyBootstrap;
   if (!boot.ok) {
     return {
       exitCode: 1,
-      stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
-      stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+      stdout: "",
+      stderr: "",
       error: 'ruby bootstrap failed: ' + (boot.error || 'unknown') + (boot.stack ? ' [stack=' + boot.stack + ']' : ''),
     };
   }
 
   try {
-    __nimbusInstallRubyFs();
+    __nimbusInstallRubyFs(args.cred, args.supervisorPid || 0);
     // AFTER the mount, never before. __wasiInitFS deliberately drops the
     // supervisor so a pooled isolate cannot serve the previous tenant's
     // filesystem, which means adopting first — as both ruby entry points do,
@@ -1244,7 +1276,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     // require answers EBADF.
     __wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor);
   } catch (e) {
-    globalThis.__nimbusRubyStderr.push('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');
+    globalThis.__nimbusRubyWriteDiagnostic('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');
   }
 
   // First call into __rubyRun: complete Ruby VM init (ruby-init +
@@ -1265,8 +1297,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     } catch (e) {
       return {
         exitCode: 1,
-        stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
-        stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+        stdout: "",
+        stderr: "",
         error: 'ruby-init / ruby-init-loadpath failed at request time: ' + (e && e.message),
       };
     }
@@ -1282,8 +1314,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
       boot.rubyInitialized = false;
       return {
         exitCode: 1,
-        stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
-        stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+        stdout: "",
+        stderr: "",
         error: 'ruby language prelude failed to load: ' +
           (preludeStatus && preludeStatus.error ? preludeStatus.error : 'eval status ' + (preludeStatus && preludeStatus.status)),
       };
@@ -1398,13 +1430,13 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   } catch (e) {
     return {
       exitCode: 1,
-      stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
-      stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+      stdout: "",
+      stderr: "",
       error: 'ruby prelude threw: ' + (e && e.message),
     };
   }
   if (preludeStatus && preludeStatus.status !== 0) {
-    globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] prelude returned non-zero status: ' + preludeStatus.status + '\\n');
+    globalThis.__nimbusRubyWriteDiagnostic('[ruby-runner-diag] prelude returned non-zero status: ' + preludeStatus.status + '\\n');
   }
 
   // Stage 2: build the body fiber wrapped for SystemExit/Exception capture,
@@ -1416,17 +1448,16 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   } catch (e) {
     return {
       exitCode: 1,
-      stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
-      stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+      stdout: "",
+      stderr: "",
       error: 'rb-eval-string-protect threw: ' + (e && e.message),
     };
   }
   if (evalStatus && evalStatus.status !== 0) {
-    globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] user wrapper returned non-zero status: ' + evalStatus.status + '\\n');
+    globalThis.__nimbusRubyWriteDiagnostic('[ruby-runner-diag] user wrapper returned non-zero status: ' + evalStatus.status + '\\n');
   }
 
-  // Read $__nimbus_exit through a sentinel on captured stderr, then remove
-  // the sentinel before returning user-visible output.
+  // Exit status is private control metadata on the same live stderr path.
   const NIMBUS_EXIT_MARKER = '__NIMBUS_RUBY_EXIT_';
   let exitCode = 0;
   try {
@@ -1435,40 +1466,20 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     await callEvalStringProtect(
       '$stderr.write(' + JSON.stringify(NIMBUS_EXIT_MARKER) + ' + $__nimbus_exit.to_s + "\\\\n")'
     );
-    // Scrape the marker from stderr buffer — using ONLY this call's
-    // slice (from stderrStart). The same facet can be reused across
-    // multiple __rubyRun invocations (loader-pool dedup by tag), so
-    // a previous call's marker would otherwise be matched first.
-    const callStderr = globalThis.__nimbusRubyStderr.slice(stderrStart).join('');
-    // Match the LAST marker in this slice (the one our just-completed
-    // call emitted; if the user wrapper also emitted writes, the
-    // marker is appended after them).
-    const markerRe = new RegExp(NIMBUS_EXIT_MARKER + '(-?\\\\d+)', 'g');
-    let lastMatch = null;
-    let mit;
-    while ((mit = markerRe.exec(callStderr)) !== null) lastMatch = mit;
-    if (lastMatch) exitCode = parseInt(lastMatch[1], 10);
+    await __nimbusRubyOutput.drain();
+    const code = Number.parseInt(__nimbusRubyStderrControl.values.exit, 10);
+    if (Number.isFinite(code)) exitCode = code;
   } catch (e) {
     // Failure to read exit code → assume 0 if no errors observed.
     exitCode = 0;
   }
 
-  // Scrub the marker out of the BUFFER, not just out of what this call
-  // returns. A process that parked instead of exiting - any server - leaves
-  // __rubyRun finished while the program is still live, and whoever reads the
-  // buffer next would otherwise hand the user our side channel.
-  const stdoutOut = globalThis.__nimbusRubyStdout.slice(stdoutStart).join('');
-  const markerLine = new RegExp(NIMBUS_EXIT_MARKER + '-?\\\\d+\\\\n?', 'g');
-  const stderrOut = globalThis.__nimbusRubyStderr.slice(stderrStart).join('').replace(markerLine, '');
-  globalThis.__nimbusRubyStderr.length = stderrStart;
-  if (stderrOut) globalThis.__nimbusRubyStderr.push(stderrOut);
-
   return {
     exitCode: exitCode,
-    stdout: stdoutOut,
-    stderr: stderrOut,
+    stdout: '',
+    stderr: '',
   };
-};
+}
 
 // ── END: ruby-runner preamble ──────────────────────────────────────
 `;

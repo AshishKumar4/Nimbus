@@ -5,7 +5,7 @@ import {
   ARROW_UP, ARROW_DOWN, CTRL_P, CTRL_N, ALT_DOT, CTRL_U,
 } from './_keys.mjs';
 import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
-import { awaitPromptAfter, execAndAwait } from './_recipe.mjs';
+
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('keybindings/history');
@@ -18,9 +18,9 @@ await t.connect();
 await t.waitForPrompt(60_000);
 
 
-await execAndAwait(t, 'echo HIST_ONE');
-await execAndAwait(t, 'echo HIST_TWO');
-await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
+await t.run('echo HIST_ONE');
+await t.run('echo HIST_TWO');
+await t.run('echo HIST_THREE last_arg_for_alt_dot');
 
 // ────────────── Up-arrow: most-recent history ──────────────
 {
@@ -31,7 +31,7 @@ await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
   // Pressing Enter executes it.
   t.send(ARROW_UP); await sleep(60);
   t.send('\r');
-  await awaitPromptAfter(t, tail0, 'prompt after Up-arrow execute');
+  await t.waitForPrompt(15_000);
   const stripped = stripAnsi(t.buf.slice(tail0));
   const ok = /HIST_THREE last_arg_for_alt_dot/.test(stripped);
   a.check('Up-arrow recalls last command', ok, ok ? '' : JSON.stringify(stripped.slice(0, 200)));
@@ -44,7 +44,7 @@ await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
   const tail0 = t.buf.length;
   t.send(CTRL_P); await sleep(60);
   t.send('\r');
-  await awaitPromptAfter(t, tail0, 'prompt after Ctrl+P execute');
+  await t.waitForPrompt(15_000);
   const stripped = stripAnsi(t.buf.slice(tail0));
   // After the previous Up-arrow execute, the most-recent history entry
   // is again "echo HIST_THREE last_arg_for_alt_dot" (the line we just
@@ -69,7 +69,7 @@ await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
   t.send(ARROW_UP); await sleep(60);
   t.send(ARROW_DOWN); await sleep(60);
   t.send('\r');
-  await awaitPromptAfter(t, tail0, 'prompt after ↑↑↓ execute');
+  await t.waitForPrompt(15_000);
   const stripped = stripAnsi(t.buf.slice(tail0));
   const ok = /HIST_(ONE|TWO|THREE)/.test(stripped);
   a.check('↑ ↑ ↓ navigates history (lands on a history entry)', ok, ok ? '' : JSON.stringify(stripped.slice(0, 200)));
@@ -86,7 +86,7 @@ await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
   const tail0 = t.buf.length;
   t.send(CTRL_N); await sleep(60); // expected: no-op
   t.send('echo CTRLN_NOOP_OK\r');
-  await awaitPromptAfter(t, tail0, 'prompt after Ctrl+N noop');
+  await t.waitForPrompt(15_000);
   const stripped = stripAnsi(t.buf.slice(tail0));
   // The output line should be "CTRLN_NOOP_OK" exactly — not preceded
   // by junk from a Ctrl+N insertion.
@@ -104,7 +104,7 @@ await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
 {
   // Set up a known-last command. CTRL_U-clears any noise.
   t.send(CTRL_U); await sleep(50);
-  await execAndAwait(t, 'echo SETUP_LAST_ALTDOT_TOKEN');
+  await t.run('echo SETUP_LAST_ALTDOT_TOKEN');
   // Now the most-recent history line is "echo SETUP_LAST_ALTDOT_TOKEN"
   // and its last whitespace-delimited word is "SETUP_LAST_ALTDOT_TOKEN".
   t.send(CTRL_U); await sleep(50);
@@ -113,7 +113,7 @@ await execAndAwait(t, 'echo HIST_THREE last_arg_for_alt_dot');
   t.send('echo '); await sleep(40);
   t.send(ALT_DOT); await sleep(60);
   t.send('\r');
-  await awaitPromptAfter(t, tail0, 'prompt after Alt+. execute');
+  await t.waitForPrompt(15_000);
   const stripped = stripAnsi(t.buf.slice(tail0));
   const ok = /SETUP_LAST_ALTDOT_TOKEN/.test(stripped);
   a.check('Alt+. inserts last arg of previous command', ok,

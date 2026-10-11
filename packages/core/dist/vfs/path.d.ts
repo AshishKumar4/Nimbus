@@ -1,6 +1,8 @@
 export declare function normalizeVfsPath(p: string): string;
 /** Resolve a user path against a VFS cwd and return a canonical VFS key. */
 export declare function resolveVfsPath(path: string, cwd: string): string;
+/** Whether one engine key is the other or under it: '' (the root) overlaps every key. */
+export declare function pathsOverlap(left: string, right: string): boolean;
 /** Return the canonical VFS parent key, or an empty string for root-level paths. */
 export declare function parentVfsPath(path: string): string;
 /** Strip leading slashes only — does not touch internal segments. */

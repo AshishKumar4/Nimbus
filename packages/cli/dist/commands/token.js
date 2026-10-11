@@ -7,6 +7,7 @@
  */
 import { issueNimbusToken, verifyNimbusToken } from '@nimbus-sh/sdk/token';
 import { NimbusAuthError } from '@nimbus-sh/sdk/errors';
+import { parseArgs } from 'node:util';
 /**
  * Programmatic interface for token mint. Used by `bin.ts` and exported
  * from `@nimbus-sh/cli` so embedder scripts can call it directly.
@@ -22,12 +23,22 @@ import { NimbusAuthError } from '@nimbus-sh/sdk/errors';
  *          `CLI_EXIT_CODES` semantics).
  */
 export async function mintToken(args) {
-    const parsed = parseArgs(args, ['--tenant', '--sub', '--ttl', '--scopes', '--sid']);
-    const tn = parsed['--tenant'];
-    const sub = parsed['--sub'];
-    const ttlSec = parsed['--ttl'] ? Number(parsed['--ttl']) : undefined;
-    const scopes = parsed['--scopes'] ? parsed['--scopes'].split(',').map((s) => s.trim()) : undefined;
-    const sid = parsed['--sid'];
+    let parsed;
+    try {
+        parsed = parseArgs({ args, options: {
+                tenant: { type: 'string' }, sub: { type: 'string' }, ttl: { type: 'string' },
+                scopes: { type: 'string' }, sid: { type: 'string' },
+            } }).values;
+    }
+    catch (error) {
+        process.stderr.write(`nimbus token mint: ${error instanceof Error ? error.message : error}\n`);
+        return 64;
+    }
+    const tn = parsed.tenant;
+    const sub = parsed.sub;
+    const ttlSec = parsed.ttl ? Number(parsed.ttl) : undefined;
+    const scopes = parsed.scopes ? parsed.scopes.split(',').map((s) => s.trim()) : undefined;
+    const sid = parsed.sid;
     if (!tn) {
         process.stderr.write('nimbus token mint: --tenant required\n');
         return 64;
@@ -75,31 +86,4 @@ function reportError(e) {
     }
     process.stderr.write(`${JSON.stringify({ error: String(e?.message ?? e), code: 'E_UNKNOWN' })}\n`);
     return 70;
-}
-/**
- * Mini argv parser. Long flags only (`--key value` or `--key=value`).
- * Returns a record of seen flags. Unknown flags are silently dropped
- * (matches Unix tradition).
- */
-function parseArgs(args, known) {
-    const out = {};
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (!a.startsWith('--'))
-            continue;
-        const eq = a.indexOf('=');
-        let key, val;
-        if (eq >= 0) {
-            key = a.slice(0, eq);
-            val = a.slice(eq + 1);
-        }
-        else {
-            key = a;
-            val = args[i + 1] ?? '';
-            i++;
-        }
-        if (known.includes(key))
-            out[key] = val;
-    }
-    return out;
 }

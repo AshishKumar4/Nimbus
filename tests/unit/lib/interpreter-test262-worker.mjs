@@ -6,10 +6,11 @@
 // from V8's. Prints one JSON line per run.
 
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 
 import { PRIMORDIALS_FILE } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
-import { ROUTE_FUNCTION_CONSTRUCTORS } from './interpreter-build.mjs';
+import { MODULE_HELPERS_FILE, ROUTE_FUNCTION_CONSTRUCTORS } from './interpreter-build.mjs';
 
 // Test code's rejections and late errors land on this process; each test's
 // outcome is judged from its own run.
@@ -22,6 +23,7 @@ const wrap = (file) => new vm.Script(`(function (module, exports, require) {${re
 const primordialsScript = wrap(primordialsFile);
 const interpreterScript = wrap(interpreterFile);
 const opsScript = wrap(opsFile);
+const helpersScript = wrap(join(dirname(interpreterFile), MODULE_HELPERS_FILE));
 const routeScript = new vm.Script(ROUTE_FUNCTION_CONSTRUCTORS);
 const harness = new Map();
 function harnessFile(name) {
@@ -55,6 +57,7 @@ function realm(interpreted, printed) {
     interp = createInterpreter(load(opsScript, context), {
       dynamicImport: () => Promise.reject(new Error('no module loader')),
       primordials: primordials.LAUNCH_PRIMORDIALS,
+      moduleHelpers: load(helpersScript, context),
     });
     routeScript.runInContext(context)(interp);
   }

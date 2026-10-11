@@ -4,37 +4,25 @@
 // carried bare `__name(` calls whose helper lives elsewhere in the worker's
 // bundle, and threw inside the facet isolate.
 //
-// The facet now embeds no function by toString(): its retry client
-// (retryingGitHttp, git/pack/transport.ts) and every other helper come in
-// self-contained esbuild bundles (GIT_PACK_SRC, the wave writer). So:
-//   - the facet template has no `.toString()}` embed;
-//   - a bundle the facet splices calls `__name(` only if it declares it;
-//   - the idempotent globalThis.__name shim still precedes the facet's code;
-//   - the spliced retry client retries a transient status with no __name in
+// The facet now embeds no function by toString(): it is one self-contained
+// esbuild bundle (GIT_PACK_SRC, its worker git/pack/network-worker.ts). So:
+//   - the bundle calls `__name(` only if it declares it;
+//   - the facet's module is the bundle and the worker it exports;
+//   - the bundle's retry client retries a transient status with no __name in
 //     the isolate.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
-import { ESBUILD_NAME_GLOBAL_SHIM } from '../../packages/core/src/_shared/esbuild-facet-shim.ts';
-import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { GIT_PACK_SRC } from '../../packages/worker/src/git/pack/facet.generated.ts';
 
-const template = readFileSync(new URL('../../packages/worker/src/git/network-facet.ts', import.meta.url), 'utf8');
-assert.ok(!/\.toString\(\)\}/.test(template), 'the facet template embeds a function by toString()');
-
-const facet = assembleGitNetworkFacetSource();
-assert.ok(facet.includes(ESBUILD_NAME_GLOBAL_SHIM), 'assembled git facet is missing the idempotent globalThis.__name shim');
-for (const [name, source] of [['GIT_PACK_SRC', GIT_PACK_SRC]]) {
-  assert.ok(facet.includes(source), name + ' is not spliced into the facet');
-  if (source.includes('__name(')) assert.ok(/\bvar __name\b/.test(source), name + ' calls __name( without declaring it');
-}
+if (GIT_PACK_SRC.includes('__name(')) assert.ok(/\bvar __name\b/.test(GIT_PACK_SRC), 'GIT_PACK_SRC calls __name( without declaring it');
 
 // The pack bundle as the facet isolate runs it: no __name anywhere.
 assert.equal(typeof globalThis.__name, 'undefined', 'globalThis.__name unexpectedly predefined');
 // (Its node imports, which the facet module makes first, are the host's here.)
 const pack = new Function('__nimbusNodeCrypto', '__nimbusNodeZlib', `${GIT_PACK_SRC}\nreturn __nimbusGitPack;`)(
   await import('node:crypto'), await import('node:zlib'));
+assert.equal(typeof pack.networkWorker.fetch, 'function', 'the bundle exports the facet\'s worker');
 const calls = [];
 const outcomes = [{ statusCode: 522 }, { statusCode: 200 }];
 const http = pack.retryingGitHttp({ async request(req) { calls.push(req); return outcomes[calls.length - 1]; } }, [1, 1]);

@@ -47,6 +47,8 @@ export interface WorkspaceExecOptions extends RunOptions {
      * digit. Omitted, the call runs in a shell of its own.
      */
     readonly shellId?: string;
+    /** Release a named shell without ending this process or saving its later state. */
+    readonly detach?: AbortSignal;
 }
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
@@ -145,7 +147,7 @@ export interface NimbusWorkspaceOptions {
     readonly ctxExports?: CtxExports;
     /** The process table that allocated supervisor-binding pids. */
     readonly processes?: SessionProcessSupervisor;
-    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
     readonly filesystemNamespace?: string;
     /**
      * The namespace and process bindings, when the host made them before the

@@ -60,7 +60,7 @@
  *
  * Run via:
  *   node scripts/bundle-esbuild-wasm.mjs
- *   (also wired into package.json predev/predeploy/postinstall)
+ *   (also wired into package.json predev/predeploy)
  *
  * If a future esbuild-wasm release breaks `esm/browser.js` (e.g.
  * reintroduces a dynamic require), this script bails loud rather

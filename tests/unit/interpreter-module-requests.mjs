@@ -53,6 +53,47 @@ assert.deepEqual(requests('"use strict";\nconst path = require("path");\nmodule.
 assert.deepEqual(requests('export const loaders = { a: () => require("nested-a"), b: { c: import("nested-c") } };\n'),
   ['dynamic:nested-c', 'require:nested-a']);
 
+// ── a require createRequire made, by any name ──
+assert.deepEqual(requests([
+  'import { createRequire } from "node:module";',
+  'import module from "node:module";',
+  'const __require = createRequire(import.meta.url);',
+  'const req = module.createRequire(import.meta.url);',
+  'const a = __require("by-binding");',
+  'const b = req(`by-member-binding`);',
+  'const c = __require.resolve("resolved-only");',
+  'const notMade = load("not-a-require-binding");',
+].join('\n')), ['require:by-binding', 'require:by-member-binding', 'static:node:module', 'static:node:module']);
+
+// ── a function that passes its first parameter to a require loads what its
+// callers name (@vitejs/plugin-vue resolves vue/compiler-sfc so) ──
+assert.deepEqual(requests([
+  'import { createRequire } from "node:module";',
+  'function tryResolveCompiler(root) {',
+  '  const vueMeta = tryRequire("vue/package.json", root);',
+  '  if (vueMeta && vueMeta.version.split(".")[0] >= 3) return tryRequire("vue/compiler-sfc", root);',
+  '}',
+  'const _require = createRequire(import.meta.url);',
+  'function tryRequire(id, from) {',
+  '  try {',
+  '    return from ? _require(_require.resolve(id, { paths: [from] })) : _require(id);',
+  '  } catch (e) {}',
+  '}',
+  'const load = (name) => require(name);',
+  'const loadOptional = function (name, fallback = null) { try { return require.resolve(name); } catch { return fallback; } };',
+  'export const a = load("arrow-wrapper"), b = loadOptional("expression-wrapper");',
+  'export const c = tryRequire(computed, root);',
+].join('\n')), [
+  'require:arrow-wrapper', 'require:expression-wrapper', 'require:vue/compiler-sfc', 'require:vue/package.json', 'static:node:module',
+]);
+
+// ── a function whose first parameter reaches no require names no module ──
+assert.deepEqual(requests([
+  'function label(id) { return "[" + id + "]"; }',
+  'function second(options, id) { return require(id); }',
+  'export const a = label("not-a-module"), b = second("not-a-module-either", "x");',
+].join('\n')), []);
+
 // ── text the parser cannot read asks for nothing ──
 assert.deepEqual(requests('import a from "x"; const = ;'), []);
 assert.deepEqual(requests('import type { T } from "types-only";\n', 'pkg/index.ts'), []);

@@ -46,6 +46,7 @@ import type {
 
 import {
   installAuthorityFilesystem,
+  processGoneMessage,
   WASI_ACCEPTED_PATH_PREFIX,
   WASI_LISTEN_PATH_PREFIX,
   WASI_TCP_PATH_PREFIX,
@@ -60,12 +61,13 @@ import {
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import { sqlJournal, type JournalSql } from '@nimbus-sh/core/_shared/process-fs-journal.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost, type ChildNews, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
-
-// The guest half of the Dynamic Worker ledger's news protocol (runtime/child-news.ts
-// CHILD_NEWS_SOURCE), spliced ahead of this body by scripts/bundle-facet-workers.mjs,
-// as node's shims splice it: one source for both.
+import { wasiOutputRelay, type WasiOutputTarget } from '@nimbus-sh/core/runtime/wasi/stdio.js';
+import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
 declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontier: number; seq: number }) => void) => ChildNews;
 
 // The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
@@ -73,10 +75,8 @@ declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontie
 // the store a node process reads its synchronous calls from, here listed on demand.
 declare const __wasiResidentStore: {
   __residentBindInMemory(budget: number): unknown;
-  __residentBind(ctx: { storage: { sql: unknown } }): unknown;
-  __residentSetStorage(storage: WasiStorage['grant'] | undefined, supervisor: unknown): void;
+  __residentSetStorage(storage: undefined, supervisor: unknown): void;
   __residentBootLazy(supervisor: unknown): Promise<boolean>;
-  __residentResumeLazy(supervisor: unknown, cred: WasiCred): Promise<boolean>;
   __residentNamespaceView(supervisor: unknown, device: number, cred: WasiCred): ResidentNamespace;
 };
 
@@ -213,6 +213,11 @@ let __wasiThreads: WasiThreadScheduler | null = null;
 // files, and a file syscall answers EBADF.
 let __wasiSup: WasiSupervisorStub | null = null;
 
+// The session's refusal of this process (it no longer holds the pid: the
+// session restarted, or ended the process, while it ran). Each call it refuses
+// answers ESRCH; the run ends naming it (__wasiSettled).
+let __wasiProcessGone: string | null = null;
+
 // ── The process's own copy of the namespace ──────────────────────────────
 //
 // A filesystem syscall is a round trip to the session (5.9-12.7 ms for one
@@ -224,46 +229,23 @@ let __wasiSup: WasiSupervisorStub | null = null;
 // `inbound()` is called wherever input from outside enters the guest (a
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
-let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem } | null = null;
-
-/**
- * The facet's own SQLite, where it has one (a named one-shot, whose storage
- * outlives the run): the process's store lives there, and the next process
- * of the same name and credential starts from what this one read, its pages
- * included. Its growth is the session's storage ledger's to admit (`grant`,
- * N18). Absent, the store is the run's heap.
- */
-interface WasiStorage {
-  sql: unknown;
-  grant?: { facet: string; grant: number };
-}
-let __wasiStorage: WasiStorage | null = null;
-
-/** Adopt the facet's SQLite for the next process's store (before its first filesystem call). */
-export function __wasiAdoptStorage(storage: WasiStorage | null): void {
-  __wasiStorage = storage;
-  __wasiResident = null;
-}
+let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
 
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
-function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentFilesystem {
+function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
   const store = __wasiResidentStore;
-  const storage = __wasiStorage;
-  if (storage !== null) store.__residentBind({ storage: { sql: storage.sql } });
-  else store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-  store.__residentSetStorage(storage?.grant, supervisor);
+  store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+  store.__residentSetStorage(undefined, supervisor);
   let view: ResidentNamespace | null = null;
-  void (async () => {
+  const ready = (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
-    if (root === null) return;
-    // A kept store resumes from what an earlier process read; the heap starts from nothing.
-    const booted = storage !== null ? await store.__residentResumeLazy(supervisor, cred) : await store.__residentBootLazy(supervisor);
-    if (!booted) return;
+    if (root === null || !(await store.__residentBootLazy(supervisor))) return null;
     view = store.__residentNamespaceView(supervisor, root.dev, cred);
-  })().catch(() => { view = null; });
+    return view;
+  })().catch(() => { view = null; return null; });
   const booting: ResidentNamespace = {
     get device() { return view === null ? -1 : view.device; },
     cred,
@@ -275,13 +257,47 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
     listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
     content: (key: string) => (view === null ? undefined : view.content(key)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
-    pages: (key: string, revision: number, size: number, first: number, last: number) =>
-      (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
     barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },
   };
-  return residentFilesystem(authority, booting);
+  // The process holds the subtrees it writes (delegation-holder.ts): its
+  // creates, writes, mkdirs, unlinks and renames there are decided here and
+  // logged into its filesystem client, which sends them as numbered waves.
+  const waves = sup as unknown as WaveSender;
+  const session: ProcessFsSession = {
+    // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
+    openWriter: (first) => waves.openWaveWriter(first),
+    writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
+    retireWriter: async (writer) => { await waves.retireWaveWriter(writer); },
+    grants: {
+      acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+      awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+    },
+  };
+  // A resident's facet keeps the log of what it sends in its own store
+  // (process-fs-journal.ts), drained by the session once the process is gone.
+  const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
+  const fs = residentFilesystem(authority, booting, {
+    session,
+    isHomeRoot: isHomeDirectory,
+    ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+  });
+  return { fs, ready };
+}
+
+/** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
+interface WaveSender {
+  openWaveWriter(first: boolean): Promise<string | null>;
+  writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
+  retireWaveWriter(writer: string): Promise<void>;
+}
+
+/** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
+function isHomeDirectory(key: string): boolean {
+  return key.startsWith('home/') && key.length > 'home/'.length && !key.slice('home/'.length).includes('/');
 }
 
 /** The filesystem the codec answers from: the process's resident one over the adopted supervisor, else the session's. */
@@ -295,8 +311,22 @@ function __wasiFilesystem(parking: WasiMakeImportsOptions['parking']): RuntimeFs
   // same-isolate supervisor answers synchronously and is used as it is.
   const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
   if (cred === null || !canPark) return supervisorFilesystem(sup);
-  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };
+  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
   return __wasiResident.fs;
+}
+
+export async function __wasiPrepareFilesystem(roots: readonly string[]): Promise<void> {
+  __wasiFilesystem('jspi');
+  const view = await __wasiResident?.ready;
+  if (!view) return;
+  const paths = roots.map(__wasiCanonicalize);
+  const ancestors = new Set<string>();
+  for (const root of paths) {
+    const parts = root.split('/');
+    for (let depth = 1; depth <= parts.length; depth++) ancestors.add(parts.slice(0, depth).join('/'));
+  }
+  await view.lookup([...ancestors], false);
+  for (const root of paths) await view.listTree(root);
 }
 
 /** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
@@ -310,12 +340,18 @@ export function __wasiFsStats(): ResidentFilesystemStats | null {
  * reports one did not do what it said it did, and exits non-zero.
  */
 export async function __wasiSettleWrites(): Promise<string | null> {
-  if (__wasiResident === null) return null;
-  const failures = await __wasiResident.fs.settle();
-  if (failures.length === 0) return null;
-  return failures
-    .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
-    .join('; ');
+  let failed: string | null = null;
+  try {
+    if (__wasiResident !== null) {
+      const failures = await __wasiResident.fs.settle();
+      if (failures.length > 0) failed = failures
+        .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+        .join('; ');
+    }
+  } catch (error) {
+    if (__wasiProcessGone === null) throw error;
+  }
+  return __wasiProcessGone === null ? failed : processGoneMessage(__wasiProcessGone);
 }
 
 /** Anything about to leave the process waits until what it wrote is in the session. */
@@ -362,6 +398,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   // isolate across calls, so the previous tenant's stub must not answer the
   // next program's syscalls.
   __wasiSup = null;
+  __wasiProcessGone = null;
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
     // Largest regular file the codec answers from a resident copy.
@@ -664,9 +701,6 @@ const __WASI_PARK_CEILING_MS  = 15000;  // measured; deadline must stay under
 const __WASI_PARK_DEADLINE_MS = 10000;
 void __WASI_PARK_CEILING_MS;
 
-/** Bytes a process's live output may have on their way to the session before a writer waits. */
-const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
-
 /**
  * A process's stdout and stderr live, through the session's stdout and
  * stderr calls, as a node process's go: in order, byte for byte, and without
@@ -676,42 +710,8 @@ const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
  * everything was taken, with the error of a call the session refused, whose
  * output is lost.
  */
-function __wasiSupervisorOutput(sup: unknown): {
-  stdoutBytes(bytes: Uint8Array): void | Promise<void>;
-  stderrBytes(bytes: Uint8Array): void | Promise<void>;
-  drain(): Promise<string | null>;
-} {
-  const target = sup as { stdout(data: Uint8Array): Promise<void>; stderr(data: Uint8Array): Promise<void> };
-  let chain: Promise<void> = Promise.resolve();
-  let inFlight = 0;
-  let lost: string | null = null;
-  const send = (fd: 1 | 2, bytes: Uint8Array): void | Promise<void> => {
-    if (bytes.byteLength === 0) return;
-    let at = 0;
-    const admit = (): void | Promise<void> => {
-      if (lost !== null) throw new Error(lost);
-      while (at < bytes.byteLength) {
-        const room = __WASI_OUTPUT_IN_FLIGHT_BYTES - inFlight;
-        // Capacity is admission, not a best-effort timer. A blocked writer
-        // resumes only when queued RPCs settle, or fails when one rejects.
-        if (room === 0) return chain.then(admit);
-        const size = Math.min(room, bytes.byteLength - at);
-        const part = at === 0 && size === bytes.byteLength ? bytes : bytes.subarray(at, at + size);
-        at += size;
-        inFlight += size;
-        chain = chain
-          .then(() => (fd === 1 ? target.stdout(part) : target.stderr(part)))
-          .catch((error: unknown) => { lost ??= error instanceof Error ? error.message : String(error); })
-          .finally(() => { inFlight -= size; });
-      }
-    };
-    return admit();
-  };
-  return {
-    stdoutBytes: (bytes) => send(1, bytes),
-    stderrBytes: (bytes) => send(2, bytes),
-    drain: () => chain.then(() => lost),
-  };
+function __wasiSupervisorOutput(sup: unknown): ReturnType<typeof wasiOutputRelay> {
+  return wasiOutputRelay(sup as WasiOutputTarget);
 }
 
 /**
@@ -791,7 +791,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     dv.setUint32(off + 4, hi, true);
   }
   function readPath(ptr: number, len: number): string {
-    const bytes = u8().subarray(ptr, ptr + len);
+    // By the constructor, not subarray: past 128 MiB of guest memory a
+    // Worker refuses a subarray's begin (wasi/filesystem.ts, guestBytes).
+    const mem = u8();
+    const bytes = new Uint8Array(mem.buffer, mem.byteOffset + ptr, Math.max(0, Math.min(len, mem.length - ptr)));
     return utf8dec.decode(bytes);
   }
   let stdoutBuf = '';
@@ -947,7 +950,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       const taken = appendStream(stream, combined);
       writeU32LE(nwrittenPtr, total);
       // A sink that pushes back hands a promise; any other value it returns is no answer.
-      return taken instanceof Promise ? taken.then(() => __WASI_ESUCCESS) : __WASI_ESUCCESS;
+      return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then(() => __WASI_ESUCCESS) : __WASI_ESUCCESS;
     },
 
     fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
@@ -1234,7 +1237,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       let off = 0;
       while (off < bufLen) {
         const n = Math.min(bufLen - off, CHUNK);
-        crypto.getRandomValues(memU8.subarray(bufPtr + off, bufPtr + off + n));
+        crypto.getRandomValues(new Uint8Array(memU8.buffer, memU8.byteOffset + bufPtr + off, n));
         off += n;
       }
       return __WASI_ESUCCESS;
@@ -1787,6 +1790,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     synchronous: opts.parking === 'none',
     residentBytes: __wasiFS.residentFileCap,
     extension: fsImport,
+    processGone: (refusal) => { __wasiProcessGone ??= refusal; },
   });
   // fd_filestat_get as answered, before the guest's table is made Suspending:
   // a Suspending function called from JS is not a wasm call, and traps.
@@ -2052,4 +2056,6 @@ async function __wasiSettled(result: WasiRunResult): Promise<WasiRunResult> {
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
 globalThis.__wasiSettleWrites = __wasiSettleWrites;
+globalThis.__wasiSupervisorOutput = __wasiSupervisorOutput;
+globalThis.__wasiOutputControl = outputControlReader;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

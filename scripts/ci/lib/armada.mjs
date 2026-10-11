@@ -18,24 +18,21 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is checked against that main on every run, so a history rewritten
 // under it fails loudly rather than running a client no one can fetch. The
 // pin is the client the deployed Worker is proven with: move both together.
-const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
+const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client-v3');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
-export const ARMADA_CLIENT = 'f46fb8c74c893854f1e8c46993048bdc33d6a8a0';
+export const ARMADA_CLIENT = 'b2bf6df719e64c0992f51e52d877af91d63b49e6';
 
-// Nimbus's own armada deployment (`nimbus-armada`, its own Worker, bucket
+// Nimbus's own armada deployment (`nimbus-armada-v2`, its own Worker, bucket
 // and fleet cap): every Nimbus script reaches it, and only it, through here.
-// ARMADA_URL and ARMADA_TOKEN override it (the GitHub unit job has them as
-// secrets); otherwise ARMADA_CONNECTION, defaulting to its connection file.
+// ARMADA_CONNECTION overrides the default connection file.
 // The token is in that file and is never printed.
-export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-armada.json');
+export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-armada-v2.json');
 
 /**
  * The environment an armada client (the SDK here, or the CLI a script
- * spawns) connects with: Nimbus's armada, unless ARMADA_URL and
- * ARMADA_TOKEN name another.
+ * spawns) connects with: Nimbus's armada connection file.
  */
 export function armadaEnv(env = process.env) {
-  if (env.ARMADA_URL && env.ARMADA_TOKEN) return env;
   return { ...env, ARMADA_CONNECTION: env.ARMADA_CONNECTION || ARMADA_CONNECTION };
 }
 
@@ -46,7 +43,7 @@ export function armadaEnv(env = process.env) {
  */
 
 /** The armada recipe every task needs, whatever the lane's commit has. */
-export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh'];
+export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh', 'scripts/install-deps.mjs'];
 
 const git = (cwd, args, options = {}) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30, ...options });
@@ -130,21 +127,22 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
 
 /**
  * Map `command` over `items` on `sha` (run from its repo), with `files`
- * laid over its tree. `setup`, a script path here, is appended to the
- * recipe's setup script for this job: an environment of its own (its key
- * is the setup text), so what only some tasks need is not in every
- * container. armada runs setup before it checks the commit out, so the
- * script cannot be run from the checkout; it is joined here.
+ * laid over its tree. `setup`, a script path here (or a script's name and
+ * text, for one written for the job), is appended to the recipe's setup
+ * script for this job: an environment of its own (its key is the setup
+ * text), so what only some tasks need is not in every container. armada
+ * runs setup before it checks the commit out, so the script cannot be run
+ * from the checkout; it is joined here.
  * `env` joins the recipe's for this job only: armada
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
  * the job. The commit made for it is held by a ref of its own
- * (refs/nimbus-armada/) until the job is done, so no prune can take it while
+ * (refs/nimbus-armada-v2/) until the job is done, so no prune can take it while
  * armada packs it. Resolves to that commit, each outcome in item order and
  * each task's {out} text (null when it wrote none); throws when the job
  * could not be started.
  *
- * @param {{ repo: string, sha: string, files: string[], setup?: string, items: unknown[], command: string[], env?: Record<string, string>,
+ * @param {{ repo: string, sha: string, files: string[], setup?: string | { name: string, text: string }, items: unknown[], command: string[], env?: Record<string, string>,
  *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
  */
 export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
@@ -152,28 +150,29 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   Object.assign(process.env, armadaEnv());
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { argvOf, cancelOnInterrupt, onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
-  const { cmd } = await import(join(armadaDir, 'src', 'task.ts'));
+  const { commandTask } = await import(join(armadaDir, 'src', 'task.ts'));
   /** @type {OverlayFile[]} */
   const overlay = [...RECIPE, ...files];
   if (setup) {
     // The commit's .armada.json names the environment armada packs for: one
     // whose setup is the recipe's with `setup` after it.
     const config = JSON.parse(readFileSync(join(SELF_ROOT, '.armada.json'), 'utf8'));
-    const joined = `${config.environment.setup.replace(/\.sh$/, '')}+${setup.split('/').at(-1)}`;
-    const text = `${readFileSync(join(SELF_ROOT, config.environment.setup), 'utf8')}\n${readFileSync(join(SELF_ROOT, setup), 'utf8')}`;
+    const name = typeof setup === 'string' ? setup.split('/').at(-1) : setup.name;
+    const joined = `${config.environment.setup.replace(/\.sh$/, '')}+${name}`;
+    const text = `${readFileSync(join(SELF_ROOT, config.environment.setup), 'utf8')}\n${typeof setup === 'string' ? readFileSync(join(SELF_ROOT, setup), 'utf8') : setup.text}`;
     overlay.splice(0, 1,
       { path: '.armada.json', bytes: `${JSON.stringify({ ...config, environment: { ...config.environment, setup: joined } }, null, 2)}\n` },
       { path: joined, bytes: text });
   }
   const commit = overlayCommit(repo, sha, overlay);
-  const ref = `refs/nimbus-armada/${randomUUID()}`;
+  const ref = `refs/nimbus-armada-v2/${randomUUID()}`;
   git(repo, ['update-ref', ref, commit]);
   // An interrupt exits from the cancel handler, past the finally below.
   const dropRef = () => spawnSync('git', ['update-ref', '-d', ref], { cwd: repo });
   process.once('exit', dropRef);
   try {
     log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);
-    return { commit, ...await runJob({ armada: connect(), client: { argvOf, cancelOnInterrupt, cmd, onCommit }, repo, commit, items, command, env, label, pool, timeout, log }) };
+    return { commit, ...await runJob({ armada: connect(), client: { argvOf, cancelOnInterrupt, commandTask, onCommit }, repo, commit, items, command, env, label, pool, timeout, log }) };
   } finally {
     process.off('exit', dropRef);
     dropRef();
@@ -197,8 +196,8 @@ async function runJob({ armada, client, repo, commit, items, command, env, label
   } finally {
     process.chdir(cwd);
   }
-  const task = client.cmd(where.recipe, client.argvOf(command, where.recipe), { output: 'text', timeout });
-  const job = task.map(items, { armada, pool, label, env: { ...where.env, ...env }, tmpfs: where.tmpfs });
+  const task = client.commandTask(where.recipe, client.argvOf(command, where.recipe), { output: 'text', timeout });
+  const job = task.stream(items, { armada, pool, label, env: { ...where.env, ...env }, tmpfs: where.tmpfs });
   const id = await job.id;
   log(`armada: job ${id}`);
   let phase = '';

@@ -272,8 +272,8 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   for (const entry of [parent, a, b]) assert.equal(processes.get(entry.pid), undefined, `pid ${entry.pid} is forgotten`);
   // One failure is reported as itself.
   const solo = processes.spawn('node c.js', [], '/');
-  processes.exit(solo.pid, 0);
   processes.setRelease(async () => { throw new Error('only one'); });
+  processes.exit(solo.pid, 0);
   await assert.rejects(processes.reapTree(solo.pid), { message: 'only one' });
   assert.equal(processes.get(solo.pid), undefined);
 }
@@ -287,7 +287,10 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   let activity = 0;
   processes.setLogPersist({
     load() { return null; },
-    persistChunks(pid, rows) { calls.push(['chunks', pid, rows.map((r) => r.chunk.data)]); },
+    persistChunks(pid, rows) { calls.push(['chunks', pid, rows.map((r) => {
+      assert.ok(r.chunk.data instanceof Uint8Array,'the persisted log is bytes');
+      return new TextDecoder().decode(r.chunk.data);
+    })]); },
     persistExit(pid, info) { calls.push(['exit', pid, info.code]); },
     dropPid(pid) { calls.push(['drop', pid]); },
     pruneBeforeSeq(pid, seq) { calls.push(['prune', pid, seq]); },

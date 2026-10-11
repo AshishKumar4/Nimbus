@@ -314,10 +314,15 @@ export class Outbox<M, C = void> {
     return { id, admitted: true };
   }
 
-  /** Hand a due time to whichever scheduler this outbox was built on. */
+  /**
+   * Hand a due time to whichever scheduler this outbox was built on. One that
+   * cannot be armed throws (Timers.arm), as a scheduler seam's rejection does:
+   * the row stays pending, and the caller learns its delivery is not yet owed
+   * by any alarm.
+   */
   private async arm(at: number): Promise<void> {
     if (this.scheduling.kind === 'timers') {
-      await timers(this.scheduling.host, this.scheduling.ctx).schedule(this.reason, at);
+      await timers(this.scheduling.host, this.scheduling.ctx).arm(this.reason, at);
     } else {
       await this.scheduling.schedule(at);
     }

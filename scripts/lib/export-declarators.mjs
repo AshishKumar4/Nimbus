@@ -20,8 +20,6 @@ import { join } from 'node:path';
 
 /** What a published package's build compiles and a consumer's bundler reads. */
 const SOURCE = /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
-/** A file that may hold an exported variable statement: the rest are not parsed. */
-const MAY_EXPORT_VARIABLE = /\bexport\s+(?:declare\s+)?(?:const|let|var)\b/;
 
 /**
  * Every exported variable statement under packages/<name>/src that declares
@@ -36,13 +34,14 @@ export function multiDeclaratorExports({ root }) {
   const listed = spawnSync('git', ['ls-files', '-z', '--', ':(glob)packages/*/src/**'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 });
   if (listed.status !== 0) throw new Error(`git ls-files failed in ${root}: ${listed.stderr.trim()}`);
   const files = listed.stdout.split('\0').filter((file) => SOURCE.test(file) && !file.endsWith('.d.ts'));
-  let ts = null;
+  // TypeScript is this workspace's own (the gate refuses a workspace without it).
+  const ts = createRequire(import.meta.url)('typescript');
   const found = [];
+  // Every file is parsed: a text prefilter must see every way to write the
+  // statement (`export/*c*/const a = 1, b = 2;` passed `export\s+const` by),
+  // and all ~600 parse in about half a second.
   for (const file of files) {
     const text = readFileSync(join(root, file), 'utf8');
-    if (!MAY_EXPORT_VARIABLE.test(text)) continue;
-    // TypeScript is this workspace's own (the gate refuses a workspace without it).
-    ts ??= createRequire(import.meta.url)('typescript');
     const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind(ts, file));
     for (const statement of source.statements) {
       if (!ts.isVariableStatement(statement)) continue;

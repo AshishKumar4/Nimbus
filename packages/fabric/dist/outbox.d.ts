@@ -202,7 +202,12 @@ export declare class Outbox<M, C = void> {
         id: string;
         admitted: boolean;
     }>;
-    /** Hand a due time to whichever scheduler this outbox was built on. */
+    /**
+     * Hand a due time to whichever scheduler this outbox was built on. One that
+     * cannot be armed throws (Timers.arm), as a scheduler seam's rejection does:
+     * the row stays pending, and the caller learns its delivery is not yet owed
+     * by any alarm.
+     */
     private arm;
     /** The single-alarm fold: the earliest pending deadline, or null. */
     nextRetryAt(): number | null;

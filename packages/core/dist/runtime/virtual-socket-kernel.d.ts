@@ -168,6 +168,8 @@ declare class VirtualListener {
     push(conn: VirtualConnection): void;
     accept(): Promise<VirtualConnection>;
     take(): VirtualConnection | null;
+    /** `conn` leaves the queue, unaccepted: its request is over. */
+    withdraw(conn: VirtualConnection): void;
     pending(): number;
     drainQueued(): VirtualConnection[];
     rejectPendingAccepts(error: Error): void;

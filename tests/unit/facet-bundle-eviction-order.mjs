@@ -22,7 +22,7 @@
 
 import assert from 'node:assert/strict';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
-import { isTypescriptDeclarationFile } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
+import { isTypescriptDeclarationFile } from '../../packages/core/src/_shared/typescript-specifiers.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 

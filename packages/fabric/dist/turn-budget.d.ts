@@ -101,6 +101,7 @@ export declare class TurnBudget {
 export declare function withResolvers<T = void>(): {
     promise: Promise<T>;
     resolve: (value: T | PromiseLike<T>) => void;
+    reject: (reason?: unknown) => void;
 };
 /** What {@link PacedWork} needs from the Durable Object hosting it. */
 export interface PacedWorkHost {

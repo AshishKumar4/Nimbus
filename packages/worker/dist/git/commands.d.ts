@@ -12,9 +12,9 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { type CleanupBridge } from './clone-job.js';
 import { DirCache } from './worktree/dircache.js';
-export { parseGitGlobals } from './routing.js';
-export type { ParsedGitGlobals } from './routing.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
     /** Present on sinks that keep bytes verbatim (files, byte-capable pipes). */
@@ -30,7 +30,23 @@ type Ctx = {
     env: Record<string, string>;
     /** The command's view of the namespace, as its credential. */
     vfs: ProcessView;
+    /** The command's stop: a Ctrl-C, a kill, a destroy (its reason SESSION_DESTROYED). */
+    signal: AbortSignal;
 };
+export interface ParsedGitGlobals {
+    sub: string | undefined;
+    subArgs: string[];
+    /** The directory the subcommand runs in, after every `-C`. */
+    dir: string;
+}
+/**
+ * The options git accepts BEFORE the subcommand. `-C <path>` runs the
+ * command as if started from <path>; repeated, each is relative to the
+ * previous (`git -C a -C b` runs in `a/b`). `--no-pager` and `-P` are
+ * accepted and mean nothing here, there is no pager. Any other leading
+ * option is refused: swallowing it would run the next word as a subcommand.
+ */
+export declare function parseGitGlobals(args: string[], cwd: string): ParsedGitGlobals;
 export interface ParsedCloneArgs {
     url: string | undefined;
     dest: string | undefined;
@@ -42,8 +58,10 @@ export interface ParsedCloneArgs {
     quiet: boolean;
     /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
     filter: string | undefined;
+    /** `--sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse: boolean;
 }
-export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--sparse] [--branch <name> | -b <name>] [--bg] <url> [dir]";
 /**
  * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
  * takes them: a depth from the remote's tips, or (relative) from the
@@ -83,13 +101,19 @@ export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
  * restored path. Each restored path costs lookups, not a pass over the index.
  */
 export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet<string>): Set<number>;
-/**
- * The `git` command handler. Split out from registration so it can be
- * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping
- * this module and its ~106 KB network-facet dependency out of the cold
- * script-eval graph.
- */
 export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
-network?: WorkspaceNetwork): Promise<number>;
+network?: WorkspaceNetwork, 
+/** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
+filesystem?: {
+    openHost(cred: VfsCred): {
+        fs: {
+            synchronous?: CleanupBridge;
+        };
+        dispose(): Promise<void>;
+    };
+}, 
+/** The session's process table: a background clone runs as a process of its own. */
+processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>): Promise<number>;
+export {};
 //# sourceMappingURL=commands.d.ts.map

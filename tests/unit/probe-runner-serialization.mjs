@@ -122,7 +122,7 @@ holding.close();
 }
 
 // [5] A description naming a live pid is not a holder. A run killed inside
-// run-bounded recorded its pid in its own PID namespace, where a later
+// a PID namespace of its own recorded its pid there, where a later
 // run's same pid is some unrelated process: "pid 12" blocked every suite.
 {
   describe({

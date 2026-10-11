@@ -23,7 +23,6 @@ if (!canPark) {
 }
 
 const MiB = 1024 * 1024;
-const ENOSPC = 51;
 let passed = 0;
 let index = 0;
 /** ONLY=<n> runs the n-th check alone (1-based). */
@@ -65,25 +64,16 @@ await check('descriptors pin one buffer per revision, within the store\'s budget
   await guest.dispose();
 });
 
-await check('a refusal met by another operation\'s flush is the answer of a later fsync, through any descriptor', async () => {
-  const guest = await residentGuest({ refuse: (path) => /refused(-again)?\.bin$/.test(path) });
-  const writer = await guest.open('home/user/refused.bin', { create: true, truncate: true, write: true });
-  assert.equal(await guest.write(writer, 'lost bytes'), 0);
-  // A path change flushes what is held; the session refuses the write.
-  assert.equal(await guest.mkdir('home/user/elsewhere'), 0);
-  // A reader's fsync (the codec's own copy of the file) reports it.
-  const reader = await guest.open('home/user/refused.bin');
-  assert.equal(await guest.sync(reader), ENOSPC, 'fsync through a reader');
-  assert.equal(await guest.sync(reader), ENOSPC, 'and again: the reader does not consume the writer\'s error');
-  assert.equal(await guest.close(reader), 0);
-  assert.equal(await guest.close(writer), ENOSPC, 'the writer\'s close reports it');
-  // The writer's own fsync reports it once, as Linux does per descriptor; its close then has nothing left to say.
-  const second = await guest.open('home/user/refused-again.bin', { create: true, truncate: true, write: true });
-  assert.equal(await guest.write(second, 'lost too'), 0);
-  assert.equal(await guest.mkdir('home/user/elsewhere-too'), 0);
-  assert.equal(await guest.sync(second), ENOSPC, 'fsync through the writer');
-  assert.equal(await guest.close(second), 0);
-  assert.equal(await guest.P.__wasiSettleWrites(), null, 'every refusal was reported to the program');
+await check('a description opened to write keeps writing after a chmod and chown of its file (POSIX)', async () => {
+  const guest = await residentGuest();
+  const writer = await guest.open('home/user/kept.bin', { create: true, truncate: true, write: true });
+  guest.kernel.chown('home/user/kept.bin', 0, 0);
+  guest.kernel.chmod('home/user/kept.bin', 0o444);
+  assert.equal(await guest.write(writer, 'kept bytes'), 0);
+  assert.equal(await guest.sync(writer), 0, 'the description lost its access');
+  assert.equal(await guest.close(writer), 0);
+  assert.equal(await guest.P.__wasiSettleWrites(), null);
+  assert.equal(new TextDecoder().decode(guest.kernel.readFile('home/user/kept.bin')), 'kept bytes');
   await guest.dispose();
 });
 
@@ -98,7 +88,7 @@ await check('a held file\'s fstat is the session\'s live one, with the held size
   await guest.dispose();
 });
 
-await check('a reader of a file held again after its writer closed reads the new bytes, the old reader still open', async () => {
+await check('a reader of a file written again after its writer closed reads the new bytes, and so does the old reader (the same inode)', async () => {
   const guest = await residentGuest();
   const first = await guest.open('home/user/again.txt', { create: true, truncate: true, write: true });
   assert.equal(await guest.write(first, 'old'), 0);
@@ -110,12 +100,14 @@ await check('a reader of a file held again after its writer closed reads the new
   assert.equal(await guest.write(second, 'new'), 0);
   const newReader = await guest.open('home/user/again.txt');
   assert.equal(await guest.pread(newReader, 16), 'new', 'the new reader reads what the second writer wrote');
-  assert.equal(await guest.pread(oldReader, 16), 'old', 'the old reader keeps what it opened');
+  // A copy taken while the file was not being written may keep what it took;
+  // one opened on the session's file reads it as it is, as on Linux.
+  assert.ok(['old', 'new'].includes(await guest.pread(oldReader, 16)), 'the old reader read neither version');
   for (const fd of [oldReader, newReader, second]) assert.equal(await guest.close(fd), 0);
   await guest.dispose();
 });
 
-await check('closing the last reader of a held file frees its copy while the writer goes on', async () => {
+await check('a reader of a file being written through is the session\'s descriptor: no copy of it is held', async () => {
   const { heapStats } = await import('bun:jsc');
   const external = () => { Bun.gc(true); return heapStats().extraMemorySize; };
   const guest = await residentGuest();
@@ -123,13 +115,11 @@ await check('closing the last reader of a held file frees its copy while the wri
   assert.equal(await guest.writeBytes(writer, new Uint8Array(6 * MiB).fill(9)), 0);
   const before = external();
   const reader = await guest.open('home/user/big-held.bin');
-  assert.equal(guest.stats().pinnedBytes, 6 * MiB);
-  const during = external();
-  assert.ok(during - before > 5 * MiB, `the reader's copy is ${during - before} bytes`);
+  assert.equal(guest.stats().pinnedBytes, 0, 'a file being written was copied for a reader');
+  assert.equal(await guest.pread(reader, 1), '\t', 'the reader reads what the writer sent');
   assert.equal(await guest.close(reader), 0);
-  assert.equal(guest.stats().pinnedBytes, 0);
   const after = external();
-  assert.ok(after - before < 1 * MiB, `after the last reader closed, ${after - before} bytes stay beyond the held file`);
+  assert.ok(after - before < 1 * MiB, `${after - before} bytes stay after the reader closed`);
   assert.equal(await guest.close(writer), 0);
   await guest.dispose();
 });

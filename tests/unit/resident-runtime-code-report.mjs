@@ -40,10 +40,11 @@ const second = await spawn();
 assert.notEqual(second.pid, first.pid);
 const name = runtimeCodeModuleName(runtimeCodeKey(produced));
 assert.ok(name in lastMap(), `the next launch carries ${name}: ${Object.keys(lastMap()).filter((n) => n.startsWith('gen/')).join(', ') || 'no gen/ modules'}`);
+/** The staged constructor's function, from an origin whose import() nothing calls here. */
 function compiled(name) {
   const mod = {exports: {}};
   new Function('module', lastMap()[name].cjs)(mod);
-  return mod.exports;
+  return mod.exports(() => Promise.reject(new Error('no import here')), Function);
 }
 assert.equal(await compiled(name)(41), 42, 'the next launch can execute the reported constructor with its arguments');
 

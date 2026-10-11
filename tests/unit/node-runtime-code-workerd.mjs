@@ -195,7 +195,7 @@ const FILES = {
     'const { Writable, Readable, Duplex, Transform, PassThrough } = require("stream");',
     'const out = {};',
     'function W(o) { Writable.call(this, o); } W.prototype = Object.create(Writable.prototype);',
-    'const text = (c) => Buffer.from(c).toString();',
+    'const text = (c) => String(c);',
     'new W({ write(c, e, cb) { out.w = text(c); cb(); } }).end("w1");',
     'function R(o) { Readable.call(this, o); } R.prototype = Object.create(Readable.prototype);',
     'const r = new R({ read() {} }); r.on("data", (d) => { out.r = text(d); }); r.push("r1"); r.push(null);',
@@ -374,7 +374,8 @@ try {
     assert.match(cwdRun.stdout, new RegExp(`^CWD ${W}/x \\.\\./\\.\\./\\.\\./\\.\\. ${W}$`, 'm'), 'resolve and relative start from the process cwd');
 
     const bad = await terminal.run(`cd ${W} && node bad.js`);
-    assert.match(bad.stdout, /\/home\/user\/w\/bad\.js\n\nSyntaxError/, bad.stdout);
+    // Where it stops, as Node's report places it (node-fatal-report-matches-node-workerd).
+    assert.ok(bad.stdout.includes('/home/user/w/bad.js:1\nconst x = ;\n          ^\n\nSyntaxError: Unexpected token \';\''), bad.stdout);
   } finally {
     await terminal.close().catch(() => {});
   }

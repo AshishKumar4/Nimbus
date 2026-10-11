@@ -15,10 +15,13 @@
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
 
-import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, linkedSignal, listPageBudget } from '../vfs/sqlite-vfs.js';
 import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult, WriteStreamOptions } from '../vfs/sqlite-vfs.js';
 import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
+import { Delegations, type DelegationRevoked } from './delegations.js';
+import type { OutputGate } from './output-gate.js';
+import { withRecall } from '../vfs/recall.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
 import { CompositeVFS, isAsyncMountRefusal, normalizePath, runtimeStatOf, type MountWalk } from '../vfs/composite.js';
@@ -41,6 +44,9 @@ import {
   type RuntimeFileHandle,
   type RuntimeFsBridge,
   type RuntimeFsPath,
+  type ExclusiveMutationGrant,
+  type ExclusiveMutationRequest,
+  type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadOptions,
   type RuntimeSynchronousFs,
@@ -72,24 +78,6 @@ function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
 }
 
 /**
- * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
- * is not in every runtime this code ships to, so the combination is a small
- * linked controller instead.
- */
-function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController();
-  const listeners: Array<() => void> = [];
-  for (const signal of signals) {
-    if (!signal) continue;
-    if (signal.aborted) { controller.abort(signal.reason); break; }
-    const onAbort = (): void => controller.abort(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-    listeners.push(() => signal.removeEventListener('abort', onAbort));
-  }
-  return { signal: controller.signal, dispose: () => { for (const remove of listeners) remove(); } };
-}
-
-/**
  * A scope still held: its caller's signal not aborted (that abort's reason),
  * and the scope not closed (EBADF: released, killed, or its lease disposed).
  */
@@ -112,6 +100,10 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     private readonly pid: number | undefined,
     /** N17: the lazy-import hydration job, when there is one. */
     private readonly hydrator: Hydrator | null,
+    /** The session's delegations: a process's own are granted, recalled and released here. */
+    private readonly delegations: Delegations,
+    /** The session's gate on the process's output (ProcessFiles.outputGate). */
+    private readonly gate: Required<OutputGate>,
   ) {}
 
   gateLaunch(named: readonly string[]): Promise<void> {
@@ -147,7 +139,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
 
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
     this.guard(); return this.target.writeFile(path, bytes, options);
   }
@@ -180,21 +172,41 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.chown(path, uid, gid, options);
   }
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle { this.guard(); return this.target.open(path, flags); }
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle { this.guard(); return this.target.open(path, flags, options); }
   read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
   close(handleId: number): void { return this.target.close(handleId); }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): void { this.guard(); return this.target.mkdir(path, options); }
-  unlink(path: RuntimeFsPath): void { this.guard(); return this.target.unlink(path); }
-  rmdir(path: RuntimeFsPath): void { this.guard(); return this.target.rmdir(path); }
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): void { this.guard(); return this.target.mkdir(path, options); }
+  unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.unlink(path, options); }
+  rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rmdir(path, options); }
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rename(from, to, options); }
   readlink(path: RuntimeFsPath): string | null { this.guard(); return this.target.readlink(path); }
   linkLeadsTo(path: string, link: string): string | null { this.guard(); return this.target.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
   fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
   revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
-  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult { this.guard(); return this.target.acquire(epoch, cursor, options); }
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
+    this.guard();
+    return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
+  }
+  /**
+   * `answer`, with the process's read lease when it asked for one: in the
+   * turn the answer was made in, so it is granted at the revision the answer
+   * reports (Delegations.readLease).
+   */
+  withReadLease(answer: VfsAcquireResult, options?: VfsAcquireOptions): VfsAcquireResult {
+    if (options?.lease !== true || this.pid === undefined || answer.poison) return answer;
+    let lease: { owner: string; trustMs: number } | null;
+    try {
+      lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+    } catch (error) {
+      // A change being published (EAGAIN): this barrier is answered without one.
+      if ((error as { code?: unknown } | null)?.code !== 'EAGAIN') throw error;
+      lease = null;
+    }
+    return lease === null ? answer : { ...answer, readLease: lease };
+  }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
     this.guard();
@@ -219,14 +231,6 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   fchmod(handleId: number, mode: number): void { this.guard(); return this.target.fchmod(handleId, mode); }
   fchown(handleId: number, uid: number, gid: number): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
   futimes(handleId: number, atimeMs: number, mtimeMs: number): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
-  appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number {
-    this.guard(); this.ownPid(pid);
-    return this.target.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
-  }
-  acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
-    this.guard(); this.ownPid(pid);
-    return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
-  }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
     // As writeStream: closing the scope cancels the commit.
@@ -243,10 +247,53 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
     return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
   }
-  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
-    this.guard(); return this.target.acquireExclusiveMutation(path, options);
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): ExclusiveMutationGrant {
+    this.guard();
+    const delegate = options?.delegate;
+    if (this.pid === undefined) return this.target.acquireExclusiveMutation(path, options);
+    // A delegation is the process's: it ends with the process's scope.
+    if (delegate !== undefined) return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, { terms }), this.scope);
+    // So does a lease it takes for itself: a process that ends holding one
+    // (killed, its host lost) leaves no subtree held behind it.
+    const lease = this.target.acquireExclusiveMutation(path, options, {});
+    const end = (): void => {
+      this.scope.leases.delete(lease.owner);
+      this.target.releaseExclusiveMutation(lease.owner);
+    };
+    this.scope.leases.set(lease.owner, end);
+    this.scope.subscriptions.add(end);
+    return lease;
   }
-  releaseExclusiveMutation(owner: string): void { this.guard(); return this.target.releaseExclusiveMutation(owner); }
+  releaseExclusiveMutation(owner: string): void {
+    this.guard();
+    if (this.pid !== undefined && this.delegations.holds(this.pid, owner)) {
+      this.delegations.release(this.pid, owner);
+      return;
+    }
+    const end = this.scope.leases.get(owner);
+    if (end === undefined) {
+      this.target.releaseExclusiveMutation(owner);
+      return;
+    }
+    this.scope.subscriptions.delete(end);
+    end();
+  }
+  awaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> {
+    this.guard();
+    if (this.pid === undefined) return this.target.awaitRecall(owner);
+    return this.delegations.awaitRecall(this.pid, owner, waitMs);
+  }
+  recalled(owner: string, kind: RecallKind): void {
+    this.guard();
+    if (this.pid === undefined) this.target.recalled(owner);
+    else this.delegations.recalled(this.pid, owner, kind);
+  }
+  published(options?: { escape?: boolean }): Promise<void> | void {
+    this.guard();
+    if (this.pid === undefined) return this.target.published();
+    if (options?.escape === true) this.gate.escaped(this.pid);
+    return this.gate.before(this.pid) ?? undefined;
+  }
 }
 
 /** The session's namespace and the processes bound to it. */
@@ -266,23 +313,44 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
   /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
   readonly hydrator: Hydrator | null;
+  /** Subtrees delegated to processes (Delegations): each recalled through its holder's bridge. */
+  readonly delegations: Delegations;
 
   /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
   private readonly bufferedWriteBytes: number | undefined;
 
-  constructor(readonly engine: SqliteVFS, options: { hydration?: HydratorOptions; bufferedWriteBytes?: number } = {}) {
+  constructor(
+    readonly engine: SqliteVFS,
+    options: {
+      hydration?: HydratorOptions;
+      bufferedWriteBytes?: number;
+      /** Told of a delegation's holder revoked for not answering a recall in time: the host stops it. */
+      delegationRevoked?: (event: DelegationRevoked) => void;
+      /** Told of a delegation's holder that ended still holding it (Delegations' orphaned): what it had not sent there is lost. */
+      delegationOrphaned?: (event: { readonly pid: number; readonly root: string }) => void;
+      delegationRecallTimeoutMs?: number;
+    } = {},
+  ) {
     this.hydrator = options.hydration === undefined ? null : new Hydrator(engine, options.hydration);
+    this.delegations = new Delegations({
+      release: (owner) => engine.releaseExclusiveMutation(owner),
+      revoked: options.delegationRevoked,
+      ...(options.delegationOrphaned === undefined ? {} : { orphaned: options.delegationOrphaned }),
+      recallTimeoutMs: options.delegationRecallTimeoutMs,
+    });
     this.bufferedWriteBytes = options.bufferedWriteBytes;
     this.namespace = engine.namespace;
     this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
     // An exclusive-mutation lease holds wherever a process's mutation lands,
     // on a mount as on SQLite: checked by the namespace on the route it
     // resolved, right before the backend is called.
-    this.vfs.guardMutations((cred, path) => engine.mutationRefusal(path, cred));
+    this.vfs.guardMutations((cred, path, owner) => engine.mutationRefusal(path, cred, owner));
     this.proc = standardProc();
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
     this.vfs.mount('/dev', new DevVFS());
+    // A read lease vouches for what is the engine's, which a mount or an unmount moves.
+    this.vfs.watchMounts(() => engine.breakReadLeases());
     // Every wave's records, whoever streams it (a process's binding, or a
     // command holding the engine), are placed by this namespace's mutation
     // lookup, and those it places on a mount are applied there by its own
@@ -386,14 +454,18 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * paths in one turn (git, the build services, vite's file shim, agent
    * tools). Mounted paths route to their mount (a mount without a
    * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
-   * exactly as a process's syscalls do. One per credential for the session.
+   * exactly as a process's syscalls do. `landed`: its reads read what has
+   * landed (VFS.as), asking no delegation's holder — a listing that runs on
+   * every change (the editor's file tree). One per credential and option for
+   * the session.
    */
-  namespaceFs(cred: Readonly<VfsCred>): NamespaceFs {
+  namespaceFs(cred: Readonly<VfsCred>, options: { landed?: boolean } = {}): NamespaceFs {
     const identity = immutableCredential(cred);
-    const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}`;
+    const landed = options.landed === true;
+    const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}${landed ? ':landed' : ''}`;
     let fs = this.namespaces.get(key);
     if (!fs) {
-      const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity);
+      const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity, undefined, undefined, landed);
       fs = new NamespaceFs(bridge.synchronous!, identity);
       this.namespaces.set(key, fs);
     }
@@ -410,6 +482,62 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     }
   }
 
+  /**
+   * What holds a process's output back: the publication of every commit of
+   * its that another reader's recall holds (SqliteVFS.publishedFor). None
+   * held, nothing waits.
+   */
+  readonly outputGate: Required<OutputGate> = {
+    before: (pid) => {
+      const holds = this.delegations.holdsAt(pid);
+      return holds === undefined ? null : this.engine.publishedFor(holds);
+    },
+    escaped: (pid) => { this.continuing.delete(pid); },
+  };
+  /** Whether the session's process output waits at `outputGate` (holdOutput). */
+  private outputHeld = false;
+  /** The processes whose waves answer at their commit (continueAtCommit), until one escapes the gate. */
+  private readonly continuing = new Set<number>();
+
+  /**
+   * Released `pid` writes nothing more: the set its calls were made by
+   * (Delegations.holdsOf), by which the engine holds what it wrote for its
+   * publication, goes once that is published. Until then the output its end
+   * leaves still waits for it, whenever that is let out.
+   */
+  private retireWriter(pid: number): void {
+    this.continuing.delete(pid);
+    const holds = this.delegations.holdsAt(pid);
+    if (holds === undefined) return;
+    const held = this.engine.publishedFor(holds);
+    if (held === null) this.delegations.retire(pid);
+    else void held.then(() => this.delegations.retire(pid));
+  }
+
+  /**
+   * From now on whatever `processes` lets out for a process (its log, pipes,
+   * terminal and exit, the supervisor ops that leave the session, its ports'
+   * answers: SessionProcessSupervisor.releaseOutput) waits at `outputGate`
+   * for what it wrote to be published.
+   */
+  holdOutput(processes: { setOutputGate(gate: OutputGate | null): void }): void {
+    processes.setOutputGate(this.outputGate);
+    this.outputHeld = true;
+  }
+
+  /**
+   * Process `pid`'s waves answer at their commit from now on, ahead of
+   * their publication: the writer continues, and whatever it makes visible
+   * waits for the publication instead. Only for a process whose every way
+   * out does: what the session lets out for it at `outputGate` (holdOutput),
+   * what leaves by its runtime's own network at that runtime's boundary
+   * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
+   * ending this (`escaped`).
+   */
+  continueAtCommit(pid: number): void {
+    if (this.outputHeld) this.continuing.add(pid);
+  }
+
   async releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
     this.listings.delete(pid);
@@ -420,7 +548,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       if (scope) this.closeScope(scope);
     } finally {
       this.processes.delete(pid);
-      this.engine.revokeAppendWriters(pid);
+      this.retireWriter(pid);
     }
   }
 
@@ -446,7 +574,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.listings.delete(pid);
     const scope = this.processes.get(pid);
     this.processes.delete(pid);
-    this.engine.revokeAppendWriters(pid);
+    this.retireWriter(pid);
     if (!scope || scope.closed) return { lost: [] };
     const lost: number[] = [];
     for (const [id, opened] of scope.handles) {
@@ -462,14 +590,6 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     scope.subscriptions.clear();
     return { lost };
   }
-
-  async activateAppendWriter(pid: number, writerId: string): Promise<void> {
-    if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
-    this.engine.activateAppendWriter(pid, writerId);
-  }
-  async revokeAppendWriter(pid: number, writerId: string): Promise<void> { this.engine.revokeAppendWriter(pid, writerId); }
-  async revokeAppendWriters(pid: number): Promise<void> { this.engine.revokeAppendWriters(pid); }
-  async revokeAppendWritersThrough(maxPid: number): Promise<void> { this.engine.revokeAppendWritersThrough(maxPid); }
 
   /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
   mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
@@ -506,14 +626,18 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     reportLost(lost);
   }
 
-  private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
+  private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false): RuntimeFsBridge {
     // The scope is checked again by the namespace right before each mutation
     // reaches a backend, after the lookups it awaited: a write still
     // resolving when the process is released or killed, or its lease is
     // disposed, does not land.
-    const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal));
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, view, this.bufferedWriteBytes);
-    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
+    // A process's calls are made by the delegations it holds: its own lookups
+    // recall none of them, on SQLite and through the namespace alike.
+    const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
+    const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
+    const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
+    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
     // Every other method forwards to the guarded bridge.
     let awaited = this.awaitedDescriptors.get(scope);
     if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
@@ -575,6 +699,8 @@ interface AwaitedDescription {
   readonly path: string;
   readonly flags: RuntimeFileHandle['flags'];
   position: number;
+  /** The exclusive-mutation lease the open presented: the descriptor's mutations present it too. */
+  readonly owner?: string;
 }
 
 interface AwaitedDescriptors {
@@ -600,21 +726,18 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   gateLaunch(named: readonly string[]): Promise<void> { return this.bridge.gateLaunch(named); }
   revision(path?: RuntimeFsPath): number { return this.bridge.revision(path); }
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void { return this.bridge.subscribe(path, listener); }
-  appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number {
-    return this.bridge.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
-  }
-  acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
-    return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
-  }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }) { return this.bridge.writeBatch(payload, options); }
   writeStream(
     stream: ReadableStream<Uint8Array>,
     options?: WriteStreamOptions,
   ): Promise<WriteBatchStreamResult> { return this.bridge.writeStream(stream, options); }
-  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): ExclusiveMutationGrant {
     return this.bridge.acquireExclusiveMutation(path, options);
   }
   releaseExclusiveMutation(owner: string): void { return this.bridge.releaseExclusiveMutation(owner); }
+  awaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> { return this.bridge.awaitRecall(owner, waitMs); }
+  recalled(owner: string, kind: RecallKind): void { return this.bridge.recalled(owner, kind); }
+  published(options?: { escape?: boolean }): Promise<void> | void { return this.bridge.published(options); }
 
   /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
   private live(): void {
@@ -692,10 +815,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if (underKernelMount(entry.path)) continue;
       paths.push({ ...entry, path: entry.path.slice(1) });
     }
-    return {
+    return this.bridge.withReadLease({
       epoch: root.epoch, rev: root.cursor, paths, poison: answer.poison,
       ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
-    };
+    }, options);
   }
 
   /**
@@ -776,7 +899,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return stat === null ? null : runtimeStatOf(stat);
     });
   }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }) {
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }) {
     return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => this.namespace.readFile((await this.path(path, options?.followSymlinks !== false)))));
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions) {
@@ -794,7 +917,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-      await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
+      await this.owned(options).writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
       return this.receipt();
     });
   }
@@ -813,7 +936,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-      await this.namespace.truncate((await this.path(path)), size);
+      await this.owned(options).truncate((await this.path(path)), size);
       return this.receipt();
     });
   }
@@ -850,17 +973,24 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.readdir(path, options), async () =>
       (await this.namespace.readdir((await this.path(path, options?.followSymlinks !== false)))).map((entry) => ({ name: entry.name, type: entry.type })));
   }
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }) {
-    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.owned(options).mkdir((await this.path(path)), {
+      ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
+    }));
   }
-  unlink(path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink((await this.path(path, false))));
+  /** The namespace presenting `options`' exclusive-mutation lease to its guard, for a mutation that carries one. */
+  private owned(options?: RuntimeMutationOwner): CompositeVFS {
+    return options?.mutationOwner === undefined ? this.namespace : this.namespace.scoped(() => {}, options.mutationOwner);
   }
-  rmdir(path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
+  unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.unlink(path, options), async () => this.owned(options).unlink((await this.path(path, false))));
+  }
+  rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.rmdir(path, options), async () => this.owned(options).rmdir((await this.path(path, false))));
   }
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner) {
-    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
+    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.owned(options).rename((await this.path(from, false)), (await this.path(to, false))));
   }
   realpath(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
@@ -910,8 +1040,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return { id, path: description.path, flags: { ...description.flags }, position: description.position, closed: false };
   }
 
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags) {
-    return this.either([path], () => this.bridge.open(path, flags), async () => {
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.open(path, flags, options), async () => {
       const follow = flags.followSymlinks !== false;
       const p = await this.path(path, follow);
       const stat = await this.namespace.stat(p, { follow });
@@ -923,8 +1053,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if (stat === null && !flags.create) throw syscallError('ENOENT', 'open', p);
       if (stat !== null && stat.type === 'directory' && (flags.write || flags.truncate || flags.append)) throw syscallError('EISDIR', 'open', p);
       if (flags.directory && stat !== null && stat.type !== 'directory') throw syscallError('ENOTDIR', 'open', p);
-      if (stat === null || flags.truncate) await this.namespace.writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
+      const mutates = !!(flags.write || flags.create || flags.truncate || flags.append);
+      if (stat === null || flags.truncate) await this.owned(mutates ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
       return this.issue({
+        ...(mutates && options?.mutationOwner !== undefined ? { owner: options.mutationOwner } : {}),
         // The file it opened, by the name the namespace resolved for it: a
         // link on the way repointed later does not move the descriptor.
         path: await this.namespace.realpathAsync(p),
@@ -968,14 +1100,14 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
       this.live();
       try {
-        await this.namespace.writeRange(d.path, start, bytes);
+        await this.owned({ mutationOwner: d.owner }).writeRange(d.path, start, bytes);
       } catch (error) {
         if (!(error instanceof VfsError && error.code === 'ENOTSUP')) throw error;
         const file = await this.namespace.readFile(d.path);
         const next = new Uint8Array(Math.max(file.byteLength, start + bytes.byteLength));
         next.set(file);
         next.set(bytes, start);
-        await this.namespace.writeFile(d.path, next);
+        await this.owned({ mutationOwner: d.owner }).writeFile(d.path, next);
       }
       if (offset === null || d.flags.append) d.position = start + bytes.byteLength;
       return bytes.byteLength;
@@ -1025,20 +1157,20 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number) {
     return this.on(handleId, () => this.bridge.ftruncate(handleId, size), async (d) => {
       if (!d.flags.write) throw fsError('EINVAL', 'ftruncate', d.path);
-      await this.namespace.truncate(d.path, size);
+      await this.owned({ mutationOwner: d.owner }).truncate(d.path, size);
     });
   }
 
   fchmod(handleId: number, mode: number) {
-    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.namespace.chmod(d.path, mode); });
+    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.owned({ mutationOwner: d.owner }).chmod(d.path, mode); });
   }
 
   fchown(handleId: number, uid: number, gid: number) {
-    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.namespace.chown(d.path, uid, gid); });
+    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.owned({ mutationOwner: d.owner }).chown(d.path, uid, gid); });
   }
 
   futimes(handleId: number, atimeMs: number, mtimeMs: number) {
-    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.namespace.utimes(d.path, atimeMs, mtimeMs); });
+    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.owned({ mutationOwner: d.owner }).utimes(d.path, atimeMs, mtimeMs); });
   }
 }
 
@@ -1104,11 +1236,39 @@ export const R_OK = 4;
  * syscalls a `VFS` has no word for (access, realpath, append). Absent is
  * null from `stat`; every failure is a `VfsError`.
  */
+/** A bridge's calls as a view that can wait makes them (ProcessView): each a promise, made again after a recall. */
+type RecallingBridge = {
+  [K in keyof RuntimeFsBridge]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+};
+
+/**
+ * `bridge`, each call made again once a delegation it meets is recalled
+ * (withRecall): one bridge call is one engine operation, refused before it
+ * changes anything, so making it again is safe. A write from a source is
+ * not made again (its source may be spent): the engine waits for a recall
+ * itself before it reads the source.
+ */
+function recalling(bridge: RuntimeFsBridge): RecallingBridge {
+  return new Proxy(bridge, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof value !== 'function') return value;
+      if (key === 'writeFileFrom') return (...args: unknown[]) => Promise.resolve(Reflect.apply(value, target, args));
+      return (...args: unknown[]) => withRecall(() => Reflect.apply(value, target, args) as unknown);
+    },
+  }) as unknown as RecallingBridge;
+}
+
 export class ProcessView implements VFS {
+  /** The bridge as this view calls it: each call made again once a delegation it meets is recalled. */
+  private readonly fs: RecallingBridge;
+
   constructor(
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     readonly process: RuntimeFsBridge,
-  ) {}
+  ) {
+    this.fs = recalling(process);
+  }
 
   /** `run`, a bridge failure reported as Node's error for `syscall` on `path` (and `dest`). */
   private call<T>(syscall: string, path: string, run: () => T | Promise<T>, dest?: string): T | Promise<T> {
@@ -1121,13 +1281,13 @@ export class ProcessView implements VFS {
   }
 
   async stat(path: string, options?: { follow?: boolean }): Promise<ProcessStat | null> {
-    const stat = await this.call(options?.follow === false ? 'lstat' : 'stat', path, () => this.process.stat(path, { followSymlinks: options?.follow !== false }));
+    const stat = await this.call(options?.follow === false ? 'lstat' : 'stat', path, () => this.fs.stat(path, { followSymlinks: options?.follow !== false }));
     return stat === null ? null : vfsStatOf(stat);
   }
   /** Probes need only the bridge's type, not another converted stat object. */
   private async probe(path: string, follow: boolean): Promise<RuntimeVfsStat | null> {
     try {
-      return await this.process.stat(path, { followSymlinks: follow });
+      return await this.fs.stat(path, { followSymlinks: follow });
     } catch (error) {
       const failure = toVfsError(error, follow ? 'stat' : 'lstat', path);
       if (isVfsError(failure, 'ENOTDIR')) return null;
@@ -1143,7 +1303,7 @@ export class ProcessView implements VFS {
   /** The file's bytes as UTF-8 text. */
   async readFileString(path: string): Promise<string> { return await readText(this, path); }
   async readFile(path: string): Promise<Uint8Array> {
-    const bytes = await this.call('open', path, () => this.process.readFile(path));
+    const bytes = await this.call('open', path, () => this.fs.readFile(path));
     if (bytes === null) throw syscallError('ENOENT', 'open', path);
     return bytes;
   }
@@ -1155,53 +1315,53 @@ export class ProcessView implements VFS {
    */
   async writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void> {
     if (options?.mode === undefined) {
-      await this.call('open', path, () => this.process.writeFile(path, data));
+      await this.call('open', path, () => this.fs.writeFile(path, data));
       return;
     }
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     await this.call('open', path, async () => {
-      const handle = await this.process.open(path, { write: true, create: true, truncate: true, mode: options.mode });
+      const handle = await this.fs.open(path, { write: true, create: true, truncate: true, mode: options.mode });
       try {
         let offset = 0;
         while (offset < bytes.length) {
-          const written = await this.process.write(handle.id, offset, bytes.subarray(offset));
+          const written = await this.fs.write(handle.id, offset, bytes.subarray(offset));
           if (written <= 0) throw syscallError('EIO', 'write', path, { detail: 'short write' });
           offset += written;
         }
       } finally {
-        await this.process.close(handle.id);
+        await this.fs.close(handle.id);
       }
     });
   }
   async readdir(path: string): Promise<VfsDirent[]> {
-    const entries = await this.call('scandir', path, () => this.process.readdir(path));
+    const entries = await this.call('scandir', path, () => this.fs.readdir(path));
     return entries.map((entry) => ({ name: entry.name, type: entry.type }));
   }
   async mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void> {
-    await this.call('mkdir', path, () => this.process.mkdir(path, options));
+    await this.call('mkdir', path, () => this.fs.mkdir(path, options));
   }
-  async unlink(path: string): Promise<void> { await this.call('unlink', path, () => this.process.unlink(path)); }
-  async rmdir(path: string): Promise<void> { await this.call('rmdir', path, () => this.process.rmdir(path)); }
-  async rename(from: string, to: string): Promise<void> { await this.call('rename', from, () => this.process.rename(from, to), to); }
+  async unlink(path: string): Promise<void> { await this.call('unlink', path, () => this.fs.unlink(path)); }
+  async rmdir(path: string): Promise<void> { await this.call('rmdir', path, () => this.fs.rmdir(path)); }
+  async rename(from: string, to: string): Promise<void> { await this.call('rename', from, () => this.fs.rename(from, to), to); }
   async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
-    const bytes = await this.call('open', path, () => this.process.readRange(path, offset, length));
+    const bytes = await this.call('open', path, () => this.fs.readRange(path, offset, length));
     if (bytes === null) throw syscallError('ENOENT', 'open', path);
     return bytes;
   }
   /** A ranged read that neither consults nor fills the session's content cache. */
   async readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array> {
-    const bytes = await this.call('open', path, () => this.process.readRange(path, offset, length, { cached: false }));
+    const bytes = await this.call('open', path, () => this.fs.readRange(path, offset, length, { cached: false }));
     if (bytes === null) throw syscallError('ENOENT', 'open', path);
     return bytes;
   }
   async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void> {
-    await this.call('open', path, () => this.process.writeRange(path, offset, bytes));
+    await this.call('open', path, () => this.fs.writeRange(path, offset, bytes));
   }
   /** writeFile of `size` bytes that arrive over time, published whole once they have (RuntimeFsBridge.writeFileFrom). */
   async writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Promise<void> {
-    await this.call('open', path, () => this.process.writeFileFrom(path, size, source));
+    await this.call('open', path, () => this.fs.writeFileFrom(path, size, source));
   }
-  async truncate(path: string, size: number): Promise<void> { await this.call('open', path, () => this.process.truncate(path, size)); }
+  async truncate(path: string, size: number): Promise<void> { await this.call('open', path, () => this.fs.truncate(path, size)); }
   /**
    * rm -r: what went, by the roots removed, what is still there, and why.
    * The engine removes a tree in one step or refuses it whole, so its report
@@ -1209,7 +1369,7 @@ export class ProcessView implements VFS {
    */
   async removeRecursive(path: string): Promise<VfsRemoval> {
     try {
-      await this.process.remove(path, { recursive: true });
+      await this.fs.remove(path, { recursive: true });
       return { removed: [path], kept: [], failures: [] };
     } catch (error) {
       const converted = toVfsError(error, 'rm', path);
@@ -1218,25 +1378,25 @@ export class ProcessView implements VFS {
       return { removed: [], kept: [path], failures: [failure] };
     }
   }
-  async symlink(target: string, path: string): Promise<void> { await this.call('symlink', target, () => this.process.symlink(target, path), path); }
+  async symlink(target: string, path: string): Promise<void> { await this.call('symlink', target, () => this.fs.symlink(target, path), path); }
   async readlink(path: string): Promise<string> {
-    const target = await this.call('readlink', path, () => this.process.readlink(path));
+    const target = await this.call('readlink', path, () => this.fs.readlink(path));
     if (target === null) throw syscallError('EINVAL', 'readlink', path);
     return target;
   }
   /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
-  async linkLeadsTo(path: string, link: string): Promise<string | null> { return await this.process.linkLeadsTo(path, link); }
-  async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.process.chmod(path, mode)); }
+  async linkLeadsTo(path: string, link: string): Promise<string | null> { return await this.fs.linkLeadsTo(path, link); }
+  async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.fs.chmod(path, mode)); }
   /** chown(2): a null side keeps what the file has (chown -1). */
   async chown(path: string, uid: number | null, gid: number | null): Promise<void> {
     await this.call('chown', path, async () => {
       if (uid === null || gid === null) {
-        const stat = await this.process.stat(path);
+        const stat = await this.fs.stat(path);
         if (stat === null) throw syscallError('ENOENT', 'chown', path);
         uid ??= stat.uid;
         gid ??= stat.gid;
       }
-      await this.process.chown(path, uid, gid);
+      await this.fs.chown(path, uid, gid);
     });
   }
   /**
@@ -1245,49 +1405,49 @@ export class ProcessView implements VFS {
    * ownership. `follow: false` sets a link's own times.
    */
   async utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { follow?: boolean }): Promise<void> {
-    await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.process.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
+    await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
   }
   /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
   async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
     return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
-      if (options?.recursive) return await this.process.copyTree(from, to, { preserve: options.preserve });
-      await this.process.copyFile(from, to);
+      if (options?.recursive) return await this.fs.copyTree(from, to, { preserve: options.preserve });
+      await this.fs.copyFile(from, to);
       return 1;
     }, to);
   }
   /** Create the file if absent, and set its times to now (touch). */
   async touch(path: string): Promise<void> {
     await this.call('open', path, async () => {
-      const handle = await this.process.open(path, { write: true, create: true });
-      await this.process.close(handle.id);
+      const handle = await this.fs.open(path, { write: true, create: true });
+      await this.fs.close(handle.id);
       // UTIME_NOW: write permission is enough, as for touch(1).
-      await this.process.utimes(path, null, null);
+      await this.fs.utimes(path, null, null);
     });
   }
   /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
   async readFileUncached(path: string): Promise<Uint8Array> {
     return new Uint8Array(await this.readArrayBufferUncached(path));
   }
-  /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+  /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
+   *
+   * One whole-file read through the normal credentialed namespace view, with
+   * the LRU bypassed: the image is read once for a facet's module map, never
+   * re-read from this isolate. One read is also one coherent image on every
+   * backend — no ranges to version against each other, no capability to
+   * probe. A caller mutating the returned buffer cannot disturb the store:
+   * the uncached path hands back its own buffer.
+   */
   async readArrayBufferUncached(path: string): Promise<ArrayBuffer> {
-    const stat = await this.stat(path);
-    if (stat === null) throw syscallError('ENOENT', 'open', path);
-    const buffer = new ArrayBuffer(stat.size);
-    const result = new Uint8Array(buffer);
-    for (let offset = 0; offset < result.length;) {
-      const bytes = await this.readRangeUncached(path, offset, Math.min(65536, result.length - offset));
-      if (bytes.length === 0) throw syscallError('ESTALE', 'read', path, { detail: 'changed during the read' });
-      result.set(bytes, offset);
-      offset += bytes.length;
-    }
-    return buffer;
+    const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false }));
+    if (bytes === null) throw syscallError('ENOENT', 'open', path);
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   }
   /**
    * rm: a file, or with `recursive` a tree, whole or not at all; `force`
    * makes a missing path no error.
    */
   async remove(path: string, options: { recursive?: boolean; force?: boolean } = {}): Promise<void> {
-    await this.call('rm', path, () => this.process.remove(path, options));
+    await this.call('rm', path, () => this.fs.remove(path, options));
   }
   /** Each entry of a directory with its own stat (links not followed): ls -l, find, du. */
   async readdirStat(path: string): Promise<Array<ProcessStat & { name: string }>> {
@@ -1301,22 +1461,22 @@ export class ProcessView implements VFS {
     return out;
   }
   /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
-  async access(path: string, mode: number): Promise<void> { await this.call('access', path, () => this.process.access(path, mode)); }
-  async realpath(path: string): Promise<string> { return await this.call('realpath', path, () => this.process.realpath(path)); }
+  async access(path: string, mode: number): Promise<void> { await this.call('access', path, () => this.fs.access(path, mode)); }
+  async realpath(path: string): Promise<string> { return await this.call('realpath', path, () => this.fs.realpath(path)); }
   /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
   async appendFile(path: string, content: Uint8Array | string): Promise<void> {
     const data = typeof content === 'string' ? new TextEncoder().encode(content) : content;
     await this.call('open', path, async () => {
-      const handle = await this.process.open(path, { write: true, append: true, create: true });
+      const handle = await this.fs.open(path, { write: true, append: true, create: true });
       try {
         let offset = 0;
         while (offset < data.length) {
-          const written = await this.process.write(handle.id, null, data.subarray(offset));
+          const written = await this.fs.write(handle.id, null, data.subarray(offset));
           if (written <= 0 || written > data.length - offset) throw syscallError('EIO', 'write', path, { detail: 'short append' });
           offset += written;
         }
       } finally {
-        await this.process.close(handle.id);
+        await this.fs.close(handle.id);
       }
     });
   }

@@ -5,6 +5,360 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: low-level `Facet.submit`, `IsolatePool` and `Fanout` calls now
+  accept `FacetTaskSource` values, not functions or closures. Compile the
+  task and its dependencies at build time, then pass its expression to
+  `facetTaskSource` from `@nimbus-sh/core/runtime/facet-task.js`. The old
+  `FacetFn`, `FacetTaskFn` and `serializeFunction` exports are removed.
+  Nimbus's tasks and embedded helpers use one build-time compiler and survive
+  host identifier minification; no runtime function-source serialization remains.
+  Guest entry helpers now live in core `runtime/facet-tasks.js` and worker
+  `runtime/repl-facet-tasks.js`; the former runner/REPL exports are not re-exported.
+  `runtimeModuleScope` moves from `_shared/commonjs-cell.js` to
+  `_shared/runtime-code-identity.js`, where the host/guest identity helpers are compiled together.
+  The obsolete `_shared/esbuild-facet-shim.js` and its `ESBUILD_NAME_*_SHIM`
+  exports are removed; compiled bodies carry their own lexical bindings.
+- Fixed: published core bundles npm's CommonJS dependencies with explicit ESM
+  builtin imports, so a neutral ESM bundle can start under workerd without
+  eager dynamic `require` failures.
+- Added: SDK `files.readlink`, plus optional `ino` and `revision` on `stat`
+  and `lstat`, through the shared session contract on every transport.
+- Added: `exec`/`execStream` accept a local `detach` signal. Detaching releases
+  a named shell to its next call without killing the current command or
+  saving its later cwd/environment. Its output remains readable and its exit
+  still reports actual completion. The wire `detachId` identifies an invocation
+  independently of its inherited `execId` attribution tag.
+
+- Changed: the programmatic session wire contract and result schemas now live
+  in `@nimbus-sh/core/runtime/session-protocol.js`, shared by SDK, HTTP, hosted
+  sessions and Durable Objects. Existing SDK option/result type names remain
+  available as shared or derived aliases rather than augmentable interfaces. Runtime-install
+  replies now validate their declared spec, exit code, stdout and stderr fields.
+- Breaking: `NimbusSessionSurface._rpcWriteFile` and the hosted session's raw
+  method now return the committed revision (`Promise<number>`), matching the
+  Durable Object wire result. Public `files.write` consistently returns void
+  on every transport, as declared; it no longer leaks the revision on colocated
+  calls. Producer-only `Programmatic*`, serialized process/port and app result
+  types move from the worker implementation module to the core contract.
+- Breaking: `RuntimeInstallSummary` is removed from
+  `@nimbus-sh/worker/runtime/package-manager`. Use `SessionRuntimeInstallResult`
+  from `@nimbus-sh/core/runtime/session-protocol.js`; no deprecated re-export
+  remains.
+
+- Changed: the shared base64url decoder requires canonical unpadded encodings,
+  rejecting nonzero unused padding bits. JWT, signed OAuth state and sealed
+  JSON verification therefore reject alternate strings for the same bytes;
+  generated canonical tokens and cookies are unchanged.
+
+- Changed: colocated SDK `runCode` enforces the sandbox profile's `node`
+  and `shell` allow rules for JavaScript, TypeScript and shell code, as the
+  remote API already did. Sandbox profiles and runtime-policy decisions now
+  come from `@nimbus-sh/config/sandbox`.
+- Breaking: execution `NimbusConfig` no longer accepts the unused
+  `runtimeCache` field. Configure runtime bucket bindings through
+  `BuildWranglerOptions.runtimeCache` instead.
+- Breaking: OAuth, cookie and crypto helper exports have moved out of
+  `@nimbus-sh/sdk/worker` and the `@nimbus-sh/worker` root. Import them from
+  the workerd-independent `@nimbus-sh/sdk/oauth` entrypoint. This includes
+  the Cloudflare provider functions/constants, PKCE/sealing/base64 helpers,
+  agent OAuth cookie helpers and their types; no compatibility re-exports
+  remain. The next affected-package publish requires a minor version bump.
+
+- Changed: a program that listens serves, however it was started.
+  - `node app.js`, an npm bin or a `child_process` child whose server Nimbus could not see in its code used to run as a one-shot. Its port answered 501, or 502 once it was gone.
+  - Now its first `listen()` stops it, and Nimbus runs it on as a server (the same pid), replaying it up to that listen. What it printed before is shown once.
+  - Files it changed before it listened are checked against the first run, one by one, as the replay makes them again.
+  - A program that appended to a file, started a child, opened a connection or made a request before it listened cannot be run again. Its `listen()` throws an error naming what it did.
+- Changed: a bin that served once in a workspace starts as a server directly next time.
+  - Learned by its package's name and version, the bin, and its first argument.
+  - The known server CLIs (vite, next, astro, and the others) still start that way from their first launch.
+- Changed: an npm bin runs as `node <its file>` does: one process, shown under the bin's command line, whose start, output and exit are reported once. A bin no longer has a process entry and a `[bin started]` line of its own.
+- Fixed: a `kill` sent while a process's earlier end was still waiting for its writes to drain was acknowledged but did nothing; the process kept running until the drain finished. The kill now takes effect at once, and its status is the one recorded.
+- Fixed: `opencode` run once (`opencode --version`, `opencode run …`) could reset the session; repeated runs reset it within a few dozen. Killing such a run now also ends the program, which used to run on after the session had let it go.
+- Fixed: a resident process whose filesystem could not be listed at boot reported a stale cause ("a change reported without the stat every name needs"). It now names the listing's own failure.
+
+## 2026-10-10: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
+
+- Fixed: process stdin is one bounded byte channel for Node, WASI and registry
+  children. Inherited fd 0 keeps queued bytes, future writes and EOF; full
+  pipes hold their writers until a reader makes room. Registry and shebang
+  children stream byte-exact stdout/stderr, and foreground output no longer
+  passes through a decoded log or binary placeholder. Logs persist bytes and
+  derive their text view on read. Missing/nonexecutable children fail spawn
+  with ENOENT/EACCES, and a vanished reader releases a blocked writer. npm-bin
+  entrypoints retain their broker-owned pid/fd0 and forward logged bytes
+  without feeding the same foreground subscriber back into itself. A child's
+  parent-side stdin is destroyed on exit, so a delayed end cannot write to
+  a removed reader and abort its parent's asynchronous work. A source read
+  failure preserves queued input and then reports EIO instead of clean EOF.
+  Broker-owned WASI runs reuse the same process and stream their bytes rather
+  than returning a rendered, truncated process-log tail.
+- Fixed: echo, progress, replay wakeups and impossible-child refusals use a
+  timer-independent continuation fence, so incoming filesystem RPC traffic
+  cannot withhold their bookkeeping. Fresh CPU turns still use the session's
+  alarm-backed paced-work scheduler. Complete-file stdin reads use bounded
+  1 MiB windows rather than one RPC per small stream chunk.
+- Fixed: CPython, Ruby, bash and the clang toolchain use the shared live WASI
+  byte relay instead of returning collected output at exit. Redirected files
+  receive flushed output during the run, binary pipes preserve their bytes,
+  and REPL/server control frames are bounded metadata rather than stored text.
+- Fixed: Node byte-mode readable streams expose Buffer chunks at their public
+  edge, preserving Buffer methods and encoding-aware toString calls.
+- Fixed: live Node console output no longer retains a second whole-output
+  string. Opencode's explicit one-shot text-result capture is bounded to
+  1 MiB per stream; an oversized result fails with EFBIG and a nonzero exit
+  instead of silently truncating it or exhausting the facet's memory.
+- Changed: `zlib`, `buffer` and `crypto` in node programs check their
+  arguments as Node does and throw Node's errors (`ERR_INVALID_ARG_TYPE`,
+  `ERR_MISSING_ARGS`, `ERR_OUT_OF_RANGE` and the rest, in Node's words).
+  They used to throw workerd's uncoded `Failed to execute …` errors, which a
+  program's `e.code` checks missed.
+  - `btoa` now refuses characters past U+00FF, as Node's does.
+  - `atob` reports Node's two errors.
+  - `crypto.createECDH` and `getDiffieHellman` name an unknown curve or
+    group as Node does.
+  - `crypto.setEngine` reports that no engine is found.
+- Fixed: `crypto.randomBytes`, `randomFillSync` and `randomFill` in node
+  programs threw `QuotaExceededError` past 65536 bytes. They fill up to
+  2^31-1 bytes, as Node's do. `crypto.getRandomValues` keeps the Web
+  Crypto quota, as in Node.
+- Fixed: `fs.stat(path, options, callback)` treated the options object as
+  the callback. `{ bigint: true }` was ignored by every stat call; it now
+  returns `BigIntStats` in nanoseconds.
+- Changed: `process` and `fs` in node programs are closer to Node's.
+  - `process` is an `EventEmitter` (`process instanceof EventEmitter`).
+  - `process.hrtime`, `cpuUsage`, `threadCpuUsage`, `resourceUsage`,
+    `memoryUsage`, `kill`, `_rawDebug`, `loadEnvFile`, `assert`, `ref`,
+    `unref` and `allowedNodeEnvironmentFlags` are Node's own code
+    (`lib/internal/process/per_thread.js`), with Node's argument checks.
+    `process.hrtime` now has sub-millisecond resolution and a correct
+    difference.
+  - `setUncaughtExceptionCaptureCallback` is present, along with `argv0`,
+    `release`, `debugPort`, `availableMemory` and `constrainedMemory`.
+    `process.argv[0]` is `process.execPath`, and `uptime()` counts up.
+  - Every `fs` stat result is an `fs.Stats` with Node's fields (`dev`,
+    `nlink`, `blksize`, `blocks` and the rest).
+  - `fs.F_OK`, `R_OK`, `W_OK`, `X_OK` and `fs._toUnixTimestamp` are present.
+  - `fs.lchmod` is undefined, as on Linux.
+  - `dns` has Node's constants.
+  - Known limits: `cpuUsage`, `resourceUsage` and `memoryUsage` read 0. A
+    Worker has no CPU or memory readings.
+- Fixed: a second `astro dev` in the same session reset the session (the
+  dev server never answered, 502). The launch carries what the first one
+  learned, and its larger code pack outgrew the session's memory twice:
+  writing it encoded the whole pack beside the module text it came from,
+  and booting it read the pack's bytes beside the process's wasm images and
+  decoded them into one string, two bytes a character throughout if any
+  module held a non-Latin-1 one. A code pack is now written a module at a
+  time, and read first at boot and decoded a module at a time. Past those,
+  its module map, 68.5 MB with what the first run learned beside 39.4 MB of
+  wasm, was over the platform's 64 MiB ceiling on a dynamic Worker's map:
+  it was refused at start, and the session reset holding it. A launch's map
+  now carries what earlier runs learned only as far as that ceiling allows,
+  what they needed first kept first; what does not fit runs as it did in
+  the run that learned it.
+- Fixed: an unreferenced timer, interval or immediate (`.unref()`) kept a
+  node program running until it fired, and an unreferenced interval kept it
+  running forever. They now let the program exit, as in Node.
+- Changed: `timers`, `timers/promises`, `os`, `perf_hooks` and `stream/web`
+  in node programs are Node's.
+  - `require('timers').setTimeout` is the global `setTimeout`.
+  - `timers/promises` validates its arguments, rejects with `AbortError` when
+    its signal aborts, and has `scheduler`.
+  - The deprecated `timers.enroll`, `unenroll`, `active` and `_unrefActive`
+    are present.
+  - `os` adds `machine()`, `version()`, `devNull`, `getPriority()` and
+    `setPriority()`. `os.release()` and `uname -r` now report the same
+    release, `6.0.0-nimbus`; `uname -r` used to print `1.0.0`.
+  - `perf_hooks` adds Node's classes and `constants`.
+  - `stream/web` exports every Node class.
+  - Known limits: `perf_hooks.createHistogram` and `monitorEventLoopDelay`
+    throw `ERR_METHOD_NOT_IMPLEMENTED`. `os.getPriority` and `setPriority`
+    on another process throw ENOSYS.
+- Fixed: a module the launch staged because earlier runs executed it, or as
+  a guess at a package's main, came without what its require wrapper loads.
+  nuxt's `nuxt dev` failed "Failed to resolve vue/compiler-sfc" when
+  `@vitejs/plugin-vue` was staged that way. Such a module now brings its
+  static imports and its wrappers' loads together, or is left to load late.
+
+- Changed: `util`, `assert`, `querystring` and `punycode` in node programs
+  are Node 22.22.3's own library code, loaded on first use. Modules are
+  Node's `Module` objects (`require.cache` is `Module._cache`), and a
+  missing module throws `MODULE_NOT_FOUND` with its `requireStack`, so the
+  try/catch pattern for optional dependencies works. Known limit:
+  `util.getCallSites` returns `[]` when a program has made both
+  `Error.stackTraceLimit` and `Error.prepareStackTrace` non-writable and
+  non-configurable.
+- Fixed: the first `vite` or `vite build` of a create-vite Vue project
+  failed. `@vitejs/plugin-vue` loads `vue/compiler-sfc` through a function
+  that wraps `createRequire`, and the first run staged no module reached
+  that way. The first run now stages modules a `createRequire` wrapper
+  loads.
+- Fixed: a resident process whose launch was over 2 MB and that was reset
+  during its restart backoff never came back. The cold-start alarm
+  re-drove its launch, but the launch's next timer was armed into a
+  dispatch that had already finished, so nothing ran it.
+- Fixed: `fs.promises.cp` of a single file the process held copied the held
+  bytes without checking the read: a file the process had made write-only
+  was copied, and a file the session had refused it was "copied" from the
+  refusal. It now copies a file as `fs.promises.copyFile` does, through the
+  read, and fails with EACCES where that read does.
+- Fixed: a node process could go on reading, synchronously, a file whose read
+  a chmod or a chown had revoked. The bytes it already held were kept under
+  the new revision because their content was unchanged (the same held for a
+  store kept from an earlier launch, and for a one-shot's package.json
+  copies), and readFileSync checked only the directories above the file.
+  A file is now kept or copied only while its mode and owner let the
+  process read it, and readFileSync and a read open judge the file's own
+  mode, as the session does: EACCES.
+- Fixed: a one-shot node process can read every installed package's
+  package.json synchronously on its first run, as a resident process can.
+  Package resolution reads manifests for names no closure walk sees: vite's
+  config load reads one for every import of the config to decide whether to
+  externalize it, and on a fresh create-react-router project every read
+  failed, so it bundled @react-router/dev, @tailwindcss/vite and babel into
+  the config and ran out of memory. The session reads the manifests once per
+  install and hands each launch the copies; a launch holds a copy only while
+  the file still has its content, and reads any other manifest itself.
+- Fixed: a one-shot node process reports the files it was refused, and the
+  code it produced, as they happen, as a resident process does, not only in
+  its exit report. A run the platform killed reported nothing, so its next
+  launch missed the same files and died the same way: a fresh
+  create-react-router project's config load was killed by memory ("Worker
+  exceeded memory limit") on every run. A killed run's failure now names the
+  reads it was refused, beside the platform's error, and its next launch
+  stages them.
+- Fixed: a node run that was refused a synchronous read of a file it had not
+  been staged (EAGAIN) fails at exit, naming the file, even when the program
+  swallowed the error and a later call on the same path succeeded. vite's
+  resolver swallows the EAGAIN of a package.json, bundles the package it took
+  to be missing, and later stats and reads the same path successfully; that
+  later answer cleared the miss, so the run reported success built on the
+  wrong answer. Only the remedy the error names, an asynchronous read of the
+  path, answers it now.
+- Fixed: a WebAssembly program whose memory grew past 128 MiB could no longer
+  read or write at the top of it: rolldown pre-bundling React with
+  lucide-react (152 MiB) failed "Bad address (os error 21)" writing its
+  pre-bundles, and "Invalid array buffer length" returning strings. In a
+  Worker, `subarray` refuses a begin past the 128 MiB an ArrayBuffer may
+  have; the WASI hosts and the napi-wasm loader (its emnapi included) now view
+  guest memory by offset instead.
+- The probe driver pings its terminal and process-log WebSockets every 30 s.
+  A socket that carried nothing either way for about 270 s was dropped on the
+  way to the session (close 1006, no close frame; the session was not reset),
+  so a probe waiting on a command that printed nothing for that long failed
+  as if its session had reset.
+- Breaking for Cloudflare embedders: the hosting Worker must explicitly set
+  `"limits": { "cpu_ms": 300000, "subrequests": 10000000 }` in its Wrangler
+  configuration. A facet's limits only lower its parent's, and under the
+  plan's 10,000 subrequests a dev server's filesystem calls ran out within
+  minutes ("Too many subrequests by single Worker invocation"). Omitting
+  either or configuring less is refused by deployment validation.
+  `@nimbus-sh/config` emits the required block automatically.
+
+- Added explicit, evidence-based per-kind facet CPU and subrequest limits,
+  replacing the implicit 30-second Loader CPU default. Resident filesystem
+  transport retains its invocation budget across incoming HTTP requests, so
+  processes receive a deliberately generous finite lifetime ceiling. This
+  resource policy is separate from batched filesystem write delivery.
+- Fixed: a process no longer has a wall-time deadline. A wasm program, WASI
+  included, was killed at 30 s ("Task exceeded 30000ms deadline"), which
+  ended clang over 10,000 files under load at 9,199. CPython was killed at
+  120 s, clang, Ruby and bash steps at 300 s, and a Python or Ruby REPL
+  evaluation at 60 s. A process now runs until it exits or is killed (kill,
+  Ctrl-C), and on Cloudflare the CPU limit ends a runaway one. Only a direct
+  compute call (a build, a transform, a git network step, a fan-out task)
+  still has a deadline.
+- Breaking for embedders running `@nimbus-sh/core` off Cloudflare:
+  `localFacetHost` no longer takes `defaultTimeoutMs`, and a facet call
+  given no `timeoutMs` has no deadline. Off Cloudflare there is no CPU
+  limit, so a program that never ends runs until it is killed, as it would
+  under Node. Pass `timeoutMs` to bound a call of your own.
+- Fixed: a command's second run could fail before it started, where its
+  first had got further: what the first run executed and the launch lacked
+  is learned and rooted in the next launch's required closure, and on `nuxt
+  dev` that took the closure past the snapshot bound ("require closure for
+  …/@nuxt/cli/bin/nuxi.mjs exceeds the 18874368-byte snapshot bound"). Learned
+  modules that do not fit are now staged as optional, as far as the bound
+  allows.
+- Fixed: a module a launch's map had no room for (the bound evicts the
+  largest guesses first) that the program then loaded through an `import()`
+  could not read what it reads synchronously, nor compile its WebAssembly:
+  `nuxt dev` evicted rollup, and Nitro's load of it failed reading
+  `bindings_wasm_bg.wasm`. An evicted module's wasm images are now carried,
+  and the `import()` that reaches it fetches its synchronous reads.
+- Fixed: a launch that loads rolldown, satteri or the Astro compiler by a
+  name its code computes (`nuxt dev`: nuxi loads the project's nuxt, which
+  loads vite and rolldown) carried none of their staged bindings, and failed
+  with "Cannot find module '../rolldown-binding.linux-x64-gnu.node'". It now
+  fails by name: which binding, the version Nimbus stages, and that the next
+  launch of the command carries it.
+- Fixed: `nuxt dev` failed its first run with "Cannot find native binding":
+  Nuxt reaches Vite, and Vite rolldown, through an `import()` whose specifier
+  is a variable, so the launch never carried rolldown's staged wasm binding,
+  and a binding cannot be added after launch. A launched bin now also carries
+  the staged bindings its own declared dependencies install (resolved as Node
+  resolves them, at the binding's exact version). A carried binding is
+  registered, never instantiated, until a program requires it.
+- Fixed: a program that compiled a WebAssembly module from bytes built in
+  memory, rather than read from a file, was refused, and a caller that caught
+  the refusal carried on without it, silently, on every launch (one of 286
+  bytes during `nuxt dev`'s startup). The refusal is now named on stderr, once
+  per module, and a module that validates (up to 1 MiB) is staged: the next
+  launch of the command carries it. And `WebAssembly.instantiate(bytes)` that
+  fails after its compile (a link failure, a trap) keeps its own error, where
+  it was reported as a refused compile and lost its class.
+- Changed: a process compiles a wasm image its launch carries when the
+  program first compiles it, not when the process starts. A Vite 8 or Astro
+  dev server no longer compiles lightningcss's 15.8 MB image on every launch,
+  only when it transforms CSS with lightningcss.
+- Changed: a long-running launch no longer stages, at boot, what modules it
+  reaches only through an `import()` read synchronously; that `import()`
+  fetches them before the module evaluates. A Vite 8 dev server's boot drops
+  the 15.8 MB `lightningcss_node.wasm` it reads only when it transforms CSS
+  with lightningcss.
+- Fixed: a process whose file store was at its storage budget could be
+  refused files it read many at once, though the session granted all the room
+  they asked for: each grant served one fill of the batch, and a fill gave up
+  after eight. Waiting fills now get room in the order they asked, and one ask
+  covers them all (`astro dev`: "import() prefetch: could not fetch
+  …/zod/v4/locales/…; its fetches did not land").
+- Added: a git repository on a mounted filesystem. `git clone` onto a mount
+  (before: "writes a repository only on the workspace filesystem"), and
+  `git fetch`, `pull` and `push` in a repository there. A file over a wave's
+  4 MiB mount limit is written through the session's file API (open, write,
+  close), the index through `index.lock`. A failed or interrupted clone
+  there is cleaned up as on the session's own filesystem. A mount backend
+  without `rename`, `writeRange` or `truncate` fails the clone with the
+  namespace's refusal naming the call (EXDEV for a rename, ENOTSUP for the
+  others), and the destination is removed.
+- Fixed: a write wave routed onto a mount, and a lease holder's `mkdir`,
+  `open` for writing, `unlink` and `rmdir`, did not present the caller's
+  exclusive-mutation lease: under its own lease a holder was refused EBUSY
+  there. A file opened under a lease now writes and truncates under it.
+- Changed: what a process's writes survive. A resident (node, python,
+  ruby or opencode in a SQLite-backed facet) logs every change in its own
+  store before the program is told it succeeded. When the process is
+  killed or runs out of memory, the session drains that log, and only then
+  reports its exit status: 5,000 of 5,000 files after an OOM or a `kill -9`.
+  One limit remains: a resident that dies of CPU or memory partway through
+  one unbroken synchronous stretch loses what that stretch logged (958 of
+  5,000 in a live CPU-death run). No output ever gets ahead of it.
+  A one-shot (node, python, ruby or a WASI program run once) releases no
+  output, exit status or outbound message until every change it made
+  before it is in the session. A one-shot that ends abnormally (out of
+  memory or CPU, or killed) can lose an unknown number of the changes it
+  made since it last produced output or flushed. It always exits non-zero
+  and says so in its output, naming any subtree it held. No count is
+  promised: the session never saw the changes the process acknowledged and
+  never sent.
+- Fixed: a WASI program run with `./prog.wasm`, and ruby, ran without its
+  credential, so every file call was a round trip to the session. A C
+  program writing 10,000 files now takes 14.7 s, where before it stopped at
+  the 30 s limit with about 3,000 written.
+- Fixed: a resident that died on its own after it started (out of memory
+  or CPU) stayed listed as running, and its writes were never recovered.
+
 - Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
   `git clone`, `git checkout` and `npm install` use) wrote every record to
   the session's SQLite store, even under a mount. A file under a mount
@@ -103,6 +457,17 @@ published independently in the `@nimbus-sh` npm scope.
   read stays in the program's exit report. A floating `import(...).then(...)`
   keeps the process while it fetches, and an `import()` of a module already
   loaded fetches nothing.
+- A full clone (`git clone --no-shallow`) leaves a commit-graph with
+  changed-path filters, as `git commit-graph write --reachable
+  --changed-paths` writes it (generation data v2, filters version 2), byte
+  for byte. It is written after the clone answers, so the clone takes no
+  longer: on vscode (167,136 commits) the clone's finish took 1.1 s as
+  before, and the graph was complete about five minutes later. It is one
+  layer of a commit-graph chain, so the layers a later `git fetch` writes
+  stack on it as git's do. A history that does not parse as git parses it
+  gets no graph rather than a failed clone.
+- Reading objects from a repository with many packs (a full clone has
+  scores) searches the pack the last object came from first, as git does.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
@@ -267,6 +632,16 @@ published independently in the `@nimbus-sh` npm scope.
   dev server again exposes every key of a CommonJS `module.exports = {...}`
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
+- Removed the legacy synchronous filesystem methods on `NimbusSession`
+  (`vfsReadFile`, `vfsReadFileString`, `vfsStat`, `vfsExists`, `vfsReaddir`,
+  `vfsWriteFile`) and their functions in `@nimbus-sh/worker/session/rpc`.
+  They always acted as the kernel, stripped leading slashes and turned every
+  error into `null` or an empty answer; nothing in Nimbus called them. Use
+  the session's files API (`files.read`, `files.write`, and the rest) or the
+  credentialed `_rpc*` methods, which act as a process's credential and
+  report errors. A breaking change to a published API: `@nimbus-sh/worker`
+  moves to 0.14.0, and `@nimbus-sh/sdk` to its next minor, since its
+  `@nimbus-sh/sdk/worker` entry re-exports `NimbusSession`.
 - Fixed: `create-nimbus-app` wrote a `wrangler.jsonc` without
   `limits.cpu_ms`, so a scaffolded session ran under the 30 s default CPU
   limit. The scaffold now writes the config that `@nimbus-sh/config`
@@ -295,17 +670,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 These need a minor version of fabric and of platform at the next publish.
 
-- fabric: `recordFacetNameMinted` is removed. Its callers set a facet-name
-  count of their own, and three such counters drifted apart, so the
-  lifetime facet-ID count could miss names. Charge a name with
-  `chargeFacetName(ctx, name, { refuseAtWall })`. It counts a name's
-  first use once, in this incarnation or any later one. The slot book
-  charges its own names.
-- fabric: a `FacetPoolContext`'s `storage.put` takes one object of
-  entries, Durable Object storage's atomic multi-key form, in place of
-  `put(key, value)`. The facet-name ledger writes a charge's counts and
-  its name's mark in that one put. A `DurableObjectState` already
-  provides it.
+- fabric: the facet-ID ledger is removed: `FACET_ID_LIFETIME_BUDGET`,
+  `FACET_NAME_HIGH_WATER_KEY`, `recordFacetNameMinted`, `facetNameCount`,
+  `facetNameCountDurable`, `facetIdBudget` and `withFacetBudgetNamed`.
+  Cloudflare does not bound the facet names an object uses: one object
+  created 70,000, deleting each after use, and none failed. It bounds
+  facets kept: with none deleted, one object failed at 32,240
+  (2026-10-07). `facetPool` no longer refuses a new name past 65,536, and
+  a start failure is no longer called permanent for the object. A
+  `FacetPoolContext`'s `storage` needs only `sql`. The session
+  diagnostics no longer report `facet.idBudget`. The rows the ledger
+  wrote stay in storage, unread.
 - platform: `SQLITE_MAX_BOUND_PARAMETERS` is removed. It was a second name
   for the same measured bound as `SQL_MAX_BOUND_PARAMETERS`, which every
   caller uses. Use `SQL_MAX_BOUND_PARAMETERS`.

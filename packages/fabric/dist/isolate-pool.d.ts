@@ -26,27 +26,19 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type HostRoute } from './composition.js';
+import { type SupervisorBindingProps } from './supervisor-props.js';
+import { type FacetKind } from './facet-limits.js';
+import { type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { type DynamicWorkerClaim } from './budgets.js';
-import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
-/**
- * A function dispatched into a facet isolate, with the bindings that facet was
- * minted with as its second argument.
- *
- * Declared through a method so the bindings parameter compares BIVARIANTLY: a
- * task body annotates the exact surface it calls (`env.SUPERVISOR` is the
- * embedder's RPC class, which the fabric cannot name), and accepting that
- * narrowing is the whole point of handing the bindings over.
- */
-export type FacetTaskFn<A, R> = {
-    task(args: A, env: FacetBindings): R | Promise<R>;
-}['task'];
 /** The one binding a pool needs off whichever env its host hands it. */
 export interface IsolatePoolEnv {
     LOADER?: WorkerLoader;
 }
 /** Options handed to IsolatePool's constructor. */
 export interface IsolatePoolOptions {
+    /** Policy for this pool's loaded workers; generic submitted code is an isolate. */
+    facetKind?: FacetKind;
     /**
      * Maximum concurrent in-flight facets, each a distinct Dynamic Worker
      * spent from the hosting DO's `DO_DYNAMIC_WORKER_LIMIT`. Default 1; a
@@ -59,7 +51,11 @@ export interface IsolatePoolOptions {
      * it, and a refused one waits for a slot of the claim.
      */
     claim?: DynamicWorkerClaim;
-    /** Per-task timeout in ms. Default 60_000. */
+    /**
+     * Per-task wall timeout in ms; 0 is none. Defaults to this facet kind's
+     * call deadline (facetCallDeadlineMs), and to none for a kind that runs
+     * processes, which have no wall deadline.
+     */
     timeoutMs?: number;
     /**
      * Per-task retry attempts AFTER the initial failure. Default 0.
@@ -114,7 +110,7 @@ export interface IsolatePoolOptions {
      *
      * Used by Fanout's peer-DO branch (peer-DO fanout): peer DOs
      * construct their per-task IsolatePool from inside
-     * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
+     * `executeFanoutShard`, where `ctx` is the PEER DO's ctx. Without this
      * override the peer's auto-injected SUPERVISOR routes back to the
      * peer DO itself — so writes (e.g. install-batch-facet's
      * writeBatchStream) land in the peer's VFS instead of the
@@ -144,6 +140,8 @@ export interface IsolatePoolOptions {
      * (npm resolve, pre-bundle), which never call `_pid()`.
      */
     supervisorPid?: number;
+    /** A runtime program's explicit pid/run capability; helpers keep their infrastructure binding. */
+    processSupervisor?: SupervisorBindingProps;
     /**
      * Raw JavaScript source prepended to every generated worker module.
      * Lets callers inject bundled helpers, such as a tar parser. The user
@@ -277,7 +275,8 @@ export declare class IsolatePool {
     /** The width this pool's dispatches are held inside (IsolatePoolOptions.claim). */
     private readonly claim;
     private readonly concurrency;
-    private readonly defaultTimeoutMs;
+    readonly defaultTimeoutMs: number;
+    private readonly facetKind;
     private readonly defaultRetries;
     private readonly tag;
     private readonly slotGenerations;
@@ -331,6 +330,8 @@ export declare class IsolatePool {
     private readonly scope;
     /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
     private readonly network;
+    /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
+    private readonly writerPid;
     constructor(env: unknown, ctx: DurableObjectState, opts: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
@@ -338,7 +339,7 @@ export declare class IsolatePool {
      * Run `fn` once with `arg` on a slot isolate. Returns the result or
      * throws TimeoutError / RetryExhaustedError / ExecutionError.
      */
-    submit<T, R>(fn: FacetTaskFn<T, R>, arg: T, opts?: IsolateCallOptions): Promise<Awaited<R>>;
+    submit<T, R>(fn: FacetTaskSource<T, R>, arg: T, opts?: IsolateCallOptions): Promise<Awaited<R>>;
     /**
      * Dispatch `fn` through the fetch transport — the pool's only
      * cancellable path: aborting `request.signal` cancels the inner
@@ -348,30 +349,17 @@ export declare class IsolatePool {
      * gets a fresh interpreter. `fn` is request-shaped: it encodes and
      * decodes its own payload.
      */
-    submitRequest(fn: (request: Request, env: FacetBindings) => Response | Promise<Response>, request: Request, opts?: IsolateCallOptions): Promise<Response>;
+    submitRequest(fn: FacetTaskSource<Request, Response>, request: Request, opts?: IsolateCallOptions): Promise<Response>;
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
      * pinned to stable slots so warm isolates are reused.
      *
      * Results are returned in input order. Failure handling per `onError`.
      */
-    map<T, R>(fn: FacetTaskFn<T, R>, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R> | null>>;
+    map<T, R>(fn: FacetTaskSource<T, R>, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R> | null>>;
     /**
-     * Same shape as `map`, but accepts a pre-serialized function source
-     * string instead of a live function reference. Used by
-     * `Fanout`'s peer-DO leg, where the function was already
-     * serialized on the coordinator side and forwarded over RPC.
-     *
-     * The fnSource MUST be the output of `serializeFunction(fn)`
-     * (typically forwarded directly from a coordinator RPC). Bytes-
-     * stable invariants:
-     *   - `fnHash = hashSource(fnSource)` must be deterministic so
-     *     warm slots are correctly keyed.
-     *   - `fnSource` must NOT reference `this` — same rule as
-     *     `serializeFunction`.
-     *
-     * No fn-validation runs here (it already ran on the coordinator);
-     * the peer trusts the caller to forward a valid serialization.
+     * The peer-DO transport of `map`: the coordinator forwards the task's
+     * already compiled expression. Its exact bytes key the same warm slots.
      */
     mapSource<T, R>(fnSource: string, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R> | null>>;
     /**

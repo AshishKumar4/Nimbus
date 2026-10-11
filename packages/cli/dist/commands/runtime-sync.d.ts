@@ -25,6 +25,6 @@
 export declare function syncRuntimes(args: string[], options?: {
     scriptPath?: string;
 }): Promise<number>;
-/** `nimbus runtime list` — print the catalog the SDK ships against. */
-export declare function listRuntimes(_args: string[]): Promise<number>;
+/** `nimbus runtime list` — print the selected bucket's actual defaults. */
+export declare function listRuntimes(args: string[]): Promise<number>;
 //# sourceMappingURL=runtime-sync.d.ts.map

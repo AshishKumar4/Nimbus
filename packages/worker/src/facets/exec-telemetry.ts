@@ -54,7 +54,7 @@ export interface ExecTelemetryRecord {
    * barrier). Zero in a healthy session.
    */
   namespaceRefusals: number;
-  /** Supervisor RPC writes the facet issued (__queueRpcWrite calls). */
+  /** Supervisor RPC writes the facet issued (__queueRpcWrite's calls: one per batch of writes). */
   rpcWrites: number;
   /** Supervisor fs READ round trips the facet issued. A whole-file async
    *  read costs one per READ_STREAM_CHUNK_BYTES, so this is the count that

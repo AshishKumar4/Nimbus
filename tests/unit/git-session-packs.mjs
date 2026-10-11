@@ -20,7 +20,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
-import { GIT_CLONE_JOB_MARKER } from '../../packages/worker/src/git/network-facet.ts';
+import { GIT_CLONE_JOB_MARKER } from '../../packages/worker/src/git/clone-job.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-session-packs-'));

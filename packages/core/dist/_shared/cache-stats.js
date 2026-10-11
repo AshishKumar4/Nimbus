@@ -5,7 +5,7 @@
  * ───────
  * The supervisor (and its facets) make cache lookups at four tiers:
  *
- *   L1 — per-DO SQLite (NpmCache)                    ~1 ms / file
+ *   L1 — per-DO SQLite metadata / verified local immutable tarball bytes
  *   L2 — caches.default (per-colo)                   ~50-500 µs hit
  *   L3 — R2 (cross-tenant global)                    ~30-100 ms regional
  *   L4 — registry.npmjs.org origin                   ~100-300 ms cross-region

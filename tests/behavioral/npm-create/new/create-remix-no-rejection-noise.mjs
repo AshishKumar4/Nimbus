@@ -34,7 +34,7 @@ await t.waitForPrompt(60_000);
 function tail(s, n = 800) { return s.length > n ? '…' + s.slice(-n) : s; }
 
 const r = await t.run(
-  'npm create remix@latest test-remix -- --template ./packages/templates/blank --no-install --yes 2>&1; echo RC=$?',
+  'npm create remix@latest test-remix -- --template ./packages/templates/blank --no-install --yes 2>&1',
   240_000,
 );
 const out = stripAnsi(r.output);

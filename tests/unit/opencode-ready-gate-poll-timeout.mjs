@@ -63,9 +63,8 @@ const port = 4096;
 // Behaviour is keyed by facet NAME, and a facet is named for its reusable
 // slot rather than its pid. This is the first process, so it holds slot 0.
 facetBehaviour.set(residentFacetName(0), wedgeThenServe);
-await fm._runOpencodeServerFacet({
+await fm._startStagedResident({
   pid,
-  command: 'opencode serve --port 4096',
   stageSpec: makeStageSpec(port),
 }, port);
 
@@ -82,9 +81,8 @@ facetBehaviour.set(
   residentFacetName(1),
   async () => new Response('nope', { status: 502 }),
 );
-await fm._runOpencodeServerFacet({
+await fm._startStagedResident({
   pid: entry2.pid,
-  command: 'opencode serve --port 4097',
   stageSpec: makeStageSpec(4097),
 }, 4097);
 await assert.rejects(

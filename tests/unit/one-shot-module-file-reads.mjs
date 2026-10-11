@@ -81,8 +81,8 @@ const { host, rawVfs, kfs } = createAuthority();
 let out = '';
 adoptSessionSupervisor(host, (text) => { out += text; });
 const manager = oneShotManager('one-shot-module-file-reads', { host, rawVfs, loader: runnerLoader('module-file-reads') });
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-manager.setEsbuildService(new EsbuildService(undefined, { engine: async () => oxcEngine }));
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+manager.setEsbuildService(new EsbuildService(undefined, oxcTransforms));
 for (const [rel, text] of Object.entries(files)) {
   const path = `${ROOT.slice(1)}/${rel}`;
   kfs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });

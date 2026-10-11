@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/worker",
-  "version": "0.13.3",
+  "version": "0.14.0",
   "description": "Nimbus runtime package for Cloudflare Workers, re-exported publicly through @nimbus-sh/sdk/worker.",
   "keywords": [
     "cloudflare",
@@ -42,6 +42,11 @@
       "workspace": "./src/auth/index.ts",
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
+    },
+    "./oauth": {
+      "workspace": "./src/session/agent-oauth.ts",
+      "types": "./dist/session/agent-oauth.d.ts",
+      "import": "./dist/session/agent-oauth.js"
     },
     "./session-id": {
       "workspace": "./src/_shared/session-id.ts",
@@ -104,6 +109,11 @@
       "import": "./dist/runtime/package-manager.js"
     },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
+    "./runtime/catalog": {
+      "workspace": "./src/runtime/runtime-catalog.ts",
+      "types": "./dist/runtime/runtime-catalog.d.ts",
+      "import": "./dist/runtime/runtime-catalog.js"
+    },
     "./public/*": "./public/*",
     "./package.json": "./package.json"
   },
@@ -123,6 +133,7 @@
     "bundle:facets": "node scripts/bundle-facet-workers.mjs",
     "bundle:esbuild": "node scripts/bundle-esbuild-wasm.mjs",
     "bundle:oxc": "node scripts/bundle-oxc-wasm.mjs",
+    "bundle:amaro": "node scripts/bundle-amaro-wasm.mjs",
     "bundle:sqlite": "node scripts/bundle-sqlite-wasm.mjs",
     "bundle:shims": "node scripts/bundle-node-shims.mjs",
     "bundle:tailwind": "node scripts/bundle-tailwind-play.mjs",
@@ -133,17 +144,18 @@
     "bundle:npm-cjs": "node scripts/bundle-npm-cjs.mjs",
     "bundle:agent-chat": "node scripts/bundle-agent-chat.mjs",
     "bundle:preview-isolation": "node scripts/bundle-preview-isolation.mjs",
-    "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:oxc && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:napi-wasm && bun run bundle:real-vite && bun run bundle:plugin-react && bun run bundle:npm-cjs && bun run bundle:agent-chat && bun run bundle:preview-isolation",
+    "bundle": "bun run bundle:git && bun run bundle:napi-wasm && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:oxc && bun run bundle:amaro && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:real-vite && bun run bundle:plugin-react && bun run bundle:npm-cjs && bun run bundle:agent-chat && bun run bundle:preview-isolation",
     "clean:dist": "node ../../scripts/clean-dist.mjs",
     "build": "bun run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
     "typecheck": "tsc --noEmit && tsc -p frontend --noEmit"
   },
   "dependencies": {
+    "@nimbus-sh/config": "^0.2.4",
     "@ai-sdk/openai-compatible": "^2.0.41",
-    "@nimbus-sh/core": "^0.15.1",
-    "@nimbus-sh/fabric": "^0.10.1",
-    "@nimbus-sh/platform": "^0.7.2",
+    "@nimbus-sh/core": "^0.16.0",
+    "@nimbus-sh/fabric": "^0.11.0",
+    "@nimbus-sh/platform": "^0.8.0",
     "@renovatebot/pep440": "^5.0.0",
     "ai": "^6.0.182",
     "clean-git-ref": "^2.0.1",

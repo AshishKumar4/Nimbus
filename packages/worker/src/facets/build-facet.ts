@@ -9,7 +9,7 @@ import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
-import { loadHelperFacet } from './helper-facet.js';
+import { FacetCallDeadlineError, loadHelperFacet } from './helper-facet.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset, type StagedSourceEnv } from '../runtime/staged-source.js';
 import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
@@ -19,8 +19,10 @@ import {
   fetchStagedBindingAsset,
   stagedBinding,
 } from '../runtime/staged-bindings.js';
+import { OWN_ROLLDOWN_VERSION } from '../napi-wasm-artifacts.generated.js';
 
-const ROLLDOWN = stagedBinding('rolldown');
+// The build of the rolldown Nimbus itself depends on, whose JavaScript the facet bundles.
+const ROLLDOWN = stagedBinding(`rolldown@${OWN_ROLLDOWN_VERSION}`);
 
 /**
  * The binding's linear memory past which the facet asks to be retired after
@@ -244,6 +246,7 @@ function sharedBuildFacet(ctx: DurableObjectState, env: unknown): SharedFacet {
   const stub = loadHelperFacet<BuildFacetRpc>(ctx, env, {
     id: generationId(generation),
     className: 'BuildFacet',
+    kind: 'build',
     what: 'the build facet',
     code: async (assets) => buildFacetWorkerCode(await fetchBuildFacetParts(assets)),
   });
@@ -396,6 +399,8 @@ export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (sp
         result = await stub.prebundle(spec);
       } catch (error) {
         forgetBuildFacet(ctx, facet);
+        // A call past its deadline aborted the facet already; the same pre-bundle would wait as long again.
+        if (error instanceof FacetCallDeadlineError) throw error;
         if (!facet.crashed) throw Object.assign(new Error(messageOf(error)), { reset: true });
         const message = messageOf(error);
         result = { specifier: spec.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };

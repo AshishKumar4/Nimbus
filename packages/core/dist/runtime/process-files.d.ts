@@ -16,6 +16,8 @@
  */
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
+import { Delegations, type DelegationRevoked } from './delegations.js';
+import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -38,11 +40,21 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     readonly hydrator: Hydrator | null;
+    /** Subtrees delegated to processes (Delegations): each recalled through its holder's bridge. */
+    readonly delegations: Delegations;
     /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
     private readonly bufferedWriteBytes;
     constructor(engine: SqliteVFS, options?: {
         hydration?: HydratorOptions;
         bufferedWriteBytes?: number;
+        /** Told of a delegation's holder revoked for not answering a recall in time: the host stops it. */
+        delegationRevoked?: (event: DelegationRevoked) => void;
+        /** Told of a delegation's holder that ended still holding it (Delegations' orphaned): what it had not sent there is lost. */
+        delegationOrphaned?: (event: {
+            readonly pid: number;
+            readonly root: string;
+        }) => void;
+        delegationRecallTimeoutMs?: number;
     });
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
@@ -93,11 +105,52 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * paths in one turn (git, the build services, vite's file shim, agent
      * tools). Mounted paths route to their mount (a mount without a
      * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
-     * exactly as a process's syscalls do. One per credential for the session.
+     * exactly as a process's syscalls do. `landed`: its reads read what has
+     * landed (VFS.as), asking no delegation's holder — a listing that runs on
+     * every change (the editor's file tree). One per credential and option for
+     * the session.
      */
-    namespaceFs(cred: Readonly<VfsCred>): NamespaceFs;
+    namespaceFs(cred: Readonly<VfsCred>, options?: {
+        landed?: boolean;
+    }): NamespaceFs;
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
+    /**
+     * What holds a process's output back: the publication of every commit of
+     * its that another reader's recall holds (SqliteVFS.publishedFor). None
+     * held, nothing waits.
+     */
+    readonly outputGate: Required<OutputGate>;
+    /** Whether the session's process output waits at `outputGate` (holdOutput). */
+    private outputHeld;
+    /** The processes whose waves answer at their commit (continueAtCommit), until one escapes the gate. */
+    private readonly continuing;
+    /**
+     * Released `pid` writes nothing more: the set its calls were made by
+     * (Delegations.holdsOf), by which the engine holds what it wrote for its
+     * publication, goes once that is published. Until then the output its end
+     * leaves still waits for it, whenever that is let out.
+     */
+    private retireWriter;
+    /**
+     * From now on whatever `processes` lets out for a process (its log, pipes,
+     * terminal and exit, the supervisor ops that leave the session, its ports'
+     * answers: SessionProcessSupervisor.releaseOutput) waits at `outputGate`
+     * for what it wrote to be published.
+     */
+    holdOutput(processes: {
+        setOutputGate(gate: OutputGate | null): void;
+    }): void;
+    /**
+     * Process `pid`'s waves answer at their commit from now on, ahead of
+     * their publication: the writer continues, and whatever it makes visible
+     * waits for the publication instead. Only for a process whose every way
+     * out does: what the session lets out for it at `outputGate` (holdOutput),
+     * what leaves by its runtime's own network at that runtime's boundary
+     * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
+     * ending this (`escaped`).
+     */
+    continueAtCommit(pid: number): void;
     releaseProcess(pid: number): Promise<void>;
     /** See NimbusFilesystemAuthority.rewindProcess. */
     rewindProcess(pid: number): Promise<void>;
@@ -109,10 +162,6 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     killProcess(pid: number): {
         lost: number[];
     };
-    activateAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriters(pid: number): Promise<void>;
-    revokeAppendWritersThrough(maxPid: number): Promise<void>;
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
     mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
     /**
@@ -142,14 +191,11 @@ export declare const F_OK = 0;
 export declare const X_OK = 1;
 export declare const W_OK = 2;
 export declare const R_OK = 4;
-/**
- * A process's namespace as a `VFS` over its bound bridge, plus the process
- * syscalls a `VFS` has no word for (access, realpath, append). Absent is
- * null from `stat`; every failure is a `VfsError`.
- */
 export declare class ProcessView implements VFS {
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     readonly process: RuntimeFsBridge;
+    /** The bridge as this view calls it: each call made again once a delegation it meets is recalled. */
+    private readonly fs;
     constructor(
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     process: RuntimeFsBridge);
@@ -223,7 +269,15 @@ export declare class ProcessView implements VFS {
     touch(path: string): Promise<void>;
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
     readFileUncached(path: string): Promise<Uint8Array>;
-    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
+     *
+     * One whole-file read through the normal credentialed namespace view, with
+     * the LRU bypassed: the image is read once for a facet's module map, never
+     * re-read from this isolate. One read is also one coherent image on every
+     * backend — no ranges to version against each other, no capability to
+     * probe. A caller mutating the returned buffer cannot disturb the store:
+     * the uncached path hands back its own buffer.
+     */
     readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`

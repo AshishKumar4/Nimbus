@@ -70,7 +70,7 @@ try {
 
   const servedByDevServer = new RegExp(`<base href="/s/${sid}/preview/`);
   const before = await fetch(`${BASE}/s/${sid}/preview/`, {
-    redirect: 'manual', headers: requestHeaders(), signal: AbortSignal.timeout(POLL_BUDGET_MS),
+    redirect: 'manual', headers: requestHeaders({}, sid), signal: AbortSignal.timeout(POLL_BUDGET_MS),
   });
   const beforeBody = await before.text();
   const sawPlaceholder = before.status === 200 && !servedByDevServer.test(beforeBody);
@@ -85,7 +85,7 @@ try {
     const requestStartedMs = performance.now() - t0;
     try {
       const r = await fetch(`${BASE}/s/${sid}/preview/`, {
-        redirect: 'manual', headers: requestHeaders(),
+        redirect: 'manual', headers: requestHeaders({}, sid),
         signal: AbortSignal.timeout(Math.max(1, Math.ceil(POLL_BUDGET_MS - requestStartedMs))),
       });
       const body = await r.text();

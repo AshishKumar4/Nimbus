@@ -41,7 +41,7 @@ async function fetchPrinted(url, path = '') {
       .catch((e) => ({ status: 0, text: async () => String(e) }));
     return { status: r.status, body: await r.text().catch(() => '') };
   }
-  const r = await fetch(`${url}${path}`, { redirect: 'manual', headers: requestHeaders() });
+  const r = await fetch(`${url}${path}`, { redirect: 'manual', headers: requestHeaders({}, sid) });
   return { status: r.status, body: await r.text().catch(() => '') };
 }
 async function poll(url, needle, budgetMs, path = '') {

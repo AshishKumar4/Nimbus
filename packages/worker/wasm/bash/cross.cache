@@ -11,7 +11,6 @@
 # loading this file, other *unset* `ac_cv_foo' will be assigned the
 # following values.
 
-ac_cv_build=${ac_cv_build=x86_64-pc-linux-gnux32}
 ac_cv_c_bigendian=${ac_cv_c_bigendian=no}
 ac_cv_c_char_unsigned=${ac_cv_c_char_unsigned=no}
 ac_cv_c_compiler_gnu=${ac_cv_c_compiler_gnu=yes}
@@ -22,38 +21,6 @@ ac_cv_c_restrict=${ac_cv_c_restrict=__restrict__}
 ac_cv_c_stringize=${ac_cv_c_stringize=yes}
 ac_cv_c_undeclared_builtin_options=${ac_cv_c_undeclared_builtin_options='none needed'}
 ac_cv_c_volatile=${ac_cv_c_volatile=yes}
-ac_cv_env_CC_FOR_BUILD_set=
-ac_cv_env_CC_FOR_BUILD_value=
-ac_cv_env_CC_set=set
-ac_cv_env_CC_value=/tmp/claude-1000/-home-mrwhite0racle-Nimbus/0b47f917-3635-4376-b32a-9347497a44f5/scratchpad/bashwork/wasi-sdk-25.0-x86_64-linux/bin/wasm32-wasi-clang
-ac_cv_env_CFLAGS_FOR_BUILD_set=
-ac_cv_env_CFLAGS_FOR_BUILD_value=
-ac_cv_env_CFLAGS_set=set
-ac_cv_env_CFLAGS_value='-D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -O2'
-ac_cv_env_CPPFLAGS_FOR_BUILD_set=
-ac_cv_env_CPPFLAGS_FOR_BUILD_value=
-ac_cv_env_CPPFLAGS_set=set
-ac_cv_env_CPPFLAGS_value=-D_GNU_SOURCE
-ac_cv_env_CPP_set=
-ac_cv_env_CPP_value=
-ac_cv_env_DEBUGGER_START_FILE_set=
-ac_cv_env_DEBUGGER_START_FILE_value=
-ac_cv_env_LDFLAGS_FOR_BUILD_set=
-ac_cv_env_LDFLAGS_FOR_BUILD_value=
-ac_cv_env_LDFLAGS_set=set
-ac_cv_env_LDFLAGS_value='-lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman'
-ac_cv_env_LIBS_set=
-ac_cv_env_LIBS_value=
-ac_cv_env_YACC_set=
-ac_cv_env_YACC_value=
-ac_cv_env_YFLAGS_set=
-ac_cv_env_YFLAGS_value=
-ac_cv_env_build_alias_set=
-ac_cv_env_build_alias_value=
-ac_cv_env_host_alias_set=set
-ac_cv_env_host_alias_value=wasm32-wasi
-ac_cv_env_target_alias_set=
-ac_cv_env_target_alias_value=
 ac_cv_func___argz_count=${ac_cv_func___argz_count=no}
 ac_cv_func___argz_next=${ac_cv_func___argz_next=no}
 ac_cv_func___argz_stringify=${ac_cv_func___argz_stringify=no}
@@ -323,18 +290,6 @@ ac_cv_path_SED=${ac_cv_path_SED=/usr/bin/sed}
 ac_cv_path_XGETTEXT=${ac_cv_path_XGETTEXT=/usr/bin/xgettext}
 ac_cv_path_install=${ac_cv_path_install='/usr/bin/install -c'}
 ac_cv_path_mkdir=${ac_cv_path_mkdir=/usr/bin/mkdir}
-ac_cv_prog_AR=${ac_cv_prog_AR=ar}
-ac_cv_prog_CC=${ac_cv_prog_CC=/tmp/claude-1000/-home-mrwhite0racle-Nimbus/0b47f917-3635-4376-b32a-9347497a44f5/scratchpad/bashwork/wasi-sdk-25.0-x86_64-linux/bin/wasm32-wasi-clang}
-ac_cv_prog_CPP=${ac_cv_prog_CPP='/tmp/claude-1000/-home-mrwhite0racle-Nimbus/0b47f917-3635-4376-b32a-9347497a44f5/scratchpad/bashwork/wasi-sdk-25.0-x86_64-linux/bin/wasm32-wasi-clang -E'}
-ac_cv_prog_INTLBISON=${ac_cv_prog_INTLBISON=bison}
-ac_cv_prog_YACC=${ac_cv_prog_YACC='bison -y'}
-ac_cv_prog_ac_ct_AR=${ac_cv_prog_ac_ct_AR=ar}
-ac_cv_prog_ac_ct_RANLIB=${ac_cv_prog_ac_ct_RANLIB=ranlib}
-ac_cv_prog_cc_c11=${ac_cv_prog_cc_c11=}
-ac_cv_prog_cc_g=${ac_cv_prog_cc_g=yes}
-ac_cv_prog_cc_stdc=${ac_cv_prog_cc_stdc=}
-ac_cv_prog_gcc_traditional=${ac_cv_prog_gcc_traditional=no}
-ac_cv_prog_make_make_set=${ac_cv_prog_make_make_set=yes}
 ac_cv_safe_to_define___extensions__=${ac_cv_safe_to_define___extensions__=yes}
 ac_cv_search_opendir=${ac_cv_search_opendir='none required'}
 ac_cv_should_define__xopen_source=${ac_cv_should_define__xopen_source=no}

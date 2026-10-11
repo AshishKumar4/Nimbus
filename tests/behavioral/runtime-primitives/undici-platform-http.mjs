@@ -80,7 +80,7 @@ try {
   await t.run(heredocCommand('/home/user/undici-server.js', server), 30_000);
   const boot = stripAnsi((await t.run('node /home/user/undici-server.js', 90_000)).output);
   a.check('in-session server is listening',
-    /LISTENING 7311|bin started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
+    /LISTENING 7311|facet started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
   await sleep(3000);
 
   await t.run(heredocCommand('/home/user/undici-esm.mjs', esmProbe), 30_000);

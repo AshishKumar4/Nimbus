@@ -96,14 +96,15 @@ const FILES = {
   'node_modules/late-dualuser/index.js': 'import dual from "late-dual";\nexport default dual;\n',
   'dual.mjs': 'const mod = await import(["late", "dualuser"].join("-"));\nconsole.log("DUAL " + mod.default);\n',
   // The program's own miss, made before the prefetch reads the same file:
-  // the prefetch's read never answers it (review of 1840bc205).
+  // the prefetch's read never answers it (review of 1840bc205). The module,
+  // not its package.json: every manifest is held from boot.
   'node_modules/late-kept/package.json': JSON.stringify({ name: 'late-kept', type: 'module', exports: './index.js' }),
   'node_modules/late-kept/index.js': 'export const kept = "kept";\n',
   'kept.mjs': [
     'import fs from "node:fs";',
     'const name = ["late", "kept"].join("-");',
     'let read = "read";',
-    'try { fs.readFileSync("node_modules/" + name + "/package.json", "utf8"); } catch (e) { read = e.code; }',
+    'try { fs.readFileSync("node_modules/" + name + "/index.js", "utf8"); } catch (e) { read = e.code; }',
     'const mod = await import(name);',
     'console.log("KEPT " + read + " " + mod.kept);',
   ].join('\n'),
@@ -161,12 +162,12 @@ try {
       assert.equal(run.status, 0, `${entry}: ${run.stdout}`);
     }
 
-    // The program missed late-kept's package.json itself, and carried on; the
+    // The program missed late-kept's module itself, and carried on; the
     // prefetch's own later read of it does not answer that miss, so the exit
     // report still names it, as it names any read the program was refused.
     const kept = await terminal.run(`cd ${W} && node kept.mjs`);
     assert.match(kept.stdout, /^KEPT EAGAIN kept$/m, kept.stdout);
-    assert.match(kept.stdout, /read synchronously but their content was never staged[\s\S]*late-kept\/package\.json/, `the program's own miss stays in its exit report:\n${kept.stdout}`);
+    assert.match(kept.stdout, /read synchronously but their content was never staged[\s\S]*late-kept\/index\.js/, `the program's own miss stays in its exit report:\n${kept.stdout}`);
     assert.notEqual(kept.status, 0, kept.stdout);
   } finally {
     await terminal.close();

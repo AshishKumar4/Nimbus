@@ -54,10 +54,9 @@
 //   --list             print the selection (name, tier, serial) and exit.
 //   --json PATH        also write every file's verdict, wall time and CPU
 //                      time to PATH, and a failing file's whole output. CPU is the case's whole process tree,
-//                      read from its cgroup under run-bounded or
-//                      NIMBUS_TEST_CGROUP (null otherwise); outside
-//                      run-bounded it also lists the commands the case ran
-//                      (seen every 25 ms), e.g. workerd.
+//                      read from its cgroup under NIMBUS_TEST_CGROUP
+//                      (null otherwise); it also lists the commands the
+//                      case ran (seen every 25 ms), e.g. workerd.
 //
 // Each file runs with its own empty TMPDIR (and TMP, TEMP). A file that
 // leaves anything in it FAILs, naming what it left, and the leftovers are
@@ -228,11 +227,9 @@ console.log(
   + ` (jobs ${JOBS}${serialFiles.length > 0 ? `, ${serialFiles.length} run alone` : ''})`,
 );
 if (TIER !== 'all') console.log(`unit/run-all — tier ${TIER}`);
-console.log(process.env.NIMBUS_TEST_PID_ISOLATION === '1'
-  ? 'unit/run-all — isolation: per-case cgroup + PID namespace'
-  : process.env.NIMBUS_TEST_CGROUP
-    ? `unit/run-all — isolation: per-case cgroup under ${process.env.NIMBUS_TEST_CGROUP}`
-    : 'unit/run-all — isolation: portable cleanup only; use /mnt/scratch/nimbus/run-bounded for local verification');
+console.log(process.env.NIMBUS_TEST_CGROUP
+  ? `unit/run-all — isolation: per-case cgroup under ${process.env.NIMBUS_TEST_CGROUP}`
+  : 'unit/run-all — isolation: portable cleanup only (no NIMBUS_TEST_CGROUP: no memory bound, and a setsid descendant can outlive its case)');
 
 // ── Execution ────────────────────────────────────────────────────────
 
@@ -336,7 +333,7 @@ const JSON_PATH = flagValue('--json', 'NIMBUS_UNIT_JSON') || undefined;
 if (JSON_PATH !== undefined) {
   writeFileSync(JSON_PATH, `${JSON.stringify({
     version: 1, tier: TIER, jobs: JOBS, timeoutMs: TIMEOUT_MS,
-    isolation: process.env.NIMBUS_TEST_PID_ISOLATION === '1' ? 'systemd' : process.env.NIMBUS_TEST_CGROUP ? 'cgroup' : 'portable',
+    isolation: process.env.NIMBUS_TEST_CGROUP ? 'cgroup' : 'portable',
     elapsedMs: Date.now() - t0, pass, fail,
     files: results.map(({ elapsed, ...r }) => r),
   }, null, 1)}\n`);

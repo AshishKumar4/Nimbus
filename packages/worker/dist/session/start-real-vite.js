@@ -24,6 +24,7 @@ import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-ha
 import { acquireHeavyAlloc } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { registerServingPort } from './serving-port.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /** What a dev server's pid is persisted as, and given back on restore. */
 export function devServerIdentity(entry) {
     return { cwd: entry.cwd, argv: entry.argv, cred: entry.cred, ...execIdField(entry) };
@@ -73,9 +74,10 @@ export async function startRealVite(self, opts) {
         // Extra synthetic files to seed into the facet's fs snapshot (e.g.
         // plugin-react reads ./refreshUtils.js at transform time).
         const extraSyntheticFiles = {};
-        const cfgPath = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']
+        // A read of the project waits for a delegation it meets (withRecall; the bundle's reads wait in the build).
+        const cfgPath = await withRecall(() => ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']
             .map((name) => opts.configDir + '/' + name)
-            .find((p) => callerFs.exists(p)) ?? null;
+            .find((p) => callerFs.exists(p)) ?? null);
         if (cfgPath) {
             try {
                 if (!self.esbuildService)

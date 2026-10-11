@@ -142,8 +142,6 @@ export declare function ensureLogJanitor(host: HibHost, ctx: TimerContext): void
 export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
 export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
-/** Where a host's attached clients are counted: its hibernatable sockets. */
-export type KeepaliveClients = Partial<Pick<DurableObjectState, 'getWebSockets'>>;
 /**
  * W1: arm the keep-alive alarm cycle for this instance, from the spawn hook
  * of a LONG-RUNNING process only.
@@ -174,7 +172,7 @@ export declare function armResidentKeepalive(host: ResidentKeepaliveHost, schedu
  * abandoned dev server did exactly that. The next resident spawn, or the
  * client's return, re-arms the cycle.
  */
-export declare function residentKeepaliveFired(host: ResidentKeepaliveHost, ctx: KeepaliveClients, now: number): number | null;
+export declare function residentKeepaliveFired(host: ResidentKeepaliveHost, now: number): number | null;
 /**
  * W1: a client reached the host. Records the moment, and re-arms the
  * keep-alive if a resident is running and the cycle had lapsed: a host
@@ -186,12 +184,13 @@ export declare function ensureResidentKeepalive(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any): void;
 /**
- * Whether a client is here: a hibernatable socket attached (terminal,
- * process log, file watch) or a request within the detached grace. The
- * keep-alive re-arms on this and on a running resident, never on the
- * resident alone.
+ * Only traffic delivered through this runtime's client boundaries counts.
+ * A host's socket table belongs to its embedder, not to Nimbus, and even an
+ * attached runtime terminal cannot renew an alarm forever without traffic.
+ * Attach/input/port requests renew this bounded interest; alarms and facet
+ * supervisor calls never do.
  */
-export declare function residentClientPresent(host: ResidentKeepaliveHost, ctx: KeepaliveClients, now: number): boolean;
+export declare function residentClientPresent(host: ResidentKeepaliveHost, now: number): boolean;
 /** W1: a client reached the session DO (see noteResidentClient). */
 export declare function noteClientActivity(host: HibHost, ctx: any): void;
 /**
@@ -200,7 +199,7 @@ export declare function noteClientActivity(host: HibHost, ctx: any): void;
  * reasons so a rollback from a future deploy that added new reasons doesn't
  * leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive' | 'hosting-watch';
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if
@@ -217,8 +216,11 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
+ *   - `'hosting-watch'` → hostingWatch (fabric PeerHost.watchFired):
+ *     a host holding processes for other sessions tells them of its own
+ *     reset; re-arms while it holds one.
  */
-export declare function dispatchAlarm(host: HibHost, ctx: any, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo): Promise<void>;
+export declare function dispatchAlarm(host: HibHost, ctx: any, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo, hostingWatch?: () => Promise<number | null>): Promise<void>;
 /**
  * W9: synchronous flush of the process-log ring on session close.
  * Wraps `processes.flushLogs()` in a try/catch so a flush failure

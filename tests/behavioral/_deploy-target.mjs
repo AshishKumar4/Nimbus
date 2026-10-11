@@ -21,11 +21,12 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Terminal, stripAnsi } from './_driver.mjs';
-import { deletionResult } from './_ledger.mjs';
+import { createProbeTarget } from './_session-transport.mjs';
+import { NIMBUS_STATE } from '../../scripts/ci/lib/state-dir.mjs';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -199,7 +200,7 @@ export function apiToken({ cwd, account }) {
  * One API call under the account. Answers `{ ok, status, result, errors }`;
  * a transport failure throws.
  */
-export async function cfApi(path, { account, token, method = 'GET', body, contentType = 'application/json' }) {
+export async function cfApi(path, { account, token, method = 'GET', body, contentType = 'application/json', signal }) {
   const response = await fetch(`${CF_API}/accounts/${account}${path}`, {
     method,
     headers: {
@@ -207,8 +208,13 @@ export async function cfApi(path, { account, token, method = 'GET', body, conten
       ...(body === undefined ? {} : { 'Content-Type': contentType }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
-  const json = await response.json().catch(() => ({}));
+  const json = await response.json().catch((error) => {
+    if (signal?.aborted) throw signal.reason ?? error;
+    return {};
+  });
+  signal?.throwIfAborted();
   return { ok: response.ok && json.success === true, status: response.status, result: json.result ?? null, errors: json.errors ?? [] };
 }
 
@@ -220,19 +226,22 @@ export async function cfApi(path, { account, token, method = 'GET', body, conten
  * browsers, so probes keep using the bearer token instead.
  */
 export async function createSession(base, jwt, { signal } = {}) {
-  const response = await fetch(`${base}/new`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { Authorization: `Bearer ${jwt}` },
-    signal,
-  });
-  const location = response.headers.get('location');
-  if (response.status !== 302 || !location) {
-    throw new Error(`POST /new → ${response.status} ${await response.text().catch(() => '')}`);
+  return createProbeTarget({ base, token: jwt }).create({ signal });
+}
+
+// Old replies persisted for 25 s; complete cycles measured as fast as 452 ms.
+// 64 exceeds ceil(25_000 / 452) = 56. This is a count, never a settle timer.
+export const READINESS_CYCLES = 64;
+// tw-hm-npm, 2026-10-07: slowest full cycle 2.85 s × 64 ≈ 182 s.
+// 240 s covers that plus the measured 25 s deploy overlap and 33 s headroom.
+export const READINESS_BUDGET_MS = 240_000;
+
+export class TargetNotReadyError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'TargetNotReadyError';
+    this.exitCode = 2;
   }
-  const match = location.match(/\/s\/([^/?]+)/);
-  if (!match) throw new Error(`POST /new → unexpected Location: ${location}`);
-  return { sessionId: match[1], attachPath: location };
 }
 
 /**
@@ -241,38 +250,45 @@ export async function createSession(base, jwt, { signal } = {}) {
  * result. A failed attempt owns its session until cleanup is acknowledged;
  * never mint another one while the previous cleanup is unconfirmed.
  */
-export async function waitForTarget(base, jwt, timeoutMs = 90_000) {
+export async function waitForTarget(base, jwt, timeoutMs = READINESS_BUDGET_MS, versionId) {
+  if (!versionId) throw new TargetNotReadyError('readiness requires this upload\'s version id receipt');
   const deadline = Date.now() + timeoutMs;
-  const headers = { Authorization: `Bearer ${jwt}` };
+  const target = createProbeTarget({ base, token: jwt });
   const pendingCleanup = new Set();
+  const requireVersion = (observed, stage) => {
+    if (observed !== versionId) throw new Error(`${stage} answered version ${JSON.stringify(observed)}, expected uploaded version ${versionId}`);
+  };
   const budget = (max) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('readiness deadline exceeded');
     return Math.min(max, remaining);
   };
   const destroy = async (sid) => {
-    // Still attempt cleanup when a terminal consumed the readiness budget.
+    // Readiness is bounded above; cleanup may use at most 10 s afterwards.
     const timeout = Math.max(1_000, Math.min(10_000, deadline - Date.now()));
-    const result = await deletionResult(await fetch(`${base}/s/${encodeURIComponent(sid)}/`, {
-      method: 'DELETE',
-      headers: { ...headers, 'X-Nimbus-Cleanup-Reason': 'target-readiness' },
-      signal: AbortSignal.timeout(timeout),
-    }));
+    const result = await target.delete(sid, { reason: 'target-readiness', signal: AbortSignal.timeout(timeout) });
     if (!result.ok) {
       throw new Error(`DELETE ${sid} → ${result.status}: destroy unconfirmed: ${result.body.slice(0, 300)}`);
     }
     pendingCleanup.delete(sid);
+    requireVersion(result.versionId, `DELETE ${sid}`);
   };
   let last = '';
+  let consecutive = 0;
   while (Date.now() < deadline) {
     let sid, terminal, ready = false;
     try {
       for (const pending of pendingCleanup) await destroy(pending);
-      const session = await createSession(base, jwt, { signal: AbortSignal.timeout(budget(15_000)) });
+      const session = await target.create({ signal: AbortSignal.timeout(budget(15_000)) });
       sid = session.sessionId;
       pendingCleanup.add(sid);
-      terminal = new Terminal(sid, { base, wsOptions: { headers } });
-      await terminal.connect(budget(15_000));
+      requireVersion(session.versionId, 'POST /new');
+      terminal = new Terminal(sid, { base, wsOptions: { headers: session.headers } });
+      let upgradeVersion = null;
+      const opened = terminal.connect(budget(15_000));
+      terminal.ws.on('upgrade', (response) => { upgradeVersion = response.headers['x-nimbus-probe-version'] ?? null; });
+      await opened;
+      requireVersion(upgradeVersion, 'terminal WebSocket upgrade');
       await terminal.waitForPrompt(budget(30_000));
       // The expected full marker is absent from the source, so a terminal
       // echo cannot masquerade as successful command execution.
@@ -294,12 +310,17 @@ export async function waitForTarget(base, jwt, timeoutMs = 90_000) {
         }
       }
     }
-    if (ready && pendingCleanup.size === 0) return;
+    if (ready && pendingCleanup.size === 0 && Date.now() < deadline) {
+      consecutive++;
+      if (consecutive === READINESS_CYCLES) return { versionId, cycles: consecutive };
+      continue;
+    }
+    consecutive = 0;
     const delay = Math.min(3_000, Math.max(0, deadline - Date.now()));
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
   }
   const unresolved = pendingCleanup.size > 0 ? `; unconfirmed cleanup sessions: ${[...pendingCleanup].join(', ')}` : '';
-  throw new Error(`target never became ready within ${timeoutMs}ms: ${last}${unresolved}`);
+  throw new TargetNotReadyError(`target never completed ${READINESS_CYCLES} consecutive healthy cycles on uploaded version ${versionId} within ${timeoutMs}ms: ${last}${unresolved}`);
 }
 
 // ── State ────────────────────────────────────────────────────────────
@@ -317,10 +338,7 @@ export async function waitForTarget(base, jwt, timeoutMs = 90_000) {
 // secret and pushed it — invalidating every token the other checkouts
 // were mid-suite with. Same host, same Worker, three answers.
 
-export const MACHINE_STATE_DIR = join(
-  process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'),
-  'nimbus',
-);
+export const MACHINE_STATE_DIR = NIMBUS_STATE;
 
 /**
  * Refuse to mint a new signing secret for a target that is already

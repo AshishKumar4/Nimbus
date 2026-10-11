@@ -1,5 +1,5 @@
 import { ObjectConstructor, SafeWeakMap, TypeError, accessorDescriptor, contains, copyList, createDataProperty, dataDescriptor, defineOrThrow, isEnumerableOwn, listOf, objectFreeze, reflectApply, reflectConstruct, reflectDeleteProperty, reflectGet, reflectHas, reflectOwnKeys, stringOf, symbolUnscopables, toObject, } from './intrinsics.js';
-import { Completion, isObject, operators } from './runtime.js';
+import { Completion, isObject } from './runtime.js';
 const constructors = new SafeWeakMap();
 export function isConstructorValue(value) {
     if (typeof value !== 'function')
@@ -18,11 +18,11 @@ export function isConstructorValue(value) {
     }
     return known;
 }
-export function toPropertyKey(value) {
+export function toPropertyKey(ops, value) {
     if (typeof value === 'string' || typeof value === 'symbol')
         return value;
     if (isObject(value))
-        return operators().propertyKey(value);
+        return ops.propertyKey(value);
     return stringOf(value);
 }
 /** An array literal's array: `elements`, with no element at each index of `holes` (an elision). */
@@ -95,8 +95,8 @@ export function withHas(target, name) {
     return !(isObject(unscopables) && reflectGet(unscopables, name));
 }
 /** A key read and then written converts once, as the reference does. */
-export function keyOnce(key) {
-    return typeof key === 'string' || typeof key === 'number' || typeof key === 'symbol' ? key : toPropertyKey(key);
+export function keyOnce(ops, key) {
+    return typeof key === 'string' || typeof key === 'number' || typeof key === 'symbol' ? key : toPropertyKey(ops, key);
 }
 /** A body's result as a completion signal: the completion, or undefined for a value. */
 export function signalOf(value) {

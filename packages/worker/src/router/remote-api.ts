@@ -3,7 +3,10 @@ import {
   parseSessionRoute,
 } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
-import { z } from 'zod/v4';
+import {
+  SessionRequestSchema, type SessionRequest,
+  type SessionRouterRpc, type SessionRunCodeOptions, type SessionAppTarget,
+} from '@nimbus-sh/core/runtime/session-protocol.js';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import {
@@ -18,43 +21,8 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
-
-export type NimbusRuntimeName =
-  | 'node'
-  | 'bun'
-  | 'npm'
-  | 'git'
-  | 'python'
-  | 'ruby'
-  | 'clang'
-  | 'shell'
-  | (string & {});
-
-export interface NimbusRuntimePolicy {
-  preinstall?: string[];
-  onDemand?: boolean;
-  allow?: NimbusRuntimeName[];
-}
-
-export interface NimbusSandboxProfile {
-  root?: string;
-  runtimes?: NimbusRuntimePolicy;
-  tools?: {
-    namespace?: string;
-    kind?: string;
-  };
-  preview?: {
-    baseUrl?: string;
-    pathStyle?: boolean;
-  };
-}
-
-export interface NimbusConfig {
-  endpoint?: string;
-  /** Deployment's `NIMBUS_PREVIEW_HOST_SUFFIX`. See the SDK's `NimbusConfig`. */
-  previewHostSuffix?: string;
-  sandboxes?: Record<string, NimbusSandboxProfile>;
-}
+import { codeRuntimeRequirement, runtimePolicyError, type NimbusConfig, type NimbusSandboxProfile, type NimbusRuntimeAction } from '@nimbus-sh/config/sandbox';
+export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, NimbusRuntimeName } from '@nimbus-sh/config/sandbox';
 
 export interface NimbusRemoteApiConfig {
   /** Enable the remote programmatic sandbox API. */
@@ -78,52 +46,9 @@ export interface NimbusSdkRouterConfig {
   config?: NimbusConfig;
 }
 
-interface NimbusSessionRpcStub {
-  _rpcReady(options?: { preinstall?: string[] }): Promise<unknown>;
-  _rpcBootProbe(): Promise<unknown>;
-  _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
-  _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<unknown>;
-  _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<unknown>;
-  _rpcReadFile(path: string): Promise<unknown>;
-  _rpcReadFileBytes(path: string): Promise<unknown>;
-  _rpcWriteFile(path: string, content: string | Uint8Array): Promise<unknown>;
-  _rpcStat(path: string): Promise<unknown>;
-  _rpcLstat(path: string): Promise<unknown>;
-  _rpcReaddir(path: string): Promise<unknown>;
-  _rpcRename(from: string, to: string): Promise<unknown>;
-  _rpcChmod(path: string, mode: number): Promise<unknown>;
-  _rpcFsReadRange(path: string, offset: number, length: number): Promise<unknown>;
-  _rpcExists(path: string): Promise<unknown>;
-  _rpcMkdir(path: string): Promise<unknown>;
-  _rpcDeleteFile(path: string, options?: Record<string, unknown>): Promise<unknown>;
-  _rpcInstallRuntime(spec: string, options?: Record<string, unknown>): Promise<unknown>;
-  _rpcEnsureRuntimes(specs: string[], options?: Record<string, unknown>): Promise<unknown>;
-  _rpcListRuntimes(): Promise<unknown>;
-  _rpcListProcesses(): Promise<unknown>;
-  _rpcKillProcess(pid: number): Promise<unknown>;
-  _rpcWriteProcessInput(pid: number, data: string): Promise<unknown>;
-  _rpcEndProcessInput(pid: number): Promise<unknown>;
-  _rpcResizeProcess(pid: number, size: { columns: number; rows: number }): Promise<unknown>;
-  _rpcSignalProcess(pid: number, signal: string): Promise<unknown>;
-  _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<unknown>;
-  _rpcListPorts(): Promise<unknown>;
-  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<unknown>;
-  _rpcEnsureDurableApp(input: { owner?: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<unknown>;
-  _rpcRemoveDurableApp(owner: string): Promise<unknown>;
-  _rpcExposeApp(target: RemoteAppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<unknown>;
-  _rpcListApps(): Promise<unknown>;
-  _rpcRotateLink(target: RemoteAppTarget): Promise<unknown>;
-  _rpcRemoveApp(target: RemoteAppTarget): Promise<unknown>;
-  _rpcUnexposePort(port: number): Promise<unknown>;
-  _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
-}
-
-/** An app target on the wire: a port, a pid, a name/owner, or the explicit object forms. */
-type RemoteAppTarget = number | string | { port: number } | { pid: number } | { name: string } | { owner: string };
-
 interface NimbusSessionNamespace {
   idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId): NimbusSessionRpcStub;
+  get(id: DurableObjectId): SessionRouterRpc;
 }
 
 interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
@@ -132,8 +57,8 @@ interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
 
 interface RemoteContext {
   env: NimbusRemoteEnv;
-  stub: NimbusSessionRpcStub;
-  body: RemoteRpcBody;
+  stub: SessionRouterRpc;
+  body: SessionRequest;
   profileName: string;
   profile: NimbusSandboxProfile;
   root: string;
@@ -146,19 +71,6 @@ interface RemoteAuthResult {
 }
 
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
-
-const RemoteRpcBodySchema = z.object({
-  profile: z.string().optional(),
-  tenant: z.string().optional(),
-  subject: z.string().optional(),
-  root: z.string().optional(),
-  op: z.string().optional(),
-  args: z.array(z.unknown()).optional(),
-}).passthrough();
-
-type RemoteRpcBody = z.infer<typeof RemoteRpcBodySchema>;
-
-
 
 export async function handleNimbusRemoteApi(
   request: Request,
@@ -189,13 +101,13 @@ export async function handleNimbusRemoteApi(
     return remoteJson({ ok: false, error: 'Invalid sandbox id', code: 'E_SANDBOX_ID' }, 400);
   }
 
-  let body: RemoteRpcBody;
+  let body: SessionRequest;
   if (destroyingRoot) {
     const reason = request.headers.get('X-Nimbus-Cleanup-Reason');
     body = { op: 'destroy', args: [reason === null ? {} : { reason }] };
   } else {
     try {
-      body = RemoteRpcBodySchema.parse(WireDecoder.parse(await request.json()));
+      body = SessionRequestSchema.parse(WireDecoder.parse(await request.json()));
     } catch (e: unknown) {
       return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
     }
@@ -372,6 +284,8 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     case 'readFile':
       fileOptions(args[1]);
       return ctx.stub._rpcReadFile(stringArg(args[0], 'path'));
+    case 'detachExec':
+      return ctx.stub._rpcDetachExec(stringArg(args[0], 'detachId'));
     case 'readFileBytes':
       fileOptions(args[1]);
       return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
@@ -384,6 +298,9 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     case 'lstat':
       fileOptions(args[1]);
       return ctx.stub._rpcLstat(stringArg(args[0], 'path'));
+    case 'readlink':
+      fileOptions(args[1]);
+      return ctx.stub._rpcReadlink(stringArg(args[0], 'path'));
     case 'rename':
       fileOptions(args[2]);
       return ctx.stub._rpcRename(stringArg(args[0], 'from'), stringArg(args[1], 'to'));
@@ -484,7 +401,7 @@ function exposeOptions(options: Record<string, unknown>): { visibility?: 'scoped
   };
 }
 
-function appTargetArg(value: unknown): RemoteAppTarget {
+function appTargetArg(value: unknown): SessionAppTarget {
   if (typeof value === 'number') return numberArg(value, 'target');
   if (typeof value === 'string') return stringArg(value, 'target');
   const target = objectArg(value);
@@ -506,7 +423,7 @@ function requireAnyScope(ctx: RemoteContext, scopes: readonly string[]): void {
   );
 }
 
-function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown> {
+function execOptions(ctx: RemoteContext, value: unknown): SessionRunCodeOptions {
   const options = objectArg(value);
   // The remote boundary authenticates a SESSION, not a user inside it, so a
   // token holder does not get to name the uid its command runs as. Refused
@@ -515,6 +432,11 @@ function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown
   // and is trusted with `cred` the same way it is trusted with kernel writes.
   if (options.cred !== undefined) {
     throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+  }
+  if (options.detach !== undefined) throw apiError('detach must be sent by invocation id over the remote API', 'E_ARG_SHAPE', 400);
+  if (options.detachId !== undefined) {
+    try { parseExecId(options.detachId); }
+    catch (error: unknown) { throw apiError(errorMessage(error), 'E_ARG_SHAPE', 400); }
   }
   if (options.execId !== undefined) {
     try {
@@ -566,42 +488,17 @@ function assertRuntimeForLanguage(
   language: string,
   install: unknown,
 ): void {
-  if (language === 'python' || language === 'ruby') {
-    assertRuntimeAllowed(ctx, language, install === 'ifMissing' ? 'onDemand' : 'use');
-  } else if (language === 'shell') {
-    assertRuntimeAllowed(ctx, 'shell', 'use');
-  } else if (language === 'javascript' || language === 'typescript') {
-    assertRuntimeAllowed(ctx, 'node', 'use');
-  }
+  const requirement = codeRuntimeRequirement(language, install);
+  if (requirement) assertRuntimeAllowed(ctx, requirement.spec, requirement.action);
 }
 
 function assertRuntimeAllowed(
   ctx: RemoteContext,
   spec: string,
-  action: 'preinstall' | 'onDemand' | 'use',
+  action: NimbusRuntimeAction,
 ): void {
-  const policy = ctx.profile.runtimes;
-  const name = runtimeName(spec);
-  if (policy?.allow && !policy.allow.includes(name)) {
-    throw apiError(
-      `Nimbus runtime '${name}' is not allowed by sandbox profile '${ctx.profileName}'`,
-      'E_RUNTIME_NOT_ALLOWED',
-      403,
-    );
-  }
-  if (action !== 'onDemand' || policy?.onDemand !== false) return;
-  const preinstalled = new Set((policy.preinstall ?? []).map(runtimeName));
-  if (!preinstalled.has(name)) {
-    throw apiError(
-      `Nimbus runtime '${name}' is not preinstalled and on-demand runtime installs are disabled by sandbox profile '${ctx.profileName}'`,
-      'E_RUNTIME_ON_DEMAND_DISABLED',
-      403,
-    );
-  }
-}
-
-function runtimeName(spec: string): NimbusRuntimeName {
-  return String(spec).split('@')[0] as NimbusRuntimeName;
+  const failure = runtimePolicyError(ctx.profile.runtimes, spec, action, ctx.profileName);
+  if (failure) throw apiError(failure.message, failure.code, 403);
 }
 
 function objectArg(value: unknown): Record<string, unknown> {
@@ -651,6 +548,9 @@ function isApiError(value: unknown): value is ApiError {
 
 function remoteError(value: unknown): ApiError {
   if (isApiError(value)) return value;
+  // The session holds what it cannot let go of (a destroy that stopped its
+  // work and still found a lease): the request conflicts with its state.
+  if (value instanceof Error && Reflect.get(value, 'code') === 'EBUSY') return apiError(errorMessage(value), 'EBUSY', 409);
   return apiError(errorMessage(value), 'E_NIMBUS_REMOTE_RPC', 500);
 }
 

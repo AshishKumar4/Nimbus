@@ -25,6 +25,7 @@ import {
   typescriptFallbackCandidates,
 } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { packageTypeOf, type PackageType } from './module-format.js';
 
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
@@ -34,6 +35,7 @@ import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 export interface RequireFs {
   exists(path: string): Awaitable<boolean>;
   isDirectory(path: string): Awaitable<boolean>;
+  /** The file decoded as UTF-8 with TextDecoder's defaults (an invalid sequence replaced, a leading BOM dropped). */
   readFileString(path: string): Awaitable<string>;
   stat(path: string): Awaitable<{ size: number } | null>;
   /** Revalidate held content through the same principal without rereading its bytes. */
@@ -79,8 +81,25 @@ export function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string,
   return sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
 }
 
+const fileTextDecoder = new TextDecoder();
+
+/** A file's bytes as RequireFs.readFileString answers them. */
+function fileText(bytes: Uint8Array): string {
+  return fileTextDecoder.decode(bytes);
+}
+
+/**
+ * The text RequireFs.readFileString answers for a file whose content is
+ * `cell`, a cell a module map already holds: a text cell is that text; a
+ * byte cell (a file that is not valid UTF-8, facets/manager.ts
+ * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
+ * and compares a held cell through this, in the one representation it reads.
+ */
+export function heldCellText(cell: string | Uint8Array): string {
+  return typeof cell === 'string' ? cell : fileText(cell);
+}
+
 export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
-  const decoder = new TextDecoder();
   const absent = <T>(read: () => Awaitable<T | null>): Promise<T | null> => (async () => {
     try {
       return await read();
@@ -97,7 +116,7 @@ export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
     readFileString: async (path) => {
       const bytes = await readBytes(path);
       if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return decoder.decode(bytes);
+      return fileText(bytes);
     },
     stat,
     assertReadable: path => bridge.access(path, 4),
@@ -346,6 +365,20 @@ export async function resolveRequireEx(
 }
 
 /**
+ * Whether a package.json is at `path` for a package scope walk. One the
+ * user may not look up is none, as Node's lookup reads it: a device mount
+ * shows nothing above the directory its user consented to.
+ */
+export async function packageJsonVisible(vfs: RequireFs, path: string): Promise<boolean> {
+  try {
+    return await vfs.exists(path);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EACCES') return false;
+    throw error;
+  }
+}
+
+/**
  * Node's "package scope" of a directory (`readPackageScope`): the nearest
  * enclosing package.json walking up from `fromDir`. The FIRST one found is
  * the scope, even when it lacks the field the caller wants — the imports
@@ -367,7 +400,7 @@ async function nearestPackageScope(
     if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
     const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
     if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
-    if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
+    if ((await packageJsonVisible(vfs, pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
       let pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null = null;
       const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
       try { pkg = JSON.parse(text ?? ''); } catch { /* malformed */ }
@@ -377,6 +410,15 @@ async function nearestPackageScope(
     const lastSlash = dir.lastIndexOf('/');
     dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
   }
+}
+
+/**
+ * The "type" of the package scope a file in `dir` belongs to
+ * (module-format.ts PackageType): what Node reads, through the same
+ * lookup, to tell a .js or extensionless file's module format.
+ */
+export async function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType> {
+  return packageTypeOf((await nearestPackageScope(vfs, dir, undefined, progress))?.pkg ?? null);
 }
 
 /**

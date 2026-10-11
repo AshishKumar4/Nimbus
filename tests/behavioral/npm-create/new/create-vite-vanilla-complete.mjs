@@ -36,11 +36,11 @@ await t.waitForPrompt(15_000);
 // session per mintSession so collision risk is zero, but the name
 // makes the intent explicit).
 const rCreate = await t.run(
-  'npm create vite@latest test-vite -- --template vanilla --yes 2>&1; echo CREATE_RC=$?',
+  'npm create vite@latest test-vite -- --template vanilla --yes 2>&1',
   300_000,
 );
 const outC = stripAnsi(rCreate.output);
-a.check('npm create exits 0', /CREATE_RC=0/.test(outC),
+a.check('npm create exits 0', rCreate.exitCode === 0,
   JSON.stringify(outC.slice(-400)));
 // EAGAIN is in the alternation deliberately: a non-resident sync read now
 // reports EAGAIN rather than ENOENT, so matching only ENOENT would let the

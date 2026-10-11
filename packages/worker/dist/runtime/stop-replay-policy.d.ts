@@ -1,6 +1,11 @@
 type Projection = (value: unknown) => unknown;
 export interface ReplayPolicy {
-    kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control';
+    /**
+     * `mutation`: carries the process's filesystem changes. The guest counts
+     * each change as the program makes it (stop-replay.ts mutation), not its
+     * transport; the session counts the transport as an effect.
+     */
+    kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control' | 'mutation';
     /** Exact, operation-local rules; never strip a property by its name globally. */
     answer?: Projection;
     args?: (args: readonly unknown[]) => readonly unknown[];
@@ -84,7 +89,7 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsAcquire: {
         kind: "observation";
         answer: (value: unknown) => unknown;
-        args: (a: readonly unknown[]) => unknown[];
+        args: () => never[];
     };
     fsAcquired: {
         kind: "observation";
@@ -95,6 +100,12 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "observation";
     };
     fsList: {
+        kind: "observation";
+        answer: (value: unknown) => {
+            entries?: unknown[];
+        } | null;
+    };
+    fsListTree: {
         kind: "observation";
         answer: (value: unknown) => {
             entries?: unknown[];
@@ -141,12 +152,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsWriteRange: {
         readonly kind: "effect";
     };
-    fsAppend: {
-        readonly kind: "effect";
-    };
-    fsAppendAck: {
-        readonly kind: "effect";
-    };
     fsTruncate: {
         readonly kind: "effect";
     };
@@ -154,10 +159,13 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     writeBatchStream: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     openWaveWriter: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
+    };
+    retireWaveWriter: {
+        readonly kind: "mutation";
     };
     putRegistryEntries: {
         readonly kind: "effect";
@@ -286,10 +294,19 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     fsAcquireExclusiveMutation: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     fsReleaseExclusiveMutation: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
+    };
+    fsAwaitRecall: {
+        kind: "input";
+    };
+    fsRecalled: {
+        readonly kind: "mutation";
+    };
+    fsPublished: {
+        readonly kind: "control";
     };
     innerDoFetch: {
         readonly kind: "effect";
@@ -316,6 +333,9 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     cancelHostProcess: {
+        readonly kind: "effect";
+    };
+    hostLost: {
         readonly kind: "effect";
     };
     hmrRelay: {

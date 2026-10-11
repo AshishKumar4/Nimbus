@@ -56,12 +56,22 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
   assert.equal(r.longRunning, false);
 }
 
-// .bin wrapper (skipSpawn) with server-shaped code → NOT promoted (stays exec)
+// a process another launcher reserved (skipSpawn) with server-shaped code
+// → NOT resident: its launcher judges it; it is promoted if it listens
 {
   const fm = makeFacetMgr();
-  await runFresh(fm, SERVER, { argv: [], filename: '/home/user/node_modules/.bin/x', skipSpawn: true, callerPid: 9, launchesServer: true });
-  assert.equal(fm.calls.exec.length, 1, 'skipSpawn CLI keeps the one-shot fast path');
-  assert.equal(fm.calls.spawnNode.length, 0, 'skipSpawn CLI is not promoted');
+  await runFresh(fm, SERVER, { argv: [], filename: '/home/user/child.js', skipSpawn: true, callerPid: 9, launchesServer: true });
+  assert.equal(fm.calls.exec.length, 1, 'a reserved process keeps the one-shot path');
+  assert.equal(fm.calls.spawnNode.length, 0, 'a reserved process is not made resident by its code');
+}
+
+// a program attached to the terminal → resident, which has the terminal already
+{
+  const fm = makeFacetMgr();
+  const r = await runFresh(fm, PLAIN, { argv: [], filename: '/home/user/node_modules/tui/cli.js', attachedTty: true });
+  assert.equal(fm.calls.spawnNode.length, 1, 'an attached program is resident');
+  assert.equal(fm.calls.spawnNode[0].opts.attachedTty, true);
+  assert.equal(r.stdout, '', 'no started notice over its terminal');
 }
 
 // explicit --watch on a plain script → still long-running (argv signal preserved)

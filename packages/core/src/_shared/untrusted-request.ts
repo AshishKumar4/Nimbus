@@ -16,6 +16,8 @@
  * not import. A namespace rule covers all three and any cookie added later.
  */
 
+import { isWebSocketUpgradeRequest } from './websocket-upgrade.js';
+
 /** Cookie-name prefixes reserved for Nimbus and its embedders. */
 const PLATFORM_COOKIE_PREFIXES = ['nimbus_', '__Host-nimbus', '__Secure-nimbus'];
 
@@ -60,7 +62,7 @@ export function sanitizeUntrustedHeaders(headers: Headers): void {
  * upgrade itself is already authenticated upstream.
  */
 export function sanitizeUntrustedRequest(request: Request): Request {
-  if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') return request;
+  if (isWebSocketUpgradeRequest(request.headers)) return request;
 
   const headers = new Headers(request.headers);
   sanitizeUntrustedHeaders(headers);

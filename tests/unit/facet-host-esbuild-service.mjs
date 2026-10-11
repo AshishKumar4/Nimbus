@@ -52,7 +52,7 @@ const result = await service.build(['/slate/client.tsx'], { format: 'esm' });
 assert.deepEqual(builds, [{ entryPoints: ['/slate/client.tsx'], plugin: 'object' }], 'the build ran in the build facet');
 assert.equal(result.outputFiles[0].contents, 'built in the facet');
 assert.equal(loaded.length, 2, 'one loader worker and one facet, no bundler instantiated in the test or the caller');
-assert.match(loaded[0], /^nimbus-build:rolldown-/);
+assert.match(loaded[0], /^build:\d+:\d+\/\d+\/nimbus-build:rolldown-/, 'the build facet\'s code, under the build policy');
 assert.match(loaded[1], /^facet:BuildFacet$/);
 
 console.log('facet-host-esbuild-service: ok');

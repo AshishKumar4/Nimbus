@@ -337,7 +337,7 @@ try {
     t.cmd('cat /tmp/tty-read.sh | sh; echo STATUS=$?');
     await t.waitFor((body) => body.includes('ASK>'), 20_000, 'interactive /dev/tty prompt');
     t.send('y');
-    await t.waitForNewPrompt(20_000);
+    await t.waitForPrompt(20_000);
     const body = normalized(t.buf);
     a.check('piped sh can read one key from /dev/tty through stty and dd',
       hasOutputLine(body, 'KEY=y') && hasOutputLine(body, 'STATUS=0'),
@@ -353,7 +353,7 @@ try {
     t.cmd('cat /tmp/tty-read-line.sh | sh; echo STATUS=$?');
     await t.waitFor((body) => body.includes('LINE?>'), 20_000, 'read prompt from /dev/tty');
     t.send('nimbus\r');
-    await t.waitForNewPrompt(20_000);
+    await t.waitForPrompt(20_000);
     const body = normalized(t.buf);
     a.check('piped sh read -p consumes one line from /dev/tty',
       hasOutputLine(body, 'ANSWER=nimbus') && hasOutputLine(body, 'STATUS=0'),
@@ -370,7 +370,7 @@ try {
     t.cmd('cat /tmp/source-tty-main.sh | sh; echo STATUS=$?');
     await t.waitFor((body) => body.includes('SRC?>'), 20_000, 'source /dev/tty prompt');
     t.send('sourced\r');
-    await t.waitForNewPrompt(20_000);
+    await t.waitForPrompt(20_000);
     const body = normalized(t.buf);
     a.check('source inherits the caller controlling terminal',
       hasOutputLine(body, 'SOURCE_KEY=sourced') && hasOutputLine(body, 'STATUS=0'),
@@ -383,7 +383,7 @@ try {
     t.cmd('old_tty_state=$(stty -g < /dev/tty); stty -icanon -echo min 1 time 0 < /dev/tty; printf "EXEC?>" > /dev/tty; key=$(dd bs=1 count=1 status=none); stty "$old_tty_state" < /dev/tty; printf "\\nEXEC_KEY=%s\\n" "$key"');
     await t.waitFor((body) => body.includes('EXEC?>'), 20_000, 'persistent exec /dev/tty prompt');
     t.send('e');
-    await t.waitForNewPrompt(20_000);
+    await t.waitForPrompt(20_000);
     const body = normalized(t.buf);
     a.check('persistent exec </dev/tty binds to the current terminal stream',
       hasOutputLine(body, 'EXEC_KEY=e'),

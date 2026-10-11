@@ -96,14 +96,38 @@ export function loadPreamble(opts = {}) {
   }
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('bash', ['bash'], '/', { cred });
-  const store = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-  const bindings = { SUPERVISOR: opts.remote ? remoteSupervisor(createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge: store, host: {} }), pid) : vfsSupervisor(store.bridge(pid)) };
+  const stores = [createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority })];
+  const store = stores[0];
+  let dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge: store, host: {} });
+  const filesystemSupervisor = opts.remote ? remoteSupervisor((envelope) => dispatch(envelope), pid) : vfsSupervisor(store.bridge(pid));
+  const bindings = { SUPERVISOR: { ...filesystemSupervisor,
+    stdout: bytes => processes.appendOutputBytes(pid, 'stdout', bytes),
+    stderr: bytes => processes.appendOutputBytes(pid, 'stderr', bytes),
+  } };
   const parking = opts.parking ?? (opts.remote ? 'jspi' : 'none');
+  const call = async (args) => {
+    const text = { stdout: '', stderr: '' };
+    const decoder = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+    const release = processes.subscribeOutputBytes(pid, chunk => { text[chunk.stream] += decoder[chunk.stream].decode(chunk.data, { stream: true }); });
+    try { return { ...await scope.__bashStep(args, bindings.SUPERVISOR), ...text }; }
+    finally { release(); }
+  };
   return {
-    scope, bindings, root, evaluate, cred, applets,
-    boot: args => scope.__bashStep({ op: 'boot', cwd: '/', cred, parking, coreutilsRoot: '/bin', ...args }, bindings.SUPERVISOR),
-    feed: args => scope.__bashStep({ op: 'feed', ...args }, bindings.SUPERVISOR),
-    async dispose() { await store.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
+    scope, bindings, root, evaluate, cred, applets, processes, pid,
+    boot: args => call({ op: 'boot', cwd: '/', cred, parking, coreutilsRoot: '/bin', ...args }),
+    feed: args => call({ op: 'feed', ...args }),
+    /**
+     * (remote) The session's isolate is replaced under the running bash: its
+     * calls reach a fresh process table, of the next generation, that never held it.
+     */
+    restartSession() {
+      const next = new SessionProcessSupervisor();
+      next.setPidBase(1_000_000);
+      const bridge = createSupervisorBridgeStore({ vfs: raw, processes: next, filesystem: authority });
+      stores.push(bridge);
+      dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes: next, bridge, host: {} });
+    },
+    async dispose() { for (const s of stores) await s.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
   };
 }
 

@@ -4,6 +4,7 @@
  */
 
 import type { EgressGuestEvent, EgressHead, EgressHostEvent, EgressRequest } from './realm-egress.js';
+import { routeWebSocketsThroughHost } from './realm-websocket-guest.js';
 
 /** A realm's fetch, routed through its host: the answers that cross back go to `answer`. */
 export interface RealmEgressGuest {
@@ -23,7 +24,7 @@ const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 /**
  * Route this realm's `fetch` through its host (`post` crosses to it), and
- * refuse a WebSocket, which cannot cross, with `webSocketRefusal`. The host
+ * relay WebSocket frames unless the caller supplies `webSocketRefusal`. The host
  * sends each request out through the egress and follows its redirects as the
  * realm asked; a response is the realm's once its head arrives, and its body
  * is read from the host as the realm reads it. Fails as Node's fetch fails:
@@ -33,7 +34,7 @@ const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
  * lives while its event loop has work: each holds it, as an active socket
  * holds a Node process; a body it is not reading holds nothing.
  */
-export function routeFetchThroughHost(post: (event: EgressGuestEvent) => void, waiting: () => void, webSocketRefusal: string): RealmEgressGuest {
+export function routeFetchThroughHost(post: (event: EgressGuestEvent) => void, waiting: () => void, webSocketRefusal?: string): RealmEgressGuest {
   /** The realm's requests, by id: each takes the answers that cross back for it. */
   const requests = new Map<number, (answer: EgressHostEvent) => void>();
   let ids = 0;
@@ -135,14 +136,15 @@ export function routeFetchThroughHost(post: (event: EgressGuestEvent) => void, w
     request.signal.throwIfAborted();
     return await send(request, body);
   };
-  globalThis.WebSocket = class {
-    constructor() {
-      throw new Error(webSocketRefusal);
-    }
-  } as unknown as typeof WebSocket;
+  const sockets = webSocketRefusal === undefined ? routeWebSocketsThroughHost(post, waiting, () => ++ids) : null;
+  if (webSocketRefusal !== undefined) {
+    globalThis.WebSocket = class {
+      constructor() { throw new Error(webSocketRefusal); }
+    } as unknown as typeof WebSocket;
+  }
   return {
-    answer: (event) => requests.get(event.id)?.(event),
-    get awaited() { return awaited; },
+    answer: (event) => { requests.get(event.id)?.(event); sockets?.answer(event); },
+    get awaited() { return awaited + (sockets?.awaited ?? 0); },
   };
 }
 

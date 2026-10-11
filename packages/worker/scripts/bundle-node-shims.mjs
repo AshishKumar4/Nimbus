@@ -12,9 +12,11 @@
  *     the write ledger the shims' filesystem writes go through;
  *   - `FACET_RESIDENT_STORE_SOURCE` (src/vfs/facet-resident-store.ts), a
  *     resident facet's SQLite-backed resident set the shims read from.
- * and carries two more as modules of its map: the runtime-code interpreter
+ * and carries more as modules of its map: the runtime-code interpreter
  * and its host module (scripts/interpreter-bundle.mjs), which a launch
- * compiles only when its program first produces code no launch staged.
+ * compiles only when its program first produces code no launch staged, and
+ * Node's library (src/runtime/node-lib-module.ts), which a launch compiles
+ * only when its program first needs it.
  * Keeping them inside the worker bundle pushed the main bundle over its size
  * gate (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs), whose
  * intended fix is exactly this promote: large facet-runner source strings
@@ -33,6 +35,7 @@
  *   public/_assets/runtime/resident-store-<buildId>.js
  *   public/_assets/runtime/js-interpreter-<buildId>.js
  *   public/_assets/runtime/js-interpreter-ops-<buildId>.js
+ *   public/_assets/runtime/node-lib-<buildId>.js
  *   src/node-shims-artifact.generated.ts, per source:
  *     export const <NAME>_ENTRY: string;     // asset path
  *     export const <NAME>_BUILD_ID: string;  // content-hash prefix
@@ -42,7 +45,7 @@
  * sha-verified, memoized per isolate).
  *
  * Run via: node scripts/bundle-node-shims.mjs
- * (wired into package.json bundle / predev / predeploy / postinstall)
+ * (wired into package.json bundle / predev / predeploy)
  */
 
 import { promises as fs } from 'node:fs';
@@ -54,9 +57,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 const { generateShimsCode } = await import(path.join(ROOT, 'dist/runtime/node-shims.js'));
+const { generateNodeLibModule, generateNodeDnsModule } = await import(path.join(ROOT, 'dist/runtime/node-lib-module.js'));
 const { FACET_RESIDENT_STORE_SOURCE } = await import(path.join(ROOT, 'dist/vfs/facet-resident-store.js'));
 const { VFS_WRITE_LEDGER_SOURCE } = await import('@nimbus-sh/core/_shared/vfs-write-ledger.js');
-const { bundleInterpreter } = await import('./interpreter-bundle.mjs');
+const { bundleInterpreter, bundleRegistry } = await import('./interpreter-bundle.mjs');
 const interpreter = await bundleInterpreter({ start: ROOT });
 
 const shims = generateShimsCode();
@@ -100,6 +104,9 @@ const SOURCES = [
     source: interpreter.ops,
     from: '@nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE',
   },
+  { name: 'NODE_LIB', family: 'node-lib', source: generateNodeLibModule(), from: 'dist/runtime/node-lib-module.js generateNodeLibModule()' },
+  { name: 'NODE_DNS', family: 'node-dns', source: generateNodeDnsModule(), from: 'dist/runtime/node-lib-module.js generateNodeDnsModule()' },
+  { name: 'NODE_REGISTRY', family: 'node-registry', source: await bundleRegistry({ start: ROOT }), from: 'core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs' },
 ];
 
 const pins = [];
@@ -124,8 +131,8 @@ const generated = `/**
  * scripts/bundle-node-shims.mjs. DO NOT EDIT.
  *
  * Pins the staged sources of the node-compat layer, promoted out of the worker
- * bundle: the shims, the VFS write ledger, the resident store, and the
- * runtime-code interpreter with its host module. Each
+ * bundle: the shims, the VFS write ledger, the resident store, the
+ * runtime-code interpreter with its host module, and Node's library. Each
  * <NAME>_BUILD_ID is a content-hash prefix so cache layers never serve stale
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */

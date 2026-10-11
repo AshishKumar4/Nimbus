@@ -31,11 +31,11 @@ const rc = await t.run('clang -O0 -o /home/user/s /home/user/s.c', 240_000);
 const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('/home/user/s ; echo RUN_EXIT=$?', 60_000);
+const rr = await t.run('/home/user/s', 60_000);
 const out = stripAnsi(rr.output);
 a.check('ON_STDOUT printed', /ON_STDOUT/.test(out), JSON.stringify(out.slice(-300)));
 a.check('ON_STDERR printed', /ON_STDERR/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 await t.close();
 const sum = a.summary();

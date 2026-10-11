@@ -17,6 +17,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';
 
 const bundle = await importWorkerBundle({
   'packages/worker/src/workspace-host.ts': ['composeHostedRuntime'],
@@ -57,7 +58,7 @@ const runtime = await bundle.composeHostedRuntime({
   ctx,
   env,
   ports: new bundle.PortRegistry(),
-  lifecycle: { waitUntil: (task) => facetCtx.waitUntil(task), async schedule() {}, async cancel() {} },
+  lifecycle: hostedLifecycle(ctx, () => runtime),
 });
 
 const SIZE = 100_000;

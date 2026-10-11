@@ -7,10 +7,11 @@
 import { asGen, suspendedSync } from './code.js';
 import { Error, append, contains, createDataProperty, everyItem, mapList, newSafeList, reflectGet, safeGenerator, withElement, } from './intrinsics.js';
 import { defineAccessor, defineMethod, toPropertyKey } from './operations.js';
-import { ClassRecord, PrivateName, functionName, isObject, makeClass, makeFunction, } from './runtime.js';
+import { ClassRecord, PrivateName, functionName, isObject, } from './runtime.js';
 /** A class's making at runtime: its scope entered, private names made, heritage and keys evaluated, then defined. */
-export function classMaking(entry, heritage, plan) {
-    const define = classDefiner(plan);
+export function classMaking(rt, entry, heritage, plan) {
+    const define = classDefiner(rt, plan);
+    const ops = rt.ops;
     const keys = plan.computedKeys;
     const privateNames = plan.privateNames;
     // The class's private names exist from its scope's start: its heritage and keys can name them.
@@ -33,7 +34,7 @@ export function classMaking(entry, heritage, plan) {
                 const parent = h ? h(classEnv) : undefined;
                 const computed = newSafeList();
                 for (let i = 0; i < ks.length; i++)
-                    append(computed, toPropertyKey(ks[i](classEnv)));
+                    append(computed, toPropertyKey(ops, ks[i](classEnv)));
                 return define(classEnv, parent, name, computed);
             },
             g: null,
@@ -48,7 +49,7 @@ export function classMaking(entry, heritage, plan) {
             const parent = hg ? yield* hg(classEnv) : undefined;
             const computed = newSafeList();
             for (let i = 0; i < kgs.length; i++)
-                append(computed, toPropertyKey(yield* kgs[i](classEnv)));
+                append(computed, toPropertyKey(ops, yield* kgs[i](classEnv)));
             return define(classEnv, parent, name, computed);
         }),
     };
@@ -63,11 +64,11 @@ export function fieldFrame(fi, scope, thisArg, home) {
     return env;
 }
 /** ClassDefinitionEvaluation's runtime half, from a compiled plan. */
-export function classDefiner(plan) {
+export function classDefiner(rt, plan) {
     const { ctorInfo, writeInner, elements, instanceFi, staticFi } = plan;
     return (classEnv, parent, name, computed) => {
         const record = new ClassRecord();
-        const C = makeClass(ctorInfo, classEnv, parent, name, record);
+        const C = rt.makeClass(ctorInfo, classEnv, parent, name, record);
         const protoValue = reflectGet(C, 'prototype');
         if (!isObject(protoValue))
             throw new Error('interpreter: class without a prototype');
@@ -93,7 +94,7 @@ export function classDefiner(plan) {
             if (el.kind === 'method') {
                 const fname = key instanceof PrivateName ? (el.accessor ? `${el.accessor} ${key.description}` : key.description)
                     : functionName(key, el.accessor ?? undefined);
-                const fn = makeFunction(el.fi, classEnv, target, fname);
+                const fn = rt.makeFunction(el.fi, classEnv, target, fname);
                 if (key instanceof PrivateName) {
                     if (el.accessor === 'get')
                         key.getter = fn;

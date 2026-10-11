@@ -89,7 +89,7 @@ try {
   const run = await t.run('async-exit', 30_000);
   const output = stripAnsi(run.output);
   a.check('foreground npm bin returns after explicit process.exit',
-    /async exit ok/.test(output) && /\[bin started: pid=\d+ cmd="async-exit"\]/.test(output),
+    /async exit ok/.test(output) && /\[facet started: pid=\d+ cmd="async-exit"\]/.test(output),
     JSON.stringify(output.slice(-1000)));
 
   await t.run('mkdir -p /home/user/node_modules/@nimbus-fixtures/pending-promise /home/user/node_modules/.bin', 10_000);
@@ -100,7 +100,7 @@ try {
   const pendingRun = await t.run('pending-promise', 30_000);
   const pendingOutput = stripAnsi(pendingRun.output);
   a.check('foreground npm bin returns when startup leaves only a pending Promise',
-    /pending promise ok/.test(pendingOutput) && /\[bin started: pid=\d+ cmd="pending-promise"\]/.test(pendingOutput),
+    /pending promise ok/.test(pendingOutput) && /\[facet started: pid=\d+ cmd="pending-promise"\]/.test(pendingOutput),
     JSON.stringify(pendingOutput.slice(-1000)));
 
   await t.run('mkdir -p /home/user/node_modules/@nimbus-fixtures/async-main-exit /home/user/node_modules/.bin', 10_000);
@@ -108,10 +108,10 @@ try {
   await t.run(heredocCommand('/home/user/node_modules/@nimbus-fixtures/async-main-exit/cli.js', asyncMainCliSource), 10_000);
   await t.run(heredocCommand('/home/user/node_modules/.bin/async-main-exit', '#!/usr/bin/env node\nrequire("../@nimbus-fixtures/async-main-exit/cli.js");'), 10_000);
 
-  const asyncMainRun = await t.run('async-main-exit; echo RC=$?', 30_000);
+  const asyncMainRun = await t.run('async-main-exit', 30_000);
   const asyncMainOutput = stripAnsi(asyncMainRun.output);
   a.check('foreground npm bin observes process.exit from an unawaited async main',
-    /async main exit ok/.test(asyncMainOutput) && /RC=7/.test(asyncMainOutput),
+    /async main exit ok/.test(asyncMainOutput) && asyncMainRun.exitCode === 7,
     JSON.stringify(asyncMainOutput.slice(-1000)));
 
   await t.run('mkdir -p /home/user/node_modules/@nimbus-fixtures/response-mutation-exit /home/user/node_modules/.bin', 10_000);
@@ -119,11 +119,11 @@ try {
   await t.run(heredocCommand('/home/user/node_modules/@nimbus-fixtures/response-mutation-exit/cli.js', responseMutationCliSource), 10_000);
   await t.run(heredocCommand('/home/user/node_modules/.bin/response-mutation-exit', '#!/usr/bin/env node\nrequire("../@nimbus-fixtures/response-mutation-exit/cli.js");'), 10_000);
 
-  const responseMutationRun = await t.run('response-mutation-exit; echo RC=$?', 30_000);
+  const responseMutationRun = await t.run('response-mutation-exit', 30_000);
   const responseMutationOutput = stripAnsi(responseMutationRun.output);
   a.check('foreground npm bin can mutate global Response without corrupting Nimbus host response',
     /response mutation ok/.test(responseMutationOutput)
-      && /RC=0/.test(responseMutationOutput)
+      && responseMutationRun.exitCode === 0
       && !/Promise did not resolve to 'Response'|Incorrect type for Promise/.test(responseMutationOutput),
     JSON.stringify(responseMutationOutput.slice(-1000)));
 

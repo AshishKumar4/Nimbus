@@ -10,6 +10,10 @@ export declare const REPLAY_PREFIX_MAX_BYTES: number;
 /** The most clock readings, stdin reads and random bytes a replayable run may draw. */
 export declare const REPLAY_TAPE_MAX_READINGS = 65536;
 export declare const REPLAY_TAPE_MAX_RANDOM_BYTES: number;
+/** Filesystem changes a run that can be run again records, and the bytes they carry. */
+export declare const REPLAY_TAPE_MAX_WRITES = 4096;
+export declare const REPLAY_TAPE_MAX_WRITE_BYTES: number;
+export declare const REPLAY_WRITE_ENTRY_MAX_CHARS = 8192;
 /** The most answers the session journals for one run; past it the run cannot be replayed. */
 export declare const REPLAY_JOURNAL_MAX_ENTRIES = 65536;
 /** Joined reads keep their actual answers until the run ends, including lost-response resends. */
@@ -36,6 +40,8 @@ export interface ReplayTape {
     random: string;
     /** How many bytes each completed synchronous read of stdin returned. */
     reads: number[];
+    /** Each change it made to the filesystem: its call, its path and a digest of all of it. */
+    writes: string[];
 }
 /** A chunk of output the session had not acknowledged when the run stopped. */
 export interface StoppedOutput {
@@ -47,8 +53,12 @@ export interface StoppedOutput {
 }
 export interface StopRecord {
     v: 3;
-    /** `stdin`: a read needs input not there yet. `diverged`: a replay did not retrace the run before it. */
-    kind: 'stdin' | 'diverged';
+    /**
+     * `stdin`: a read needs input not there yet. `listen`: a one-shot's first
+     * listen, to be run again as a resident. `diverged`: a replay did not
+     * retrace the run before it.
+     */
+    kind: 'stdin' | 'listen' | 'diverged';
     /** The run that stopped (1 for the first). */
     run: number;
     out: StoppedOutput[];
@@ -70,7 +80,9 @@ export interface ReplayLaunch {
     run: number;
     tape: ReplayTape;
     /** The synchronous read the run before stopped at: where the replay must have printed all of `prefix`. */
-    stopAt: number;
+    stopAt?: number;
+    /** The run before stopped at its first listen instead: the replay's boundary is there. */
+    listen?: true;
     /** What the session showed of each stream, base64: the replay prints it again first. Null when output is captured. */
     prefix: {
         stdout: string;

@@ -12,7 +12,7 @@
 // The shell page's own terminal socket, a file-watch socket and a
 // process-log socket each close from the page and must finish within 5 s.
 
-import { AUTH_TOKEN, BASE, Terminal, deleteSession, heredocCommand, makeAsserter, mintSession } from '../../_driver.mjs';
+import { BASE, Terminal, deleteSession, heredocCommand, makeAsserter, mintSession } from '../../_driver.mjs';
 import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -36,8 +36,8 @@ try {
   await terminal.close();
 
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForFunction(() => typeof ws !== 'undefined' && ws && ws.readyState === WebSocket.OPEN, { timeout: 60_000 });
 

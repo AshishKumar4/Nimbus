@@ -1,11 +1,11 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
-import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { bindProcessTable, isDynamicWorkerDeadlock, issueProcessNews, withLaunchAdmission, } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
-import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
+import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
+import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
 import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 import { resolveContext } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
@@ -13,11 +13,11 @@ import { syscallError } from "@nimbus-sh/core/vfs/vfs-error.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
-import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
 import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from "../session/ws-relay.js";
+import { ProcessSupervisor } from "../session/process-supervisor.js";
 // ── Pure helpers in ../session/helpers.ts ────────
 //
 // renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS,
@@ -83,28 +83,12 @@ export function ensureFacetManager(self, runtimeContext) {
             vfs: filesystem.engine,
             filesystem,
             network: runtimeContext.network,
+            supervise: (props) => new ProcessSupervisor(props, runtimeContext.env, runtimeContext.supervisorOp),
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
                 deliverOutput: (pid, stream, bytes) => (stream === 'stdout' ? self._rpcStdout(pid, bytes) : self._rpcStderr(pid, bytes)),
                 rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
-                // Where cpReadStdin reads a pid's stdin (session/rpc.ts): the input
-                // store when it has a channel there, else the broker's child queue.
-                stdinChannel: (pid) => {
-                    if (self.processes.hasInput(pid)) {
-                        return {
-                            read: (waitMs) => self.processes.readInput(pid, waitMs),
-                            unread: (packets) => self.processes.unreadInput(pid, packets),
-                        };
-                    }
-                    const broker = self.facetProcessManager;
-                    if (!broker || !broker.isChild(pid))
-                        return null;
-                    return {
-                        read: (waitMs) => broker.cpReadStdin(pid, waitMs),
-                        unread: (packets) => broker.unreadStdin(pid, packets.flatMap((p) => (p.data instanceof Uint8Array && p.data.byteLength > 0 ? [p.data] : []))),
-                    };
-                },
                 requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
                 resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
                 notify: (line) => runtimeContext.notify(line),
@@ -266,14 +250,22 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         resolve: async (name, from) => {
             const commandName = normalizeCpCommandName(name);
             const classified = _classifyCommand(commandName);
-            if (classified)
-                return classified;
             const registry = self._cpRegistry;
             if (!registry)
                 return null;
             const view = processView(from.pid, self.processes.cred(from.pid));
+            if (commandName.includes('/'))
+                await view.access(commandName.startsWith('/') ? commandName : `${from.cwd}/${commandName}`, X_OK);
             const registered = await registry.resolve(commandName, { ...resolveContext(from.cwd, from.env, view), search: false });
-            return { kind: registered && !isRuntimeInstallHint(registered) ? 'pure-builtin' : 'facet-direct' };
+            if (registered && !isRuntimeInstallHint(registered))
+                return classified ?? { kind: 'pure-builtin' };
+            const program = await registry.resolve(commandName, resolveContext(from.cwd, from.env, view));
+            if (!program || isRuntimeInstallHint(program))
+                return null;
+            const resolved = resolutionOf(program);
+            if (resolved?.kind === 'program')
+                await view.access(resolved.path, X_OK);
+            return { kind: 'facet-direct' };
         },
         runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
             const registry = self._cpRegistry;
@@ -287,7 +279,15 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 hooks.onStderr(textBytes(`${name}: command not found\n`));
                 return 127;
             }
-            return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
+            // It runs here, on the child's own descriptors: a kill stops it.
+            const stop = new AbortController();
+            const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
+            try {
+                return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stop.signal)).status;
+            }
+            finally {
+                stopped();
+            }
         },
     };
     /**
@@ -300,21 +300,20 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         pid,
         env,
         cwd,
-        stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
-        stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
+        stdout: { write: (d) => hooks.onStdout(textBytes(String(d))), writeBytes: (d) => hooks.onStdout(d) },
+        stderr: { write: (d) => hooks.onStderr(textBytes(String(d))), writeBytes: (d) => hooks.onStderr(d) },
         stdin,
         isFdTerminal: () => false,
     });
-    /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
-    const runBuiltin = async (cmd, name, args, io) => {
+    /** A registry command run as process `io.pid`, on `io`'s descriptors, until `signal` stops it, and how it ended. */
+    const runBuiltin = async (cmd, name, args, io, signal) => {
         const cred = self.processes.cred(io.pid);
-        const ac = new AbortController();
         const ctx = {
             ...io,
             cred,
             args,
             vfs: processView(io.pid, cred),
-            signal: ac.signal,
+            signal,
             setUmask: (mask) => { self.processes.setUmask(io.pid, mask); },
             runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
         };
@@ -351,9 +350,12 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         // workspace's runAs counts them).
         const endAwait = self.processes.beginAwait(parent.pid, child.pid);
         const endWork = self.processes.beginWork(child.pid);
+        // Its program is this session's work behind its pid: a kill stops it.
+        const stop = new AbortController();
+        const stopped = self.processes.holdWork(child.pid, (reason) => stop.abort(reason));
         let exitCode = 1;
         try {
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
+            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stop.signal);
             exitCode = ended.status;
             return ended;
         }
@@ -361,6 +363,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             endWork();
             endAwait();
             self.processes.exit(child.pid, exitCode);
+            stopped();
         }
     };
     // The Dynamic Worker ledger's wait-for edges are the session's own
@@ -391,6 +394,10 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 // lines on it would each save and restore the shell's cwd and
                 // variables over the other's. Its descriptors close as it ends.
                 const shell = workspace.shellFor(pid, { cwd: cwd || '/home/user', env });
+                // It runs here, on the child's own descriptors, until its shell has
+                // closed what it opened: a kill stops it.
+                const stop = new AbortController();
+                const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
                 try {
                     const result = await shell.execute(String(commandLine), {
                         onStdout: hooks.onStdout,
@@ -398,116 +405,22 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                         stdin,
                         commandContext: { pid, cred, setUmask },
                         runAs,
+                        signal: stop.signal,
                     });
                     return typeof result?.exitCode === 'number' ? result.exitCode : 0;
                 }
                 finally {
-                    await shell.closeDescriptors();
+                    try {
+                        await shell.closeDescriptors();
+                    }
+                    finally {
+                        stopped();
+                    }
                 }
             },
         },
     });
     return self.facetProcessManager;
-}
-export function ensureFetchProxy(self, runtimeContext, log) {
-    if (self.fetchProxyEntrypoint)
-        return self.fetchProxyEntrypoint;
-    try {
-        const env = runtimeContext.env;
-        if (!env?.LOADER?.load) {
-            log?.('LOADER.load not available — using global fetch');
-            return null;
-        }
-        // Buffered proxy: reads the entire response body into an ArrayBuffer
-        // and returns it in ONE message instead of forwarding a ReadableStream.
-        // In workerd local dev, streaming responses across a service-binding
-        // RPC fabric opens a separate loopback socket PER chunk (~16KB), which
-        // exhausts ephemeral ports for larger installs (npm registry packuments
-        // are 500KB-3MB, tarballs up to 5MB). Buffering to arrayBuffer means
-        // 1 stub call = 1 loopback connection, not N connections.
-        //
-        // 32MB cap prevents a malformed giant response from OOMing the proxy
-        // isolate. Packages with tarballs larger than 32MB will fail to install
-        // cleanly (returned as 413 → caller treats as failed fetch).
-        const proxyCode = [
-            'const MAX_BYTES = 32 * 1024 * 1024;',
-            'export default {',
-            '  async fetch(request, workerEnv) {',
-            '    try {',
-            '      const body = await request.json();',
-            '      const resp = await fetch(body.url, {',
-            '        method: body.method || "GET",',
-            '        headers: body.headers || {},',
-            '      });',
-            '      // Check advertised Content-Length before buffering',
-            '      const clStr = resp.headers.get("content-length");',
-            '      if (clStr) {',
-            '        const cl = parseInt(clStr, 10);',
-            '        if (cl > MAX_BYTES) {',
-            '          return new Response(',
-            '            JSON.stringify({ error: "response too large: " + cl + " bytes (cap " + MAX_BYTES + ")" }),',
-            '            { status: 413, headers: { "Content-Type": "application/json" } }',
-            '          );',
-            '        }',
-            '      }',
-            '      // Buffer entire body — ONE message, not streamed chunks',
-            '      const buf = await resp.arrayBuffer();',
-            '      if (buf.byteLength > MAX_BYTES) {',
-            '        return new Response(',
-            '          JSON.stringify({ error: "response exceeded cap: " + buf.byteLength + " bytes" }),',
-            '          { status: 413, headers: { "Content-Type": "application/json" } }',
-            '        );',
-            '      }',
-            '      return new Response(buf, {',
-            '        status: resp.status,',
-            '        statusText: resp.statusText,',
-            '        headers: Object.fromEntries(resp.headers.entries()),',
-            '      });',
-            '    } catch (e) {',
-            '      return new Response(JSON.stringify({ error: e.message }), {',
-            '        status: 502,',
-            '        headers: { "Content-Type": "application/json" },',
-            '      });',
-            '    }',
-            '  }',
-            '};',
-        ].join('\n');
-        const worker = env.LOADER.load({
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: [...GUEST_COMPAT_FLAGS],
-            mainModule: 'fetch-proxy.js',
-            modules: { 'fetch-proxy.js': proxyCode },
-            // The registry is reached through the workspace's egress, when it has one.
-            ...loaderOutbound(runtimeContext.network()),
-        });
-        self.fetchProxyEntrypoint = worker.getEntrypoint();
-        log?.('Fetch proxy worker created (singleton)');
-        return self.fetchProxyEntrypoint;
-    }
-    catch (e) {
-        log?.(`Fetch proxy creation failed: ${e?.message}`);
-        return null;
-    }
-}
-export function buildFetchFn(self, runtimeContext, log) {
-    const entrypoint = self.ensureFetchProxy(log);
-    if (!entrypoint)
-        return undefined;
-    return async (url, init) => {
-        const headers = {};
-        if (init?.headers) {
-            if (init.headers instanceof Headers) {
-                init.headers.forEach((v, k) => { headers[k] = v; });
-            }
-            else if (typeof init.headers === 'object') {
-                Object.assign(headers, init.headers);
-            }
-        }
-        return entrypoint.fetch(new Request('http://fetch-proxy/do-fetch', {
-            method: 'POST',
-            body: JSON.stringify({ url, method: init?.method || 'GET', headers }),
-        }));
-    };
 }
 export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
     self.ensureSqliteFs();
@@ -520,40 +433,15 @@ export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
     // subgraph) on first npm use so it stays out of the cold script-eval
     // graph. The install command paths that call this are already async.
     const { NpmInstaller } = await import('../npm/installer.js');
-    // ── Lazy fetch-proxy ────────────────────────────────────────────
-    // The fetch-proxy is a singleton dynamic worker (LOADER.load) that
-    // buffers registry responses to dodge wrangler-local-dev port
-    // exhaustion. It is only needed for the in-supervisor npm paths.
-    // When the resolver and install paths run in facets (default-on),
-    // they use bare globalThis.fetch and need no proxy, so the proxy is
-    // built only when a facet path is disabled via its env flag.
-    const useFacetResolver = self._envFlagDefaultOn('NIMBUS_FACET_RESOLVER');
-    const useFacetInstall = self._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL');
-    const useBatchFacet = self._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL_BATCH');
-    const needProxy = !(useFacetResolver && useFacetInstall && useBatchFacet);
-    const fetchFn = needProxy ? self.buildFetchFn(onProgress) : undefined;
-    if (!needProxy) {
-        onProgress?.(`[npm] Lazy fetch-proxy: skipped (all facet paths default-on)`);
-    }
     self.npmInstaller = new NpmInstaller(self.getFilesystemAuthority(), runtimeContext.ctx.storage.sql, {
         esbuild: self.esbuildService,
         bundlePool: self.ensureBundlePool(),
         ctx: runtimeContext.ctx,
         env: runtimeContext.env,
         onProgress,
-        fetchFn,
         network: runtimeContext.network(),
     });
     return self.npmInstaller;
-}
-export function _envFlagDefaultOn(self, runtimeContext, name) {
-    const raw = runtimeContext.env?.[name];
-    if (raw === undefined || raw === null)
-        return true;
-    const s = String(raw).toLowerCase();
-    if (s === '0' || s === '' || s === 'false' || s === 'off' || s === 'no')
-        return false;
-    return true;
 }
 export function ensureGlobalPrefixDirs(self, runtimeContext, prefix) {
     const fs = self.sqliteFs.as(CRED_SESSION_USER);
@@ -574,10 +462,7 @@ export function bindRuntimeServices(host, context) {
         ensureFacetManager: ensureFacetManager.bind(null, host, context),
         _ensureWebSocketRelay: _ensureWebSocketRelay.bind(null, host, context),
         _ensureFacetProcessManager: _ensureFacetProcessManager.bind(null, host, context),
-        ensureFetchProxy: ensureFetchProxy.bind(null, host, context),
-        buildFetchFn: buildFetchFn.bind(null, host, context),
         ensureNpmInstaller: ensureNpmInstaller.bind(null, host, context),
-        _envFlagDefaultOn: _envFlagDefaultOn.bind(null, host, context),
         ensureGlobalPrefixDirs: ensureGlobalPrefixDirs.bind(null, host, context),
     };
 }

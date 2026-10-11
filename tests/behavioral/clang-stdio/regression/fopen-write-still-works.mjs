@@ -31,12 +31,12 @@ await t.run('mkdir -p /home/user/tmp', 10_000);
 await t.run(heredocCommand('w.c', CSRC), 10_000);
 await t.run('clang w.c -o w', 240_000);
 
-const rr = await t.run('./w ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./w', 30_000);
 const out = stripAnsi(rr.output);
 a.check('"hello from v13" printed', /hello from v13/.test(out), JSON.stringify(out.slice(-300)));
 a.check('"done" printed (v13 stdio flush works)', /done/.test(out), JSON.stringify(out.slice(-300)));
 a.check('no FOPEN_FAIL', !/FOPEN_FAIL/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 const r2 = await t.run('cat /home/user/tmp/greet.txt', 10_000);
 a.check('greet.txt contains "written by v13"', /written by v13/.test(stripAnsi(r2.output)),

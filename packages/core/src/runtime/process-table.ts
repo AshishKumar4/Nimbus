@@ -37,7 +37,20 @@ export interface ProcessEntry {
   attachedTty?: boolean;
   /** Output is owned by the command that launched it, until its launch returns. */
   foreground?: boolean;
+  /**
+   * The process this one restarts, when it is one: a resident started again
+   * under a new pid because the session object itself restarted while it
+   * ran, or, under restart 'on-failure', because it exited with a non-zero
+   * code or the platform reset the host it ran on. Absent otherwise.
+   */
+  restartedFrom?: ProcessRestart;
 }
+
+/** Which process a restart replaced, and why it was restarted. */
+export type ProcessRestart =
+  | { pid: number; cause: 'session-restart' }
+  | { pid: number; cause: 'exited'; exitCode: number }
+  | { pid: number; cause: 'host-reset' };
 
 export interface ProcessTableSpawnOptions {
   cred?: VfsCred;
@@ -48,6 +61,8 @@ export interface ProcessTableSpawnOptions {
    * inherited.
    */
   execId?: string;
+  /** The process this one restarts (ProcessEntry.restartedFrom). */
+  restartedFrom?: ProcessRestart;
 }
 
 /**
@@ -94,10 +109,21 @@ function immutableCred(cred: VfsCred): VfsCred {
  */
 export const PID_GEN_STRIDE = 1_000_000;
 
+/**
+ * A call made for a pid the table does not hold: the process ended, or the
+ * session restarted under it (pids carry the isolate generation, so a pid of
+ * an earlier generation is never reissued). Coded so a caller across RPC can
+ * tell it from a filesystem failure.
+ */
+function noSuchProcess(pid: number): Error {
+  return Object.assign(new Error(`process pid ${pid} does not exist`), { code: 'ESRCH' });
+}
+
 export class ProcessTable {
   private nextPid = 1;
   private base = 0;
   private processes = new Map<number, ProcessEntry>();
+  private onStride: ((stride: number) => void) | null = null;
 
   /**
    * Move the pid space onto this instance generation's range. Called once at
@@ -115,6 +141,15 @@ export class ProcessTable {
     return this.base;
   }
 
+  /**
+   * Told the stride (pid / PID_GEN_STRIDE) a pid minted here enters past its
+   * generation's own: the next generation must start beyond it, or its pids
+   * would repeat this one's.
+   */
+  onPidStride(listener: (stride: number) => void): void {
+    this.onStride = listener;
+  }
+
   /** Allocate a PID and register a new process. */
   spawn(
     command: string,
@@ -128,6 +163,7 @@ export class ProcessTable {
     const execId = options.execId
       ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
     const pid = this.nextPid++;
+    if (pid % PID_GEN_STRIDE === 0) this.onStride?.(pid / PID_GEN_STRIDE);
     const entry: ProcessEntry = {
       pid,
       command,
@@ -140,6 +176,7 @@ export class ProcessTable {
       cred: immutableCred(options.cred ?? inheritedCred),
       parentPid: options.parentPid,
       ...(execId === undefined ? {} : { execId }),
+      ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
     };
     this.processes.set(pid, entry);
     return entry;
@@ -147,7 +184,13 @@ export class ProcessTable {
 
   credOf(pid: number): VfsCred {
     const entry = this.processes.get(pid);
-    if (!entry) throw new Error(`process pid ${pid} does not exist`);
+    if (!entry) throw noSuchProcess(pid);
+    return immutableCred(entry.cred);
+  }
+
+  liveCred(pid: number): VfsCred {
+    const entry = this.processes.get(pid);
+    if (!entry || entry.state !== 'running') throw noSuchProcess(pid);
     return immutableCred(entry.cred);
   }
 
@@ -157,7 +200,7 @@ export class ProcessTable {
 
   setUmask(pid: number, umask: number): number {
     const entry = this.processes.get(pid);
-    if (!entry) throw new Error(`process pid ${pid} does not exist`);
+    if (!entry) throw noSuchProcess(pid);
     if (!Number.isInteger(umask) || umask < 0 || umask > 0o777) {
       throw new Error(`invalid umask ${umask}`);
     }

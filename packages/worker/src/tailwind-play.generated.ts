@@ -15,7 +15,7 @@
  * SHA-256: 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15
  *
  * If you change this file by hand it WILL be overwritten by the next
- * predev / predeploy / postinstall.
+ * predev / predeploy.
  */
 
 import { loadAssetText, type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';

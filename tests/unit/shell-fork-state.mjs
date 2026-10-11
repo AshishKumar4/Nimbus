@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 // A subshell, a pipeline element, $( ) and a background job each run in a
 // child shell, as bash forks one: nothing the child changes (variables,
-// arrays, cwd, options, traps, aliases, functions) reaches the parent, `exit`
-// ends only the child, and the child runs its own EXIT trap. A background
+// arrays, cwd, options, traps, aliases, functions, readonly names,
+// positionals) reaches the parent, whichever builtin changed it; `exit` ends
+// only the child, and the child runs its own EXIT trap. A background
 // job's status survives the parent's later assignments, so `wait $p` returns
 // it. Errexit is ignored in every command of an and-or list but the last.
 // Each case's answer is what bash 5.3 prints on Linux.
@@ -32,6 +33,11 @@ const CASES = [
   ["set -e; false && true; echo reached", "reached\n"],
   ["set -e; if (false; echo in); then echo t; fi", "in\nt\n"],
   ["set -e; (false; echo no); echo no2", ""],
+  // A builtin in a child shell acts on the child's state.
+  ["(readonly r=1); r=2; echo r=$r", "r=2\n"],
+  ["set -- a b; (shift; echo $1); echo $1", "b\na\n"],
+  ["f() { (local y=1; echo $y); echo y=$y; }; f", "1\ny=\n"],
+  ["echo z=9 > /tmp/fork-source.sh; (. /tmp/fork-source.sh; echo $z); echo z=$z", "9\nz=\n"],
 ];
 
 const harness = createSqliteVfsTestHarness();

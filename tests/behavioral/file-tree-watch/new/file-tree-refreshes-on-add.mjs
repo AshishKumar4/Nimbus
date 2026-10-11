@@ -19,7 +19,7 @@ console.log(`file-tree-watch/file-tree-refreshes-on-add — ${BASE}`);
 
 const sid = await mintSession();
 
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders(sid));
 const received = [];
 let opened = false;
 let subResult = null;

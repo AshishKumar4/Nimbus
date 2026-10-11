@@ -39,6 +39,9 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('require-resolution/imports-field');
 
+// The synthetic packages are CommonJS (no "type"): their files require,
+// which an ES module's scope has no name for (module-format-matches-node).
+
 // ── Check 1: synthetic-exact ────────────────────────────────────────
 //
 // Package with imports:{"#x":"./x.js"}. Consumer requires the package
@@ -47,7 +50,7 @@ const A = makeAsserter('require-resolution/imports-field');
 
 await t.run('rm -rf /home/user/if-exact && mkdir -p /home/user/if-exact/node_modules/mypkg/lib', 5_000);
 await t.writeFile('/home/user/if-exact/node_modules/mypkg/package.json', JSON.stringify({
-  name: 'mypkg', type: 'module', main: './lib/index.js',
+  name: 'mypkg', main: './lib/index.js',
   imports: { '#x': './lib/x.js' },
 }));
 await t.writeFile('/home/user/if-exact/node_modules/mypkg/lib/x.js', "module.exports = 'X_VAL';");
@@ -74,7 +77,7 @@ A.check(
 
 await t.run('rm -rf /home/user/if-cond && mkdir -p /home/user/if-cond/node_modules/mypkg', 5_000);
 await t.writeFile('/home/user/if-cond/node_modules/mypkg/package.json', JSON.stringify({
-  name: 'mypkg', type: 'module', main: './index.js',
+  name: 'mypkg', main: './index.js',
   imports: { '#x': { node: './n.js', default: './d.js' } },
 }));
 await t.writeFile('/home/user/if-cond/node_modules/mypkg/n.js', "module.exports = 'NODE_VAR';");
@@ -101,7 +104,7 @@ A.check(
 
 await t.run('rm -rf /home/user/if-pat && mkdir -p /home/user/if-pat/node_modules/mypkg/src', 5_000);
 await t.writeFile('/home/user/if-pat/node_modules/mypkg/package.json', JSON.stringify({
-  name: 'mypkg', type: 'module', main: './index.js',
+  name: 'mypkg', main: './index.js',
   imports: { '#x/*': './src/*.js' },
 }));
 await t.writeFile('/home/user/if-pat/node_modules/mypkg/src/foo.js', "module.exports = 'FOO_VAL';");
@@ -129,7 +132,7 @@ A.check(
 
 await t.run('rm -rf /home/user/if-miss && mkdir -p /home/user/if-miss/node_modules/mypkg', 5_000);
 await t.writeFile('/home/user/if-miss/node_modules/mypkg/package.json', JSON.stringify({
-  name: 'mypkg', type: 'module', main: './index.js',
+  name: 'mypkg', main: './index.js',
   imports: { '#x': './x.js' },
 }));
 await t.writeFile('/home/user/if-miss/node_modules/mypkg/x.js', "module.exports = 'X';");

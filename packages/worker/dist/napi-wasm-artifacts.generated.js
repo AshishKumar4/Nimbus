@@ -9,8 +9,8 @@
  * evaluated; PACKAGE_ABI_POLICY.stagedArtifacts routes each owner package and
  * the packages it requires the binding by to its entry.
  */
-export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/2d96049628b5796a/napi-wasm-loader.mjs", "sha256": "8809054acddf7998687f1876da6de7d38c31dbd85746982dd339e86f4e62596f", "bytes": 206776 };
-export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/2d96049628b5796a/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
+export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/2defc39acb3b82bb/napi-wasm-loader.mjs", "sha256": "ef8ee9fb1e44d19f7debfd5c0ec1efdd03fb04f110193a37fffbecd4ed1fd718", "bytes": 207197 };
+export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/2defc39acb3b82bb/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
 export const STAGED_BINDING_ARTIFACTS = [
     {
         "name": "rolldown",
@@ -24,6 +24,20 @@ export const STAGED_BINDING_ARTIFACTS = [
             "path": "/_assets/napi-wasm/rolldown/1.2.11/rolldown.wasm",
             "sha256": "9e38287a3d6f106d50fa9eeb774f264130fd960a39f194d6380de731a4d7ed58",
             "bytes": 13472165
+        }
+    },
+    {
+        "name": "rolldown",
+        "version": "1.2.13",
+        "owner": "rolldown",
+        "requiredAs": [
+            "@rolldown/binding-wasm32-wasi"
+        ],
+        "memoryPages": 86,
+        "wasm": {
+            "path": "/_assets/napi-wasm/rolldown/1.2.13/rolldown.wasm",
+            "sha256": "7d3047dab778ea7233dcedf9c15b01e2ac0ea5ac5845a9bd1e3c747c126feb22",
+            "bytes": 13740474
         }
     },
     {
@@ -55,3 +69,5 @@ export const STAGED_BINDING_ARTIFACTS = [
         }
     }
 ];
+/** The rolldown Nimbus itself depends on, whose build the build facet runs. */
+export const OWN_ROLLDOWN_VERSION = "1.2.11";

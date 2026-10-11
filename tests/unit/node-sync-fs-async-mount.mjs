@@ -41,7 +41,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { facetSql } from './lib/resident-body.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { runnerLoader } from './lib/one-shot-runner.mjs';
 
@@ -88,11 +88,14 @@ const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ met
 attachSupervisorOps(host, buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs: ws.vfs, processes: ws.processes, filesystem: ws.filesystem }), routed));
 
 let out = '';
-const supervisorFor = (pid) => supervisorDouble(async (name, args) => {
-  if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
-  if (name === 'reportExit' || name === 'registerPort' || name === 'unregisterPort') return;
-  return host.supervisorOp({ op: name, args, pid });
-});
+const supervisorFor = (pid) => {
+  const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid }));
+  return supervisorDouble(async (name, args) => {
+    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
+    if (name === 'reportExit' || name === 'registerPort' || name === 'unregisterPort') return;
+    return send(name, args);
+  });
+};
 adoptCtxExports({ SupervisorRPC: ({ props }) => supervisorFor(props?.pid) });
 
 // The Worker Loader: a one-shot's runner is written out and imported; a

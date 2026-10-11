@@ -37,7 +37,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { readViteConfigFile } from '../../packages/worker/src/facets/vite-config-file.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { CASES, caseDigest } from '../reference/vite-esbuild-cases.mjs';
-import { oxcEngine } from './lib/oxc-engine.mjs';
+import { oxcTransforms } from './lib/oxc-engine.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../fixtures/vite-esbuild-reference.json', import.meta.url), 'utf8'));
@@ -148,7 +148,7 @@ async function viteOutcome(recorded) {
 
 // ── The cases ────────────────────────────────────────────────────────────
 
-const engine = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const engine = new EsbuildService(undefined, oxcTransforms);
 const versionDifferences = [];
 let compared = 0;
 try {

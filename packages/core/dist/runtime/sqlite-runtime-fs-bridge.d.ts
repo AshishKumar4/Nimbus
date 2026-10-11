@@ -1,7 +1,7 @@
-import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
     node: VfsOpenDescription;
@@ -10,10 +10,14 @@ interface OpenDescription {
 export interface SqliteDescriptorScope {
     nextId: number;
     handles: Map<number, OpenDescription>;
+    /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
+    waveDescriptions: Map<string, number>;
     closed: boolean;
     /** Aborted when the scope closes; cancels in-flight stream commits. */
     abort: AbortController;
     subscriptions: Set<() => void>;
+    /** The exclusive leases the process took itself (not delegations), by owner: each one's release, among the subscriptions. */
+    leases: Map<string, () => void>;
 }
 export declare function createSqliteDescriptorScope(): SqliteDescriptorScope;
 /**
@@ -74,6 +78,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): RuntimeVfsStat | null;
     readFile(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
+        cached?: boolean;
     }): Uint8Array | null;
     /**
      * A mounted file as this process sees it while it holds buffered writes to
@@ -96,8 +101,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     } & RuntimeMutationOwner): VfsMutationReceipt;
     /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
     private owned;
-    appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     } & RuntimeMutationOwner): VfsMutationReceipt;
@@ -109,7 +112,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle;
+    /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     close(handleId: number): void;
@@ -119,9 +123,15 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
-    }): void;
-    unlink(path: RuntimeFsPath): void;
-    rmdir(path: RuntimeFsPath): void;
+    } & RuntimeMutationOwner): void;
+    /**
+     * Whether anything may be at `located`: a mounted name (its mount
+     * answers), `/` (which has no row), a row, or a link the legacy registry
+     * holds. A walk that met the name absent has looked at all of them.
+     */
+    private mayExist;
+    unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
+    rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     readlink(path: RuntimeFsPath): string | null;
     symlink(target: string, path: RuntimeFsPath): void;
@@ -153,10 +163,34 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         chunks: number;
     }>;
     writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]): Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
-    acquireExclusiveMutation(path: RuntimeFsPath, options?: {
-        includeMissingAncestors?: boolean;
-    }): import("../vfs/sqlite-vfs.js").ExclusiveMutationLease;
+    /**
+     * The open descriptions a process's waves name (WaveDescriptions): each one
+     * this binding's descriptor, so the process reads, stats and closes it as
+     * any of its own; its access decided at its open (SqliteVFS.describeInode),
+     * and its file alive until its close.
+     */
+    private readonly waveDescriptions;
+    /**
+     * A lease; with `held`, a process's own (ProcessFiles' bridge), which ends
+     * with the process; with its `terms`, a delegation, whose recalls that
+     * bridge answers. This bridge serves no process, so it delegates nothing
+     * itself (`delegate`: EINVAL).
+     */
+    acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest, held?: {
+        terms?: DelegationTerms;
+    }): ExclusiveMutationGrant;
     releaseExclusiveMutation(owner: string): void;
+    acquireReadLease(terms: DelegationTerms, at: {
+        readonly epoch: string;
+        readonly cursor: number;
+    }): {
+        readonly owner: string;
+    };
+    /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
+    awaitRecall(owner: string): never;
+    recalled(owner: string): never;
+    /** No process: its writes wait for their publication, so none is held. */
+    published(): void;
     private pathArgument;
     private resolveDataPath;
     /**
@@ -170,6 +204,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     linkLeadsTo(path: string, link: string): string | null;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
+    /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
+    private reached;
     /**
      * Refuses a mutation at the namespace path `path` that another owner's
      * exclusive-mutation lease covers (EBUSY), or that lies outside the

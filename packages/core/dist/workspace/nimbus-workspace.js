@@ -31,9 +31,9 @@ import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
 import { workspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
-import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
@@ -164,9 +164,11 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
-        // Its processes bind to this filesystem, so a reap releases them here:
-        // the one place the table and the filesystem meet.
+        // Its processes bind to this filesystem, so a reap releases them here,
+        // and their output waits for what they wrote to be published: the one
+        // place the table and the filesystem meet.
         processes.setRelease((pid) => filesystem.releaseProcess(pid));
+        filesystem.holdOutput(processes);
         const env = { ...defaultEnv(home), ...options.env };
         // The identity every shell command runs as. A host that supplied one keeps
         // it verbatim — its pid is already alive in ITS process table. Otherwise
@@ -222,7 +224,6 @@ export class NimbusWorkspace {
             if (options.facets) {
                 registerWasmRuntimes({
                     facets: options.facets,
-                    sql: options.sql,
                     vfs,
                     filesystem,
                     registry,
@@ -339,10 +340,10 @@ export class NimbusWorkspace {
      * ended, leave the process table when the result is returned.
      */
     exec(command, options = {}) {
-        const { shellId, ...call } = options;
+        const { shellId, detach, ...call } = options;
         if (shellId === undefined)
             return this.runProcess(command, call, null);
-        return this.withNamedShell(shellId, {}, (named) => this.runProcess(command, call, named));
+        return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named));
     }
     async runProcess(command, options, named) {
         const cwd = options.cwd ?? named?.cwd ?? this.shell.getCwd();
@@ -351,9 +352,15 @@ export class NimbusWorkspace {
         // shell takes them for the call only: passed as its state they would pin
         // it there, and its `cd` would not survive the call.
         const shell = named?.open(pid) ?? this.shellFor(pid, { cwd, env: options.env });
+        // The call is this workspace's work behind the pid until its shell has
+        // closed what it opened: a kill stops it, and only then is what it bound
+        // released.
+        const stop = new AbortController();
+        const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
+        const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason));
         let exitCode = 1;
         try {
-            const result = await runCommand(shell, command, named ? options : { ...options, cwd: undefined, env: undefined });
+            const result = await runCommand(shell, command, { ...(named ? options : { ...options, cwd: undefined, env: undefined }), signal });
             exitCode = result.exitCode;
             return result;
         }
@@ -365,6 +372,7 @@ export class NimbusWorkspace {
                 await shell.closeDescriptors();
             }
             finally {
+                stopped();
                 await this.processes.reapTree(pid);
             }
         }
@@ -389,6 +397,7 @@ export class NimbusWorkspace {
             setUmask: (mask) => processes.setUmask(pid, mask),
             runAs: this.shell.getRunAsHost(),
             accountWork: (worker) => processes.beginWork(worker),
+            holdWork: (worker, stop) => processes.holdWork(worker, stop),
         });
         const hostSignals = this.shell.getHostProcessSignals();
         if (hostSignals)
@@ -453,19 +462,9 @@ export class NimbusWorkspace {
         }
     }
 }
-/**
- * Open the durable filesystem for a host that has not opened one itself.
- *
- * The revocation is here rather than in `create` because it is the act of
- * OPENING that carries it: pids at or below this generation's floor belong to
- * an instance that is gone, and their append capabilities must stop being
- * honoured before the first read. A host that opened the filesystem itself has
- * already done this, at the same seam, for the same reason.
- */
+/** Open the durable filesystem for a host that has not opened one itself. */
 function openFilesystem(options) {
-    const vfs = new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
-    vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
-    return vfs;
+    return new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
 }
 /**
  * The environment a Nimbus shell starts in.
@@ -523,6 +522,9 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         // them doing nothing but await a program (SessionProcessSupervisor).
         const endAwait = processes.beginAwait(parent.pid, child.pid);
         const endWork = processes.beginWork(child.pid);
+        // Its program is this workspace's work behind its pid: a kill stops it.
+        const stop = new AbortController();
+        const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason));
         let exitCode = 1;
         try {
             // The child inherits its parent's descriptors, environment and directory.
@@ -536,7 +538,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
                 terminalStdin: parent.terminalStdin,
                 isFdTerminal: parent.isFdTerminal,
                 isFdPipe: parent.isFdPipe,
-                signal: parent.signal,
+                signal: parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal,
                 runAs: runAsProcess,
             });
             exitCode = ended.status;
@@ -546,6 +548,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
             endWork();
             endAwait();
             processes.exit(child.pid, exitCode);
+            stopped();
         }
     };
     const commandIdentityFor = (pid) => ({
@@ -558,6 +561,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         },
         runAs: runAsProcess,
         accountWork: (worker) => processes.beginWork(worker),
+        holdWork: (worker, stop) => processes.holdWork(worker, stop),
     });
     return commandIdentityFor(shellProcess.pid);
 }
@@ -607,29 +611,17 @@ function registerWasmRuntimes(deps) {
     };
     const runners = {
         [BASH_RUNNER]: lazy(async () => (await import('../runtime/bash-runner.js'))
-            .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+            .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
         // No `startResident`: a workspace owns no actor that could outlive the
         // call, so a program that keeps serving is refused by name rather than
         // run as a one-shot that dies with it. Same for ruby, where a script is
         // the shape that may bind a port.
-        // The stock build and the one importing the Nimbus extensions (CPYTHON_RUNNER) run on the same runner.
         'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-            .makeCPythonRunnerFactory({ facets: deps.facets, network: deps.network })),
-        [CPYTHON_RUNNER]: lazy(async () => (await import('../runtime/cpython-runner.js'))
-            .makeCPythonRunnerFactory({ facets: deps.facets, network: deps.network })),
+            .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
         'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-            .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
+            .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
-            .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
-        [GIT_RUNNER]: lazy(async () => {
-            const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
-                import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
-            ]);
-            return makeGitRunnerFactory({
-                facets: deps.facets, filesystem: deps.filesystem,
-                fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
-            });
-        }),
+            .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
     };
     for (const [key, factory] of Object.entries(runners)) {
         deps.runtimes.registerRunner(key, factory);
@@ -656,27 +648,8 @@ function once(make) {
  * drops them itself, and only once their columns prove they are its own.
  */
 const WORKSPACE_TABLES = [
-    'vfs_append_receipts_v2',
-    'vfs_append_writer_state_v2',
-    'vfs_append_module_state_v2',
-    'vfs_append_pid_revocations_v2',
-    'vfs_append_acked_gaps_v2',
-    'vfs_state',
-    'vfs_inodes',
-    'vfs_chunks',
-    'vfs_contents',
-    'vfs_content_chunks',
-    'vfs_inode_history',
-    'vfs_gc_queue',
-    'vfs_jobs',
-    'vfs_snapshots',
-    'vfs_tombstones',
-    'vfs_cold_trash',
-    'vfs_append_receipts',
-    'vfs_append_writer_state',
-    'vfs_append_module_state',
-    'vfs_append_pid_revocations',
-    'vfs_append_acked_gaps',
+    // The store's own, as it keeps them.
+    ...STORE_TABLES,
     SHELLS_TABLE,
 ];
 /**

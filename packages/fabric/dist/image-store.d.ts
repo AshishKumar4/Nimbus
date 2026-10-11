@@ -5,11 +5,12 @@
  * A resident process's module map is sized by the user's disk, so it does not
  * ride inside the boot spec — the store writes it once and the session keeps
  * only a path (see process-fabric.ts, ResidentCodeSpec.vfsTextModules). This
- * module owns the write protocol: paced slicing so no one turn holds a
- * transaction the platform resets the object over, register-roots-before-
- * first-byte so the sweep can never observe an unrooted image, size-equality
- * as the completeness test, and a mark-sweep rooted off the live process
- * table.
+ * module owns the write protocol, for these images and every other
+ * content-addressed blob a session keeps (storeContentBlob): paced slicing so
+ * no one turn holds a transaction the platform resets the object over,
+ * register-roots-before-first-byte so the sweep can never observe an unrooted
+ * image, size-equality as the completeness test, and a mark-sweep rooted off
+ * the live process table.
  *
  * The filesystem itself stays the embedder's, reached through the
  * {@link ImageBlobStore} port — the store decides what is written where
@@ -39,9 +40,12 @@ export interface ImageBlobStore {
     mkdirp(dir: string): void;
     /** The file's current size in bytes, or null when it does not exist. */
     sizeOf(path: string): number | null;
-    /** Create or REPLACE the file with exactly these bytes (truncating). */
+    /**
+     * Create or REPLACE the file with exactly these bytes (truncating). The
+     * bytes are taken during the call: the store reuses their buffer after.
+     */
     writeFile(path: string, bytes: Uint8Array): void;
-    /** Write bytes at an offset, growing the file. */
+    /** Write bytes at an offset, growing the file; taken during the call, as writeFile's. */
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     /** Entry names directly under `dir`. Throws when the dir is unreadable. */
     list(dir: string): string[];
@@ -63,13 +67,14 @@ export declare class ImageStore {
     private residentImages;
     private dirReady;
     /**
-     * @param blobs The disk the images land on, resolved per use — the embedder
-     *   may not have a filesystem yet when the store is constructed, and throws
-     *   from here when a write is asked for without one.
+     * @param blobs The disk the images of process `pid` land on, as written on
+     *   its behalf (the process reads them as their writer), resolved per use —
+     *   the embedder may not have a filesystem yet when the store is
+     *   constructed, and throws from here when a write is asked for without one.
      * @param isLive Whether a pid still names a running process. The root set
      *   is the process table, reached through this one predicate.
      */
-    constructor(blobs: () => ImageBlobStore, isLive: (pid: number) => boolean);
+    constructor(blobs: (pid: number) => ImageBlobStore, isLive: (pid: number) => boolean);
     /**
      * The image store's directory, created before the first filesystem view is
      * built rather than on the first image write.
@@ -87,7 +92,7 @@ export declare class ImageStore {
      * accepting terminal connections at all, while the same build without it
      * served them.
      */
-    ensureDir(): void;
+    ensureDir(pid: number): void;
     /**
      * Materialize generated module sources in the content-addressed image store
      * and return the module-name → path map naming them.
@@ -104,8 +109,11 @@ export declare class ImageStore {
      *
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
+     *
+     * Each image is written by {@link storeContentBlob}: rooted here before its
+     * first byte, so a sweep that runs while this launch is suspended sees it.
      */
-    materialize(pid: number, images: AsyncIterable<readonly [string, string | readonly string[]]> | Iterable<readonly [string, string | readonly string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
+    materialize(pid: number, images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
     /**
      * Drop every image no running process boots from.
      *
@@ -119,4 +127,38 @@ export declare class ImageStore {
      */
     private sweep;
 }
+/**
+ * Store `source` at its content address in `fs` (`pathOf` its digest), unless
+ * a complete copy is already there; the one write protocol for every
+ * content-addressed blob a session keeps, whatever keeps it alive.
+ *
+ * The source is never encoded whole: it is digested a slice at a time, then,
+ * unless a complete blob is already stored at that digest, written a slice at
+ * a time, both passes encoding into one slice-sized buffer (encodeInto: no
+ * part's encoding is made on its own), each part released (emptied in place)
+ * as it is written. Encoded whole, an astro project's second launch held its
+ * pack's 33.6 MiB of strings and their 25 MiB of UTF-8 at once, and reset the
+ * session's isolate. What it holds at once is that buffer, whatever the
+ * blob's size.
+ *
+ * `root` is told the path before the first byte. A blob at its full size is
+ * a COMPLETE one: a write only ever grows the file from offset zero, so a
+ * write cut short by a reset leaves a strictly shorter file and fails this
+ * test. Size is enough of a check because every reader verifies the digest
+ * (process-fabric.ts readContentBlob).
+ *
+ * Sliced because the platform resets the object over what ONE TURN has
+ * outstanding, not over what it eventually writes — pi's 22.9 MB map went in
+ * as a single write and took the session down with it ~25% of the time.
+ * Spending each slice on `pacer` is what puts the rest on later turns; the
+ * slice bound is what keeps any one of them small.
+ */
+export declare function storeContentBlob(fs: ImageBlobStore, source: string | string[], pathOf: (digest: string) => string, { pacer, root }?: {
+    pacer?: TurnBudget;
+    root?: (path: string) => void;
+}): Promise<{
+    digest: string;
+    path: string;
+    bytes: number;
+}>;
 //# sourceMappingURL=image-store.d.ts.map

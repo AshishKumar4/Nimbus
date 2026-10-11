@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // loader-slot-ownership — a warm IsolatePool slot executes ONE dispatch
 // at a time, the tail covers the slot's in-flight work rather than the
 // caller's settle, and dispose() rejects what never started.
@@ -54,8 +55,8 @@ const deferred = () => {
   const ctx = { id: { toString: () => 'slot-owner-a' } };
   const pool = new IsolatePool({ LOADER: makeLoader(record) }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true });
   await Promise.all([
-    pool.submit((value) => value, 'first'),
-    pool.submit((value) => value, 'second'),
+    pool.submit(facetTaskSource("(value) => value"), 'first'),
+    pool.submit(facetTaskSource("(value) => value"), 'second'),
   ]);
   assert.equal(record.maxInFlight, 1, 'two submits on slot 0 ran serially, never concurrently');
   pool.dispose();
@@ -89,8 +90,8 @@ const deferred = () => {
   };
   const ctx = { id: { toString: () => 'slot-owner-b' } };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, concurrency: 2 });
-  const mapping = pool.map((value) => value, ['a', 'b', 'c', 'd', 'e', 'f']);
-  await pool.submit((value) => value, 'during-map');
+  const mapping = pool.map(facetTaskSource("(value) => value"), ['a', 'b', 'c', 'd', 'e', 'f']);
+  await pool.submit(facetTaskSource("(value) => value"), 'during-map');
   await mapping;
   assert.ok((maxPerSlot.get(0) ?? 0) <= 1, 'slot 0 never had two executions in flight');
   assert.equal(Math.max(...maxPerSlot.values()), 1, 'no slot ran two executions at once');
@@ -106,7 +107,7 @@ const deferred = () => {
   const record = { inFlight: 0, maxInFlight: 0 };
   const ctx = { id: { toString: () => 'slot-owner-c' } };
   const pool = new IsolatePool({ LOADER: makeLoader(record) }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, concurrency: 2 });
-  await pool.map((value) => value, ['a', 'b', 'c', 'd']);
+  await pool.map(facetTaskSource("(value) => value"), ['a', 'b', 'c', 'd']);
   assert.equal(record.maxInFlight, 2, 'two slots still ran concurrently — ownership is per-slot, not global');
   pool.dispose();
   console.log('  different slots still overlap — the tail is per-slot, not global');
@@ -136,8 +137,8 @@ const deferred = () => {
   };
   const ctx = { id: { toString: () => 'slot-owner-d' } };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true });
-  const first = pool.submit((value) => value, 'first', { timeoutMs: 20 });
-  const second = pool.submit((value) => value, 'second', { timeoutMs: 5_000 });
+  const first = pool.submit(facetTaskSource("(value) => value"), 'first', { timeoutMs: 20 });
+  const second = pool.submit(facetTaskSource("(value) => value"), 'second', { timeoutMs: 5_000 });
   const firstOutcome = await first.then(() => 'resolved', (e) => e.constructor.name);
   assert.equal(firstOutcome, 'TimeoutError', `the first submit rejects on timeout (got ${firstOutcome})`);
   assert.equal(record.started, 1, 'the timed-out execute is still live — the second has NOT started');
@@ -168,8 +169,8 @@ const deferred = () => {
   };
   const ctx = { id: { toString: () => 'slot-owner-e' } };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true });
-  const first = pool.submit((value) => value, 'first');
-  const second = pool.submit((value) => value, 'second');
+  const first = pool.submit(facetTaskSource("(value) => value"), 'first');
+  const second = pool.submit(facetTaskSource("(value) => value"), 'second');
   // Wait until the first dispatch is actually in-flight on the slot.
   while (record.started === 0) await new Promise((r) => setTimeout(r, 1));
   pool.dispose();

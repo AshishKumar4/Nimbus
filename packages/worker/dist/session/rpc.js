@@ -21,8 +21,10 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { ISOLATE_NETWORK, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { enc, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
+import { sessionFileStatOf } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
+import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -30,16 +32,14 @@ import { NpmCache } from '../npm/cache.js';
 import { failureOf as errorFromCacheFailure } from '../runtime/stop-replay-body.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
-import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
-import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
-import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
+import { executeFanoutShard } from '@nimbus-sh/fabric/fanout.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { residentBootSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -47,8 +47,10 @@ import { acquireSupervisorReadAllocation, } from '@nimbus-sh/platform/heavy-allo
 import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/platform/diag-counters.js';
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { registerServingPort } from './serving-port.js';
+import { subtreeListing } from '@nimbus-sh/core/runtime/fs-list-tree.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 // Cache I/O stays in SupervisorRPC's realm, at its original subrequest depth.
@@ -64,6 +66,22 @@ export async function _rpcCacheResult(self, ticket, result, pid, run) {
 export async function _rpcStdinPrepared(self, pid, run) {
     if (pid !== undefined)
         self.facetManager?.stdinPrepared(pid, run);
+}
+function queueExitNotice(self, notice) {
+    return Boolean(self.terminal && self.shell?.queueProcessExitNotice(notice, self.processes, renderExitNotice));
+}
+function renderExitNotice(notice, source) {
+    const { pid, code } = notice;
+    const cmd = source.get(pid)?.command || `pid ${pid}`;
+    if (notice.kind === 'facet')
+        return `${code === 0 ? '\x1b[2m' : '\x1b[2;31m'}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`;
+    if (notice.kind === 'shell')
+        return `\x1b[2;31m[shell exited: pid=${pid} code=${code} duration=${notice.durationMs}ms]\x1b[0m\r\n`;
+    if (notice.kind === 'killed')
+        return `[process killed: pid=${pid} code=${code}]\r\n`;
+    const sep = '─'.repeat(60);
+    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m';
+    return `\r\n${color}${sep}\r\nProcess ${pid} (${cmd}) exited with code ${code}\r\n${sep}\x1b[0m\r\n`;
 }
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
@@ -316,10 +334,13 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
     fs.chmod(protectedPath, 0o444);
 }
 export async function _rpcStat(self, path, pid, cred) {
-    return self.supervisorOp({ op: 'stat', args: [path], pid, cred });
+    return sessionFileStatOf(await self.supervisorOp({ op: 'stat', args: [path], pid, cred }));
 }
 export async function _rpcLstat(self, path, pid, cred) {
-    return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
+    return sessionFileStatOf(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred }));
+}
+export async function _rpcReadlink(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'readlink', args: [path], pid, cred });
 }
 export async function _rpcChmod(self, path, mode, pid, cred) {
     await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
@@ -366,17 +387,6 @@ const FsWriteRangeArgsSchema = z.object({
     path: z.string(),
     offset: FsRangeOffsetSchema,
 });
-const FsAppendArgsSchema = z.object({
-    path: z.string(),
-    writerId: z.string().uuid(),
-    moduleId: z.string().uuid(),
-    operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
-});
-const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
-    writerId: true,
-    moduleId: true,
-    operationId: true,
-});
 const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
@@ -386,8 +396,11 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
+    /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
+    begin: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
+        lease: z.boolean().optional(),
         push: z.object({
             roots: z.array(z.string().max(4096)).max(64),
             exclude: z.array(z.string().max(255)).max(64).optional(),
@@ -402,6 +415,10 @@ const FsAcquireArgsSchema = z.object({
 const FsListArgsSchema = z.object({
     after: z.string().max(4096).nullable(),
     limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+});
+const FsListTreeArgsSchema = z.object({
+    root: z.string().max(4096),
+    maxEntries: z.number().int().min(1).max(FS_LIST_TREE_MAX_ENTRIES),
 });
 /**
  * The facet's WebSocket relay. A facet does not open its own sockets: the
@@ -453,7 +470,8 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
  */
 export async function _rpcFsAcquire(self, epoch, cursor, options, pid) {
     const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
-    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+    // What it reports another's held commit made waits for its publication, as a list does.
+    return withRecall(() => self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options));
 }
 /** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
 export const FS_ACQUIRED_READ_OPS = ['stat', 'lstat', 'fsReadBatch'];
@@ -549,11 +567,14 @@ export async function _acquireOnDelivery(self, args, pid) {
     if (!parsed.success)
         return undefined;
     const caller = pid !== undefined && pid > 0 ? pid : undefined;
+    // A delivery never takes a read lease: its process cannot time the trust
+    // of an answer it did not ask for (the barrier that asks does).
+    const { lease: _lease, ...options } = parsed.data.options ?? {};
+    // Computed now, or not carried: one that would wait for another's held
+    // commit to publish holds no delivery back (the process asks, and waits).
     try {
-        return {
-            args: parsed.data,
-            answer: await _rpcFsAcquire(self, parsed.data.epoch, parsed.data.cursor, parsed.data.options, caller),
-        };
+        const { epoch, cursor } = parsed.data;
+        return { args: parsed.data, answer: await self.supervisorBridge(caller).acquire(epoch, cursor, parsed.data.options === undefined ? undefined : options) };
     }
     catch {
         return undefined;
@@ -583,14 +604,21 @@ export function _acquireForRoutedRequest(self, pid) {
  */
 export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
-    return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
+    // A page that reaches another holder's delegation waits for its recall, and is read again.
+    return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
+}
+/** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
+export async function _rpcFsListTree(self, root, maxEntries, pid) {
+    const args = FsListTreeArgsSchema.parse({ root, maxEntries });
+    // A page that reaches another holder's delegation waits for its recall, and the subtree is walked again.
+    return withRecall(() => subtreeListing(self.supervisorBridge(pid), args.root, args.maxEntries));
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
 }
 /** A bounded range used only to prepare fd 0, never an ordinary file read. */
 export async function _rpcStdinFileRead(self, path, offset, length, pid) {
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536)
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > STDIN_FILE_READ_PIECE_BYTES)
         throw new RangeError('invalid stdin preparation range');
     const stat = await self.supervisorBridge(pid).stat(path);
     if (!stat)
@@ -681,27 +709,6 @@ export async function _rpcFsReadBatch(self, requests, pid) {
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
     return self.supervisorBridge(pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
-}
-export async function _rpcFsAppend(self, path, writerId, moduleId, operationId, bytes, pid) {
-    const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
-    const sequence = Number(args.operationId);
-    if (!Number.isSafeInteger(sequence)) {
-        throw new Error('filesystem append operation exceeds the safe integer range');
-    }
-    const processId = processPid(pid);
-    const data = normalizeWriteBatchChunkData(bytes);
-    const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-    const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return self.supervisorBridge(pid).appendOnce(args.path, processId, args.writerId, args.moduleId, sequence, digest, data);
-}
-export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid) {
-    const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
-    const sequence = Number(args.operationId);
-    if (!Number.isSafeInteger(sequence)) {
-        throw new Error('filesystem append operation exceeds the safe integer range');
-    }
-    const processId = processPid(pid);
-    await self.supervisorBridge(processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -872,8 +879,11 @@ export async function _rpcStdout(self, pid, data, at, run) {
         data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
     if (data.byteLength === 0)
         return;
-    if (self.facetProcessManager?.routeOutput(pid, 1, data))
+    const childOutput = self.facetProcessManager?.routeOutput(pid, 1, data);
+    if (childOutput) {
+        await childOutput;
         return;
+    }
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
     // output. Skip pid=0 (the supervisor-rpc fallback when no props.pid
@@ -881,7 +891,7 @@ export async function _rpcStdout(self, pid, data, at, run) {
     // un-traceable facets.
     try {
         if (pid > 0)
-            self.processes.appendOutputBytes(pid, 'stdout', data);
+            await self.processes.appendOutputBytes(pid, 'stdout', data);
         if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
             const text = decodeForTerminal(pid, 'stdout', data);
             if (text.length > 0)
@@ -889,6 +899,10 @@ export async function _rpcStdout(self, pid, data, at, run) {
         }
     }
     catch (e) {
+        if (isBrokenPipe(e)) {
+            self.facetManager?.kill(pid, 'SIGPIPE');
+            throw e;
+        }
         // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
         // drops here are exactly what hides bugs; default-off so we don't
         // blow up terminals with normal-operation noise, but diagnosable on
@@ -908,11 +922,14 @@ export async function _rpcStderr(self, pid, data, at, run) {
         data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
     if (data.byteLength === 0)
         return;
-    if (self.facetProcessManager?.routeOutput(pid, 2, data))
+    const childOutput = self.facetProcessManager?.routeOutput(pid, 2, data);
+    if (childOutput) {
+        await childOutput;
         return;
+    }
     try {
         if (pid > 0)
-            self.processes.appendOutputBytes(pid, 'stderr', data);
+            await self.processes.appendOutputBytes(pid, 'stderr', data);
         // Terminal gets red wrapping; the ring buffer keeps it raw so the
         // stream tag can drive color decisions at replay time.
         if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
@@ -922,6 +939,10 @@ export async function _rpcStderr(self, pid, data, at, run) {
         }
     }
     catch (e) {
+        if (isBrokenPipe(e)) {
+            self.facetManager?.kill(pid, 'SIGPIPE');
+            throw e;
+        }
         if (self.nimbusDebug && self.terminal) {
             try {
                 self.terminal.write(`\x1b[33m[rpc-error] _rpcStderr(pid=${pid}) threw: ${e?.message || e}\x1b[0m\r\n`);
@@ -933,7 +954,8 @@ export async function _rpcStderr(self, pid, data, at, run) {
 function shouldMirrorProcessOutputToShell(self, pid) {
     if (pid <= 0)
         return true;
-    const entry = self.processes.get(pid);
+    // As published: output the gate held is delivered before the end it preceded.
+    const entry = self.processes.published(pid);
     // No table entry: either a reaped process's late flush or a facet that
     // outlived an instance reset. Neither owns the user's shell anymore — the
     // output still lands in the log ring above, never on the shell WS (an
@@ -979,20 +1001,39 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.closeInput(pid);
     }
     catch { }
+    // Its receipts go, and what it bound is released ahead of its output,
+    // so what its last closes flush goes out with it.
+    self.supervisorDeliveries?.forget(pid);
+    self.processes.programEnded(pid);
+    await self.processes.releaseOutput(pid, () => {
+        closeRelayedSockets(self, pid);
+        reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules);
+    });
+}
+/**
+ * A relayed socket is held open by the supervisor on the process's behalf,
+ * so it does not die when the facet does. Nothing else would ever close it,
+ * and a live one keeps buffering into the supervisor's heap. Its peer sees
+ * the close as the rest of the process's end: let out with it.
+ */
+function closeRelayedSockets(self, pid) {
+    try {
+        self.webSocketRelay?.closeForPid(pid);
+    }
+    catch { }
+}
+/** A process's own exit report, to everything that observes it. */
+function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) {
+    // Exit callbacks may release the foreground launch; capture its ownership first.
+    const entry = self.processes.get(pid);
+    const normalForeground = code === 0
+        && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
     for (const stream of ['stdout', 'stderr']) {
         const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
         if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
             self.terminal.write(normalizeTerminalNewlines(rest));
         }
     }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
-    try {
-        self.webSocketRelay?.closeForPid(pid);
-    }
-    catch { }
-    self.supervisorForgetBridge?.(pid);
     if (tail)
         self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -1023,36 +1064,11 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
-    // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
-    //
-    // Pre-fix Fix-4 policy was "dump whenever the ring buffer has
-    // bytes, regardless of code" (intent: catch the
-    // clean-but-silent failure where stderr traceback was buffered
-    // but user wasn't watching). Real-world cost: every successful
-    // `node -e`, `python -c`, etc. printed stdout once live, then
-    // again as a post-exit dump — double-print on the happy path.
-    //
-    // New policy:
-    //   - Non-zero exit AND non-empty buffer → dump (failure context)
-    //   - Zero exit → no dump (live stream already showed it)
-    //
-    // Reconnect-replay path is preserved by the `logs <pid>` shell
-    // command + `/api/processes/<pid>/logs` endpoint, neither of
-    // which depends on the inline dump.
-    //
-    // NOTE: _emitShellExecDone (below) carries an identical gate;
-    // both paths must agree because either may fire first depending
-    // on facet vs. shell-finalizer ordering.
     if (code !== 0 && self.processes.logSize(pid) > 0) {
         self._emitExitDump(pid, code);
     }
-    // Fix 5: verbose exit trace gated on NIMBUS_DEBUG=1. Facets already
-    // get a spawn banner via FacetManager.onSpawn; this closes the loop.
-    if (self.nimbusDebug && self.terminal) {
-        const entry = self.processes.get(pid);
-        const cmd = entry?.command || `pid ${pid}`;
-        const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
-        self.terminal.write(`${colorExit}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`);
+    if (!normalForeground && (self.nimbusDebug || code !== 0)) {
+        queueExitNotice(self, { pid, code, kind: 'facet' });
     }
 }
 /**
@@ -1068,78 +1084,24 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
  *     log buffer still has everything, so `logs <pid>` recovers it.
  */
 export function _emitExitDump(self, pid, code) {
-    if (!self.terminal)
+    if (!queueExitNotice(self, { pid, code, kind: 'dump' }))
         return;
-    const entry = self.processes.get(pid);
-    const cmd = entry?.command || `pid ${pid}`;
-    const chunks = self.processes.tailLogs(pid, { lines: 30 });
-    const sep = '─'.repeat(60);
-    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m'; // yellow-dim for clean-silent
-    self.terminal.write(`\r\n${color}${sep}\r\n` +
-        `Process ${pid} (${cmd}) exited with code ${code}\r\n` +
-        `${sep}\x1b[0m\r\n`);
-    for (const c of chunks) {
-        const terminalData = normalizeTerminalNewlines(c.data);
-        const painted = c.stream === 'stderr' ? `\x1b[31m${terminalData}\x1b[0m` : terminalData;
-        self.terminal.write(painted);
+    let diagnostics = '';
+    for (const chunk of self.processes.tailLogs(pid, { lines: 30 })) {
+        const data = normalizeTerminalNewlines(chunk.data);
+        diagnostics += chunk.stream === 'stderr' ? `\x1b[31m${data}\x1b[0m` : data;
     }
-    self.terminal.write(`${color}${sep}\x1b[0m\r\n`);
+    self.shell?.writeNotice(diagnostics);
 }
-/**
- * Fix 3 + Fix 4 + Fix 5: finalizer for shellExecuteTracked.
- *
- * Runs after a tracked shell.execute finishes (any path). Chooses when
- * to emit the exit-dump banner and when to log the debug trace.
- *
- * Dump policy (Fix 4):
- *   - Non-zero exit AND any buffered output → always dump.
- *   - Zero exit AND buffered output has >0 bytes → dump anyway. Rationale:
- *     an npm run that returned "success" while the ring buffer still has
- *     a traceback is the exact "clean-but-silent failure" we're hunting.
- *     The replay is unique information the user didn't see live (e.g.
- *     because the terminal was reconnected after the fact).
- *   - Zero exit AND empty buffer → nothing to say. Skip.
- *
- * Trace policy (Fix 5):
- *   - NIMBUS_DEBUG=1: always print `[exited pid=N code=C duration=Xms]`.
- *   - Default: print only for non-zero OR long-running scripts (the
- *     cmd-start banner makes them expect an exit marker).
- *
- * Called with the already-marked pid (processes.exit + processes.markExit
- * ran in shellExecuteTracked's finally).
- */
-export function _emitShellExecDone(self, pid, cmd, code, durationMs) {
-    const bufSize = self.processes.logSize(pid);
-    // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
-    //
-    // Pre-fix policy was "dump regardless of code when buffer non-empty"
-    // (Fix 4 from W3.5 era, intent: catch clean-but-silent failure
-    // where user couldn't see live output e.g. across reconnect).
-    //
-    // Real-world cost: for every successful `node -e`, `python -c`,
-    // `npx X --version`, etc., user saw output once live + once
-    // again in the post-exit dump. Annoying double-print for the
-    // common-case interactive session.
-    //
-    // New policy:
-    //   - Non-zero exit AND non-empty buffer → dump (failure context)
-    //   - Zero exit → no dump (live stream already showed it)
-    //
-    // Reconnect-replay path is preserved by the `logs <pid>` shell
-    // command + `/api/processes/<pid>/logs` endpoint, neither of
-    // which depends on the inline dump.
-    const shouldDump = bufSize > 0 && code !== 0;
-    if (shouldDump) {
-        self._emitExitDump(pid, code);
-    }
-    if (self.terminal) {
-        const traceAlways = self.nimbusDebug;
-        const isLongRunning = /^(vite|wrangler|next|nuxt|astro|remix|dev|serve|start|watch)\b/.test(cmd);
-        if (traceAlways || code !== 0 || isLongRunning) {
-            const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
-            self.terminal.write(`${colorExit}[shell exited: pid=${pid} code=${code} duration=${durationMs}ms]\x1b[0m\r\n`);
+export function _emitShellExecDone(self, pid, _cmd, code, durationMs) {
+    if (code === 0)
+        return;
+    void self.processes.releaseOutput(pid, () => {
+        if (self.processes.logSize(pid) > 0) {
+            self._emitExitDump(pid, code);
         }
-    }
+        queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    });
 }
 /**
  * External-exit path: invoked by FacetManager when a process is killed
@@ -1148,20 +1110,25 @@ export function _emitShellExecDone(self, pid, cmd, code, durationMs) {
  * has useful context, then runs the same dump machinery.
  */
 export function _reportExternalExit(self, pid, code, reason) {
+    // Its receipts go however its exit was recorded. What it bound in the
+    // filesystem is the table's to release (SessionProcessSupervisor.holdWork):
+    // once whatever of it the session runs has unwound.
+    self.supervisorDeliveries?.forget(pid);
     if (self.processes.getExit(pid))
         return;
     try {
         self.processes.closeInput(pid);
     }
     catch { }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
-    try {
-        self.webSocketRelay?.closeForPid(pid);
-    }
-    catch { }
-    self.supervisorForgetBridge?.(pid);
+    void self.processes.releaseOutput(pid, () => {
+        closeRelayedSockets(self, pid);
+        reportExternalExit(self, pid, code, reason);
+    });
+}
+/** An exit the process did not report itself, to everything that observes it. */
+function reportExternalExit(self, pid, code, reason) {
+    if (self.processes.getExit(pid))
+        return;
     if (reason) {
         self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
@@ -1173,6 +1140,9 @@ export function _reportExternalExit(self, pid, code, reason) {
         notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
         if (self.terminal && self.processes.logSize(pid) > 0) {
             self._emitExitDump(pid, code);
+        }
+        else if (code !== 0) {
+            queueExitNotice(self, { pid, code, kind: 'killed' });
         }
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero
@@ -1285,19 +1255,10 @@ export async function _rpcCpSpawn(self, req) {
  * UTF-8 into U+FFFD.
  */
 export async function _rpcCpStdinWrite(self, childPid, data) {
-    if (self.processes.hasInput(childPid)) {
-        return self.processes.writeInputBytes(childPid, data);
-    }
-    const fpm = self._ensureFacetProcessManager();
-    return fpm.stdinWrite(childPid, data);
+    return self.processes.writeInputBytesWait(childPid, data);
 }
 export async function _rpcCpStdinEnd(self, childPid) {
-    if (self.processes.hasInput(childPid)) {
-        self.processes.endInput(childPid);
-        return;
-    }
-    const fpm = self._ensureFacetProcessManager();
-    fpm.stdinEnd(childPid);
+    await self.processes.endInputAfterWrites(childPid);
 }
 /**
  * `reply`, carrying the ACQUIRE for the caller (`_acquireOnDelivery`) when it
@@ -1309,7 +1270,7 @@ async function withDeliveredAcquire(self, reply, delivers, acquire, pid) {
     const acquired = await _acquireOnDelivery(self, acquire, pid);
     return acquired ? { ...reply, acquired } : reply;
 }
-export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writerId) {
+export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writerId, maxBytes) {
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
@@ -1324,26 +1285,15 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writ
     if (taken && !taken.admits(writerId))
         return { data: new Uint8Array(0), ended: false };
     let packet;
-    if (self.processes.hasInput(childPid)) {
-        // The input store holds typed text and piped bytes; the child's stdin
-        // pump takes bytes, so text is encoded at this edge and bytes pass as
-        // they are.
-        const input = await self.processes.readInput(childPid, waitMs);
-        packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
-    }
-    else {
-        const fpm = self._ensureFacetProcessManager();
-        packet = await fpm.cpReadStdin(childPid, waitMs);
-    }
+    // Every child and terminal descriptor is a reference onto the same store.
+    const input = await self.processes.readInput(childPid, waitMs, maxBytes);
+    packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
     if (taken) {
         // The run stopped while this read waited: what it would have taken goes
         // back in front of the channel for the run after it.
         if (!taken.admits(writerId)) {
             if (packet.data.byteLength > 0) {
-                if (self.processes.hasInput(childPid))
-                    self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
-                else
-                    self._ensureFacetProcessManager().unreadStdin(childPid, [packet.data]);
+                self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
             }
             return { data: new Uint8Array(0), ended: false };
         }
@@ -1390,468 +1340,56 @@ export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStar
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
-// ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
-// Kept for backward compatibility with direct DO stub callers.
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export function vfsReadFile(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        const data = self.sqliteFs.as(CRED_KERNEL).readFile(stripped);
-        return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Read a file as string. Returns string or null. */
-export function vfsReadFileString(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readFileString(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Stat a path. Returns file metadata or null. */
-export function vfsStat(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).stat(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Check if path exists. */
-export function vfsExists(self, path) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    return self.sqliteFs.as(CRED_KERNEL).exists(stripped);
-}
-/** RPC: List directory contents. Returns array of { name, type }. */
-export function vfsReaddir(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readdir(stripped);
-    }
-    catch {
-        return [];
-    }
-}
-/** RPC: Write a file to the VFS. */
-export function vfsWriteFile(self, path, data) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    self.sqliteFs.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
-}
-/**
- * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
- *
- * Called by a coordinator NimbusSession DO via
- * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
- * THIS DO instance acts as a peer worker: it runs ONE IsolatePool
- * over its assigned shard and returns the per-task results.
- *
- * Budget
- * ──────
- * The coordinator's calls to its peers are Durable Object RPCs and spend
- * none of its Dynamic Worker budget; each peer spends its own. The shard
- * runs one IsolatePool as wide as this DO's headroom allows (at least one
- * slot — a peer has nowhere further to send it), claimed on the ledger
- * while it runs.
- *
- * Failure model
- * ─────────────
- * Throws bubble back to the coordinator's RPC promise (rejects on
- * the supervisor side). The coordinator's `submitMany` Promise.all
- * surfaces the first reject; the install path treats it as a hard
- * failure (matching today's single-facet `pool.submit` posture).
- *
- * Bytes-isolation
- * ───────────────
- * The fnSource string is forwarded verbatim into a fresh
- * IsolatePool, which serializes it into the loader's worker
- * code. No supervisor-side eval. Same trust posture as every other
- * IsolatePool dispatch.
- */
-export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
-    if (!Array.isArray(args)) {
-        throw new TypeError('_rpcFanoutExecute: args must be an array');
-    }
-    if (args.length === 0)
-        return { results: [] };
-    const concurrency = Math.max(1, Math.min(args.length, dynamicWorkerHeadroom(self.ctx)));
-    const claim = claimDynamicWorkers(self.ctx, concurrency);
-    const pool = new IsolatePool(self.env, self.ctx, {
-        concurrency,
-        claim: claim ?? undefined,
-        timeoutMs: poolOpts.timeoutMs,
-        tag: poolOpts.tag ?? 'fanout-peer',
-        preamble: poolOpts.preamble,
-        wasmModules: poolOpts.wasmModules,
-        extraBindings: poolOpts.extraBindings,
-        omitSupervisor: poolOpts.omitSupervisor,
-        // INSTALL-HONESTY: route SUPERVISOR.* back to the coordinator
-        // (the user's session DO), not the peer DO. When undefined
-        // (back-compat with non-fanout callers), IsolatePool falls
-        // back to ctx.id.toString() — the legacy behavior, correct for
-        // single-DO callers.
-        supervisorDoIdOverride: poolOpts.coordinatorDoId,
-        supervisorRoute: poolOpts.coordinatorRoute,
-        supervisorPid: poolOpts.supervisorPid,
-        network: poolOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(poolOpts.network.egress, poolOpts.network.id),
-    });
-    try {
-        // mapSource accepts the pre-serialized fnSource forwarded by the
-        // coordinator (the function was already validated +
-        // serialized via serializeFunction on the coordinator side).
-        const results = await pool.mapSource(fnSource, args);
-        return { results };
-    }
-    finally {
-        try {
-            pool.dispose();
-        }
-        catch { /* best-effort */ }
-        claim?.release();
-    }
+/** RPC: the peer end of Fanout's sharded submitMany (fabric executeFanoutShard). */
+export function _rpcFanoutExecute(self, fnSource, args, shardOpts) {
+    return executeFanoutShard(self.env, self.ctx, fnSource, args, shardOpts);
 }
 // ── Process fabric: the peer host leg ───────────────────────────────────────
 //
-// THIS DO instance acts as a process host for a sibling coordinator session:
-// it opens the process as a facet of ITSELF — the same `processes().spawn`
-// call the coordinator makes when it hosts one directly — so the facet lands
-// in THIS DO's workerd process, with its own memory AND its own CPU. The
-// facet's SUPERVISOR binding is minted for the COORDINATOR's doId, so every
-// syscall routes back to the user's session. Same trust and routing posture as
-// _rpcFanoutExecute's INSTALL-HONESTY override.
-//
-// Nothing here knows what the process is, and nothing here decides anything: a
-// coordinator reaches this leg only because its deployment set
-// NIMBUS_PROCESS_HOST=peer. See loaders/process-host.ts.
-/** The fabric's boot-spec shape, with the staged arm validated as Nimbus's
- *  opencode stage — this RPC is the peer's trust boundary for it. */
+// What a sibling coordinator asks of THIS object when its deployment set
+// NIMBUS_PROCESS_HOST=peer (loaders/process-host.ts), served by the object's
+// one fabric PeerHost.
+/** The fabric's boot-spec shape, with the staged arm validated as Nimbus's opencode stage. */
 const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
-const HostProcessOptsSchema = z.object({
-    /** Full doId of the coordinator session (SUPERVISOR routing target). */
-    coordinatorDoId: z.string().min(1),
-    /** The coordinator's route, minted into the process's SUPERVISOR binding. */
-    route: z.object({
-        supervisorEntrypoint: z.string().min(1),
-        hostNamespace: z.string().min(1),
-        hostDispatchMethod: z.string().min(1),
-    }).optional(),
-    /** Supervisor-assigned pid of the process entry on the coordinator. */
-    pid: z.number().int().positive(),
-    /** Trusted identity of this concrete resident-host incarnation. */
-    writerId: z.string().uuid(),
-    /** The coordinator instance's delivery incarnation, for the process's SUPERVISOR binding. */
-    hostIncarnation: z.string().uuid().optional(),
-    /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
-    network: z.object({
-        egress: z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
-            && typeof value.fetch === 'function' && typeof value.connect === 'function'),
-        id: z.string().min(1),
-    }).optional(),
-    /** Keyed dynamic-worker identity on THIS peer's loader. */
-    workerKey: z.string().min(1),
-    /** Unforgeable capability for the fetch-semantic WebSocket hop. */
-    webSocketCapability: z.string().uuid(),
-    /** Opaque arguments forwarded to the runner's startProcess. */
-    startArgs: z.unknown().optional(),
-});
 /**
- * How long a boot-payload or routed-HTTP leg waits for its process's host
- * record. Normally zero: the coordinator issues `_rpcHostProcess` first and it
- * registers before its first await. The wait exists so neither leg can lose a
- * race with RPC delivery order.
+ * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
+ * the hosting watch armed through the object's own scheduler.
  */
-const HOSTED_RECORD_WAIT_MS = 30_000;
-/**
- * Whole-file reads for a boot spec's by-path members, in ranges. This is the
- * one thing a peer does differently from a coordinator, and it is a PARAMETER
- * of `processes().spawn` rather than a branch inside it: the coordinator reads
- * its own disk synchronously, a peer reads the same disk over the supervisor.
- *
- * Ranged because these are the session's largest files — a ruby
- * interpreter+stdlib image is 34.3 MiB — and workerd's 32 MiB ceiling applies
- * to each returned VALUE, not to the call. UNCACHED for the same reason the
- * coordinator's own reader is: caching a 34 MiB blob in a 32 MiB LRU evicts
- * everything the session was using and holds the blob for the session's life.
- *
- * The credential is the PROCESS's, not the kernel's, because that is what a
- * supervisor RPC carries and no substrate should be able to read more than the
- * process it hosts. Boot-spec members are reachable under it by construction:
- * the image store is kernel-owned mode 0644 precisely so any process can read
- * it, and the installed runtime images are world-readable too — which is not
- * an assumption, it is what makes ruby, python and node boot on a peer in the
- * live gates.
- */
-const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
-function peerDiskReader(supervisor) {
-    const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
-    if (!supervisorRpc) {
-        throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? 'SupervisorRPC'} unavailable`);
-    }
-    const fs = supervisorRpc({ props: supervisor });
-    return { readFile: (path) => readSupervisorFile(fs, path) };
+export function peerHostFor(ctx, env, scheduleWatch) {
+    return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema, scheduleWatch });
 }
-async function readSupervisorFile(fs, path) {
-    const stat = await fs.stat(path);
-    const size = Number(stat?.size);
-    if (!Number.isSafeInteger(size) || size < 0) {
-        throw new Error(`Nimbus: cannot size '${path}' for a resident process's module map`);
-    }
-    const out = new Uint8Array(size);
-    for (let offset = 0; offset < size;) {
-        const chunk = await fs.fsReadRangeUncached(path, offset, Math.min(RESIDENT_READ_RANGE_BYTES, size - offset));
-        if (!chunk || chunk.byteLength === 0) {
-            throw new Error(`Nimbus: '${path}' returned no bytes at offset ${offset}`);
-        }
-        out.set(chunk, offset);
-        offset += chunk.byteLength;
-    }
-    return out;
+export function _rpcProcessHostProbe(self) {
+    return self.peerHost.probe();
 }
-function registerHostedRecord(self, workerKey, record) {
-    const records = self._hostedProcesses;
-    records.set(workerKey, record);
-    const waiters = self._hostedProcessWaiters;
-    const pending = waiters.get(workerKey);
-    if (!pending)
-        return;
-    waiters.delete(workerKey);
-    for (const notify of pending)
-        notify(record);
+export function _rpcHostProcess(self, boot, opts) {
+    return self.peerHost.host(boot, opts);
+}
+export function _rpcAwaitHostedOpen(self, workerKey) {
+    return self.peerHost.awaitOpen(workerKey);
+}
+export function _rpcAwaitHostedBoot(self, workerKey) {
+    return self.peerHost.awaitBoot(workerKey);
+}
+export function _rpcRouteHostedHttp(self, workerKey, wire) {
+    return self.peerHost.routeHttp(workerKey, wire);
+}
+export function _rpcCancelHostProcess(self, workerKey) {
+    return self.peerHost.cancel(workerKey);
 }
 /**
- * The record for `workerKey`, waiting briefly if the host leg has not landed
- * yet — the coordinator issues it first and it registers before its first
- * await, so normally there is nothing to wait for, but RPC delivery order is
- * not a guarantee.
- *
- * A host runs exactly ONE process: its Durable Object name carries the pid
- * (`<doId>:proc:<pid>:<attempt>`) and pids never repeat, being strided by
- * generation. So a key this host is not hosting is a key it never will host,
- * and parking a waiter for it would let anyone holding a NIMBUS_SESSION stub
- * accumulate map entries and 30-second timers here by the thousand. Once
- * something is known, an unknown key is refused immediately instead.
+ * RPC: the actor that hosted `workerKey` for this session reports, from a new
+ * incarnation, that the platform reset it under the process. The capability
+ * proves it hosted it. True when the process was this session's and is now
+ * ended.
  */
-function awaitHostedRecord(self, workerKey) {
-    const records = self._hostedProcesses;
-    const existing = records.get(workerKey);
-    if (existing)
-        return Promise.resolve(existing);
-    const waiters = self._hostedProcessWaiters;
-    if (records.size > 0 || (waiters.size > 0 && !waiters.has(workerKey))) {
-        return Promise.reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
-    }
-    return new Promise((resolve, reject) => {
-        const pending = waiters.get(workerKey) ?? new Set();
-        const notify = (record) => { clearTimeout(timer); resolve(record); };
-        const timer = setTimeout(() => {
-            pending.delete(notify);
-            if (pending.size === 0)
-                waiters.delete(workerKey);
-            reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
-        }, HOSTED_RECORD_WAIT_MS);
-        pending.add(notify);
-        waiters.set(workerKey, pending);
-    });
-}
-/**
- * RPC: placement probe. Returns this peer's module-scope isolate token so the
- * coordinator can verify the peer landed in a distinct workerd process — the
- * same token means a shared process, which is the CPU sharing a peer exists to
- * escape.
- */
-export function _rpcProcessHostProbe(_self) {
-    return { isolateToken: isolateToken() };
-}
-/**
- * RPC: host a resident process. Held open by the coordinator for the process's
- * whole life, and it is that held call which keeps this DO resident — nothing
- * arms an alarm to wake a host back up. Resolves when the coordinator releases
- * the process; rejects if it could not be opened at all.
- *
- * The runner's start CONTRACT never crosses. The coordinator's fabric decides
- * from it when the process is over and releases, which cancels this call — so
- * this leg holds uniformly and has no idea whether it is hosting a TUI or a
- * server.
- *
- * If the coordinator dies, workerd cancels this inbound call, the facet is
- * released in the `finally` below, and the process dies with it: a hosting
- * peer never outlives its parent session.
- */
-export async function _rpcHostProcess(self, boot, opts) {
-    const hostOpts = HostProcessOptsSchema.parse(opts);
-    const spec = ResidentBootSpecSchema.parse(boot);
-    const { workerKey } = hostOpts;
-    const supervisor = {
-        ...supervisorBindingProps(self.ctx, hostOpts.pid, {
-            writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
-            network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
-        }),
-        ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
-    };
-    let cancel = () => { };
-    const cancelled = new Promise((resolve) => { cancel = resolve; });
-    let settleFacet = () => { };
-    let failFacet = () => { };
-    const facetPromise = new Promise((resolve, reject) => {
-        settleFacet = resolve;
-        failFacet = reject;
-    });
-    let settleStarted = () => { };
-    let failStarted = () => { };
-    const startedPromise = new Promise((resolve, reject) => {
-        settleStarted = resolve;
-        failStarted = reject;
-    });
-    // Nothing awaits these unless a leg asks for them; keep the runtime from
-    // reporting them as unhandled while the process is healthy.
-    facetPromise.catch(() => { });
-    startedPromise.catch(() => { });
-    registerHostedRecord(self, workerKey, {
-        facet: facetPromise,
-        started: startedPromise,
-        webSocketCapability: hostOpts.webSocketCapability,
-        cancelled,
-        cancel,
-    });
-    let facet;
+export function _rpcHostLost(self, workerKey, capability) {
+    // An answer either way: the host keeps asking until it gets one, so a
+    // session that cannot act on the report still answers it.
     try {
-        facet = processes(self.ctx, self.env).spawn(() => peerDiskReader(supervisor), supervisor, {
-            pid: hostOpts.pid,
-            workerKey,
-            boot: spec,
-            writerId: hostOpts.writerId,
-            startArgs: hostOpts.startArgs,
-        });
-        settleFacet(facet);
-        facet.started.then(settleStarted, failStarted);
-        await cancelled;
-        return { ok: true };
+        return self.facetManager?.hostLost(workerKey, capability) ?? false;
     }
-    catch (e) {
-        failFacet(e);
-        failStarted(e);
-        throw e;
+    catch (error) {
+        console.warn(`[process-host] a report that process ${workerKey} lost its host could not be applied:`, errorText(error));
+        return false;
     }
-    finally {
-        // The record OUTLIVES the process on purpose, and a peer hosts exactly one
-        // (its name carries the pid), so this is one entry per host for the life of
-        // the instance. Dropping it would make a request that arrives after a kill
-        // wait out `HOSTED_RECORD_WAIT_MS` and then blame the wrong thing; keeping
-        // it routes that request into the released facet, which is exactly what a
-        // coordinator-hosted one does — it says the process is no longer running.
-        await facet?.release();
-    }
-}
-/**
- * RPC: settle once the process is OPEN on this peer, or reject with whatever
- * stopped it from opening.
- *
- * This exists so a host failure surfaces at the same place on both substrates.
- * Opening a facet of your own DO either throws or does not, before the fabric
- * has a handle; opening one on a peer is a message, and without this the
- * coordinator would return a handle for a process that never existed and only
- * discover it later, through `done`. A caller must not have to know which
- * substrate it is on to know what a successful spawn means.
- */
-export async function _rpcAwaitHostedOpen(self, workerKey) {
-    const record = await awaitHostedRecord(self, workerKey);
-    await record.facet;
-    return { ok: true };
-}
-/**
- * RPC: read back the runner's startProcess payload. `_rpcHostProcess` started
- * it; this never starts anything, so a coordinator asking twice gets the same
- * answer a local facet would have returned inline — and for a `lifetime`
- * runner it settles at exit, exactly as the local one does.
- */
-export async function _rpcAwaitHostedBoot(self, workerKey) {
-    const record = await awaitHostedRecord(self, workerKey);
-    return { payload: await record.started };
-}
-/**
- * RPC: inbound HTTP for a port owned by a process this peer hosts.
- *
- * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
- * rejects it with "Entrypoints to dynamically-loaded workers cannot be
- * transferred to other Workers", because the object belongs to the
- * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
- * body is a plain ReadableStream, which RPC transfers with flow control. So
- * the leg carries the parts and rebuilds the object on each side: no
- * buffering, no size ceiling, and an SSE or chunked body still flows live.
- *
- * The response body is re-piped through an identity stream owned by THIS
- * isolate before it is returned, for the same reason the parts exist at all:
- * what leaves here must not be an object the loaded worker owns.
- */
-export async function _rpcRouteHostedHttp(self, workerKey, wire) {
-    const record = await awaitHostedRecord(self, workerKey);
-    const facet = await record.facet;
-    const headers = new Headers();
-    for (const [k, v] of wire.headers)
-        headers.append(k, v);
-    const init = { method: wire.method, headers };
-    if (wire.body) {
-        init.body = wire.body;
-        init.duplex = 'half';
-    }
-    const response = await facet.handleHttpRequest(new Request(wire.url, init));
-    let body = null;
-    if (response.body) {
-        const { readable, writable } = new IdentityTransformStream();
-        self.ctx.waitUntil(response.body.pipeTo(writable).catch(() => { }));
-        body = readable;
-    }
-    return {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headerPairs(response.headers),
-        body,
-    };
-}
-/**
- * The peer end of the upgrade hop. Reached by `fetch` rather than RPC, so the
- * 101 and its live socket travel back as themselves.
- *
- * The workerKey names a process and is derivable from a pid, so it does not
- * authorise on its own; the capability is minted by whoever opened the process
- * and never leaves the two sessions that hold it. A mismatch is a 404 and not
- * a 403, so the route reveals nothing about what this peer is hosting.
- */
-export async function routeHostedWebSocket(self, workerKey, capability, request) {
-    const record = await awaitHostedRecord(self, workerKey);
-    if (record.webSocketCapability !== capability)
-        return new Response('Not found', { status: 404 });
-    const facet = await record.facet;
-    return facet.handleWebSocketRequest(request);
-}
-/**
- * RPC: deterministic kill of a hosted process — the same teardown a
- * coordinator applies to a facet of its own, and it does not answer until it
- * has happened. The facet is released HERE rather than left to the held call's
- * `finally`, because a caller that has to guess whether the process is really
- * gone cannot retire the writer identity behind it.
- */
-export async function _rpcCancelHostProcess(self, workerKey) {
-    const records = self._hostedProcesses;
-    const record = records.get(workerKey);
-    if (!record)
-        return { cancelled: false };
-    const facet = await record.facet.catch(() => null);
-    await facet?.release();
-    try {
-        record.cancel();
-    }
-    catch { /* best-effort */ }
-    return { cancelled: true };
 }

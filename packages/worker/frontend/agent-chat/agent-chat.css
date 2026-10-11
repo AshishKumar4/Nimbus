@@ -123,6 +123,12 @@
 .agent-status.warn::before { background: var(--nim-amber); }
 .agent-status.streaming { color: var(--nim-accent); }
 .agent-status.streaming::before { background: var(--nim-accent); animation: nim-pulse 1.1s ease-in-out infinite; }
+@media (max-width: 760px) {
+  .agent-top { flex-wrap: wrap; }
+  .agent-heading { flex: 1 1 100%; }
+  .agent-top .agent-btn { min-height: 32px; }
+  .agent-status { margin-left: auto; }
+}
 
 /* ── Message list ─────────────────────────────────────────────────── */
 .agent-messages {

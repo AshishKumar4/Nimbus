@@ -11,7 +11,8 @@
  *                          the "too large" one), an empty commit, and a
  *                          commit dated before its parent by more than 2^31
  *                          seconds (the GDO2 overflow chunk).
- *   referenceGraph(repo)   host git's graph for `repo`, written in a copy.
+ *   referenceGraph(repo)   host git's graph for `repo`, written in a copy
+ *                          (with changed-path filters, or without).
  *   diffGraphs(a, b)       null when equal, else what first differs: the
  *                          header, the chunk table, or a chunk, with the
  *                          commit (by graph position) where it can say.
@@ -79,14 +80,18 @@ export function buildFixture(dir) {
   return dir;
 }
 
-/** Host git's commit-graph for `repo`, written in a copy of it: the reference bytes. */
-export function referenceGraph(repo) {
+/**
+ * Host git's commit-graph for `repo`, written in a copy of it: the reference
+ * bytes. `changedPaths: false` for a graph without Bloom filters, as a clone
+ * writes before its filters are computed.
+ */
+export function referenceGraph(repo, { changedPaths = true } = {}) {
   const copy = mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'commit-graph-reference-'));
   try {
     cpSync(path.join(repo, '.git'), path.join(copy, '.git'), { recursive: true });
     rmSync(path.join(copy, '.git/objects/info/commit-graph'), { force: true });
     rmSync(path.join(copy, '.git/objects/info/commit-graphs'), { recursive: true, force: true });
-    git(copy, ['-c', 'commitGraph.changedPathsVersion=2', 'commit-graph', 'write', '--reachable', '--changed-paths']);
+    git(copy, ['-c', 'commitGraph.changedPathsVersion=2', 'commit-graph', 'write', '--reachable', ...(changedPaths ? ['--changed-paths'] : [])]);
     return new Uint8Array(readFileSync(path.join(copy, '.git/objects/info/commit-graph')));
   } finally {
     rmSync(copy, { recursive: true, force: true });

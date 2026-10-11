@@ -142,6 +142,17 @@ export const BUILD_FIXPOINT = [
     script: 'build',
     why: 'compile src → dist',
   })),
+  { cwd: '.', script: 'generate:wrangler', why: 'project canonical deployment policy and explicit environment identities' },
+  {
+    cwd: 'packages/worker',
+    script: 'bundle:facets',
+    why: 'produce core source strings before their compiled asset consumers',
+  },
+  {
+    cwd: 'packages/core',
+    script: 'build',
+    why: 'compile the facet-generated client consumed by bundle:shims',
+  },
   {
     cwd: 'packages/worker',
     script: 'bundle',
@@ -161,10 +172,15 @@ export const BUILD_FIXPOINT = [
     script: 'build',
     why: 'carry the regenerated sources into dist',
   },
+  {
+    cwd: 'packages/fabric',
+    script: 'build',
+    why: 'carry the build-time compiled adapter into dist',
+  },
 ];
 
 /** Everything the build can write. Digested whole, before and after. */
-export const OUTPUT_ROOTS = BUILT_PACKAGES.map((pkg) => `packages/${pkg}`);
+export const OUTPUT_ROOTS = [...BUILT_PACKAGES.map((pkg) => `packages/${pkg}`), 'apps/hosted-demo/wrangler.jsonc', 'apps/probe/wrangler.jsonc'];
 
 /** Where a `/_assets/...` path resolves on disk for every deploy target. */
 export const STAGED_ASSETS_DIR = join('packages', 'worker', 'public');
@@ -226,6 +242,8 @@ export const INPUT_ROOTS = [
   'bun.lock',
   'scripts/dist-integrity.mjs',
   'scripts/clean-dist.mjs',
+  'scripts/generate-wrangler-configs.mjs',
+  'apps/nimbus-deployments.json',
 ];
 
 /** The toolchain is an input: a new bun or node can change what the same src compiles to. */
@@ -403,8 +421,8 @@ const BWRAP = '/usr/bin/bwrap';
 
 /**
  * Each build step runs as PID 1's child in a PID namespace of its own that
- * dies with this process (bwrap --unshare-pid --die-with-parent, as
- * run-bounded runs a test): when the gate dies, however it dies, the
+ * dies with this process (bwrap --unshare-pid --die-with-parent): when the
+ * gate dies, however it dies, the
  * namespace's init is killed and the kernel kills every process in it. So
  * nothing a step started (esbuild's service, which Node spawns with fds 0-2
  * only, among them) writes on after the checkout lock is released; the

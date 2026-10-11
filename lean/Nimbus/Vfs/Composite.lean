@@ -1,5 +1,5 @@
 /-
-  Nimbus.Vfs.Composite — `CompositeVFS` (DESIGN.md §2, /mnt/scratch/nimbus/verify/vfs-api):
+  Nimbus.Vfs.Composite — `CompositeVFS` (DESIGN.md §2):
   one executable model of routing, per-principal sources, synthesized mount-point
   directories, root-symlink resolution and the refusals, over trees for each backend.
   The refinement fixture `lean/fixtures/composite-vfs.json` is this model's output.

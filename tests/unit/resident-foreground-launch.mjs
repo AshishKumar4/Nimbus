@@ -52,7 +52,10 @@ const within = (promise, ms, what) => Promise.race([
   let pid = 0;
   const launch = manager.spawnWorker('export default {}', 'ruby worker.rb', '/home/user', {
     resident: { runtime: 'ruby', argv: ['ruby', 'worker.rb'] },
-    foreground: { signal: controller.signal, write: (stream, text) => { written.push([stream, text]); } },
+    foreground: { signal: controller.signal, write: (stream, bytes) => {
+      assert.ok(bytes instanceof Uint8Array,'the foreground relay carries bytes');
+      written.push([stream,new TextDecoder().decode(bytes)]);
+    } },
   });
   launch.catch(() => {});
   while (booting.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));

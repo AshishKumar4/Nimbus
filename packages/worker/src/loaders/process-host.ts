@@ -12,6 +12,7 @@ import {
 import type {
   ProcessHost,
   ResidentDiskReader,
+  Supervise,
 } from '@nimbus-sh/fabric/process-fabric.js';
 
 /**
@@ -38,6 +39,7 @@ export function processHostFor(
   disk: () => ResidentDiskReader,
   /** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
   network: () => WorkspaceNetwork = () => ISOLATE_NETWORK,
+  supervise?: Supervise,
 ): ProcessHost {
-  return createProcessHost(processHostMode(env), ctx, env, disk, network);
+  return createProcessHost(processHostMode(env), ctx, env, disk, network, supervise);
 }

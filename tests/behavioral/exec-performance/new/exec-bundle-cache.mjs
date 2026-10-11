@@ -26,10 +26,10 @@ console.log(`exec-performance/exec-bundle-cache — ${BASE}`);
 const sid = await mintSession();
 
 async function reset() {
-  await fetch(`${BASE}/s/${sid}/api/_diag/exec/reset`, { method: 'POST', headers: requestHeaders() });
+  await fetch(`${BASE}/s/${sid}/api/_diag/exec/reset`, { method: 'POST', headers: requestHeaders({}, sid) });
 }
 async function lastRecord() {
-  const r = await fetch(`${BASE}/s/${sid}/api/_diag/exec`, { headers: requestHeaders() });
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/exec`, { headers: requestHeaders({}, sid) });
   if (r.status !== 200) return null;
   const body = await r.json();
   const recs = Array.isArray(body.records) ? body.records : [];

@@ -146,7 +146,7 @@ export const NODE_WS_UPGRADE_SOURCE = `
 
   /** A frame the client should not have sent: the connection fails with \`closeCode\` (1002, or 1007 for text that is not UTF-8). */
   function protocolError(message, closeCode = 1002) {
-    return Object.assign(new Error("Nimbus: WebSocket protocol error from the client: " + message), { code: "ERR_NIMBUS_WEBSOCKET_PROTOCOL", closeCode });
+    return nodeError(Error, "ERR_NIMBUS_WEBSOCKET_PROTOCOL", "Nimbus: WebSocket protocol error from the client: " + message, { closeCode });
   }
 
   /** \`bytes\` as UTF-8 text, or the connection fails with 1007. */
@@ -394,7 +394,7 @@ export const NODE_WS_UPGRADE_SOURCE = `
     write(chunk, encoding, callback) {
       if (typeof encoding === "function") callback = encoding;
       if (chunk !== undefined && chunk !== null && chunk.length > 0) {
-        this.destroy(Object.assign(new Error("Nimbus: a WebSocket upgrade request carries no body"), { code: "ERR_NIMBUS_WEBSOCKET_UPGRADE_BODY" }));
+        this.destroy(nodeError(Error, "ERR_NIMBUS_WEBSOCKET_UPGRADE_BODY", "Nimbus: a WebSocket upgrade request carries no body"));
         return false;
       }
       if (callback) queueMicrotask(callback);

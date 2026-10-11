@@ -17,8 +17,12 @@ const verified = await verifyNimbusToken(env, token);
 assert.equal(verified.claims.tn, 'tenant-1');
 
 const [header, payload, signature] = token.split('.');
+const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const alias = signature.slice(0, -1) + alphabet[alphabet.indexOf(signature.at(-1)) + 1];
+assert.deepEqual(Buffer.from(alias, 'base64url'), Buffer.from(signature, 'base64url'), 'nonzero padding bits name the same signature bytes');
 for (const [label, bad] of [
   ['a signature with characters outside base64url', `${header}.${payload}.${signature.slice(0, -2)}!!`],
+  ['a non-canonical spelling of the same signature bytes', `${header}.${payload}.${alias}`],
   ['a signature in the standard alphabet with padding', `${header}.${payload}.${signature.replace(/-/g, '+').replace(/_/g, '/')}=`],
   ['a payload that is not base64url', `${header}.%%%.${signature}`],
 ]) {

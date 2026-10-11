@@ -169,10 +169,10 @@ const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nim
 
 // The lock is an exclusive SQLite lock on HOLD_PATH, held for the run's
 // life: the kernel drops it when the run ends, however it ends. LOCK_PATH
-// only describes the holder. A pid cannot say whether a holder lives:
-// run-bounded starts each job in its own PID namespace, where the pid a
-// killed run recorded names some other process (a run killed at its
-// timeout on 2026-09-30 left "pid 12", which blocked every later suite).
+// only describes the holder. A pid cannot say whether a holder lives: a
+// run in a PID namespace of its own records a pid that, read outside it,
+// names some other process (a run killed at its timeout on 2026-09-30 left
+// "pid 12", which blocked every later suite).
 const LOCK_PATH = join(tmpdir(), 'nimbus-behavioral-run.lock');
 const HOLD_PATH = `${LOCK_PATH}.sqlite`;
 
@@ -422,14 +422,18 @@ function runProbeOnce(probePath) {
   return new Promise((resolve) => {
     const subT0 = Date.now();
     const child = spawn(process.execPath, [probePath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'], serialization: 'json',
       env: { ...process.env, NIMBUS_PROBE_RUN_ID: scope },
+    });
+    const assertions = new Map();
+    child.on('message', (message) => {
+      if (message?.type === 'nimbus-probe-assertions') assertions.set(message.result?.id, message.result);
     });
     let stdout = '';
     let stderr = '';
     const done = (r) => {
       reapLeakedBrowsers(scope);
-      resolve({ ...r, elapsedMs: Date.now() - subT0 });
+      resolve({ ...r, assertions: assertions.size ? [...assertions.values()] : null, elapsedMs: Date.now() - subT0 });
     };
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
@@ -480,7 +484,7 @@ function reportProbe(probe, r) {
   }
   // The JSON verdict keeps each probe's output tail, stdout then stderr.
   const output = JSON_REPORT ? `${r.stdout.slice(-OUTPUT_TAIL)}${r.stderr ? `\n── stderr\n${r.stderr.slice(-OUTPUT_TAIL)}` : ''}` : undefined;
-  return { probe, ok: r.ok, code: r.code, elapsed: Number(elapsedS), retried: r.retried, output };
+  return { probe, ok: r.ok, code: r.code, elapsed: Number(elapsedS), retried: r.retried, output, assertions: r.assertions };
 }
 
 /** Bytes of each stream a JSON verdict keeps per probe. */

@@ -5,13 +5,7 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-/**
- * session/programmatic.ts - public sandbox RPC helpers.
- *
- * These helpers are called by NimbusSession one-line delegators so the
- * Durable Object exposes a typed, programmatic sandbox surface without
- * duplicating the interactive terminal boot path.
- */
+import { SESSION_DESTROYED } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -19,19 +13,20 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import { z } from 'zod/v4';
+import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
 import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
-import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { adoptGeneration, generation, raiseGeneration, releaseGeneration } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { _acquireForRoutedRequest } from './rpc.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /**
  * Run `body` in the named shell `options.shellId`, or with none when no
  * `shellId` was given. The named shells are the workspace's
@@ -56,7 +51,35 @@ async function withShellState(self, options, background, run) {
     const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
         ? options.shellRoot
         : getHome(self);
-    return workspace.withNamedShell(options.shellId, { start: { cwd: root }, persist: !background }, run);
+    return workspace.withNamedShell(options.shellId, { start: { cwd: root }, persist: !background, detach: options.detach }, run);
+}
+const detachableExecs = new WeakMap();
+/** Register before readiness/queueing; even a call waiting for its shell can detach. */
+function openExec(self, options) {
+    if (options.detachId === undefined)
+        return { options, close() { } };
+    const id = parseExecId(options.detachId);
+    let calls = detachableExecs.get(self);
+    if (!calls)
+        detachableExecs.set(self, calls = new Map());
+    if (calls.has(id))
+        throw new Error(`detachId '${id}' already names a running call`);
+    const call = { shellId: options.shellId, controller: new AbortController() };
+    calls.set(id, call);
+    return {
+        options: { ...options, detach: options.detach ? AbortSignal.any([options.detach, call.controller.signal]) : call.controller.signal },
+        close() { if (calls.get(id) === call)
+            calls.delete(id); if (calls.size === 0)
+            detachableExecs.delete(self); },
+    };
+}
+/** Leave ownership of one invocation, not its process or its output. A scoped session can leave only its own shell. */
+export function rpcDetachExec(self, detachId, shellId) {
+    const call = detachableExecs.get(self)?.get(parseExecId(detachId));
+    if (!call || (shellId !== undefined && call.shellId !== shellId))
+        return { detached: false };
+    call.controller.abort();
+    return { detached: true };
 }
 /**
  * The named shells this object's storage holds from before they were the
@@ -77,22 +100,7 @@ async function adoptStoredShells(self, workspace) {
 }
 /** The most keys one Durable Object storage `delete` takes. */
 const STORAGE_DELETE_KEYS = 128;
-/**
- * The durable half of the port capability lives in `./port-capability.js`, so
- * the facet manager can retire a stale one without importing this module.
- */
-const ProcessLogsOptionsSchema = z.object({
-    cursor: z.number().int().nonnegative().optional(),
-    lines: z.number().int().nonnegative().optional(),
-    bytes: z.number().int().nonnegative().optional(),
-}).strict();
 function getHome(self) {
-    try {
-        const envHome = self.shell?.env?.HOME;
-        if (envHome)
-            return String(envHome);
-    }
-    catch { }
     try {
         const shellEnv = self.shell?.getEnv?.();
         if (shellEnv?.HOME)
@@ -101,6 +109,7 @@ function getHome(self) {
     catch { }
     return '/home/user';
 }
+/** What a runtime install writes with: as the kernel, repeatable, so its callers pass a delegation it meets by withRecall. */
 function runtimeDeps(self) {
     self.ensureSqliteFs();
     if (!self.sqliteFs)
@@ -120,7 +129,7 @@ export async function ensureProgrammaticReady(self, options = {}) {
         .map((s) => String(s).trim())
         .filter(Boolean);
     if (preinstall.length > 0) {
-        const results = await ensureRuntimesProgrammatic(runtimeDeps(self), preinstall);
+        const results = await withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), preinstall));
         const failed = results.filter((r) => r.exitCode !== 0);
         if (failed.length > 0) {
             const details = failed.map((r) => `${r.spec}: ${r.stderr || r.stdout}`).join('\n');
@@ -152,9 +161,11 @@ function startShellJob(self, command, options, job, named) {
     if (job.background)
         self.processes.openInput(pid);
     const controller = new AbortController();
-    self.processes.setTerminator(pid, () => {
+    // The job is this session's work behind the pid: a kill stops it, and the
+    // pid's release waits for its shell to close what it opened.
+    const stopped = self.processes.holdWork(pid, (reason) => {
         try {
-            controller.abort();
+            controller.abort(reason);
         }
         catch { /* already settled */ }
     });
@@ -195,7 +206,7 @@ function startShellJob(self, command, options, job, named) {
                 }
                 : {}),
         },
-    }).finally(() => shell.closeDescriptors());
+    }).finally(() => shell.closeDescriptors()).finally(stopped);
     return { pid, entry, run, abort: () => { try {
             controller.abort();
         }
@@ -230,15 +241,24 @@ export async function rpcExec(self, command, options = {}) {
 export async function rpcExecStream(self, command, options = {}) {
     assertAbsoluteExecCwd(options);
     assertExecId(options);
-    await ensureProgrammaticReady(self, options);
+    const invocation = openExec(self, options);
+    options = invocation.options;
+    try {
+        await ensureProgrammaticReady(self, options);
+    }
+    catch (error) {
+        invocation.close();
+        throw error;
+    }
     let writer = null;
     return new Promise((resolve, reject) => {
         // The exit lands after a named shell's state is saved, so a caller that
         // has read `exit` sees its `cd` on the next call.
-        withShellState(self, options, false, (named) => streamOnShell(self, command, options, named, (started) => {
+        const running = withShellState(self, options, false, (named) => streamOnShell(self, command, options, named, (started) => {
             writer = started;
             resolve(started.stream);
-        })).then((exit) => writer.end(exit), (error) => (writer ? writer.fail(error) : reject(error)));
+        })).then((exit) => { invocation.close(); writer.end(exit); }, (error) => { invocation.close(); return writer ? writer.fail(error) : reject(error); });
+        self.ctx.waitUntil(running);
     });
 }
 async function streamOnShell(self, command, options, named, started) {
@@ -432,11 +452,11 @@ export async function rpcRunCode(self, code, options = {}) {
 }
 export async function rpcInstallRuntime(self, spec, options = {}) {
     await ensureProgrammaticReady(self);
-    return installRuntimeProgrammatic(runtimeDeps(self), String(spec), options);
+    return withRecall(() => installRuntimeProgrammatic(runtimeDeps(self), String(spec), options));
 }
 export async function rpcEnsureRuntimes(self, specs, options = {}) {
     await ensureProgrammaticReady(self);
-    return ensureRuntimesProgrammatic(runtimeDeps(self), specs.map((s) => String(s)), options);
+    return withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), specs.map((s) => String(s)), options));
 }
 export async function rpcListRuntimes(self) {
     await ensureProgrammaticReady(self);
@@ -447,7 +467,7 @@ export async function rpcListRuntimes(self) {
 }
 export async function rpcListProcesses(self) {
     await ensureProgrammaticReady(self);
-    return self.processes.getAll().map((p) => serializeProcess(p));
+    return self.processes.publishedAll().map((p) => serializeProcess(p));
 }
 export async function rpcKillProcess(self, pid) {
     await ensureProgrammaticReady(self);
@@ -505,7 +525,7 @@ export async function rpcSignalProcess(self, pid, signal) {
 }
 export async function rpcProcessLogs(self, pid, options = {}) {
     await ensureProgrammaticReady(self);
-    const parsed = ProcessLogsOptionsSchema.parse(options);
+    const parsed = SessionProcessLogsOptionsSchema.parse(options);
     const readOptions = {
         cursor: parsed.cursor,
         ...(parsed.bytes !== undefined ? { bytes: parsed.bytes } : { lines: parsed.lines ?? 200 }),
@@ -959,85 +979,128 @@ export async function rpcSpawnWorker(self, workerCode, command, cwd, opts = {}) 
  */
 export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
-    const p = String(path).replace(/^\/+/, '');
-    const vfs = self.sqliteFs.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
-    if (!vfs.exists(p))
-        return;
-    if (vfs.isDirectory(p)) {
-        if (!options.recursive) {
-            vfs.rmdir(p);
+    const p = `/${String(path).replace(/^\/+/, '')}`;
+    const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
+    // A delegation it meets is recalled first.
+    await withRecall(() => {
+        if (!fs.exists(p))
+            return;
+        if (fs.isDirectory(p)) {
+            if (!options.recursive)
+                fs.rmdir(p);
+            else
+                fs.removeRecursive(p);
             return;
         }
-        vfs.removeRecursive(p);
-        return;
-    }
-    vfs.unlink(p);
+        fs.unlink(p);
+    });
 }
-export async function rpcDestroy(self, options = {}) {
+/** One destroy at a time: one asked for while another runs is answered by it. */
+export function rpcDestroy(self, options = {}) {
+    return self.destroying ??= destroySession(self, options).finally(() => { self.destroying = null; });
+}
+async function destroySession(self, options) {
     self.ensureSqliteFs();
-    if (self.sqliteFs.hasExclusiveMutation()) {
+    const guardedVfs = self.sqliteFs;
+    // A lease that stopping the session's processes does not end refuses the
+    // destroy before anything is stopped: a refused destroy leaves the session
+    // as it was. What their work holds goes as it stops (a delegation with its
+    // process, a clone's lease with its clone).
+    if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
         throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
     }
-    const guardedVfs = self.sqliteFs;
-    const destroyLease = guardedVfs.acquireGlobalExclusiveMutation();
+    // Past this it completes, and nothing starts meanwhile: the table it stops
+    // admits no process, and a request that would ready the session waits for
+    // the one it makes again (rpcDestroy, ensureRuntimeReady).
+    self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+    const reason = typeof options.reason === 'string' && options.reason.trim()
+        ? options.reason.trim().slice(0, 200)
+        : null;
+    const destroyedAt = Date.now();
+    let killed = 0;
+    const running = self.processes.getAll()
+        .filter((p) => p.state === 'running');
+    // Each one's work stops as a destroy's (SESSION_DESTROYED): what it would
+    // still write into the storage about to be wiped, it does not.
+    for (const entry of running) {
+        const pid = Number(entry.pid);
+        try {
+            if (self._viteShimPid === pid) {
+                if (self.cirrusReal?.isRunning)
+                    self.cirrusReal.stop(self.ctx);
+                self.cirrusReal = null;
+                if (self.viteDevServer?.isRunning)
+                    self.viteDevServer.stop();
+                self.viteDevServer = null;
+                try {
+                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
+                }
+                catch { }
+                self._viteShimPid = null;
+                self._viteShimPort = null;
+            }
+            else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
+                // facetManager.kill already marks process state and unregisters ports.
+            }
+            else {
+                try {
+                    self.processes.kill(pid, undefined, SESSION_DESTROYED);
+                }
+                catch { }
+            }
+            try {
+                self.portRegistry?.unregisterByPid?.(pid);
+            }
+            catch { }
+            try {
+                if (!self.processes.getExit(pid)) {
+                    self.processes.markExit(pid, 137, reason ?? 'destroyed');
+                }
+            }
+            catch { }
+            killed++;
+        }
+        catch {
+            try {
+                self.processes.kill(pid, undefined, SESSION_DESTROYED);
+            }
+            catch { }
+            try {
+                self.portRegistry?.unregisterByPid?.(pid);
+            }
+            catch { }
+        }
+    }
+    // What they held goes once the work stopping on them has closed what it
+    // opened (SessionProcessSupervisor.released, bounded for work that ignores
+    // its stop): their delegations and leases among it (a clone releases its
+    // lease as it stops).
+    await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
+    // Its processes stopped, every wave still being read is cut, which ends
+    // the commits it held open: each is then published once its reader
+    // answers, or its trust runs out. The check and the take after the last
+    // are one turn.
+    for (;;) {
+        guardedVfs.cancelStreams('the session is being destroyed');
+        const held = guardedVfs.publishedFor();
+        if (held === null)
+            break;
+        await held;
+    }
+    // What work that ignored its stop still holds, the destroy takes over:
+    // nothing of that work reaches the session it leaves. Its processes'
+    // calls name their pids, which are no longer live (liveCred: ESRCH), and
+    // the recreated session's table never issues them again; its writes under
+    // a lease present the lease, which ends here (ESTALE); and a clone stopped
+    // with SESSION_DESTROYED writes nothing more (its record and junk are the
+    // wipe's).
+    const destroyLease = guardedVfs.seizeGlobalExclusiveMutation();
     let destroyed = false;
     try {
-        const reason = typeof options.reason === 'string' && options.reason.trim()
-            ? options.reason.trim().slice(0, 200)
-            : null;
-        const destroyedAt = Date.now();
-        let killed = 0;
-        const running = self.processes.getAll()
-            .filter((p) => p.state === 'running');
-        for (const entry of running) {
-            const pid = Number(entry.pid);
-            try {
-                if (self._viteShimPid === pid) {
-                    if (self.cirrusReal?.isRunning)
-                        self.cirrusReal.stop(self.ctx);
-                    self.cirrusReal = null;
-                    if (self.viteDevServer?.isRunning)
-                        self.viteDevServer.stop();
-                    self.viteDevServer = null;
-                    try {
-                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
-                    }
-                    catch { }
-                    self._viteShimPid = null;
-                    self._viteShimPort = null;
-                }
-                else if (self.facetManager?.kill?.(pid)) {
-                    // facetManager.kill already marks process state and unregisters ports.
-                }
-                else {
-                    try {
-                        self.processes.kill(pid);
-                    }
-                    catch { }
-                }
-                try {
-                    self.portRegistry?.unregisterByPid?.(pid);
-                }
-                catch { }
-                try {
-                    if (!self.processes.getExit(pid)) {
-                        self.processes.markExit(pid, 137, reason ?? 'destroyed');
-                    }
-                }
-                catch { }
-                killed++;
-            }
-            catch {
-                try {
-                    self.processes.kill(pid);
-                }
-                catch { }
-                try {
-                    self.portRegistry?.unregisterByPid?.(pid);
-                }
-                catch { }
-            }
-        }
+        // A launch suspended for a turn waits on the alarm the wipe deletes, in
+        // the manager the reset drops: closed, it ends now, and what it holds
+        // (its build's share of the isolate's allocation credit) goes back.
+        await self.facetManager?.closeLaunches();
         try {
             self.processes.flushLogs();
         }
@@ -1081,16 +1144,10 @@ export async function rpcDestroy(self, options = {}) {
             await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt);
         }
         catch { /* best-effort */ }
-        // deleteAll also wiped the isolate-generation counter; without
-        // re-persisting it the next boot would restart at generation 1, and a
-        // straggler facet from a HIGHER pre-destroy generation would classify as
-        // current-generation (pid > pidBase) — landing its output on the
-        // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-        try {
-            await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx));
-        }
-        catch { /* best-effort */ }
-        resetInMemorySessionState(self);
+        // deleteAll also wiped the isolate-generation counter: the recreated
+        // session's supervisor reserves its generation again (installEmptyProcessState),
+        // past every pid this instance minted, before it mints any.
+        await resetInMemorySessionState(self);
         destroyed = true;
         return { ok: true, killed, destroyedAt, reason };
     }
@@ -1117,16 +1174,30 @@ async function quiesceInMemorySessionState(self) {
         self._cirrusHmrWsClients?.clear?.();
     }
     catch { }
-    installEmptyProcessState(self, successorGeneration(self));
+    await installEmptyProcessState(self);
 }
 /**
- * The generation the NEXT boot of this session will run as.
- *
- * rpcDestroy re-persists the pre-destroy generation after wiping storage,
- * so `adoptGeneration` reads it back and bumps once — landing here.
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations). It mints no pid before
+ * reserveSessionProcesses gives it its range.
  */
-function successorGeneration(self) {
-    return generation(self.ctx) + 1;
+export function sessionProcesses(ctx) {
+    const processes = new SessionProcessSupervisor();
+    processes.onPidStride((stride) => { void raiseGeneration(ctx, stride); });
+    return processes;
+}
+/**
+ * Give `processes` (made by sessionProcesses) this incarnation's pid range:
+ * its generation durably reserved first (adoptGeneration: persisted past
+ * every one before it, and past every pid this context minted), then its
+ * pids start past that. The one way a live supervisor gets its range: at
+ * boot and at a destroy's recreate.
+ */
+export async function reserveSessionProcesses(ctx, processes) {
+    await adoptGeneration(ctx);
+    processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+    return processes;
 }
 /**
  * Install the empty process/port state a destroyed session leaves behind.
@@ -1143,9 +1214,9 @@ function successorGeneration(self) {
  * generation could have issued. This instance has to refuse exactly the
  * same set for the rest of its life, so it takes the same floor.
  */
-function installEmptyProcessState(self, generation) {
-    self.processes = new SessionProcessSupervisor();
-    self.processes.setPidBase(generation * PID_GEN_STRIDE);
+async function installEmptyProcessState(self) {
+    releaseGeneration(self.ctx);
+    self.processes = await reserveSessionProcesses(self.ctx, sessionProcesses(self.ctx));
     self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
     self._w9PersistWired = false;
 }
@@ -1185,7 +1256,7 @@ async function closeAcceptedWebSockets(self) {
         await delay(25);
     }
 }
-function resetInMemorySessionState(self) {
+async function resetInMemorySessionState(self) {
     try {
         self._cirrusHmrWsClients?.clear?.();
     }
@@ -1194,7 +1265,9 @@ function resetInMemorySessionState(self) {
         self.terminal?.close?.();
     }
     catch { }
-    self.sqliteFs = null;
+    const filesystem = self.filesystem;
+    self.filesystem = null;
+    await filesystem?.close();
     self.kernel = null;
     self.shell = null;
     self.shellProcessPid = null;
@@ -1214,8 +1287,6 @@ function resetInMemorySessionState(self) {
     self._cirrusHmrWsClients = null;
     self.nimbusWrangler = null;
     self.npmInstaller = null;
-    self.fetchProxyEntrypoint = null;
-    self._supervisorOps = null;
     self._cpRegistry = null;
     self._viteShimPid = null;
     self._viteShimPort = null;
@@ -1223,14 +1294,8 @@ function resetInMemorySessionState(self) {
     self.sessionBasePathHydrated = false;
     self.wranglerAliasBannerShown = false;
     self._b4Phase = 'drained';
-    // Adopt the generation the next boot will derive from the counter
-    // rpcDestroy just re-persisted, so the in-memory pid floor and the
-    // persisted one agree. Deliberately left unpersisted: storage keeps the
-    // pre-destroy value, and adoptGeneration re-derives this one from it.
-    const successor = successorGeneration(self);
-    installEmptyProcessState(self, successor);
+    await installEmptyProcessState(self);
     self._w9SchemaInit = false;
-    assumeGeneration(self.ctx, successor);
     try {
         self._w9WireProcessLogPersist?.();
     }

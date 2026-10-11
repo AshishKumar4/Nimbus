@@ -27,12 +27,15 @@
 import { loaderOutbound, requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute } from './composition.js';
-import { supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { hashSource } from './vendor/serialize.js';
+import { requireFacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
-import { beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
+import { beginLoaderFetch, readmitRefused, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -47,29 +50,8 @@ function infrastructureSupervisorProps(ctx, pid, options) {
     return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
         ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure', ...egress };
 }
-/**
- * How long one call waits, in all, on the Dynamic Worker ledger after
- * "Dynamic worker concurrency limit exceeded" before the refusal surfaces
- * (beginLoaderFetchWhenFree: let in when a hold ends or the refusal's pause
- * passes). A deployed Durable Object admitted the refused batch after a 6 s
- * pause; 15 s bounds a call that would never be admitted.
- */
-const CAP_REFUSAL_WAIT_MS = 15_000;
-/**
- * esbuild runtime helpers re-declared at the top of every generated facet
- * module. esbuild emits `__name(fn, "fn")` wrappers around every named
- * function or arrow-with-binding-name; `fn.toString()` yields a body that
- * references `__name` by bare identifier. The supervisor bundle declares
- * `__name` at its own top level, but the binding does NOT cross isolate
- * boundaries — the facet's worker.js must re-declare it.
- *
- * The shim is bytes-stable so it doesn't perturb the loader-cache key;
- * if esbuild ever emits a new helper we'll see a "<name> is not defined"
- * error in the facet, add it here, and every slot rebuilds.
- */
-const ESBUILD_RUNTIME_SHIM = [
-    'const __defProp = Object.defineProperty;',
-    'const __name = (target, value) => __defProp(target, "name", { value, configurable: true });',
+/** Result ownership shared by guest tasks that call the supervisor. */
+const FACET_RPC_PREAMBLE = [
     'const __nimbusDisposeRpcResult = (value) => {',
     '  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;',
     '  const dispose = value[Symbol.dispose];',
@@ -99,7 +81,7 @@ export function assembleLoaderWorkerModuleSource(options) {
         }
         lines.push('// ── End pool-injected WebAssembly modules ─────────────────');
     }
-    lines.push('', '// ── esbuild runtime shim ──────────────────────────────────', '// When Nimbus is bundled by wrangler/esbuild, our facet function', '// is transformed into `__name(async function …, "…")` at emit', '// time. `fn.toString()` then yields the wrapped function body,', '// but `__name` and its helpers are module-local in the SUPERVISOR', '// bundle and do NOT cross into the facet isolate. Redeclare them', '// here so facet bodies survive the toString() round-trip.', ESBUILD_RUNTIME_SHIM, '// ── End esbuild runtime shim ──────────────────────────────', '');
+    lines.push('', FACET_RPC_PREAMBLE, '');
     if (options.preamble) {
         lines.push('// ── Preamble (pool-level helpers) ─────────────────────────', options.preamble, '// ── End preamble ──────────────────────────────────────────', '');
     }
@@ -155,6 +137,7 @@ export class IsolatePool {
     claim;
     concurrency;
     defaultTimeoutMs;
+    facetKind;
     defaultRetries;
     tag;
     slotGenerations = new Map();
@@ -210,6 +193,8 @@ export class IsolatePool {
     scope;
     /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
     network;
+    /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
+    writerPid;
     constructor(env, ctx, opts) {
         // A host hands its whole env over; the binding is claimed here and the
         // claim is checked on the next line.
@@ -222,9 +207,11 @@ export class IsolatePool {
         this.ctx = ctx;
         this.claim = opts.claim;
         this.concurrency = Math.max(1, opts.concurrency ?? 1);
-        this.defaultTimeoutMs = opts.timeoutMs ?? 60_000;
+        this.facetKind = opts.facetKind ?? 'isolate';
+        this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
         this.defaultRetries = Math.max(0, opts.retries ?? 0);
         this.tag = opts.tag ?? 'facet';
+        this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
         this.preamble = opts.preamble;
         // Include preamble in the cache-bucket key so changes to bundled helpers
         // invalidate warm slots. Empty preamble → '0' suffix (stable).
@@ -285,12 +272,13 @@ export class IsolatePool {
                 // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
                 // to the user's session DO, not the peer DO. Default to the
                 // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
-                const supervisor = infrastructureSupervisorProps(ctx, opts.supervisorPid ?? 0, {
-                    doId: opts.supervisorDoIdOverride,
-                    route: opts.supervisorRoute,
+                const supervisor = opts?.processSupervisor ?? infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
+                    doId: opts?.supervisorDoIdOverride,
+                    route: opts?.supervisorRoute,
                     network: opts.network,
                 });
-                bindings.SUPERVISOR = supervisorRpc({ props: supervisor });
+                bindings.SUPERVISOR = opts?.processSupervisor
+                    ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });
                 // Whatever the minted worker's env carries must be in its loader
                 // cache key — workerd's loader cache survives a DO hibernation
                 // wake while generation-strided pids (1000001 → 2000001) do not:
@@ -300,7 +288,8 @@ export class IsolatePool {
                 // not exist". doIdShort alone cannot cover this — it changes
                 // across sessions, not across wakes of the same session. So does
                 // the instance a binding delivers mutations to, when it names one.
-                this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}`, supervisor);
+                const run = supervisor.bindingKind === 'process' ? `:${supervisor.writerId}` : '';
+                this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}${run}`, supervisor);
             }
             else {
                 // Supervisor entrypoint unavailable — running without ctx.exports
@@ -384,8 +373,7 @@ export class IsolatePool {
         // standard ESM import binding receives the resulting
         // WebAssembly.Module. We expose them on `globalThis.__NIMBUS_WASM`
         // so the user fn can read them at request time without having to
-        // re-import (the user fn is serialized via fn.toString and doesn't
-        // carry import statements).
+        // re-import (task expressions bind only the guest's supplied modules).
         //
         // Per-call entries (passed via IsolateCallOptions.wasmModules
         // — used by the wasm-runner shell command) are appended to the same
@@ -482,7 +470,7 @@ export class IsolatePool {
         // identity so a wake of that same session can never reuse a warm
         // worker whose SUPERVISOR binding still names the dead generation's
         // pid. See the supervisorKey field comment for the failure mode.
-        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
+        const buildId = (generation) => `nfp:${facetLoaderKey(this.facetKind, this.tag)}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
         let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
         const code = this.#buildCode(fnSource, perCallWasmEntries);
         // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
@@ -495,6 +483,8 @@ export class IsolatePool {
         // A hold the ledger already took for the next attempt, when a refused
         // call waited on it for room; otherwise the attempt begins its own.
         let admitted;
+        // The hold the latest attempt ran on: a refused one is readmitted on its terms.
+        let held;
         const runOnce = async () => {
             // loader.get() is synchronous from the caller's POV; the callback
             // is only invoked on cache miss. We wrap the callback tightly so a
@@ -527,9 +517,10 @@ export class IsolatePool {
             // dispatching here), the first dispatch is the launch's own worker.
             const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
             admitted = undefined;
+            held = endFetch;
             try {
-                const stub = this.loader.get(id, async () => code);
-                const entrypoint = stub.getEntrypoint();
+                const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
+                const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
                 // Direct property call, awaited by this frame — bracketed, never
                 // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
                 return await invoke(entrypoint, attempt);
@@ -549,8 +540,8 @@ export class IsolatePool {
         const maxAttempts = 1 + resilience.retries;
         let lastError;
         let retriedCloneRefusal = false;
-        // When this call's waits for room after a limit refusal run out.
-        let capDeadline;
+        // When the platform first refused this call (readmitRefused).
+        let firstRefusal;
         let attempt = 0;
         while (attempt < maxAttempts) {
             try {
@@ -636,31 +627,16 @@ export class IsolatePool {
                     // reverse direction. This refresh targets the stale-loader case.
                     continue;
                 }
-                if (cause === 'dynamic_worker_cap') {
-                    // The platform refused to start this call. Nothing ran, so the
-                    // call waits, as the platform asks, and is sent again without
-                    // spending an attempt: on the ledger, which lets it in when a
-                    // hold ends, or when the pause this refusal started has passed
-                    // (the platform still counts a worker the ledger has given back:
-                    // a fan-out's workers stay counted for a moment after their
-                    // calls return).
-                    capDeadline ??= Date.now() + CAP_REFUSAL_WAIT_MS;
-                    const remainingMs = capDeadline - Date.now();
-                    if (remainingMs > 0) {
-                        // The deadline's timer is cleared once the wait settles: a
-                        // pending timer keeps the hosting object from hibernating.
-                        const deadline = new AbortController();
-                        const timer = setTimeout(() => deadline.abort(), remainingMs);
-                        const waitFor = signal ? AbortSignal.any([deadline.signal, signal]) : deadline.signal;
-                        admitted = await beginLoaderFetchWhenFree(this.ctx, id, { claim: this.claim, signal: waitFor })
-                            .catch(() => undefined)
-                            .finally(() => clearTimeout(timer));
-                        if (admitted)
-                            continue;
-                        // The caller aborted while waiting: surface its abort as above.
-                        if (signal?.aborted)
-                            throw lastError;
-                    }
+                if (cause === 'dynamic_worker_cap' && held) {
+                    // The platform refused to start this call: nothing ran, so it is
+                    // sent again, without spending an attempt, once the ledger lets it in.
+                    firstRefusal ??= Date.now();
+                    admitted = await readmitRefused(held, { since: firstRefusal, signal });
+                    if (admitted)
+                        continue;
+                    // The caller aborted while waiting: surface its abort as above.
+                    if (signal?.aborted)
+                        throw lastError;
                 }
                 if (attempt < maxAttempts - 1) {
                     // 100 * 2^attempt, capped at 2s so retries don't compound waiting.
@@ -680,7 +656,7 @@ export class IsolatePool {
         throw named;
     }
     #prepare(fn) {
-        const fnSource = serializeFunction(fn);
+        const fnSource = requireFacetTaskSource(fn);
         const fnHash = hashSource(fnSource);
         return { fnSource, fnHash };
     }
@@ -691,7 +667,21 @@ export class IsolatePool {
     async submit(fn, arg, opts) {
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
-        return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+        try {
+            return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+        }
+        catch (error) {
+            throw this.#ended(error);
+        }
+    }
+    /**
+     * A run that failed (its facet died, was killed or timed out) of a process
+     * that writes (bound to a pid) ended abnormally: its error says what may be
+     * lost (unsettledEnd), every time; whether it acknowledged writes it never
+     * sent, the session cannot know.
+     */
+    #ended(error) {
+        return this.writerPid === undefined ? error : unsettledEnd(error);
     }
     /**
      * Dispatch `fn` through the fetch transport — the pool's only
@@ -712,7 +702,12 @@ export class IsolatePool {
         // Every attempt fetches a clone: a Request's body is consumed once,
         // so the caller's original stays unspent and retries get a fresh
         // body that follows the same signal.
-        return this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
+        try {
+            return await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
+        }
+        catch (error) {
+            throw this.#ended(error);
+        }
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
@@ -727,21 +722,8 @@ export class IsolatePool {
         return this.#mapInternal(fnSource, fnHash, items, opts);
     }
     /**
-     * Same shape as `map`, but accepts a pre-serialized function source
-     * string instead of a live function reference. Used by
-     * `Fanout`'s peer-DO leg, where the function was already
-     * serialized on the coordinator side and forwarded over RPC.
-     *
-     * The fnSource MUST be the output of `serializeFunction(fn)`
-     * (typically forwarded directly from a coordinator RPC). Bytes-
-     * stable invariants:
-     *   - `fnHash = hashSource(fnSource)` must be deterministic so
-     *     warm slots are correctly keyed.
-     *   - `fnSource` must NOT reference `this` — same rule as
-     *     `serializeFunction`.
-     *
-     * No fn-validation runs here (it already ran on the coordinator);
-     * the peer trusts the caller to forward a valid serialization.
+     * The peer-DO transport of `map`: the coordinator forwards the task's
+     * already compiled expression. Its exact bytes key the same warm slots.
      */
     async mapSource(fnSource, items, opts) {
         if (items.length === 0)

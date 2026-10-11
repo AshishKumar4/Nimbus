@@ -48,60 +48,22 @@
  */
 
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
+import { WASM_CALL_TASK } from './compiled-bodies.generated.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { stdinBytesOf } from '../shell/stdin-adapter.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
-import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
+import type { WasmCallResult } from './facet-tasks.js';
 import type { WasiAbi } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
+import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { exists } from '../vfs/vfs.js';
-
-// ── facet-side globals injected by the WASI preamble ─────────────────
-// The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
-// time and declares these top-level. The facet fn below references
-// them; tsc needs to know they exist. Empty bodies — only types.
-//
-// The SHAPES come from runtime/wasi/types.ts, which is what the shim itself is
-// written against. They used to be restated here by hand, and the copy had
-// drifted: it omitted `parking` entirely and declared `getMemory` as returning a
-// nullable memory, which the shim dereferences unguarded. A second description
-// of one contract cannot be kept honest, so there is now only the one.
-declare const __wasiMakeImports: (opts: WasiMakeImportsOptions) => WasiInstanceBundle;
-declare const __wasiInitFS: (opts: WasiInitOptions) => void;
-declare const __wasiAdoptSupervisor: (sup: unknown) => void;
-/** The green-thread scheduler — see runtime/wasi-threads.ts. */
-interface WasiThreadScheduler {
-  hostImports: () => Record<string, WebAssembly.ModuleImports>;
-}
-declare const __wasiThreadsCreate: (opts: {
-  memory: WebAssembly.Memory;
-  startThread: (tid: number, startArg: number) => () => Promise<unknown>;
-}) => WasiThreadScheduler;
-declare const __wasiThreadsStarter: (
-  module: WebAssembly.Module,
-  importObject: Record<string, WebAssembly.ModuleImports>,
-) => (tid: number, startArg: number) => () => Promise<unknown>;
-declare const __wasiRunStartThreads: (
-  instance: WebAssembly.Instance,
-  sched: WasiThreadScheduler,
-) => Promise<{ exitCode: number; error?: string }>;
-declare const __wasiRunStart: (
-  instance: WebAssembly.Instance,
-  ctx: { memory: WebAssembly.Memory },
-) => { exitCode: number; error?: string };
-// WASI socket and polling support P3: async variant that wraps _start with WebAssembly.promising
-// for JSPI-suspending imports (sock_send/recv/shutdown). Falls back to
-// sync invocation when WebAssembly.promising is unavailable, so behaviour
-// is identical for non-suspending wasm programs.
-declare const __wasiRunStartAsync: (
-  instance: WebAssembly.Instance,
-  ctx: { memory: WebAssembly.Memory },
-) => Promise<{ exitCode: number; error?: string }>;
 export const WASM_RUNNER_VERSION = '0.3.0';
 
 export const WASM_RUNNER_HELP =
@@ -205,8 +167,10 @@ export function makeWasmRunner(deps: {
     // for it, so a host lease carries the read rather than a process binding.
     let bytes: Uint8Array;
     try {
+      // A whole program image bypasses the content cache: it is read once and
+      // handed to the facet's module map, never re-read from this isolate.
       const program = await withHostView(deps.filesystem, cred, async (fs) =>
-        (await fs.exists(wasmPath)) ? fs.readFile(wasmPath) : null);
+        (await fs.exists(wasmPath)) ? fs.readFileUncached(wasmPath) : null);
       if (program === null) {
         return {
           exitCode: 1,
@@ -333,300 +297,6 @@ export function makeWasmRunner(deps: {
       limited.byteOffset + limited.byteLength,
     ) as ArrayBuffer;
 
-    // The submitted function runs INSIDE the facet isolate. It reads
-    // the precompiled WebAssembly.Module the facet host injected via
-    // globalThis.__NIMBUS_WASM, instantiates it (with WASI imports
-    // when needed), and either calls the named export or _start.
-    //
-    // The fn must be self-contained: serialised via fn.toString,
-    // closure references are NOT available inside the facet.
-    type WasmCallResult = {
-      ok: boolean;
-      mode: 'direct' | 'wasi';
-      result?: number | string;
-      exports?: string[];
-      stdout?: string;
-      stderr?: string;
-      exitCode?: number;
-      error?: string;
-      fsDiff?: {
-        filesWritten: Record<string, string>;
-        filesDeleted: string[];
-        dirsCreated: string[];
-        dirsDeleted: string[];
-      };
-    };
-    /**
-     * What `WebAssembly.instantiate` resolves to: the instance for a compiled
-     * module, `{ instance, module }` for bytes. The engine's own types describe
-     * only the first, which is what the facet host's table holds — the second
-     * is named because the checks below are what keep a table filled with
-     * anything else from yielding an instance-less object.
-     */
-    type WasmInstantiateResult =
-      | WebAssembly.Instance
-      | { instance: WebAssembly.Instance; module: WebAssembly.Module };
-    /**
-     * A direct-mode export: integer args in, one scalar — or nothing — out.
-     * `WebAssembly.Exports` types every export as a bare `Function`, which
-     * carries no signature of its own.
-     */
-    type WasmDirectExport = (...args: number[]) => number | bigint | undefined;
-    const facetFn = async function wasmFacetCall(
-      args: {
-        mode: 'direct' | 'wasi';
-        exportName?: string;
-        intArgs?: number[];
-        wasiArgv?: string[];
-        wasiEnv?: Record<string, string>;
-        wasiAbi?: WasiAbi;
-        /**
-         * The import namespace to bind, resolved supervisor-side.
-         *
-         * This function is serialized with fn.toString() and evaluated in the
-         * facet isolate, where module imports do not exist — reaching for
-         * WASI_ABI_NAMESPACE here is a ReferenceError at instantiate time that
-         * surfaces as "wasi trap: instantiate failed", with the guest blamed
-         * for a defect in the host. Values the facet needs travel as arguments.
-         */
-        wasiNamespace?: string;
-        /**
-         * Present only for a wasi-threads build. Carries the imported memory's
-         * declared limits, which the host must reproduce exactly — read from
-         * the binary supervisor-side because the JS API exposes an import's
-         * name but not its type.
-         */
-        threads?: {
-          memory: { module: string; name: string; initial: number; maximum: number };
-        };
-        wasiFs?: {
-          root: string;
-          preopens: Array<{ wasiPath: string; vfsPath: string }>;
-        };
-      },
-      facetEnv?: { SUPERVISOR?: unknown },
-    ): Promise<WasmCallResult> {
-      // This body is serialized into the facet isolate, where the supervisor's
-      // module graph — and so _shared/error-text.js — does not exist. Same
-      // fallback as errorText, spelled out locally.
-      const errText = (err: unknown): string =>
-        typeof err === 'object' && err !== null && 'message' in err && err.message
-          ? String(err.message)
-          : String(err);
-      const wasmTable = globalThis.__NIMBUS_WASM || {};
-      const mod = wasmTable['user.wasm'];
-      if (!mod) {
-        return {
-          ok: false,
-          mode: args.mode,
-          error:
-            'globalThis.__NIMBUS_WASM[\'user.wasm\'] not found — the facet ' +
-            'host did not register the module. Internal error.',
-        };
-      }
-
-      // ── WASI mode ──
-      if (args.mode === 'wasi') {
-        const mk = __wasiMakeImports;
-        const runStart = __wasiRunStart;
-        // WASI socket and polling support P3 / production compatibility fix: bare lexical reference, matching
-        // the runStart pattern above. The earlier `(globalThis as any)
-        // .__wasiRunStartAsync` lookup returned undefined at runtime
-        // because top-level `function` declarations in the preamble's
-        // ES-module scope do NOT auto-attach to globalThis. The result
-        // was that sock_*/poll_oneoff (wrapped in WebAssembly.Suspending)
-        // were invoked from a sync `_start` call stack → V8 trapped with
-        // "trying to suspend without WebAssembly.promising". The 11
-        // sync-only WASI socket and polling support probes worked because they never hit a
-        // Suspending import; the 7 async probes failed because they did.
-        // The preamble is statically prepended to this same module body
-        // (fabric/isolate-pool.ts), so the symbol is guaranteed in
-        // scope. typeof guard handles the impossible case of a preamble
-        // pre-dating WASI socket and polling support (defensive only).
-        const runStartAsync = typeof __wasiRunStartAsync === 'function'
-          ? __wasiRunStartAsync
-          : null;
-        const initFS = __wasiInitFS;
-        if (!mk || !runStart || !initFS) {
-          return {
-            ok: false,
-            mode: 'wasi',
-            error:
-              'WASI preamble missing: __wasi* helpers not defined. ' +
-              'Pool preamble may have failed to load.',
-          };
-        }
-        // Install the preopens. fd 3 = the user's session root preopen. The
-        // shim's fd table is reset by initFS each call.
-        if (args.wasiFs) {
-          initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens });
-          // initFS resets the live state, so adoption has to follow it. Every
-          // file the guest touches is then read from and written to the
-          // authority through the stub.
-          __wasiAdoptSupervisor(facetEnv && facetEnv.SUPERVISOR);
-        } else {
-          // initFS is what RESETS per-call state: the fd table and the preopen
-          // list. A pooled isolate that skipped it would hand this program the
-          // previous one's descriptors.
-          initFS({ root: '', preopens: [] });
-        }
-        const memRef: { mem: WebAssembly.Memory | null } = { mem: null };
-        const abi = args.wasiAbi || 'preview1';
-        const wasi = mk({
-          argv: args.wasiArgv || [],
-          env: args.wasiEnv || {},
-          abi,
-          threads: !!args.threads,
-          // Non-null by ordering, not by check. The import table is only ever
-          // CALLED from inside the guest, and the guest cannot run before
-          // `_start` below, by which point memRef.mem is assigned or the call
-          // has already returned an error. The shim dereferences the result
-          // unguarded, so if the ordering ever stops holding, the failure is a
-          // TypeError raised inside a suspended syscall.
-          getMemory: () => memRef.mem as WebAssembly.Memory,
-        });
-        // Bind ONLY the namespace this module actually imports, with the
-        // import table built for that ABI. Aliasing one preview1 table onto
-        // both names — which this did until the encodings were checked
-        // against the binaries — gives a preview0 guest inverted fd_seek
-        // whence and a 64-byte filestat it decodes as 56, so every lseek
-        // lands wrong and every st_size reads back as the nlink field. The
-        // signatures are identical, so nothing traps and nothing is logged.
-        // The one place the precise table meets WebAssembly's own types, which
-        // describe an import object as an untyped index signature. Widening
-        // here keeps the precision on the shim's side of the boundary.
-        const importObject: Record<string, WebAssembly.ModuleImports> = {
-          [args.wasiNamespace || 'wasi_snapshot_preview1']:
-            wasi.wasiImport as unknown as WebAssembly.ModuleImports,
-        };
-        // A threads build imports its memory instead of defining one, because
-        // every thread is another instance and they must all address the same
-        // bytes. The host creates it — shared, at the module's declared limits
-        // — and the scheduler, the syscall layer and each thread instance all
-        // read through this one object.
-        let sched: WasiThreadScheduler | null = null;
-        if (args.threads) {
-          let shared: WebAssembly.Memory;
-          try {
-            shared = new WebAssembly.Memory({
-              initial: args.threads.memory.initial,
-              maximum: args.threads.memory.maximum,
-              shared: true,
-            });
-          } catch (e) {
-            // A shared memory reserves its MAXIMUM up front, so an over-large
-            // --max-memory fails here rather than when the program grows into
-            // it. Say which number did it; the alternative message is a bare
-            // RangeError with no link to the build line that chose it.
-            return {
-              ok: false,
-              mode: 'wasi',
-              error:
-                `wasi-threads: could not reserve the shared memory the module declares `
-                + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
-                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errText(e)}. `
-                + 'A shared memory reserves its maximum immediately — lower --max-memory.',
-            };
-          }
-          memRef.mem = shared;
-          importObject[args.threads.memory.module] = {
-            ...(importObject[args.threads.memory.module] || {}),
-            [args.threads.memory.name]: shared,
-          };
-          sched = __wasiThreadsCreate({
-            memory: shared,
-            startThread: __wasiThreadsStarter(mod, importObject),
-          });
-          Object.assign(importObject, sched.hostImports());
-        }
-        let inst: WebAssembly.Instance;
-        try {
-          const result = await WebAssembly.instantiate(mod, importObject) as WasmInstantiateResult;
-          inst = (result instanceof WebAssembly.Instance ? result : result.instance);
-        } catch (e) {
-          return {
-            ok: false,
-            mode: 'wasi',
-            error: `instantiate failed: ${errText(e)}`,
-          };
-        }
-        if (!memRef.mem) {
-          const exported = inst.exports.memory;
-          if (exported instanceof WebAssembly.Memory) memRef.mem = exported;
-        }
-        if (!memRef.mem) {
-          return {
-            ok: false,
-            mode: 'wasi',
-            error: 'wasm module did not export a `memory` — WASI requires one.',
-          };
-        }
-        // WASI socket and polling support P3: use async runStart when available so any
-        // suspending socket imports can complete via JSPI. The async
-        // wrapper falls back to sync invocation internally when
-        // WebAssembly.promising isn't available, so this is safe for
-        // non-suspending programs too. Legacy preambles (pre-WASI socket and polling support)
-        // that ship without __wasiRunStartAsync still work via the
-        // sync runStart path.
-        const r = sched
-          ? await __wasiRunStartThreads(inst, sched)
-          : runStartAsync
-            ? await runStartAsync(inst, { memory: memRef.mem })
-            : runStart(inst, { memory: memRef.mem });
-        return {
-          ok: r.exitCode === 0 && !r.error,
-          mode: 'wasi',
-          stdout: wasi.getStdout(),
-          stderr: wasi.getStderr(),
-          exitCode: r.exitCode,
-          exports: Object.keys(inst.exports),
-          error: r.error,
-        };
-      }
-
-      // ── Direct mode ──
-      let inst: WebAssembly.Instance;
-      try {
-        // Single-arg instantiate against a precompiled Module — this
-        // is the form workerd's CSP DOES allow. The dynamic-bytes
-        // form (instantiate(ArrayBuffer)) is what's blocked.
-        const result = await WebAssembly.instantiate(mod, {}) as WasmInstantiateResult;
-        inst = (result instanceof WebAssembly.Instance ? result : result.instance);
-      } catch (e) {
-        return {
-          ok: false,
-          mode: 'direct',
-          error: `instantiate failed: ${errText(e)}`,
-        };
-      }
-      const exportNames = Object.keys(inst.exports);
-      const fn = inst.exports[args.exportName!];
-      if (typeof fn !== 'function') {
-        return {
-          ok: false,
-          mode: 'direct',
-          exports: exportNames,
-          error:
-            `export '${args.exportName}' is not a function (or not exported). ` +
-            `Available exports: ${exportNames.join(', ')}`,
-        };
-      }
-      let out: number | bigint | undefined;
-      try {
-        out = (fn as WasmDirectExport)(...(args.intArgs || []));
-      } catch (e) {
-        return {
-          ok: false,
-          mode: 'direct',
-          exports: exportNames,
-          error:
-            `${args.exportName}(${(args.intArgs||[]).join(', ')}) threw: ${errText(e)}`,
-        };
-      }
-      // BigInt (i64) → string; everything else → as-is.
-      if (typeof out === 'bigint') return { ok: true, mode: 'direct', result: out.toString(), exports: exportNames };
-      return { ok: true, mode: 'direct', result: out, exports: exportNames };
-    };
 
     // PID + log integration. The runtime-registry's contract is
     // runtime-agnostic at the PID layer; node + bun get this for
@@ -644,13 +314,24 @@ export function makeWasmRunner(deps: {
       (opts.filename || '').replace(/^\/+/, '/') +
       ' ' +
       argv.join(' ');
-    const procEntry = deps.processes.spawn(
+    const brokerPid = opts.stdinPid;
+    const owned = brokerPid === undefined;
+    const procEntry = owned ? deps.processes.spawn(
       cmdLabel.trim(),
       ['wasm-runner', ...argv],
       opts.cwd || '/home/user',
       { parentPid: opts.invokerPid, cred },
-    );
+    ) : deps.processes.get(brokerPid);
+    if (!procEntry || procEntry.state !== 'running') throw new Error('WASI broker process is not running');
     const pid = procEntry.pid;
+    const killed = new AbortController();
+    const runSignal = opts.signal ? AbortSignal.any([opts.signal,killed.signal]) : killed.signal;
+    deps.processes.setTerminator(pid, () => killed.abort());
+    const inputPump = !owned ? null : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
+    if (!deps.processes.hasInput(pid)) { deps.processes.openInput(pid); deps.processes.endInput(pid); }
+    const releaseOutput = opts.output
+      ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output!(chunk.stream, chunk.data)) : null;
+    if (releaseOutput) deps.processes.setForeground(pid, true);
 
     // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
     // runtime-registry's RuntimeRunOpts carries env on the way in; we
@@ -672,7 +353,7 @@ export function makeWasmRunner(deps: {
     if (processFs) {
       // Session root = cwd of the shell invocation. Falls back to /home/user.
       const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
-      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }] };
+      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
     }
 
     /**
@@ -696,7 +377,7 @@ export function makeWasmRunner(deps: {
         // filesystem with the live session VFS instead of a spawn-time copy.
         // Direct (compute-only) mode has no filesystem at all, so it asks for
         // no capability and the facet boots fast.
-        syscalls: processFs ? { vfs: processFs, pid } : undefined,
+        syscalls: processFs ? { vfs: processFs, pid, processes: deps.processes } : undefined,
         // WASI mode: ship the WASI shim source as a facet preamble so
         // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
         // no preamble (saves a few KB per submit).
@@ -705,6 +386,8 @@ export function makeWasmRunner(deps: {
 
       const submitArgs = isWasi
         ? {
+            processPid: pid,
+            liveOutput: true,
             mode: 'wasi' as const,
             wasiArgv,
             wasiEnv,
@@ -715,25 +398,24 @@ export function makeWasmRunner(deps: {
           }
         : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
       outcome = (await facet.submit(
-        facetFn,
+        WASM_CALL_TASK,
         submitArgs,
         {
           wasmModules: { 'user.wasm': buf },
-          // 30s ceiling for compute. Most wasm calls return in
-          // microseconds; runaway loops hit this and a host that can
-          // abandon the facet surfaces a timeout as exitCode 1 + stderr.
-          timeoutMs: 30_000,
-          // A kill or Ctrl-C ends the facet too, where the host can.
-          signal: opts.signal,
+          signal: runSignal,
         },
       )) as DispatchOutcome;
     } catch (e) {
       // Killed: the program ends as an interrupted one does, with no error of its own.
-      outcome = opts.signal?.aborted
-        ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: '' }
+      outcome = runSignal.aborted
+        ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) }
         : { ok: false, error: `dispatch failed: ${errorText(e)}` };
     } finally {
       facet?.dispose();
+      inputPump?.stop();
+      if (owned) deps.processes.closeInput(pid);
+      releaseOutput?.();
+      if (releaseOutput) deps.processes.setForeground(pid, false);
     }
 
     let exitCode: number;
@@ -757,6 +439,7 @@ export function makeWasmRunner(deps: {
           `wasm-runner: wasi trap: ${outcome.error}\n`;
       }
       exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
+      if (opts.env?.NIMBUS_WASI_FS_STATS === '1') stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
     } else if (!outcome.ok) {
       // Direct-mode failure or pre-instantiate dispatch failure — shell
       // sees rc=1 + stderr.
@@ -779,10 +462,10 @@ export function makeWasmRunner(deps: {
     // append-then-markExit ordering matches what shellExecuteTracked
     // does in init.ts:1559+ (Fix 5 contract).
     if (stdout) {
-      try { deps.processes.appendOutput(pid, 'stdout', stdout); } catch {}
+      await deps.processes.appendOutputBytes(pid, 'stdout', new TextEncoder().encode(stdout));
     }
     if (stderr) {
-      try { deps.processes.appendOutput(pid, 'stderr', stderr); } catch {}
+      await deps.processes.appendOutputBytes(pid, 'stderr', new TextEncoder().encode(stderr));
     }
     try { deps.processes.exit(pid, exitCode); } catch {}
     try {
@@ -791,7 +474,8 @@ export function makeWasmRunner(deps: {
       }
     } catch {}
 
-    return { exitCode, stdout, stderr };
+    const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
+    return { exitCode, stdout: streamed ? '' : stdout, stderr };
   };
 }
 

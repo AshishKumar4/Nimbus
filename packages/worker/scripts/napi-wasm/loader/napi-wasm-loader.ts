@@ -579,7 +579,9 @@ function baseWasiImports(host: NapiWasmBindingHost, memory: () => WebAssembly.Me
     random_get(buf: number, length: number) {
       // getRandomValues fills at most 64 KiB per call.
       for (let at = 0; at < length; at += 65536) {
-        crypto.getRandomValues(bytes().subarray(buf + at, buf + Math.min(length, at + 65536)));
+        // By the constructor, not subarray: past 128 MiB of memory a Worker
+        // refuses a subarray's begin (core/runtime/wasi/filesystem.ts, guestBytes).
+        crypto.getRandomValues(new Uint8Array(memory().buffer, buf + at, Math.min(length - at, 65536)));
       }
       return ERRNO_SUCCESS;
     },

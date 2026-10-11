@@ -17,7 +17,7 @@ const a = makeAsserter('file-tree/panel/new/file-tree-create-file');
 console.log(`file-tree/panel/new/file-tree-create-file — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 // HTML wiring.
@@ -32,7 +32,7 @@ a.check('newFile() refreshes parent folder after fs-write',
   `parent refresh wiring missing`);
 
 // Protocol round-trip.
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

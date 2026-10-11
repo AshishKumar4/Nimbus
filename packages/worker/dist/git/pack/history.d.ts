@@ -1,10 +1,13 @@
 /**
- * git/pack/history.ts — a clone's full history, fetched in self-contained
- * pieces after its depth-1 worktree.
+ * git/pack/history.ts — a clone's history, fetched in self-contained pieces
+ * after its worktree: all of it for a full clone, its N commits for a
+ * --depth N clone (N > 1: the older commits' blobs the worktree's batches
+ * did not fetch).
  *
  *   commits  every commit, no trees or blobs (filter tree:0); their root
  *            trees listed in pack order (newest first: neighbours share
- *            most of their trees)
+ *            most of their trees), and each recorded for the clone's
+ *            commit-graph (commit-graph.ts commitRecord)
  *   trees    the root trees of a run of commits with everything below them
  *            but blobs (filter blob:none), in runs of COMMITS_PER_CHUNK;
  *            each blob met is listed with its basename
@@ -43,6 +46,12 @@ export interface HistoryStepResult {
     pending: PendingPack | null;
     /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
     lists: StagedFile[];
+    /**
+     * commits: the commits' records for the commit-graph (GRAPH_RECORDS_DIR
+     * files; commit-graph.ts commitRecord); null when one did not parse, which
+     * no graph is written for, as git writes none.
+     */
+    graphLists?: StagedFile[] | null;
     /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
     tagsFound?: string[];
 }
@@ -54,6 +63,8 @@ export declare function historyStep(context: CloneContext, request: {
     piece: string;
     /** commits: the branch head. */
     head?: string;
+    /** commits: the clone's depth, for a shallow clone's history (its older commits' blobs); none for all of it. */
+    depth?: number;
     /** trees: a slice of a commits list (20-byte root trees); blobs: a batch file (20-byte ids). */
     source?: StagedFile & {
         offset?: number;

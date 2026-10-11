@@ -123,7 +123,7 @@ async function main() {
  * SHA-256: ${sha256}
  *
  * If you change this file by hand it WILL be overwritten by the next
- * predev / predeploy / postinstall.
+ * predev / predeploy.
  */
 
 import { loadAssetText, type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';

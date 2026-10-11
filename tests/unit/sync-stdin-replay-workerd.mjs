@@ -47,7 +47,7 @@ import { createServer as createTcpServer } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { startLocalProbe } from './lib/workerd-probe.mjs';
+import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const CHILDREN = {
   ready: [
@@ -459,31 +459,13 @@ if (lan) {
 const W = '/home/user/w';
 console.log('sync-stdin-replay-workerd: starting local workerd');
 const probe = await startLocalProbe({ runtimes: [] });
-process.env.BASE = probe.base;
-process.env.NIMBUS_PROBE_TOKEN = probe.token;
-const { mintSession, deleteSession, Terminal } = await import('../behavioral/_driver.mjs');
-const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
 const failures = [];
 let workerLog = '';
 const check = (ok, what) => { if (!ok) failures.push(what); console.log(`${ok ? 'ok  ' : 'FAIL'} ${ok ? what.split('\n')[0] : what}`); };
 try {
-  const sid = await mintSession();
-  const t = new Terminal(sid);
+  const client = await localTerminal(probe, { install: [] });
+  const { terminal: t, run } = client;
   try {
-    await t.connect();
-    await t.waitForPrompt(60_000);
-    let serial = 0;
-    // A command's own output and status, the echo and prompt stripped.
-    const run = async (command, timeoutMs = 120_000) => {
-      const mark = `__NIMBUS_DONE_${++serial}__`;
-      const { output } = await t.run(`${command}; echo "${mark}$?"`, timeoutMs);
-      const text = strip(output);
-      const end = text.lastIndexOf(mark);
-      if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
-      const status = Number(/^\d+/.exec(text.slice(end + mark.length))?.[0]);
-      const echoed = text.lastIndexOf(`echo "${mark}$?"`);
-      return { stdout: text.slice(text.indexOf('\n', echoed) + 1, end), status };
-    };
     const write = (path, content) => run(`node -e "require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}', 'base64'))"`);
     await run(`mkdir -p ${W}`);
 
@@ -606,7 +588,11 @@ try {
       await write(`${W}/net.js`, NET_PARENT);
       fixtureStats.tcp = 0;
       fixtureStats.bodyErrors = 0;
-      const net = netLines((await run(`cd ${W} && node net.js`, 400_000)).stdout);
+      const networkRun = await run(`cd ${W} && node net.js`, 400_000);
+      const net = netLines(networkRun.stdout);
+      if (networkRun.status !== 0 || Object.keys(net).length !== Object.keys(NET).length) {
+        console.error('sync-stdin network parent result: ' + JSON.stringify(networkRun));
+      }
       check(JSON.stringify(net.headers) === JSON.stringify(netExpected.headers),
         `a response's headers and bytes, through blob() and a body reader, are the run before's\n  node:   ${JSON.stringify(netExpected.headers)}\n  nimbus: ${JSON.stringify(net.headers)}`);
       check(JSON.stringify(net.pending) === JSON.stringify(netExpected.pending),
@@ -667,7 +653,7 @@ try {
     const t0 = Date.now();
     t.cmd(`sleep 8 | node -e "function u(){require('fs').readFileSync(0)} console.log('print' + 'ed')"`);
     const printedAfter = await t.waitFor((b) => /\nprinted/.test(b), 60_000, 'printed');
-    await t.waitForNewPrompt(60_000);
+    await t.waitForPrompt(60_000);
     check(printedAfter < 5_000, `pipe: an unused reader prints before its writer ends (${printedAfter} ms, writer 8000 ms)`);
 
     // Ctrl-C while the read waits ends the program with 130, as it does
@@ -678,7 +664,7 @@ try {
     await new Promise((r) => setTimeout(r, 1000));
     const c0 = Date.now();
     t.send('\x03');
-    await t.waitForNewPrompt(30_000);
+    await t.waitForPrompt(30_000);
     const interrupted = Date.now() - c0;
     // The interrupted line's status, read by the next one.
     const status = Number(/S=(\d+)/.exec((await run('echo "S=$?"')).stdout)?.[1]);
@@ -691,8 +677,7 @@ try {
     check(/ERR_NIMBUS_SYNC_STDIN/.test(termSrv.stdout) && /started from the terminal/.test(termSrv.stdout),
       `a terminal-started server's read names why it cannot wait\n${termSrv.stdout}`);
   } finally {
-    await t.close().catch(() => {});
-    await deleteSession(sid).catch(() => {});
+    await client.close().catch(() => {});
   }
 
   // A resident the SDK starts, whose stdin the caller writes and ends: its
@@ -732,10 +717,8 @@ try {
     await box.destroy().catch(() => {});
   }
 } catch (error) {
-  // What the worker said, for a failure the driver only sees as a closed socket.
-  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
-  writeFileSync(logPath, probe.log());
-  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
+  // CI retains the worker log with this test's output, without a tmp leak.
+  console.error(`sync-stdin-replay-workerd: the worker's log:\n${probe.log()}`);
   throw error;
 } finally {
   workerLog = probe.log();
@@ -744,9 +727,7 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 if (failures.length > 0) {
-  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
-  writeFileSync(logPath, workerLog);
-  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
+  console.error(`sync-stdin-replay-workerd: the worker's log:\n${workerLog}`);
   console.error(`sync-stdin-replay-workerd: ${failures.length} failure(s):\n${failures.join('\n\n')}`);
   process.exit(1);
 }

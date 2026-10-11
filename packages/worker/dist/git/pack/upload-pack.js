@@ -22,26 +22,58 @@ export class UploadPackError extends Error {
 const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-export function pktLine(text) {
+function pktLine(text) {
     const body = encoder.encode(text);
     const out = new Uint8Array(body.byteLength + 4);
     out.set(encoder.encode((body.byteLength + 4).toString(16).padStart(4, '0')));
     out.set(body, 4);
     return out;
 }
-export function headers(options, extra) {
+/**
+ * The repository's URL without credentials, and the credentials to send: a
+ * URL's own (https://user:password@host/repo.git), as git takes them, else
+ * the options'.
+ */
+function remote(options) {
+    const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
+    if (parsed === null || (parsed.username === '' && parsed.password === ''))
+        return { url: withoutSlash(options.url), auth: options.auth };
+    const auth = { username: unescapeUserinfo(parsed.username), password: unescapeUserinfo(parsed.password) };
+    parsed.username = '';
+    parsed.password = '';
+    return { url: withoutSlash(parsed.href), auth };
+}
+function withoutSlash(url) {
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+/** A URL's username or password as written: each run of percent-escapes decoded, a stray `%` kept. */
+function unescapeUserinfo(text) {
+    return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+        try {
+            return decodeURIComponent(run);
+        }
+        catch {
+            return run;
+        }
+    });
+}
+function headers(auth, extra) {
     const result = { 'user-agent': 'git/nimbus', ...extra };
-    if (options.auth && (options.auth.username || options.auth.password)) {
-        result.authorization = 'Basic ' + btoa(options.auth.username + ':' + options.auth.password);
+    if (auth && (auth.username || auth.password)) {
+        // Basic credentials are UTF-8, as git sends them.
+        const bytes = encoder.encode(auth.username + ':' + auth.password);
+        let binary = '';
+        for (const byte of bytes)
+            binary += String.fromCharCode(byte);
+        result.authorization = 'Basic ' + btoa(binary);
     }
     return result;
-}
-export function repoUrl(url) {
-    return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 /** A request whose transient failures are retried before any byte is read (transport.ts). */
 async function send(options, path, init) {
     const doFetch = options.fetch ?? fetch;
+    const { url, auth } = remote(options);
+    const request = { ...init, headers: headers(auth, init.headers) };
     // Headers that do not come within the stall time are a stall too.
     const stallMs = options.stallMs ?? STALL_MS;
     const attempt = async () => {
@@ -50,7 +82,7 @@ async function send(options, path, init) {
             timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
         });
         try {
-            return await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
+            return await Promise.race([doFetch(url + path, { ...request, signal: options.signal }), stalled]);
         }
         finally {
             if (timer !== null)
@@ -73,7 +105,7 @@ async function send(options, path, init) {
 }
 export { STALL_MS };
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
-export class PktReader {
+class PktReader {
     reader;
     stallMs;
     buffer = new Uint8Array(0);
@@ -146,14 +178,13 @@ export class PktReader {
         return this.reader.cancel();
     }
 }
-export function text(payload) {
+function text(payload) {
     const line = decoder.decode(payload);
     return line.endsWith('\n') ? line.slice(0, -1) : line;
 }
-/** The refs and capabilities `service` (upload-pack for a fetch, receive-pack for a push) advertises. */
-export async function discover(options, service = 'git-upload-pack') {
-    const response = await send(options, '/info/refs?service=' + service, {
-        headers: headers(options, { accept: 'application/x-' + service + '-advertisement' }),
+export async function discover(options) {
+    const response = await send(options, '/info/refs?service=git-upload-pack', {
+        headers: { accept: 'application/x-git-upload-pack-advertisement' },
     });
     if (response.status === 401 || response.status === 403) {
         await response.body?.cancel();
@@ -165,7 +196,7 @@ export async function discover(options, service = 'git-upload-pack') {
     }
     const reader = new PktReader(response.body.getReader(), options.stallMs);
     const first = await reader.next();
-    if (!first || text(first) !== '# service=' + service)
+    if (!first || text(first) !== '# service=git-upload-pack')
         throw new UploadPackError('not a smart HTTP server');
     if (await reader.next() !== null)
         throw new UploadPackError('advertisement header lacks its flush');
@@ -206,29 +237,20 @@ export async function discover(options, service = 'git-upload-pack') {
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised, request) {
     // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
-    const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])]
-        .filter((capability) => advertised.has(capability));
+    const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
     if (!advertised.has('side-band-64k'))
         throw new UploadPackError('the server does not offer side-band-64k');
     if (request.thin && advertised.has('thin-pack'))
         capabilities.push('thin-pack');
-    const deepens = request.depth !== undefined || request.deepenSince !== undefined || (request.deepenNot?.length ?? 0) > 0;
-    if (deepens || (request.shallows?.length ?? 0) > 0) {
+    if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
         if (!advertised.has('shallow'))
             throw new UploadPackError('the server does not support shallow fetches');
         capabilities.push('shallow');
     }
-    // fetch-pack.c: the server must offer each deepen option the request uses.
-    for (const [used, capability] of [
-        [request.deepenSince !== undefined, 'deepen-since'],
-        [(request.deepenNot?.length ?? 0) > 0, 'deepen-not'],
-        [request.deepenRelative === true, 'deepen-relative'],
-    ]) {
-        if (!used)
-            continue;
-        if (!advertised.has(capability))
-            throw new UploadPackError('the server does not support ' + capability);
-        capabilities.push(capability);
+    if (request.relative) {
+        if (!advertised.has('deepen-relative'))
+            throw new UploadPackError('the server does not support --deepen');
+        capabilities.push('deepen-relative');
     }
     if (request.filter !== undefined) {
         if (!advertised.has('filter'))
@@ -249,10 +271,6 @@ export async function requestPack(options, advertised, request) {
         lines.push(pktLine('shallow ' + oid + '\n'));
     if (request.depth !== undefined)
         lines.push(pktLine('deepen ' + request.depth + '\n'));
-    if (request.deepenSince !== undefined)
-        lines.push(pktLine('deepen-since ' + request.deepenSince + '\n'));
-    for (const ref of request.deepenNot ?? [])
-        lines.push(pktLine('deepen-not ' + ref + '\n'));
     if (request.filter !== undefined)
         lines.push(pktLine('filter ' + request.filter + '\n'));
     lines.push(encoder.encode('0000'));
@@ -271,10 +289,10 @@ export async function requestPack(options, advertised, request) {
     const response = await send(options, '/git-upload-pack', {
         method: 'POST',
         body,
-        headers: headers(options, {
+        headers: {
             'content-type': 'application/x-git-upload-pack-request',
             accept: 'application/x-git-upload-pack-result',
-        }),
+        },
     });
     if (!response.ok || !response.body) {
         const detail = response.body ? (await response.text()).slice(0, 300) : '';

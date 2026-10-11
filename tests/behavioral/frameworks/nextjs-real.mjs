@@ -38,16 +38,20 @@ try {
   console.log('[nextjs-real] npx create-next-app@latest...');
 
   const createR = await t.run(
-    "npx --yes create-next-app@latest mvp --ts --no-eslint --tailwind --app --src-dir --import-alias '@/*' --use-npm --yes 2>&1; echo \"CNA_EXIT=$?\"",
+    "npx --yes create-next-app@latest mvp --ts --no-eslint --tailwind --app --src-dir --import-alias '@/*' --use-npm --yes 2>&1",
     240_000,
   );
   const createOut = stripAnsi(createR.output);
-  const createTail = JSON.stringify(createOut.split(/\r?\n/).filter((l) => l.trim()).slice(-8).join(' | '));
+  const createLines = createOut.split(/\r?\n/).filter((l) => l.trim());
+  // A partial install's summary says "see above"; keep every cause as well
+  // as the trailing summary, without changing either completion predicate.
+  const createDetail = JSON.stringify(createLines.filter((line, index) =>
+    index >= createLines.length - 8 || /\[warn\]|\bFailed\b|\baborted\b/i.test(line)).join(' | '));
 
   a.check('create-next-app launches and initializes the local template (npm resolver + facet spawn)',
-    /Initializing project with template/.test(createOut), createTail);
+    /Initializing project with template/.test(createOut), createDetail);
   a.check('create-next-app completes: "Success! Created mvp" and exit 0',
-    /Success! Created mvp/.test(createOut) && /CNA_EXIT=0\b/.test(createOut), createTail);
+    /Success! Created mvp/.test(createOut) && createR.exitCode === 0, createDetail);
 
   const tpl = await t.run(
     `node -e "const fs=require('fs');const need=['mvp/next.config.ts','mvp/tsconfig.json','mvp/src'];console.log('TPL='+need.every(p=>fs.existsSync(p)));console.log('PKG='+fs.existsSync('mvp/package.json'));"`,
@@ -81,11 +85,11 @@ try {
     `status=${port.status} body=${JSON.stringify(String(port.body).slice(0, 200))}`);
 
   // Boundary 2: the next bin itself is refused before start, by name.
-  const bin = await t.run('npx next --version; echo "NEXT_EXIT=$?"', 120_000);
+  const bin = await t.run('npx next --version', 120_000);
   const binOut = stripAnsi(bin.output);
   a.check('honest boundary: the next bin is refused (require closure exceeds the facet snapshot bound), exit non-zero',
     /require closure for \S*next\/dist\/bin\/next exceeds the snapshot bound/.test(binOut)
-      && /NEXT_EXIT=[1-9]\d*/.test(binOut),
+      && bin.exitCode > 0,
     JSON.stringify(binOut.slice(-400)));
 } finally {
   await t.close();

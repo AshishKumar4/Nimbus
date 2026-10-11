@@ -5,9 +5,7 @@
  * supervisor that dispatches each op as the session does. The guest's imports
  * are called from the test as a guest calls them, with its memory laid out by
  * hand. `refuse(path)` makes the session refuse every write to a file whose
- * path it matches with ENOSPC, as a full store does. `storage` gives the
- * process a facet's SQLite (ctx.storage.sql's shape) for its store, and
- * `world` runs it as a new process in an earlier guest's session.
+ * path it matches with ENOSPC, as a full store does.
  *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
@@ -21,8 +19,10 @@ import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { FILESYSTEM_RPC_METHODS } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { subtreeListing } from '../../../packages/core/src/runtime/fs-list-tree.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
+import { SupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './wasi-imports.mjs';
 import { acrossRpc } from './rpc-error.mjs';
@@ -34,14 +34,18 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/** @param {{ refuse?: (path: string) => boolean, storage?: object | null, world?: object | null }} [options] */
-export async function residentGuest({ refuse = () => false, storage = null, world = null } = {}) {
+/**
+ * @param {{ refuse?: (path: string) => boolean, of?: object }} [options]
+ * `of`: another guest whose session this one is a second process of (its
+ * own pid, its own WASI body and store).
+ */
+export async function residentGuest({ refuse = () => false, of } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiAdoptStorage, __wasiFsStats, __wasiSettleWrites };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 
-  const session = world ?? (() => {
+  const session = of?.session ?? (() => {
     const harness = createSqliteVfsTestHarness();
     const raw = new SqliteVFS(harness.sql, harness.ctx);
     const kernel = raw.as(CRED_KERNEL);
@@ -50,12 +54,15 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
     const processes = new SessionProcessSupervisor();
     const authority = new ProcessFiles(raw);
     const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-    const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
-    return { harness, raw, kernel, processes, authority, bridge, dispatch };
+    // Fenced waves, as a process's binding sends them: a refusal answers its own op.
+    const deliveries = new SupervisorDeliveries();
+    const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
+    return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch, retired: [] };
   })();
-  const { harness, raw, kernel, processes, authority, bridge, dispatch } = session;
+  const { harness, raw, kernel, processes, authority } = session;
+  const boundIncarnation = session.deliveries.incarnation;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
-  const own = authority.bind({ pid, cred: USER });
+
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
   for (const op of Object.values(FILESYSTEM_RPC_METHODS)) {
@@ -64,23 +71,40 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
         throw acrossRpc(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }));
       }
       try {
-        const value = await dispatch({ op, args, pid });
+        if (globalThis.__guestTrace) globalThis.__guestTrace.push(op);
+        const value = await session.dispatch({ op, args, pid });
         const opened = /** @type {{ path?: string, id?: number } | undefined} */ (op === 'fsOpen' ? value : undefined);
         if (opened && refuse(String(opened.path))) refusedHandles.add(opened.id);
         return value;
-      } catch (error) { throw acrossRpc(error); }
+      } catch (error) {
+        if (globalThis.__guestTrace) globalThis.__guestTrace.push(`${op}!${error?.code ?? error?.message}`);
+        throw acrossRpc(error);
+      }
     };
   }
   // What session/rpc.ts answers itself rather than through the op table.
-  supervisor.fsAcquire = async (epoch, cursor, options) => own.acquire(epoch, cursor, options);
-  supervisor.fsList = async (...args) => own.list(...args);
+  supervisor.fsAcquire = async (epoch, cursor, options) => session.bridge.bridge(pid).acquire(epoch, cursor, options);
+  // The process's waves (its filesystem client's), fenced as SupervisorRPC fences them.
+  supervisor.openWaveWriter = async () => /** @type {{ writer: string | null }} */ (await session.dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
+  supervisor.retireWaveWriter = async (writer) => { await session.dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
+  supervisor.writeBatchStream = async (stream, fence, owner) => {
+    try {
+      return await session.dispatch({
+        op: 'writeBatchStream', args: [], pid, stream,
+        ...(fence === undefined ? {} : { waveFence: { ...fence, hostIncarnation: boundIncarnation } }),
+        ...(owner === undefined ? {} : { mutationOwner: owner }),
+      });
+    } catch (error) { throw acrossRpc(error); }
+  };
+  supervisor.fsList = async (...args) => session.bridge.bridge(pid).list(...args);
+  supervisor.fsListTree = async (root, maxEntries) => subtreeListing(session.bridge.bridge(pid), root, maxEntries);
   supervisor.fsReadBatch = async (requests) => {
+    const current = session.bridge.bridge(pid);
     const out = [];
     for (const request of requests) {
       try {
-        if (!('length' in request)) out.push({ stat: (await own.stat(request.path, { followSymlinks: false })) ?? null });
-        // As session/rpc.ts reads a range: pinned to the epoch and revision it names.
-        else out.push({ bytes: await own.readRange(request.path, request.offset, request.length, { expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision }) });
+        if (!('length' in request)) out.push({ stat: (await current.stat(request.path, { followSymlinks: false })) ?? null });
+        else out.push({ bytes: await current.readRange(request.path, request.offset, request.length) });
       } catch (error) { out.push({ error }); }
     }
     return out;
@@ -89,8 +113,7 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
   const memory = new WebAssembly.Memory({ initial: 16 });
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: USER });
   P.__wasiAdoptSupervisor(supervisor);
-  if (storage !== null) P.__wasiAdoptStorage({ sql: storage });
-  const { wasiImport, fsImport } = makeImportsWithoutJSPI(P, {
+  const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {},
   });
   const view = () => new DataView(memory.buffer);
@@ -100,7 +123,20 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, wasiImport, fsImport, memory, world: session, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, session, pid, stats: () => P.__wasiFsStats(),
+    /**
+     * The session's isolate is replaced under the running guest: its calls
+     * reach a fresh process table, of the next generation, that never held it.
+     */
+    restartSession() {
+      const next = new SessionProcessSupervisor();
+      next.setPidBase(1_000_000);
+      session.retired.push(session.bridge);
+      session.processes = next;
+      session.bridge = createSupervisorBridgeStore({ vfs: raw, processes: next, filesystem: authority });
+      session.deliveries = new SupervisorDeliveries();
+      session.dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes: next, bridge: session.bridge, host: {}, deliveries: session.deliveries });
+    },
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
       const n = putPath(name);
@@ -155,6 +191,36 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
       return wasiImport.poll_oneoff(SUB, EVENT, 1, NEVENTS);
     },
     sync: (fd) => wasiImport.fd_sync(fd),
+    /** os.listdir: path_open of the directory, then fd_readdir until it is read through; the names, or a thrown errno. */
+    async listdir(name) {
+      const fd = await guest.open(name, { directory: true });
+      const BUF = 16384, LEN = 8192;
+      const names = [];
+      let cookie = 0n;
+      try {
+        for (;;) {
+          const errno = await wasiImport.fd_readdir(fd, BUF, LEN, cookie, OUT);
+          if (errno !== 0) throw Object.assign(new Error(`fd_readdir ${name}: errno ${errno}`), { errno });
+          const used = view().getUint32(OUT, true);
+          let at = 0;
+          let whole = 0;
+          while (at + 24 <= used) {
+            const next = view().getBigUint64(BUF + at, true);
+            const length = view().getUint32(BUF + at + 16, true);
+            if (at + 24 + length > used) break;
+            const entry = new TextDecoder().decode(bytesAt().slice(BUF + at + 24, BUF + at + 24 + length));
+            if (entry !== '.' && entry !== '..') names.push(entry);
+            cookie = next;
+            at += 24 + length;
+            whole++;
+          }
+          if (used < LEN || whole === 0) break;
+        }
+      } finally {
+        await guest.close(fd);
+      }
+      return names;
+    },
     async mkdir(name) { const n = putPath(name); return wasiImport.path_create_directory(PREOPEN_FD, PATH, n); },
     /** fd_filestat_get: { nlink, size }, or a thrown errno. */
     async fstat(fd) {
@@ -162,11 +228,9 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
       if (errno !== 0) throw Object.assign(new Error(`fd_filestat_get: errno ${errno}`), { errno });
       return { nlink: Number(view().getBigUint64(OUT + 24, true)), size: Number(view().getBigUint64(OUT + 32, true)) };
     },
-    /** This process ends; the session ends with it unless it was another guest's (`world`). */
-    async dispose() {
-      await authority.releaseProcess(pid);
-      if (world === null) { await bridge.dispose(); harness.db.close(); }
-    },
+    async dispose() { for (const b of [...session.retired, session.bridge]) await b.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
+    /** This process ends (its writes settled, its grants given back); the session goes on for another. */
+    async end() { await P.__wasiSettleWrites(); await authority.releaseProcess(pid); },
   };
   // The store boots on the first call; wait until it answers.
   await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));

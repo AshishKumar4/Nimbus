@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { memoryStorage } from './lib/do-storage.mjs';
+
 
 function registerCloneHarness() {
   let gitCommand;
@@ -20,6 +23,8 @@ function registerCloneHarness() {
   const vfs = {
     deviceId: 1,
     as: () => ({
+      // The destinations here do not exist before their clones.
+      exists: () => false,
       acquireExclusiveMutation(path, options) {
         const owner = `owner-${acquiredRoots.length + 1}`;
         acquiredRoots.push(path);
@@ -35,13 +40,17 @@ function registerCloneHarness() {
   };
   const waitUntilPromises = [];
   const doCtx = {
+    storage: memoryStorage(),
     waitUntil(promise) {
       waitUntilPromises.push(promise);
     },
   };
+  // The command's process (pid 1, commandContext): a background clone runs as a child of it.
+  const processes = new SessionProcessSupervisor();
+  processes.spawn('sh', ['sh'], '/home/user', { cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
   // Same registration shape init.ts uses — the module is already loaded here,
   // so the lazy import init.ts needs is simply the handler itself.
-  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}));
+  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}, undefined, undefined, processes));
   assert.equal(typeof gitCommand, 'function');
   return {
     gitCommand,
@@ -62,10 +71,13 @@ function commandContext(args) {
     env: {},
     stdout: { write() {} },
     stderr: { write() {} },
+    signal: new AbortController().signal,
     // The command's view of the namespace: every path is itself, on the engine (device 1).
     vfs: {
       async realpath(path) { return path; },
       async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; },
+      // Each directory is empty: a destination is one a clone may take.
+      async readdir() { return []; },
     },
   };
 }
@@ -79,7 +91,7 @@ function commandContext(args) {
   ]));
   assert.equal(exitCode, 1, 'foreground clone must propagate the facet failure status');
   assert.deepEqual(harness.acquiredRoots, ['/home/user/foreground']);
-  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true }]);
+  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true, stoppable: true }]);
   assert.deepEqual(harness.releasedOwners, ['owner-1']);
   assert.equal(harness.activeOwners.size, 0);
   assert.equal(harness.waitUntilPromises.length, 0);
@@ -95,7 +107,7 @@ function commandContext(args) {
   ]));
   assert.equal(exitCode, 0);
   assert.deepEqual(harness.acquiredRoots, ['/home/user/background']);
-  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true }]);
+  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true, stoppable: true }]);
   assert.equal(harness.waitUntilPromises.length, 1, 'background clone was not owned by DO waitUntil');
   await harness.waitUntilPromises[0];
   assert.deepEqual(harness.releasedOwners, ['owner-1']);
@@ -135,13 +147,14 @@ function commandContext(args) {
   const branchVfs = {
     deviceId: 1,
     as: () => ({
+      exists: () => false,
       acquireExclusiveMutation(path) {
         return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
       },
     }),
     releaseExclusiveMutation() {},
   };
-  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {} };
+  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {}, storage: memoryStorage() };
   registry.register('git', (ctx) => runGitCommand(ctx, branchVfs, branchCtx, env));
   const exitCode = await registry.gitCommand(commandContext([
     'clone',

@@ -37,10 +37,20 @@ function immutableCred(cred) {
  * the current base is by construction from a PREVIOUS generation.
  */
 export const PID_GEN_STRIDE = 1_000_000;
+/**
+ * A call made for a pid the table does not hold: the process ended, or the
+ * session restarted under it (pids carry the isolate generation, so a pid of
+ * an earlier generation is never reissued). Coded so a caller across RPC can
+ * tell it from a filesystem failure.
+ */
+function noSuchProcess(pid) {
+    return Object.assign(new Error(`process pid ${pid} does not exist`), { code: 'ESRCH' });
+}
 export class ProcessTable {
     nextPid = 1;
     base = 0;
     processes = new Map();
+    onStride = null;
     /**
      * Move the pid space onto this instance generation's range. Called once at
      * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.
@@ -56,6 +66,14 @@ export class ProcessTable {
     get pidBase() {
         return this.base;
     }
+    /**
+     * Told the stride (pid / PID_GEN_STRIDE) a pid minted here enters past its
+     * generation's own: the next generation must start beyond it, or its pids
+     * would repeat this one's.
+     */
+    onPidStride(listener) {
+        this.onStride = listener;
+    }
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, options = {}) {
         const inheritedCred = options.parentPid === undefined
@@ -64,6 +82,8 @@ export class ProcessTable {
         const execId = options.execId
             ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
         const pid = this.nextPid++;
+        if (pid % PID_GEN_STRIDE === 0)
+            this.onStride?.(pid / PID_GEN_STRIDE);
         const entry = {
             pid,
             command,
@@ -76,6 +96,7 @@ export class ProcessTable {
             cred: immutableCred(options.cred ?? inheritedCred),
             parentPid: options.parentPid,
             ...(execId === undefined ? {} : { execId }),
+            ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
         };
         this.processes.set(pid, entry);
         return entry;
@@ -83,7 +104,13 @@ export class ProcessTable {
     credOf(pid) {
         const entry = this.processes.get(pid);
         if (!entry)
-            throw new Error(`process pid ${pid} does not exist`);
+            throw noSuchProcess(pid);
+        return immutableCred(entry.cred);
+    }
+    liveCred(pid) {
+        const entry = this.processes.get(pid);
+        if (!entry || entry.state !== 'running')
+            throw noSuchProcess(pid);
         return immutableCred(entry.cred);
     }
     cred(pid) {
@@ -92,7 +119,7 @@ export class ProcessTable {
     setUmask(pid, umask) {
         const entry = this.processes.get(pid);
         if (!entry)
-            throw new Error(`process pid ${pid} does not exist`);
+            throw noSuchProcess(pid);
         if (!Number.isInteger(umask) || umask < 0 || umask > 0o777) {
             throw new Error(`invalid umask ${umask}`);
         }

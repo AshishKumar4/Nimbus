@@ -5,7 +5,7 @@
  * defined, and what constructing an instance initializes.
  */
 import { type Code } from './code.js';
-import { type Env, type FunctionInfo, PrivateName, type Sync } from './runtime.js';
+import { type Env, type FunctionInfo, type InterpreterRuntime, PrivateName, type Sync } from './runtime.js';
 /**
  * A class element's key: static, one of the class's private names, or the
  * index of its computed key among the class's computed keys, which are all
@@ -24,7 +24,7 @@ export type ElementKey = {
     readonly computed: number;
 };
 /** A class's making at runtime: its scope entered, private names made, heritage and keys evaluated, then defined. */
-export declare function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | null, plan: ClassPlan): ClassMaker;
+export declare function classMaking(rt: InterpreterRuntime, entry: ((env: Env) => Env) | null, heritage: Code | null, plan: ClassPlan): ClassMaker;
 /** ClassDefinitionEvaluation, with the class's name given when it runs. */
 export type ClassMaker = {
     readonly s: (env: Env, name: string) => unknown;
@@ -67,5 +67,5 @@ export interface ClassPlan {
 /** A field initializer's (or static block's) frame: `this` and the home object. */
 export declare function fieldFrame(fi: FunctionInfo, scope: Env, thisArg: unknown, home: object): Env;
 /** ClassDefinitionEvaluation's runtime half, from a compiled plan. */
-export declare function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]) => Function;
+export declare function classDefiner(rt: InterpreterRuntime, plan: ClassPlan): (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]) => Function;
 //# sourceMappingURL=classes.d.ts.map

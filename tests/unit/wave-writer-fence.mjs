@@ -163,6 +163,57 @@ const byteStream = (bytes) => new ReadableStream({
   console.log('  ok  an original that lands after its re-send and a later wave applies nothing');
 }
 
+// ── A restarted session: missing process before stale stream binding ────
+{
+  const harness = createSqliteVfsTestHarness();
+  const kernel = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', 1000, 1000);
+  const open = () => {
+    const ctx = {};
+    const vfs = new SqliteVFS(harness.sql, harness.ctx);
+    const processes = new SessionProcessSupervisor();
+    const host = { sqliteFs: vfs, processes, ensureSqliteFs() {}, supervisorDeliveries: openSupervisorDeliveries(ctx) };
+    attachSupervisorOps(host, buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem: new ProcessFiles(vfs) })));
+    return { ctx, vfs, processes, host };
+  };
+  let session = open();
+  const env = { NIMBUS_SESSION: {
+    idFromName: (id) => ({ toString: () => id }),
+    idFromString: (id) => ({ toString: () => id }),
+    get: () => ({ supervisorOp: (sent) => session.host.supervisorOp(sent) }),
+  } };
+  const bind = (pid, hostIncarnation) => new SupervisorRPC({ props: { doId: 'session', pid, writerId: 'restart-stream', hostIncarnation } }, env);
+  const pid = session.processes.spawn('git', ['git'], '/home/user').pid;
+  const { hostIncarnation } = supervisorDeliveryProps(session.ctx);
+  const rpc = bind(pid, hostIncarnation);
+  const epoch = await rpc.openWaveWriter();
+  const path = 'home/user/wave.txt';
+  const stream = (text) => {
+    const data = enc.encode(text);
+    return encodeWriteBatchStream({
+      inodes: [{ path, parentPath: 'home/user', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
+      chunks: [{ path, chunkId: 0, data }],
+    });
+  };
+  assert.equal((await rpc.writeBatchStream(stream('before'), { writer: epoch, wave: 1, attempt: 1 })).ok, true);
+  const revision = session.vfs.revision(path);
+  session = open();
+  session.processes.setPidBase(1_000_000);
+  const fence = { writer: epoch, wave: 2, attempt: 1 };
+  await assert.rejects(rpc.writeBatchStream(stream('missing process'), fence), (error) => error.code === 'ESRCH');
+  const currentPid = session.processes.spawn('git', ['git'], '/home/user').pid;
+  const current = bind(currentPid, supervisorDeliveryProps(session.ctx).hostIncarnation);
+  const stale = bind(currentPid, hostIncarnation);
+  await assert.rejects(stale.writeBatchStream(stream('stale binding'), fence), (error) => error.code === 'ESTALE');
+  assert.equal(session.vfs.revision(path), revision, 'neither refused stream changed the file');
+  assert.equal(dec.decode(session.vfs.as(CRED_KERNEL).readFile(path)), 'before');
+  const next = await current.openWaveWriter();
+  assert.equal((await current.writeBatchStream(stream('after'), { writer: next, wave: 1, attempt: 1 })).ok, true);
+  assert.equal(dec.decode(session.vfs.as(CRED_KERNEL).readFile(path)), 'after');
+  console.log('  ok  a missing process stream gets ESRCH, a live stale binding gets ESTALE, and the current writer still writes');
+}
+
 // ── Overtaken while it runs: the next commit is refused ─────────────────
 {
   const harness = createSqliteVfsTestHarness();
@@ -191,6 +242,45 @@ const byteStream = (bytes) => new ReadableStream({
   assert.ok(written > 0 && written < inodes.length, `${written} of ${inodes.length} files: the first group should commit and no later one`);
   assert.equal(result.committedPathCount, written);
   console.log(`  ok  an attempt overtaken while it runs commits nothing more (${written} of ${inodes.length} files)`);
+}
+
+// ── A process's first epoch is the one minted with its binding: no round trip ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const kernel = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', 1000, 1000);
+  const ctx = {};
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const processes = new SessionProcessSupervisor();
+  const host = { sqliteFs: vfs, processes, ensureSqliteFs() {}, supervisorDeliveries: openSupervisorDeliveries(ctx) };
+  attachSupervisorOps(host, buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem: new ProcessFiles(vfs) })));
+  const ops = [];
+  const env = {
+    NIMBUS_SESSION: {
+      idFromName: (id) => ({ toString: () => id }),
+      idFromString: (id) => ({ toString: () => id }),
+      get: () => ({ supervisorOp: (sent) => { ops.push(sent.op); return host.supervisorOp(sent); } }),
+    },
+  };
+  const pid = processes.spawn('node', ['node'], '/home/user').pid;
+  const props = { doId: 'session', pid, writerId: 'minted-run', ...supervisorDeliveryProps(ctx, pid) };
+  assert.equal(typeof props.waveWriter, 'string', 'no epoch was minted with the binding');
+  const rpc = new SupervisorRPC({ props }, env);
+  assert.equal(await rpc.openWaveWriter(true), props.waveWriter);
+  assert.deepEqual(ops, [], 'the first epoch cost a round trip');
+  // Admitted: a wave fenced with it lands.
+  const fence = { writer: props.waveWriter, wave: 1, attempt: 1 };
+  const landed = await rpc.writeBatchStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [{ type: 'call', call: { call: 'writeFile', path: 'home/user/minted', mode: 0o644, data: enc.encode('m') } }] }), fence);
+  assert.equal(landed.ok, true, JSON.stringify(landed.error));
+  // Any later epoch is a new one: a writer that numbers afresh never reuses one.
+  const later = await rpc.openWaveWriter(false);
+  assert.notEqual(later, props.waveWriter);
+  assert.deepEqual(ops, ['writeBatchStream', 'openWaveWriter']);
+  // An old binding's epoch is not handed out.
+  const stale = new SupervisorRPC({ props: { ...props, waveWriterMintedAt: Date.now() - 10 * 60_000 } }, env);
+  assert.notEqual(await stale.openWaveWriter(true), props.waveWriter);
+  console.log('  ok  a process\'s first epoch is its binding\'s, and only the first');
 }
 
 console.log('wave writer fence: ok');

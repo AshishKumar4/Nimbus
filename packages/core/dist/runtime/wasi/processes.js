@@ -31,7 +31,7 @@
  * Every import answers 0 or a positive WASI errno; the C side
  * (git-wasi-compat.c) turns that into errno.
  */
-import { filesystemErrno } from './filesystem.js';
+import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, PIPE: 64, SRCH: 71 };
@@ -499,7 +499,7 @@ export function processHost(opts) {
                 view().setUint32(nread, 0, true);
                 return E.SUCCESS;
             }
-            return opts.input(room).then((packet) => {
+            const finish = (packet) => {
                 if (!(packet.data instanceof Uint8Array) || packet.data.byteLength > room)
                     return E.IO;
                 if (packet.data.byteLength > 0) {
@@ -512,7 +512,15 @@ export function processHost(opts) {
                     return E.INTR;
                 view().setUint32(nread, 0, true);
                 return E.SUCCESS;
-            }, () => E.IO);
+            };
+            try {
+                const packet = opts.input(room);
+                return packet && typeof packet.then === 'function'
+                    ? Promise.resolve(packet).then(finish, () => E.IO) : finish(packet);
+            }
+            catch {
+                return E.IO;
+            }
         }
         const entry = pipeEntry(fd);
         if (!entry)

@@ -7,14 +7,27 @@
 
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, type FacetKind } from '@nimbus-sh/fabric/facet-limits.js';
 import type { StagedSourceEnv } from '../runtime/staged-source.js';
 
 /** What a helper facet is: its worker id and facet name, its class, and its code, built from the staged assets. */
 export interface HelperFacetSpec {
+  kind?: FacetKind;
   id: string;
   className: string;
   /** How a missing binding names it: "the transform facet". */
   what: string;
+  /**
+   * The child facet's name, when it is not `id`: the same worker code run as
+   * a second actor (the esbuild CLI's facet, apart from its compute calls).
+   */
+  facetName?: string;
+  /**
+   * The facet runs processes (the esbuild CLI): its calls have no wall
+   * deadline. Without it every call is a compute call, bounded by the kind's
+   * call deadline (boundedCalls).
+   */
+  runsProcesses?: true;
   code(assets: Required<StagedSourceEnv>): Promise<WorkerCode>;
 }
 
@@ -33,9 +46,70 @@ export async function loadHelperFacet<T extends DurableObject>(
   if (!loader || typeof loader.get !== 'function') throw new Error(`Nimbus: env.LOADER unavailable for ${spec.what}`);
   const assets = Reflect.get(Object(env), 'ASSETS');
   if (!assets || typeof assets.fetch !== 'function') throw new Error(`Nimbus: env.ASSETS unavailable for ${spec.what}`);
-  const worker = await loader.get(spec.id, () => spec.code({ ASSETS: assets }));
-  const facetClass = worker.getDurableObjectClass(spec.className);
-  return ctx.facets.get<T>(spec.id, async () => ({ class: facetClass }));
+  const kind = spec.kind ?? 'worker';
+  const worker = await loader.get(facetLoaderKey(kind, spec.id), async () => applyFacetLimits(kind, await spec.code({ ASSETS: assets })));
+  const facetClass = worker.getDurableObjectClass(spec.className, { limits: facetLimits(kind) });
+  const facetName = spec.facetName ?? spec.id;
+  const stub = ctx.facets.get<T>(facetName, async () => ({ class: facetClass }));
+  return spec.runsProcesses ? stub : boundedCalls(ctx, facetName, stub, spec, kind);
+}
+
+/**
+ * A helper facet's compute call that outlived its kind's call deadline. Not
+ * retried: the same input would wait as long again (buildFacetPrebundler and
+ * oxcTransformHost let it through as it is).
+ */
+export class FacetCallDeadlineError extends Error {
+  constructor(readonly what: string, readonly method: string, readonly kind: FacetKind, readonly deadlineMs: number) {
+    super(`Nimbus: ${what}'s ${method} gave no answer within ${deadlineMs} ms (the ${kind} kind's call deadline)`);
+    this.name = 'FacetCallDeadlineError';
+  }
+}
+
+/**
+ * `stub`, with each compute call bounded by `kind`'s call deadline
+ * (facetCallDeadlineMs). The one place a helper facet's calls are bounded,
+ * so no call site keeps its own timer.
+ *
+ * A call that has not answered by then is ended, not abandoned: an RPC
+ * cannot be cancelled by itself, so the facet is aborted, which ends its
+ * work and every call on it (a late plugin answer has nothing to resume),
+ * and the next load gets a fresh actor. Only then does the call fail, with a
+ * FacetCallDeadlineError, so the caller's admission is released after the
+ * work really ended. A facet that runs processes is a separate actor
+ * (spec.runsProcesses), so this never ends a running esbuild command.
+ */
+function boundedCalls<T extends DurableObject>(ctx: DurableObjectState, facetName: string, stub: Fetcher<T>, spec: HelperFacetSpec, kind: FacetKind): Fetcher<T> {
+  const deadlineMs = facetCallDeadlineMs(kind);
+  if (deadlineMs === undefined) return stub;
+  return new Proxy(stub, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      // Called on the stub itself, never on this wrapper (Symbol.dispose included).
+      if (typeof property !== 'string') return value.bind(target);
+      return (...args: unknown[]) => withinDeadline(
+        Promise.resolve(Reflect.apply(value, target, args)),
+        deadlineMs,
+        () => {
+          const expired = new FacetCallDeadlineError(spec.what, property, kind, deadlineMs);
+          try { ctx.facets.abort(facetName, expired); } catch { /* already gone */ }
+          return expired;
+        },
+      );
+    },
+  });
+}
+
+/** `call`, or, once `ms` pass first, a rejection with what `expire` returns (after it has run). */
+async function withinDeadline<R>(call: Promise<R>, ms: number, expire: () => Error): Promise<R> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(expire()), ms); });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }
 
 /**

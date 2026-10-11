@@ -13,7 +13,7 @@
 // what the chat needs to show Connect and open a popup; the callback page is
 // the session's real one (answering an error, as a declined sign-in would).
 
-import { AUTH_TOKEN, BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
+import { BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
 import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -40,8 +40,8 @@ const callbackPath = `/s/${sid}/api/agent/oauth/callback?error=access_denied`;
 /** A shell page whose agent status and OAuth start are answered here; counts status reads. */
 async function openShell(query) {
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   const reads = { count: 0 };
   await page.setRequestInterception(true);
   page.on('request', async (request) => {

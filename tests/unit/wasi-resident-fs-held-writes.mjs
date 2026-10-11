@@ -1,20 +1,16 @@
 #!/usr/bin/env bun
 /**
- * wasi-resident-fs-held-writes — what a WASI process holds of what it writes
- * (core runtime/wasi/resident-filesystem.ts), and the session's descriptors it
- * opens, against the session's own answers.
- *
- * A file the process creates or truncates is held until its close, fsync, a
- * path change, another writer's open, a send or the run's end. What must
+ * wasi-resident-fs-held-writes — the session's descriptors a WASI process
+ * opens when it has no filesystem client of its own (core
+ * runtime/wasi/resident-filesystem.ts, no delegation), against the session's
+ * own answers. Nothing is held: every write is the descriptor's, at once
+ * (with a client, writes go through it: wasi-delegation-holder). What must
  * hold:
- *   - a refusal the session makes is reported, never dropped by a flush that
- *     some other operation caused;
- *   - holding is bounded: a truncate or a write past what may be held goes to
- *     the session instead of growing the process;
- *   - a held file is known by its identity: a peer that replaces the name is
- *     read as the peer's file;
+ *   - a refusal the session makes is the write's own error;
+ *   - a file is known by its identity: a peer that replaces the name is read
+ *     as the peer's file;
  *   - a second writer, a reader, and fsync through another descriptor all see
- *     what is held;
+ *     what was written;
  *   - every descriptor is the session's, so a directory's descriptor works
  *     for the session's calls (mkdirat, futimes) and lists the directory it
  *     opened, wherever that directory is now;
@@ -88,11 +84,11 @@ const refusing = new Proxy(authority, {
 });
 
 const create = { read: true, write: true, create: true, truncate: true };
-/** Open `name` for writing as a held file: the store knows its directory first, as it does once a process has looked around. */
+/** Open `name` for writing: the store knows its directory first, as it does once a process has looked around. */
 const openHeld = async (fs, name) => {
   await fs.stat(beneath('two.bin'));
   const handle = await fs.open(beneath(name), create);
-  assert.equal(fs.holding(), true, `${name} is held`);
+  assert.equal(fs.holding(), false, `${name} is held by an adapter with no client`);
   return handle;
 };
 let passed = 0;
@@ -107,34 +103,20 @@ const check = async (name, fn) => {
   console.log(`  ok  ${name}`);
 };
 
-await check('a refusal met by a flush another operation caused is still the close\'s error', async () => {
+await check('a refusal is the write\'s own error, and nothing is left for the close or the settle', async () => {
   const fs = residentFilesystem(refusing, view);
   const held = await openHeld(fs, 'refused-a.txt');
-  await fs.write(held.id, null, enc.encode('lost'));
-  // A path change flushes what is held first; the session refuses it.
-  await fs.mkdir(beneath('made-by-rename-path'));
-  assert.equal(fs.holding(), false);
-  await assert.rejects(async () => fs.close(held.id), { code: 'ENOSPC' });
-});
-
-await check('a refusal met by a flush before a send is reported by the run\'s settle', async () => {
-  const fs = residentFilesystem(refusing, view);
-  const held = await openHeld(fs, 'refused-b.txt');
-  await fs.write(held.id, null, enc.encode('lost'));
-  await fs.flush();
-  const failures = await fs.settle();
-  assert.equal(failures.length, 1);
-  assert.equal(failures[0].path, `${ROOT}/refused-b.txt`);
-  assert.equal(failures[0].error.code, 'ENOSPC');
+  await assert.rejects(async () => fs.write(held.id, null, enc.encode('lost')), { code: 'ENOSPC' });
+  assert.deepEqual(await fs.settle(), []);
   await fs.close(held.id);
 });
 
-await check('a truncate or a write past what may be held goes to the session', async () => {
+await check('a truncate or a sparse write is the session\'s at once', async () => {
   const fs = residentFilesystem(authority, view);
   const held = await openHeld(fs, 'huge.bin');
   await fs.write(held.id, null, enc.encode('head'));
   await fs.ftruncate(held.id, WASI_RESIDENT_FILE_CAP_BYTES * 16);
-  assert.equal(fs.holding(), false, 'the truncate was not held');
+  assert.equal(fs.holding(), false, 'the truncate was held');
   assert.equal((await authority.stat(beneath('huge.bin'))).size, WASI_RESIDENT_FILE_CAP_BYTES * 16);
   await fs.close(held.id);
   const sparse = await openHeld(fs, 'sparse.bin');

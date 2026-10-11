@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto';
 import { crc32, deflateSync, inflateSync } from 'node:zlib';
 
-import { ByteLru } from './byte-lru.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import {
   OBJ_OFS_DELTA,
   OBJ_REF_DELTA,

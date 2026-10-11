@@ -20,7 +20,7 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 
 // Subscriber WS (raw).
-const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
+const subWs = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders(sid));
 let opened = false;
 const received = []; // fs-watch-event frames
 let subscribeResult = null;

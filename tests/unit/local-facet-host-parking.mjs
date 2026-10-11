@@ -10,7 +10,7 @@
 // its `_start`; only a suspending import table lets a writer wait at a pipe's
 // capacity. Without it, `seq 100000 | cat | head -1` had `cat` spool all of
 // `seq` before `head` ran, so `seq` was credited with exit 0 where GNU gives
-// 141 (traced: /mnt/scratch/nimbus/verify/release/pipe-trace-local.json).
+// 141 (traced).
 //
 // Real GNU bash 5.2.37 and real BusyBox through NimbusWorkspace + localFacetHost,
 // exactly as core-wasm-runtime-bun.mjs drives them.

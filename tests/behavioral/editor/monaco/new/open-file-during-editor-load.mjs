@@ -12,7 +12,7 @@
 // The file is then typed into, saved with Ctrl+S, and read back from the
 // session's filesystem; welcome.md must be untouched.
 
-import { AUTH_TOKEN, BASE, Terminal, deleteSession, heredocCommand, makeAsserter, mintSession } from '../../../_driver.mjs';
+import { BASE, Terminal, deleteSession, heredocCommand, makeAsserter, mintSession } from '../../../_driver.mjs';
 import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -33,8 +33,8 @@ try {
   await t.close();
 
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   // Hold Monaco's loader back so the click lands before the editor is ready.
   await page.setRequestInterception(true);
   page.on('request', (request) => {

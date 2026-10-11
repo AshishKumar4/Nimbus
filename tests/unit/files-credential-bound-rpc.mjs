@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
@@ -53,8 +54,10 @@ function makeHost() {
   const st = kernel.stat('home/user/priv/secret.txt');
   assert.equal(st.uid, OWNER.uid, 'fixture: the file is owned by uid 1001');
   assert.equal(st.mode & 0o777, 0o600, 'fixture: mode 0600');
+  const authority = new ProcessFiles(vfs);
   const host = {
     sqliteFs: vfs,
+    getFilesystemAuthority: () => authority,
     processes: new SessionProcessSupervisor(),
     ensureSqliteFs() {},
     async ensureRuntimeReady() {},

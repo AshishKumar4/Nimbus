@@ -54,7 +54,8 @@ const ctx = {
   ...facetCtx,
   storage: { ...facetCtx.storage, sql: harness.sql, transactionSync: harness.ctx.storage.transactionSync },
   exports: { SupervisorRPC: ({ props }) => ({ props }) },
-  getWebSockets: () => [],
+  // Kinu's chat/workspace sockets belong to the embedder, not this runtime.
+  getWebSockets: () => [{ readyState: 1, close() {} }],
 };
 const env = {
   WORKSPACES: { idFromName() {}, idFromString() {}, get() {} },
@@ -144,6 +145,24 @@ try {
   await settle(() => keepalives().length > 2);
   assert.equal(keepalives().length, 3, 'a new resident re-arms the lapsed cycle');
   console.log('  [4] the next resident re-arms the cycle');
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    now += 61_000;
+    const count = keepalives().length;
+    await runtime.onScheduled('resident-keepalive');
+    assert.equal(keepalives().length, count, 'an unrelated host socket and an idle attached terminal cannot renew forever');
+    await runtime.terminalFrame(ws, JSON.stringify({ type: 'input', data: '' }));
+    await settle(() => keepalives().length > count);
+    assert.equal(keepalives().length, count + 1, 'traffic to this runtime re-arms its resident');
+    now += 5_000;
+    await runtime.onScheduled('resident-keepalive');
+    assert.equal(keepalives().length, count + 2, 'the active terminal keeps its resident within the idle bound');
+    now += 61_000;
+    await runtime.onScheduled('resident-keepalive');
+    assert.equal(keepalives().length, count + 2, 'even this runtime\'s attached terminal expires when its traffic stops');
+  } finally { Date.now = realNow; }
 } finally {
   await runtime.close();
 }

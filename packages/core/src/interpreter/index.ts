@@ -21,31 +21,34 @@
  * an ordinary call of the global eval, which a Worker refuses at request time
  * natively too.
  */
-import { parse, type FunctionExpression, type Options, type Program } from 'acorn';
+import { Parser, parse, tokTypes, type FunctionExpression, type Options, type Program } from 'acorn';
 import {
   type SourceRealm, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
   scriptExpression,
 } from '../_shared/runtime-function-source.js';
 import { Compiler, type UnitContext, type UnitHost } from './compile.js';
-import { type ModuleCell, moduleCell } from './modules.js';
+import { type ModuleCell, type ModuleHelpers, moduleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
-import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './runtime.js';
+import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
 import {
-  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, someItem,
-  stringLastIndexOf, stringOf, stringSlice, withElement,
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, objectCreate, objectKeys,
+  reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
+import { type ModuleRequest, programRequests } from './module-requests.js';
+import type { AcornParser } from '../runtime/javascript-ast.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
+export type { ModuleRequest } from './module-requests.js';
 
 export interface InterpreterHost {
-  /** `import(specifier, options)` from code whose module URL is `parentUrl`. */
+  /** `import(specifier, options)` from code whose module URL is `parentUrl`, for code compiled without an origin. */
   dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
   /**
    * LAUNCH_PRIMORDIALS of the primordials module the launch loaded at its
@@ -53,17 +56,33 @@ export interface InterpreterHost {
    * evaluation of it, which would capture what the program has replaced.
    */
   readonly primordials: object;
+  /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
+  readonly moduleHelpers: ModuleHelpers;
+}
+
+/**
+ * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
+ * import() calls, and the `Function` its free `Function` binding starts as.
+ * An origin without a `Function` gives its code the global's, as code
+ * compiled without an origin has; that code imports through the host
+ * against its own module URL (none for a constructor's).
+ */
+export interface CodeOrigin {
+  import(specifier: unknown, options: unknown): Promise<unknown>;
+  /** Undefined, as an own property, for an origin without one. */
+  readonly Function: unknown;
 }
 
 export interface Interpreter {
-  /** The function `new <kind>Function(...params, body)` builds. */
-  compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string): NativeFunction;
+  /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
+  compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
   /**
    * The module cell for a file's text: Node's wrapper function of
    * (exports, require, module, __filename, __dirname). CommonJS text runs as
-   * that function's body; an ES module as esbuild lowers it to one.
+   * that function's body; an ES module linked as the next launch's lowering
+   * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
    */
-  compileModule(path: string, text: string): ModuleCell;
+  compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -71,7 +90,7 @@ export interface Interpreter {
    * `this` at its top level). Code of any other shape is refused
    * (UnsupportedSyntax).
    */
-  compileExpression(code: string): NativeFunction;
+  compileExpression(code: string, origin?: CodeOrigin): NativeFunction;
   /** Run a script at global scope: its vars and functions become global object properties. */
   runScript(text: string): void;
 }
@@ -138,42 +157,11 @@ function leadingSlashes(path: string): number {
 }
 
 /**
- * One module a module's text asks for, and how: `static` (an import or
- * export-from declaration), `dynamic` (import()) or `require`. The kind
- * decides the resolution, as the loader makes it: a static import is
- * evaluated through the module's scoped require (modules.ts), so it resolves
- * under require's conditions; import() resolves under import's.
- */
-export interface ModuleRequest {
-  readonly specifier: string;
-  readonly kind: 'static' | 'dynamic' | 'require';
-}
-
-/** A string literal, or a template with no substitutions: the specifier a request spells. */
-function spelledString(node: unknown): string | undefined {
-  if (typeof node !== 'object' || node === null) return undefined;
-  const type = reflectGet(node, 'type');
-  if (type === 'Literal') {
-    const value = reflectGet(node, 'value');
-    return typeof value === 'string' ? value : undefined;
-  }
-  if (type !== 'TemplateLiteral') return undefined;
-  const expressions = reflectGet(node, 'expressions');
-  const quasis = reflectGet(node, 'quasis');
-  if (!arrayIsArray(expressions) || expressions.length !== 0 || !arrayIsArray(quasis) || quasis.length !== 1) return undefined;
-  const value = reflectGet(quasis[0], 'value');
-  const cooked = typeof value === 'object' && value !== null ? reflectGet(value, 'cooked') : undefined;
-  return typeof cooked === 'string' ? cooked : undefined;
-}
-
-/**
- * The modules a file's text asks for, as this parser reads it: import and
- * export-from sources, `import()` of a string, and `require()` of a string
- * (any call of a `require` binding, the module's own or one createRequire
- * made). A specifier spelled with escapes or in a template is read as the
- * language reads it; one in a comment or a string is not a request. Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
- * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ * The modules a file's text asks for, as this parser reads it
+ * (module-requests.ts programRequests: imports, import() and require() of a
+ * string, a createRequire binding's calls, and a require wrapper's). Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
+ * import() prefetch (node-shims.ts) finds what to fetch with it.
  */
 export function moduleRequests(path: string, text: string): ModuleRequest[] {
   if (UNPARSED_EXTENSIONS[extensionOf(path)]) return [];
@@ -187,49 +175,161 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
       return [];
     }
   }
-  const requests: ModuleRequest[] = [];
-  const add = (specifier: string | undefined, kind: ModuleRequest['kind']) => {
-    if (specifier !== undefined) requests[requests.length] = { specifier, kind };
-  };
-  const pending: unknown[] = [program];
-  while (pending.length > 0) {
-    const node = pending[pending.length - 1];
-    pending.length -= 1;
-    if (typeof node !== 'object' || node === null) continue;
-    if (arrayIsArray(node)) {
-      for (let i = 0; i < node.length; i++) pending[pending.length] = node[i];
-      continue;
-    }
-    const type = reflectGet(node, 'type');
-    if (typeof type !== 'string') continue;
-    if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration') {
-      add(spelledString(reflectGet(node, 'source')), 'static');
-    } else if (type === 'ImportExpression') {
-      add(spelledString(reflectGet(node, 'source')), 'dynamic');
-    } else if (type === 'CallExpression') {
-      const callee = reflectGet(node, 'callee');
-      const args = reflectGet(node, 'arguments');
-      if (typeof callee === 'object' && callee !== null && reflectGet(callee, 'type') === 'Identifier'
-        && reflectGet(callee, 'name') === 'require' && arrayIsArray(args) && args.length > 0) {
-        add(spelledString(args[0]), 'require');
+  return programRequests(program);
+}
+
+interface BlockParser extends AcornParser {
+  strict: boolean;
+  start: number;
+  end: number;
+  lastTokStart: number;
+  lastTokEnd: number;
+  raise(pos: number, message: string): never;
+  raiseRecoverable(pos: number, message: string): never;
+  parseVarId(decl: { id: { type: string; start: number; end: number } }, kind: string): void;
+  startNode(): object;
+  expect(type: unknown): void;
+  enterScope(flags: number): void;
+  exitScope(): void;
+}
+const AcornParserClass = Parser as unknown as new (options: Options, input: string) => BlockParser;
+const FOUND = objectCreate(null);
+
+/**
+ * acorn keeping no statement once parsed, at the top level or in a block (a
+ * fatal error may come from a multi-MiB bundle, and acorn's tree is 17 to 24
+ * times its source): what is held is the chain of open nodes. It stops at the
+ * innermost throw whose argument holds `offset`, which finishes before any
+ * throw around it.
+ */
+class ThrowFinder extends AcornParserClass {
+  offset = -1;
+  found: [number, number] | null = null;
+  // The token a syntax error is at, as V8 marks it: the parser's current or
+  // last token where one starts there (a reserved word is raised past it).
+  raisedToken: [number, number] | null = null;
+  // The binding a declarator just parsed, which V8 marks where its initializer is missing.
+  declared: { start: number; end: number; required: boolean } | null = null;
+
+  parseVarId(decl: { id: { type: string; start: number; end: number } }, kind: string): void {
+    this.declared = null;
+    super.parseVarId(decl, kind);
+    this.declared = { start: decl.id.start, end: decl.id.end, required: kind === 'const' || decl.id.type !== 'Identifier' };
+  }
+
+  raise(pos: number, message: string): never {
+    const declared = this.declared;
+    const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
+      && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
+    this.raisedToken = missingInitializer ? [declared.start, declared.end]
+      : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
+    return super.raise(pos, message);
+  }
+
+  // acorn's is its raise, not a call of it.
+  raiseRecoverable(pos: number, message: string): never {
+    return this.raise(pos, message);
+  }
+
+  parseTopLevel(node: Program): Program {
+    const exports = objectCreate(null);
+    while (this.type !== tokTypes.eof) this.parseStatement(null, true, exports);
+    if (this.inModule) {
+      const names = objectKeys(this.undefinedExports);
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        const { start, end } = this.undefinedExports[name];
+        this.raisedToken = [start, end];
+        super.raise(start, "Export '" + name + "' is not defined");
       }
     }
-    const keys = objectKeys(node);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
-      // A literal's or template element's value is data; elsewhere `value` holds a node (a property's).
-      if ((key === 'value' || key === 'regex') && (type === 'Literal' || type === 'TemplateElement')) continue;
-      pending[pending.length] = reflectGet(node, key);
-    }
+    this.next();
+    return this.finishNode(node, 'Program');
   }
-  return requests;
+
+  parseBlock(createNewLexicalScope = true, node = this.startNode(), exitStrict = false): object {
+    reflectSet(node, 'body', []);
+    this.expect(tokTypes.braceL);
+    if (createNewLexicalScope) this.enterScope(0);
+    while (this.type !== tokTypes.braceR) this.parseStatement(null);
+    if (exitStrict) this.strict = false;
+    this.next();
+    if (createNewLexicalScope) this.exitScope();
+    return this.finishNode(node, 'BlockStatement');
+  }
+
+  finishNode<T>(node: T, type: string): T {
+    const finished = super.finishNode(node, type);
+    if (type === 'ThrowStatement') {
+      const argument = reflectGet(finished as object, 'argument') as object;
+      if (this.offset >= (reflectGet(argument, 'start') as number) && this.offset < (reflectGet(finished as object, 'end') as number)) {
+        const start = reflectGet(finished as object, 'start') as number;
+        this.found = [start, start + 1];
+        throw FOUND;
+      }
+    }
+    return finished;
+  }
+}
+
+/**
+ * Where V8 would place a fatal error's report in `text`, a module's whole
+ * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
+ * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
+ * frame's offset and not V8's message:
+ *   - `offset` given: the innermost `throw` statement whose argument holds
+ *     it, as [start, start + 1], V8's location of a throw; null for none;
+ *   - `offset` -1: the syntax error that stops the parse, as [start, end]
+ *     of the token it stops at; null when the text parses.
+ */
+/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
+export function tokenizer(code: string, options: Options): ReturnType<typeof Parser.tokenizer> {
+  return Parser.tokenizer(code, options);
+}
+
+export function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null {
+  const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
+  finder.offset = offset;
+  try {
+    finder.parse();
+  } catch (error) {
+    if (error === FOUND) return finder.found;
+    if (offset !== -1 || !isObject(error)) return null;
+    const token = finder.raisedToken;
+    if (token !== null && token[1] > token[0]) return token;
+    const at = reflectGet(error, 'pos');
+    const end = reflectGet(error, 'raisedAt');
+    if (typeof at !== 'number') return null;
+    return [at, typeof end === 'number' && end > at ? end : at + 1];
+  }
+  return null;
 }
 
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program: Program): boolean {
   return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
     || s.type === 'ExportDefaultDeclaration' || s.type === 'ExportAllDeclaration');
+}
+
+/**
+ * A module file's text as Node detects its format: an ES module when it has
+ * import or export declarations, or when it parses only as one (top-level
+ * await, import.meta); else CommonJS, a script whose top level may return.
+ */
+function moduleProgram(text: string): { readonly module: boolean; readonly program: Owned<Program> } {
+  let module: Owned<Program> | null = null;
+  try {
+    module = ownProgram(parseQuick(text, MODULE_OPTIONS));
+  } catch {
+    // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
+  }
+  if (module !== null && hasModuleSyntax(module)) return { module: true, program: module };
+  try {
+    return { module: false, program: ownProgram(parseQuick(text, COMMONJS_OPTIONS)) };
+  } catch (error) {
+    if (module === null) throw error;
+    return { module: true, program: module };
+  }
 }
 
 /** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
@@ -242,20 +342,28 @@ const REALM: SourceRealm = {
   },
 };
 
-let installed: HostOps | null = null;
+function unitContext(runtime: InterpreterRuntime, source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
+  return { source, module, host, runtime, imports: new SafeMap(), moduleScope };
+}
 
-function unitContext(source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
-  return { source, module, host, imports: new SafeMap(), moduleScope };
+/** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
+function unitHost(host: InterpreterHost, origin: CodeOrigin | undefined, parentUrl: string | undefined): UnitHost {
+  if (origin === undefined) {
+    return { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options), functionBinding: null };
+  }
+  // Its own property only: an origin without a Function must not take one a program put on Object.prototype.
+  const own = reflectGetOwnPropertyDescriptor(origin, 'Function');
+  return {
+    dynamicImport: (specifier, options) => origin.import(specifier, options),
+    functionBinding: own === undefined || own.value === undefined ? null : { value: own.value },
+  };
 }
 
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
   if (host.primordials !== LAUNCH_PRIMORDIALS) throw new Error('interpreter: its built-ins were not captured at the launch start');
-  if (installed !== hostOps) {
-    installHost(hostOps);
-    installed = hostOps;
-  }
+  const runtime = new InterpreterRuntime(hostOps);
   const interpreter: Interpreter = {
-    compileFunction(kind, params, body) {
+    compileFunction(kind, params, body, origin) {
       // A trailing source map is parsed only when the shortened body fails.
       const short = withoutTrailingLineComments(body);
       let parsed: { readonly node: FunctionExpression; readonly text: string };
@@ -269,58 +377,46 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const node = ownFunctionExpression(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+      const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null);
       const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
       releaseScopes(root);
-      return makeFunction(fi, ROOT_ENV, undefined);
+      return runtime.makeFunction(fi, ROOT_ENV, undefined);
     },
 
-    compileModule(path, text) {
+    compileModule(path, text, origin) {
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
-      const unitHost: UnitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
-      const compileCell = (program: Owned<Program>): ModuleCell => {
+      const moduleHost = unitHost(host, origin, parentUrl);
+      const parsed = moduleProgram(text);
+      if (parsed.module) {
+        const program = parsed.program;
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
-        const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
+        const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root), text, 0, root).modulePlan(program, root);
         releaseScopes(root);
-        return cell;
-      };
-      let module: Owned<Program> | null = null;
-      try {
-        module = ownProgram(parseQuick(text, MODULE_OPTIONS));
-      } catch {
-        // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
+        return moduleCell(plan, runtime.ops, host.moduleHelpers);
       }
-      if (module !== null && hasModuleSyntax(module)) return compileCell(module);
-      let script: Owned<Program>;
-      try {
-        script = ownProgram(parseQuick(text, COMMONJS_OPTIONS));
-      } catch (error) {
-        // Top-level await or import.meta without imports or exports: still a module.
-        if (module === null) throw error;
-        return compileCell(module);
-      }
+      const script = parsed.program;
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);
-      const fi = new Compiler(analysis, unitContext(text, false, unitHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
       releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
-      return makeFunction(fi, ROOT_ENV, undefined);
+      return runtime.makeFunction(fi, ROOT_ENV, undefined);
     },
 
-    compileExpression(code) {
+    compileExpression(code, origin) {
       const at = scriptExpression(code, REALM);
       if (at === null) throw new UnsupportedSyntax('a vm script that is not one expression');
       const body = expressionFunctionBody(stringSlice(code, 0, at.prologueEnd), stringSlice(code, at.start, at.end));
-      return interpreter.compileFunction('function', [], body);
+      return interpreter.compileFunction('function', [], body, origin);
     },
 
     runScript(text) {
       const program = ownProgram(parse(text, SCRIPT_OPTIONS));
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
-      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+      const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null);
       const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
       releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');

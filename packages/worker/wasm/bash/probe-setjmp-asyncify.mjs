@@ -3,8 +3,10 @@
 // facet scheduler; the setjmp "capture" = unwind into a per-jmp_buf slot then
 // immediately rewind it (so setjmp returns 0 and the slot retains a replayable
 // snapshot); longjmp = unwind current stack, restore the slot cursor, rewind.
+//   node probe-setjmp-asyncify.mjs <m4-sjlj.wasm>
 import { readFileSync } from 'node:fs';
-const mod = new WebAssembly.Module(readFileSync('/tmp/claude-1000/-home-mrwhite0racle-Nimbus/0b47f917-3635-4376-b32a-9347497a44f5/scratchpad/bashwork/m4-sjlj.wasm'));
+if (!process.argv[2]) { console.error('usage: node probe-setjmp-asyncify.mjs <m4-sjlj.wasm>'); process.exit(2); }
+const mod = new WebAssembly.Module(readFileSync(process.argv[2]));
 const PAGE = 65536;
 const outs = [];
 

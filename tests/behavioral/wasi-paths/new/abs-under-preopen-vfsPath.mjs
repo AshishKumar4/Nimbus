@@ -36,8 +36,8 @@ const rc = await t.run('clang -O0 -o /home/user/abs /home/user/abs.c', 240_000);
 const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('/home/user/abs ; echo RUN_EXIT=$?', 60_000);
-const runOK = /PROGRAM_OK/.test(stripAnsi(rr.output)) && /RUN_EXIT=0/.test(stripAnsi(rr.output));
+const rr = await t.run('/home/user/abs', 60_000);
+const runOK = /PROGRAM_OK/.test(stripAnsi(rr.output)) && rr.exitCode === 0;
 a.check('program exits 0 with PROGRAM_OK on stdout', runOK,
   JSON.stringify(stripAnsi(rr.output).slice(-200)));
 

@@ -5,7 +5,7 @@ import { type CommandRegistry } from '../commands/registry.js';
 import type { ChildExit, CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { type CapturedCommand } from './expander.js';
-import { JobTable } from './jobs.js';
+import { type ShellState } from './state.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { WorkThread } from './work-thread.js';
 export declare class BreakSignal {
@@ -28,17 +28,6 @@ export declare class ExitSignal {
     exitCode: number;
     constructor(exitCode: number);
 }
-export interface ShellOptions {
-    errexit: boolean;
-    nounset: boolean;
-    pipefail: boolean;
-}
-export interface TrapTable {
-    get(signal: string): string | undefined;
-    set(signal: string, action: string): void;
-    delete(signal: string): void;
-    entries(): IterableIterator<[string, string]>;
-}
 export interface BuiltinExecutionContext {
     interactive?: boolean;
     vfs: ProcessView;
@@ -59,13 +48,13 @@ export interface BuiltinExecutionContext {
     /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
     unsetFunction(name: string): boolean;
     /** The state of the shell running the builtin: a child shell's own, after a fork. */
-    shell: InterpreterConfig;
+    shell: ShellState;
     getLastExitCode(): number;
 }
 export interface InlineExecutionOptions {
     positionals?: string[];
 }
-export type BuiltinFn = (args: string[], stdout: CommandOutputStream, stderr: CommandOutputStream, stdin?: CommandInputStream, context?: BuiltinExecutionContext) => Promise<number>;
+export type BuiltinFn = (args: string[], stdout: CommandOutputStream, stderr: CommandOutputStream, stdin: CommandInputStream | undefined, context: BuiltinExecutionContext) => Promise<number>;
 /**
  * A file a redirection opened. `refs` counts what holds it, as the kernel
  * counts references to an open file description: the redirection's command
@@ -156,29 +145,16 @@ export type TerminalFdState = {
 type PositionalFrame = {
     args: string[];
 };
-export interface InterpreterConfig {
-    env: Record<string, string>;
-    /**
-     * Indexed arrays; `env` holds the scalars. A name lives in exactly one of
-     * them, so `$arr` and `${arr[0]}` cannot disagree, and only `unset` moves a
-     * name from one to the other.
-     */
-    arrays: Map<string, (string | undefined)[]>;
-    getCwd: () => string;
-    setCwd: (cwd: string) => void;
+/** A shell's state, and what every shell of the interactive one shares. */
+export interface InterpreterConfig extends ShellState {
     vfs: ProcessView;
     filesystem: NimbusFilesystemAuthority;
     registry: CommandRegistry;
     builtins: Map<string, BuiltinFn>;
-    jobTable: JobTable;
     processRegistry: ProcessRegistry;
     writeToTerminal: (text: string) => void;
-    aliases?: Map<string, string>;
     /** Returns the current abort signal for foreground commands */
     getAbortSignal?: () => AbortSignal;
-    options: ShellOptions;
-    traps: TrapTable;
-    readonlyNames: ReadonlySet<string>;
 }
 /**
  * Assign a plain value to a name. A name that already holds an array keeps it:
@@ -205,13 +181,11 @@ export declare class Interpreter {
     saveFunctions(): FunctionTable;
     restoreFunctions(saved: FunctionTable): void;
     /**
-     * A child shell, as fork(2) makes one: its own copy of every piece of shell
-     * state (variables and arrays, cwd, options, traps, readonly names,
-     * aliases, functions, $?, the open descriptors), so nothing it changes
-     * reaches this shell. Shared: the process registry and filesystem,
-     * command registry and terminal; `$$` stays this shell's. Traps reset to
-     * the default, except ignored ones, and the child runs its own EXIT trap
-     * when it finishes (`finishChild`).
+     * A child shell, as fork(2) makes one: its own copy of the shell's state
+     * (forkShellState) and of its functions, $? and open descriptors, so
+     * nothing it changes reaches this shell. Shared: the process registry and
+     * filesystem, command registry and terminal; `$$` stays this shell's. The
+     * child runs its own EXIT trap when it finishes (`finishChild`).
      */
     fork(): Interpreter;
     getLastExitCode(): number;

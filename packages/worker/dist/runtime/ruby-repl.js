@@ -28,8 +28,9 @@ import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
-import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { RUBY_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 class RubyReplAdapter {
     pool = null;
@@ -119,7 +120,7 @@ class RubyReplAdapter {
         }
         // Sentinel handling: if stdout ends with __NIMBUS_INCOMPLETE__ marker,
         // signal incomplete.
-        if (result.stdout && result.stdout.includes('__NIMBUS_INCOMPLETE__')) {
+        if (result.control?.incomplete !== undefined) {
             return { kind: 'incomplete' };
         }
         // Non-zero exit code from Ruby = user called exit / process aborted.
@@ -150,12 +151,12 @@ class RubyReplAdapter {
             return;
         const { installRoot, facetMgr } = this.deps;
         const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
-        this.wasmBytesAB = toArrayBuffer(await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
+        this.wasmBytesAB = await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
             if (!(await vfs.exists(wasmPath))) {
                 throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
             }
-            return vfs.readFile(wasmPath);
-        }));
+            return vfs.readArrayBufferUncached(wasmPath);
+        });
         // The one canonical Ruby facet preamble. A hand-rolled copy here once
         // drifted (it lacked the language-prelude const __rubyRun requires, so
         // every REPL eval died on boot) — compose it in exactly one place.
@@ -167,6 +168,7 @@ class RubyReplAdapter {
             tag: 'ruby-repl',
             concurrency: 1,
             supervisorPid: this.deps.pid,
+            processSupervisor: supervisorBindingProps(ctx, this.deps.pid, { writerId: crypto.randomUUID(), network }),
             preamble,
             // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
             network,
@@ -177,58 +179,11 @@ class RubyReplAdapter {
         if (!pool || !wasmBytesAB)
             throw new Error('Ruby REPL is not initialized');
         const { home, cwd, binName } = this.deps;
-        const step = { userCode, home, cwd, binName };
-        return await pool.submit(rubyReplStepFacetFn, step, {
+        const step = { userCode, home, cwd, binName, supervisorPid: this.deps.pid };
+        return await pool.submit(RUBY_REPL_TASK, step, {
             wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
-            timeoutMs: 60_000,
         });
     }
-}
-/**
- * Facet-side function. Self-contained — serialized via fn.toString();
- * no closure captures, no class refs, no bare 'this' word.
- *
- * Calls globalThis.__rubyRun (installed by RUBY_RUNNER_PREAMBLE_TAIL)
- * with the user code wrapped by the driver above, in the caller's working
- * directory, over the caller's filesystem (the pool's SUPERVISOR), as the
- * one-shot runner's entry does.
- */
-export function rubyReplStepFacetFn(args, facetEnv) {
-    const g = globalThis;
-    return (async function () {
-        const fn = g.__rubyRun;
-        if (typeof fn !== 'function') {
-            return {
-                stdout: '', stderr: '', exitCode: 127,
-                error: 'ruby-repl preamble missing: __rubyRun not in scope',
-            };
-        }
-        const adopt = g.__wasiAdoptSupervisor;
-        const supervisor = facetEnv && facetEnv.SUPERVISOR;
-        // Published where __rubyRun re-adopts it after the mount; adopting only
-        // here would be undone by __wasiInitFS.
-        if (supervisor)
-            Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
-        adopt?.(supervisor);
-        // The prompt starts in the shell's cwd once per VM; a later line keeps
-        // whatever directory the program's own Dir.chdir left.
-        const started = Reflect.get(globalThis, '__nimbusRubyPromptStarted') === true;
-        Reflect.set(globalThis, '__nimbusRubyPromptStarted', true);
-        const r = await fn({
-            userCode: args.userCode,
-            rbArgv: ['ruby', '-e', args.userCode],
-            userEnv: { HOME: args.home },
-            progName: 'ruby',
-            binName: args.binName,
-            cwd: started ? undefined : args.cwd,
-        });
-        return {
-            stdout: r.stdout || '',
-            stderr: r.stderr || '',
-            exitCode: typeof r.exitCode === 'number' ? r.exitCode : 0,
-            error: r.error,
-        };
-    })();
 }
 /**
  * Top-level wrapper: builds a Ruby REPL adapter, drives a ReplSession

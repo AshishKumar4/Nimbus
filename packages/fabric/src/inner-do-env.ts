@@ -36,7 +36,7 @@
  */
 
 import type { RpcStub, WorkerEntrypoint } from 'cloudflare:workers';
-import { ESBUILD_NAME_MODULE_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
+import { INNER_DO_ADAPTER_SOURCE } from './compiled-bodies.generated.js';
 
 /**
  * The id string a name gives: deterministic (FNV-style, 64-bit hex), with the
@@ -77,8 +77,8 @@ const CLASSES_ENTRYPOINT = 'NimbusDurableObjectClasses';
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
  * and answers the class check the main module exports. `main` is the main
- * module's namespace. Self-contained (serialized with toString): it reaches
- * nothing outside itself but its arguments.
+ * module's namespace. Compiled with its dependencies into an adapter expression
+ * at build time; the inner runtime capabilities arrive as arguments.
  */
 export function innerDoAdapter(
   idFromName: (name: string) => string,
@@ -133,7 +133,7 @@ export function innerDoAdapter(
    */
   const stubPrototype: object = Object.create(Object.prototype, {
     constructor: {
-      value: function DurableObject(): never { throw new TypeError('Illegal constructor'); },
+      value: Object.defineProperty(function (): never { throw new TypeError('Illegal constructor'); }, 'name', { value: 'DurableObject', configurable: true }),
       writable: true,
       configurable: true,
     },
@@ -166,6 +166,12 @@ export function innerDoAdapter(
     getByName(name: string): object { return this.get(this.idFromName(name)); }
     jurisdiction(): DurableObjectNamespace { return this; }
   }
+
+  // These are observable platform type names (including serialization
+  // diagnostics), not compiler-private identifiers. State them explicitly
+  // so the compiled adapter preserves the native namespace/id contract.
+  Object.defineProperty(DurableObjectNamespace, 'name', { value: 'DurableObjectNamespace', configurable: true });
+  Object.defineProperty(DurableObjectId, 'name', { value: 'DurableObjectId', configurable: true });
 
   for (const name of names) {
     const remote: unknown = Reflect.get(runtime.env, name);
@@ -204,9 +210,8 @@ export function innerWorkerModules(bundle: string, names: readonly string[]): {
   const adapter = [
     "import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';",
     `import * as main from './${MAIN_MODULE}';`,
-    // The functions below are serialized from the bundled worker, which wraps them in __name.
-    ESBUILD_NAME_MODULE_SHIM,
-    `const { ${CLASSES_ENTRYPOINT} } = (${innerDoAdapter.toString()})(${innerDoIdFromName.toString()}, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
+    `const { innerDoAdapter, innerDoIdFromName } = ${INNER_DO_ADAPTER_SOURCE};`,
+    `const { ${CLASSES_ENTRYPOINT} } = innerDoAdapter(innerDoIdFromName, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
     `export { ${CLASSES_ENTRYPOINT} };`,
   ].join('\n');
   return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter }, classesEntrypoint };

@@ -6,6 +6,7 @@
 
 import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { diagMemory, fmtBytes } from './_diag.mjs';
+import assert from 'node:assert/strict';
 
 const sid = await mintSession();
 console.log(`[N3] sid=${sid} BASE=${BASE}`);
@@ -40,24 +41,26 @@ const sampler = (async () => {
   }
 })();
 
-t.cmd('git clone https://github.com/AshishKumar4/Markflow');
-await t.waitFor((b) => /clone complete|done\./i.test(b), 180_000, 'clone');
-await t.run('cd /home/user/Markflow', 5_000);
-t.reset();
-t.cmd('npm i');
 let outcome = 'TIMEOUT';
 try {
-  await t.waitFor(
-    (b) => /added \d+ packages|npm install failed|\[batch-fanout\] aborted/i.test(b),
-    300_000,
-    'install end',
-  );
-  if (/added\s+\d+\s+packages/.test(stripAnsi(t.buf))) outcome = 'SUCCESS';
-} catch { outcome = 'TIMEOUT'; }
-
-sampling = false;
-await sampler;
-await t.close();
+  const clone = await t.run('git clone https://github.com/AshishKumar4/Markflow', 180_000);
+  assert.equal(clone.exitCode, 0, `clone failed: ${clone.output.slice(-500)}`);
+  await t.run('cd /home/user/Markflow', 5_000);
+  t.reset();
+  t.cmd('npm i');
+  try {
+    await t.waitFor(
+      (b) => /added \d+ packages|npm install failed|\[batch-fanout\] aborted/i.test(b),
+      300_000,
+      'install end',
+    );
+    if (/added\s+\d+\s+packages/.test(stripAnsi(t.buf))) outcome = 'SUCCESS';
+  } catch { outcome = 'TIMEOUT'; }
+} finally {
+  sampling = false;
+  await sampler;
+  await t.close();
+}
 
 const peakInFlight = samples.reduce((a, s) => Math.max(a, s.inFlight), 0);
 const peakSpoolBytes = samples.reduce((a, s) => Math.max(a, s.spoolBytes), 0);

@@ -1,0 +1,318 @@
+{
+ "_http_agent": "absent",
+ "_http_client": "absent",
+ "_http_common": "absent",
+ "_http_incoming": "absent",
+ "_http_outgoing": "absent",
+ "_http_server": "absent",
+ "_stream_duplex": {
+  "missing": [
+   "from",
+   "fromWeb",
+   "toWeb"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "_stream_readable": {
+  "missing": [
+   "ReadableState",
+   "_fromList",
+   "toWeb",
+   "wrap"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "_stream_wrap": "absent",
+ "_stream_writable": {
+  "missing": [
+   "WritableState",
+   "fromWeb",
+   "toWeb"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "_tls_common": "absent",
+ "_tls_wrap": "absent",
+ "builtinModules": {
+  "missing": [
+   "_http_agent",
+   "_http_client",
+   "_http_common",
+   "_http_incoming",
+   "_http_outgoing",
+   "_http_server",
+   "_stream_wrap",
+   "_tls_common",
+   "_tls_wrap",
+   "cluster",
+   "domain",
+   "trace_events",
+   "wasi"
+  ],
+  "extra": []
+ },
+ "child_process": {
+  "missing": [
+   "_forkChild"
+  ],
+  "extra": [
+   "__cpDrainAllChildren"
+  ],
+  "type": []
+ },
+ "cluster": "absent",
+ "console": {
+  "missing": [
+   "context",
+   "createTask"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "constants": {
+  "missing": [
+   "POINT_CONVERSION_COMPRESSED",
+   "POINT_CONVERSION_HYBRID",
+   "POINT_CONVERSION_UNCOMPRESSED",
+   "defaultCipherList",
+   "defaultCoreCipherList"
+  ],
+  "extra": [
+   "EXTENSIONLESS_FORMAT_JAVASCRIPT",
+   "EXTENSIONLESS_FORMAT_WASM"
+  ],
+  "type": []
+ },
+ "crypto": {
+  "missing": [
+   "diffieHellman"
+  ],
+  "extra": [
+   "CryptoKey",
+   "PrivateKeyObject",
+   "PublicKeyObject",
+   "SecretKeyObject",
+   "createCipher",
+   "createDecipher",
+   "fips",
+   "pseudoRandomBytes"
+  ],
+  "type": [
+   [
+    "Cipher",
+    "function",
+    "undefined"
+   ],
+   [
+    "Decipher",
+    "function",
+    "undefined"
+   ]
+  ]
+ },
+ "dgram": {
+  "missing": [
+   "_createSocketHandle"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "domain": "absent",
+ "fs": {
+  "missing": [
+   "openAsBlob",
+   "readlinkSync",
+   "symlinkSync"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "inspector": {
+  "missing": [
+   "NetworkResources"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "inspector/promises": {
+  "missing": [
+   "NetworkResources"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "module": {
+  "missing": [
+   "_debug",
+   "_findPath",
+   "_initPaths",
+   "_pathCache",
+   "_preloadModules",
+   "findPackageJSON",
+   "register",
+   "registerHooks",
+   "runMain",
+   "stripTypeScriptTypes",
+   "syncBuiltinESMExports"
+  ],
+  "extra": [
+   "wrap",
+   "wrapper"
+  ],
+  "type": []
+ },
+ "net": {
+  "missing": [
+   "BlockList",
+   "SocketAddress",
+   "Stream",
+   "_createServerHandle",
+   "_normalizeArgs",
+   "_setSimultaneousAccepts",
+   "getDefaultAutoSelectFamily",
+   "getDefaultAutoSelectFamilyAttemptTimeout",
+   "setDefaultAutoSelectFamily",
+   "setDefaultAutoSelectFamilyAttemptTimeout"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "process": {
+  "missing": [
+   "_debugEnd",
+   "_debugProcess",
+   "_fatalException",
+   "_getActiveHandles",
+   "_getActiveRequests",
+   "_linkedBinding",
+   "_preload_modules",
+   "_startProfilerIdleNotifier",
+   "_stopProfilerIdleNotifier",
+   "_tickCallback",
+   "abort",
+   "config",
+   "dlopen",
+   "execve",
+   "finalization",
+   "getActiveResourcesInfo",
+   "initgroups",
+   "moduleLoadList",
+   "openStdin",
+   "reallyExit",
+   "report",
+   "setegid",
+   "seteuid",
+   "setgid",
+   "setgroups",
+   "setuid"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "readline/promises": {
+  "missing": [
+   "Interface",
+   "Readline"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "repl": {
+  "missing": [
+   "isValidSyntax"
+  ],
+  "extra": [
+   "_builtinLibs",
+   "builtinModules"
+  ],
+  "type": []
+ },
+ "stream": {
+  "missing": [
+   "_isArrayBufferView",
+   "_isUint8Array",
+   "_uint8ArrayToBuffer",
+   "compose",
+   "destroy",
+   "duplexPair",
+   "getDefaultHighWaterMark",
+   "isDestroyed",
+   "promises",
+   "setDefaultHighWaterMark"
+  ],
+  "extra": [
+   "_Readable",
+   "_Transform",
+   "_Writable"
+  ],
+  "type": []
+ },
+ "tls": {
+  "missing": [
+   "getCACertificates",
+   "setDefaultCACertificates"
+  ],
+  "extra": [],
+  "type": [
+   [
+    "SecureContext",
+    "function",
+    "undefined"
+   ],
+   [
+    "createSecureContext",
+    "function",
+    "undefined"
+   ]
+  ]
+ },
+ "trace_events": "absent",
+ "v8": {
+  "missing": [
+   "DefaultDeserializer",
+   "DefaultSerializer",
+   "Deserializer",
+   "GCProfiler",
+   "Serializer",
+   "getCppHeapStatistics",
+   "getHeapCodeStatistics",
+   "getHeapSnapshot",
+   "isStringOneByteRepresentation",
+   "promiseHooks",
+   "queryObjects",
+   "setHeapSnapshotNearHeapLimit",
+   "stopCoverage",
+   "takeCoverage"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "vm": {
+  "missing": [
+   "createScript"
+  ],
+  "extra": [
+   "Module",
+   "SourceTextModule",
+   "SyntheticModule"
+  ],
+  "type": []
+ },
+ "wasi": "absent",
+ "worker_threads": {
+  "missing": [
+   "getEnvironmentData",
+   "isInternalThread",
+   "moveMessagePortToContext",
+   "postMessageToThread",
+   "resourceLimits",
+   "setEnvironmentData",
+   "threadName"
+  ],
+  "extra": [],
+  "type": []
+ }
+}

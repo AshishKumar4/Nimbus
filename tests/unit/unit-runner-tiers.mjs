@@ -34,7 +34,7 @@ function tree(label, files) {
   mkdirSync(join(root, 'tests/unit/lib'), { recursive: true });
   mkdirSync(join(root, 'scripts/lib'), { recursive: true });
   for (const file of ['run-all.mjs', 'lib/partition.mjs']) copyFileSync(join(repo, 'tests/unit', file), join(root, 'tests/unit', file));
-  for (const lib of ['bounded-process.mjs', 'subprocess-entry.mjs']) copyFileSync(join(repo, 'scripts/lib', lib), join(root, 'scripts/lib', lib));
+  copyFileSync(join(repo, 'scripts/lib/bounded-process.mjs'), join(root, 'scripts/lib/bounded-process.mjs'));
   for (const [name, source] of Object.entries(files)) writeFileSync(join(root, 'tests/unit', name), source);
   return root;
 }
@@ -126,10 +126,8 @@ try {
   assert.equal(byName['a-pooled.mjs'].stdoutTail, undefined, 'a passing file carries no output');
   assert.equal(byName['a-pooled.mjs'].stdout, undefined, 'a passing file carries no output');
   const cpu = byName['e-cpu.mjs'].cpuMs;
-  if (json.isolation !== 'systemd') {
-    // The census names what a case started: the burning child is a bun.
-    assert.ok(byName['e-cpu.mjs'].commands.includes('bun'), `commands ${byName['e-cpu.mjs'].commands}`);
-  }
+  // The census names what a case started: the burning child is a bun.
+  assert.ok(byName['e-cpu.mjs'].commands.includes('bun'), `commands ${byName['e-cpu.mjs'].commands}`);
   if (json.isolation === 'portable') {
     assert.equal(cpu, null, 'portable cleanup cannot see a process tree\'s CPU');
   } else {
@@ -177,8 +175,8 @@ try {
   assert.deepEqual(JSON.parse(echoed.stdout), odd);
 
   // ── The CI containers' isolation: one cgroup per case ───────────────
-  // Needs a cgroup this process may create groups in, as run-bounded's unit
-  // and a CI task's case group are; elsewhere it is skipped, and says so.
+  // Needs a cgroup this process may create groups in, as a CI task's case
+  // group is; elsewhere it is skipped, and says so.
   const own = `/sys/fs/cgroup${readFileSync('/proc/self/cgroup', 'utf8').match(/^0::(\/.*)$/m)?.[1] ?? '/'}`;
   const groups = join(own, `unit-tiers-${process.pid}`);
   let delegated = false;
@@ -197,7 +195,7 @@ try {
       return { code: r.status, stdout: r.stdout, stderr: r.stderr };
     };
     try {
-      const cgroupEnv = { NIMBUS_TEST_PID_ISOLATION: '', NIMBUS_TEST_CGROUP: groups, ...odd };
+      const cgroupEnv = { NIMBUS_TEST_CGROUP: groups, ...odd };
       const sawEnv = join(scratch, 'saw-env.json');
       const cg = tree('cgroup', {
         'e-cpu.mjs': `require('node:child_process').spawnSync(process.execPath, ['-e', ${JSON.stringify(burn)}], { stdio: 'inherit' });\n`,

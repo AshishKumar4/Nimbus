@@ -22,4 +22,24 @@ export declare class LruMap<K, V> {
     clear(): void;
     keys(): IterableIterator<K>;
 }
+/** Estimated cost of an entry's key, Map node, value object and ArrayBuffer.
+ * Charging payload alone leaves a cache of many small entries undercounted. */
+export declare const BYTE_LRU_ENTRY_OVERHEAD = 160;
+/** A least-recently-used map bounded by its values' bytes, not their count. */
+export declare class ByteLru<K, V extends {
+    byteLength: number;
+}> {
+    readonly maxBytes: number;
+    readonly maxValueBytes: number;
+    private readonly map;
+    private bytes;
+    /** `maxBytes` bounds the sum; a value larger than `maxValueBytes` is never kept. */
+    constructor(maxBytes: number, maxValueBytes?: number);
+    get size(): number;
+    /** Bytes charged: the values' and each entry's overhead. */
+    get byteLength(): number;
+    get(key: K): V | undefined;
+    set(key: K, value: V): void;
+    clear(): void;
+}
 //# sourceMappingURL=lru-map.d.ts.map

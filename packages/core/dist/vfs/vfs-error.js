@@ -80,6 +80,17 @@ export function toVfsError(error, syscall, path, dest) {
     return error;
 }
 /**
+ * The codes that are a filesystem call's answer: the call was refused before
+ * it changed anything (the name is not there, it is a directory, the
+ * storage ledger has no room). Any other (EIO, ESTALE, EAGAIN, none at all)
+ * leaves the call's outcome unknown, which is a durability failure whatever
+ * the caller does with it.
+ */
+export const SYSCALL_VERDICTS = new Set([
+    'ENOENT', 'EEXIST', 'EISDIR', 'ENOTDIR', 'ENOTEMPTY', 'EBADF', 'EINVAL', 'EPERM', 'EACCES', 'ELOOP',
+    'ENAMETOOLONG', 'ENOSPC', 'EROFS', 'EBUSY', 'ENOTSUP', 'EXDEV', 'ENXIO', 'E2BIG',
+]);
+/**
  * What rename refuses with before it changes anything. A filesystem whose
  * rename fails after making part of it answers with another code (EIO), so
  * one of these means both names are as they were. EXDEV is among them, and

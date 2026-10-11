@@ -27,10 +27,10 @@ const out1 = stripAnsi(rc.output);
 a.check('lib.h resolves via -Iinclude', !/lib\.h.*not found/i.test(out1), JSON.stringify(out1.slice(-400)));
 a.check('no error markers', !/error:/i.test(out1), JSON.stringify(out1.slice(-400)));
 
-const rr = await t.run('./m ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./m', 30_000);
 const out2 = stripAnsi(rr.output);
 a.check('./m prints VAL=42', /VAL=42/.test(out2), JSON.stringify(out2.slice(-300)));
-a.check('./m exits 0', /RUN_EXIT=0/.test(out2), JSON.stringify(out2.slice(-200)));
+a.check('./m exits 0', rr.exitCode === 0, JSON.stringify(out2.slice(-200)));
 
 await t.close();
 const sum = a.summary();

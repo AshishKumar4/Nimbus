@@ -32,6 +32,7 @@
  * (git-wasi-compat.c) turns that into errno.
  */
 import type { FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
+import type { Awaitable } from '../os-contracts.js';
 /**
  * The longest a guest waits on a child in one call. A wasm stack suspended
  * past about 15 s in a facet never resumes (wasi/preamble.ts, park
@@ -87,7 +88,7 @@ export interface ProcessHostOptions {
     supervisor(): WasiSupervisorStub | null;
     pid: number;
     /** An injected broker-bounded read of this process's stdin channel. */
-    input?: (maxBytes: number) => Promise<WasiInputPacket>;
+    input?: (maxBytes: number) => Awaitable<WasiInputPacket>;
     /** The guest's stdout and stderr, where a child's output that joins them goes. */
     output(fd: 1 | 2, bytes: Uint8Array): void | Promise<void>;
     /** Before an observation: what the guest holds of its writes goes to the session. */

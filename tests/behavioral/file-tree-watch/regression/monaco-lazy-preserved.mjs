@@ -13,7 +13,7 @@ const a = makeAsserter('file-tree-watch/regression/monaco-lazy-preserved');
 console.log(`file-tree-watch/regression/monaco-lazy-preserved — ${BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { headers: requestHeaders({}, sid) });
 a.check('GET /s/<sid>/ returns 200', r.status === 200, `status=${r.status}`);
 const html = await r.text();
 a.check('html includes Editor IIFE marker',

@@ -1,7 +1,9 @@
+import type { ShellInputSubmission, ShellIntegrationEvent } from '@nimbus-sh/core/shell/input-submission.js';
 export declare class WebSocketTerminal {
     /** Null while the terminal is headless (composed before any attach). */
     ws: WebSocket | null;
     private dataCallback;
+    private submissionCallback;
     /**
      * editor/monaco (2026-05-13): Editor-pane file-system bridge.
      *
@@ -19,13 +21,15 @@ export declare class WebSocketTerminal {
     private _cols;
     private _rows;
     private buffer;
-    private flushTimer;
+    private flushScheduled;
     /** [B'.3] Optional tee called from flush() with the final coalesced
      *  frame data. Used by initSession to mirror every WS output frame
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
-     *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
+     *  per-write) coalesces writes from one JavaScript turn. */
     private onFlush;
-    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void);
+    /** Sends a frame once the shell's output may go (SessionProcessSupervisor.releaseOutput), in order. */
+    private readonly release;
+    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void, release?: (send: () => void) => void);
     /**
      * [B'.5] Swap the underlying WebSocket on a warm rejoin. The Shell
      * keeps `terminal` as a stable instance reference (it stored
@@ -47,7 +51,7 @@ export declare class WebSocketTerminal {
     writeln(data: string): void;
     /**
      * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
-     * the 5 ms coalescer. Used by ReplSession.submitLine to emit stdout,
+     * the turn coalescer. Used by ReplSession.submitLine to emit stdout,
      * stderr, and the next-prompt as three discrete frames in deterministic
      * order. Without this, all three coalesce into one `{type:'output'}`
      * frame and probes asserting frame-order (stderr-before-stdout or
@@ -58,10 +62,13 @@ export declare class WebSocketTerminal {
      */
     flushNow(): void;
     private flush;
-    onData(callback: (data: string) => void | Promise<void>): void;
+    onData(callback: (data: string, submission?: ShellInputSubmission) => void | Promise<void>): void;
+    onSubmission(callback: (data: string, id: string, deliver: (submission: ShellInputSubmission) => void | Promise<void>, repl: boolean) => void | Promise<void>): void;
+    shellIntegration(event: ShellIntegrationEvent): void;
     handleMessage(msg: {
         type: string;
         data?: string;
+        submissionId?: string;
         cols?: number;
         rows?: number;
         path?: string;
@@ -77,7 +84,7 @@ export declare class WebSocketTerminal {
      * reinstalls on warm rejoin via `attach()`.
      */
     onFs(cb: (msg: any, reply: (frame: any) => void) => void): void;
-    sendData(data: string): void | Promise<void>;
+    sendData(data: string, submission?: ShellInputSubmission): void | Promise<void>;
     attachRepl(input: (data: string) => void | Promise<void>, dispose?: () => Promise<void>): () => void;
     focus(): void;
     clear(): void;

@@ -14,7 +14,12 @@ assert.deepEqual(parseCloneArgs(['--depth', '1', url]), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
+
+// --sparse (and its --no- form) asks for a cone-mode sparse checkout.
+assert.equal(parseCloneArgs(['--sparse', url]).sparse, true);
+assert.equal(parseCloneArgs(['--sparse', '--no-sparse', url]).sparse, false);
 
 assert.deepEqual(parseCloneArgs(['--depth', '1', url, 'checkout']), {
   url,
@@ -25,6 +30,7 @@ assert.deepEqual(parseCloneArgs(['--depth', '1', url, 'checkout']), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs(['--depth=1', url]), {
@@ -36,6 +42,7 @@ assert.deepEqual(parseCloneArgs(['--depth=1', url]), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs(['--depth', '3', url]), {
@@ -47,6 +54,7 @@ assert.deepEqual(parseCloneArgs(['--depth', '3', url]), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs([url]), {
@@ -58,6 +66,7 @@ assert.deepEqual(parseCloneArgs([url]), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs([url, 'mydir']), {
@@ -69,6 +78,7 @@ assert.deepEqual(parseCloneArgs([url, 'mydir']), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs(['--no-shallow', url]), {
@@ -80,6 +90,7 @@ assert.deepEqual(parseCloneArgs(['--no-shallow', url]), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs(['--bg', url, 'background-checkout']), {
@@ -91,6 +102,7 @@ assert.deepEqual(parseCloneArgs(['--bg', url, 'background-checkout']), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs([url, 'background-checkout', '&']), {
@@ -102,6 +114,7 @@ assert.deepEqual(parseCloneArgs([url, 'background-checkout', '&']), {
   branch: undefined,
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 // --branch takes a value: the value must never be eaten as the URL.
@@ -114,6 +127,7 @@ assert.deepEqual(parseCloneArgs(['--branch', 'dev', url]), {
   branch: 'dev',
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs(['--branch=dev', url, 'mydir']), {
@@ -125,6 +139,7 @@ assert.deepEqual(parseCloneArgs(['--branch=dev', url, 'mydir']), {
   branch: 'dev',
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 assert.deepEqual(parseCloneArgs(['-b', 'release/2.0', url]), {
@@ -136,6 +151,7 @@ assert.deepEqual(parseCloneArgs(['-b', 'release/2.0', url]), {
   branch: 'release/2.0',
   quiet: false,
   filter: undefined,
+  sparse: false,
 });
 
 // A value-taking flag with no value is a loud error, not a silent default.
@@ -168,7 +184,7 @@ assert.throws(
 assert.equal(parseCloneArgs(['-q', url]).quiet, true);
 assert.equal(parseCloneArgs(['--quiet', '--depth', '1', url, 'dir']).quiet, true);
 assert.deepEqual(parseCloneArgs(['--quiet', '--depth', '1', url, 'dir']), {
-  url, dest: 'dir', depth: 1, noShallow: false, isBg: false, branch: undefined, quiet: true, filter: undefined,
+  url, dest: 'dir', depth: 1, noShallow: false, isBg: false, branch: undefined, quiet: true, filter: undefined, sparse: false,
 });
 assert.equal(parseCloneArgs(['-v', url]).quiet, false);
 assert.throws(() => parseCloneArgs(['--porcelain', url]), /unknown option '--porcelain'/);

@@ -582,4 +582,19 @@ let checks = 0;
   checks++;
 }
 
+// Cloudflare RpcPromise is thenable but is not a native Promise. Resolve
+// its packet before touching RpcProperty fields, and retain output pressure.
+{
+  const packet = { data: Uint8Array.of(255), ended: false };
+  const g = await guest({ stdinRead: () => ({ then(resolve) { resolve(packet); } }) });
+  assert.deepEqual(await g.read(0,1,true), { errno:E.SUCCESS,bytes:[255] });
+  let release;
+  const gate = new Promise(resolve=>{release=resolve;});
+  const out = g.P.__wasiSupervisorOutput({ stdout:()=>({then(resolve,reject){return gate.then(resolve,reject);}}),stderr(){} });
+  out.stdoutBytes(Uint8Array.of(1));
+  let done=false;const drain=out.drain().then(()=>{done=true;});
+  for(let i=0;i<20;i++)await null;
+  assert.equal(done,false,'an RPC thenable is not a completed delivery');
+  release();await drain;g.dispose();checks++;
+}
 console.log(`wasi-processes: ${checks} groups passed`);

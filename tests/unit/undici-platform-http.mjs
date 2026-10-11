@@ -43,7 +43,7 @@ function bootFacet({ env = {}, origin } = {}) {
 
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return __require;',
+    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
   );
   const require = factory(
     {},

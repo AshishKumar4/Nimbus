@@ -1,8 +1,3 @@
-// Kept here rather than in `demo-auth.ts` for the reason documented at the
-// top of `demo-sessions.ts`: that module imports the full `@nimbus-sh/sdk/worker`
-// barrel and so is only loadable inside workerd. These are plain responses
-// with no OAuth state in them, and they are worth being able to assert
-// outside a Worker.
 import { demoPage } from './demo-sessions.js';
 
 export function demoAuthRequiredResponse(request: Request, returnTo?: string): Response {

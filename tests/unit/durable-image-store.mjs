@@ -69,11 +69,27 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
   return { boots, lines, world, ctx, env, fm, processes, portRegistry, storage, vfs, disk };
 }
 
+/** The session's image disk (ImageBlobStore) over `vfs` as the kernel, counting what it writes. */
+function kernelBlobs(vfs) {
+  const fs = vfs.as(CRED_KERNEL);
+  const writes = [];
+  return {
+    writes,
+    mkdirp: (dir) => fs.mkdir(dir, { recursive: true, mode: 0o755 }),
+    sizeOf: (path) => (fs.exists(path) ? fs.lstat(path).size : null),
+    writeFile: (path, bytes) => { writes.push(path); fs.writeFile(path, bytes, { mode: 0o644 }); },
+    writeRange: (path, offset, bytes) => { writes.push(path); fs.writeRange(path, offset, bytes); },
+    list: (dir) => fs.readdir(dir).map((entry) => entry.name),
+    unlink: (path) => fs.unlink(path),
+  };
+}
+
 // ── 1. the store is content-addressed and kernel-only ────────────────────────
 {
   const disk = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(disk.sql, disk.ctx);
-  const image = await persistDurableWorkerImage(vfs, 'export default { fetch() {} }', {
+  const blobs = kernelBlobs(vfs);
+  const image = await persistDurableWorkerImage(blobs, 'export default { fetch() {} }', {
     modules: { 'extra.js': 'export const x = 1;' },
     env: { TOKEN: 'abc' },
   });
@@ -91,11 +107,13 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
 
   // A second persist of the same inputs rewrites nothing: the digests name
   // the same bytes, so the store is idempotent across a relaunch.
-  const again = await persistDurableWorkerImage(vfs, 'export default { fetch() {} }', {
+  blobs.writes.length = 0;
+  const again = await persistDurableWorkerImage(blobs, 'export default { fetch() {} }', {
     modules: { 'extra.js': 'export const x = 1;' },
     env: { TOKEN: 'abc' },
   });
   assert.deepEqual(again, image, 'identical inputs mint identical digests');
+  assert.deepEqual(blobs.writes, [], 'and blobs already stored at them are not written again');
 
   // The resolver hands a re-drive its modules and env back; a missing row
   // reads as 'the application is gone', never an error a boot cannot answer.
@@ -108,6 +126,14 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
     await resolveDurableWorkerImage(vfs, { image: { runner: '0'.repeat(64), application: '1'.repeat(64) } }),
     null,
     'a missing image resolves to absent, not an error',
+  );
+
+  // A blob whose bytes are not the ones its digest names is never booted.
+  kernel.writeFile(`${DURABLE_IMAGE_DIR}/${image.runner}`, 'export default { fetch() { return evil(); } }');
+  await assert.rejects(
+    resolveDurableWorkerImage(vfs, { image }),
+    (error) => /does not match its digest/.test(error.message) && error.message.includes(image.runner),
+    'a corrupt runner blob is refused by name',
   );
 }
 

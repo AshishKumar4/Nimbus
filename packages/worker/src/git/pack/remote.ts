@@ -21,7 +21,8 @@
 import { resumePack, storePackResumable, type CloneContext, type PendingPack } from './clone.js';
 import { PackFormatError } from './format.js';
 import { discoverReceivePack, sendPack, type ReceiveCommand } from './receive-pack.js';
-import { discover, requestPack, type Advertisement, type GitTransportAuth, type UploadPackOptions } from './upload-pack.js';
+import { discover, requestPack, type Advertisement, type UploadPackOptions } from './upload-pack.js';
+import type { GitTransportAuth } from './transport.js';
 
 /** The remote, as an operation reaches it. */
 export interface RemoteTransport {
@@ -158,7 +159,7 @@ export async function fetchPack(context: CloneContext, request: FetchPackRequest
     ...(request.depth !== undefined ? { depth: request.depth } : {}),
     ...(request.deepenSince !== undefined ? { deepenSince: request.deepenSince } : {}),
     ...(request.deepenNot?.length ? { deepenNot: request.deepenNot } : {}),
-    ...(request.deepenRelative ? { deepenRelative: true } : {}),
+    ...(request.deepenRelative ? { relative: true } : {}),
     ...(filtered ? { filter: request.filter } : {}),
     includeTag: request.includeTag,
   });

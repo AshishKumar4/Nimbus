@@ -1,165 +1,144 @@
 #!/usr/bin/env bun
+// lowerEsModule, the one lowering of an ES module to the CommonJS a cell runs,
+// import.meta and import() bound, as a cell runs it: the wrapper's require
+// and module are its arguments. Imports stay live, a default export evaluates
+// where it stands, top-level await takes the async body, every line of the
+// module is where the source has it, and its map reads every edited one back.
 
 import assert from 'node:assert/strict';
-import { rewriteBundledEsmToCjs } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { lowerEsModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
 
-const source = [
-  'import { createRequire as makeRequire } from "node:module";',
-  'const require = makeRequire(import.meta.url);',
-  'import defaultThing,{\nvalue as alias\n}from"./dep.js";import"./side.js";',
-  `const payload = "${'x'.repeat(600_000)}";`,
-  'let counter = 0; function increment() { counter++; }',
-  'const url = import.meta.url;',
-  'const resolved = import.meta.resolve("./asset.js");',
-  'function use() { return [defaultThing, alias, require("local"), url, resolved, payload.length]; }',
-  'export{payload,counter,increment,use};',
-].join('');
-const absoluteUrl = 'file:///home/user/node_modules/pkg/chunk.js';
-const transformed = rewriteBundledEsmToCjs(source, absoluteUrl);
-assert.ok(transformed, 'bundler-emitted ESM should use the bounded rewrite');
-assert.doesNotMatch(transformed.code, /(^|[;\n])\s*(?:import|export)\b/);
-
-let sideEffects = 0;
-const module = { exports: {}, require: null };
-const moduleRequire = (specifier) => {
-  if (specifier === 'node:module') return { createRequire: () => (id) => id === 'local' ? 'local' : null };
-  if (specifier === './dep.js') return { __esModule: true, default: 'default', value: 'dep' };
-  if (specifier === './side.js') { sideEffects++; return {}; }
-  throw new Error(`unexpected module: ${specifier}`);
+const url = 'file:///home/user/node_modules/pkg/chunk.js';
+const lowered = (source) => lowerEsModule(source, 'node', url).code;
+// Runs lowered code as a cell's wrapper does (commonjs-cell.ts: strict, in a
+// block, which its own `const require` shadows); its result, an async body's promise.
+const run = (code, require, meta = {}) => {
+  const module = { exports: {}, __nimbusImportMeta: meta };
+  const wrapper = new Function('exports', 'require', 'module', '__filename', '__dirname', `"use strict";{${code}\n}`);
+  const result = wrapper(module.exports, require, module, '/chunk.js', '/');
+  return { module, result };
 };
-module.require = moduleRequire;
-const previousResolve = globalThis.__nimbusImportMetaResolve;
-globalThis.__nimbusImportMetaResolve = (specifier, base) => new URL(specifier, base).href;
-try {
-  const execute = new Function(
-    'exports', 'require__nimbus_unused', 'module', '__filename', '__dirname',
-    transformed.code,
-  );
-  execute(module.exports, undefined, module, '/home/user/node_modules/pkg/chunk.js', '/home/user/node_modules/pkg');
-} finally {
-  globalThis.__nimbusImportMetaResolve = previousResolve;
-}
-
-assert.equal(sideEffects, 1);
-assert.equal(module.exports.payload.length, 600_000);
-assert.equal(module.exports.counter, 0);
-module.exports.increment();
-assert.equal(module.exports.counter, 1, 'named exports remain live bindings');
-assert.deepEqual(module.exports.use(), [
-  'default',
-  'dep',
-  'local',
-  absoluteUrl,
-  'file:///home/user/node_modules/pkg/asset.js',
-  600_000,
-]);
-
-const defaultModule = rewriteBundledEsmToCjs(
-  `const value = "${'y'.repeat(600_000)}";export default value;`,
-  absoluteUrl,
-);
-assert.ok(defaultModule, 'final default expressions are safe bundler exports');
-const defaultRecord = { exports: {}, require() { throw new Error('unexpected require'); } };
-new Function('exports', 'require', 'module', '__filename', '__dirname', defaultModule.code)(
-  defaultRecord.exports, undefined, defaultRecord, '/chunk.js', '/',
-);
-assert.equal(defaultRecord.exports.default.length, 600_000);
+const noRequire = () => { throw new Error('unexpected require'); };
 
 {
-  // A declaration without its semicolon ends where the parse says, not at
-  // the next `;`: the statement after it stays in place.
-  const out = rewriteBundledEsmToCjs('import x from "x"\nconst y = x; export { y };', absoluteUrl);
-  assert.ok(out, 'a semicolon-free import takes the bounded path');
-  const record = { exports: {}, require: (name) => { assert.equal(name, 'x'); return { __esModule: true, default: 'x-default' }; } };
-  new Function('exports', 'require', 'module', '__filename', '__dirname', out.code)(record.exports, undefined, record, '/chunk.js', '/');
-  assert.equal(record.exports.y, 'x-default');
+  const source = [
+    'import { createRequire as makeRequire } from "node:module";',
+    'const require = makeRequire(import.meta.url);',
+    'import defaultThing,{\nvalue as alias\n}from"./dep.js";import"./side.js";',
+    'let counter = 0; function increment() { counter++; }',
+    'const url = import.meta.url;',
+    'function use() { return [defaultThing, alias, require("local"), url]; }',
+    'export{counter,increment,use};',
+  ].join('');
+  let sideEffects = 0;
+  const { module } = run(lowered(source), (specifier) => {
+    if (specifier === 'node:module') return { createRequire: () => (id) => id === 'local' ? 'local' : null };
+    if (specifier === './dep.js') return { __esModule: true, default: 'default', value: 'dep' };
+    if (specifier === './side.js') { sideEffects++; return {}; }
+    throw new Error(`unexpected module: ${specifier}`);
+  }, { url });
+  assert.equal(sideEffects, 1);
+  assert.equal(module.exports.counter, 0);
+  module.exports.increment();
+  assert.equal(module.exports.counter, 1, 'named exports remain live bindings');
+  assert.deepEqual(module.exports.use(), ['default', 'dep', 'local', url]);
 }
-assert.equal(
-  rewriteBundledEsmToCjs('const dir = import.meta.dirname; export { dir };', absoluteUrl),
-  null,
-  'unsupported import.meta members use the full transformer',
-);
-assert.equal(
-  rewriteBundledEsmToCjs('await boot(); export { boot };', absoluteUrl),
-  null,
-  'top-level await uses the full transformer',
-);
-assert.ok(
-  rewriteBundledEsmToCjs(
-    'const load = () => run(async () => await value); export { load };',
-    absoluteUrl,
-  ),
-  'await inside an arrow expression is not top-level',
-);
-assert.equal(
-  rewriteBundledEsmToCjs(
-    'const load = () => 1, value = await boot(); export { load };',
-    absoluteUrl,
-  ),
-  null,
-  'top-level await after an arrow expression must not be hidden',
-);
-assert.ok(
-  rewriteBundledEsmToCjs(
-    'const iterator = { async *[Symbol.asyncIterator]() { await read(); } }; export { iterator };',
-    absoluteUrl,
-  ),
-  'await inside a computed async method is not top-level',
-);
+
+{
+  // A declaration without its semicolon ends where the parse says, not at the next `;`.
+  const { module } = run(lowered('import x from "x"\nconst y = x; export { y };'), (name) => {
+    assert.equal(name, 'x');
+    return { __esModule: true, default: 'x-default' };
+  });
+  assert.equal(module.exports.y, 'x-default');
+}
+
 {
   // A default export evaluates where it stands, before the statements after it.
-  const middle = rewriteBundledEsmToCjs(
-    'const order = ["first"]; export default order.join(); order.push("later");',
-    absoluteUrl,
-  );
-  assert.ok(middle, 'a default export before later statements takes the bounded path');
-  const record = { exports: {}, require() { throw new Error('unexpected require'); } };
-  new Function('exports', 'require', 'module', '__filename', '__dirname', middle.code)(record.exports, undefined, record, '/chunk.js', '/');
-  assert.equal(record.exports.default, 'first', 'read before the later push');
+  const { module } = run(lowered('const order = ["first"]; export default order.join(); order.push("later");'), noRequire);
+  assert.equal(module.exports.default, 'first', 'read before the later push');
 }
-assert.equal(
-  rewriteBundledEsmToCjs(
-    'import x from "y"; var a = { class: "x" }; if (a) { await boot(); } export { a };',
-    absoluteUrl,
-  ),
-  null,
-  'class and function property keys cannot hide later top-level await',
-);
 
-// ── dynamic import is left as written ─────────────────────────────────────
-// The bounded path converts declarations only. A cell's import() calls are
-// routed to the process's ESM loader by the parse in the esbuild facet
-// (dynamic-import-rewrite.ts, tests/unit/dynamic-import-rewrite.mjs).
-{
-  const out = rewriteBundledEsmToCjs(
-    'import { a } from "dep";\n'
-    + 'async function boot() { const { createServer } = await import("node:http"); return createServer(a); }\n'
-    + 'const api = { import(id) { return id; } };\n'
-    + 'export { boot, api };',
-    absoluteUrl,
-  );
-  assert.ok(out, 'the fixture is rewritable, an import-named method included');
-  assert.match(out.code, /await import\("node:http"\)/, 'the dynamic import survives for the facet to route');
+// Top-level await, and only it, takes the async body.
+for (const [source, async] of [
+  ['const boot = async () => {}; await boot(); export { boot };', true],
+  ['const load = () => run(async () => await value); export { load };', false],
+  ['const load = () => 1, value = await boot(); export { load };', true],
+  ['const iterator = { async *[Symbol.asyncIterator]() { await read(); } }; export { iterator };', false],
+  ['import x from "y"; var a = { class: "x" }; if (a) { await boot(); } export { a };', true],
+  ['for await (const x of xs) use(x); export {};', true],
+  ['class C { async m() { for await (const x of xs); } } export { C };', false],
+]) {
+  assert.equal(lowerEsModule(source, 'node', url).code.includes('return (async () => {'), async, source);
 }
-// A module factory's cell reads import.meta from its module's metadata, bound
-// by the facet's rewrite of every MetaProperty, so any property survives the
-// bounded rewrite for that pass — Vite's 2 MiB dev-server chunk reads
-// `import.meta.dirname` and `.env` and otherwise went to esbuild whole, where
-// one transform took esbuild's memory from 28 to 172 MiB.
 {
-  const out = rewriteBundledEsmToCjs(
-    'import { a } from "dep";\n'
-    + 'const here = import.meta.dirname ?? import.meta.url;\n'
-    + 'const mode = import.meta.env?.MODE;\n'
-    + 'const meta = import.meta;\n'
-    + 'export { a, here, mode, meta };',
-    absoluteUrl,
-    true,
-  );
-  assert.ok(out, 'any import.meta property is rewritable in a module factory');
-  assert.match(out.code, /import\.meta\.dirname \?\? import\.meta\.url/, 'left for the metadata pass');
-  assert.match(out.code, /const meta = import\.meta;/);
-  assert.equal(rewriteBundledEsmToCjs('const d = import.meta.dirname;\nexport { d };', absoluteUrl), null,
-    'outside a module factory, a property it cannot bind still takes esbuild');
+  const { module, result } = run(lowered('export let db; db = await Promise.resolve("connected");'), noRequire);
+  await result;
+  assert.equal(module.exports.db, 'connected');
 }
+
+// import() goes to the process's loader, and any import.meta member reads the module's metadata.
+{
+  const code = lowered('import { a } from "dep";\nexport async function boot() { return [a, await import("node:http")]; }\nexport const here = import.meta.dirname ?? import.meta.url;\n');
+  assert.doesNotMatch(code, /\bimport\(/, 'the dynamic import is routed');
+  const { module } = run(code, () => ({ a: 1 }), { dirname: '/home/user/node_modules/pkg' });
+  assert.equal(module.exports.here, '/home/user/node_modules/pkg');
+}
+
+// Lines and columns: what the lowering adds sits on the first line, before
+// its map's head; past it, each line is the source's own but for its edits,
+// which the map's columns read back as the source.
+{
+  const source = [
+    '#!/usr/bin/env node',
+    'import fs from "node:fs";',
+    'import {',
+    '  join',
+    '} from "node:path";',
+    'export const a = 1;',
+    'export function f() {',
+    '  throw new Error("x " + typeof fs);',
+    '}',
+    'export default class Thing {}',
+    'export * from "./more.js";',
+    'console.log(import.meta.url, join);',
+  ].join('\n');
+  const { code, map } = lowerEsModule(source, 'node', url);
+  const { head, columns } = JSON.parse(map);
+  const lines = code.slice(head).split('\n');
+  const wanted = source.split('\n');
+  assert.ok(lines.length > wanted.length, 'a line per source line, then only what follows the source');
+  assert.ok(lines[wanted.length - 1].startsWith('console.log('), 'the last line is the last line');
+  assert.equal(code.slice(0, head).includes('\n'), false, 'the lowering adds no line');
+  // Each line its edits changed, read back through the map, is the source's.
+  for (const [i, line] of wanted.entries()) {
+    let back = '';
+    let at = 0;
+    let delta = 0;
+    for (const [, column, length, text] of columns.filter((entry) => entry[0] === i + 1)) {
+      back += lines[i].slice(at, column + delta) + text;
+      at = column + delta + length;
+      delta += length - text.length;
+    }
+    assert.equal(back + lines[i].slice(at), line, `line ${i + 1} reads back`);
+  }
+  assert.equal(lines[0], '//' + wanted[0].slice(2), 'the hashbang, a comment');
+  // A removed declaration leaves its lines, a `;` where it began.
+  for (const at of [1, 2, 3, 4, 10]) assert.match(lines[at], /^;? *$/, wanted[at]);
+  assert.equal(lines[5], ';      const a = 1;', 'export keywords leave their columns');
+  assert.ok(lines[7].startsWith('  throw new Error("x " + typeof '), 'the throw keeps its column; the import it reads is rewritten');
+  assert.equal(lines[9], ';              class Thing {}', 'a default class keeps its column');
+}
+// A free CommonJS name in a default export's expression is unbound as anywhere else.
+{
+  const { module } = run(lowered('export default typeof require + typeof module'), noRequire);
+  assert.equal(module.exports.default, 'undefinedundefined');
+}
+
+// Generated names avoid an identifier written with escapes as one of them.
+{
+  const { module } = run(lowered('import { a } from "dep";\nconst \\u005f_nimbus_m0 = 1, \\u005f_nimbus_m1 = 2;\nexport const sum = a + __nimbus_m0 + __nimbus_m1;'), () => ({ a: 4 }));
+  assert.equal(module.exports.sum, 7);
+}
+
 console.log('esbuild-bundled-esm-rewrite: ok');

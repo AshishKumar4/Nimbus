@@ -1,0 +1,174 @@
+#!/usr/bin/env bun
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { setImmediate } from 'node:timers/promises';
+import { WebSocketServer } from 'ws';
+import { Terminal, stripAnsi } from '../behavioral/_driver.mjs';
+
+const mark = (value, end = '\x07') => `\x1b]133;${value}${end}`;
+const prompt = 'user@nimbus:~$ ';
+const server = createServer();
+const sockets = new WebSocketServer({ server });
+server.listen(0, '127.0.0.1');
+await once(server, 'listening');
+const base = `http://127.0.0.1:${server.address().port}`;
+const failures = [];
+
+async function scenario(name, exercise) {
+  let terminal;
+  let peer;
+  try {
+    const connected = once(sockets, 'connection');
+    terminal = new Terminal(name, { base, wsOptions: {} });
+    await terminal.connect();
+    [peer] = await connected;
+    peer.send(JSON.stringify({ type: 'output', data: prompt }));
+    await terminal.waitFor((text) => text.includes(prompt), 1000, 'initial prompt text');
+    // The fixture's marks are shell lifecycle facts; serialize the same facts
+    // out of band. Forged program marks are covered by the real-shell test.
+    let buffered = '';
+    let status;
+    const output = (data) => {
+      buffered += data;
+      for (;;) {
+        const complete = /\x1b\]133;([ABCD])(?:;(-?\d+))?(?:\x07|\x1b\\)/.exec(buffered);
+        if (!complete) {
+          const partial = buffered.lastIndexOf('\x1b]');
+          const end = partial < 0 ? buffered.length : partial;
+          if (end) peer.send(JSON.stringify({ type: 'output', data: buffered.slice(0, end) }));
+          buffered = buffered.slice(end);
+          return;
+        }
+        peer.send(JSON.stringify({ type: 'output', data: buffered.slice(0, complete.index + complete[0].length) }));
+        buffered = buffered.slice(complete.index + complete[0].length);
+        const submissionId = terminal.submission?.id;
+        if (complete[1] === 'C') peer.send(JSON.stringify({ type: 'shell-integration', event: 'start', submissionId }));
+        if (complete[1] === 'D') status = complete[2] === undefined ? null : Number(complete[2]);
+        if (complete[1] === 'B') {
+          peer.send(JSON.stringify({ type: 'shell-integration', event: 'prompt' }));
+          if (status !== undefined && submissionId) {
+            peer.send(JSON.stringify({ type: 'shell-integration', event: 'end', submissionId, exitCode: status }));
+            status = undefined;
+          }
+        }
+      }
+    };
+    await exercise(terminal, peer, output);
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    failures.push(`${name}: ${error.message}`);
+  } finally {
+    peer?.close();
+    await terminal?.close();
+  }
+}
+
+try {
+  await scenario('ANSI-only output cannot complete a submitted command', async (terminal, peer, output) => {
+    let finished = false;
+    terminal.cmd('held');
+    const completion = terminal.waitForPrompt(1000).then(() => { finished = true; });
+    const chunk = once(terminal.ws, 'message');
+    output('\x1b[?25h');
+    await chunk;
+    await setImmediate();
+    const premature = finished;
+    output(`${mark('C')}done\n${mark('D;7')}${mark('A')}${prompt}${mark('B')}`);
+    await completion;
+    assert.equal(premature, false, 'ANSI bytes after a buffered prompt are not a new prompt');
+  });
+
+  await scenario('prompt-looking program output cannot complete run()', async (terminal, peer, output) => {
+    let finished = false;
+    const completion = terminal.run('held', 1000).then((result) => { finished = true; return result; });
+    output(`${mark('C')}a@b:c$ `);
+    await terminal.waitFor((text) => text.endsWith('a@b:c$ '), 1000, 'program output');
+    await setImmediate();
+    const premature = finished;
+    output(`still running\n${mark('D;9')}${mark('A')}${prompt}${mark('B')}`);
+    const result = await completion;
+    assert.equal(premature, false, 'a program can print a prompt at a chunk boundary and keep running');
+    assert.equal(result.exitCode, 9);
+    assert.match(result.output, /still running/);
+    assert.ok(!result.output.includes('\x1b]133;'), 'OSC marks are not visible output');
+  });
+
+  await scenario('a resume prompt does not complete the command that woke the session', async (terminal, peer, output) => {
+    let finished = false;
+    const completion = terminal.run('held', 1000).then((result) => { finished = true; return result; });
+    output(`session resumed\n${mark('A')}${prompt}${mark('B')}`);
+    await terminal.waitFor((text) => text.includes('session resumed'), 1000, 'resume notice');
+    await setImmediate();
+    const premature = finished;
+    output(`${mark('C')}awake\n${mark('D;17')}${mark('A')}${prompt}${mark('B')}`);
+    const result = await completion;
+    assert.equal(premature, false, 'a resumed shell has not executed the submitted command at its initial B');
+    assert.equal(result.exitCode, 17);
+    assert.match(result.output, /awake/);
+  });
+
+  await scenario('split marks survive reset; the first B owns the result', async (terminal, peer, output) => {
+    const completion = terminal.run('held', 1000);
+    output(`${mark('C')}first\n${mark('D;3', '\x1b\\')}${mark('A')}${prompt}\x1b]133;`);
+    await terminal.waitFor((text) => text.includes('first'), 1000, 'first output');
+    terminal.reset();
+    output(`B\x1b\\${mark('C')}queued\n${mark('D;0')}${mark('A')}${prompt}${mark('B')}`);
+    const result = await completion;
+    assert.equal(result.exitCode, 3, 'the queued command cannot overwrite the first completion');
+    assert.match(result.output, /first/);
+    assert.ok(!result.output.includes('queued'), 'run output ends at its own B');
+
+    const thrown = terminal.run('throws', 1000);
+    output(`${mark('C')}threw\n${mark('D')}${mark('A')}${prompt}${mark('B')}`);
+    assert.equal((await thrown).exitCode, null, 'bare D has no exit status, never an earlier command\'s status');
+
+    terminal.cmd('');
+    const empty = terminal.waitForPrompt(1000);
+    output(`${mark('A')}${prompt}${mark('B')}`);
+    peer.send(JSON.stringify({ type: 'shell-integration', event: 'end', submissionId: terminal.submission.id, exitCode: null }));
+    await empty;
+
+    terminal.cmd('python');
+    output(`${mark('C')}>>> `);
+    await terminal.waitFor((text) => text.endsWith('>>> '), 1000, 'REPL ready');
+    terminal.reset();
+    terminal.cmd('exit()');
+    const exiting = terminal.waitForPrompt(1000);
+    output(`${mark('D;5')}${mark('A')}${prompt}${mark('B')}`);
+    await exiting;
+    assert.equal(terminal.submission.exitCode, 5, 'stdin keeps the running command\'s ownership');
+
+    terminal.cmd('echo "open');
+    output('> ');
+    await terminal.waitFor((text) => text.endsWith('> '), 1000, 'PS2');
+    terminal.send('\x03');
+    const cancelled = terminal.waitForPrompt(1000);
+    output(`^C\n${mark('A')}${prompt}${mark('B')}`);
+    await cancelled;
+
+    await terminal.close();
+    const reconnected = once(sockets, 'connection');
+    await terminal.connect();
+    const [replacement] = await reconnected;
+    let prompted = false;
+    const fresh = terminal.waitForPrompt(1000).then(() => { prompted = true; });
+    await setImmediate();
+    const reused = prompted;
+    replacement.send(JSON.stringify({ type: 'output', data: `${mark('A')}${prompt}${mark('B')}` }));
+    replacement.send(JSON.stringify({ type: 'shell-integration', event: 'prompt' }));
+    await fresh;
+    assert.equal(reused, false, 'reconnect waits for this connection\'s B, without resetting the mark stream');
+  });
+
+  try {
+    assert.equal(stripAnsi(`a${mark('D;0')}b\x1b]0;window title\x1b\\c\x1b[31md\x1b[0m`), 'abcd');
+  } catch (error) {
+    failures.push(`strip OSC sequences: ${error.message}`);
+  }
+} finally {
+  await new Promise((resolve) => sockets.close(resolve));
+  await new Promise((resolve) => server.close(resolve));
+}
+assert.deepEqual(failures, []);
+console.log('behavioral-terminal-shell-marks: PASS');

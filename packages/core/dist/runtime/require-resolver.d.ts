@@ -28,6 +28,7 @@
  */
 import { type RequireFs, type WalkProgress } from './require-resolution.js';
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -50,6 +51,22 @@ export interface PrefetchResult {
     entryPaths?: ReadonlySet<string>;
     /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
     deferred?: DeferredImport[];
+    /**
+     * What each staged module loads statically, each by the file it resolved
+     * to: what evaluating it evaluates. The planner reads ancestry from it
+     * (which modules an \`import()\` of a target evaluates); an \`import()\` a
+     * module only defers is not an edge, since importing the module does not
+     * evaluate the target.
+     */
+    edges?: ReadonlyMap<string, readonly string[]>;
+    /**
+     * The optional learned roots that landed (RequiredModuleRoot.optional),
+     * each with every cell it staged: one unit, kept or evicted whole.
+     */
+    units?: ReadonlyArray<{
+        root: string;
+        members: readonly string[];
+    }>;
 }
 /** An `import()` a module defers, and how many its module defers (phase 2's order). */
 export interface DeferredImport {
@@ -58,6 +75,8 @@ export interface DeferredImport {
     alternatives: number;
     /** The file, when the walk resolved it already (a tool config and what it names). */
     path?: string;
+    /** Loaded by a require wrapper's call (requireWrapperCalls): resolved as require() resolves it, not import(). */
+    require?: true;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
@@ -102,6 +121,14 @@ export interface RequiredModuleRoot {
      * loads by name, follow it.
      */
     config?: boolean;
+    /**
+     * A module an earlier run executed that the required closure could not
+     * hold with the rest (buildPrefetchBundle walks the learned roots again so
+     * when they take it past the bound): phase 2's first tier, its closure
+     * staged whole within the bound or not at all, evictable, never the
+     * launch's failure.
+     */
+    optional?: boolean;
 }
 /**
  * A module the command line preloads (`node -r`, `--import`), as it named

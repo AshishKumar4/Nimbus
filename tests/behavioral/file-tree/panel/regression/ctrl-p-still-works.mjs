@@ -10,7 +10,7 @@ const a = makeAsserter('file-tree/panel/regression/ctrl-p-still-works');
 console.log(`file-tree/panel/regression/ctrl-p-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 a.check('Ctrl+P global keydown handler still present',
@@ -21,7 +21,7 @@ a.check('palette overlay DOM still present',
   `palette DOM incomplete`);
 
 // Protocol — fs-list round-trip (what openPalette uses).
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });
 await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); setTimeout(()=>rej('timeout'), 10_000); });

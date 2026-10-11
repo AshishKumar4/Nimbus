@@ -19,20 +19,28 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-const result = await build({
-  entryPoints: [path.join(ROOT, 'frontend', 'preview-isolation', 'index.ts')],
-  outdir: path.join(ROOT, 'public', '_assets', 'preview-isolation'),
-  entryNames: 'preview-isolation',
-  bundle: true,
-  format: 'esm',
-  platform: 'browser',
-  target: 'es2022',
-  minify: true,
-  sourcemap: false,
-  legalComments: 'none',
-  metafile: true,
-});
+/** @type {Array<{ entry: string; name: string; format: import('esbuild').Format; globalName?: string }>} */
+const bundles = [
+  { entry: path.join(ROOT, 'frontend', 'preview-isolation', 'index.ts'), name: 'preview-isolation', format: 'esm' },
+  { entry: path.resolve(ROOT, '..', 'core', 'src', '_shared', 'id-component.ts'), name: 'session-id', format: 'iife', globalName: 'NimbusSessionId' },
+];
+for (const { entry, name, format, globalName } of bundles) {
+  const result = await build({
+    entryPoints: [entry],
+    outdir: path.join(ROOT, 'public', '_assets', name),
+    entryNames: name,
+    bundle: true,
+    format,
+    globalName,
+    platform: 'browser',
+    target: 'es2022',
+    minify: true,
+    sourcemap: false,
+    legalComments: 'none',
+    metafile: true,
+  });
 
-for (const [file, output] of Object.entries(result.metafile.outputs)) {
-  console.log(`[bundle-preview-isolation] ${file} ${(output.bytes / 1024).toFixed(1)} KiB`);
+  for (const [file, output] of Object.entries(result.metafile.outputs)) {
+    console.log(`[bundle-preview-isolation] ${file} ${(output.bytes / 1024).toFixed(1)} KiB`);
+  }
 }

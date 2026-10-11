@@ -16,6 +16,7 @@
 // terminal thinks for longer than this between commands.
 
 import { deleteSession, makeAsserter, mintSession, sleep, stripAnsi, Terminal } from '../../_driver.mjs';
+import { terminalCommandRunner } from '../../../unit/lib/workerd-probe.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'agentic-cli/new/terminal-idle-survives-hibernation';
@@ -31,11 +32,15 @@ const t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
+  // Rehydration may announce itself with an unsolicited prompt before the
+  // input command completes. Wait for this command's status marker, as the
+  // local production-engine probes do, not that intermediate prompt.
+  const run = terminalCommandRunner(t);
 
-  const before = await t.run('cd /tmp && echo one', 30_000);
+  const before = await run('cd /tmp && echo one', 30_000);
   a.check('a command answers before the idle',
-    /\bone\b/.test(stripAnsi(before.output).replace('echo one', '')),
-    JSON.stringify(stripAnsi(before.output).slice(-200)));
+    before.status === 0 && /\bone\b/.test(stripAnsi(before.stdout)),
+    JSON.stringify(stripAnsi(before.stdout).slice(-200)));
 
   // Idle with nothing on the socket. The readiness of the socket itself is
   // recorded along the way: a close here would be a different defect and
@@ -54,18 +59,18 @@ try {
   }
   a.check(`the socket is still open after ${Math.round(IDLE_MS / 1000)}s idle`, !t.closed, t.closeDetail ?? '');
 
-  const after = await t.run('echo two', 30_000);
-  const output = stripAnsi(after.output);
+  const after = await run('echo two', 30_000);
+  const output = stripAnsi(after.stdout);
   a.check('the first command after the idle produces its output',
-    /\btwo\b/.test(output.replace('echo two', '')),
+    after.status === 0 && /\btwo\b/.test(output),
     JSON.stringify(output.slice(-300)));
 
   // The shell that answered is the same session: cwd set before the idle
   // survives it (the rebuild reads it back from the session's storage).
-  const where = await t.run('pwd', 30_000);
+  const where = await run('pwd', 30_000);
   a.check('the shell keeps the cwd set before the idle',
-    /^\/tmp\s*$/m.test(stripAnsi(where.output).replace('pwd', '')),
-    JSON.stringify(stripAnsi(where.output).slice(-200)));
+    where.status === 0 && /^\/tmp\s*$/m.test(stripAnsi(where.stdout)),
+    JSON.stringify(stripAnsi(where.stdout).slice(-200)));
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);

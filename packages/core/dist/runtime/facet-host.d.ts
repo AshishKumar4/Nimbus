@@ -20,19 +20,7 @@
  * substrate answered and never asks.
  */
 import type { WasiParking } from './wasi/types.js';
-/**
- * A function submitted into a facet.
- *
- * It is SERIALIZED on any host that runs it elsewhere, so it must be
- * self-contained: closure references do not survive the crossing, and neither
- * do module imports. Names the spec's `preamble` declares ARE in scope — that
- * is what the preamble is for — and everything else travels as `args`.
- *
- * `bindings` carries whatever capabilities the host minted for this facet;
- * `SUPERVISOR` is the session syscall capability, present only when the spec
- * named a pid to act as.
- */
-export type FacetFn<A, R> = (args: A, bindings: FacetBindings) => R | Promise<R>;
+import type { FacetTaskSource } from './facet-task.js';
 /** Capabilities handed to the facet's function as its second argument. */
 export interface FacetBindings {
     /** The session's syscall capability, bound to {@link FacetSpec.supervisorPid}. */
@@ -90,6 +78,8 @@ export interface FacetSpec {
 export interface FacetSyscalls {
     readonly vfs: import('./os-contracts.js').RuntimeFsBridge;
     readonly pid: number;
+    /** Local hosts bind the same stdio channels that a remote host reaches by pid. */
+    readonly processes?: import('./session-process-supervisor.js').SessionProcessSupervisor;
 }
 export interface FacetSubmitOptions {
     /**
@@ -98,6 +88,10 @@ export interface FacetSubmitOptions {
      * a dynamic worker, and the local host's worker thread
      * ({@link ./local-facet-host.ts}), which `terminate()` stops even in a
      * loop that never yields.
+     *
+     * Absent, there is none. A process's run passes none: it runs until it
+     * exits or is killed (`signal`), and on Cloudflare the platform's CPU limit
+     * ends a runaway one. Only a direct compute call passes a deadline.
      */
     timeoutMs?: number;
     /**
@@ -118,7 +112,7 @@ export interface FacetSubmitOptions {
  * would hand the second call a shell that had never run.
  */
 export interface Facet {
-    submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>>;
+    submit<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>>;
     /**
      * The same call dispatched as a fetch Request through the host's fetch
      * seam. Present only where the host can carry one — a Worker Loader
@@ -127,7 +121,7 @@ export interface Facet {
      * is still serialized and scoped exactly as `submit`'s; it receives the
      * Request itself and answers with a Response.
      */
-    submitRequest?(fn: FacetFn<Request, Response>, request: Request, options?: FacetSubmitOptions): Promise<Response>;
+    submitRequest?(fn: FacetTaskSource<Request, Response>, request: Request, options?: FacetSubmitOptions): Promise<Response>;
     /** Idempotent. The scope and everything it holds are dropped. */
     dispose(): void;
 }

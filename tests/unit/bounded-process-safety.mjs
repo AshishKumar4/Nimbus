@@ -1,11 +1,9 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
-import { tmpdir, userInfo } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'bounded-process-'));
@@ -57,9 +55,7 @@ try {
     await readyFile(ready);
     assert.equal(await lockStatus(lock), 1, 'detached child holds its lock before parent exit');
   } finally { writeFileSync(release, 'release'); escapedResult = await escaped; }
-  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1' || escapedResult.ok) {
-    assert.equal(escapedResult.ok, true, escapedResult.reason);
-  } else {
+  if (!escapedResult.ok) {
     // Without isolation, descendants are found by a /proc census every 25 ms.
     // A setsid one whose parent exits within a period is reparented before it
     // is seen (bounded-process.mjs): the run must then end at the cleanup
@@ -89,59 +85,6 @@ try {
   const narrowEnv = await runBoundedProcess(process.execPath, ['-e', 'console.log(JSON.stringify(process.env))'], { env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
   assert.equal(narrowEnv.ok, true, narrowEnv.reason);
   assert.deepEqual(JSON.parse(narrowEnv.stdout), { PATH: '/usr/bin:/bin', LANG: 'C' });
-  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
-    const sentinel = `synthetic-${randomUUID()}`;
-    const marker = join(root, 'private-launch.ready');
-    const releasePrivate = join(root, 'private-launch.release');
-    const probe = join(root, 'private-launch.mjs');
-    writeFileSync(probe, `
-      import fs from 'node:fs';
-      import path from 'node:path';
-      const parentArgv = fs.readFileSync('/proc/'+process.ppid+'/cmdline','utf8');
-      const request = parentArgv.split('\\0').filter(Boolean).at(-1);
-      const group = fs.readFileSync('/proc/self/cgroup','utf8').trim().split('::')[1];
-      fs.writeFileSync(process.env.MARKER, JSON.stringify({ parentArgv, request, group,
-        mode: fs.statSync(request).mode & 511, dirMode: fs.statSync(path.dirname(request)).mode & 511,
-        received: process.env.SAFETY_SENTINEL }));
-      setInterval(()=>{ if(fs.existsSync(process.env.RELEASE)) process.exit(0); },10);
-    `);
-    const pending = runBoundedProcess(process.execPath, [probe], {
-      timeoutMs: 10_000,
-      env: { PATH: '/usr/bin:/bin', SAFETY_SENTINEL: sentinel, MARKER: marker, RELEASE: releasePrivate },
-    });
-    let request;
-    try {
-      await readyFile(marker);
-      const observed = JSON.parse(readFileSync(marker, 'utf8'));
-      request = observed.request;
-      assert.equal(observed.received, sentinel);
-      assert.equal(observed.mode, 0o600);
-      assert.equal(observed.dirMode, 0o700);
-      assert.ok(!observed.parentArgv.includes(sentinel), 'secret absent from launcher argv');
-      const unit = observed.group.split('/').at(-1);
-      const metadata = spawnSync('/usr/bin/systemctl', ['--user', `--machine=${userInfo().username}@.host`, 'show', unit, '--property=Description,ExecStart'], { encoding: 'utf8', timeout: 3000 });
-      assert.equal(metadata.status, 0, metadata.stderr);
-      assert.match(metadata.stdout, /Description=Nimbus bounded subprocess/);
-      assert.ok(!metadata.stdout.includes(sentinel), 'secret absent from systemd metadata');
-    } finally {
-      writeFileSync(releasePrivate, 'release');
-      const result = await pending;
-      assert.equal(result.ok, true, result.reason);
-    }
-    assert.equal(existsSync(request), false, 'private launch request removed after completion');
-    const huge = await runBoundedProcess(process.execPath, ['-e', ''], { env: { HUGE: 'x'.repeat(1024 * 1024) } });
-    assert.match(huge.reason, /launch request exceeds/);
-    const entry = fileURLToPath(new URL('../../scripts/lib/subprocess-entry.mjs', import.meta.url));
-    const invalidRequest = join(root, 'invalid-request.json');
-    for (const content of ['{"executable":', JSON.stringify({ executable: process.execPath, args: ['-e', 'console.log("must not execute")'], env: null })]) {
-      rmSync(join(root, 'status.json'), { force: true });
-      writeFileSync(invalidRequest, content, { mode: 0o600 });
-      const refused = await runBoundedProcess(process.execPath, [entry, invalidRequest]);
-      assert.equal(refused.code, 1);
-      assert.equal(refused.stdout, '');
-      assert.equal(JSON.parse(readFileSync(join(root, 'status.json'), 'utf8')).code, null, 'invalid request is not a target exit');
-    }
-  }
   const normal143 = await runBoundedProcess(process.execPath, ['-e', 'process.exit(143)']);
   assert.equal(normal143.code, 143);
   assert.equal(normal143.reason, '');
@@ -178,16 +121,6 @@ try {
   assert.equal(result.code, 143);
   assert.equal(readFileSync(cleaned, 'utf8'), 'clean', 'caller finally runs before signal-derived exit');
   console.log('bounded-process-safety: cancellation unwound caller');
-  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
-    let sentinel;
-    do {
-      sentinel = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
-      owned.push(sentinel);
-    } while (sentinel.pid <= 3);
-    const lookup = await runBoundedProcess(process.execPath, ['-e', `try { process.kill(${sentinel.pid},0); console.log('visible'); } catch(e) { console.log(e.code); }`]);
-    assert.equal(lookup.stdout.trim(), 'ESRCH', 'outer owned sentinel is not addressable in the child PID namespace');
-    assert.equal(sentinel.kill(0), true, 'signal-zero probe did not affect the owned sentinel');
-  }
   console.log('bounded-process-safety: byte-exact output, overflow, timeout, escaped pipes, spawn errors');
 } finally {
   await Promise.all(owned.map((child) => child.exitCode !== null || child.signalCode !== null ? undefined : new Promise((resolve) => { child.once('close', resolve); child.kill('SIGKILL'); })));

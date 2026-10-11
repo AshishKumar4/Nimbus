@@ -12,6 +12,8 @@
 //       option, a V8 flag, `--no-` of a non-boolean (and of an alias of a
 //       boolean, which is one), `--` in NODE_OPTIONS, a Node error after a
 //       bad V8 option (Node's comes first);
+//       and TypeScript's mode and source maps, which
+//       --experimental-transform-types sets where it is read;
 //   (1e) for `-e` and `-p`: the code, its arguments and execArgv;
 //   (2) the option table (node-cli-options.generated.ts) is Node's own, as
 //       its generator reads it under host Node, which is the release Nimbus's
@@ -31,7 +33,7 @@ process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module', imports: { '#cond': { development: './t.js', default: './f.js' } } }));
 writeFileSync(join(dir, 't.js'), 'export default true;');
 writeFileSync(join(dir, 'f.js'), 'export default false;');
-writeFileSync(join(dir, 'main.mjs'), "import c from '#cond'; console.log(JSON.stringify({ execArgv: process.execArgv, args: process.argv.slice(2), development: c, preloaded: globalThis.preloaded ?? [] }));");
+writeFileSync(join(dir, 'main.mjs'), "import c from '#cond'; console.log(JSON.stringify({ execArgv: process.execArgv, args: process.argv.slice(2), development: c, preloaded: globalThis.preloaded ?? [], typescript: process.features.typescript, sourceMaps: process.sourceMapsEnabled }));");
 // Preloads, each recording that it ran: by the specifier the command line names it.
 const PRELOADS = { './p1.cjs': 'p1', './p2.cjs': 'p2', './p3.mjs': 'p3' };
 for (const [specifier, name] of Object.entries(PRELOADS)) {
@@ -103,6 +105,20 @@ const cases = [
   [['--import', './p3.mjs', '-r', './p1.cjs', 'main.mjs']],
   [['-r', './p1.cjs', 'main.mjs'], '--require ./p2.cjs --import=./p3.mjs'],
   [['main.mjs'], '-r ./p2.cjs'],
+  [['--experimental-transform-types', 'main.mjs']],
+  [['--enable-source-maps', 'main.mjs']],
+  [['--experimental-transform-types', '--no-enable-source-maps', 'main.mjs']],
+  [['--no-enable-source-maps', '--experimental-transform-types', 'main.mjs']],
+  [['--experimental-transform-types', '--no-experimental-transform-types', 'main.mjs']],
+  [['main.mjs'], '--experimental-transform-types'],
+  [['--no-enable-source-maps', 'main.mjs'], '--experimental-transform-types'],
+  [['--enable-source-maps', 'main.mjs'], '--experimental-transform-types --no-enable-source-maps'],
+  [['--no-experimental-strip-types', 'main.mjs']],
+  [['--no-experimental-strip-types', '--experimental-transform-types', 'main.mjs']],
+  [['--experimental-transform-types', '--no-experimental-strip-types', 'main.mjs']],
+  [['--no-experimental-strip-types', '--experimental-strip-types', 'main.mjs']],
+  [['--no-experimental-strip-types', '--experimental-transform-types', '--no-experimental-transform-types', 'main.mjs']],
+  [['main.mjs'], '--no-experimental-strip-types'],
 ];
 for (const [args, nodeOptions = ''] of cases) {
   const host = spawnSync('node', args, {
@@ -125,6 +141,8 @@ for (const [args, nodeOptions = ''] of cases) {
   assert.equal(ours.conditions.includes('development'), said.development, `${label}: the development condition`);
   // Node requires its -r modules (NODE_OPTIONS' first), then imports its --import ones.
   assert.deepEqual([...ours.require, ...ours.import].map((specifier) => PRELOADS[specifier]), said.preloaded, `${label}: the preloads`);
+  assert.equal(ours.transformTypes ? 'transform' : ours.stripTypes && 'strip', said.typescript, `${label}: TypeScript's mode`);
+  assert.equal(ours.enableSourceMaps, said.sourceMaps, `${label}: source maps`);
 }
 console.log(`  ok  (1) ${cases.length} command lines read as Node reads them`);
 

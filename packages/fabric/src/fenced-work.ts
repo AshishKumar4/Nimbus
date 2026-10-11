@@ -39,8 +39,31 @@
  */
 export const FENCED_WORK_KEY_PREFIX = 'resident-launch:';
 
+/**
+ * Why a row is re-driven: its session restarted, its process exited with
+ * `code`, or the platform reset the host its process ran on (a sibling
+ * Durable Object, process-host.ts `peer`), which ends the process with it.
+ */
+export type RedriveCause = { kind: 'session-restart' } | { kind: 'exited'; code: number } | { kind: 'host-reset' };
+
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
 export const FENCED_WORK_MAX_ATTEMPT = 1;
+
+/**
+ * How long a resident runs before its re-drive budget is whole again. A
+ * process whose new isolate has used about a second of CPU makes the
+ * platform restart its session (spike/isolate-move), and its re-drive is a
+ * new process in a new isolate that does it again: a budget refilled at boot
+ * re-drove such a process, and restarted its session, forever.
+ *
+ * The rule: a resident's row returns to attempt 0 only when the process has
+ * stayed up this long in one instance of its session, which that instance's
+ * own timer counts from the boot. That is the evidence it ran without
+ * restarting the session under it. Time while the session is down is never
+ * counted, since no timer of a dead instance fires, and a restart storm
+ * spends the budget however long the outages between restarts were.
+ */
+export const RESIDENT_PROVEN_MS = 120_000;
 
 /**
  * A resident process this session owes the user, as a later instance would
@@ -66,8 +89,7 @@ export interface FencedWorkRecord {
   /** 0 for a launch the user asked for; 1 for the one re-drive it may get. */
   attempt: number;
   /** Where the resident was when its instance died: still being built, or
-   *  booted and running. Running residents re-drive with a fresh attempt
-   *  budget — their launch already proved itself once. */
+   *  booted and running. */
   phase: 'starting' | 'running';
 }
 
@@ -109,11 +131,11 @@ export interface FencedWorkHost<R extends FencedWorkRecord> {
    * carries it into the launch it starts. The result is discarded: a re-drive
    * owns its own process, and nobody is waiting on the pid it allocates.
    */
-  redrive(record: R, attempt: number): Promise<unknown>;
+  redrive(record: R, attempt: number, cause: RedriveCause): Promise<unknown>;
   /** A re-drive is being started for this record. */
   onRedrive?(record: R): void;
   /** The record's re-drive budget is spent; the resident stays stopped. */
-  onAbandoned?(record: R): void;
+  onAbandoned?(record: R, cause: RedriveCause): void;
   /** The re-drive itself failed. */
   onRedriveFailed?(record: R, error: unknown): void;
 }
@@ -217,22 +239,26 @@ export class FencedWork<R extends FencedWorkRecord> {
    * Re-drive one journal row — the awaited sibling of recovery's un-awaited
    * re-drives, for a caller that must know whether the launch actually came
    * back. Single-flight per row: a request-driven drive and recovery's own
-   * never boot the same launch twice. Resolves true only when the re-drive
-   * itself FAILED and the failure was reported; a settled drive supersedes
-   * the row the same way recovery's does.
+   * never boot the same launch twice. `cause` says why the row is driven: a
+   * session restart (a row a previous instance left), whose drive is
+   * announced through onRedrive, once, by the call that starts it, or the
+   * process's own non-zero exit, which its restart policy re-drives. Resolves
+   * true only when the re-drive itself FAILED and the failure was reported;
+   * a settled drive supersedes the row the same way recovery's does.
    */
-  drive(key: string, record: R): Promise<boolean> {
+  drive(key: string, record: R, cause: RedriveCause): Promise<boolean> {
     let inflight = this.drives.get(key);
     if (inflight === undefined) {
       inflight = (async (): Promise<boolean> => {
         if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
-          this.host.onAbandoned?.(record);
+          this.host.onAbandoned?.(record, cause);
           await this.supersede(key);
           return true;
         }
+        if (cause.kind === 'session-restart') this.host.onRedrive?.(record);
         let failed = false;
         try {
-          await this.host.redrive(record, record.attempt + 1);
+          await this.host.redrive(record, record.attempt + 1, cause);
         } catch (e: unknown) {
           this.host.onRedriveFailed?.(record, e);
           failed = true;
@@ -295,16 +321,15 @@ export class FencedWork<R extends FencedWorkRecord> {
       await this.storage.put(key, { ...record, attempt: record.attempt + 1 });
     }
     if (abandoned.length > 0 || redriven.length > 0) await this.storage.sync();
-    for (const [, record] of abandoned) this.host.onAbandoned?.(record);
+    for (const [, record] of abandoned) this.host.onAbandoned?.(record, { kind: 'session-restart' });
     for (const [key, record] of redriven) {
-      this.host.onRedrive?.(record);
       // Not awaited: this call is running inside the alarm that granted the
       // turn, and the launch it starts asks for turns of its own through that
       // same alarm — awaiting it here would be waiting on an alarm that cannot
       // be scheduled until this one returns. `drive` single-flights it: a
       // request that arrives mid-launch waits on this same drive rather than
       // booting a second process.
-      this.host.waitUntil(this.drive(key, record));
+      this.host.waitUntil(this.drive(key, record, { kind: 'session-restart' }));
     }
   }
 

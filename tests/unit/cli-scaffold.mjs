@@ -34,6 +34,18 @@ try {
     nimbusPublicDirectory: true,
     agent: { model: '@cf/moonshotai/kimi-k2.6', gatewayId: 'default' },
   }));
+  process.stdout.write = () => true;
+  process.stderr.write = () => true;
+  try {
+    assert.equal(await scaffold([target]), 73, 'an existing project needs --force');
+    assert.equal(await scaffold(['--force', '--name=renamed', target]), 0);
+    assert.equal(parseWranglerJsonc(readFileSync(join(target, 'wrangler.jsonc'), 'utf8')).name, 'renamed');
+    assert.equal(await scaffold([target, '--name']), 64);
+    assert.equal(await scaffold([target, '--unknown']), 64);
+  } finally {
+    process.stdout.write = oldStdoutWrite;
+    process.stderr.write = oldStderrWrite;
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

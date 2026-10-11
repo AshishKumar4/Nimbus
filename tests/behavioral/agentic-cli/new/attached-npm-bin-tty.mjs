@@ -138,7 +138,7 @@ try {
 
   const launch = await t.run('attached-agent', 30_000);
   const terminalOut = stripAnsi(launch.output);
-  const pidMatch = terminalOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="attached-agent"\]/);
+  const pidMatch = terminalOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="attached-agent"\]/);
   const pid = pidMatch ? Number(pidMatch[1]) : 0;
   a.check('npm bin launches as a long-running attached process', pid > 0, JSON.stringify(terminalOut.slice(-800)));
 
@@ -208,7 +208,7 @@ try {
 
   const asyncLaunch = await t.run('async-attached-agent', 30_000);
   const asyncTerminalOut = stripAnsi(asyncLaunch.output);
-  const asyncPidMatch = asyncTerminalOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="async-attached-agent"\]/);
+  const asyncPidMatch = asyncTerminalOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="async-attached-agent"\]/);
   const asyncPid = asyncPidMatch ? Number(asyncPidMatch[1]) : 0;
   a.check('unawaited async npm-bin TUI launches as a long-running attached process',
     asyncPid > 0,
@@ -245,18 +245,23 @@ try {
   t.cmd('async-attached-crash');
   await t.waitFor((body) => /ASYNC_ATTACHED_CRASH/.test(body), 30_000, 'async TUI crash stack');
   const crashTerminalOut = stripAnsi(t.buf);
-  const crashPidMatch = crashTerminalOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="async-attached-crash"\]/);
+  const crashPidMatch = crashTerminalOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="async-attached-crash"\]/);
   const crashPid = crashPidMatch ? Number(crashPidMatch[1]) : 0;
   a.check('unawaited async npm-bin crash launches as a long-running attached process',
     crashPid > 0,
     JSON.stringify(crashTerminalOut.slice(-800)));
 
-  a.check('unawaited async npm-bin crash is surfaced with an exit code and stack',
-    /Process \d+ \(async-attached-crash\) exited with code 1/.test(crashTerminalOut)
-      && /ASYNC_ATTACHED_CRASH/.test(crashTerminalOut),
+  a.check('the async crash diagnostic appears before another input, without an unordered status notice',
+    /ASYNC_ATTACHED_CRASH/.test(crashTerminalOut)
+      && !/Process \d+ \(async-attached-crash\) exited with code/.test(crashTerminalOut),
     JSON.stringify(crashTerminalOut.slice(-1000)));
-  t.send('\r');
+  t.cmd('');
   await t.waitForPrompt(30_000);
+  const reported = stripAnsi(t.buf);
+  const status = /Process \d+ \(async-attached-crash\) exited with code 1/.exec(reported);
+  a.check('unawaited async npm-bin crash is surfaced with an exit code and stack before the next prompt',
+    status !== null && /ASYNC_ATTACHED_CRASH/.test(reported) && status.index < reported.lastIndexOf('user@nimbus:'),
+    JSON.stringify(reported.slice(-1000)));
   a.check('terminal remains responsive after an attached async startup crash',
     /[$#>]\s*$/.test(stripAnsi(t.buf).trimEnd().slice(-3)),
     JSON.stringify(stripAnsi(t.buf).slice(-1000)));

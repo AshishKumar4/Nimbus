@@ -1,12 +1,14 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
 import { resolveContext } from '../commands/registry.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
+import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { arrayFor, assignArray, assignVariable, cloneArrays, restoreVariable, saveVariable } from './variables.js';
+import { arrayFor, assignArray, assignVariable, restoreVariable, saveVariable } from './variables.js';
+import { forkShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
@@ -74,6 +76,9 @@ function redirectionDiagnostic(error) {
                     : error.message;
     return `sh: ${error.target}: ${reason}\n`;
 }
+function terminalStdinFd(io, stdin = io.stdin) {
+    return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
+}
 function exited(status) {
     return { status, signal: null };
 }
@@ -108,31 +113,14 @@ export class Interpreter {
         this.functions = new Map(saved);
     }
     /**
-     * A child shell, as fork(2) makes one: its own copy of every piece of shell
-     * state (variables and arrays, cwd, options, traps, readonly names,
-     * aliases, functions, $?, the open descriptors), so nothing it changes
-     * reaches this shell. Shared: the process registry and filesystem,
-     * command registry and terminal; `$$` stays this shell's. Traps reset to
-     * the default, except ignored ones, and the child runs its own EXIT trap
-     * when it finishes (`finishChild`).
+     * A child shell, as fork(2) makes one: its own copy of the shell's state
+     * (forkShellState) and of its functions, $? and open descriptors, so
+     * nothing it changes reaches this shell. Shared: the process registry and
+     * filesystem, command registry and terminal; `$$` stays this shell's. The
+     * child runs its own EXIT trap when it finishes (`finishChild`).
      */
     fork() {
-        const parent = this.config;
-        let cwd = parent.getCwd();
-        const env = { ...parent.env };
-        const config = {
-            ...parent,
-            env,
-            jobTable: parent.jobTable.fork(),
-            arrays: cloneArrays(parent.arrays),
-            getCwd: () => cwd,
-            setCwd: (next) => { cwd = next; env.PWD = next; },
-            options: { ...parent.options },
-            traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
-            readonlyNames: new Set(parent.readonlyNames),
-            aliases: parent.aliases ? new Map(parent.aliases) : undefined,
-        };
-        const child = new Interpreter(config);
+        const child = new Interpreter({ ...this.config, ...forkShellState(this.config) });
         child.lastExitCode = this.lastExitCode;
         child.functions = new Map(this.functions);
         child.persistentOutputFds = new Map(this.persistentOutputFds);
@@ -242,7 +230,7 @@ export class Interpreter {
             // controlling terminal for `/dev/tty`, but only the foreground job
             // owns the terminal's modes: a background REPL (`node &`) never takes
             // the Ctrl-C meant for the foreground.
-            if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+            if (terminalStdinFd(io)) {
                 backgroundIo.stdin = this.createEmptyReader();
                 backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
             }
@@ -1137,6 +1125,8 @@ export class Interpreter {
         const io = {};
         if (stdin)
             io.stdin = stdin;
+        else if (terminalStdin && !scriptMode)
+            io.stdin = terminalStdin;
         if (terminalStdin)
             io.terminalStdin = terminalStdin;
         if (terminalFds)
@@ -1266,7 +1256,7 @@ export class Interpreter {
         setMembership(terminalOutputFds, 1, io.terminalFds?.stdout ?? !io.stdout);
         setMembership(terminalOutputFds, 2, io.terminalFds?.stderr ?? !io.stderr);
         const terminalInputFds = new Set(this.persistentTerminalInputFds);
-        setMembership(terminalInputFds, 0, io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)));
+        setMembership(terminalInputFds, 0, terminalStdinFd(io, stdin));
         if (io.terminalStdin) {
             for (const fd of terminalInputFds) {
                 inputFds.set(fd, io.terminalStdin);
@@ -1488,12 +1478,17 @@ export class Interpreter {
         const targetPath = resolve(this.config.getCwd(), target);
         const vfs = io.vfs ?? this.config.vfs;
         try {
+            // Each call is made again once a delegation it meets is recalled
+            // (withRecall): a redirection into a subtree a process holds waits for
+            // it, as any caller that can wait does. What it changes ahead of a
+            // reader's recall is published by the time the command ends (`held`).
             const bridge = vfs.process;
-            const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+            const held = new Set();
+            const handle = await withRecall(() => bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' }), undefined, held);
             const push = async (bytes) => {
                 let offset = 0;
                 while (offset < bytes.length) {
-                    const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+                    const written = await withRecall(() => bridge.write(handle.id, null, bytes.subarray(offset)), undefined, held);
                     if (written <= 0 || written > bytes.length - offset)
                         throw new Error('EIO: invalid redirection write length');
                     offset += written;
@@ -1504,8 +1499,14 @@ export class Interpreter {
                 stream,
                 // What the VFS still holds for the file is written as the command
                 // whose redirection opened it ends (flushFds), and a failure is its.
-                flush: async () => { await bridge.fsync(handle.id); },
-                close: async () => { await bridge.close(handle.id); },
+                flush: async () => {
+                    await withRecall(() => bridge.fsync(handle.id), undefined, held);
+                    await Promise.all(held);
+                },
+                close: async () => {
+                    await bridge.close(handle.id);
+                    await Promise.all(held);
+                },
                 refs: 1,
             });
             return { stream, terminal: false };
@@ -1535,8 +1536,8 @@ export class Interpreter {
             }
             await vfs.access(targetPath, 0o4);
             const bridge = vfs.process;
-            const handle = await bridge.open(targetPath, { read: true });
-            const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)), true);
+            const handle = await withRecall(() => bridge.open(targetPath, { read: true }));
+            const stream = this.createFileReader(vfs, targetPath, (offset, length) => withRecall(() => bridge.read(handle.id, offset, length)), true);
             fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
             return { stream, terminal: false };
         }

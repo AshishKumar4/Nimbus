@@ -12,26 +12,34 @@
  * byte stream of frames (`encodeExecStream` / `decodeExecStream`), so both
  * boundaries keep the platform's own stream backpressure.
  */
+import { z } from 'zod/v4';
 export type ExecStreamName = 'stdout' | 'stderr';
 export interface ExecChunk {
     stream: ExecStreamName;
     data: Uint8Array;
 }
-export interface ExecExit {
-    command: string;
-    exitCode: number;
-    success: boolean;
-    duration: number;
-    timestamp: number;
-}
+export declare const ExecExitSchema: z.ZodObject<{
+    command: z.ZodString;
+    exitCode: z.ZodNumber;
+    success: z.ZodBoolean;
+    duration: z.ZodNumber;
+    timestamp: z.ZodNumber;
+}, z.core.$strip>;
+export type ExecExit = z.infer<typeof ExecExitSchema>;
 export interface ExecStream {
     output: ReadableStream<ExecChunk>;
     exit: Promise<ExecExit>;
 }
-export interface ExecOutput extends ExecExit {
-    stdout: string;
-    stderr: string;
-}
+export declare const ExecOutputSchema: z.ZodObject<{
+    command: z.ZodString;
+    exitCode: z.ZodNumber;
+    success: z.ZodBoolean;
+    duration: z.ZodNumber;
+    timestamp: z.ZodNumber;
+    stdout: z.ZodString;
+    stderr: z.ZodString;
+}, z.core.$strip>;
+export type ExecOutput = z.infer<typeof ExecOutputSchema>;
 /** Output a writer may run ahead of its reader before its writes wait. */
 export declare const EXEC_STREAM_HIGH_WATER_BYTES: number;
 /** Content type of an HTTP body carrying an encoded exec stream. */

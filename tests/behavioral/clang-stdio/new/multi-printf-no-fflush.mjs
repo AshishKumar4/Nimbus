@@ -41,7 +41,7 @@ const rc = await t.run('clang m.c -o m', 240_000);
 a.check('compile succeeds', !/error:/i.test(stripAnsi(rc.output)),
   JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('./m ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./m', 30_000);
 const out = stripAnsi(rr.output);
 a.check('line one printed (line-buffered first flush, pre-v13 ok)', /line one/.test(out),
   JSON.stringify(out.slice(-300)));
@@ -49,7 +49,7 @@ a.check('line two printed (v13 stdio-flush works)', /line two/.test(out),
   JSON.stringify(out.slice(-300)));
 a.check('no-newline-tail printed (v13 flush works for buffered tail)',
   /no-newline-tail/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 await t.close();
 const sum = a.summary();

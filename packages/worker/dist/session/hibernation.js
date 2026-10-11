@@ -103,7 +103,7 @@ export function installLogPersistence(host, ctx, onActivity, onRetention) {
                 const chunks = chunkRows.map((r) => ({
                     ts: Number(r.ts),
                     stream: r.stream === 'stderr' ? 'stderr' : 'stdout',
-                    data: String(r.data),
+                    data: r.data instanceof ArrayBuffer ? new Uint8Array(r.data) : r.data instanceof Uint8Array ? r.data : String(r.data),
                     binary: !!r.binary,
                     ...(r.seq !== undefined ? { seq: Number(r.seq) } : {}),
                 }));
@@ -134,7 +134,7 @@ export function installLogPersistence(host, ctx, onActivity, onRetention) {
                 ctx.storage.transactionSync(() => {
                     for (const r of rows) {
                         const c = r.chunk;
-                        sql.exec('INSERT OR REPLACE INTO w9_proc_logs (pid, seq, ts, stream, data, binary) VALUES (?, ?, ?, ?, ?, ?)', pid, r.seq, c.ts, c.stream, c.data, c.binary ? 1 : 0);
+                        sql.exec('INSERT OR REPLACE INTO w9_proc_logs (pid, seq, ts, stream, data, binary) VALUES (?, ?, ?, ?, ?, ?)', pid, r.seq, c.ts, c.stream, c.data, 0);
                     }
                 });
             }
@@ -339,8 +339,8 @@ export function armResidentKeepalive(host, schedule) {
  * abandoned dev server did exactly that. The next resident spawn, or the
  * client's return, re-arms the cycle.
  */
-export function residentKeepaliveFired(host, ctx, now) {
-    if (host.processes.residentRunning > 0 && residentClientPresent(host, ctx, now)) {
+export function residentKeepaliveFired(host, now) {
+    if (!host._w1SessionDestroyed && host.processes.residentRunning > 0 && residentClientPresent(host, now)) {
         return now + RESIDENT_KEEPALIVE_MS;
     }
     host._w1KeepaliveArmed = false;
@@ -368,7 +368,7 @@ export function ensureHibSchema(host, ctx) {
         const sql = ctx.storage.sql;
         sql.exec('CREATE TABLE IF NOT EXISTS w9_proc_logs (' +
             'pid INTEGER NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, ' +
-            'stream TEXT NOT NULL, data TEXT NOT NULL, binary INTEGER NOT NULL, ' +
+            'stream TEXT NOT NULL, data BLOB NOT NULL, binary INTEGER NOT NULL, ' +
             'PRIMARY KEY (pid, seq))');
         sql.exec('CREATE INDEX IF NOT EXISTS w9_proc_logs_ts ON w9_proc_logs(ts)');
         sql.exec('CREATE TABLE IF NOT EXISTS w9_proc_exits (' +
@@ -381,15 +381,13 @@ export function ensureHibSchema(host, ctx) {
     }
 }
 /**
- * Whether a client is here: a hibernatable socket attached (terminal,
- * process log, file watch) or a request within the detached grace. The
- * keep-alive re-arms on this and on a running resident, never on the
- * resident alone.
+ * Only traffic delivered through this runtime's client boundaries counts.
+ * A host's socket table belongs to its embedder, not to Nimbus, and even an
+ * attached runtime terminal cannot renew an alarm forever without traffic.
+ * Attach/input/port requests renew this bounded interest; alarms and facet
+ * supervisor calls never do.
  */
-export function residentClientPresent(host, ctx, now) {
-    const sockets = typeof ctx?.getWebSockets === 'function' ? ctx.getWebSockets() : [];
-    if (sockets.length > 0)
-        return true;
+export function residentClientPresent(host, now) {
     return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 /** W1: a client reached the session DO (see noteResidentClient). */
@@ -435,8 +433,11 @@ export function scheduleHibFlush(host, ctx) {
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
+ *   - `'hosting-watch'` → hostingWatch (fabric PeerHost.watchFired):
+ *     a host holding processes for other sessions tells them of its own
+ *     reset; re-arms while it holds one.
  */
-export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo) {
+export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostingWatch) {
     return timers(host, ctx).dispatch({
         'w9-flush': () => {
             host.processes.flushLogs();
@@ -453,7 +454,12 @@ export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo) {
                 return { rearmAt };
         },
         'resident-keepalive': (now) => {
-            const rearmAt = residentKeepaliveFired(host, ctx, now);
+            const rearmAt = residentKeepaliveFired(host, now);
+            if (rearmAt !== null)
+                return { rearmAt };
+        },
+        'hosting-watch': async () => {
+            const rearmAt = await hostingWatch?.() ?? null;
             if (rearmAt !== null)
                 return { rearmAt };
         },

@@ -16,6 +16,7 @@ import { esbuildFacetWorkerCode } from '../../../packages/worker/src/facets/esbu
 import { ESBUILD_JS_ASSET_PATH, ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_SHA256 } from '../../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 import { OXC_FACET_ASSET_PATH } from '../../../packages/worker/src/oxc-facet-artifact.generated.ts';
+import { namedFacetPlatform } from './named-facet-platform.mjs';
 
 /**
  * What the facet's esbuilds have done since the last reset. `beforeInitialize`
@@ -117,39 +118,7 @@ export async function freshFacetClass() {
  * on a sound stub answers without running esbuild (only the stub is in question).
  */
 export function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
-  const counts = { loaderGets: 0, facetInstances: 0, stubs: 0 };
-  const instances = new Map();
-  const ctx = {
-    id: { toString: () => 'shared-stub-do' },
-    facets: {
-      get(name, load) {
-        if (!instances.has(name)) {
-          instances.set(name, load().then(({ class: FacetClass }) => {
-            counts.facetInstances++;
-            return new FacetClass({}, {});
-          }));
-        }
-        const instance = instances.get(name);
-        if (++counts.stubs <= brokenStubs) {
-          return { transformMany: async () => { throw new Error(`stub ${counts.stubs} disconnected`); } };
-        }
-        return { transformMany: async (requests) => structuredClone(await (await instance).transformMany(structuredClone(requests))) };
-      },
-    },
-  };
-  const env = {
-    ASSETS: { async fetch() { throw new Error('the worker is handed out by LOADER.get below'); } },
-    LOADER: {
-      async get() {
-        counts.loaderGets++;
-        // A load takes a turn or two, as a real one does, so a transform can
-        // start while another caller is still inside it.
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return { getDurableObjectClass: () => EsbuildFacet };
-      },
-    },
-  };
-  return { ctx, env, counts };
+  return namedFacetPlatform({ id: 'shared-stub-do', classFor: () => EsbuildFacet, loadDelayMs: 5, brokenStubs });
 }
 
 /** Restore the globals the harness set; a test that uses the harness ends with this. */

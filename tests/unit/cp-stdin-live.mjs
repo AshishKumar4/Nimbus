@@ -60,10 +60,10 @@ function reader(childPid) {
 for (const [kind, command, args] of [['pure builtin', 'cat', []], ['shell', 'sh', ['s.sh']], ['program by path', './s.sh', []]]) {
   const { childPid } = await manager.spawn({ parentPid: parent.pid, command, args, cwd: '/home/user', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
   const outputOf = reader(childPid);
-  assert.equal(manager.stdinWrite(childPid, encoder.encode('one\n')).ok, true);
+  assert.equal((await manager.stdinWrite(childPid, encoder.encode('one\n'))).ok, true);
   assert.equal(await outputOf((text) => text === 'one\n'), 'one\n', `${kind}: the first line is read while stdin is open`);
   await sleep(600);
-  assert.equal(manager.stdinWrite(childPid, encoder.encode('two\n')).ok, true, `${kind}: the child is still reading`);
+  assert.equal((await manager.stdinWrite(childPid, encoder.encode('two\n'))).ok, true, `${kind}: the child is still reading`);
   assert.equal(await outputOf((text) => text === 'two\n'), 'two\n', `${kind}: and the second, when it is written`);
   manager.stdinEnd(childPid);
   const exit = await manager.wait(childPid, 5000);

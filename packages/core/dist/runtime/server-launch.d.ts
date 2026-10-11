@@ -46,6 +46,15 @@
 import type { Program } from 'acorn';
 /** How large a module may be to be walked: parsing costs about 50 ms a MiB. */
 export declare const SERVER_LAUNCH_MODULE_BYTES: number;
+/**
+ * What a bin is, for what its runs teach about it (worker facets/server-hints.ts):
+ * its package as name@version, the bin, and its first positional argument.
+ */
+export interface ServerIdentity {
+    package: string;
+    bin: string;
+    arg0: string;
+}
 /** How the analysis reads the program's modules: the command's own view. */
 export interface ServerLaunchHost {
     /** A relative specifier from `dir`, resolved to a VFS key, or null. */

@@ -1,5 +1,19 @@
+/**
+ * /dev: the character devices.
+ *
+ * Device nodes are byte sources and sinks, not files with content. `stat`
+ * says so (S_IFCHR, size 0), and `readRange` produces the requested bytes on
+ * demand, so a device has no content ceiling but the caller's bound. A
+ * whole-file read of a device that never ends cannot be answered and fails
+ * (EINVAL) rather than handing back an arbitrary prefix; bounded readers
+ * (`head -c N`, `dd count=N`, redirections) use `readRange`.
+ *
+ * /dev/stdin, stdout, stderr and tty exist so `test -e` and `ls` see them;
+ * the shell resolves them to the process's own descriptors before any read.
+ * /dev/tcp is the WASI socket prefix, not a node here.
+ */
+import { S_IFCHR } from './vfs.js';
 import { syscallError } from './vfs-error.js';
-const S_IFCHR = 0o020000;
 const DEV_MODE = S_IFCHR | 0o666;
 /** Largest buffer one read produces; fewer bytes than asked is ordinary read(2). */
 const MAX_DEVICE_READ = 1024 * 1024;

@@ -21,6 +21,13 @@
 // only because init made the workspace before the re-drive, which recovery
 // does not await, reached its spawn.
 //
+// Each launch here crosses several turns (NIMBUS_LAUNCH_CHUNK_BYTES), as a
+// real app's does: a re-driven launch asks for its next turn through the
+// alarm that re-drove it. Its arm used to join that dispatch's arm collection
+// after the dispatch had folded it, so nothing was armed and (1) waited
+// forever once its launch passed one turn's budget (fabric timers.ts
+// dispatchArms; found as a 400 KB-larger once.js failing (1) on 71b50fa60).
+//
 // Runs with the test egress, then runs itself without it (a second probe, in
 // a process of its own: the driver binds its base URL once). Runs the worker
 // built in the tree (lib/workerd-probe.mjs): rebuild the generated artifacts
@@ -53,7 +60,9 @@ if (${crashOnce} && !fs.existsSync(marker)) {
 async function scenario(egressed) {
   const tag = `NIMBUS_TEST_EGRESS=${egressed ? 1 : 0}`;
   console.log(`workspace-egress-reset-recovery-workerd: starting local workerd (${tag})`);
-  const probe = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: egressed ? '1' : '0', NIMBUS_DEBUG: '1' } });
+  const probe = await startLocalProbe({
+    runtimes: [], vars: { NIMBUS_TEST_EGRESS: egressed ? '1' : '0', NIMBUS_DEBUG: '1', NIMBUS_LAUNCH_CHUNK_BYTES: '500000' },
+  });
   try {
     const session = await localTerminal(probe, { install: [] });
     const { requestHeaders, fetchPort, sleep, Terminal } = await import('../behavioral/_driver.mjs');

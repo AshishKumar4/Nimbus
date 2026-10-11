@@ -17,28 +17,6 @@
 import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, WS_BASE } from '../_driver.mjs';
 
 /**
- * Wait until the line sent after buffer offset `tail0` has RUN: a fresh
- * prompt, and a newline after `tail0`. The newline matters: right after a
- * `t.reset()`, `tail0` is 0 and a Ctrl+U redraw still in flight is already
- * "more bytes, prompt-shaped", which would end the wait before the line ran.
- * Only running a line emits a newline.
- */
-export function awaitPromptAfter(t, tail0, label, timeoutMs = 15_000) {
-  return t.waitFor(
-    (b) => /\n/.test(t.buf.slice(tail0)) && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-    timeoutMs,
-    label,
-  );
-}
-
-/** Run `cmd` at the prompt (seeding history, say) and wait for the next one. */
-export async function execAndAwait(t, cmd) {
-  const tail0 = t.buf.length;
-  t.send(cmd + '\r');
-  await awaitPromptAfter(t, tail0, `prompt after ${cmd}`);
-}
-
-/**
  * Run one keybinding recipe.
  *
  * @param {string} probeLabel       — label for assertions
@@ -87,7 +65,7 @@ export async function runRecipes(probeLabel, cases) {
     // Execute the line.
     const tail0 = t.buf.length;
     t.send('\r');
-    await awaitPromptAfter(t, tail0, `prompt after recipe "${c.name}"`);
+    await t.waitForPrompt(15_000);
 
     // Extract the OUTPUT line. The buffer after the recipe contains:
     //   <command-echo-line>\r\n         e.g. "user@nimbus:~$ echo abX"

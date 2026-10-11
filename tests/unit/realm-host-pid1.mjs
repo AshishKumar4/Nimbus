@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // A process realm's host may itself be PID 1: Bun as a container's
 // entrypoint. The guest takes its host's PID at launch to notice the host
 // going away (it is reparented then); it refused PID 1, so in a container
@@ -7,7 +8,7 @@
 // so PID 1 needs no other watch.
 //
 // Run by bun, it runs itself as PID 1 of a new PID namespace (bubblewrap
-// --as-pid-1, as run-bounded uses) and opens a facet there. Under Bun a
+// --as-pid-1) and opens a facet there. Under Bun a
 // facet is a process realm, the transport this concerns.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -28,7 +29,7 @@ if (process.pid !== 1) {
   const { localFacetHost } = await import('../../packages/core/src/runtime/local-facet-host.ts');
   const { ISOLATE_NETWORK } = await import('../../packages/core/src/_shared/workspace-network.ts');
   const facet = localFacetHost(ISOLATE_NETWORK).open({ tag: 'pid1' });
-  assert.equal(await facet.submit(function answer() { return 41 + 1; }, null), 42);
+  assert.equal(await facet.submit(facetTaskSource("function answer() { return 41 + 1; }"), null), 42);
   await facet.dispose();
   console.log('ok - as PID 1');
 }

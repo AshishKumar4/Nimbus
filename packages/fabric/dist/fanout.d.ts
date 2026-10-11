@@ -17,8 +17,9 @@
  * install and runtime operations do not appear successful after partial
  * dispatch.
  */
-import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { type FacetTaskFn } from './isolate-pool.js';
+import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
+import { type HostRoute } from './composition.js';
 import type { WorkerLoader } from './vendor/types.js';
 /** The bindings a fan-out needs off the coordinator DO's env. The host
  *  namespace key is the composed one — whatever this host named its own
@@ -110,7 +111,7 @@ export interface FanoutOptions {
      */
     tag: string;
     /**
-     * Per-task timeout in ms. Default 60_000. Forwarded to the in-DO
+     * Per-task wall timeout in ms. Defaults to the fanout kind's call deadline. Forwarded to the in-DO
      * IsolatePool's submit calls and to the peer-DO RPC's own
      * IsolatePool.
      */
@@ -147,7 +148,7 @@ export interface FanoutOptions {
      * Invoking process pid, baked into each facet's SUPERVISOR binding so
      * filesystem RPCs (writeBatchStream) are authorized under the caller's
      * credential (mirrors IsolatePool's supervisorPid). Threaded to both
-     * the in-DO loader pool and, via `_rpcFanoutExecute`, the peer-DO pools.
+     * the in-DO loader pool and, via `executeFanoutShard`, the peer-DO pools.
      * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
      */
     supervisorPid?: number;
@@ -207,10 +208,10 @@ export declare class Fanout {
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as IsolatePool.submit. The function is serialized via
-     * the vendored serializeFunction (same as IsolatePool#prepare).
+     * as IsolatePool.submit. The precompiled task expression is forwarded
+     * unchanged on either route (same as IsolatePool#prepare).
      */
-    submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskFn<A, R>): Promise<R[]>;
+    submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskSource<A, R>): Promise<R[]>;
     /** The topology a task count would take against the headroom right now. */
     topologyFor(taskCount: number): FanoutTopology | 'empty';
     /**
@@ -224,6 +225,47 @@ export declare class Fanout {
     private _dispatchInDo;
     private _dispatchPeerDo;
 }
+/** What a coordinator sends each peer with its shard. */
+export interface FanoutShardOptions {
+    tag?: string;
+    timeoutMs?: number;
+    preamble?: string;
+    wasmModules?: Record<string, ArrayBuffer>;
+    extraBindings?: Record<string, unknown>;
+    omitSupervisor?: boolean;
+    /**
+     * INSTALL-HONESTY: full doId of the COORDINATOR (the DO that called
+     * submitMany). The peer's IsolatePool mints a SUPERVISOR binding that routes
+     * back to it rather than to the peer: without this, install-batch's
+     * writeBatchStream calls from inside a loader isolate land in the PEER's
+     * VFS, invisible to the user.
+     */
+    coordinatorDoId?: string;
+    /** The coordinator's route, minted into the binding with its doId. */
+    coordinatorRoute?: HostRoute;
+    /** Invoking process pid: the peer's facets write under the caller's credential (FanoutOptions.supervisorPid). */
+    supervisorPid?: number;
+    /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
+    network?: WorkspaceNetworkRef;
+}
+/**
+ * The peer end of a sharded submitMany: THIS Durable Object runs one
+ * IsolatePool over the shard it was handed and returns the per-task results.
+ *
+ * The coordinator's calls to its peers are Durable Object RPCs and spend none
+ * of its Dynamic Worker budget; each peer spends its own. The shard runs one
+ * IsolatePool as wide as this object's headroom allows (at least one slot — a
+ * peer has nowhere further to send it), claimed on the ledger while it runs.
+ * A throw bubbles back to the coordinator's dispatch, whose submitMany
+ * surfaces the first one.
+ *
+ * The fnSource string is forwarded verbatim into a fresh IsolatePool, which
+ * serializes it into the loader's worker code: no eval here, the same trust
+ * posture as every other IsolatePool dispatch.
+ */
+export declare function executeFanoutShard(env: unknown, ctx: DurableObjectState, fnSource: string, args: unknown[], opts?: FanoutShardOptions): Promise<{
+    results: unknown[];
+}>;
 /**
  * Stable hash → shard: the key's djb2 integer modulo peerCount.
  *

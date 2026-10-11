@@ -1,0 +1,269 @@
+// A repository built on disk by host git and mirrored into a SqliteVFS (its
+// .git included), each step run by host git there and by Nimbus's git here
+// (runGitCommand), then compared: the exit code, git's messages, the
+// worktree, the index (entries, stages, skip-worktree bits as read and as
+// written) and status. For worktree commands, whose results host git can
+// read back from a copy of the VFS.
+//
+// The mirror is the same repository to git: each file keeps its times, and
+// the index records our copies' stat where it recorded host git's files
+// (syncIndexStat), its own time kept. So a status or diff rewrites the index
+// on our side exactly when git's rewrites it on the host (what it refreshed,
+// or a racy index), and what such a rewrite persists, a present file's
+// cleared skip-worktree bit, is the same on both.
+
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
+import { runGitCommand } from '../../../packages/worker/src/git/commands.ts';
+import { DirCache } from '../../../packages/worker/src/git/worktree/dircache.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+
+export const GIT_ENV = {
+  PATH: process.env.PATH,
+  HOME: '/nonexistent',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0',
+  GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@example.com', GIT_AUTHOR_DATE: '1700000000 +0000',
+  GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@example.com', GIT_COMMITTER_DATE: '1700000000 +0000',
+  LC_ALL: 'C',
+  GIT_CEILING_DIRECTORIES: tmpdir(),
+};
+
+/** Host git in `cwd`. */
+export function realGit(cwd, args) {
+  const r = spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' });
+  if (r.error) throw r.error;
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+/** Host git commands that must succeed. */
+export function sh(cwd, ...commands) {
+  for (const args of commands) {
+    const r = realGit(cwd, args);
+    assert.equal(r.code, 0, `git ${args.join(' ')}: ${r.stderr}`);
+  }
+}
+
+/** A worktree as a sorted list: each path (but .git), its kind and contents. */
+export function worktreeOf(dir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const name of readdirSync(join(dir, rel)).sort()) {
+      if (rel === '' && name === '.git') continue;
+      const path = rel ? `${rel}/${name}` : name;
+      const st = lstatSync(join(dir, path));
+      if (st.isSymbolicLink()) out.push([path, 'link', readlinkSync(join(dir, path))]);
+      else if (st.isDirectory()) { out.push([path, 'dir']); walk(path); }
+      else out.push([path, 'file', readFileSync(join(dir, path), 'utf8')]);
+    }
+  };
+  walk('');
+  return out;
+}
+
+/** What git prints on stderr that this git prints on stdout, or not at all: the branch a checkout is on. */
+export const branchNotes = (text) => text.split('\n').filter((line) => !/^(Switched to|Already on|HEAD is now at)/.test(line)).join('\n');
+
+/** A scratch directory and a session's VFS, as the session user, for one test file. */
+export function createMirror(label) {
+  // Its real path: git names the worktree by it.
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), `nimbus-${label}-`)));
+  process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  vfs.as(CRED_KERNEL).mkdir('home/user', { recursive: true, mode: 0o755 });
+  vfs.as(CRED_KERNEL).chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const user = vfs.as(CRED_SESSION_USER);
+  const files = new ProcessFiles(vfs);
+  const counts = { checks: 0, copies: 0 };
+
+  /** Copy a disk tree (its .git included) into the VFS at `to`, modes and times and all. */
+  const mirror = (from, to) => {
+    user.mkdir(to, { recursive: true });
+    for (const name of readdirSync(from)) {
+      const src = join(from, name);
+      const dst = `${to}/${name}`;
+      const st = lstatSync(src);
+      if (st.isDirectory()) {
+        mirror(src, dst);
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        user.symlink(readlinkSync(src), dst);
+      } else {
+        user.writeFile(dst, new Uint8Array(readFileSync(src)));
+        user.chmod(dst, st.mode & 0o777);
+      }
+      user.utimes(dst, st.atimeMs, st.mtimeMs, { followSymlinks: false });
+    }
+  };
+
+  /** A tracked path's content as git hashes it: a file's bytes, a link's target. */
+  const contentId = (path) => {
+    const st = user.lstat(path);
+    const bytes = st.type === 'symlink' ? new TextEncoder().encode(user.readlink(path)) : user.readFile(path);
+    return createHash('sha1').update(`blob ${bytes.byteLength}\0`).update(bytes).digest('hex');
+  };
+
+  /**
+   * The mirrored index of the repository at `repo` (a VFS path) made to
+   * describe our copies: each tracked file there with the index's content
+   * takes our copy's stat as our git reads it (the process view's), as git's
+   * refresh_index records a file it proved clean. Our copies are new files
+   * to the VFS, their inodes and change times its own; without this our
+   * first status or diff would refresh, and rewrite, an index git's left
+   * alone. Nothing else changes, the skip-worktree bits as written included,
+   * and the index keeps host git's time.
+   */
+  const syncIndexStat = async (repo) => {
+    const index = `${repo}/.git/index`;
+    if (!user.exists(index)) return;
+    const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
+    const { atime, mtime } = user.lstat(index);
+    const dc = DirCache.parse(user.readFile(index), 0);
+    for (let i = 0; i < dc.count; i++) {
+      if (dc.stage(i) !== 0 || dc.skipWorktree(i)) continue;
+      const path = `${repo}/${dc.path(i)}`;
+      const st = await view.stat(path, { follow: false });
+      if (st === null || st.type === 'directory' || contentId(path) !== dc.oid(i)) continue;
+      dc.refresh(i, { ctimeMs: st.ctimeMs, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid, size: st.size });
+    }
+    user.writeFile(index, dc.encode());
+    user.utimes(index, atime, mtime);
+  };
+
+  /** Copy a VFS tree (its .git included) back to disk, links as links. */
+  const copyOut = (from, to) => {
+    mkdirSync(to, { recursive: true });
+    for (const { name, type } of user.readdir(from)) {
+      const src = `${from}/${name}`;
+      const dst = join(to, name);
+      if (type === 'directory') copyOut(src, dst);
+      else if (type === 'symlink') symlinkSync(user.readlink(src), dst);
+      else {
+        writeFileSync(dst, user.readFile(src));
+        chmodSync(dst, user.lstat(src).mode & 0o777);
+      }
+    }
+  };
+
+  /**
+   * `beforeWrite(path)`: awaited before each whole-file write the command makes (a gate).
+   * @param {string} cwd
+   * @param {string[]} args
+   * @param {{ beforeWrite?: (path: string) => Promise<void> }} [options]
+   */
+  const nimbusGit = async (cwd, args, { beforeWrite } = {}) => {
+    let stdout = '';
+    let stderr = '';
+    const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
+    if (beforeWrite) {
+      const write = view.writeFile.bind(view);
+      view.writeFile = async (path, ...rest) => { await beforeWrite(path); return await write(path, ...rest); };
+    }
+    const code = await runGitCommand({
+      pid: 1,
+      // Its stop, never given here.
+      signal: new AbortController().signal,
+      cred: CRED_SESSION_USER,
+      args,
+      cwd,
+      env: { USER: 'a', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@example.com', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@example.com' },
+      stdout: { write(s) { stdout += s; }, writeBytes(bytes) { stdout += Buffer.from(bytes).toString('utf8'); } },
+      stderr: { write(s) { stderr += s; } },
+      vfs: view,
+    }, vfs);
+    return { code, stdout, stderr };
+  };
+
+  /** One repository, on disk for host git and in the VFS for ours, each step run in both (made by Pair.of). */
+  class Pair {
+    constructor(name, disk) {
+      this.name = name;
+      this.disk = disk;
+      this.virtual = `/home/user/${name}`;
+      mirror(disk, this.virtual);
+    }
+
+    /**
+     * The repository at `disk`, mirrored, its index made to describe our
+     * copies (syncIndexStat) before the caller touches either side.
+     */
+    static async of(name, disk) {
+      const pair = new Pair(name, disk);
+      await syncIndexStat(pair.virtual);
+      return pair;
+    }
+
+    /**
+     * `args` in both, in the repository or `sub` below it, `{root}` in an
+     * argument each one's own top: the same exit code; git's stderr (but what
+     * `branchNotes` drops, its top named as ours), and stdout, where asked.
+     */
+    async run(args, { stderr = true, stdout = false, sub = '' } = {}) {
+      const label = `${this.name}: git ${args.join(' ')}`;
+      const host = realGit(sub ? join(this.disk, sub) : this.disk, args.map((arg) => arg.replaceAll('{root}', this.disk)));
+      const ours = await nimbusGit(sub ? `${this.virtual}/${sub}` : this.virtual, args.map((arg) => arg.replaceAll('{root}', this.virtual)));
+      assert.equal(ours.code, host.code, `${label}: exit code (ours: ${ours.stderr}; git's: ${host.stderr})`);
+      if (stderr) assert.equal(branchNotes(ours.stderr), branchNotes(host.stderr.replaceAll(this.disk, this.virtual)), `${label}: stderr`);
+      if (stdout) assert.equal(ours.stdout, host.stdout, `${label}: stdout`);
+      counts.checks++;
+      return ours;
+    }
+
+    /** A file written (or removed, `text` null) in both worktrees. */
+    write(path, text) {
+      const disk = join(this.disk, path);
+      const virtual = `${this.virtual}/${path}`;
+      if (text === null) {
+        rmSync(disk, { force: true });
+        if (user.exists(virtual)) user.unlink(virtual);
+        return;
+      }
+      mkdirSync(join(disk, '..'), { recursive: true });
+      writeFileSync(disk, text);
+      user.mkdir(virtual.slice(0, virtual.lastIndexOf('/')), { recursive: true });
+      user.writeFile(virtual, new TextEncoder().encode(text));
+    }
+
+    /** A file's times set, in both worktrees, to `seconds` since the epoch. */
+    touch(path, seconds) {
+      utimesSync(join(this.disk, path), seconds, seconds);
+      user.utimes(`${this.virtual}/${path}`, seconds * 1000, seconds * 1000);
+    }
+
+    /** Ours copied out to disk, for host git to read. */
+    copy() {
+      const ours = join(scratch, `ours-${this.name}-${counts.copies++}`);
+      copyOut(this.virtual, ours);
+      return ours;
+    }
+
+    /** The same worktree and index: entries, stages and skip-worktree bits, as read and as written. */
+    same(step) {
+      const label = `${this.name}: after ${step}`;
+      const ours = this.copy();
+      assert.deepEqual(worktreeOf(ours), worktreeOf(this.disk), `${label}: the worktree`);
+      for (const args of [['ls-files', '-s', '-t'], ['-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t'], ['status', '--porcelain']]) {
+        assert.equal(realGit(ours, args).stdout, realGit(this.disk, args).stdout, `${label}: git ${args.join(' ')}`);
+      }
+      counts.checks++;
+      return ours;
+    }
+  }
+
+  return { scratch, user, nimbusGit, Pair, counts };
+}

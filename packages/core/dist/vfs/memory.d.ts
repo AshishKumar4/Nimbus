@@ -9,6 +9,8 @@
 import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
 export declare class MemoryVFS implements VFS {
     private readonly owner;
+    /** VFS.storesWrites: a regular file holds what it was written. */
+    readonly storesWrites = true;
     private readonly root;
     private clock;
     readonly sync: SyncVFS;
