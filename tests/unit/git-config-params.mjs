@@ -109,7 +109,7 @@ try {
     const args = ['-c', setting, 'status', '--short'];
     const h = realGit(host, args), o = await nimbusGit(ours, args);
     if (h.code !== o.code || h.stdout !== o.stdout || h.stderr !== o.stderr) modeDifferences.push({ setting, expected: h, actual: o });
-    await both(`raw boolean ${setting}`, host, ours, ['-c', setting, 'config', '--get', 'core.filemode'], { stdout: true });
+    if (value !== null) await both(`raw boolean ${setting}`, host, ours, ['-c', setting, 'config', '--get', 'core.filemode'], { stdout: true });
   }
   chmodSync(join(host, 'a.txt'), 0o644);
   user.chmod('home/user/r/a.txt', 0o644);

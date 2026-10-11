@@ -47,11 +47,6 @@ assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 503 }, n
   "fatal: unable to access 'https://h/r/': The requested URL returned error: 503\n");
 assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 403, message: 'use https://x:hunter2@h/r or TOKEN-9\n' }, { username: '', password: true }, ['TOKEN-9']),
   "remote: use https://h/r or <redacted>\nfatal: unable to access 'https://h/r/': The requested URL returned error: 403\n", 'credentials a server echoes are not printed');
-for (const failure of [{ kind: 'status', status: 403 }, { kind: 'status', status: 401 }, { kind: 'status', status: 404 }, { kind: 'transport', detail: 'unreachable' }]) {
-  const message = remoteFailureText('https://h/TOKEN-9/r.git?access_token=TOKEN-9', failure, { username: '', password: true }, ['TOKEN-9']);
-  assert.doesNotMatch(message, /TOKEN-9/, 'known secrets in the destination path/query are not printed');
-  assert.match(message, /<redacted>/);
-}
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 /** A server answering each repository's discovery with a failure. */
@@ -233,3 +228,8 @@ try {
   rmSync(work, { recursive: true, force: true });
 }
 console.log('git-remote-failure: ok');
+for (const failure of [{ kind: 'status', status: 403 }, { kind: 'status', status: 401 }, { kind: 'status', status: 404 }, { kind: 'transport', detail: 'unreachable' }]) {
+  const message = remoteFailureText('https://h/TOKEN-9/r.git?access_token=TOKEN-9', failure, { username: '', password: true }, ['TOKEN-9']);
+  assert.doesNotMatch(message, /TOKEN-9/, 'known secrets in the destination path/query are not printed');
+  assert.match(message, /<redacted>/);
+}
