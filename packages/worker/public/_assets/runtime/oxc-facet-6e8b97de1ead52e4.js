@@ -602,7 +602,7 @@ ${val.stack}`;
   };
   function jsoncToJson(text, dialect) {
     const lineEnd2 = LINE_END[dialect];
-    const blank2 = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
+    const blank = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
     const source = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
     let out = "";
     for (let i = 0; i < source.length; i++) {
@@ -614,13 +614,13 @@ ${val.stack}`;
       } else if (c === "/" && source[i + 1] === "/") {
         let end = i;
         while (end < source.length && !lineEnd2.test(source[end])) end++;
-        out += blank2(source.slice(i, end));
+        out += blank(source.slice(i, end));
         i = end - 1;
       } else if (c === "/" && source[i + 1] === "*") {
         const close = source.indexOf("*/", i + 2);
         if (close < 0 && dialect === "esbuild") throw new Error('Expected "*/" to terminate multi-line comment');
         const end = close < 0 ? source.length : close + 2;
-        out += blank2(source.slice(i, end));
+        out += blank(source.slice(i, end));
         i = end - 1;
       } else {
         out += dialect === "esbuild" && lineEnd2.test(c) ? "\n" : c;
@@ -1666,8 +1666,8 @@ error: the Oxc transform crashed (${reason})`);
       node.body.push(stmt);
     }
     if (this.inModule) {
-      for (var i = 0, list2 = Object.keys(this.undefinedExports); i < list2.length; i += 1) {
-        var name = list2[i];
+      for (var i = 0, list = Object.keys(this.undefinedExports); i < list.length; i += 1) {
+        var name = list[i];
         this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
       }
     }
@@ -2134,8 +2134,8 @@ error: the Oxc transform crashed (${reason})`);
     return this.finishNode(node, "EmptyStatement");
   };
   pp$8.parseLabeledStatement = function(node, maybeName, expr, context) {
-    for (var i$1 = 0, list2 = this.labels; i$1 < list2.length; i$1 += 1) {
-      var label = list2[i$1];
+    for (var i$1 = 0, list = this.labels; i$1 < list.length; i$1 += 1) {
+      var label = list[i$1];
       if (label.name === maybeName) {
         this.raise(expr.start, "Label '" + maybeName + "' is already declared");
       }
@@ -2559,8 +2559,8 @@ error: the Oxc transform crashed (${reason})`);
           node.attributes = this.parseWithClause();
         }
       } else {
-        for (var i = 0, list2 = node.specifiers; i < list2.length; i += 1) {
-          var spec = list2[i];
+        for (var i = 0, list = node.specifiers; i < list.length; i += 1) {
+          var spec = list[i];
           this.checkUnreserved(spec.local);
           this.checkLocalExport(spec.local);
           if (spec.local.type === "Literal") {
@@ -2614,8 +2614,8 @@ error: the Oxc transform crashed (${reason})`);
     if (type === "Identifier") {
       this.checkExport(exports, pat, pat.start);
     } else if (type === "ObjectPattern") {
-      for (var i = 0, list2 = pat.properties; i < list2.length; i += 1) {
-        var prop = list2[i];
+      for (var i = 0, list = pat.properties; i < list.length; i += 1) {
+        var prop = list[i];
         this.checkPatternExport(exports, prop);
       }
     } else if (type === "ArrayPattern") {
@@ -2637,8 +2637,8 @@ error: the Oxc transform crashed (${reason})`);
     if (!exports) {
       return;
     }
-    for (var i = 0, list2 = decls; i < list2.length; i += 1) {
-      var decl = list2[i];
+    for (var i = 0, list = decls; i < list.length; i += 1) {
+      var decl = list[i];
       this.checkPatternExport(exports, decl.id);
     }
   };
@@ -2815,8 +2815,8 @@ error: the Oxc transform crashed (${reason})`);
           if (refDestructuringErrors) {
             this.checkPatternErrors(refDestructuringErrors, true);
           }
-          for (var i = 0, list2 = node.properties; i < list2.length; i += 1) {
-            var prop = list2[i];
+          for (var i = 0, list = node.properties; i < list.length; i += 1) {
+            var prop = list[i];
             this.toAssignable(prop, isBinding);
             if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
               this.raise(prop.argument.start, "Unexpected token");
@@ -3003,8 +3003,8 @@ error: the Oxc transform crashed (${reason})`);
     if (bindingType === void 0) bindingType = BIND_NONE;
     switch (expr.type) {
       case "ObjectPattern":
-        for (var i = 0, list2 = expr.properties; i < list2.length; i += 1) {
-          var prop = list2[i];
+        for (var i = 0, list = expr.properties; i < list.length; i += 1) {
+          var prop = list[i];
           this.checkLValInnerPattern(prop, bindingType, checkClashes);
         }
         break;
@@ -4084,8 +4084,8 @@ error: the Oxc transform crashed (${reason})`);
     this.exitScope();
   };
   pp$5.isSimpleParamList = function(params) {
-    for (var i = 0, list2 = params; i < list2.length; i += 1) {
-      var param = list2[i];
+    for (var i = 0, list = params; i < list.length; i += 1) {
+      var param = list[i];
       if (param.type !== "Identifier") {
         return false;
       }
@@ -4094,8 +4094,8 @@ error: the Oxc transform crashed (${reason})`);
   };
   pp$5.checkParams = function(node, allowDuplicates) {
     var nameHash =   Object.create(null);
-    for (var i = 0, list2 = node.params; i < list2.length; i += 1) {
-      var param = list2[i];
+    for (var i = 0, list = node.params; i < list.length; i += 1) {
+      var param = list[i];
       this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
     }
   };
@@ -4422,13 +4422,13 @@ error: the Oxc transform crashed (${reason})`);
     d.nonBinary.sc = d.nonBinary.Script;
     d.nonBinary.scx = d.nonBinary.Script_Extensions;
   }
-  for (i = 0, list2 = [9, 10, 11, 12, 13, 14]; i < list2.length; i += 1) {
-    ecmaVersion = list2[i];
+  for (i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
+    ecmaVersion = list[i];
     buildUnicodeData(ecmaVersion);
   }
   var ecmaVersion;
   var i;
-  var list2;
+  var list;
   var pp$1 = Parser.prototype;
   var BranchID = function BranchID2(parent, base) {
     this.parent = parent;
@@ -4536,8 +4536,8 @@ error: the Oxc transform crashed (${reason})`);
   RegExpValidationState.prototype.eatChars = function eatChars(chs, forceU) {
     if (forceU === void 0) forceU = false;
     var pos = this.pos;
-    for (var i = 0, list2 = chs; i < list2.length; i += 1) {
-      var ch = list2[i];
+    for (var i = 0, list = chs; i < list.length; i += 1) {
+      var ch = list[i];
       var current2 = this.at(pos, forceU);
       if (current2 === -1 || current2 !== ch) {
         return false;
@@ -4612,8 +4612,8 @@ error: the Oxc transform crashed (${reason})`);
     if (state.maxBackReference > state.numCapturingParens) {
       state.raise("Invalid escape");
     }
-    for (var i = 0, list2 = state.backReferenceNames; i < list2.length; i += 1) {
-      var name = list2[i];
+    for (var i = 0, list = state.backReferenceNames; i < list.length; i += 1) {
+      var name = list[i];
       if (!state.groupNames[name]) {
         state.raise("Invalid named capture referenced");
       }
@@ -4912,8 +4912,8 @@ error: the Oxc transform crashed (${reason})`);
       var known = state.groupNames[state.lastStringValue];
       if (known) {
         if (trackDisjunction) {
-          for (var i = 0, list2 = known; i < list2.length; i += 1) {
-            var altID = list2[i];
+          for (var i = 0, list = known; i < list.length; i += 1) {
+            var altID = list[i];
             if (!altID.separatedFrom(state.branchID)) {
               state.raise("Duplicate capture group name");
             }
@@ -6642,11 +6642,11 @@ error: the Oxc transform crashed (${reason})`);
   function templateAwaitAt(holding, at2) {
     const index = holding.findIndex((node) => node.type === "AwaitExpression" && node.start < at2);
     if (index === -1) return false;
-    let child2 = holding[index];
+    let child = holding[index];
     for (const parent of holding.slice(index + 1)) {
-      const continues = parent.type === "BinaryExpression" || parent.type === "LogicalExpression" || parent.type === "SequenceExpression" || parent.type === "UnaryExpression" || parent.type === "AssignmentExpression" && parent.right === child2 || parent.type === "ConditionalExpression" && parent.consequent !== child2;
+      const continues = parent.type === "BinaryExpression" || parent.type === "LogicalExpression" || parent.type === "SequenceExpression" || parent.type === "UnaryExpression" || parent.type === "AssignmentExpression" && parent.right === child || parent.type === "ConditionalExpression" && parent.consequent !== child;
       if (!continues) return parent.type === "TemplateLiteral";
-      child2 = parent;
+      child = parent;
     }
     return false;
   }
@@ -9527,60 +9527,64 @@ error: the Oxc transform crashed (${reason})`);
   function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
   }
+  var STATIC_IMPORT = 1;
   var DYNAMIC_IMPORT = 2;
   var IMPORT_META = 3;
-  var METADATA_BINDING = "__nimbusMetadataModule";
-  var IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
   var RETAINED_LEXER_CHARS = 256 * 1024;
   var moduleLexer = null;
-  function lexImports(source) {
+  function lexModule(source) {
     const lex = moduleLexer ??= createModuleLexer();
     if (source.length > RETAINED_LEXER_CHARS) moduleLexer = null;
-    return lex(source)[0];
+    return lex(source);
   }
   function isLexerError(error) {
     return error instanceof Error && typeof Reflect.get(error, "idx") === "number";
   }
-  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true, loader = DYNAMIC_IMPORT_HELPER) {
-    const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
-    const imports = routeImports && mayHaveDynamicImport(code);
-    if (!imports && !metadata) return code;
+  function rewriteDynamicImports(code, parentUrl, loader = DYNAMIC_IMPORT_HELPER) {
+    if (!mayHaveDynamicImport(code)) return code;
     let lexed;
     try {
-      lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl), metadata, imports);
+      lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl));
     } catch (error) {
       if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
       lexed = null;
     }
-    return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl), metadata, imports);
+    return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl));
   }
   function loaderCall(loader, parentUrl) {
     return loader + "(" + JSON.stringify(parentUrl) + ", ";
   }
-  function rewriteFromLexer(code, call, metadata, imports) {
+  function lexedImportSites(code) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
-    const lexed = lexImports(source);
+    const lexing = lexModule(source);
+    const lexed = lexing[0];
     const lines = new Lines(source);
     const passed = passedOver(source, lexed, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
     if (passed === null) return null;
-    const calls = [];
+    const sites = [];
     const metas = [];
+    const statics = [];
     for (const entry of lexed) {
-      if (entry.t === DYNAMIC_IMPORT) calls.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
-      else if (metadata && entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
+      if (entry.t === DYNAMIC_IMPORT) sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
+      else if (entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
+      else if (entry.t === STATIC_IMPORT) {
+        if (entry.n === void 0) return null;
+        statics.push({ start: entry.s - 1, end: entry.e + 1, specifier: entry.n, attributes: Object.fromEntries(entry.at ?? []) });
+      } else {
+        return null;
+      }
     }
-    if (!imports) calls.length = 0;
-    for (const at2 of imports ? passed : []) {
+    for (const at2 of passed) {
       const open = skipTrivia(source, at2 + "import".length).at;
       const end = source[open] === "(" ? parenthesisEnd(source, open) : null;
       if (end === null) return null;
-      calls.push({ ss: at2, se: end, d: open, lexed: false });
+      sites.push({ ss: at2, se: end, d: open, lexed: false });
     }
-    calls.sort((a, b) => a.ss - b.ss);
-    const edits = [];
+    sites.sort((a, b) => a.ss - b.ss);
+    const calls = [];
     let validatedEnd = -1;
-    for (const site of calls) {
+    for (const site of sites) {
       if (site.ss >= validatedEnd) {
         const shape = callShape(source, site);
         if (shape === null) return null;
@@ -9588,12 +9592,49 @@ error: the Oxc transform crashed (${reason})`);
         if (!validImportArguments(source.slice(site.ss, site.se))) return null;
         validatedEnd = site.se;
       }
-      edits.push({ start: site.ss, end: site.d + 1, text: call });
+      calls.push({ start: site.ss, open: site.d });
     }
-    if (!edits.length && !metas.length) return code;
-    if (!metas.length) return applyEdits(code, edits, metas, null, 0, "");
-    const { insertion, separator } = afterDirectives(code);
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
+    return { calls, metas, statics, moduleSyntax: lexing[3] === true };
+  }
+  function rewriteFromLexer(code, call) {
+    const sites = lexedImportSites(code);
+    return sites === null ? null : applySourceEdits(code, sites.calls.map((site) => ({ start: site.start, end: site.open + 1, text: call })));
+  }
+  function readModuleImportSites(code) {
+    let lexed;
+    try {
+      lexed = lexedImportSites(code);
+    } catch (error) {
+      if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
+      lexed = null;
+    }
+    if (lexed !== null) return lexed;
+    const calls = [];
+    const metas = [];
+    const statics = [];
+    let declarations = false;
+    parseStatements(code, MODULE_PARSE_OPTIONS, {
+      onNode: (node) => {
+        if (node.type === "ImportExpression") calls.push({ start: node.start, open: skipTrivia(code, node.start + "import".length).at });
+        else if (node.type === "MetaProperty" && node.meta.name === "import") metas.push({ start: node.start, end: node.end });
+      },
+      onStatement: (statement) => {
+        if (statement.type === "ExportDefaultDeclaration") declarations = true;
+        if (statement.type !== "ImportDeclaration" && statement.type !== "ExportAllDeclaration" && statement.type !== "ExportNamedDeclaration") return;
+        declarations = true;
+        const source = statement.source;
+        if (!source || typeof source.value !== "string") return;
+        const attributes = {};
+        for (const attribute of statement.attributes ?? []) {
+          const key = attribute.key.type === "Identifier" ? attribute.key.name : String(attribute.key.value);
+          if (typeof attribute.value.value === "string") attributes[key] = attribute.value.value;
+        }
+        statics.push({ start: source.start, end: source.end, specifier: source.value, attributes });
+      }
+    });
+    calls.sort((a, b) => a.start - b.start);
+    metas.sort((a, b) => a.start - b.start);
+    return { calls, metas, statics, moduleSyntax: declarations || metas.length > 0 };
   }
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
@@ -9613,7 +9654,7 @@ error: the Oxc transform crashed (${reason})`);
     }
     parts.push(source.slice(from));
     const code =   new Set();
-    for (const entry of lexImports(parts.join(""))) if (entry.t === IMPORT_META) code.add(entry.s);
+    for (const entry of lexModule(parts.join(""))[0]) if (entry.t === IMPORT_META) code.add(entry.s);
     const passed = [];
     for (const [index, { at: at2, call }] of marks.entries()) {
       if (!code.has(at2 + index * CODE_MARK.length + 1)) continue;
@@ -9642,8 +9683,6 @@ error: the Oxc transform crashed (${reason})`);
   }
   var PARSE_STATEMENT = Reflect.get(Parser.prototype, "parseStatement");
   var PARSE_DYNAMIC_IMPORT = Reflect.get(Parser.prototype, "parseDynamicImport");
-  var PARSE_IMPORT_META = Reflect.get(Parser.prototype, "parseImportMeta");
-  var PARSE_IDENT = Reflect.get(Parser.prototype, "parseIdent");
   var FINISH_NODE = Reflect.get(Parser.prototype, "finishNode");
   function produce(production, parser, args) {
     if (typeof production !== "function") throw new TypeError("acorn has no such production");
@@ -9701,57 +9740,6 @@ error: the Oxc transform crashed (${reason})`);
     }
     return false;
   }
-  function escapedCaptureNames(code) {
-    const names =   new Set();
-    for (let at2 = code.indexOf("\\u"); at2 !== -1; at2 = code.indexOf("\\u", at2)) {
-      let start = at2;
-      while (start > 0 && IDENTIFIER_PART.test(code[start - 1])) start--;
-      let end = at2;
-      while (end < code.length) {
-        if (code[end] === "\\" && code[end + 1] === "u") {
-          const close = code[end + 2] === "{" ? code.indexOf("}", end + 3) : end + 5;
-          if (close < 0 || close > end + 9) break;
-          end = close + 1;
-        } else if (IDENTIFIER_PART.test(code[end])) {
-          end++;
-        } else {
-          break;
-        }
-      }
-      try {
-        const token = tokenizer2(code.slice(start, end), { ecmaVersion: "latest" }).getToken();
-        const value = Reflect.get(token, "value");
-        if (token.type === types$1.name && typeof value === "string" && value.startsWith(METADATA_BINDING)) names.add(value);
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-      }
-      at2 = Math.max(at2 + 2, end);
-    }
-    return names;
-  }
-  function afterDirectives(code) {
-    const tokens = tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true });
-    let token = tokens.getToken();
-    let insertion = token.start;
-    let separator = "";
-    while (token.type === types$1.string) {
-      const expression = parseExpressionAt2(code, token.start, { ecmaVersion: "latest", sourceType: "script" });
-      if (expression.type !== "Literal" || typeof Reflect.get(expression, "value") !== "string") break;
-      do {
-        token = tokens.getToken();
-      } while (token.start < expression.end);
-      if (token.type === types$1.semi) {
-        insertion = token.end;
-        separator = "";
-        token = tokens.getToken();
-        continue;
-      }
-      if (token.type !== types$1.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
-      insertion = expression.end;
-      separator = ";";
-    }
-    return { insertion, separator };
-  }
   var ImportCollector = class extends Parser {
     constructor(options, input, collected) {
       super(options, input);
@@ -9773,33 +9761,12 @@ error: the Oxc transform crashed (${reason})`);
       return { type: "EmptyStatement", start: node.start, end: node.end };
     }
   };
-  var MetadataCollector = class extends ImportCollector {
-    parseImportMeta(node) {
-      const parsed = produce(PARSE_IMPORT_META, this, [node]);
-      this.collected.metas.push({ start: node.start, end: node.end });
-      return parsed;
-    }
-    parseIdent(liberal) {
-      const node = produce(PARSE_IDENT, this, [liberal]);
-      if (node.type === "Identifier") this.collected.names?.add(node.name);
-      return node;
-    }
-  };
-  function rewriteWithGrammar(code, call, metadata, imports) {
-    const collected = {
-      call,
-      edits: [],
-      metas: [],
-      names: metadata ?   new Set() : null
-    };
-    const Collector = metadata ? MetadataCollector : ImportCollector;
-    for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
+  function rewriteWithGrammar(code, call) {
+    const collected = { call, edits: [] };
+    for (const sourceType of ["script", "module"]) {
       collected.edits.length = 0;
-      collected.metas.length = 0;
-      collected.names?.clear();
-      let program;
       try {
-        program = new Collector({
+        new ImportCollector({
           ecmaVersion: "latest",
           sourceType,
           allowReturnOutsideFunction: true,
@@ -9809,704 +9776,9 @@ error: the Oxc transform crashed (${reason})`);
       } catch {
         continue;
       }
-      if (!imports) collected.edits.length = 0;
-      if (!collected.edits.length && !collected.metas.length) return code;
-      let insertion = program.body[0]?.start ?? code.length;
-      let separator = "";
-      for (const statement of program.body) {
-        if (typeof Reflect.get(statement, "directive") !== "string") break;
-        insertion = statement.end;
-        separator = code[statement.end - 1] === ";" ? "" : ";";
-      }
-      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
+      return collected.edits.length ? applySourceEdits(code, collected.edits) : code;
     }
     return code;
-  }
-  function applyEdits(code, edits, metas, names, insertion, separator) {
-    if (metas.length) {
-      let binding = METADATA_BINDING;
-      while (code.includes(binding) || names?.has(binding)) binding += "_";
-      for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-      edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
-    }
-    return applySourceEdits(code, edits);
-  }
-
-  function bindingIdentifiers(pattern, out) {
-    if (pattern === null) return out;
-    switch (pattern.type) {
-      case "Identifier":
-        out[out.length] = pattern;
-        return out;
-      case "ObjectPattern":
-        for (let i = 0; i < pattern.properties.length; i++) {
-          const property = pattern.properties[i];
-          bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
-        }
-        return out;
-      case "ArrayPattern":
-        for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
-        return out;
-      case "RestElement":
-        return bindingIdentifiers(pattern.argument, out);
-      case "AssignmentPattern":
-        return bindingIdentifiers(pattern.left, out);
-      default:
-        return out;
-    }
-  }
-
-  var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
-  var ESM_INTEROP_HELPER = "(m) => m && m.__esModule ? m : { default: m }";
-  var ESM_NAMESPACE_HELPER = '(m) => { if (m && m.__esModule) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }';
-  var ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
-  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER} }`;
-  function exportName(node) {
-    return node.type === "Identifier" ? node.name : `${node.value}`;
-  }
-  function esmRecord(node, lists) {
-    switch (node.type) {
-      case "ImportDeclaration": {
-        const bindings = lists.list();
-        for (let i = 0; i < node.specifiers.length; i++) {
-          const specifier = node.specifiers[i];
-          lists.push(bindings, specifier.type === "ImportNamespaceSpecifier" ? { kind: "namespace", local: specifier.local.name } : {
-            kind: "named",
-            local: specifier.local.name,
-            imported: specifier.type === "ImportDefaultSpecifier" ? "default" : exportName(specifier.imported)
-          });
-        }
-        return { kind: "import", start: node.start, end: node.end, source: `${node.source.value}`, bindings };
-      }
-      case "ExportNamedDeclaration": {
-        const names = lists.list();
-        const declaration = node.declaration;
-        if (declaration) {
-          if (declaration.type === "VariableDeclaration") {
-            const ids = lists.list();
-            for (let i = 0; i < declaration.declarations.length; i++) bindingIdentifiers(declaration.declarations[i].id, ids);
-            for (let i = 0; i < ids.length; i++) lists.push(names, { kind: "named", exported: ids[i].name, local: ids[i].name });
-          } else {
-            lists.push(names, { kind: "named", exported: declaration.id.name, local: declaration.id.name });
-          }
-          return { kind: "export", start: node.start, end: declaration.start, source: null, names };
-        }
-        for (let i = 0; i < node.specifiers.length; i++) {
-          const specifier = node.specifiers[i];
-          lists.push(names, { kind: "named", exported: exportName(specifier.exported), local: exportName(specifier.local) });
-        }
-        return { kind: "export", start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, names };
-      }
-      case "ExportDefaultDeclaration": {
-        const declaration = node.declaration;
-        if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
-          const names = lists.list();
-          lists.push(names, { kind: "named", exported: "default", local: declaration.id.name });
-          return { kind: "export", start: node.start, end: declaration.start, source: null, names };
-        }
-        return { kind: "export-default", start: node.start, end: node.end, expression: { start: declaration.start, end: declaration.end } };
-      }
-      case "ExportAllDeclaration": {
-        if (node.exported) {
-          const names = lists.list();
-          lists.push(names, { kind: "namespace", exported: exportName(node.exported) });
-          return { kind: "export", start: node.start, end: node.end, source: `${node.source.value}`, names };
-        }
-        return { kind: "export-all", start: node.start, end: node.end, source: `${node.source.value}` };
-      }
-      default:
-        return null;
-    }
-  }
-  function esmLink(records, lists) {
-    const exports = lists.list();
-    const requests = lists.list();
-    const namespaces = lists.list();
-    const stars = lists.list();
-    const none = lists.list();
-    const request = (source, kept, interop, bindings) => {
-      lists.push(requests, { source, kept, interop, bindings });
-      return requests.length - 1;
-    };
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
-      switch (record.kind) {
-        case "import": {
-          let interop = false;
-          for (let j = 0; j < record.bindings.length; j++) {
-            const binding = record.bindings[j];
-            if (binding.kind === "named" && binding.imported === "default") interop = true;
-          }
-          const at2 = request(record.source, record.bindings.length > 0, interop, record.bindings);
-          for (let j = 0; j < record.bindings.length; j++) {
-            const binding = record.bindings[j];
-            if (binding.kind === "namespace") lists.push(namespaces, { request: at2, local: binding.local });
-          }
-          break;
-        }
-        case "export": {
-          if (record.source === null) {
-            for (let j = 0; j < record.names.length; j++) {
-              const name = record.names[j];
-              if (name.kind === "named") lists.push(exports, { kind: "binding", exported: name.exported, local: name.local });
-            }
-            break;
-          }
-          const at2 = request(record.source, true, false, none);
-          for (let j = 0; j < record.names.length; j++) {
-            const name = record.names[j];
-            if (name.kind === "named") {
-              lists.push(exports, { kind: "reexport", exported: name.exported, request: at2, name: name.local });
-            } else {
-              lists.push(namespaces, { request: at2, local: null });
-              lists.push(exports, { kind: "namespace", exported: name.exported, namespace: namespaces.length - 1 });
-            }
-          }
-          break;
-        }
-        case "export-default":
-          lists.push(exports, { kind: "default", exported: "default" });
-          break;
-        case "export-all":
-          lists.push(stars, request(record.source, true, false, none));
-          break;
-      }
-    }
-    return { exports: byExportedName(exports, lists), requests, namespaces, stars };
-  }
-  function byExportedName(entries, lists) {
-    const n = entries.length;
-    let sorted = true;
-    for (let i = 1; i < n && sorted; i++) sorted = !(entries[i].exported < entries[i - 1].exported);
-    if (sorted) return entries;
-    let from = entries;
-    let to = lists.list();
-    for (let i = 0; i < n; i++) lists.push(to, entries[i]);
-    for (let width = 1; width < n; width *= 2) {
-      for (let low = 0; low < n; low += 2 * width) {
-        const middle = low + width < n ? low + width : n;
-        const high = low + 2 * width < n ? low + 2 * width : n;
-        let i = low;
-        let j = middle;
-        let k = low;
-        while (i < middle && j < high) to[k++] = from[j].exported < from[i].exported ? from[j++] : from[i++];
-        while (i < middle) to[k++] = from[i++];
-        while (j < high) to[k++] = from[j++];
-      }
-      const merged = to;
-      to = from;
-      from = merged;
-    }
-    return from;
-  }
-
-  function isNode(value) {
-    return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && "start" in value && typeof value.start === "number" && "end" in value && typeof value.end === "number";
-  }
-  function child(node, key) {
-    const value = node?.[key];
-    return isNode(value) ? value : null;
-  }
-  function list(node, key) {
-    const value = node?.[key];
-    return Array.isArray(value) ? value.filter(isNode) : [];
-  }
-  function stringOf(node, key) {
-    const value = node?.[key];
-    return typeof value === "string" ? value : null;
-  }
-  function patternNames(node) {
-    let binding = node;
-    while (binding !== null && (binding.type === "TSParameterProperty" || binding.type === "TSQualifiedName")) {
-      binding = child(binding, binding.type === "TSParameterProperty" ? "parameter" : "left");
-    }
-    return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
-  }
-  var FUNCTIONS =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
-  function programNames(statement) {
-    return [...varNames([statement], false), ...lexicalNames([statement])];
-  }
-  function* lexicalNames(statements) {
-    for (const statement of statements) {
-      const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? child(statement, "declaration") : statement;
-      if (node?.type === "VariableDeclaration" && node.kind !== "var") {
-        for (const declarator of list(node, "declarations")) yield* patternNames(child(declarator, "id"));
-      }
-      if (node?.type === "FunctionDeclaration" || node?.type === "ClassDeclaration") yield* patternNames(child(node, "id"));
-      if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
-    }
-  }
-  function varNames(value, sloppy, top = true, names = []) {
-    if (Array.isArray(value)) {
-      for (const item of value) varNames(item, sloppy, top, names);
-      return names;
-    }
-    if (!isNode(value)) return names;
-    if (value.type === "FunctionDeclaration" && sloppy && !top) names.push(...patternNames(child(value, "id")));
-    if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return names;
-    if (value.type === "VariableDeclaration" && value.kind === "var") {
-      for (const declarator of list(value, "declarations")) names.push(...patternNames(child(declarator, "id")));
-    }
-    for (const key in value) {
-      const field = value[key];
-      if (field !== null && typeof field === "object" && key !== "parent") varNames(field, sloppy, false, names);
-    }
-    return names;
-  }
-  function scopeOf(node, scope, sloppy, functionBody) {
-    const within = (names) => ({ names: new Set(names), parent: scope });
-    switch (node.type) {
-      case "Program":
-      case "StaticBlock":
-        return within([...varNames(list(node, "body"), sloppy), ...lexicalNames(list(node, "body"))]);
-      case "FunctionDeclaration":
-      case "FunctionExpression":
-      case "ArrowFunctionExpression":
-        return within([
-          ...node.type === "FunctionExpression" ? patternNames(child(node, "id")) : [],
-          ...node.type === "ArrowFunctionExpression" ? [] : ["arguments"],
-          ...list(node, "params").flatMap((parameter) => [...patternNames(parameter)])
-        ]);
-      case "BlockStatement":
-        return within([...functionBody ? varNames(list(node, "body"), sloppy) : [], ...lexicalNames(list(node, "body"))]);
-      case "SwitchStatement":
-        return within(lexicalNames(list(node, "cases").flatMap((c) => list(c, "consequent"))));
-      case "ForStatement":
-      case "ForInStatement":
-      case "ForOfStatement": {
-        const head = child(node, node.type === "ForStatement" ? "init" : "left");
-        return within(head?.type === "VariableDeclaration" && head.kind !== "var" ? list(head, "declarations").flatMap((declarator) => [...patternNames(child(declarator, "id"))]) : []);
-      }
-      case "CatchClause":
-        return within(patternNames(child(node, "param")));
-      case "ClassDeclaration":
-      case "ClassExpression":
-        return within(patternNames(child(node, "id")));
-      default:
-        return scope;
-    }
-  }
-  function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "", opaque) {
-    const stack = [[value, scope, functionBody, parent, key]];
-    while (stack.length > 0) {
-      const [item, at2, inBody, under, field] = stack.pop();
-      if (Array.isArray(item)) {
-        for (let i = item.length - 1; i >= 0; i--) stack.push([item[i], at2, false, under, field]);
-        continue;
-      }
-      if (!isNode(item)) continue;
-      yield [item, at2, under, field];
-      if (opaque?.(item)) continue;
-      const inner = scopeOf(item, at2, sloppy, inBody);
-      const isFunction = FUNCTIONS.has(item.type);
-      const fields = Object.keys(item);
-      for (let i = fields.length - 1; i >= 0; i--) {
-        const name = fields[i];
-        const child2 = item[name];
-        if (child2 === null || typeof child2 !== "object" || name === "parent") continue;
-        const fieldScope = item.type === "SwitchStatement" && name === "discriminant" ? at2 : inner;
-        stack.push([child2, fieldScope, isFunction && name === "body", item, name]);
-      }
-    }
-  }
-  function bindingScope(scope, name) {
-    for (let at2 = scope; at2; at2 = at2.parent) if (at2.names.has(name)) return at2;
-    return null;
-  }
-  function namesBinding(parent, key) {
-    switch (parent.type) {
-      case "MemberExpression":
-        return key !== "property" || parent.computed === true;
-      case "Property":
-      case "MethodDefinition":
-      case "PropertyDefinition":
-        return key !== "key" || parent.computed === true;
-      case "ImportAttribute":
-        return key !== "key";
-      case "LabeledStatement":
-      case "BreakStatement":
-      case "ContinueStatement":
-      case "MetaProperty":
-      case "ImportSpecifier":
-      case "ImportDefaultSpecifier":
-      case "ImportNamespaceSpecifier":
-      case "ExportSpecifier":
-      case "ExportAllDeclaration":
-        return false;
-      default:
-        return true;
-    }
-  }
-
-  function vfsPathExtension(path) {
-    const base = path.slice(path.lastIndexOf("/") + 1);
-    const dot = base.lastIndexOf(".");
-    return dot > 0 ? base.slice(dot) : "";
-  }
-
-  function typescriptLoader(path) {
-    const ext = vfsPathExtension(path);
-    if (ext === ".tsx") return "tsx";
-    return ext === ".ts" || ext === ".mts" || ext === ".cts" ? "ts" : null;
-  }
-  function isTypescriptDeclarationFile(path) {
-    return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf("/") + 1));
-  }
-  function stripsTypeScript(path) {
-    return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
-  }
-
-  function typeScriptFormat(path, packageType, stripped) {
-    if (!stripsTypeScript(path)) return null;
-    const ext = vfsPathExtension(path);
-    if (ext === ".mts") return "module";
-    if (ext === ".cts") return "commonjs";
-    const type = packageType();
-    if (type !== null) return type;
-    return containsModuleSyntax(stripped()) ? "module" : "commonjs";
-  }
-  var ES_MODULE_SCOPE_GLOBAL = "__nimbusEsmScope";
-  var ES_MODULE_UNBOUND_NAMES = Object.fromEntries(
-    [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`])
-  );
-  function esModuleSource(source) {
-    return source + "\nexport {};\n";
-  }
-
-  var ARRAYS = { list: () => [], push: (list2, value) => {
-    list2.push(value);
-  } };
-  function blank(text) {
-    return text.replace(/[^\n\r\u2028\u2029]/g, " ");
-  }
-  var GENERATED_NAME_PREFIX = "__nimbus_m";
-  function generatedNames(source, names = generatedLookingNames(source)) {
-    let count = 0;
-    return () => {
-      let name;
-      do
-        name = `${GENERATED_NAME_PREFIX}${count++}`;
-      while (names.has(name));
-      return name;
-    };
-  }
-  function generatedLookingNames(source) {
-    const names =   new Set();
-    try {
-      for (const token of tokenizer2(source, MODULE_PARSE_OPTIONS)) {
-        const value = Reflect.get(token, "value");
-        if (token.type === types$1.name && typeof value === "string" && value.startsWith(GENERATED_NAME_PREFIX)) names.add(value);
-      }
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-    }
-    return names;
-  }
-  function lowerAsyncModule(esm) {
-    return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
-  }
-  function lowerEsModule(source, scope, parentUrl) {
-    const module = esModuleSource(source);
-    const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = readEsmModule(module);
-    const unbound = [];
-    if (scope === "node") for (const [name, references] of wrapperUses) {
-      const to = ES_MODULE_UNBOUND_NAMES[name];
-      for (const { start, end: end2, use } of references) {
-        unbound.push({ start, end: end2, text: use === "typeof" ? "(void 0)" : use === "shorthand" ? `${name}: ${to}` : to });
-      }
-    }
-    const { code, head, end, columns } = emitModule(module, records, {
-      body: topLevelAwait ? "async" : "sync",
-      names: generatedNames(module, names),
-      exportsObject: "arguments[2].exports",
-      requireFunction: "arguments[1]",
-      edits: unbound,
-      bind: { metadata: "arguments[2].__nimbusImportMeta", parentUrl, metas, dynamicImports },
-      sourceLength: source.length
-    });
-    const map = { head, tail: code.length - end, columns };
-    return { code, map: JSON.stringify(map), warnings: [] };
-  }
-  function readEsmRecords(source) {
-    return readEsmModule(source).records;
-  }
-  function readEsmModule(source) {
-    const first = readModule(source, null);
-    const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-    const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = read;
-    return { records, wrapperUses, topLevelAwait, metas, dynamicImports, names };
-  }
-  function readModule(source, known) {
-    const imported = new Set(known ?? []);
-    const tracked =   new Set([...imported, ...COMMONJS_WRAPPER_NAMES]);
-    const declared =   new Set();
-    const records = [];
-    const uses =   new Map();
-    let code = false;
-    let importsAfterCode = false;
-    const awaits = [];
-    const statementStarts =   new Set();
-    const metas = [];
-    const dynamicImports = [];
-    const names =   new Set();
-    const outside = { names:   new Set(), parent: null };
-    const mentions = [];
-    const mentioned = (start, end) => {
-      let low = 0;
-      let high = mentions.length;
-      while (low < high) {
-        const middle = low + high >>> 1;
-        if (mentions[middle] < start) low = middle + 1;
-        else high = middle;
-      }
-      return low < mentions.length && mentions[low] < end;
-    };
-    const freeIn =   new WeakMap();
-    const freeUses = (root) => {
-      const own = freeIn.get(root);
-      if (own) return own;
-      const free = [];
-      if (!mentioned(root.start, root.end)) return free;
-      const patternProperties =   new Set();
-      for (const [node, scope, parent, key] of scoped(root, outside, false, false, null, "", (n) => n !== root && freeIn.has(n))) {
-        const inner = node === root ? void 0 : freeIn.get(node);
-        if (inner) {
-          for (const use of inner) if (bindingScope(scope, use.name) === null) free.push(use);
-          continue;
-        }
-        if (node.type === "ObjectPattern") for (const property of list(node, "properties")) patternProperties.add(property);
-        const name = node.type === "Identifier" ? stringOf(node, "name") : null;
-        if (name === null || !tracked.has(name) || parent === null || !namesBinding(parent, key)) continue;
-        if (bindingScope(scope, name) !== null) continue;
-        free.push({ name, start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
-      }
-      return free;
-    };
-    const onIdentifier = (identifier) => {
-      const name = stringOf(identifier, "name");
-      if (name === null) return;
-      if (name.startsWith(GENERATED_NAME_PREFIX)) names.add(name);
-      if (!tracked.has(name)) return;
-      let at2 = mentions.length;
-      while (at2 > 0 && mentions[at2 - 1] > identifier.start) at2--;
-      mentions.splice(at2, 0, identifier.start);
-    };
-    const onStatement = (node) => {
-      for (const name of programNames(node)) declared.add(name);
-      if (node.type !== "ImportDeclaration") {
-        for (const { name, start, end, use } of freeUses(node)) {
-          const found = uses.get(name) ?? [];
-          uses.set(name, found);
-          found.push({ start, end, use });
-        }
-      }
-      const record = esmRecord(node, ARRAYS);
-      if (record?.kind === "import") {
-        for (const binding of record.bindings) {
-          if (binding.kind === "namespace") continue;
-          if (code && !imported.has(binding.local)) importsAfterCode = true;
-          imported.add(binding.local);
-          tracked.add(binding.local);
-        }
-        records.push(record);
-        return;
-      }
-      if (record) records.push(record);
-      code = true;
-    };
-    parseStatements(source, MODULE_PARSE_OPTIONS, {
-      onStatement: (statement) => onStatement(statement),
-      onNode: (node) => {
-        if (node.type === "Identifier") onIdentifier(node);
-        else if (node.type === "ExpressionStatement") {
-          if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
-        } else if (node.type === "ImportExpression") {
-          dynamicImports.push(node.start);
-        } else if (node.type === "MetaProperty") {
-          if (node.meta.name === "import") metas.push({ start: node.start, end: node.end });
-        } else if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
-        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
-          freeIn.set(node, freeUses(node));
-          while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start) awaits.pop();
-        }
-      }
-    });
-    const leading = (references) => references.map((reference) => reference.use === "call" && statementStarts.has(reference.start) ? { ...reference, use: "leading-call" } : reference);
-    const withUses = records.map((record) => record.kind !== "import" ? record : {
-      ...record,
-      bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) })
-    });
-    const wrapperUses =   new Map();
-    for (const name of COMMONJS_WRAPPER_NAMES) {
-      const found = uses.get(name);
-      if (found && !declared.has(name)) wrapperUses.set(name, found);
-    }
-    return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0, metas, dynamicImports, names };
-  }
-  function useOf(parent, key, patternProperties) {
-    switch (parent.type) {
-      case "AssignmentExpression":
-      case "AssignmentPattern":
-      case "ForInStatement":
-      case "ForOfStatement":
-        return key === "left" ? "write" : "read";
-      case "UpdateExpression":
-      case "ArrayPattern":
-      case "RestElement":
-        return "write";
-      case "Property":
-        if (key !== "value") return "read";
-        if (patternProperties.has(parent)) return "write";
-        return parent.shorthand === true ? "shorthand" : "read";
-      case "CallExpression":
-        return key === "callee" ? "call" : "read";
-      case "UnaryExpression":
-        return parent.operator === "typeof" ? "typeof" : "read";
-      case "TaggedTemplateExpression":
-        return key === "tag" ? "call" : "read";
-      default:
-        return "read";
-    }
-  }
-  function emitCommonJs(source, records, options) {
-    return emitModule(source, records, options).code;
-  }
-  function emitModule(source, records, options) {
-    const temp = options.names ?? generatedNames(source);
-    const key = (name) => `[${JSON.stringify(name)}]`;
-    const link = esmLink(records, ARRAYS);
-    const header = [];
-    const helpers =   new Map();
-    const helper = (text) => {
-      let name = helpers.get(text);
-      if (name === void 0) {
-        name = temp();
-        helpers.set(text, name);
-        header.push(`const ${name} = ${text};`);
-      }
-      return name;
-    };
-    let requireRef = "";
-    if (link.requests.length > 0) {
-      requireRef = temp();
-      header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
-    }
-    let exportsRef = "";
-    let exportGetter = "";
-    if (records.some((record) => record.kind !== "import")) {
-      exportsRef = temp();
-      exportGetter = temp();
-      header.push(`const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; const ${exportGetter} = (${ESM_EXPORTS_HELPER})(${exportsRef});`);
-    }
-    const requires = [];
-    const modules = [];
-    const reads =   new Map();
-    for (const request of link.requests) {
-      if (!request.kept) {
-        requires.push(`${requireRef}(${JSON.stringify(request.source)});`);
-        modules.push("");
-        continue;
-      }
-      const mod = temp();
-      modules.push(mod);
-      requires.push(`const ${mod} = ${requireRef}(${JSON.stringify(request.source)});`);
-      const interop = request.interop ? temp() : null;
-      if (interop) requires.push(`const ${interop} = ${helper(ESM_INTEROP_HELPER)}(${mod});`);
-      for (const binding of request.bindings) {
-        if (binding.kind === "named") reads.set(binding.local, binding.imported === "default" ? `${interop}.default` : `${mod}${key(binding.imported)}`);
-      }
-    }
-    const imported = [];
-    const lazy = [];
-    const namespaces = link.namespaces.map(({ request, local }) => {
-      const namespace = helper(ESM_NAMESPACE_HELPER);
-      if (local !== null) {
-        imported.push(`const ${local} = ${namespace}(${modules[request]});`);
-        return local;
-      }
-      const value = temp();
-      lazy.push(`let ${value};`);
-      return `${value} ??= ${namespace}(${modules[request]})`;
-    });
-    const uses = [];
-    const useImports = (bindings) => {
-      for (const binding of bindings) {
-        if (binding.kind === "namespace") continue;
-        const read = reads.get(binding.local);
-        for (const { start, end: end2, use } of binding.references) {
-          if (use === "write") continue;
-          const callee = use === "call" ? `(0, ${read})` : use === "leading-call" ? `void 0, (0, ${read})` : null;
-          uses.push(callee === null ? { start, end: end2, text: use === "shorthand" ? `${binding.local}: ${read}` : read } : { start, end: end2, text: callee, call: true });
-        }
-        if (binding.references.some(({ use }) => use === "write")) imported.push(`const ${binding.local} = void 0;`);
-      }
-    };
-    const edits = [...options.edits ?? []];
-    if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
-    const remove = (start, end2) => edits.push({ start, end: end2, text: ";" + blank(source.slice(start + 1, end2)) });
-    let defaultValue = "";
-    for (const record of records) {
-      if (record.kind !== "export-default") {
-        remove(record.start, record.end);
-        if (record.kind === "import") useImports(record.bindings);
-        continue;
-      }
-      defaultValue = temp();
-      const { start, end: end2 } = record.expression;
-      const keyword = blank(source.slice(record.start, start));
-      const lineBreak2 = keyword.search(/[\n\r\u2028\u2029]/);
-      edits.push({ start: record.start, end: start, text: `var ${defaultValue} = ({ default: (` + (lineBreak2 === -1 ? "" : keyword.slice(lineBreak2)) });
-      edits.push({ start: end2, end: record.end, text: ") }).default;" + blank(source.slice(end2, record.end)) });
-    }
-    const installed = link.exports.map((entry) => {
-      const read = entry.kind === "binding" ? reads.get(entry.local) ?? entry.local : entry.kind === "default" ? defaultValue : entry.kind === "reexport" ? `${modules[entry.request]}${key(entry.name)}` : namespaces[entry.namespace];
-      return `${exportGetter}(${JSON.stringify(entry.exported)}, () => ${read});`;
-    });
-    const stars = link.stars.map((request) => `${helper(ESM_STAR_HELPER)}(${exportsRef}, ${exportGetter}, ${modules[request]});`);
-    const bind = options.bind;
-    if (bind && bind.metas.length > 0) {
-      const meta = temp();
-      header.push(`const ${meta} = ${bind.metadata};`);
-      for (const { start, end: end2 } of bind.metas) edits.push({ start, end: end2, text: meta + blank(source.slice(start, end2)).replace(/ /g, "") });
-    }
-    if (bind && bind.dynamicImports.length > 0) {
-      const load = temp();
-      header.push(`const ${load} = (...args) => ${bind.loader ?? DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
-      for (const start of bind.dynamicImports) edits.push({ start, end: start + "import".length, text: load });
-    }
-    const allEdits = [...edits, ...uses];
-    const prologue = [...lazy, ...installed, ...requires, ...imported, ...stars].join(" ");
-    const lead = options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}` : `"use strict";${header.join(" ")} ${prologue}`;
-    const code = lead + applySourceEdits(source, allEdits) + (options.body === "async" ? "\n})();\n" : "\n");
-    const sourceLength = options.sourceLength ?? source.length;
-    let end = lead.length + sourceLength;
-    for (const edit of allEdits) if (edit.end <= sourceLength) end += edit.text.length - (edit.end - edit.start);
-    return { code, head: lead.length, end, columns: columnMap(source, allEdits) };
-  }
-  var LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
-  function columnMap(source, edits) {
-    const entries = [];
-    const ordered = [...edits].sort((a, b) => a.start - b.start);
-    let line = 1;
-    let lineStart = 0;
-    let scanned = 0;
-    for (const edit of ordered) {
-      const before = source.slice(scanned, edit.start).split(LINE_BREAK);
-      if (before.length > 1) {
-        line += before.length - 1;
-        lineStart = edit.start - before[before.length - 1].length;
-      }
-      scanned = edit.start;
-      const from = source.slice(edit.start, edit.end).split(LINE_BREAK);
-      const to = edit.text.split(LINE_BREAK);
-      for (let i = 0; i < from.length; i++) {
-        const column = i === 0 ? edit.start - lineStart : 0;
-        const text = i === from.length - 1 ? to.slice(i).join("") : to[i];
-        if (text === from[i]) continue;
-        entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i], 1] : [line + i, column, text.length, from[i]]);
-      }
-    }
-    return entries;
   }
 
   var NODE_RELEASE = "22.22.3";
@@ -10626,6 +9898,34 @@ error: the Oxc transform crashed (${reason})`);
     return edits.length === 0 ? source : applySourceEdits(source, edits);
   }
 
+  function vfsPathExtension(path) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    const dot = base.lastIndexOf(".");
+    return dot > 0 ? base.slice(dot) : "";
+  }
+
+  function typescriptLoader(path) {
+    const ext = vfsPathExtension(path);
+    if (ext === ".tsx") return "tsx";
+    return ext === ".ts" || ext === ".mts" || ext === ".cts" ? "ts" : null;
+  }
+  function isTypescriptDeclarationFile(path) {
+    return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf("/") + 1));
+  }
+  function stripsTypeScript(path) {
+    return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
+  }
+
+  function typeScriptFormat(path, packageType, stripped) {
+    if (!stripsTypeScript(path)) return null;
+    const ext = vfsPathExtension(path);
+    if (ext === ".mts") return "module";
+    if (ext === ".cts") return "commonjs";
+    const type = packageType();
+    if (type !== null) return type;
+    return containsModuleSyntax(stripped()) ? "module" : "commonjs";
+  }
+
   var amaro = null;
   async function stripTypeScript(code, filename, { mode, sourceMap }, packageType) {
     const { transformSync } = await (amaro ??= Promise.resolve().then(() => __toESM(require_dist(), 1)));
@@ -10659,7 +9959,7 @@ error: the Oxc transform crashed (${reason})`);
     return btoa(binary);
   }
 
-  var runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules, stripTypeScript };
+  var runtime = { rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules, stripTypeScript };
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
     __nimbusTransformRuntime: runtime

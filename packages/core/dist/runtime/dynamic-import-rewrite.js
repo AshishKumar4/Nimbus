@@ -1,13 +1,15 @@
 /**
- * Route a cell's import() to its process loader and bind import.meta to its
- * evaluation metadata.
+ * Where a cell's module syntax is, as its loader reads it: the import()
+ * calls a CommonJS cell routes to its process's loader
+ * (rewriteDynamicImports), and the import() calls, import.meta and static
+ * specifiers an ES module is staged by (readModuleImportSites, native-esm.ts).
  *
- * es-module-lexer (module-lexer.ts) finds both in one linear pass with no
+ * es-module-lexer (module-lexer.ts) finds them in one linear pass with no
  * AST: it skips comments, strings and templates exactly, and reads a `/` as
  * a regex or a division from the token before it. Where that reading can
- * differ from the grammar's, Acorn's parser decides the cell instead
- * (rewriteWithGrammar, which streams: it drops each completed top-level
- * statement). That is when:
+ * differ from the grammar's, Acorn's parser decides the cell instead, a
+ * statement at a time (it drops each completed top-level statement). That is
+ * when:
  * - the lexer cannot lex the cell;
  * - a `/` in code it may have misread (import-lexer-hazards.ts) could open a
  *   regex that holds import syntax, or a quote with import syntax later on
@@ -17,24 +19,25 @@
  * - an `import(...)` followed by `{` on a later line reads both as a method
  *   and as a call before a block;
  * - the lexer passed over an `import(` in code that is not a member call and
- *   is not followed by `{`.
+ *   is not followed by `{`;
+ * - a specifier has escapes the lexer does not unquote, or a phase import
+ *   (`import source`).
  * Otherwise Acorn only reads small spans: one call's arguments, the braces
- * around an `import(...)` whose `{` is on the next line, the leading
- * directives, and unicode-escaped words that could collide with the metadata
- * capture's name.
+ * around an `import(...)` whose `{` is on the next line, and unicode-escaped
+ * words a stage's added names must not collide with.
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes } from 'acorn';
-import { applySourceEdits, isAstNode } from './javascript-ast.js';
+import { applySourceEdits, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { createModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
 export function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
 }
-/** es-module-lexer's `t` for an import() call and for import.meta. */
+/** es-module-lexer's `t` for a static import or re-export, an import() call and import.meta. */
+const STATIC_IMPORT = 1;
 const DYNAMIC_IMPORT = 2;
 const IMPORT_META = 3;
-const METADATA_BINDING = '__nimbusMetadataModule';
 const IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
 /**
  * A source of this many characters fits the lexer's initial 1 MiB scratch
@@ -44,31 +47,22 @@ const IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
  */
 const RETAINED_LEXER_CHARS = 256 * 1024;
 let moduleLexer = null;
-function lexImports(source) {
+function lexModule(source) {
     const lex = moduleLexer ??= createModuleLexer();
     if (source.length > RETAINED_LEXER_CHARS)
         moduleLexer = null;
-    return lex(source)[0];
+    return lex(source);
 }
 function isLexerError(error) {
     return error instanceof Error && typeof Reflect.get(error, 'idx') === 'number';
 }
-/**
- * Route the cell's import() calls to the process's loader, `loader(parentUrl,
- * ...arguments)`, and, with `moduleMetadata`, bind its import.meta to the
- * module's own. `routeImports` false binds metadata alone: a transform that
- * lowers module syntax binds import.meta before lowering (CommonJS output
- * would make it {}) and routes import() after, once the cell's import
- * bindings are member reads that cannot capture the loader's name.
- */
-export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true, loader = DYNAMIC_IMPORT_HELPER) {
-    const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
-    const imports = routeImports && mayHaveDynamicImport(code);
-    if (!imports && !metadata)
+/** Route the cell's import() calls to the process's loader, `loader(parentUrl, ...arguments)`. */
+export function rewriteDynamicImports(code, parentUrl, loader = DYNAMIC_IMPORT_HELPER) {
+    if (!mayHaveDynamicImport(code))
         return code;
     let lexed;
     try {
-        lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl), metadata, imports);
+        lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl));
     }
     catch (error) {
         // A lexing or a probe that cannot finish settles nothing; the grammar decides.
@@ -76,44 +70,57 @@ export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, r
             throw error;
         lexed = null;
     }
-    return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl), metadata, imports);
+    return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl));
 }
 /** The text an import() call's `import(` becomes. */
 function loaderCall(loader, parentUrl) {
     return loader + '(' + JSON.stringify(parentUrl) + ', ';
 }
-/** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
-function rewriteFromLexer(code, call, metadata, imports) {
+/**
+ * The lexer's reading of a cell's import() calls, import.meta and static
+ * specifiers, or null where only the grammar can decide (see the header).
+ */
+function lexedImportSites(code) {
     // The lexer reads a hashbang line as code. Blank it: lengths, and so
     // every position, stay the cell's.
     const hashbang = code.startsWith('#!') ? lineEnd(code, 0) : 0;
     const source = hashbang ? ' '.repeat(hashbang) + code.slice(hashbang) : code;
-    const lexed = lexImports(source);
+    const lexing = lexModule(source);
+    const lexed = lexing[0];
     const lines = new Lines(source);
     const passed = passedOver(source, lexed, [...ambiguousSlashes(source, lines), ...htmlComments(source, lines)]);
     if (passed === null)
         return null;
-    const calls = [];
+    const sites = [];
     const metas = [];
+    const statics = [];
     for (const entry of lexed) {
         if (entry.t === DYNAMIC_IMPORT)
-            calls.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
-        else if (metadata && entry.t === IMPORT_META)
+            sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
+        else if (entry.t === IMPORT_META)
             metas.push({ start: entry.s, end: entry.e });
+        else if (entry.t === STATIC_IMPORT) {
+            // A specifier with escapes the lexer cannot unquote is the grammar's to read.
+            if (entry.n === undefined)
+                return null;
+            statics.push({ start: entry.s - 1, end: entry.e + 1, specifier: entry.n, attributes: Object.fromEntries(entry.at ?? []) });
+        }
+        else {
+            // A phase import (`import source`, `import defer`): the grammar's to refuse or read.
+            return null;
+        }
     }
-    if (!imports)
-        calls.length = 0;
-    for (const at of imports ? passed : []) {
+    for (const at of passed) {
         const open = skipTrivia(source, at + 'import'.length).at;
         const end = source[open] === '(' ? parenthesisEnd(source, open) : null;
         if (end === null)
             return null;
-        calls.push({ ss: at, se: end, d: open, lexed: false });
+        sites.push({ ss: at, se: end, d: open, lexed: false });
     }
-    calls.sort((a, b) => a.ss - b.ss);
-    const edits = [];
+    sites.sort((a, b) => a.ss - b.ss);
+    const calls = [];
     let validatedEnd = -1;
-    for (const site of calls) {
+    for (const site of sites) {
         // Inside arguments Acorn has already accepted: an import() there is one.
         if (site.ss >= validatedEnd) {
             const shape = callShape(source, site);
@@ -125,15 +132,66 @@ function rewriteFromLexer(code, call, metadata, imports) {
                 return null;
             validatedEnd = site.se;
         }
-        // d is the opening parenthesis; do not consume grouping in the argument.
-        edits.push({ start: site.ss, end: site.d + 1, text: call });
+        calls.push({ start: site.ss, open: site.d });
     }
-    if (!edits.length && !metas.length)
-        return code;
-    if (!metas.length)
-        return applyEdits(code, edits, metas, null, 0, '');
-    const { insertion, separator } = afterDirectives(code);
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
+    return { calls, metas, statics, moduleSyntax: lexing[3] === true };
+}
+/** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
+function rewriteFromLexer(code, call) {
+    const sites = lexedImportSites(code);
+    // d is the opening parenthesis; do not consume grouping in the argument.
+    return sites === null ? null : applySourceEdits(code, sites.calls.map((site) => ({ start: site.start, end: site.open + 1, text: call })));
+}
+/**
+ * An ES module's import() calls, import.meta and static specifiers, as the
+ * language reads them: the lexer's reading where it is the grammar's, and
+ * otherwise the grammar's, a top-level statement at a time. Throws acorn's
+ * SyntaxError for a module that does not parse.
+ */
+export function readModuleImportSites(code) {
+    let lexed;
+    try {
+        lexed = lexedImportSites(code);
+    }
+    catch (error) {
+        if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError))
+            throw error;
+        lexed = null;
+    }
+    if (lexed !== null)
+        return lexed;
+    const calls = [];
+    const metas = [];
+    const statics = [];
+    let declarations = false;
+    parseStatements(code, MODULE_PARSE_OPTIONS, {
+        onNode: (node) => {
+            if (node.type === 'ImportExpression')
+                calls.push({ start: node.start, open: skipTrivia(code, node.start + 'import'.length).at });
+            else if (node.type === 'MetaProperty' && node.meta.name === 'import')
+                metas.push({ start: node.start, end: node.end });
+        },
+        onStatement: (statement) => {
+            if (statement.type === 'ExportDefaultDeclaration')
+                declarations = true;
+            if (statement.type !== 'ImportDeclaration' && statement.type !== 'ExportAllDeclaration' && statement.type !== 'ExportNamedDeclaration')
+                return;
+            declarations = true;
+            const source = statement.source;
+            if (!source || typeof source.value !== 'string')
+                return;
+            const attributes = {};
+            for (const attribute of statement.attributes ?? []) {
+                const key = attribute.key.type === 'Identifier' ? attribute.key.name : String(attribute.key.value);
+                if (typeof attribute.value.value === 'string')
+                    attributes[key] = attribute.value.value;
+            }
+            statics.push({ start: source.start, end: source.end, specifier: source.value, attributes });
+        },
+    });
+    calls.sort((a, b) => a.start - b.start);
+    metas.sort((a, b) => a.start - b.start);
+    return { calls, metas, statics, moduleSyntax: declarations || metas.length > 0 };
 }
 /** Marks the lexer reports only where it reads the marked spot as code. */
 const CODE_MARK = ' import.meta ';
@@ -169,7 +227,7 @@ function passedOver(source, imports, hazards) {
     }
     parts.push(source.slice(from));
     const code = new Set();
-    for (const entry of lexImports(parts.join('')))
+    for (const entry of lexModule(parts.join(''))[0])
         if (entry.t === IMPORT_META)
             code.add(entry.s);
     const passed = [];
@@ -219,8 +277,6 @@ function callShape(source, site) {
 // Acorn's own productions, which the parsers below extend.
 const PARSE_STATEMENT = Reflect.get(Parser.prototype, 'parseStatement');
 const PARSE_DYNAMIC_IMPORT = Reflect.get(Parser.prototype, 'parseDynamicImport');
-const PARSE_IMPORT_META = Reflect.get(Parser.prototype, 'parseImportMeta');
-const PARSE_IDENT = Reflect.get(Parser.prototype, 'parseIdent');
 const FINISH_NODE = Reflect.get(Parser.prototype, 'finishNode');
 /** What acorn's own `production` makes on `parser`: a node, checked as one. */
 function produce(production, parser, args) {
@@ -295,11 +351,11 @@ function validImportArguments(fragment) {
     return false;
 }
 /**
- * Ordinary spellings are excluded by raw membership, even in text. Only
- * unicode-escaped words need decoding, each alone; a word in text may
- * over-exclude, which is safe.
+ * The names `code` spells with unicode escapes: an added name must be none of
+ * them, nor any ordinary spelling in the text (raw membership). Each word is
+ * decoded alone; a word in text may over-exclude, which is safe.
  */
-function escapedCaptureNames(code) {
+export function escapedIdentifierNames(code) {
     const names = new Set();
     for (let at = code.indexOf('\\u'); at !== -1; at = code.indexOf('\\u', at)) {
         let start = at;
@@ -324,7 +380,7 @@ function escapedCaptureNames(code) {
         try {
             const token = tokenizer(code.slice(start, end), { ecmaVersion: 'latest' }).getToken();
             const value = Reflect.get(token, 'value');
-            if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(METADATA_BINDING))
+            if (token.type === tokTypes.name && typeof value === 'string')
                 names.add(value);
         }
         catch (error) {
@@ -335,33 +391,6 @@ function escapedCaptureNames(code) {
         at = Math.max(at + 2, end);
     }
     return names;
-}
-/** Keep the user's directive prologue, and a hashbang, in front of the metadata capture. */
-function afterDirectives(code) {
-    const tokens = tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true });
-    let token = tokens.getToken();
-    let insertion = token.start;
-    // What ends the last directive where it has no `;`.
-    let separator = '';
-    while (token.type === tokTypes.string) {
-        const expression = parseExpressionAt(code, token.start, { ecmaVersion: 'latest', sourceType: 'script' });
-        if (expression.type !== 'Literal' || typeof Reflect.get(expression, 'value') !== 'string')
-            break;
-        do {
-            token = tokens.getToken();
-        } while (token.start < expression.end);
-        if (token.type === tokTypes.semi) {
-            insertion = token.end;
-            separator = '';
-            token = tokens.getToken();
-            continue;
-        }
-        if (token.type !== tokTypes.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start)))
-            break;
-        insertion = expression.end;
-        separator = ';';
-    }
-    return { insertion, separator };
 }
 /**
  * Acorn, collecting each import() call as it recognizes one and dropping each
@@ -393,40 +422,16 @@ class ImportCollector extends Parser {
         return { type: 'EmptyStatement', start: node.start, end: node.end };
     }
 }
-/** An ImportCollector that also collects import.meta, and every identifier. */
-class MetadataCollector extends ImportCollector {
-    parseImportMeta(node) {
-        const parsed = produce(PARSE_IMPORT_META, this, [node]);
-        this.collected.metas.push({ start: node.start, end: node.end });
-        return parsed;
-    }
-    parseIdent(liberal) {
-        const node = produce(PARSE_IDENT, this, [liberal]);
-        if (node.type === 'Identifier')
-            this.collected.names?.add(node.name);
-        return node;
-    }
-}
 /**
  * The grammar's reading of the cell. A cell it cannot parse in either goal is
  * returned as written, for its compile to report.
  */
-function rewriteWithGrammar(code, call, metadata, imports) {
-    const collected = {
-        call,
-        edits: [],
-        metas: [],
-        names: metadata ? new Set() : null,
-    };
-    // Import-only cells need no identifier collection.
-    const Collector = metadata ? MetadataCollector : ImportCollector;
-    for (const sourceType of metadata ? ['module', 'script'] : ['script', 'module']) {
+function rewriteWithGrammar(code, call) {
+    const collected = { call, edits: [] };
+    for (const sourceType of ['script', 'module']) {
         collected.edits.length = 0;
-        collected.metas.length = 0;
-        collected.names?.clear();
-        let program;
         try {
-            program = new Collector({
+            new ImportCollector({
                 ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true,
                 allowAwaitOutsideFunction: true, allowHashBang: true,
             }, code, collected).parse();
@@ -434,32 +439,7 @@ function rewriteWithGrammar(code, call, metadata, imports) {
         catch {
             continue;
         }
-        if (!imports)
-            collected.edits.length = 0;
-        if (!collected.edits.length && !collected.metas.length)
-            return code;
-        let insertion = program.body[0]?.start ?? code.length;
-        // After a directive, which a `;` ends where it has none.
-        let separator = '';
-        for (const statement of program.body) {
-            if (typeof Reflect.get(statement, 'directive') !== 'string')
-                break;
-            insertion = statement.end;
-            separator = code[statement.end - 1] === ';' ? '' : ';';
-        }
-        return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
+        return collected.edits.length ? applySourceEdits(code, collected.edits) : code;
     }
     return code;
-}
-function applyEdits(code, edits, metas, names, insertion, separator) {
-    if (metas.length) {
-        let binding = METADATA_BINDING;
-        while (code.includes(binding) || names?.has(binding))
-            binding += '_';
-        for (const meta of metas)
-            edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-        // On the line it is inserted in, so every line keeps its number: a directive of its own.
-        edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
-    }
-    return applySourceEdits(code, edits);
 }

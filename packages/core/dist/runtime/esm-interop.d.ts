@@ -34,18 +34,18 @@
 import type { ModuleDeclaration, Statement } from 'acorn';
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export declare const ESM_EXPORTS_HELPER: string;
-/** What a default import reads `default` of: the module when it is marked `__esModule`, else `{ default: module }`. */
-export declare const ESM_INTEROP_HELPER = "(m) => m && m.__esModule ? m : { default: m }";
+/** What a default import reads `default` of: an ES module's as it is, else `{ default: module }`. */
+export declare const ESM_INTEROP_HELPER = "(m) => (m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\"))) ? m : { default: m }";
 /**
  * A required module as a namespace, as Node and esbuild read a CommonJS
- * module: one marked `__esModule` as it is; any other with its exports as
- * `default`, its other own names read through.
+ * module: an ES module's as it is; any other with its exports as `default`,
+ * its other own names read through.
  */
 export declare const ESM_NAMESPACE_HELPER: string;
 /** `export *`: each name of the module but `default` and those already exported, read through. */
 export declare const ESM_STAR_HELPER = "(exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }";
 /** The four helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), interop: (m) => m && m.__esModule ? m : { default: m }, namespace: (m) => { if (m && m.__esModule) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, \"default\", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== \"default\") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }, star: (exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); } }";
+export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), interop: (m) => (m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\"))) ? m : { default: m }, namespace: (m) => { if ((m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\")))) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, \"default\", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== \"default\") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }, star: (exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); } }";
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string

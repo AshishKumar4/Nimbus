@@ -34,7 +34,7 @@ import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
  * or the JSON module of the file at a key. Each names its map module.
  */
 export type EsmModuleRow =
-  | readonly [kind: 'module', key: string, name: string, targets: readonly number[]]
+  | readonly [kind: 'module', key: string, name: string, targets: readonly number[], bunScope?: 1]
   | readonly [kind: 'commonjs', key: string, name: string]
   | readonly [kind: 'builtin', builtin: string, name: string]
   | readonly [kind: 'json', key: string, name: string];
@@ -114,10 +114,10 @@ export async function stageEsModules(
   const missing: EsmMissing[] = [];
   // A cell's id is its place among `cells`: the table's first rows, its targets filled as it is staged.
   const targetIds: number[][] = [];
-  for (const key of cells.keys()) {
+  for (const [key, { sites }] of cells) {
     const targets: number[] = [];
     targetIds.push(targets);
-    table.push(['module', key, commonJsCellModuleName(key), targets]);
+    table.push(sites.commonJsNames?.length ? ['module', key, commonJsCellModuleName(key), targets, 1] : ['module', key, commonJsCellModuleName(key), targets]);
   }
   const ids = new Map<string, number>();
   for (let id = 0; id < table.length; id++) ids.set(`module:${table[id]![1]}`, id);
@@ -210,7 +210,9 @@ export async function stageEsModules(
         missing.push(refusal(error));
       }
     }
-    modules.set(key, stageEsModule(code, sites, { id, name: commonJsCellModuleName(key), targets }));
+    modules.set(key, stageEsModule(code, sites, {
+      id, name: commonJsCellModuleName(key), targets, ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
+    }));
     id++;
   }
   return { modules, members, table, missing };

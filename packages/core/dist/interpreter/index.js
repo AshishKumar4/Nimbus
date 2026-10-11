@@ -117,6 +117,40 @@ export function moduleRequests(path, text) {
     }
     return programRequests(program);
 }
+/**
+ * Whether an ES module's text awaits at its top level (an `await`, or a
+ * `for await`, outside any function): the module's evaluation can suspend.
+ * Text the parser cannot read as a module has none. The process asks only of
+ * a module whose body began and has not completed (node-shims'
+ * __nimbusEsmSuspends).
+ */
+export function hasTopLevelAwait(text) {
+    let program;
+    try {
+        program = parseQuick(text, MODULE_OPTIONS);
+    }
+    catch {
+        return false;
+    }
+    return awaitsOutsideFunctions(program);
+}
+/** Whether `node`'s tree has an await not inside a function of it. */
+function awaitsOutsideFunctions(node) {
+    if (node === null || typeof node !== 'object')
+        return false;
+    const type = reflectGet(node, 'type');
+    if (type === 'AwaitExpression')
+        return true;
+    if (type === 'ForOfStatement' && reflectGet(node, 'await') === true)
+        return true;
+    if (type === 'FunctionDeclaration' || type === 'FunctionExpression' || type === 'ArrowFunctionExpression')
+        return false;
+    for (const key in node) {
+        if (key !== 'type' && awaitsOutsideFunctions(reflectGet(node, key)))
+            return true;
+    }
+    return false;
+}
 const AcornParserClass = Parser;
 const FOUND = objectCreate(null);
 /**

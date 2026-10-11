@@ -102,10 +102,8 @@ export interface RunFreshOpts {
     signal?: AbortSignal;
     /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
     launchesServer?: boolean;
-    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    /** The program is an ES module (RuntimeRunOpts.esModule). */
     esModule?: boolean;
-    /** RuntimeRunOpts.esModuleMap. */
-    esModuleMap?: string;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     /** A node program's command line (RuntimeRunOpts.node). */

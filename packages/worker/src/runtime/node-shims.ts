@@ -12155,9 +12155,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     return cached.exports;
   }
   // A staged ES module: its namespace once the registry evaluated it, else
-  // the interpreter's evaluation of it, below.
-  const esmId = evaluationKey === resolvedPath ? __nimbusEsmId("module", normalizedPath) : -1;
-  if (esmId !== -1) {
+  // the interpreter's evaluation of it, below (an instance of its own, for
+  // a query or a fragment, always).
+  const esmId = __nimbusEsmId("module", normalizedPath);
+  if (esmId !== -1 && evaluationKey === resolvedPath) {
     const namespace = __nimbusEsmRequire(esmId, required);
     if (namespace !== null) return namespace;
   }
@@ -12456,7 +12457,10 @@ function __nimbusEsmEnter(metaUrl) {
   if (row[0] === "module") {
     const filename = "/" + row[1];
     const url = __nimbusEsmUrl(filename);
-    return { m: __nimbusFileImportMeta(filename, url), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
+    const scope = { m: __nimbusFileImportMeta(filename, url), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
+    // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
+    if (row[4] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
+    return scope;
   }
   if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
   return { c, r, l: () => builtins[row[1]], s: (resync) => { __nimbusEsmResyncs.push(resync); } };
@@ -12706,6 +12710,40 @@ function __esmLoad(resolution) {
     }
     const esm = resolution.format === "module" || resolution.format === "detect";
     const evaluationKey = variant ? resolution.url : key;
+    // An interpreted ES module links through its require(): the staged
+    // modules it imports are the registry's to evaluate, first.
+    if (esm) return __nimbusEsmLinkStaged(key, new Set()).then(() => __esmLoadInterpreted(resolution, key, evaluationKey, esm));
+    return __esmLoadInterpreted(resolution, key, evaluationKey, esm);
+  }
+  __esmNamespaces.set(resolution.url, ns);
+  return ns;
+}
+// Evaluate, in import order, the staged ES modules the interpreted module at
+// \`key\` statically imports, and those its unstaged imports do, so the
+// interpreter finds them evaluated rather than evaluating them itself.
+async function __nimbusEsmLinkStaged(key, seen) {
+  if (seen.has(key)) return;
+  seen.add(key);
+  const staged = __nimbusEsmId("module", key);
+  const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
+  if (text === null) return;
+  const parentUrl = __nimbusEsmUrl("/" + key);
+  for (const request of __nimbusModuleRequests(key, text)) {
+    if (request.kind !== "static") continue;
+    let resolution;
+    try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
+    if (!resolution.path) continue;
+    const target = resolution.path.replace(/^\\/+/, "");
+    const id = __nimbusEsmId("module", target);
+    if (id === -1) await __nimbusEsmLinkStaged(target, seen);
+    else if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) {
+      try { await __nimbusEsmImport(id); } catch {}
+    }
+  }
+}
+function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
+  let ns;
+  {
     // The import is the module's job: what escapes its evaluation is
     // explained as Node's loader explains it.
     let exports;

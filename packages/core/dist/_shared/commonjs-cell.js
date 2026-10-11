@@ -202,20 +202,18 @@ const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function
  * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
- * and `loweredTail` are a lowered ES module's (EsModuleMap): its own code
- * around the module's text, which a frame counts as wrapper.
+ * (Node strips it too; `#!` is not valid inside a function).
  */
-export function wrapCommonJsCell(cell, scope = 'function', loweredHead = 0, loweredTail = 0) {
+export function wrapCommonJsCell(cell, scope = 'function') {
     const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
     const body = hashbang ? '//' + cell.slice(2) : cell;
     const head = scope === 'function'
         ? WRAPPER_HEAD
         : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
     const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-    return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length + loweredTail, hashbang };
+    return { text: head + body + tail, head: head.length, tail: tail.length, hashbang };
 }
-/** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
+/** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
 export function columnMapModuleName(name) {
     return name + COLUMN_MAP_SUFFIX;
 }
@@ -516,18 +514,14 @@ const {
 // leads its SyntaxError's stack with where.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
-  if (!__row) return null;
+  // A staged ES module is the registry's to evaluate (node-shims' __nimbusEsmImport).
+  if (!__row || __row[6] === 1) return null;
   try {
     return __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
   } catch (e) {
     __nimbusDecorateSyntaxError(e, __row[1]);
     throw e;
   }
-}
-// Whether the cell at a VFS key is an ES module the launch lowered (CommonJsCellRow).
-function __nimbusModuleCellIsEsModule(key) {
-  const __row = __nimbusCodeCells.get(key);
-  return __row !== undefined && __row[6] === 1;
 }
 // The entry's wrapper function, with the Function of the entry's own URL,
 // importer. A SyntaxError from compiling it carries no location (the
@@ -591,9 +585,9 @@ function __nimbusFrameFile(module) {
   module.frameFile ??= module.esModule ? __nimbusFileUrl(module.path) : module.path;
   return module.frameFile;
 }
-// A lowered ES module's edits that moved its columns, by line: [source column,
-// generated length, source text, 1 for a call] (async-module-lowering.ts
-// ColumnMap), read once from the module beside its own; null for none.
+// A staged ES module's edits, by line: [source column, generated length,
+// source text, 1 for a call] (native-esm.ts ColumnMap), read once from the
+// module beside its own; null for none.
 function __nimbusColumnEdits(module) {
   if (module.columns !== undefined) return module.columns;
   module.columns = null;
@@ -640,8 +634,9 @@ function __nimbusGeneratedColumn(module, line, column) {
   return column + delta;
 }
 // A module's line as its source has it, from the emit's.
-// A module's text as it was compiled, before any lowering: where Node reads
-// its source map's URL from and measures its lines.
+// A module's text as it was before it was staged: where Node reads its
+// source map's URL from and measures its lines, and what the interpreter
+// evaluates when it adopts a staged module.
 function __nimbusModuleSourceText(module) {
   if (module === null) return null;
   const text = __nimbusFrameModuleText(module);

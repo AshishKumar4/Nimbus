@@ -33,6 +33,7 @@ import { type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
+import { type EsmStage } from './esm-stage.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -209,6 +210,8 @@ interface GeneratedNodeFacetCode {
     immutableModules: Record<string, ImmutableModuleSource>;
     modules: Record<string, string>;
     codeModules: Record<string, string>;
+    /** The staged ES modules and their facades, as `{ js }` module texts (FacetVfsBundleSource.esModules). */
+    esModules: Record<string, string>;
 }
 /**
  * The URL an entry's import() resolves against and its `Function` carries:
@@ -216,14 +219,14 @@ interface GeneratedNodeFacetCode {
  * `<cwd>/[stdin]`).
  */
 export declare function entryImporterUrl(filename: string | undefined, cwd: string): string;
-/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
-export declare function stagedDataUrlModule(text: string, moduleScope: ModuleScope, esbuild: EsbuildService): Promise<string>;
+/** The VFS key a launch stages an ES module entry at: its file, or `[eval1]` in the working directory for `-e` and stdin code. */
+export declare function entryEsModuleKey(filename: string | undefined, cwd: string): string;
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, esModuleMap?: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -274,7 +277,6 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     filename?: string;
     dirname?: string;
     esModule?: boolean;
-    esModuleMap?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -312,15 +314,12 @@ interface FacetVfsState {
      * with none is its own module.
      */
     emits?: Map<string, string>;
-    /** A lowered ES module's EsModuleMap (core async-module-lowering.ts), as JSON, by path. */
-    columnMaps?: Map<string, string>;
     /**
-     * The cells lowered from ESM or compiled from TypeScript
-     * (transformEsmInBundle), whose module wraps them in the block scope
-     * (commonjs-cell.ts, THE WRAPPER), each true where it is an ES module.
-     * Every other code cell is CommonJS as Node would run it.
+     * The ES modules the map carries, staged (esm-stage.ts): each its own
+     * module, which is never also in `emits`. Every other code cell is
+     * CommonJS as Node would run it.
      */
-    lowered?: Map<string, boolean>;
+    esm?: EsmStage;
     /**
      * The files staged only to run whose module is an emit: the map carries the
      * emit and not the file, which no read asked for. A synchronous read of one
@@ -498,8 +497,12 @@ interface FacetVfsBundleSource {
     modules: Record<string, string>;
     /** The code cells as `{ cjs }` module texts, by module name. */
     codeModules: Record<string, string>;
+    /** The staged ES modules and what they link to, as `{ js }` module texts, by module name (esm-stage.ts). */
+    esModules: Record<string, string>;
     /** The JSON of the launch's CommonJsCellRow table. */
     codeCells: string;
+    /** The JSON of the launch's ES module table and refusals (esm-stage.ts EsmStage), or `null`. */
+    esm: string;
     /** The JSON list of runtime-code keys the map carries as `gen/<key>.js`. */
     runtimeCode: string;
     /**
@@ -546,14 +549,12 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, columnMaps, lowered, codeOnly, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, esm, codeOnly, runtimeCode, }?: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
-    /** FacetVfsState.columnMaps. */
-    columnMaps?: ReadonlyMap<string, string>;
-    /** FacetVfsState.lowered. */
-    lowered?: ReadonlyMap<string, boolean>;
+    /** The staged ES modules (FacetVfsState.esm). */
+    esm?: EsmStage;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
@@ -854,6 +855,8 @@ export interface PrefetchBundleOptions {
     stripTypes?: NodeTypeScript | null;
     /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
     preloads?: readonly PreloadModuleRoot[];
+    /** `entryCode` is an ES module (`-e` or stdin, entryEsModuleKey): the VFS key it is staged at. */
+    entryEsModule?: string;
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -1066,9 +1069,8 @@ export interface ResidentSpawnOptions {
     cwd?: string;
     filename?: string;
     dirname?: string;
-    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    /** The program is an ES module (RuntimeRunOpts.esModule). */
     esModule?: boolean;
-    esModuleMap?: string;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     command?: string;
@@ -1676,10 +1678,13 @@ export declare class FacetManager {
     /**
      * The runtime code recorded for an entry, as `{ cjs }` module text by key:
      * a constructor call as the function module (or the SyntaxError the
-     * constructor would throw), a file lowered and wrapped as a module cell is.
-     * A file is staged by its content key even when the launch also carries its
+     * constructor would throw), a CommonJS file wrapped as a module cell is. A
+     * file is staged by its content key even when the launch also carries its
      * path as a cell: the guest looks a path up first and the key only for a
-     * path the map lacks — the same text written under a fresh name.
+     * path the map lacks — the same text written under a fresh name. An ES
+     * module (a data: URL's always) is not staged: each instance of it is the
+     * path it was written at, which a module the map fixes cannot be, so each
+     * launch interprets it (core native-esm.ts).
      */
     private _stagedRuntimeCode;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
@@ -1742,10 +1747,8 @@ export declare class FacetManager {
         callerPid?: number;
         /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
         invokerPid?: number;
-        /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+        /** The program is an ES module (RuntimeRunOpts.esModule). */
         esModule?: boolean;
-        /** RuntimeRunOpts.esModuleMap. */
-        esModuleMap?: string;
         /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
         moduleScope?: ModuleScope;
         bundleProfile?: FacetBundleProfile;

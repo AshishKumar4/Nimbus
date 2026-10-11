@@ -43,7 +43,6 @@ import {
 } from './esm-interop.js';
 import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
 import { bindingScope, list, namesBinding, programNames, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleSource, type ModuleScope } from './module-format.js';
 
 /** An import's binding (esm-interop.ts), a named one with its `references`: where the module uses it. */
 export type EsmUsedBinding =
@@ -139,56 +138,6 @@ export interface CommonJsEmitOptions {
 }
 
 interface Span { readonly start: number; readonly end: number }
-
-/** `esm` lowered to the CommonJS function body of an async module. */
-export function lowerAsyncModule(esm: string): string {
-  return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
-}
-
-/**
- * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts), at
- * `parentUrl`: the one lowering, which the transform facet runs for a module
- * under bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the
- * session for a larger one, read a statement at a time (bounded memory). Its
- * import.meta is the cell's module's, its import() the process loader's. In
- * Node's `scope` a free use of a CommonJS wrapper name binds nothing
- * (module-format.ts ES_MODULE_UNBOUND_NAMES; its typeof is 'undefined'); in
- * Bun's the module keeps them. `map` is the emit's EsModuleMap. Throws
- * acorn's SyntaxError for a module that does not parse.
- */
-export function lowerEsModule(source: string, scope: ModuleScope, parentUrl: string): { code: string; map: string; warnings: [] } {
-  const module = esModuleSource(source);
-  const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = readEsmModule(module);
-  const unbound: SourceEdit[] = [];
-  if (scope === 'node') for (const [name, references] of wrapperUses) {
-    const to = ES_MODULE_UNBOUND_NAMES[name]!;
-    for (const { start, end, use } of references) {
-      unbound.push({ start, end, text: use === 'typeof' ? '(void 0)' : use === 'shorthand' ? `${name}: ${to}` : to });
-    }
-  }
-  const { code, head, end, columns } = emitModule(module, records, {
-    body: topLevelAwait ? 'async' : 'sync',
-    names: generatedNames(module, names),
-    exportsObject: 'arguments[2].exports',
-    requireFunction: 'arguments[1]',
-    edits: unbound,
-    bind: { metadata: 'arguments[2].__nimbusImportMeta', parentUrl, metas, dynamicImports },
-    sourceLength: source.length,
-  });
-  const map: EsModuleMap = { head, tail: code.length - end, columns };
-  return { code, map: JSON.stringify(map), warnings: [] };
-}
-
-/**
- * What a lowered ES module's frames read back as its source's places: where
- * the module's own text starts (`head`) and ends (`tail` from the emit's end)
- * in its emit, and the ColumnMap of its edits.
- */
-export interface EsModuleMap {
-  readonly head: number;
-  readonly tail: number;
-  readonly columns: ColumnMap;
-}
 
 /** A use of a name an import may bind, before the module's imports are all known. */
 interface NamedUse extends EsmReference {

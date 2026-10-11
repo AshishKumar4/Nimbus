@@ -1,0 +1,232 @@
+/**
+ * native-esm.ts — an ES module as a guest's module registry evaluates it:
+ * its own text, scope, live bindings, cycles and top-level await, all the
+ * engine's. Nimbus stages it; it never lowers it.
+ *
+ * The registry (workerd's new module registry over a Worker Loader map, or a
+ * host's own loader off Cloudflare) joins a specifier to the importing
+ * module's URL and nothing more: no package lookup, no conditions, no Node
+ * builtins in a program's sense, and every module lives under the map's
+ * root, so its own `import.meta` names the map, not the program's file. So
+ * each module is staged before it runs, edited only where the registry reads
+ * it differently from Node:
+ *   - each static specifier names the map module of what Node's resolver
+ *     names for it (a module, a CommonJS facade, a builtin facade);
+ *   - `import.meta` and the `import` of `import(` are the module's own
+ *     bindings of the same length, so no line or column moves;
+ *   - a prologue call opens the first line (its `head`), and one line after
+ *     the last binds those names from the module's meta instance
+ *     (ESM_META_MODULE, `?<id>`), imports the module's own namespace, and
+ *     registers it once the body completes.
+ *
+ * The meta instance is the module's gate (workerd): its body ends in a
+ * top-level await, so the registry, which evaluates every module with the
+ * request's I/O context suppressed (workerd io/worker-modules.h,
+ * SuppressIoContextScope), runs no module body inside that evaluation; V8
+ * runs it from the gate's fulfillment, a microtask, inside the request. One
+ * instance per module, so a module first evaluated later (a chunk whose
+ * dependencies are all loaded) waits for its own gate too. The prologue call
+ * runs first in the body, where a gate cannot: every gate of a batch settles
+ * before any body of it runs. It stops the body once an earlier body of the
+ * same batch threw, as Node's evaluation stops at the first error, or once
+ * the batch was cancelled for a require() of a module in it (node-shims).
+ *
+ * Every edit is recorded (ColumnMap): a stack frame's column moves back by
+ * the ones that changed a line's length, and the module's text before it was
+ * staged is read back through them all (commonjs-cell.ts
+ * __nimbusModuleSourceText), for its source map's URL and for the
+ * interpreter, which evaluates the module where the registry cannot
+ * (node-shims' adoption).
+ */
+import { escapedIdentifierNames } from './dynamic-import-rewrite.js';
+/** The map module every staged module binds import.meta, import(), its check and its registration from. */
+export const ESM_META_MODULE = 'nimbus/meta.js';
+/** The map module the runner fills with the functions ESM_META_MODULE's instances ask for. */
+export const ESM_HOST_MODULE = 'nimbus/esm-host.js';
+/** Where a launch puts the facades an ES module imports a builtin or a CommonJS module through. */
+export const ESM_FACADE_DIR = 'nimbus/facade/';
+const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
+/** The ColumnMap of `edits` to `source`, none of which adds or removes a line break. */
+export function columnMap(source, edits) {
+    const entries = [];
+    const ordered = [...edits].sort((a, b) => a.start - b.start);
+    let line = 1;
+    let lineStart = 0;
+    let scanned = 0;
+    for (const edit of ordered) {
+        const before = source.slice(scanned, edit.start).split(LINE_BREAK);
+        if (before.length > 1) {
+            line += before.length - 1;
+            lineStart = edit.start - before[before.length - 1].length;
+        }
+        scanned = edit.start;
+        const from = source.slice(edit.start, edit.end).split(LINE_BREAK);
+        const to = edit.text.split(LINE_BREAK);
+        for (let i = 0; i < from.length; i++) {
+            const column = i === 0 ? edit.start - lineStart : 0;
+            const text = i === from.length - 1 ? to.slice(i).join('') : to[i];
+            if (text !== from[i])
+                entries.push([line + i, column, text.length, from[i]]);
+        }
+    }
+    return entries;
+}
+/** The map's root as module URLs name it. */
+const MAP_ROOT = 'file:///bundle/';
+/**
+ * The specifier that names map module `target` from map module `from`: as
+ * written when the registry already resolves it there, else the shorter of a
+ * relative path and a root-absolute one.
+ */
+function mapSpecifier(written, from, target) {
+    const base = MAP_ROOT + from;
+    try {
+        if (new URL(written, base).href === MAP_ROOT + target)
+            return written;
+    }
+    catch {
+        // Not a URL the registry reads: rewritten below.
+    }
+    const fromDir = from.split('/').slice(0, -1);
+    const parts = target.split('/');
+    let common = 0;
+    while (common < fromDir.length && common < parts.length - 1 && fromDir[common] === parts[common])
+        common++;
+    const up = fromDir.length - common;
+    const relative = (up === 0 ? './' : '../'.repeat(up)) + parts.slice(common).join('/');
+    const absolute = '/bundle/' + target;
+    return relative.length <= absolute.length ? relative : absolute;
+}
+/**
+ * Identifiers `text` never spells, raw or escaped, of `length` characters
+ * each: names the stage adds cannot be one the module declares or reads.
+ */
+function freshNames(text, length) {
+    const escaped = text.includes('\\u') ? escapedIdentifierNames(text) : new Set();
+    let n = 0;
+    return () => {
+        for (;;) {
+            const suffix = (n++).toString(36);
+            const name = '$n' + suffix.padStart(length - 2, '_');
+            if (!text.includes(name) && !escaped.has(name))
+                return name;
+        }
+    };
+}
+/** The import of a module's meta instance, as the appended line has it: `bindings` are `export as local` pairs. */
+function metaImport(id, bindings) {
+    return `import{${bindings.map(([exported, local]) => `${exported} as ${local}`).join(',')}}from${JSON.stringify(`/bundle/${ESM_META_MODULE}?${id}`)};`;
+}
+/**
+ * The module the registry evaluates for ES module `text`, read as `sites`,
+ * linked as `link` says. Lines and columns stay the file's but for the first
+ * line's prologue (`head`) and specifiers whose length changed (`columns`).
+ */
+export function stageEsModule(text, sites, link) {
+    const hashbang = text.startsWith('#!');
+    const source = hashbang ? '//' + text.slice(2) : text;
+    const fresh = freshNames(text, 6);
+    const [check, register, self] = [fresh(), fresh(), fresh()];
+    const meta = sites.metas.length > 0 ? fresh() : null;
+    const load = sites.calls.length > 0 ? fresh() : null;
+    const edits = [];
+    sites.statics.forEach((site, index) => {
+        const target = link.targets[index];
+        if (target === undefined)
+            throw new Error(`no target for specifier ${JSON.stringify(site.specifier)}`);
+        const specifier = mapSpecifier(site.specifier, link.name, target);
+        if (specifier === site.specifier)
+            return;
+        // A literal written over lines (a line continuation) keeps them: the
+        // same continuations before its closing quote.
+        const breaks = source.slice(site.start, site.end).match(/\r\n|[\n\r\u2028\u2029]/g) ?? [];
+        edits.push({ start: site.start, end: site.end, text: JSON.stringify(specifier).slice(0, -1) + breaks.map((at) => '\\' + at).join('') + '"' });
+    });
+    // `import` becomes the binding, and the rest of `import.meta` spaces but
+    // its line breaks: the same length, the same lines.
+    if (meta !== null) {
+        for (const { start, end } of sites.metas)
+            edits.push({ start, end, text: meta + source.slice(start + 6, end).replace(/[^\n\r\u2028\u2029]/g, ' ') });
+    }
+    if (load !== null)
+        for (const { start } of sites.calls)
+            edits.push({ start, end: start + 6, text: load });
+    const bindings = [['c', check], ['r', register]];
+    if (meta !== null)
+        bindings.push(['m', meta]);
+    if (load !== null)
+        bindings.push(['i', load]);
+    for (const name of link.commonJsNames ?? [])
+        bindings.push([COMMONJS_NAME_EXPORTS[name] ?? name, name]);
+    const prologue = `${check}();`;
+    const tail = `\n;${metaImport(link.id, bindings)}import*as ${self} from${JSON.stringify('/bundle/' + link.name)};${register}(${self});`;
+    let body = '';
+    let at = 0;
+    for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
+        body += source.slice(at, edit.start) + edit.text;
+        at = edit.end;
+    }
+    body += source.slice(at);
+    return { text: prologue + body + tail, head: prologue.length, tail: tail.length, hashbang, columns: columnMap(source, edits) };
+}
+/** What ESM_META_MODULE exports a Bun module's CommonJS names as. */
+const COMMONJS_NAME_EXPORTS = { require: 'q', __filename: 'f', __dirname: 'd' };
+/** The facade of a builtin or CommonJS module: its exports, read from what its meta instance's `l` loads. */
+function facadeModule(id, names, resync) {
+    const exported = names.filter((name) => name !== 'default');
+    const lines = [
+        'c();',
+        'const m = l();',
+        'export default m;',
+    ];
+    if (exported.length > 0) {
+        const read = resync
+            ? (name) => `m[${JSON.stringify(name)}]`
+            : (name) => `v(${JSON.stringify(name)})`;
+        if (!resync) {
+            // Node's CommonJS namespace: an own property's value when the module has
+            // loaded, undefined otherwise, and a throwing getter reads as undefined.
+            lines.push('const o = Object.prototype.hasOwnProperty, v = (k) => { if (m === null || m === undefined || !o.call(m, k)) return undefined; try { return m[k]; } catch { return undefined; } };');
+        }
+        lines.push(`let ${exported.map((name, i) => `$${i} = ${read(name)}`).join(', ')};`, `export { ${exported.map((name, i) => `$${i} as ${JSON.stringify(name)}`).join(', ')} };`);
+        // module.syncBuiltinESMExports() reads a builtin's names again.
+        if (resync)
+            lines.push(`s(() => { ${exported.map((name, i) => `$${i} = ${read(name)};`).join(' ')} });`);
+    }
+    lines.push('r();', metaImport(id, [['c', 'c'], ['l', 'l'], ['r', 'r'], ...(resync ? [['s', 's']] : [])]));
+    return lines.join('\n') + '\n';
+}
+/**
+ * The facade an ES module imports CommonJS module `id` through (Node's
+ * createCJSModuleWrap): it loads the module as require() does, at its place
+ * in the graph's evaluation; `default` is module.exports and each of `names`
+ * (cjs-module-exports.ts) its own property's value then.
+ */
+export function commonJsFacadeModule(id, names) {
+    return facadeModule(id, names, false);
+}
+/**
+ * The facade an ES module imports builtin `id` through (Node's
+ * getESMFacade): `default` is the builtin itself, the object require()
+ * gives, and each of `names` (node-builtin-exports.ts) its value, until
+ * module.syncBuiltinESMExports() reads them again.
+ */
+export function builtinFacadeModule(id, names) {
+    return facadeModule(id, names, true);
+}
+/**
+ * ESM_META_MODULE: one instance per staged module (`?<id>`). Its evaluation
+ * hands the module its bindings from the runner (ESM_HOST_MODULE's `host`),
+ * which tags the module with the batch evaluating it. On workerd it is the
+ * module's gate (`await`, see the header); a host with no request context to
+ * reach has none, so its graphs stay synchronous for require().
+ */
+export function metaModuleSource(gate) {
+    return [
+        `import { host } from ${JSON.stringify('/bundle/' + ESM_HOST_MODULE)};`,
+        'export const { m, i, c, r, l, s, q, f, d } = host.enter(import.meta.url);',
+        gate ? 'await 0;' : '',
+    ].join('\n');
+}
+/** ESM_HOST_MODULE: what the runner fills before the program's first import. */
+export const ESM_HOST_SOURCE = 'export const host = Object.create(null);\n';

@@ -13,11 +13,9 @@ import { ESBUILD_FACET_RUNTIME_SOURCE, TRANSFORM_FACET_RUNTIME_SOURCE } from './
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
-import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
+import { readModuleImportSites, rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs } from './module-format.js';
 import { rewriteProvidedCommonJsModules } from './provided-packages.js';
 import { withRecall } from '../vfs/recall.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
@@ -142,89 +140,19 @@ export function getSharedRuntimeExternals(specifier) {
     });
 }
 const __outputDecoder = new TextDecoder();
-/**
- * `lower` is async-module-lowering.ts's `lowerAsyncModule`, passed in because
- * this function is serialized into the transform facet.
- */
-async function transformWithEsbuild(esbuildApi, code, options, lower) {
+/** One esbuild transform, its diagnostics made serializable. */
+async function transformWithEsbuild(esbuildApi, code, options) {
     // What esbuild may keep as written: `import()` where the process's loader
-    // takes it, `import.meta` where it is bound; the caller's `supported` over
-    // that. (No helper function: this one is serialized into the transform
-    // facet, where a bundler's name-keeping wrapper is not defined.)
+    // takes it; the caller's `supported` over that. (No helper function: this
+    // one is serialized into the transform facet, where a bundler's
+    // name-keeping wrapper is not defined.)
     const supported = {
         'dynamic-import': options?.dynamicImportParent !== undefined,
-        'import-meta': options?.moduleMetadata === true,
         ...options?.supported,
     };
-    const format = options?.format || 'esm';
-    const loader = options?.loader || 'ts';
-    if (format === 'cjs') {
-        try {
-            const direct = await esbuildApi.transform(code, {
-                loader,
-                format,
-                target: options?.target || 'esnext',
-                sourcemap: options?.sourcemap ?? false,
-                minify: options?.minify ?? false,
-                jsx: options?.jsx,
-                jsxFactory: options?.jsxFactory,
-                jsxFragment: options?.jsxFragment,
-                jsxImportSource: options?.jsxImportSource,
-                jsxDev: options?.jsxDev,
-                tsconfigRaw: options?.tsconfigRaw,
-                define: options?.define,
-                supported,
-                sourcefile: options?.sourcefile,
-            });
-            return {
-                code: direct.code,
-                map: direct.map || '',
-                warnings: direct.warnings?.map((warning) => ({
-                    text: warning.text,
-                    location: warning.location,
-                })) || [],
-            };
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (!/top-level await.*not supported.*cjs/i.test(message))
-                throw error;
-        }
-        // A hashbang is valid only at the start of a script. The TLA fallback
-        // moves the body into an async function, so keep its line as a comment
-        // before either fallback pass (Vite bin/vite.js imported by Vinext).
-        if (code.startsWith('#!'))
-            code = '//' + code.slice(2);
-        // esbuild emits no CommonJS for top-level await: emit the module as ESM
-        // and lower its declarations around an async function body.
-        const esm = await esbuildApi.transform(code, {
-            loader,
-            format: 'esm',
-            target: options?.target || 'esnext',
-            sourcemap: false,
-            minify: false,
-            jsx: options?.jsx,
-            jsxFactory: options?.jsxFactory,
-            jsxFragment: options?.jsxFragment,
-            jsxImportSource: options?.jsxImportSource,
-            jsxDev: options?.jsxDev,
-            tsconfigRaw: options?.tsconfigRaw,
-            define: options?.define,
-            supported,
-            sourcefile: options?.sourcefile,
-        });
-        return {
-            code: lower(esm.code),
-            map: '',
-            warnings: esm.warnings?.map((warning) => ({
-                text: warning.text,
-                location: warning.location,
-            })) || [],
-        };
-    }
     const result = await esbuildApi.transform(code, {
-        loader,
-        format,
+        loader: options?.loader || 'ts',
+        format: options?.format || 'esm',
         target: options?.target || 'esnext',
         sourcemap: options?.sourcemap ?? false,
         minify: options?.minify ?? false,
@@ -248,11 +176,14 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
     };
 }
 /**
- * One transform request as a transform host runs it: esbuild (unless the
- * code is already CommonJS), then, for a module whose dynamic `import()` is
- * the process's, the rewrite that routes each one to the process's ESM loader.
- * `engine` is null only before esbuild is loaded, which a rewrite-only
- * request does not wait for.
+ * One transform request as a transform host runs it. An ES module the
+ * process's registry evaluates natively (native-esm.ts) answers with its
+ * code and, as its map, the JSON of its import sites
+ * (dynamic-import-rewrite.ts readModuleImportSites), which the session stages
+ * it by; TypeScript and JSX are compiled with their module syntax kept, and
+ * staged so when they have some. CommonJS keeps its code, each dynamic
+ * `import()` routed to the process's ESM loader. `engine` is null only before
+ * esbuild is loaded, which neither a rewrite nor a stage waits for.
  */
 export async function runTransformRequest(engine, code, options, runtime) {
     const parent = options?.dynamicImportParent;
@@ -267,71 +198,40 @@ export async function runTransformRequest(engine, code, options, runtime) {
             return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: 'node' } : {}) };
         // JavaScript now: its bundled records of provided packages bound, as the session binds JavaScript's (preparedTransformSource).
         const javaScript = runtime.rewriteProvidedCommonJsModules(stripped.code);
-        if (stripped.format === 'module') {
-            const lowering = { ...rest, esModule: 'node' };
-            try {
-                return await runTransformRequest(engine, javaScript, lowering, runtime);
-            }
-            catch (e) {
-                // Where the engine's stack runs out (oxc-transform.ts), the esbuild facet lowers the stripped code: it has no amaro.
-                if (typeof e === 'object' && e !== null && Reflect.get(e, 'stackExhausted') === true)
-                    Reflect.set(e, 'retry', { code: javaScript, options: lowering });
-                throw e;
-            }
-        }
+        if (stripped.format === 'module')
+            return { code: javaScript, map: JSON.stringify(runtime.readModuleImportSites(javaScript)), warnings: [], esModule: 'node' };
         return { code: parent === undefined ? javaScript : runtime.rewriteDynamicImports(javaScript, parent), map: '', warnings: [] };
     }
     if (options?.rewriteOnly) {
         if (parent === undefined)
             throw new Error('a rewrite-only transform needs dynamicImportParent');
-        return { code: runtime.rewriteDynamicImports(code, parent, options.moduleMetadata), map: '', warnings: [] };
+        return { code: runtime.rewriteDynamicImports(code, parent), map: '', warnings: [] };
     }
-    if (options?.esModule) {
-        if (parent === undefined)
-            throw new Error('an ES module transform needs dynamicImportParent');
-        try {
-            return { ...runtime.lowerEsModule(code, options.esModule, parent), esModule: options.esModule };
-        }
-        catch (e) {
-            // Nested past what a parse on this stack reaches (acorn, about 600
-            // levels): the engine's CommonJS, which in the transform facet runs out
-            // too and so goes to the esbuild facet, whose parser does not; the
-            // session's define (requestOptions) keeps Node's scope.
-            if (!(e instanceof RangeError))
-                throw e;
-            const { esModule: scope, ...rest } = options;
-            const compiled = await runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, runtime);
-            return { ...compiled, esModule: scope };
-        }
+    const compiled = options?.loader !== undefined && options.loader !== 'js';
+    if (options?.esModule && !compiled) {
+        return { code, map: JSON.stringify(runtime.readModuleImportSites(code)), warnings: [], esModule: options.esModule };
     }
     const esbuildApi = typeof engine === 'function' ? await engine() : engine;
     if (esbuildApi === null)
         throw new Error('esbuild transform before esbuild is loaded');
-    if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
-        // CJS emit replaces import.meta with an empty object even when syntax
-        // support is enabled. First erase TypeScript/JSX with the module format
-        // preserved, bind metadata references, then lower declarations. Both
-        // passes and import analysis stay in the transform facet.
-        // No ESM emit in between: it wraps a cell that assigns module.exports
-        // in __commonJS and exports that as `default`, so the lowered cell's
-        // module.exports would stop being the one the source assigned. The
-        // single CommonJS pass below is what binds such a cell, as it does for
-        // every cell that takes no metadata pass. import() is routed after it,
-        // as for every other cell: before lowering, a name the cell imports
-        // could capture the loader's.
-        const javascript = await esbuildApi.transform(code, {
-            loader: options.loader ?? 'js', target: 'esnext',
+    if (options?.esModule) {
+        // TypeScript or JSX the runtime compiles itself: with no format, its
+        // module syntax kept, then staged where it has some, and CommonJS
+        // whose import() is routed where it has none.
+        const compiledCode = (await esbuildApi.transform(code, {
+            loader: options.loader, target: 'esnext',
             jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
             jsxImportSource: options.jsxImportSource, jsxDev: options.jsxDev,
-            tsconfigRaw: options.tsconfigRaw, define: options.define,
+            tsconfigRaw: options.tsconfigRaw, define: options.define, sourcefile: options.sourcefile,
             supported: { 'dynamic-import': true, 'import-meta': true },
-        });
-        const bound = runtime.rewriteDynamicImports(javascript.code, parent, true, false);
-        const lowered = await transformWithEsbuild(esbuildApi, bound, { ...options, loader: 'js', moduleMetadata: false }, runtime.lowerAsyncModule);
-        return { ...lowered, code: runtime.rewriteDynamicImports(lowered.code, parent) };
+        })).code;
+        const sites = runtime.readModuleImportSites(compiledCode);
+        if (sites.moduleSyntax)
+            return { code: compiledCode, map: JSON.stringify(sites), warnings: [], esModule: options.esModule };
+        return { code: parent === undefined ? compiledCode : runtime.rewriteDynamicImports(compiledCode, parent), map: '', warnings: [] };
     }
-    const result = await transformWithEsbuild(esbuildApi, code, options, runtime.lowerAsyncModule);
-    return parent === undefined ? result : { ...result, code: runtime.rewriteDynamicImports(result.code, parent, options?.moduleMetadata) };
+    const result = await transformWithEsbuild(esbuildApi, code, options);
+    return parent === undefined ? result : { ...result, code: runtime.rewriteDynamicImports(result.code, parent) };
 }
 /**
  * An esbuild diagnostic as RPC can carry it: everything but \`detail\`, which
@@ -458,19 +358,6 @@ async function remotePlugin(plugin, initialOptions) {
         },
     };
 }
-/**
- * An ES module request in Node's scope carries the define that unbinds the
- * CommonJS names, which the host's engine applies where the lowering's parse
- * runs out of stack (runTransformRequest), and its result has a typeof of one
- * 'undefined' (module-format.ts esModuleScopeTypeofs; for the lowering's own
- * result, already so).
- */
-function requestOptions(options) {
-    return options?.esModule === 'node' || options?.stripTypes ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
-}
-function finishedTransform(result, options) {
-    return (options?.esModule ?? result.esModule) === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
-}
 /** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */
 function preparedTransformSource(code, options) {
     if (options?.rewriteOnly)
@@ -532,7 +419,7 @@ export class EsbuildService {
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
         this.engine = options.engine ?? null;
-        this.runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
+        this.runtime = { rewriteDynamicImports, readModuleImportSites, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
         this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
     /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */
@@ -555,18 +442,7 @@ export class EsbuildService {
         });
         return this.initPromise;
     }
-    /**
-     * Transform a single code string (TS→JS, JSX→JS, minify, etc.)
-     *
-     * Top-level await: esbuild emits no CommonJS for it, and a node cell is
-     * CommonJS. Modern CLI entries use it (nuxi's `bin/nuxi.mjs`, serve 14's
-     * `build/main.js`), so when esbuild rejects `format: 'cjs'` for that
-     * reason, the module is emitted as ESM and lowered by lowerAsyncModule:
-     * imports become requires above a returned async IIFE holding the rest,
-     * exports become `module.exports` assignments. The runner awaits the
-     * returned promise, so the awaits cannot race process teardown or VFS
-     * flushes. Every other source takes esbuild's own CommonJS output.
-     */
+    /** Transform a single code string (TS→JS, JSX→JS, minify, etc.): runTransformRequest. */
     async transform(code, options) {
         if (this.transformHost) {
             const [outcome] = await this.transformMany([{ code, options }]);
@@ -575,14 +451,14 @@ export class EsbuildService {
             return outcome;
         }
         // In the isolate the engine's own error propagates, diagnostics and all.
-        const result = await this.transformInIsolate(preparedTransformSource(code, options), requestOptions(options));
+        const result = await this.transformInIsolate(preparedTransformSource(code, options), options);
         if ('error' in result)
             throw new Error(result.error);
-        return finishedTransform(result, options);
+        return result;
     }
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     async transformInIsolate(code, options) {
-        // The engine loads for the first request that needs it (an ES module's lowering does not).
+        // The engine loads for the first request that needs it (an ES module's staging does not).
         const engine = async () => {
             await this.ensureInit();
             return this._esbuild;
@@ -602,7 +478,7 @@ export class EsbuildService {
         const positions = [];
         requests.forEach(({ code, options }, i) => {
             try {
-                prepared.push({ code: preparedTransformSource(code, options), options: requestOptions(options) });
+                prepared.push({ code: preparedTransformSource(code, options), options });
                 positions.push(i);
             }
             catch (e) {
@@ -616,16 +492,13 @@ export class EsbuildService {
             if (hosted.length !== prepared.length) {
                 throw new Error(`esbuild transform host answered ${hosted.length} of ${prepared.length} requests`);
             }
-            hosted.forEach((outcome, j) => {
-                outcomes[positions[j]] = 'error' in outcome ? outcome : finishedTransform(outcome, requests[positions[j]].options);
-            });
+            hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
             return outcomes;
         }
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                const result = await this.transformInIsolate(code, options);
-                outcomes[positions[j]] = 'error' in result ? result : finishedTransform(result, requests[positions[j]].options);
+                outcomes[positions[j]] = await this.transformInIsolate(code, options);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };

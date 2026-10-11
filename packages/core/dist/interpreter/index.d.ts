@@ -85,6 +85,14 @@ export interface Interpreter {
  */
 export declare function moduleRequests(path: string, text: string): ModuleRequest[];
 /**
+ * Whether an ES module's text awaits at its top level (an `await`, or a
+ * `for await`, outside any function): the module's evaluation can suspend.
+ * Text the parser cannot read as a module has none. The process asks only of
+ * a module whose body began and has not completed (node-shims'
+ * __nimbusEsmSuspends).
+ */
+export declare function hasTopLevelAwait(text: string): boolean;
+/**
  * Where V8 would place a fatal error's report in `text`, a module's whole
  * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
  * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a

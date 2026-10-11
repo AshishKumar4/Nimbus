@@ -29,12 +29,10 @@ export interface WrappedCommonJsCell {
  * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
- * and `loweredTail` are a lowered ES module's (EsModuleMap): its own code
- * around the module's text, which a frame counts as wrapper.
+ * (Node strips it too; `#!` is not valid inside a function).
  */
-export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope, loweredHead?: number, loweredTail?: number): WrappedCommonJsCell;
-/** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
+export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
+/** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
 export declare function columnMapModuleName(name: string): string;
 /**
  * Whether a script declares one of the wrapper's five names lexically at its
@@ -60,8 +58,8 @@ export declare function opensWithUseStrict(source: string): boolean;
  * when the process's store takes the cell's file content from the module text
  * (read back from the bundle filesystem) rather than from a data cell: the
  * store's one copy of that file, and the map's only. `esModule` is 1 for an
- * ES module lowered to CommonJS (module-format.ts): its require is its static
- * imports only, and an import() of it is its namespace.
+ * ES module the registry evaluates itself (core runtime/native-esm.ts): its
+ * module is staged text, never a wrapper, and its ColumnMap is beside it.
  */
 export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1, esModule: 0 | 1];
 /** Bytes of runtime code one launch records, and the supervisor keeps. */
