@@ -48,7 +48,6 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       this.#reader = response.body?.getReader();
     }
     _read() {
-      if (!this._consuming) { this._readableState.readingMore = false; this._consuming = true; }
       if (this.#reading) return;
       if (!this.#reader) { this.complete = true; this.push(null); return; }
       this.#reading = true;
