@@ -22,11 +22,21 @@ const oc = (argv) => classifyStagedArtifact('opencode', argv);
 assert.equal(oc([]), 'dual', 'bare opencode → dual');
 assert.equal(oc(['--interactive']), 'dual', 'opencode --interactive (flag-only) → dual');
 
+// Default-command project and option operands are not subcommands.
+for (const argv of [
+  ['project'], ['../project'], ['--', 'serve'],
+  ['--port', '4096'], ['--hostname=127.0.0.1'],
+  ['--log-level', 'DEBUG', 'project'], ['-s', 'session-id', 'project'],
+  ['--model', 'provider/model', 'project'], ['-mprovider/model', 'project'],
+  ['--cors', 'https://example.test', 'https://other.test'],
+]) assert.equal(oc(argv), 'dual', `${JSON.stringify(argv)} is a default TUI invocation`);
+
 // serve / web → resident server facet (NOT attached-TTY, NOT one-shot)
 assert.equal(oc(['serve']), 'server', 'opencode serve → server');
 assert.equal(oc(['serve', '--port', '4096']), 'server', 'opencode serve --port → server');
 assert.equal(oc(['serve', '--hostname', '127.0.0.1', '--port', '4096']), 'server');
 assert.equal(oc(['web']), 'server', 'opencode web → server');
+assert.equal(oc(['--log-level', 'DEBUG', 'serve']), 'server', 'global option operands do not hide a subcommand');
 
 // attach → attached-TTY client facet
 assert.equal(oc(['attach', 'http://127.0.0.1:4096']), 'attached', 'opencode attach <url> → attached');
