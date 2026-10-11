@@ -16,7 +16,7 @@ import type { NpmInstaller } from '../npm/installer.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
-import { isHostedWatch, isHostedWebSocket, type PeerHost } from '@nimbus-sh/fabric/peer-host.js';
+import { isHostedWatch, isHostedWebSocket, isHostedResidency, type PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
@@ -451,6 +451,7 @@ export async function composeHostedRuntime(options: HostedRuntimeOptions) {
     supervisorOp: (envelope: SupervisorOpEnvelope) => owner.supervisorOp(envelope),
     /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
     hostedFetch: (request: Request): Promise<Response | null> => {
+      if (isHostedResidency(request)) return owner.peerHost.reside(request);
       if (isHostedWatch(request)) return owner.peerHost.watch(request);
       if (isHostedWebSocket(request)) return owner.peerHost.routeWebSocket(request);
       return Promise.resolve(null);

@@ -171,10 +171,16 @@ export async function hostResponse(
     if (response.webSocket || response.body === null) { lease.release(); return response; }
     const declared = request.method === 'HEAD' ? null : response.headers.get('Content-Length');
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    const { readable, writable } = Number.isSafeInteger(length)
-      ? new FixedLengthStream(length)
-      : new IdentityTransformStream();
-    ctx.waitUntil(response.body.pipeTo(writable).finally(lease.release).catch(() => {}));
+    const cancelled = new AbortController();
+    const signal = AbortSignal.any([request.signal, cancelled.signal]);
+    // Native identity pipes notice a disconnected reader on the next write.
+    // The terminal's cancellation algorithm also ends a stalled source now.
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>({
+      cancel(reason) { cancelled.abort(reason); },
+      ...(Number.isSafeInteger(length) ? { expectedLength: length } : {}),
+    });
+    const body = Number.isSafeInteger(length) ? response.body.pipeThrough(new FixedLengthStream(length), { signal }) : response.body;
+    ctx.waitUntil(body.pipeTo(writable, { signal }).finally(lease.release).catch(() => {}));
     return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
   } catch (error) { lease.release(); throw error; }
 }

@@ -68,7 +68,7 @@
 
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, hostResponse } from './host-activity.js';
+import { hostActivity, hostResponse, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
@@ -90,6 +90,7 @@ import {
   HOSTED_WEBSOCKET_CAPABILITY_HEADER,
   HOSTED_WEBSOCKET_KEY_HEADER,
   HOSTED_WATCH_HEADER,
+  HOSTED_RESIDENCY_HEADER,
   HOSTED_FAILURE_HEADER,
   headerPairs,
   isolateToken,
@@ -309,6 +310,11 @@ interface PeerPlacement {
   isolateToken: string;
 }
 
+interface PeerResidency {
+  abort: AbortController;
+  socket: WebSocket | null;
+}
+
 class PeerProcessHost implements ProcessHost {
   /**
    * A peer buys independent CPU and its own storage budget, and pays for both
@@ -326,6 +332,7 @@ class PeerProcessHost implements ProcessHost {
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
+  private readonly residencies = new Map<string, PeerResidency>();
   private reconciliation: Promise<void> | undefined;
   private closed = false;
 
@@ -380,6 +387,8 @@ class PeerProcessHost implements ProcessHost {
     const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
     const loss = new HostLoss();
     let stopObserving = () => {};
+    const residency: PeerResidency = { abort: new AbortController(), socket: null };
+    this.residencies.set(params.workerKey, residency);
     try {
       if (this.closed) throw new Error('Nimbus: the process host is closed');
       await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { pid: params.pid, workerKey: params.workerKey, peerName: placement.peerName } satisfies PeerOwner);
@@ -395,6 +404,16 @@ class PeerProcessHost implements ProcessHost {
         webSocketCapability,
         startArgs: params.startArgs,
       }));
+      if (this.closed) throw new Error('Nimbus: the process host is closed');
+      const response = await this.withPeer(placement.peerName, (stub) => stub.fetch(new Request('https://nimbus-process.invalid/', {
+        signal: residency.abort.signal,
+        headers: { Upgrade: 'websocket', [HOSTED_RESIDENCY_HEADER]: params.workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: webSocketCapability },
+      })).then((response) => peerFetchAnswer(response, webSocketCapability)));
+      residency.abort.signal.throwIfAborted();
+      if (response.status !== 101 || !response.webSocket || response.headers.get(HOST_INCARNATION_HEADER) !== opened.incarnation) {
+        throw new Error('Nimbus: the hosting peer did not establish coordinator residency');
+      }
+      residency.socket = response.webSocket;
       if (this.closed) throw new Error('Nimbus: the process host is closed');
       const observation = hostActivity(this.ctx).observe(
         (signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal),
@@ -417,6 +436,8 @@ class PeerProcessHost implements ProcessHost {
           released = true;
           stopObserving();
           loss.release();
+          residency.abort.abort();
+          this.residencies.delete(params.workerKey);
           this.tokensInUse.delete(params.pid);
           await this._cancel(params.workerKey, placement.peerName);
           await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
@@ -428,6 +449,8 @@ class PeerProcessHost implements ProcessHost {
     } catch (error) {
       stopObserving();
       loss.release();
+      residency.abort.abort();
+      this.residencies.delete(params.workerKey);
       this.tokensInUse.delete(params.pid);
       // Awaited, not fired off: a spawn that rejects must mean nothing was
       // left running, which is what a throw from `processes().spawn` means on
@@ -456,6 +479,8 @@ class PeerProcessHost implements ProcessHost {
   async close(): Promise<void> {
     this.closed = true;
     hostActivity(this.ctx).close();
+    for (const residency of this.residencies.values()) residency.abort.abort();
+    this.residencies.clear();
     await this.clearPlacements();
   }
 

@@ -5,6 +5,9 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 import { peerPlacement } from '../../packages/fabric/src/process-host.ts';
+import { launchManager } from './lib/facet-launch-harness.mjs';
+import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
+import { reservePort } from '../../packages/worker/src/session/port-capability.ts';
 
 adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
 const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: ['nodejs_compat'], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
@@ -60,16 +63,19 @@ for (const reset of [false, true]) {
   const before = await peer.peerHost.inspect(placement.workerKey);
   assert.equal(before.found, true);
   assert.equal(before.facet, t.world.boots[0].facetName);
+  assert.equal([...peer.peerHost.records.values()][0].residencies.size, 1, 'one passive socket belongs to this coordinator incarnation');
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'idle owns no peer RPC stub');
   const lease = hostActivity(t.ctx).acquire(); await lease.ready;
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 1, 'only the active fetch watch owns a stub');
   lease.release(); await turns();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
   assert.equal(await (await process.handleHttpRequest(new Request('http://process/'))).text(), 'ok');
+  await turns();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'a data call does not retain its routing stub');
   await process.release();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
   assert.equal(await peerPlacement(t.ctx, t.params.pid), null);
+  assert.equal([...peer.peerHost.records.values()][0].residencies.size, 0, 'bounded cancellation closes residency before replying');
   assert.deepEqual(await peer.peerHost.inspect(placement.workerKey), { found: false, incarnation: before.incarnation, facet: null });
 }
 {
@@ -118,5 +124,19 @@ for (const code of [1000, 1005, 1006, 'error']) {
     server.dispatchEvent(event);
     assert.equal(record.watchers.size, 0, 'duplicate close/error is harmless');
   } finally { lease.release(); await process.release(); }
+}
+{
+  const world = createFacetWorld(() => ({ startProcess: async () => ({}) }), { resolveConfig: false });
+  const { ns } = createPeerNamespace(world, { LOADER: world.loader });
+  const published = [];
+  const gen = launchManager('durable-refusal', { env: { NIMBUS_PROCESS_HOST: 'peer', NIMBUS_SESSION: ns }, hooks: { onSpawn: (...args) => published.push(args) } });
+  const before = gen.processes.getAll().length;
+  await assert.rejects(gen.manager.spawnWorker('export default {}', 'durable', '/home/user', { durable: { owner: 'owned' } }), /durable.*facet-hosted/);
+  const owner = await deriveResidentOwner('/home/user', ['server.js']);
+  await reservePort(gen.ctx, { owner, preferredPort: 3000, occupiedPorts: new Set() });
+  await assert.rejects(gen.manager.spawnNode('require("http").createServer().listen(3000)', { cwd: '/home/user', argv: ['server.js'], attachedTty: true }), /durable.*facet-hosted/);
+  assert.equal(gen.processes.getAll().length, before, 'unsupported durable hosting does not allocate a pid');
+  assert.deepEqual(published, [], 'unsupported durable hosting never announces a spawn');
+  await gen.manager.closeLaunches();
 }
 console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');

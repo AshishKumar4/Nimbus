@@ -553,7 +553,7 @@ for (const mode of PROCESS_HOST_MODES) {
   await handle.booted();
   const activity = host.acquireActivity(); await activity.ready;
   [...host.peers.values()][0].die(new Error('peer reset under a running process'));
-  await assert.rejects(handle.done, /its host was reset by the platform \(Nimbus: the process host ended its active watch\)/,
+  await assert.rejects(handle.done, /its host was reset by the platform/,
     'active observation reports the host reset');
   activity.release();
   assert.equal(retired.length, 1, 'and the writer identity it held is reclaimed');

@@ -97,6 +97,7 @@ export interface HostedHttpResponse {
 }
 export type HostedReply<T> = T | { hostLost: string };
 export const HOSTED_WATCH_HEADER = 'x-nimbus-hosted-watch';
+export const HOSTED_RESIDENCY_HEADER = 'x-nimbus-hosted-residency';
 export const HOSTED_FAILURE_HEADER = 'x-nimbus-hosted-failure';
 class LostHostedProcess extends Error {}
 
@@ -122,6 +123,7 @@ export function isHostedWebSocket(request: Request): boolean {
   return Boolean(request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER));
 }
 export function isHostedWatch(request: Request): boolean { return request.headers.has(HOSTED_WATCH_HEADER); }
+export function isHostedResidency(request: Request): boolean { return request.headers.has(HOSTED_RESIDENCY_HEADER); }
 
 /** The embedder's boot-spec authority. */
 export interface PeerHostOptions {
@@ -147,6 +149,7 @@ interface HostedProcessRecord {
   closed: boolean;
   failure?: Error;
   watchers: Map<WebSocket, () => void>;
+  residencies: Map<WebSocket, () => void>;
   release(): Promise<void>;
 }
 
@@ -292,10 +295,12 @@ export class PeerHost {
       webSocketCapability: hostOpts.webSocketCapability,
       closed: false,
       watchers: new Map(),
+      residencies: new Map(),
       release: () => {
         record.closed = true;
         return releasing ??= (async () => {
           for (const [socket, release] of record.watchers) { release(); socket.close(1000, 'process released'); }
+          for (const [socket, release] of record.residencies) { release(); socket.close(); }
           const facet = await opened.promise.catch(() => null);
           await facet?.release();
           if (ownsRow) await this.ctx.storage.delete(hostingKey);
@@ -341,6 +346,7 @@ export class PeerHost {
       facet.lost.catch((error) => {
         record.failure = error instanceof Error ? error : new Error(String(error));
         for (const [socket, release] of record.watchers) { release(); socket.close(1011, 'process host lost'); }
+        for (const [socket, release] of record.residencies) { release(); socket.close(); }
       });
       await located;
       if (record.closed) throw new Error('Nimbus: the peer process was cancelled while opening');
@@ -459,32 +465,51 @@ export class PeerHost {
       const record = await this.awaitRecord(key);
       const facet = await record.facet;
       const lease = facet.acquireActivity(request.signal);
-      let held: WebSocket;
-      let released = false;
-      const release = () => {
-        if (released) return;
-        released = true;
-        request.signal.removeEventListener('abort', ended);
-        record.watchers.delete(held);
-        lease.release();
-      };
-      const ended = () => { release(); held?.close(); };
       try {
         await lease.ready;
         request.signal.throwIfAborted();
         if (record.failure) throw new LostHostedProcess(errorText(record.failure));
         if (record.closed) throw new Error('Nimbus: the hosted process is no longer running');
-        const [client, server] = Object.values(new WebSocketPair());
-        held = server;
-        record.watchers.set(server, release);
-        server.addEventListener('close', ended);
-        server.addEventListener('error', ended);
-        server.accept();
-        request.signal.addEventListener('abort', ended, { once: true });
-        return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
-      } catch (error) { release(); throw error; }
+        return this.socket(request, record.watchers, lease.release);
+      } catch (error) { lease.release(); throw error; }
     });
     return result instanceof Response ? result : this.gone(capability, result.hostLost);
+  }
+
+  /** The coordinator retains its endpoint unaccepted; only the peer receives events. */
+  async reside(request: Request): Promise<Response> {
+    const key = request.headers.get(HOSTED_RESIDENCY_HEADER) ?? '';
+    const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+    if (!capability || !await this.authorized(key, capability)) return new Response('Not found', { status: 404 });
+    const result = await this.answer(key, async () => {
+      const record = await this.awaitRecord(key);
+      await record.facet;
+      request.signal.throwIfAborted();
+      return this.socket(request, record.residencies, () => {}, () => {
+        if (record.closed || record.residencies.size) return;
+        this.ctx.waitUntil(this.cancel(key).catch((error) => console.error('Nimbus: coordinator residency teardown failed', error)));
+      });
+    });
+    return result instanceof Response ? result : this.gone(capability, result.hostLost);
+  }
+
+  private socket(request: Request, sockets: Map<WebSocket, () => void>, releaseOwner: () => void, afterEnd?: () => void): Response {
+    const [client, server] = Object.values(new WebSocketPair());
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      request.signal.removeEventListener('abort', ended);
+      sockets.delete(server);
+      releaseOwner();
+    };
+    const ended = () => { release(); server.close(); afterEnd?.(); };
+    sockets.set(server, release);
+    server.addEventListener('close', ended);
+    server.addEventListener('error', ended);
+    server.accept();
+    request.signal.addEventListener('abort', ended, { once: true });
+    return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
   }
 
   private async authorized(key: string, capability: string): Promise<boolean> {
