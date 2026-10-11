@@ -95,9 +95,9 @@ export class MemoryVFS implements VFS {
     return { dir, name };
   }
 
-  /** VFS.fileStore: this one, through any wrapper of it. */
+  /** VFS.fileStore: its tree, whichever object (a wrapper of it) is asked. */
   get fileStore(): object {
-    return this;
+    return this.root;
   }
 
   private stats(entry: Entry): VfsStat {

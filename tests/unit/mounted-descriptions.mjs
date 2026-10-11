@@ -985,7 +985,12 @@ await check('a re-sent open of a description on an awaiting mount stops with its
 await check('a held write overlays its file through a source that wraps the same store anew each time', async () => {
   const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
   backend.writeFile('/x', enc.encode('0123'));
-  files.vfs.mount('/fw', () => unranged(backend));
+  // A wrapper that keeps its receiver: a getter of the backend's is asked of the wrapper.
+  const wrapped = () => new Proxy(backend, {
+    get: (target, key, receiver) => (key === 'writeRange' ? undefined : Reflect.get(target, key, receiver)),
+    has: (target, key) => key !== 'writeRange' && key in target,
+  });
+  files.vfs.mount('/fw', wrapped);
   try {
     const proc = files.bind({ pid: ++pid, cred: USER });
     const fd = proc.open('/fw/x', { read: true, write: true });
