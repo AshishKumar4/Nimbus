@@ -54,7 +54,16 @@ export interface RegistryCacheEntry {
 /** `json`'s value; `fallback` for none, or one that does not parse. */
 function parsed<T>(json: string | undefined, fallback: T): T {
   if (!json) return fallback;
+  // Most of a record's maps are empty: no parse for those.
+  if (json === '{}') return {} as T;
   try { return JSON.parse(json) as T; } catch { return fallback; }
+}
+
+/** A JSON-encoded name → range map; undefined when it names none. */
+function ranges(json: string | undefined): Record<string, string> | undefined {
+  if (!json || json === '{}') return undefined;
+  const map = parsed<Record<string, string>>(json, {});
+  return Object.keys(map).length > 0 ? map : undefined;
 }
 
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
@@ -78,24 +87,25 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
 
 /** A record's edges: its dependencies, required peers and optional dependencies. */
 export function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, 'dependencies' | 'peerDependencies' | 'optionalDependencies'> {
-  const peers = parsed<Record<string, string>>(record.peerDepsJson, {});
-  const optional = parsed<Record<string, string>>(record.optionalDepsJson, {});
   return {
     dependencies: parsed<Record<string, string>>(record.depsJson, {}),
-    peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
-    optionalDependencies: Object.keys(optional).length > 0 ? optional : undefined,
+    peerDependencies: ranges(record.peerDepsJson),
+    optionalDependencies: ranges(record.optionalDepsJson),
   };
 }
 
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage {
   const platform = parsed<{ os?: unknown; cpu?: unknown; libc?: unknown }>(record.platformJson, {});
+  const edges = recordEdges(record);
   return {
     name: record.name,
     version: record.version,
     tarballUrl: record.tarballUrl,
     integrity: record.integrity,
-    ...recordEdges(record),
+    dependencies: edges.dependencies,
+    peerDependencies: edges.peerDependencies,
+    optionalDependencies: edges.optionalDependencies,
     os: Array.isArray(platform.os) ? platform.os : undefined,
     cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
     libc: Array.isArray(platform.libc) ? platform.libc : undefined,
