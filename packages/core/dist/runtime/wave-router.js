@@ -80,6 +80,20 @@ export function namespaceWaveRouter(namespace, credential) {
             const cleanup = view(cred, undefined, owner);
             return applyRecord(ns, cleanup, record, pinsOf(ns, record));
         },
+        async open(call, cred, guard, owner) {
+            // Pinned under the wave's lease alone: its description's later writes are not this wave's to admit.
+            const ns = view(cred, undefined, owner);
+            const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
+            const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
+            const pinned = pinOf(ns, parentOf(call.path));
+            const opened = await openOnMount(file, {
+                flags, mode: call.mode, refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
+            }, false, () => {
+                guard();
+                return pinned();
+            });
+            return { file, stat: statOf(opened) };
+        },
     };
 }
 function parentOf(path) {
@@ -188,7 +202,7 @@ async function applyRecord(ns, cleanup, record, pinned) {
                 await ns.unlink(call.path);
             else if (call.call === 'rmdir')
                 await ns.rmdir(call.path);
-            // An open description's truncate, by its name: a mount numbers its files its own way.
+            // A truncate the process made by the file's name: one through a description is the description's (WaveIngest).
             else if (call.call === 'ftruncate')
                 await ns.truncate(call.path, call.size);
             else if (call.call === 'rm') {
@@ -213,17 +227,9 @@ async function applyRecord(ns, cleanup, record, pinned) {
             // A mount keeps no owner or times of a link apart from what it names: refused, as a backend without them refuses.
             else if (call.call === 'lchown' || call.call === 'lutimes')
                 throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
-            else if (call.call === 'open') {
-                // open(2) to write, as the namespace's open decides it for every caller.
-                const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
-                const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
-                return statOf(await openOnMount(file, {
-                    flags, mode: call.mode, refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
-                }, false, pinned));
-            }
-            // A description's close: a mount keeps no description (its open made none).
-            else if (call.call === 'close')
-                return null;
+            // An open is the router's own (WaveRouter.open), and a description's close the binding's.
+            else if (call.call === 'open' || call.call === 'close')
+                throw new Error(`internal: a ${call.call} call is not a record the router applies`);
             else
                 await ns.symlink(call.target, call.path);
             return null;
@@ -249,8 +255,8 @@ async function applyRecord(ns, cleanup, record, pinned) {
             return statOf(await ns.stat(record.path));
         }
         case 'data-call': {
-            // The namespace's call with the whole bytes; a description's write or
-            // append by its name, as a mount numbers its files its own way.
+            // The namespace's call with the whole bytes; a write or append through
+            // a description is the description's (WaveIngest), this one by name.
             await pinned();
             if (record.call === 'appendFile' || record.call === 'append') {
                 const prior = await ns.stat(record.path);

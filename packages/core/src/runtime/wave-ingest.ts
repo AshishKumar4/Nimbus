@@ -54,6 +54,8 @@ interface RoutedFile {
   offset?: number;
   /** A writeFile's or appendFile's umask (W7Call umask). */
   umask?: number;
+  /** A write or append through the binding's description of a file on a mount: made on it, wherever its name leads now. */
+  described?: Description;
 }
 
 type Placement = { resolved: string; epoch: number };
@@ -76,6 +78,8 @@ interface Routing {
   /** A name placed on this filesystem: rechecked right before its commit. */
   placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, epoch: number) => void;
   reach?: WriteStreamOptions['mountReach'];
+  /** The binding's descriptions (WriteStreamOptions.descriptions): a mounted one's calls are its own. */
+  descriptions?: WaveDescriptions;
   guard: () => void;
   settleBefore: () => Promise<void>;
   /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */

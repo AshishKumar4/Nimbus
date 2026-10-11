@@ -44,20 +44,24 @@ export declare function openFollows(flags: RuntimeFileHandle['flags']): boolean;
  * `settled` runs right before the answer, or the change.
  */
 export declare function openOnMount(file: PinnedFile, open: MountedOpen, describes: boolean, settled?: () => Awaitable<void>): Awaitable<VfsStat>;
-export interface MountedDescriptionOptions extends MountedOpen {
-    /** The name opened, in the namespace. */
-    name: string;
+/** What a mounted description is held with, whatever opened it. */
+export interface MountedDescriptionContext {
     /** The descriptors' scope: whose pending writes this process reads (processView). */
     scope: DescriptorScope;
-    /** The file `name` leads to now (CompositeVFS.pin): what the open and its description hold, whatever later moves at the name. */
-    pin(name: string, follow: boolean): Awaitable<PinnedFile>;
-    /** Its files answer only by awaiting (an asynchronous mount). */
-    awaits: boolean;
+    refuse: Refuse;
     /** O_SYNC: each write in the mount before it returns. */
     sync: boolean;
     /** What a description holds unwritten before a write is EFBIG. */
     bufferedWriteBytes: number;
 }
+export interface MountedDescriptionOptions extends MountedOpen, MountedDescriptionContext {
+    /** The name opened, in the namespace. */
+    name: string;
+    /** The file `name` leads to now (CompositeVFS.pin): what the open and its description hold, whatever later moves at the name. */
+    pin(name: string, follow: boolean): Awaitable<PinnedFile>;
+}
 /** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export declare function openMounted(options: MountedDescriptionOptions): Awaitable<Description>;
+/** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
+export declare function describeMounted(context: MountedDescriptionContext, file: PinnedFile, ino: number): Description;
 //# sourceMappingURL=mounted-description.d.ts.map

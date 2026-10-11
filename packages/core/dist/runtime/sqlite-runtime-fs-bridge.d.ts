@@ -139,6 +139,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * and its file alive until its close.
      */
     private readonly waveDescriptions;
+    private waveDescription;
+    /** `node`, the description a wave's open of `id` made: the session's descriptor of it. */
+    private keepWaveDescription;
     /**
      * A lease; with `held`, a process's own (ProcessFiles' bridge), which ends
      * with the process; with its `terms`, a delegation, whose recalls that

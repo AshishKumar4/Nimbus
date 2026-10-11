@@ -32,8 +32,8 @@ import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, reportLost } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
+import { BUFFERED_WRITE_BYTES, openFollows, openMounted } from '../vfs/mounted-description.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -771,7 +771,7 @@ class AwaitingProcessBridge {
      * or on an asynchronous mount's refusal, `awaited`.
      */
     either(paths, sync, awaited) {
-        // Relative to one of this face's own descriptors: the bridge has never seen it.
+        // Relative to a descriptor whose description awaits: the bridge would refuse it.
         const settled = () => { this.live(); return awaited(); };
         if (paths.some((path) => typeof path !== 'string' && 'directory' in path && this.awaits(path.directory)))
             return settled();
@@ -845,14 +845,29 @@ class AwaitingProcessBridge {
                 throw error;
             }
             const stat = await this.namespace.stat(resolved, { follow });
-            return stat === null ? null : runtimeStatOf(stat);
+            if (stat === null)
+                return null;
+            const view = stat.type === 'file' ? await this.viewed(resolved, follow) : undefined;
+            return view ? { ...runtimeStatOf(stat), size: view.byteLength } : runtimeStatOf(stat);
         });
     }
     readFile(path, options) {
-        return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => this.namespace.readFile((await this.path(path, options?.followSymlinks !== false)))));
+        return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => {
+            const follow = options?.followSymlinks !== false;
+            const name = await this.path(path, follow);
+            return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
+        }));
     }
     readRange(path, offset, length, options) {
-        return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => await readRangeOrWhole(this.namespace, await this.path(path), offset, length)));
+        return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
+            const name = await this.path(path);
+            const view = await this.viewed(name, true);
+            return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length);
+        }));
+    }
+    /** A mounted file as this process sees it, its held writes applied (processView); undefined when it holds none for it. */
+    async viewed(name, follow) {
+        return processView(this.scope, () => this.namespace.pin(name, { follow, sync: false }));
     }
     writeFile(path, bytes, options) {
         return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
@@ -989,13 +1004,13 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.open(path, flags, options), async () => {
             const opened = openFlags(flags);
             const mutates = opened.write || opened.create || opened.truncate || opened.append;
-            const name = await this.path(path, opened.followSymlinks);
+            const name = await this.path(path, openFollows(opened));
             const files = this.owned(mutates ? options : undefined);
             const node = await openMounted({
                 name, flags: opened, mode: flags.mode,
                 refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
                 pin: (file, follow) => files.pin(file, { follow, sync: false }),
-                awaits: true, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
+                sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
             });
             this.live();
             return this.descriptors.issue(node, opened);

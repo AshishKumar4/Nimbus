@@ -1,5 +1,5 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
-import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, describeMounted, openFollows, openMounted } from '../vfs/mounted-description.js';
 import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
@@ -165,8 +165,8 @@ export class SqliteRuntimeFsBridge {
     }
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
     processView(located, follow) {
-        const { mount, namespace, path } = located;
-        return processView(this.scope, () => (mount.stat(path) === null ? null : mount.readFile(path)), () => namespace.pin(path, { follow, sync: true }).key);
+        // The synchronous face pins through synchronous faces only: every answer is a value.
+        return processView(this.scope, () => located.namespace.pin(located.path, { follow, sync: true }));
     }
     writeFile(path, bytes, options = {}) {
         return called({ syscall: 'write', path }, () => {
@@ -355,9 +355,11 @@ export class SqliteRuntimeFsBridge {
             const mutates = normalizedFlags.write || normalizedFlags.create ||
                 normalizedFlags.truncate || normalizedFlags.append;
             const owner = mutates ? options.mutationOwner : undefined;
+            // The name is looked up as the open decides it (openFollows): O_CREAT|O_EXCL answers for the name itself.
+            const follows = openFollows(normalizedFlags);
             const located = mutates
-                ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open', owner)
-                : this.locate(path, normalizedFlags.followSymlinks);
+                ? this.locateMutation(path, follows, 'open', owner)
+                : this.locate(path, follows);
             if (located === null)
                 throw fsError('ELOOP', 'open', path);
             if (located.mount) {
@@ -365,7 +367,7 @@ export class SqliteRuntimeFsBridge {
                 const node = openMounted({
                     name: located.path, flags: normalizedFlags, mode: flags.mode,
                     refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
-                    awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+                    sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
                 });
                 // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.
                 if (isPromise(node))
@@ -375,6 +377,10 @@ export class SqliteRuntimeFsBridge {
             const p = located.path;
             if (p === '')
                 return this.openRoot(path, normalizedFlags);
+            // O_CREAT|O_EXCL of a name that is there, a link included, is EEXIST,
+            // before O_NOFOLLOW's ELOOP: Linux's order, and the mounted open's.
+            if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p)))
+                throw fsError('EEXIST', 'open', path);
             // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
             // open on the link itself, and what it points at is exactly what the
             // caller declined to open.
@@ -382,8 +388,6 @@ export class SqliteRuntimeFsBridge {
                 throw fsError('ELOOP', 'open', path);
             this.assertExpectedRevision(p, normalizedFlags.expectedRevision);
             const exists = this.vfs.exists(p);
-            if (normalizedFlags.exclusive && normalizedFlags.create && exists)
-                throw fsError('EEXIST', 'open', path);
             if (normalizedFlags.directory && (!exists || !this.vfs.isDirectory(p)))
                 throw fsError('ENOTDIR', 'open', path);
             if (!exists && !normalizedFlags.create)
@@ -690,20 +694,20 @@ export class SqliteRuntimeFsBridge {
     waveDescriptions = {
         adopt: (id, ino, rights, path, cred) => {
             const node = this.rawVfs.describeInode(ino, path, cred, rights, this.vfs.principal, this.vfs.holds);
-            if (node === null)
-                return null;
-            const handle = this.descriptors.issue(node, openFlags({ read: rights.read, write: rights.write }));
-            // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
-            const prior = this.scope.waveDescriptions.get(id);
-            if (prior !== undefined && this.scope.handles.has(prior))
-                this.close(prior);
-            this.scope.waveDescriptions.set(id, handle.id);
-            return handle.id;
+            return node === null ? null : this.keepWaveDescription(id, node, rights);
         },
+        // Each write of a wave's description is in its mount before the wave is answered (sync).
+        describe: (id, file, ino, rights) => this.keepWaveDescription(id, describeMounted({
+            scope: this.scope, refuse: (code, syscall) => fsError(code, syscall, file.name), sync: true, bufferedWriteBytes: this.bufferedWriteBytes,
+        }, file, ino), rights),
         node: (id) => {
-            const handleId = this.scope.waveDescriptions.get(id);
-            // A wave's description is one this binding adopted: the engine's, on SQLite.
-            return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+            const node = this.waveDescription(id);
+            // The engine's, on this filesystem: a mount's is the binding's alone (mounted).
+            return node === undefined || node.mounted ? undefined : node;
+        },
+        mounted: (id) => {
+            const node = this.waveDescription(id);
+            return node?.mounted ? node : undefined;
         },
         handle: (id) => {
             const handleId = this.scope.waveDescriptions.get(id);
@@ -718,6 +722,20 @@ export class SqliteRuntimeFsBridge {
                 this.close(handleId);
         },
     };
+    waveDescription(id) {
+        const handleId = this.scope.waveDescriptions.get(id);
+        return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+    }
+    /** `node`, the description a wave's open of `id` made: the session's descriptor of it. */
+    keepWaveDescription(id, node, rights) {
+        const handle = this.descriptors.issue(node, openFlags({ read: rights.read, write: rights.write }));
+        // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
+        const prior = this.scope.waveDescriptions.get(id);
+        if (prior !== undefined && this.scope.handles.has(prior))
+            this.close(prior);
+        this.scope.waveDescriptions.set(id, handle.id);
+        return handle.id;
+    }
     /**
      * A lease; with `held`, a process's own (ProcessFiles' bridge), which ends
      * with the process; with its `terms`, a delegation, whose recalls that

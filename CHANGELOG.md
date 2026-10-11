@@ -29,9 +29,17 @@ published independently in the `@nimbus-sh` npm scope.
   backend of one identity reports, and both faces now refuse what a
   credentialed backend's modes deny. A description holds the file its open
   found (`CompositeVFS.pin`): an unmount, a mount or a link changed at its
-  name later moves neither its I/O nor its held writes. The synchronous face
-  refuses a descriptor on an asynchronous mount with that mount's `EAGAIN`,
-  not `EBADF`. `CompositeVFS.writesInPlace` is removed.
+  name later moves neither its I/O nor its held writes, and a write through it
+  is reported to `observeWrites` only while its mount is still at its point.
+  A wave's `open` of a file on a mount keeps it as the process's description
+  (`WaveDescriptions.describe`, `WaveRouter.open`): that description's
+  writes, appends and truncates act on that file, not on whatever its name
+  leads to later. `O_CREAT|O_EXCL` of a name that is a link, followed or not,
+  is `EEXIST` on SQLite too (it created the link's target, or answered
+  `ELOOP` first). Held writes are read back by every read of their file, by
+  path or descriptor, awaited ones included. The synchronous face refuses a
+  descriptor on an asynchronous mount with that mount's `EAGAIN`, not
+  `EBADF`. `CompositeVFS.writesInPlace` is removed.
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the
   namespace's `WaveIngest` (`@nimbus-sh/core/runtime/wave-ingest.js`,
   `ProcessFiles.waves`). `CredentialedVfs.writeStream` and `writeBatchPlaced`

@@ -88,7 +88,11 @@ function openAccess(flags, there, describes) {
 }
 /** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export function openMounted(options) {
-    return andThen(options.pin(options.name, openFollows(options.flags)), (file) => andThen(openOnMount(file, options, true), (stat) => new MountedDescription(options, file, stat)));
+    return andThen(options.pin(options.name, openFollows(options.flags)), (file) => andThen(openOnMount(file, options, true), (stat) => describeMounted(options, file, stat.ino ?? 0)));
+}
+/** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
+export function describeMounted(context, file, ino) {
+    return new MountedDescription(context, file, ino);
 }
 /**
  * The description of `name` on a mount. A write goes in place (writeRange);
@@ -101,45 +105,44 @@ export function openMounted(options) {
  */
 class MountedDescription {
     options;
+    pinned;
     ino;
     mounted = true;
     /** The file's backend operations, where the open's lookup landed (CompositeVFS.pin). */
     files;
     /** The path they are handed. */
     at;
-    /** The namespace's name for it, when it was opened. */
-    name;
-    /** Which file it is (PinnedFile.key): whose held writes this process's reads of it overlay (processView). */
-    file;
     immediate;
     inPlace = true;
     pending = [];
     held = 0;
-    constructor(options, file, stat) {
+    constructor(options, pinned, ino) {
         this.options = options;
-        this.ino = stat.ino ?? 0;
-        if (options.awaits)
+        this.pinned = pinned;
+        this.ino = ino;
+        if (pinned.awaits)
             this.awaits = true;
-        this.files = file.files;
-        this.at = file.path;
-        this.name = file.name;
-        this.file = file.key;
-        this.immediate = options.sync || options.awaits;
+        this.files = pinned.files;
+        this.at = pinned.path;
+        this.immediate = options.sync || pinned.awaits;
     }
-    path() { return this.name; }
-    key() { return this.file; }
+    /** The namespace's name for it, when it was opened. */
+    path() { return this.pinned.name; }
+    /** Which file it is (PinnedFile.key): whose held writes this process's reads of it overlay (processView). */
+    key() { return this.pinned.key; }
     stat() {
         return andThen(this.files.stat(this.at), (there) => {
             if (there === null)
                 throw this.options.refuse('ENOENT', 'fstat');
             const now = runtimeStatOf(there);
-            const view = this.viewed();
-            return view ? { ...now, size: view.byteLength } : now;
+            return andThen(this.viewed(), (view) => (view ? { ...now, size: view.byteLength } : now));
         });
     }
     read(offset, length) {
         const view = this.viewed();
-        return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.at, offset, length);
+        if (view === undefined)
+            return readRangeOrWhole(this.files, this.at, offset, length);
+        return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : readRangeOrWhole(this.files, this.at, offset, length)));
     }
     write(offset, bytes) {
         const written = this.inPlaceAt(offset, bytes);
@@ -193,10 +196,7 @@ class MountedDescription {
      * writes.
      */
     viewed() {
-        return processView(this.options.scope, () => {
-            const file = this.whole();
-            return isPromise(file) ? null : file;
-        }, this.file);
+        return processView(this.options.scope, this.pinned);
     }
     heldAppend(bytes) {
         return andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));

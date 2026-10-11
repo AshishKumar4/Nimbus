@@ -167,6 +167,8 @@ export interface PinnedFile {
     readonly name: string;
     /** Which file it is (its mount, and the path there): the same for every pin of it, whatever name reached it. */
     readonly key: string;
+    /** Its backend answers only by awaiting. */
+    readonly awaits: boolean;
 }
 export interface MountInfo {
     readonly point: string;

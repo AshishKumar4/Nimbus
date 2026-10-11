@@ -10,6 +10,7 @@
 import { type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { PinnedFile } from '../vfs/composite.js';
 type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
 type EngineDescription = Omit<VfsOpenDescription, 'path'>;
 /** An open file description: what a process's descriptors (dups included) share. Its name is known at once. */
@@ -68,14 +69,15 @@ export declare function closeDescriptions(scope: DescriptorScope): unknown[];
 export declare function reportLost(lost: readonly unknown[]): void;
 /**
  * A mounted file as this process sees it while it holds buffered writes to
- * it (VFS-PF-001 viewAs, page-cache semantics): the file `file` names
- * (PinnedFile.key) with each of this process's descriptions of it applied,
- * in open order. Undefined when it holds none pending: then the mount's own
- * file is the answer. Another process's pending writes are never in it, nor
- * a file that only shares its name. `file` is asked only once some
+ * it (VFS-PF-001 viewAs, page-cache semantics): `file` (pinned where its
+ * name led, CompositeVFS.pin) read through its pin, with each of this
+ * process's descriptions of that same file (PinnedFile.key) applied, in open
+ * order. Undefined when it holds none pending for it: then the file's own
+ * content is the answer. Another process's pending writes are never in it,
+ * nor a file that only shares its name. `file` is pinned only once some
  * description holds writes.
  */
-export declare function processView(scope: DescriptorScope, read: () => Uint8Array | null, file: string | (() => string)): Uint8Array | undefined;
+export declare function processView(scope: DescriptorScope, file: PinnedFile | (() => Awaitable<PinnedFile>)): Awaitable<Uint8Array | undefined>;
 /** The descriptor operations, over a scope: answered in the caller's turn unless the description awaits. */
 export declare class Descriptors {
     private readonly scope;
