@@ -47,7 +47,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
@@ -73,7 +73,6 @@ const FILES = {
   'resolution/lib/one.js': 'module.exports = 1;',
   'resolution/main.cjs': String.raw`
 const path = require('path');
-const fs = require('fs');
 const out = (id, run) => { try { const p = run(); console.log(id + ' ' + (p.startsWith('/') ? path.relative(__dirname, p) : p)); } catch (e) { console.log(id + ' ' + e.code); } };
 out('sync', () => require.resolve('rx'));
 out('require-first', () => require.resolve('rx/require-first'));
@@ -103,9 +102,7 @@ out('no-implicit-mjs', () => require.resolve('./m'));
 out('no-implicit-cjs', () => require.resolve('./self'));
 out('suffix-directory-is-not-file', () => require.resolve('./not-file'));
 out('exports-exact', () => require.resolve('rx/extensionless'));
-fs.symlinkSync('../real/linked', path.join(__dirname, 'node_modules/rx-link'));
 out('symlink-package', () => require.resolve('rx-link'));
-fs.symlinkSync('./self.cjs', path.join(__dirname, 'source-link.cjs'));
 out('symlink-file', () => require.resolve('./source-link.cjs'));
 `,
   'resolution/m.mjs': 'export default 1;',
@@ -993,6 +990,8 @@ for (const [path, text] of Object.entries(FILES)) {
   mkdirSync(dirname(join(host, path)), { recursive: true });
   writeFileSync(join(host, path), text);
 }
+symlinkSync('../real/linked', join(host, 'resolution/node_modules/rx-link'));
+symlinkSync('./self.cjs', join(host, 'resolution/source-link.cjs'));
 const expected = new Map(PROGRAMS.map((program) => {
   const hostOptions = program === 'dns-unavailable.cjs' ? '--expose-internals -r ./dns-unavailable-binding.cjs ' : '';
   const ran = spawnSync('sh', ['-c', `node ${hostOptions}${program}`], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
@@ -1009,6 +1008,8 @@ try {
     const made = await session.run(`mkdir -p ${dirs.join(' ')}`, 30_000);
     assert.equal(made.status, 0, made.stdout);
     for (const [path, text] of Object.entries(FILES)) await session.writeFile(`${W}/${path}`, text);
+    const links = await session.run(`ln -s ../real/linked ${W}/resolution/node_modules/rx-link && ln -s ./self.cjs ${W}/resolution/source-link.cjs`, 30_000);
+    assert.equal(links.status, 0, links.stdout);
     for (const program of PROGRAMS) {
       const r = await session.run(`cd ${W} && node ${program} > out.txt 2>/dev/null; echo "exit $?" >> out.txt; cat out.txt`, 120_000);
       const got = `${splitScenarioOutput(r.stdout).lines.join('\n')}\n`;

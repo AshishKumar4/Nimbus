@@ -201,6 +201,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			if (!builtins.has(name)) builtins.set(name, moduleMap[name]());
 			return builtins.get(name);
 		}
+		if (id.startsWith('node:')) throw Object.assign(new Error('No such built-in module: ' + id), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
 		const path = resolveFilename(id, dir);
 		if (path !== null) return path.startsWith('node:') ? requireModule(path, dir, parentFilename) : load(path, undefined, parentFilename);
 		if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
