@@ -105,8 +105,6 @@ export interface TreePlan<P extends TreePackage, I extends TreePackage> {
     readonly failures: readonly TreeFailure[];
     /** Placements (and failure ids) a path of required edges reaches from the project. */
     readonly required: ReadonlySet<string>;
-    /** Placements only devDependencies reach: what `--omit=dev` leaves out. */
-    readonly dev: ReadonlySet<string>;
     /** Placements (and failure ids) left out: optional failures and refusals, what the host leaves out, and their optional sets. */
     readonly skipped: ReadonlySet<string>;
     /** Why each one left out is (by placement or failure id). */

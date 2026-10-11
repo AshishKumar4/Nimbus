@@ -157,19 +157,21 @@ export function namedPackages(manifest, specs, flags = {}) {
 /**
  * A project's roots, as npm's Node loads the root's edges, the later
  * replacing the earlier of one name: its peers, dependencies and optional
- * dependencies (manifestEdges), then its devDependencies; then the packages
- * named on the command line, explicit requests of their save type.
- * `implicit`: names the project needs without declaring them (a global
- * prefix's installed packages), each met by what is there.
+ * dependencies (manifestEdges), then its devDependencies, but with
+ * `production` (`--omit=dev`); then the packages named on the command line,
+ * explicit requests of their save type. `implicit`: names the project needs
+ * without declaring them (a global prefix's installed packages), each met
+ * by what is there.
  */
-export function projectRoots(manifest, named, { implicit = [], legacyPeerDeps = false } = {}) {
+export function projectRoots(manifest, named, { implicit = [], legacyPeerDeps = false, production = false } = {}) {
     const roots = new Map();
     for (const name of implicit)
         roots.set(name, { name, range: '*', type: 'prod' });
     for (const edge of manifestEdges(manifest ?? {}, { legacyPeerDeps }))
         roots.set(edge.name, edge);
-    for (const [name, range] of Object.entries(manifest?.devDependencies ?? {}))
-        roots.set(name, { name, range, type: 'dev' });
+    if (!production)
+        for (const [name, range] of Object.entries(manifest?.devDependencies ?? {}))
+            roots.set(name, { name, range, type: 'dev' });
     for (const { name, range, saveType } of named)
         roots.set(name, { name, range: range ?? 'latest', type: saveType, explicit: true });
     return [...roots.values()];

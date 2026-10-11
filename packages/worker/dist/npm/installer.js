@@ -193,7 +193,7 @@ export class NpmInstaller {
         let tree;
         let usedLockfile = false;
         if (opts.fromLockfile) {
-            const locked = await this.treeFromPackageLock(projDir, project, principal, log, registry);
+            const locked = await this.treeFromPackageLock(projDir, project, principal, opts.production === true, log, registry);
             tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, frozen: true });
             log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
         }
@@ -204,8 +204,8 @@ export class NpmInstaller {
                 return record === null ? [] : [{ at, pkg: resolvedFromRecord(record) }];
             });
             tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
-            // The lockfile answered every edge: nothing resolved, nothing failed, nothing extraneous.
-            usedLockfile = lockfile !== null && tree.plan.failures.length === 0 && tree.plan.extraneous.size === 0 && [...tree.plan.nodes.values()].every((node) => !node.planned);
+            // The lockfile answered every edge: nothing resolved, nothing failed.
+            usedLockfile = lockfile !== null && tree.plan.failures.length === 0 && [...tree.plan.nodes.values()].every((node) => !node.planned);
             log(usedLockfile ? `Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.` : `Resolved ${tree.plan.nodes.size} packages.`);
         }
         phases['resolve'] = Date.now() - phaseStart;
@@ -228,14 +228,13 @@ export class NpmInstaller {
         }
         opts.signal?.throwIfAborted();
         // ── Phase 2: Hoist ────────────────────────────────────────────────
-        // The tree to install: what the plan holds, but what it leaves out and,
-        // with --omit=dev, what only devDependencies need.
+        // The tree to install: what the plan holds, but what it leaves out.
         phaseStart = Date.now();
         setInstallPhase('hoist');
         const resolved = new Map();
         const nested = new Map();
         for (const [at, node] of plan.nodes) {
-            if (plan.skipped.has(at) || (opts.production && plan.dev.has(at)))
+            if (plan.skipped.has(at))
                 continue;
             (at.includes('/node_modules/') ? nested : resolved).set(at, node.pkg);
         }
@@ -1158,7 +1157,7 @@ export class NpmInstaller {
         const manifest = await fs.exists(pkgJsonPath) ? readPackageJson(await fs.readFileString(pkgJsonPath))?.manifest ?? null : null;
         const named = namedPackages(manifest, opts.packages ?? [], opts);
         const implicit = opts.global ? [...(lockfile?.keys() ?? [])].filter((at) => !at.includes('/node_modules/')) : [];
-        const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true });
+        const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true, production: opts.production === true });
         const explicit = new Set(named.map(({ name }) => name));
         const rooted = new Set(roots.map(({ name }) => name));
         for (const name of Object.keys(manifest?.devDependencies ?? {})) {
@@ -1295,7 +1294,7 @@ export class NpmInstaller {
      * required, and a swapped package resolves its swap target at the locked
      * version.
      */
-    async treeFromPackageLock(projDir, fs, principal, log, registry) {
+    async treeFromPackageLock(projDir, fs, principal, production, log, registry) {
         let lockName;
         for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
             if (await fs.exists(`${projDir}/${name}`)) {
@@ -1331,6 +1330,8 @@ export class NpmInstaller {
         const swapPlacements = [];
         for (const [key, entry] of Object.entries(lock.packages)) {
             if (key === '')
+                continue;
+            if (production && entry.dev === true)
                 continue;
             const placement = key.slice('node_modules/'.length);
             const folderName = placement.split('/node_modules/').pop() ?? placement;

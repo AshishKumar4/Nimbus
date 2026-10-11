@@ -122,14 +122,16 @@ export declare function namedPackages(manifest: ProjectManifest | null, specs: r
 /**
  * A project's roots, as npm's Node loads the root's edges, the later
  * replacing the earlier of one name: its peers, dependencies and optional
- * dependencies (manifestEdges), then its devDependencies; then the packages
- * named on the command line, explicit requests of their save type.
- * `implicit`: names the project needs without declaring them (a global
- * prefix's installed packages), each met by what is there.
+ * dependencies (manifestEdges), then its devDependencies, but with
+ * `production` (`--omit=dev`); then the packages named on the command line,
+ * explicit requests of their save type. `implicit`: names the project needs
+ * without declaring them (a global prefix's installed packages), each met
+ * by what is there.
  */
-export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { implicit, legacyPeerDeps }?: {
+export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { implicit, legacyPeerDeps, production }?: {
     implicit?: readonly string[];
     legacyPeerDeps?: boolean;
+    production?: boolean;
 }): TreeRoot[];
 /**
  * package.json (`json`, as parsed) with what the command line named saved,
