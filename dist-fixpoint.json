@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "64ccd3b2136d76bf94f458e50de081602bb32721b7001bae9b0fafed6bd3be39",
+  "fingerprint": "5a71bfda64c9c5bb7d72e2813765228248f9dada7be10b494ae1cf245eec970c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -539,8 +539,8 @@
     "packages/core/dist/runtime/realm.d.ts.map": "6da956c0790e0716f6dd8ad27195cbd60933595f765d9f21f5c38b56b10601d9",
     "packages/core/dist/runtime/realm.js": "1f25f83c90287b02125843b3a5fce0014b7ed29eb6cb5ea81caab30d6594b03b",
     "packages/core/dist/runtime/require-resolution.d.ts": "d1fe48f174f6762fb830669e6ffe9412cec0af12b485d44af4fa93d1f63cdf51",
-    "packages/core/dist/runtime/require-resolution.d.ts.map": "5d2f41dfb96a811bc4cb7a76918f49f2710a87308388f25cc67cf60b29c80eec",
-    "packages/core/dist/runtime/require-resolution.js": "06334dad1dcc80514f3706b0f7405ac068e4803d4b64ed8445c4602708666db1",
+    "packages/core/dist/runtime/require-resolution.d.ts.map": "c178fd95c0de7cb22737d0226edf6e9d111864154e0b90b17519f3f84168c653",
+    "packages/core/dist/runtime/require-resolution.js": "f661f9a5a17d6a69937b4b94ed3a0cfe6f3e8f434b522f2a0689c33bb29a5589",
     "packages/core/dist/runtime/require-resolver.d.ts": "de73f6e95ad7aa97a35b646895da98ddc6acccf99692f5fe5b4159034e041060",
     "packages/core/dist/runtime/require-resolver.d.ts.map": "d3f7a99f7f3e092f40af25f912edd6d60cb6069e60f651a124cdb29c06570c13",
     "packages/core/dist/runtime/require-resolver.js": "8fa9502a1d84167dfbb189178418abc73aef27445a001ffd6a97a7ba88c50bb4",
@@ -1404,7 +1404,7 @@
     "packages/core/src/runtime/realm-websocket-guest.ts": "b1d5ad7e429ad903e5480744ff026a09ad81635cfeb2300623066363fba6ad23",
     "packages/core/src/runtime/realm-websocket.ts": "773e377733b8d5271abd5cc4e9aee95ce901691f668677d32c22692af6ccbca0",
     "packages/core/src/runtime/realm.ts": "366a6d874631e017a8fcf538158f693e08fe0d9651a6459cba132d4d459d7e80",
-    "packages/core/src/runtime/require-resolution.ts": "c3cf8c692c903c48702128159a19b670aafb70a508a6b08640e8bd1915f4d9e0",
+    "packages/core/src/runtime/require-resolution.ts": "9008cf071f4352756953233478bba641c3731feb29b0647ebad21c3253a76e53",
     "packages/core/src/runtime/require-resolver.ts": "1268b68dafa4c7dd365270970c32be4759e35c442645111f22d1bb06b1621de6",
     "packages/core/src/runtime/require-wrappers.ts": "1422e8c3661aa89f9496f71c9a643cf2fb0dc19d8451e2e3c987ad9368ba7195",
     "packages/core/src/runtime/rolldown-build.ts": "021d428d41ff89ee8a21ecd2a3932342bbcee24aff107b88761b968a1ebfa46c",
