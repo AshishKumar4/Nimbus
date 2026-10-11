@@ -131,7 +131,7 @@ export async function planTree(roots, host) {
         queue = next;
         if (layer.length === 0)
             continue;
-        const answers = await host.resolve(layer.map(({ edge }) => edge));
+        const answers = await host.resolve(layer);
         layer.forEach(({ edge, at }, i) => {
             pending.delete(at);
             settled.add(at);

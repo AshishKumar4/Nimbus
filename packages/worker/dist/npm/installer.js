@@ -33,7 +33,8 @@ import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
-import { decidePlacement, nestedPlacement, visiblePlacements, MAX_NEST_DEPTH } from '@nimbus-sh/core/_shared/npm-placement.js';
+import { placementName, visiblePlacements } from '@nimbus-sh/core/_shared/npm-placement.js';
+import { planTree, projectRoots } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -233,7 +234,16 @@ export class NpmInstaller {
             phaseStart = Date.now();
             setInstallPhase('resolve');
             log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout)...`);
-            const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry });
+            // What the lockfile says is installed is kept where it meets an edge
+            // (its registry record says what it depends on); the rest resolves.
+            const installed = (at) => {
+                const entry = lockfile?.get(at);
+                if (entry === undefined)
+                    return null;
+                const record = recordOf(entry);
+                return record === null ? null : resolvedFromRecord(record);
+            };
+            const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry, installed });
             resolved = tree.resolved;
             nested = tree.nested;
             phases['resolve'] = Date.now() - phaseStart;
@@ -506,22 +516,13 @@ export class NpmInstaller {
             log(`[npm] note: ${ev.from} has no Workers-compatible build${marker}: ${ev.reason}${hint}`);
         };
         const __f2Diag = (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
-        // Per-walk state — supervisor side. Root by name, nested by placement
-        // path, `placed` is both; `pending` is dispatched and unanswered,
-        // `settled` answered whatever the answer was.
+        // What the walk reports: root placements by name, nested ones by
+        // placement path; dependencies it could not resolve, name → reason.
         const resolved = new Map();
         const nested = new Map();
-        const placed = new Map();
-        const pending = new Set();
-        const settled = new Set();
-        // Dependencies the walk asked for and could not resolve, name → reason.
         const unresolved = new Map();
-        // EBADPLATFORM refusals (os/cpu/libc allowlists), in walk order.
-        // Announced as `[skip]` lines at record time; required-vs-optional is
-        // classified at end of walk, when every required edge has been seen.
-        const refusals = new Map();
-        const optionalNames = new Set(); // X.5-G G1
-        let queue = Object.entries(specs).map(([name, range]) => ({ name, range, from: '', kind: 'dep' }));
+        // `from` is the dependent's placement, '' for the project; where each
+        // edge goes is the shared rule's (core _shared/npm-placement.ts).
         const cacheWritesPending = [];
         let totalPackumentBytes = 0;
         let totalPackumentsDecoded = 0;
@@ -573,240 +574,160 @@ export class NpmInstaller {
             // runs its bucket as wide as its own Dynamic Worker headroom allows.
             maxPeers: RESOLVE_PEER_CAP,
         });
-        // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
-        // submitMany batch.
-        while (queue.length > 0) {
-            // Decide each edge (decidePlacement); one whose nearest visible
-            // placement is in flight waits a layer.
-            const layer = [];
-            const deferred = [];
-            for (const edge of queue) {
-                const decision = decidePlacement(edge, placed, pending);
-                if (decision.kind === 'wait') {
-                    deferred.push(edge);
-                    continue;
+        // One BFS layer at a time, each dispatched as ONE submitMany batch: the
+        // one engine's plan (core _shared/npm-tree.ts) over the resolver facets,
+        // with what is installed read from the lockfile (`installed`).
+        const plan = await planTree(Object.entries(specs).map(([name, range]) => ({ name, range, optional: optionalRoots.has(name) })), {
+            resolve: async (layer) => {
+                if (__f2Diag)
+                    log(`[f2-frontier] N=${layerN} width=${layer.length} resolved-so-far=${resolved.size}`);
+                // Track peak — the layer is dispatched in parallel inside the pool.
+                if (layer.length > inFlightPeak)
+                    inFlightPeak = layer.length;
+                totalLayers++;
+                // Build per-package tasks. Each task gets its own pre-loaded
+                // cache slice (only entries for THIS name) so the per-task RPC
+                // stays small. Bounded to 16 versions per name — enough to cover
+                // ~2 majors of typical packages, well under any RPC arg size cap.
+                const tasks = layer.map(({ edge, at }) => {
+                    const taskSpec = {
+                        name: edge.name,
+                        range: edge.range,
+                        cachedEntries: this.cache.getRegistryVersions(edge.name).slice(0, 16),
+                        isOptional: edge.optional,
+                        fetchTimeoutMs: 15_000,
+                        retries: 3,
+                        registry,
+                    };
+                    return { key: at, args: taskSpec };
+                });
+                // Dispatch the layer. Fanout routes it in-DO when the session's
+                // Dynamic Worker headroom holds the layer, else across sibling DOs.
+                let results;
+                const layerT0 = Date.now();
+                try {
+                    results = await fanoutPool.submitMany(tasks, NPM_RESOLVE_ONE_TASK);
+                    layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms/${layerRoute.taken?.topology}`);
                 }
-                if (decision.kind === 'met') {
-                    // A peer met by a version outside its range: said the way npm does.
-                    if (decision.mismatch) {
-                        const pkg = placed.get(decision.at);
-                        log(`  [warn] peer ${edge.name}@${edge.range} from ${edge.from} is met by ${pkg.name}@${pkg.version} (${decision.at})`);
+                catch (e) {
+                    // Per anti-requirement: no fallback. Log + propagate.
+                    const msg = `${describeError(e)} (layer width ${layer.length}, ${layerRoute.taken?.topology})`;
+                    log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
+                    throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`, { cause: e });
+                }
+                // Each dispatched edge is answered, so a result the fanout
+                // failed to deliver is recorded instead of skipped.
+                const answers = layer.map(({ edge }, i) => {
+                    const res = results[i];
+                    const taskName = edge.name;
+                    if (!res)
+                        return { failed: `resolver fanout returned no result at layer ${layerN}` };
+                    // Forward messages + events. `advisory` events are the policy's
+                    // "cannot run here" list — one note per name per install.
+                    for (const m of res.messages)
+                        log(m);
+                    for (const ev of res.events) {
+                        try {
+                            emitRegistryEvent(ev);
+                        }
+                        catch { /* swallow sink errors */ }
+                        if (ev.type === 'advisory')
+                            noteAdvisory(ev);
                     }
-                    continue;
-                }
-                if (settled.has(decision.at))
-                    continue; // failed once, on record under the name
-                if (decision.kind === 'too-deep') {
-                    unresolved.set(edge.name, `${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels (cycle with incompatible ranges)`);
-                    settled.add(decision.at);
-                    continue;
-                }
-                pending.add(decision.at);
-                layer.push({ edge, placement: decision.at });
-            }
-            queue = deferred;
-            if (__f2Diag) {
-                log(`[f2-frontier] N=${layerN} width=${layer.length} resolved-so-far=${resolved.size} settled=${settled.size}`);
-            }
-            if (layer.length === 0)
-                break;
-            // Track peak — the layer is dispatched in parallel inside the pool.
-            if (layer.length > inFlightPeak)
-                inFlightPeak = layer.length;
-            totalLayers++;
-            // Build per-package tasks. Each task gets its own pre-loaded
-            // cache slice (only entries for THIS name) so the per-task RPC
-            // stays small. Bounded to 16 versions per name — enough to cover
-            // ~2 majors of typical packages, well under any RPC arg size cap.
-            const tasks = layer.map(({ edge: { name, range }, placement }) => {
-                const taskSpec = {
-                    name,
-                    range,
-                    cachedEntries: this.cache.getRegistryVersions(name).slice(0, 16),
-                    isOptional: optionalNames.has(name),
-                    fetchTimeoutMs: 15_000,
-                    retries: 3,
-                    registry,
-                };
-                return { key: placement, args: taskSpec };
-            });
-            // Dispatch the layer. Fanout routes it in-DO when the session's
-            // Dynamic Worker headroom holds the layer, else across sibling DOs.
-            let results;
-            const layerT0 = Date.now();
-            try {
-                results = await fanoutPool.submitMany(tasks, NPM_RESOLVE_ONE_TASK);
-                layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms/${layerRoute.taken?.topology}`);
-            }
-            catch (e) {
-                // Per anti-requirement: no fallback. Log + propagate.
-                const msg = `${describeError(e)} (layer width ${layer.length}, ${layerRoute.taken?.topology})`;
-                log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
-                throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`, { cause: e });
-            }
-            // Stitch per-package results into supervisor state. The dispatched
-            // layer — not the returned array — drives the loop, so a result the
-            // fanout failed to deliver is recorded instead of skipped.
-            for (let i = 0; i < layer.length; i++) {
-                const res = results[i];
-                const { edge, placement } = layer[i];
-                const taskName = edge.name;
-                pending.delete(placement);
-                settled.add(placement);
-                if (!res) {
-                    unresolved.set(taskName, `resolver fanout returned no result at layer ${layerN}`);
-                    continue;
-                }
-                // Forward messages + events. `advisory` events are the policy's
-                // "cannot run here" list — one note per name per install.
-                for (const m of res.messages)
-                    log(m);
-                for (const ev of res.events) {
-                    try {
-                        emitRegistryEvent(ev);
+                    // Accumulate cache writes for end-of-walk flush.
+                    for (const cw of res.cacheWrites)
+                        cacheWritesPending.push(cw);
+                    // cache-obs-2: harvest per-task cache events for end-of-walk fold.
+                    if (res.cacheStatEvents)
+                        fanoutCacheStatEvents.push(...res.cacheStatEvents);
+                    // One `npm http` line per packument, reporting the tier that actually
+                    // served it. A skipped task issued no request, so it gets no line.
+                    if (res.packumentSource === 'network') {
+                        this.npmLog('http', npmHttpFetchLine(packumentUrl(taskName, registry), res.packumentElapsedMs));
                     }
-                    catch { /* swallow sink errors */ }
-                    if (ev.type === 'advisory')
-                        noteAdvisory(ev);
-                }
-                // Accumulate cache writes for end-of-walk flush.
-                for (const cw of res.cacheWrites)
-                    cacheWritesPending.push(cw);
-                // cache-obs-2: harvest per-task cache events for end-of-walk fold.
-                if (res.cacheStatEvents)
-                    fanoutCacheStatEvents.push(...res.cacheStatEvents);
-                // One `npm http` line per packument, reporting the tier that actually
-                // served it. A skipped task issued no request, so it gets no line.
-                if (res.packumentSource === 'network') {
-                    this.npmLog('http', npmHttpFetchLine(packumentUrl(taskName, registry), res.packumentElapsedMs));
-                }
-                else if (res.packumentSource !== 'skipped') {
-                    this.npmLog('http', npmHttpCacheLine(packumentUrl(taskName, registry)));
-                }
-                totalPackumentBytes += res.packumentBytesDecoded;
-                if (res.packumentSource === 'r2-cache')
-                    r2Wins++;
-                else if (res.packumentSource === 'network')
-                    r2Losses++;
-                if (res.packumentBytesDecoded > 0)
-                    totalPackumentsDecoded++;
-                // w6-reject: an os/cpu/libc platform-gate refusal — npm's
-                // EBADPLATFORM. Announced as a [skip] line now and classified
-                // required-vs-optional at end of walk, when the required-edge
-                // closure is final. Table rejects are advisories handled above and
-                // never reach this branch.
-                if (res.error && res.error.type === 'w6-reject') {
-                    refusals.set(taskName, res.error.reason);
-                    const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
-                    log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
-                    emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
-                    continue;
-                }
-                // Resolution failure. Optional (X.5-G G1) edges are allowed to
-                // disappear; anything else is a dependency the project asked for
-                // and did not get, so it is recorded and surfaced as an install
-                // failure.
-                if (res.error && res.error.type === 'unresolved') {
-                    if (optionalNames.has(taskName)) {
-                        const reason = `optional dep unresolved: ${res.error.reason}`;
-                        log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
-                        emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
-                        continue;
+                    else if (res.packumentSource !== 'skipped') {
+                        this.npmLog('http', npmHttpCacheLine(packumentUrl(taskName, registry)));
                     }
-                    unresolved.set(taskName, res.error.reason);
-                    continue;
-                }
-                const pkg = res.pkg;
-                if (!pkg) {
-                    // Every deliberate skip reports 'skipped'. Anything else that
-                    // returns no package is a resolver bug, and dropping it here is
-                    // how a required dependency plus its whole subtree used to
-                    // vanish from an install that then reported success.
-                    if (res.packumentSource !== 'skipped') {
-                        unresolved.set(taskName, 'resolver returned no package and no reason');
+                    totalPackumentBytes += res.packumentBytesDecoded;
+                    if (res.packumentSource === 'r2-cache')
+                        r2Wins++;
+                    else if (res.packumentSource === 'network')
+                        r2Losses++;
+                    if (res.packumentBytesDecoded > 0)
+                        totalPackumentsDecoded++;
+                    // w6-reject: an os/cpu/libc platform-gate refusal — npm's
+                    // EBADPLATFORM. Announced as a [skip] line now and classified
+                    // required-vs-optional at end of walk, when the required-edge
+                    // closure is final. Table rejects are advisories handled above and
+                    // never reach this branch.
+                    if (res.error && res.error.type === 'w6-reject') {
+                        const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
+                        log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
+                        emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
+                        return { refused: res.error.reason };
                     }
-                    continue;
-                }
-                // X.5-G G1: silent-skip platform-native bindings sourced from
-                // optionalDependencies. The task returns the pkg raw; the
-                // supervisor classifies it against the package ABI policy.
-                if (optionalNames.has(taskName)) {
-                    if (isOptionalNativeBinding({
-                        name: pkg.name,
-                        os: pkg.os, cpu: pkg.cpu, libc: pkg.libc,
-                        main: pkg.main,
-                    })) {
-                        const reason = `optional native binding (os=${pkg.os ?? '*'}, cpu=${pkg.cpu ?? '*'}, libc=${pkg.libc ?? '*'}, main=${pkg.main || '?'})`;
-                        log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
-                        emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
-                        continue;
+                    // Resolution failure: a dependency the project asked for and did
+                    // not get; the plan skips it, with what needs it, if it is optional.
+                    if (res.error && res.error.type === 'unresolved')
+                        return { failed: res.error.reason };
+                    const pkg = res.pkg;
+                    if (!pkg) {
+                        // Every deliberate skip reports 'skipped'. Anything else that
+                        // returns no package is a resolver bug, and dropping it here is
+                        // how a required dependency plus its whole subtree used to
+                        // vanish from an install that then reported success.
+                        return res.packumentSource === 'skipped' ? { omitted: 'skipped by the resolver' } : { failed: 'resolver returned no package and no reason' };
                     }
-                }
-                // A W6 swap answers with another name; place what came back.
-                const isRoot = placement === taskName;
-                const actual = isRoot ? pkg.name : nestedPlacement(edge.from, pkg.name);
-                if (placed.has(actual))
-                    continue;
-                placed.set(actual, pkg);
-                settled.add(actual);
-                if (isRoot)
-                    resolved.set(pkg.name, pkg);
-                else
-                    nested.set(actual, pkg);
-                // Edge extraction, from this package's own placement. Peers are
-                // the required ones only (resolve-one-facet drops the optional).
-                for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
-                    queue.push({ name: depName, range: depRange, from: actual, kind: 'dep' });
-                }
-                const optDeps = pkg.optionalDependencies;
-                if (optDeps) {
-                    for (const [depName, depRange] of Object.entries(optDeps)) {
-                        optionalNames.add(depName);
-                        queue.push({ name: depName, range: depRange, from: actual, kind: 'dep' });
+                    // X.5-G G1: a platform-native binding the package ABI policy
+                    // cannot run is left out where it is optional.
+                    if (isOptionalNativeBinding({ name: pkg.name, os: pkg.os, cpu: pkg.cpu, libc: pkg.libc, main: pkg.main })) {
+                        return { package: pkg, skipIfOptional: `optional native binding (os=${pkg.os ?? '*'}, cpu=${pkg.cpu ?? '*'}, libc=${pkg.libc ?? '*'}, main=${pkg.main || '?'})` };
                     }
-                }
-                if (pkg.peerDependencies) {
-                    for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
-                        queue.push({ name: peerName, range: peerRange, from: actual, kind: 'peer' });
-                    }
-                }
-            }
-            layerN++;
-        }
-        // G2: a refused package is required iff it is reachable from a
-        // required root — every selected spec except optionalDependencies
-        // roots — through required edges (`dependencies` minus the package's
-        // own optionalDependencies, which npm overrides as optional, and
-        // required peers). Computed now over the resolved graph: the walk
-        // sees names in BFS order, so incremental propagation would freeze a
-        // dev/optional first sighting before a later required edge lands.
-        const requiredNames = new Set();
-        // Followed by name over every placement, root first.
-        const byName = new Map(resolved);
-        for (const pkg of nested.values())
-            if (!byName.has(pkg.name))
-                byName.set(pkg.name, pkg);
-        const pendingRequired = Object.keys(specs).filter((name) => !optionalRoots.has(name));
-        for (let i = 0; i < pendingRequired.length; i++) {
-            const name = pendingRequired[i];
-            if (requiredNames.has(name))
+                    return { package: pkg };
+                });
+                layerN++;
+                return answers;
+            },
+            installed: async (placements) => placements.map((at) => opts.installed?.(at) ?? null),
+            peerMismatch: (edge, at, version) => {
+                // A peer met by a version outside its range: said the way npm does.
+                log(`  [warn] peer ${edge.name}@${edge.range} from ${edge.from} is met by ${placementName(at)}@${version} (${at})`);
+            },
+        });
+        // The tree: what is placed and what is kept, but what is skipped.
+        for (const [at, pkg] of [...plan.planned.map(({ at, pkg }) => [at, pkg]), ...plan.kept]) {
+            if (plan.skipped.has(at))
                 continue;
-            requiredNames.add(name);
-            const pkg = byName.get(name);
-            if (!pkg)
+            if (at.includes('/node_modules/'))
+                nested.set(at, pkg);
+            else
+                resolved.set(at, pkg);
+        }
+        // What could not be placed: a required one is unresolved (a refused one
+        // is a refusal, below); an optional one is skipped, said as it was.
+        for (const { edge, at, reason, refused } of plan.failures) {
+            if (refused)
                 continue;
-            const optional = pkg.optionalDependencies ?? {};
-            for (const dep of Object.keys(pkg.dependencies)) {
-                if (!Object.hasOwn(optional, dep))
-                    pendingRequired.push(dep);
+            if (!plan.skipped.has(at)) {
+                unresolved.set(edge.name, reason);
+                continue;
             }
-            for (const peer of Object.keys(pkg.peerDependencies ?? {}))
-                pendingRequired.push(peer);
+            log(`[resolve-fanout] [skip] ${edge.name} — optional dep unresolved: ${reason}`);
+            emitRegistryEvent({ type: 'transitive-skip', from: edge.name, reason: `optional dep unresolved: ${reason}` });
         }
-        const rejected = [];
-        for (const [name, reason] of refusals) {
-            rejected.push({ name, reason, required: requiredNames.has(name) });
+        for (const { at, pkg } of plan.planned) {
+            if (!plan.skipped.has(at) || plan.failures.some((f) => f.at === at))
+                continue;
+            const reason = plan.reasons.get(at);
+            if (reason === undefined)
+                continue;
+            log(`[resolve-fanout] [skip] ${pkg.name} — ${reason}`);
+            emitRegistryEvent({ type: 'transitive-skip', from: pkg.name, reason });
         }
+        // Refusals: npm's EBADPLATFORM, required when a required path reaches them.
+        const rejected = plan.failures
+            .filter(({ refused }) => refused)
+            .map(({ edge, at, reason }) => ({ name: edge.name, reason, required: plan.required.has(at) }));
         // End-of-walk: flush all cache writes in one RPC-equivalent call
         // (this.cache is a SQLite handle; one putRegistryEntries call =
         // O(N) prepared statements within a single DO event-loop turn,
@@ -1234,42 +1155,31 @@ export class NpmInstaller {
         // Names the top-level pass already announced — the walk dedupes its
         // own advisories against it.
         const advised = new Set();
-        if (explicitPackages && explicitPackages.length > 0) {
-            // Explicit packages: npm install react react-dom@18.2.0
-            for (const pkg of explicitPackages) {
-                const parsed = parseExplicitPackageSpec(pkg);
-                specs[parsed.name] = parsed.range;
-            }
-            const applied = this.applyW6Registry(specs, new Set(), { advised });
-            return { specs: applied.specs, devOnly, optionalRoots, advised };
-        }
-        // Read from package.json
+        // Every declared dependency is a root (core npm-tree.ts projectRoots),
+        // with the packages named on the command line (`npm install react
+        // react-dom@18.2.0`), which win their names: one plan for the tree, as
+        // npm makes it. What cannot run here is named by the advisory pass
+        // below; nothing a project declares is quietly left out of node_modules.
         const pkgJsonPath = projDir + '/package.json';
-        if (!await fs.exists(pkgJsonPath))
-            return { specs, devOnly, optionalRoots, advised };
-        try {
-            const pkgJson = JSON.parse(await fs.readFileString(pkgJsonPath));
-            // Every declared dependency is a spec. What cannot run here is
-            // named by the advisory pass below; nothing a project declares is
-            // quietly left out of node_modules.
-            for (const [name, range] of Object.entries(pkgJson.dependencies || {})) {
-                specs[name] = range;
+        let manifest = null;
+        if (await fs.exists(pkgJsonPath)) {
+            try {
+                manifest = JSON.parse(await fs.readFileString(pkgJsonPath));
             }
-            for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
-                if (name in specs || production)
-                    continue;
-                specs[name] = range;
-                devOnly.add(name);
-            }
-            // npm semantics: an optionalDependencies entry overrides the same
-            // name in dependencies — it is a best-effort root, not required.
-            for (const [name, range] of Object.entries(pkgJson.optionalDependencies || {})) {
-                specs[name] = range;
-                optionalRoots.add(name);
-            }
+            catch { /* corrupt package.json */ }
         }
-        catch { /* corrupt package.json */ }
-        const applied = this.applyW6Registry(specs, optionalRoots, { declared: true, devOnly, advised });
+        const named = (explicitPackages ?? []).map((pkg) => parseExplicitPackageSpec(pkg));
+        for (const root of projectRoots(manifest, named, { production })) {
+            specs[root.name] = root.range;
+            if (root.optional)
+                optionalRoots.add(root.name);
+        }
+        const explicit = new Set(named.map(({ name }) => name));
+        for (const name of Object.keys(manifest?.devDependencies ?? {})) {
+            if (Object.hasOwn(specs, name) && !explicit.has(name) && !Object.hasOwn(manifest?.dependencies ?? {}, name) && !optionalRoots.has(name))
+                devOnly.add(name);
+        }
+        const applied = this.applyW6Registry(specs, optionalRoots, { declared: manifest !== null, devOnly, advised });
         return { specs: applied.specs, devOnly, optionalRoots, advised };
     }
     /**

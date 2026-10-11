@@ -261,12 +261,13 @@ async function installTree(roots, install) {
     }
     // ── Plan ──
     const plan = await planTree(roots, {
-        async resolve(edges) {
+        async resolve(layer) {
             const answers = [];
-            for (const edge of edges) {
+            for (const { edge } of layer) {
                 await stdout.write(`  ${edge.name}${edge.range ? '@' + edge.range : ''}...\n`);
                 try {
-                    answers.push({ package: await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal) });
+                    const info = await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal);
+                    answers.push({ package: { ...info, name: edge.name, info } });
                 }
                 catch (e) {
                     answers.push({ failed: describe(e) });
@@ -318,7 +319,7 @@ async function installTree(roots, install) {
             try {
                 // writeTarballStream throws when the archive carried no manifest
                 // and writes package.json last, so a return is a complete package.
-                await fetchAndStreamPackage(network, pkg.dist.tarball, pkg.dist.integrity, stagedAt(i), vfs, signal, stderr);
+                await fetchAndStreamPackage(network, pkg.info.dist.tarball, pkg.info.dist.integrity, stagedAt(i), vfs, signal, stderr);
             }
             catch (e) {
                 if (!plan.skip(at, describe(e)))
@@ -404,7 +405,7 @@ async function installTree(roots, install) {
         if (install.globalBinDir) {
             for (const i of order) {
                 if (planned[i].edge.from === '')
-                    await linkGlobalBins(planned[i].pkg, join(targetBase, planned[i].at), install.globalBinDir, install);
+                    await linkGlobalBins(planned[i].pkg.info, join(targetBase, planned[i].at), install.globalBinDir, install);
             }
         }
         return { installed: order.map((i) => `${planned[i].pkg.name}@${planned[i].pkg.version}`), failed: [] };
