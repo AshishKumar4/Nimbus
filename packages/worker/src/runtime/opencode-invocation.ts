@@ -85,9 +85,9 @@ export function buildOpenCodeTransportPlan(
       // Explicit defaults prevent serve's global server config from changing
       // the default command's local-only network disposition.
       serveArgv: ['serve', '--hostname', scalar('hostname') ?? '127.0.0.1', '--mdns', 'false',
-        ...globals, ...(args.cors ?? []).flatMap((domain: string) => ['--cors', domain])],
+        ...globals, ...(args.cors ?? []).map((domain: string) => `--cors=${domain}`)],
       attachArgv: [...booleanArg('continue'), ...booleanArg('fork'),
-        ...(session === undefined ? [] : ['--session', session]), ...globals],
+        ...(session === undefined ? [] : [`--session=${session}`]), ...globals],
     };
   } catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
 }

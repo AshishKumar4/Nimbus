@@ -78,7 +78,8 @@ const cases = [
   [], ['project'], ['../project'], [''], ['123'], ['--port=4096'], ['--port', '4096'],
   ['--hostname', '0.0.0.0'], ['--pure', '--print-logs', '--log-level=DEBUG'],
   ['-c'], ['--continue=false'], ['--no-continue'], ['-cs=abc'], ['-s', 'abc', '--fork'],
-  ['--session=abc', '../project'], ['--cors', 'https://a.test', 'https://b.test'],
+  ['--session=abc', '../project'], ['--session=--help'], ['--session='],
+  ['--cors', 'https://a.test', 'https://b.test'], ['--cors=--literal'],
   ['--model=provider/model'], ['-m=provider/model'], ['--prompt', 'hello'], ['--agent=build'],
 ];
 for (const argv of cases) {
