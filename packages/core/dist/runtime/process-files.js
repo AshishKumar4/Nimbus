@@ -285,7 +285,6 @@ export class ProcessFiles {
     /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
     proc;
     processes = new Map();
-    /** Each scope's descriptors on asynchronous mounts: a process's, whichever bridge it binds per call. */
     namespaces = new Map();
     retired = new Set();
     /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
