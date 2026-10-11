@@ -22,7 +22,7 @@ try {
   a.check('a relative project with flags launches the real default TUI', pid > 0, stripAnsi(launched.output).slice(-900));
   if (pid > 0) {
     tui = await connectProcessTerminal(sid, pid);
-    await tui.waitFor(out => /\x1b\[/.test(out), 60_000, 'default project TUI frame');
+    await tui.waitFor(() => /\x1b\[/.test(tui.rawOutput), 60_000, 'default project TUI frame');
     a.check('the non-bare invocation renders an actual frame', /\x1b\[/.test(tui.rawOutput), tui.output.slice(-500));
     const fetched = await terminal.run('curl -s http://127.0.0.1:4201/path', 30_000);
     const line = stripAnsi(fetched.output).split(/\r?\n/).find(line => line.startsWith('{') && line.includes('"directory"'));
