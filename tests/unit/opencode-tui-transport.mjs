@@ -11,9 +11,21 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 const source = fs.readFileSync(new URL('../../packages/worker/public/_assets/opencode/1.16.2/index.js', import.meta.url), 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
 const bindings = new Map();
+let globalOptions = [];
 const property = (object, name) => object?.properties?.find(p => (p.key.name ?? p.key.value) === name)?.value;
 const value = node => Function(`return (${source.slice(node.start, node.end)});`)();
 walk.simple(ast, { VariableDeclarator(node) { if (node.id.type === 'Identifier') bindings.set(node.id.name, node.init); } });
+const chain = node => {
+  if (node?.type !== 'CallExpression' || node.callee.type !== 'MemberExpression') return [];
+  return [...chain(node.callee.object), node];
+};
+for (const init of bindings.values()) {
+  const calls = chain(init);
+  if (calls.some(call => call.callee.property.name === 'scriptName' && call.arguments[0]?.value === 'opencode')) {
+    globalOptions = calls.filter(call => call.callee.property.name === 'option').map(call => [value(call.arguments[0]), value(call.arguments[1])]);
+  }
+}
+assert.ok(globalOptions.length > 0, 'the actual global option chain was found');
 const commands = [...bindings.values()].filter(node => node?.type === 'CallExpression' && node.arguments[0]?.type === 'ObjectExpression')
   .map(node => node.arguments[0]).filter(node => property(node, 'command'));
 const command = name => commands.find(node => property(node, 'command')?.value === name);
@@ -35,13 +47,7 @@ const native = (argv, which = tui) => {
   let handled;
   const cli = yargs(argv).exitProcess(false).parserConfiguration({ 'populate--': true })
     .help('help').alias('help', 'h').version('version', 'version', 'fixture').alias('version', 'v');
-  // These definitions also come from the actual global chain.
-  let globals;
-  walk.simple(ast, { CallExpression(node) {
-    if (node.callee.type === 'MemberExpression' && node.callee.property.name === 'scriptName' && node.arguments[0]?.value === 'opencode') globals = node;
-  } });
-  assert.ok(globals);
-  for (const [name, options] of [['print-logs', { type: 'boolean' }], ['pure', { type: 'boolean' }], ['log-level', { type: 'string', choices: ['DEBUG', 'INFO', 'WARN', 'ERROR'] }]]) cli.option(name, options);
+  for (const [name, options] of globalOptions) cli.option(name, options);
   cli.command({ command: property(which, 'command').value, builder: builder(which), handler(args) { handled = args; } }).strict();
   const parsed = cli.parseSync();
   return handled ?? parsed;

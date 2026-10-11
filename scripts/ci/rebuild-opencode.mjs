@@ -11,10 +11,10 @@ import * as walk from 'acorn-walk';
 const out = process.argv[process.argv.indexOf('--out') + 1];
 if (!out) throw new Error('--out is required');
 const repo = process.cwd();
-const run = (command, args, cwd = repo, env = process.env) => {
+const run = (command, args, cwd = repo, env = process.env, quiet = false) => {
   const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 1 << 29 });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
-  process.stderr.write(result.stdout + result.stderr);
+  if (!quiet) process.stderr.write(result.stdout + result.stderr);
   return result.stdout.trim();
 };
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-opencode-build-'));
@@ -58,5 +58,6 @@ run('bun', ['build-node.ts'], packageRoot, env);
 run('node', ['packages/worker/scripts/bundle-opencode.mjs'], repo, env);
 const assets = readdirSync(assetRoot).map(name => ({ name, bytes: Bun.file(join(assetRoot, name)).size }));
 for (const asset of assets) if (asset.bytes > 25 * 1024 * 1024) throw new Error(`asset exceeds the Workers 25MiB limit: ${asset.name} (${asset.bytes})`);
-const patch = run('git', ['diff', '--binary', '--', 'packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts']);
+run('git', ['add', '--intent-to-add', '--', 'packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts']);
+const patch = run('git', ['diff', '--binary', '--', 'packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts'], repo, process.env, true);
 writeFileSync(out, JSON.stringify({ sourceCommit, assets, patch }));
