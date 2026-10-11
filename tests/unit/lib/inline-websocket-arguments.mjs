@@ -53,6 +53,13 @@ export async function inlineWebSocketArguments(base) {
       catch (error) { events.push(['symbol send', error.name]); }
       try { socket.send(); events.push(['missing send', 'accepted']); }
       catch (error) { events.push(['missing send', error.name]); }
+      const invalidBuffers = [new Uint8Array(new SharedArrayBuffer(4)), new DataView(new SharedArrayBuffer(4)),
+        new ArrayBuffer(4, { maxByteLength: 8 }), new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 })),
+        new DataView(new ArrayBuffer(4, { maxByteLength: 8 }))];
+      for (const buffer of invalidBuffers) {
+        try { socket.send(buffer); events.push(['invalid buffer', 'accepted']); }
+        catch (error) { events.push(['invalid buffer', error.name]); }
+      }
       for (const [code, reason] of [[1001, ''], [3000, 'x'.repeat(124)], [Symbol('code'), ''], [3000, Symbol('reason')]]) {
         try { socket.close(code, reason); events.push(['invalid close', 'accepted']); }
         catch (error) { events.push(['invalid close', error.name]); }
