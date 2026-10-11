@@ -86,7 +86,8 @@ async function exercise({ dir, sourceUrl, proxyUrl, upgrade }) {
     for await (const part of request) { buffers &&= Buffer.isBuffer(part); parts.push(part); }
     response.writeHead(201, 'Created', { 'x-native': 'yes', 'set-cookie': ['a=1', 'b=2'] });
     response.end(JSON.stringify({
-      method: request.method, url: request.url, phase: enteredPhase,
+      method: request.method, url: request.url, phase,
+      admittedAfterReturn: !enteredPhase.endsWith('-call'),
       native: request instanceof http.IncomingMessage && response instanceof http.ServerResponse,
       buffers, bytes: Array.from(Buffer.concat(parts)),
       headers: ['if-modified-since', 'user-agent', 'content-type'].map(name => [name, request.headers[name]]),
@@ -321,6 +322,8 @@ try {
   assert.ok(actualLine, output);
   const { upgraded, ...actual } = JSON.parse(actualLine);
   console.log('NIMBUS ' + JSON.stringify({ ...actual, upgraded }));
+  assert.equal(actual.viaHttp.body.admittedAfterReturn, true);
+  assert.equal(actual.viaFetch.body.admittedAfterReturn, true);
   const { upgraded: _nodeUpgraded, ...nodeExpected } = expected;
   assert.deepEqual(actual, nodeExpected,
     'the common HTTP contract, shared-view coherence, a stream proxied through and cross-pid routing match Node');
