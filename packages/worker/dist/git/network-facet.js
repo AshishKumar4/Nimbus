@@ -172,19 +172,27 @@ function throwIfCancelled(signal) {
     if (signal?.aborted)
         throw new GitNetworkCancelled(signal.reason);
 }
-/** A promise that rejects GitNetworkCancelled when `signal` stops the operation; `off` lets it go. */
-function cancellation(signal) {
+/**
+ * `work`'s answer, or GitNetworkCancelled as soon as `signal` stops the
+ * operation: every wait of the operation's ends with its stop. What `work`
+ * was doing is not stopped by it (a shared load goes on for its other
+ * callers); the caller lets go of it.
+ */
+async function unlessCancelled(work, signal) {
     if (signal === undefined)
-        return { stopped: new Promise(() => { }), off: () => { } };
-    let off = () => { };
+        return work;
+    throwIfCancelled(signal);
+    let onAbort = () => { };
     const stopped = new Promise((_, reject) => {
-        const onAbort = () => reject(new GitNetworkCancelled(signal.reason));
-        if (signal.aborted)
-            return onAbort();
+        onAbort = () => reject(new GitNetworkCancelled(signal.reason));
         signal.addEventListener('abort', onAbort, { once: true });
-        off = () => signal.removeEventListener('abort', onAbort);
     });
-    return { stopped, off };
+    try {
+        return await Promise.race([work, stopped]);
+    }
+    finally {
+        signal.removeEventListener('abort', onAbort);
+    }
 }
 class GitClonePhaseError extends Error {
     phase;
@@ -290,7 +298,6 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
             }
         }, timeoutMs);
     });
-    const stop = cancellation(signal);
     try {
         const call = entrypoint.fetch(new Request(`http://git/git/${phase}/${encodeURIComponent(invocationId)}`, {
             method: 'POST',
@@ -301,10 +308,10 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
                 disposeRpcResource(response);
             return response;
         });
-        const response = await Promise.race([call, timeout, stop.stopped]);
+        const response = await unlessCancelled(Promise.race([call, timeout]), signal);
         let result;
         try {
-            result = await response.json();
+            result = await unlessCancelled(response.json(), signal);
         }
         finally {
             disposeRpcResource(response);
@@ -345,26 +352,19 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
         throw new GitClonePhaseError(phase, message, diagnostic);
     }
     finally {
-        stop.off();
         if (timeoutHandle !== undefined)
             clearTimeout(timeoutHandle);
     }
 }
 const GIT_PROGRESS_ENCODER = new TextEncoder();
-async function writeClonePhaseProgress(supervisor, diagnostic) {
-    try {
-        const rpcCount = Object.values(diagnostic.supervisorRpc)
-            .reduce((total, count) => total + count, 0);
-        const status = diagnostic.outcome === 'success' ? 'complete' : diagnostic.outcome;
-        const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(`\n[git] ${diagnostic.phase} ${status} ` +
-            `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
-            `w7=${diagnostic.w7Waves} rpc=${rpcCount})` +
-            (diagnostic.outcome === 'success' || !diagnostic.error ? '' : `: ${diagnostic.error}`) + '\n'));
-        disposeRpcResource(result);
-    }
-    catch {
-        // Terminal progress is best-effort; the phase result remains authoritative.
-    }
+async function writeClonePhaseProgress(supervisor, diagnostic, signal) {
+    const rpcCount = Object.values(diagnostic.supervisorRpc)
+        .reduce((total, count) => total + count, 0);
+    const status = diagnostic.outcome === 'success' ? 'complete' : diagnostic.outcome;
+    await writeCloneProgressLine(supervisor, `\n[git] ${diagnostic.phase} ${status} ` +
+        `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
+        `w7=${diagnostic.w7Waves} rpc=${rpcCount})` +
+        (diagnostic.outcome === 'success' || !diagnostic.error ? '' : `: ${diagnostic.error}`) + '\n', signal);
 }
 /**
  * Batches of a fast clone that run at once. Facets loaded by one session
@@ -443,10 +443,9 @@ async function invokeClonePhase(phase, opts, run) {
             }
             run.phases.push(error.diagnostic);
             if (run.progress) {
-                await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
+                await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`, run.signal);
             }
-            await retryDelay(attempt - 1);
-            throwIfCancelled(run.signal);
+            await unlessCancelled(retryDelay(attempt - 1), run.signal);
             continue;
         }
         run.phases.push(invocation.diagnostic);
@@ -458,10 +457,10 @@ async function invokeClonePhase(phase, opts, run) {
             !(fenced || transientPieceFailure(invocation.diagnostic, error)))
             break;
         if (run.progress) {
-            await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
+            await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`, run.signal);
         }
         if (attempt < CLONE_PIECE_ATTEMPTS)
-            await retryDelay(attempt - 1);
+            await unlessCancelled(retryDelay(attempt - 1), run.signal);
         throwIfCancelled(run.signal);
     }
     if (invocation.result.success !== true) {
@@ -494,7 +493,7 @@ local = false) {
             await writeCloneProgressLine(run.progress, `\n[git] clone-batch ${completed}/${fast.batches.length} complete (blobs=${result.blobs} files=${result.files} ` +
                 (result.pack === null ? '' : `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB `) +
                 `wall=${invocation.diagnostic.elapsed}ms ` +
-                `w7=${invocation.diagnostic.w7Waves})\n`);
+                `w7=${invocation.diagnostic.w7Waves})\n`, run.signal);
         }
     });
     return shares;
@@ -549,7 +548,7 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
         packBytes += step.pack?.packBytes ?? 0;
         if (run.progress) {
             await writeCloneProgressLine(run.progress, `\n[git] clone-history ${name} complete (objects=${step.pack?.objects ?? 0} ` +
-                `pack=${((step.pack?.packBytes ?? 0) / 1048576).toFixed(1)}MB wall=${elapsed}ms)\n`);
+                `pack=${((step.pack?.packBytes ?? 0) / 1048576).toFixed(1)}MB wall=${elapsed}ms)\n`, run.signal);
         }
         return lists;
     };
@@ -569,7 +568,7 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
         await piece('blobs', 'blobs-' + index, { source });
     });
     if (run.progress) {
-        await writeCloneProgressLine(run.progress, `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`);
+        await writeCloneProgressLine(run.progress, `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`, run.signal);
     }
     return graph;
 }
@@ -609,14 +608,15 @@ graph, run,
 checkoutFailed = false) {
     const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph, checkoutFailed }, run);
     if (run.progress)
-        await writeClonePhaseProgress(run.progress, finish.diagnostic);
+        await writeClonePhaseProgress(run.progress, finish.diagnostic, run.signal);
 }
-async function writeCloneProgressLine(supervisor, line) {
+/** Terminal progress: best-effort, and not waited for past the operation's stop (the next step stops it). */
+async function writeCloneProgressLine(supervisor, line, signal) {
     try {
-        disposeRpcResource(await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(line)));
+        disposeRpcResource(await unlessCancelled(supervisor.stdout(GIT_PROGRESS_ENCODER.encode(line)), signal));
     }
     catch {
-        // Terminal progress is best-effort; the batch result remains authoritative.
+        // The phase or batch result remains authoritative.
     }
 }
 /** A piece's wall-time budget: within a facet invocation's limits, with room to write its file. */
@@ -736,7 +736,7 @@ export async function execGitNetwork(ctx, env, opts, /**
         // beginLoaderFetch).
         const endFetch = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
         try {
-            const gitBundleSource = await fetchGitBundleSource(env);
+            const gitBundleSource = await unlessCancelled(fetchGitBundleSource(env), signal);
             const facetCode = (binding) => ({
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: [...GUEST_COMPAT_FLAGS],
@@ -811,7 +811,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                             : 'clone-prepare returned an invalid result', prepare.diagnostic, undefined, typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined);
                     }
                     if (!opts.quiet)
-                        await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
+                        await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic, signal);
                     const prepared = prepare.result.prepared;
                     // A partial clone's objects are in once its filtered pack is: its
                     // batches are git's lazy fetch of what the checkout writes.
@@ -1016,10 +1016,9 @@ export async function execGitNetwork(ctx, env, opts, /**
                     disposeRpcResource(response);
                 }
             });
-            const stop = cancellation(signal);
             let result;
             try {
-                result = await Promise.race([call, timeout, stop.stopped]);
+                result = await unlessCancelled(Promise.race([call, timeout]), signal);
             }
             catch (error) {
                 if (!(error instanceof GitNetworkCancelled))
@@ -1037,7 +1036,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                 };
             }
             finally {
-                stop.off();
                 if (timeoutHandle !== undefined)
                     clearTimeout(timeoutHandle);
             }

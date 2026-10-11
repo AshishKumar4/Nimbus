@@ -961,13 +961,13 @@ export async function rpcDeleteFile(self, path, options = {}, cred) {
 export async function rpcDestroy(self, options = {}) {
     self.ensureSqliteFs();
     const guardedVfs = self.sqliteFs;
-    const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
     // A lease that stopping the session's processes does not end refuses the
     // destroy before anything is stopped: a refused destroy leaves the session
     // as it was. What their work holds goes as it stops (a delegation with its
-    // process, a clone's lease with its clone).
-    if (guardedVfs.hasExclusiveMutation({ stoppable: false }))
-        throw busy();
+    // process, a clone's lease with its clone). Past this, it completes.
+    if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
+        throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
+    }
     const reason = typeof options.reason === 'string' && options.reason.trim()
         ? options.reason.trim().slice(0, 200)
         : null;
@@ -1029,8 +1029,7 @@ export async function rpcDestroy(self, options = {}) {
     // What they held goes once the work stopping on them has closed what it
     // opened (SessionProcessSupervisor.released, bounded for work that ignores
     // its stop): their delegations and leases among it (a clone releases its
-    // lease as it stops). What work that ignored its stop still holds after is
-    // refused below.
+    // lease as it stops).
     await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
     // Its processes stopped, every wave still being read is cut, which ends
     // the commits it held open: each is then published once its reader
@@ -1043,9 +1042,14 @@ export async function rpcDestroy(self, options = {}) {
             break;
         await held;
     }
-    if (guardedVfs.hasExclusiveMutation())
-        throw busy();
-    const destroyLease = guardedVfs.acquireGlobalExclusiveMutation();
+    // What work that ignored its stop still holds, the destroy takes over:
+    // nothing of that work reaches the session it leaves. Its processes'
+    // calls name their pids, which are no longer live (liveCred: ESRCH), and
+    // the recreated session's table never issues them again; its writes under
+    // a lease present the lease, which ends here (ESTALE); and a clone stopped
+    // with SESSION_DESTROYED writes nothing more (its record and junk are the
+    // wipe's).
+    const destroyLease = guardedVfs.seizeGlobalExclusiveMutation();
     let destroyed = false;
     try {
         // A launch suspended for a turn waits on the alarm the wipe deletes, in

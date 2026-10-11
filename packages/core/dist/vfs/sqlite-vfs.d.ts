@@ -1425,6 +1425,13 @@ export declare class SqliteVFS {
      * write it refuses is told (EBUSY's detail), instead of the lease's root.
      */
     acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
+    /**
+     * Hold the whole session for one owner over the leases held now, each of
+     * which ends: a write that presents one is ESTALE from then on. A
+     * destroy's, once it has stopped the work that held them: what they held,
+     * it wipes.
+     */
+    seizeGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
     /**
      * A read lease of the whole namespace, granted at `at`: refused (ESTALE)
