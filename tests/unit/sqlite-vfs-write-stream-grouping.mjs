@@ -19,13 +19,15 @@ import {
   MAX_TX_SQL_EXECS,
 } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
+  const waves = new WaveIngest(null);
+  return { harness, rawVfs, waves, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
 function reopenVfs(harness) {
@@ -127,13 +129,13 @@ function assertBounded(stats) {
 // every byte of every file survives a reopen. 120 files plus two directories
 // is the install facet's old wave size (128 owned paths).
 {
-  const { harness, rawVfs, vfs } = openVfs();
+  const { harness, rawVfs, waves, vfs } = openVfs();
   const entries = Array.from({ length: 120 }, (_, index) => ({
     path: `pkg/lib/file-${index}.js`,
     data: bytes(200 + index, index),
   }));
   const before = harness.transactionCount;
-  const result = await vfs.writeStream(
+  const result = await waves.writeStream(vfs,
     encodeWriteBatchStream(streamPayload(entries, ['pkg', 'pkg/lib'])),
   );
   const transactions = harness.transactionCount - before;
@@ -184,7 +186,7 @@ function assertBounded(stats) {
     "SELECT chunk_id FROM vfs_inodes WHERE path = 'owned/kept.txt'",
   )[0].chunk_id;
   assert.equal(
-    (await together.vfs.writeStream(encodeWriteBatchStream(streamPayload([replaced, fresh])))).ok,
+    (await together.waves.writeStream(together.vfs, encodeWriteBatchStream(streamPayload([replaced, fresh])))).ok,
     true,
   );
 
@@ -192,7 +194,7 @@ function assertBounded(stats) {
   seed(apart.vfs);
   for (const entry of [replaced, fresh]) {
     assert.equal(
-      (await apart.vfs.writeStream(encodeWriteBatchStream(streamPayload([entry])))).ok,
+      (await apart.waves.writeStream(apart.vfs, encodeWriteBatchStream(streamPayload([entry])))).ok,
       true,
     );
   }
@@ -209,11 +211,11 @@ function assertBounded(stats) {
 // A file larger than one transaction is alone in its group: it stages across
 // bounded transactions and publishes on the last of them.
 {
-  const { harness, rawVfs, vfs } = openVfs();
+  const { harness, rawVfs, waves, vfs } = openVfs();
   const small = { path: 'before.bin', data: bytes(32, 3) };
   const large = { path: 'large.bin', data: bytes(MAX_TX_BLOB_BYTES * 2 + 1, 4) };
   const after = { path: 'after.bin', data: bytes(32, 5) };
-  const result = await vfs.writeStream(
+  const result = await waves.writeStream(vfs,
     encodeWriteBatchStream(streamPayload([small, large, after])),
   );
   assert.equal(result.ok, true);
@@ -239,22 +241,22 @@ function assertBounded(stats) {
   ];
   // How many statements the group's single transaction runs, so every one of
   // them can be faulted in turn.
-  const { harness: probe, vfs: probeVfs } = openVfs();
+  const { harness: probe, waves: probeWaves, vfs: probeVfs } = openVfs();
   probeVfs.mkdir('crash', { recursive: true });
   const groupTransaction = probe.transactionCount + 1;
-  await probeVfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  await probeWaves.writeStream(probeVfs, encodeWriteBatchStream(streamPayload(entries)));
   const statementCount = probe.statements
     .filter((s) => s.transaction === groupTransaction).length;
   assert.ok(statementCount > 0, 'expected the group to commit in one transaction');
 
   for (let statement = 1; statement <= statementCount; statement++) {
-    const { harness, vfs } = openVfs();
+    const { harness, waves, vfs } = openVfs();
     vfs.mkdir('crash', { recursive: true });
     harness.failOnTransactionStatement(statement, {
       transaction: harness.transactionCount + 1,
       error: new Error(`injected group fault at ${statement}`),
     });
-    const failed = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+    const failed = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload(entries)));
     harness.clearFault();
     assert.equal(failed.ok, false, `statement ${statement} should have faulted`);
     assert.equal(failed.committedPathCount, 0);
@@ -268,7 +270,7 @@ function assertBounded(stats) {
       );
     }
 
-    const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+    const replay = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload(entries)));
     assert.equal(replay.ok, true);
     assert.equal(replay.committedPathCount, entries.length);
     const converged = reopenVfs(harness);
@@ -281,14 +283,14 @@ function assertBounded(stats) {
 // Replaying a stream that already committed is idempotent: the same paths,
 // the same bytes, and no duplicate inodes.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, waves, vfs } = openVfs();
   const entries = Array.from({ length: 40 }, (_, index) => ({
     path: `idem/file-${index}.txt`,
     data: bytes(64 + index, index),
   }));
   const payload = () => streamPayload(entries, ['idem']);
-  assert.equal((await vfs.writeStream(encodeWriteBatchStream(payload()))).ok, true);
-  assert.equal((await vfs.writeStream(encodeWriteBatchStream(payload()))).ok, true);
+  assert.equal((await waves.writeStream(vfs, encodeWriteBatchStream(payload()))).ok, true);
+  assert.equal((await waves.writeStream(vfs, encodeWriteBatchStream(payload()))).ok, true);
   const reconstructed = reopenVfs(harness);
   for (const entry of entries) {
     assert.deepEqual(reconstructed.readFile(entry.path), entry.data);
@@ -305,7 +307,7 @@ function assertBounded(stats) {
 // and the loop awaits the decoder between them, so another request on this
 // object can take an overlapping lease inside that window.
 {
-  const { harness, rawVfs, vfs } = openVfs();
+  const { harness, rawVfs, waves, vfs } = openVfs();
   const entries = [
     { path: 'locked/a.txt', data: bytes(16, 1) },
     { path: 'locked/b.txt', data: bytes(16, 2) },
@@ -334,7 +336,7 @@ function assertBounded(stats) {
     },
   });
 
-  const blocked = await vfs.writeStream(paused);
+  const blocked = await waves.writeStream(vfs, paused);
   assert.notEqual(lease, null, 'expected a lease to be taken before batch-end');
   assert.equal(blocked.ok, false);
   assert.equal(blocked.error.phase, 'publish');
@@ -344,7 +346,7 @@ function assertBounded(stats) {
   for (const entry of entries) assert.equal(duringLease.exists(entry.path), false);
 
   rawVfs.releaseExclusiveMutation(lease.owner);
-  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  const replay = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload(entries)));
   assert.equal(replay.ok, true);
   const converged = reopenVfs(harness);
   for (const entry of entries) assert.deepEqual(converged.readFile(entry.path), entry.data);
@@ -353,8 +355,8 @@ function assertBounded(stats) {
 // A delete observes every write the stream made before it, even though those
 // writes are now batched rather than committed one path at a time.
 {
-  const { harness, vfs } = openVfs();
-  const result = await vfs.writeStream(encodeWriteBatchStream({
+  const { harness, waves, vfs } = openVfs();
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({
     ...streamPayload([
       { path: 'ordered/keep.txt', data: bytes(8, 1) },
     ], ['ordered']),

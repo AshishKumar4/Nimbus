@@ -166,6 +166,11 @@ export declare class PacedWork implements TurnScheduler {
     close(reason?: Error): void;
     /** Whether any launch is suspended waiting for a turn. */
     get hasPending(): boolean;
+    /** The launches suspended waiting for a turn, and how long the oldest has waited. */
+    state(now?: number): {
+        waiting: number;
+        oldestMs: number | null;
+    };
 }
 /**
  * Chunk bound for this session, honouring the verification knob.

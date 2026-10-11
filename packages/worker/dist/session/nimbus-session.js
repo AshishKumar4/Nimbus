@@ -1170,7 +1170,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // Idempotent: guarded by shouldSeedProject() which checks both a
         // sentinel file and the project dir. Safe to call on every boot.
         try {
-            seedProject(this.sqliteFs, { log: (msg) => console.log(msg) });
+            seedProject(this.getFilesystemAuthority(), { log: (msg) => console.log(msg) });
         }
         catch (e) {
             console.error('[nimbus] seedProject failed:', e?.message || e);

@@ -1,4 +1,5 @@
-import { type SqliteVFS, type WaveSequence } from '../vfs/sqlite-vfs.js';
+import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { WaveSequence } from '../runtime/wave-contracts.js';
 import type { ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
@@ -239,7 +240,7 @@ declare const NATIVE_OPS: {
     utimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     fsWriteRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
-    writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
+    writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../runtime/wave-contracts.js").WriteBatchStreamResult>;
     retireWaveWriter: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<void> | undefined;
     openWaveWriter: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => {
         writer: null;

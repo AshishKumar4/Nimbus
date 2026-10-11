@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -24,10 +25,11 @@ const enc = new TextEncoder();
 function setup() {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const kernel = raw.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', 1000, 1000);
-  return { harness, raw, kernel, user: raw.as(USER) };
+  return { harness, raw, waves, kernel, user: raw.as(USER) };
 }
 
 function payload(dir, count, size = 40) {
@@ -69,11 +71,11 @@ const encode = async (wave) => new Uint8Array(await new Response(encodeWriteBatc
 
 // ── One read per group, not one per file ───────────────────────────────
 {
-  const { harness, user } = setup();
+  const { harness, waves, user } = setup();
   user.mkdir('home/user/a', { recursive: true });
   const files = 120;
   const before = harness.statements.filter((statement) => statement.sql.startsWith('SELECT path, parent_path')).length;
-  const result = await user.writeStream(encodeWriteBatchStream(payload('home/user/a', files)));
+  const result = await waves.writeStream(user, encodeWriteBatchStream(payload('home/user/a', files)));
   assert.equal(result.ok, true, result.error?.message);
   const lookups = harness.statements.filter((statement) => statement.sql.startsWith('SELECT path, parent_path')).length - before;
   assert.ok(lookups <= 10, `${lookups} inode lookups placed ${files} new files in one group`);
@@ -82,10 +84,10 @@ const encode = async (wave) => new Uint8Array(await new Response(encodeWriteBatc
 
 // ── A chmod between a file's arrival and its group's commit is honoured ─
 {
-  const { kernel, user } = setup();
+  const { kernel, waves, user } = setup();
   user.mkdir('home/user/locked', { recursive: true });
   const bytes = await encode(payload('home/user/locked', 40));
-  const result = await user.writeStream(pausing(bytes, () => kernel.chmod('home/user/locked', 0o555)));
+  const result = await waves.writeStream(user, pausing(bytes, () => kernel.chmod('home/user/locked', 0o555)));
   assert.equal(result.ok, false, 'a group committed into a directory made read-only before its commit');
   assert.match(result.error.message, /EACCES/);
   assert.equal(user.readdir('home/user/locked').length, 0, 'part of the group committed');
@@ -94,10 +96,10 @@ const encode = async (wave) => new Uint8Array(await new Response(encodeWriteBatc
 
 // ── A chown between arrival and commit is honoured ──────────────────────
 {
-  const { kernel, user } = setup();
+  const { kernel, waves, user } = setup();
   user.mkdir('home/user/taken', { recursive: true, mode: 0o755 });
   const bytes = await encode(payload('home/user/taken', 40));
-  const result = await user.writeStream(pausing(bytes, () => kernel.chown('home/user/taken', 0, 0)));
+  const result = await waves.writeStream(user, pausing(bytes, () => kernel.chown('home/user/taken', 0, 0)));
   assert.equal(result.ok, false, 'a group committed into a directory given away before its commit');
   assert.match(result.error.message, /EACCES/);
   console.log('  ok  a chown before the group commits refuses the whole group');
@@ -105,11 +107,11 @@ const encode = async (wave) => new Uint8Array(await new Response(encodeWriteBatc
 
 // ── A link that replaces a directory before the commit is followed ─────
 {
-  const { user } = setup();
+  const { waves, user } = setup();
   user.mkdir('home/user/old', { recursive: true });
   user.mkdir('home/user/elsewhere', { recursive: true });
   const bytes = await encode(payload('home/user/old', 40));
-  const result = await user.writeStream(pausing(bytes, () => {
+  const result = await waves.writeStream(user, pausing(bytes, () => {
     user.rename('home/user/old', 'home/user/moved');
     user.symlink('elsewhere', 'home/user/old');
   }));

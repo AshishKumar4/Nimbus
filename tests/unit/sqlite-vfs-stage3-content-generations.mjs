@@ -307,7 +307,7 @@ function streamFromBytes(bytes) {
 // that had already been accepted stay absent, a replaced file keeps its old
 // content, and replaying the whole stream converges to the requested bytes.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, waves, vfs } = openVfs();
   const oldB = bytes(4, 3);
   vfs.writeFile('prefix-b.bin', oldB);
   const entries = [
@@ -321,7 +321,7 @@ function streamFromBytes(bytes) {
       ? new Error('injected publish failure')
       : null
   ));
-  const failed = await vfs.writeStream(encodeWriteBatchStream(payload));
+  const failed = await waves.writeStream(vfs, encodeWriteBatchStream(payload));
   harness.clearFault();
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'publish');
@@ -331,7 +331,7 @@ function streamFromBytes(bytes) {
   assert.deepEqual(reopenVfs(harness).readFile('prefix-b.bin'), oldB);
   assert.equal(reopenVfs(harness).exists('prefix-c.bin'), false);
 
-  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  const replay = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload(entries)));
   assert.equal(replay.ok, true);
   assert.equal(replay.committedGroupSequence, 1);
   assert.equal(replay.committedPathCount, 3);
@@ -343,7 +343,7 @@ function streamFromBytes(bytes) {
 // one transaction closes the group before it, so the failure that lands in the
 // second group cannot unmake the first.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, waves, vfs } = openVfs();
   const entries = [
     { path: 'group-a.bin', data: bytes(5, 10) },
     { path: 'group-b.bin', data: bytes(MAX_TX_BLOB_BYTES + 1, 20) },
@@ -353,7 +353,7 @@ function streamFromBytes(bytes) {
       ? new Error('injected second-group publish failure')
       : null
   ));
-  const failed = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  const failed = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload(entries)));
   harness.clearFault();
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'publish');
@@ -363,7 +363,7 @@ function streamFromBytes(bytes) {
   assert.deepEqual(reconstructed.readFile('group-a.bin'), entries[0].data);
   assert.equal(reconstructed.exists('group-b.bin'), false);
 
-  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  const replay = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload(entries)));
   assert.equal(replay.ok, true);
   const converged = reopenVfs(harness);
   for (const entry of entries) assert.deepEqual(converged.readFile(entry.path), entry.data);
@@ -372,13 +372,13 @@ function streamFromBytes(bytes) {
 // Decoder failure mid-file abandons the whole pending group: neither the
 // complete path nor the incomplete one is durable, and the replay converges.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, waves, vfs } = openVfs();
   const first = { path: 'decode-a.bin', data: bytes(3, 1) };
   const second = { path: 'decode-b.bin', data: bytes(CHUNK_SIZE + 1, 2) };
   const payload = streamPayload([first, second]);
   const encoded = await collectStream(encodeWriteBatchStream(payload));
   const secondChunkOffset = nthRecordOffset(encoded, 5, 2);
-  const failed = await vfs.writeStream(streamFromBytes(encoded.slice(0, secondChunkOffset + 9)));
+  const failed = await waves.writeStream(vfs, streamFromBytes(encoded.slice(0, secondChunkOffset + 9)));
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'decode');
   assert.equal(failed.committedGroupSequence, 0);
@@ -387,7 +387,7 @@ function streamFromBytes(bytes) {
   assert.equal(reconstructed.exists(first.path), false);
   assert.equal(reconstructed.exists(second.path), false);
 
-  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload([first, second])));
+  const replay = await waves.writeStream(vfs, encodeWriteBatchStream(streamPayload([first, second])));
   assert.equal(replay.ok, true);
   const converged = reopenVfs(harness);
   assert.deepEqual(converged.readFile(first.path), first.data);
@@ -397,7 +397,7 @@ function streamFromBytes(bytes) {
 // Directory upserts and present/absent deletes remain idempotent when the
 // complete logical stream is replayed after committed-prefix semantics.
 {
-  const { harness, vfs } = openVfs();
+  const { harness, waves, vfs } = openVfs();
   vfs.mkdir('remove/sub', { recursive: true });
   vfs.writeFile('remove/sub/old.txt', 'old');
   const file = { path: 'kept/new.txt', data: bytes(9, 77) };
@@ -406,7 +406,7 @@ function streamFromBytes(bytes) {
     mtime: 1, mode: 0o755, chunkCount: 0,
   };
   const payload = streamPayload([file]);
-  const apply = () => vfs.writeStream(encodeWriteBatchStream({
+  const apply = () => waves.writeStream(vfs, encodeWriteBatchStream({
     inodes: [directory, ...payload.inodes],
     chunks: streamPayload([file]).chunks,
     deletePaths: ['remove', 'already-absent'],

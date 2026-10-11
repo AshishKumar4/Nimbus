@@ -15,10 +15,12 @@ import { acquireSupervisorAllocation, readSupervisorAllocationBudget } from '../
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+const ingest = new WaveIngest(null);
 
 const random = (size, seed) => {
   const data = new Uint8Array(size);
@@ -55,7 +57,7 @@ const owner = await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_
 let ownerLeft = false;
 setTimeout(() => { owner.release(); ownerLeft = true; }, 100);
 
-const written = Promise.all(waves.map((entry) => vfs.writeStream(encodeWriteBatchStream(entry.payload))));
+const written = Promise.all(waves.map((entry) => ingest.writeStream(vfs, encodeWriteBatchStream(entry.payload))));
 const outcome = await Promise.race([
   written.then((results) => ({ results })),
   new Promise((resolve) => setTimeout(() => resolve({ stalled: true }), 5_000)),

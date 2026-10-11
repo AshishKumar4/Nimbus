@@ -1,5 +1,4 @@
-/** sqlite-vfs.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
-export const MOUNT_WAVE_FILE_MAX = 4 * 1024 * 1024;
+import { ROUTED_FILE_MAX } from '@nimbus-sh/core/runtime/wave-contracts.js';
 /** One write's bytes: well inside what one RPC carries. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 /**
@@ -223,7 +222,7 @@ export function mountWriter(writer, api, dir, onReceipts) {
     return {
         ...(streamed === undefined ? {} : {
             async fileChunks(path, mode, size, chunks) {
-                if (size <= MOUNT_WAVE_FILE_MAX)
+                if (size <= ROUTED_FILE_MAX)
                     return await streamed.call(writer, path, mode, size, chunks);
                 await writer.flush();
                 await replaceStreamed(api, root + '/' + path, mode, chunks);
@@ -231,7 +230,7 @@ export function mountWriter(writer, api, dir, onReceipts) {
         }),
         async file(path, mode, bytes) {
             const index = path === '.git/index';
-            if (!index && bytes.byteLength <= MOUNT_WAVE_FILE_MAX)
+            if (!index && bytes.byteLength <= ROUTED_FILE_MAX)
                 return await writer.file(path, mode, bytes);
             // What the waves hold before it (its directory among them) lands first.
             await writer.flush();

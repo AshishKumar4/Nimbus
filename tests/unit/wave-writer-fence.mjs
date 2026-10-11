@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -218,6 +219,7 @@ const byteStream = (bytes) => new ReadableStream({
 {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  const waves = new WaveIngest(null);
   vfs.mkdir('t', { recursive: true });
   // Three groups' worth of 300 KB files (a group holds up to 1 MiB).
   const inodes = [];
@@ -230,7 +232,7 @@ const byteStream = (bytes) => new ReadableStream({
     for (let chunkId = 0; chunkId < chunkCount; chunkId++) chunks.push({ path, chunkId, data: data.slice(chunkId * 65_536, (chunkId + 1) * 65_536) });
   }
   let admitted = 0;
-  const result = await vfs.writeStream(encodeWriteBatchStream({ inodes, chunks }), {
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({ inodes, chunks }), {
     admit() {
       admitted++;
       if (admitted > 1) throw Object.assign(new Error('ESTALE: overtaken'), { code: 'ESTALE' });

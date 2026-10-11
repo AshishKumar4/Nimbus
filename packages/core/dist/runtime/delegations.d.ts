@@ -159,6 +159,13 @@ export declare class Delegations {
     holdsOf(pid: number): Set<string>;
     /** Process `pid`'s set (holdsOf), until it is retired; undefined otherwise. */
     holdsAt(pid: number): ReadonlySet<string> | undefined;
+    /**
+     * Process `pid` has ended: it reads nothing more, so its read lease ends
+     * now, asking it nothing (a recall would wait out its trust for an answer
+     * no one is left to give). What it delegated for writing stays until its
+     * release.
+     */
+    endReads(pid: number): void;
     /** Process `pid` is over, and nothing it wrote is held: what is kept of it here goes. */
     retire(pid: number): void;
     get size(): number;
