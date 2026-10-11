@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 // A tty.ReadStream a program makes reads the process's stdin, and holds the
 // input as a referenced stdin handle does, so the program waits for its
-// keystrokes. Destroyed, it lets go: the last one gone, stdin is paused and
-// the hold released, unless something else of the program reads stdin, so a
-// program whose only reader of its terminal is gone ends (its natural exit
-// counts the input handles). Red before: destroying it left the hold, and an
-// attached program waited for its terminal's end.
+// keystrokes. The hold has owners: each such reader, and the program's own
+// reading of process.stdin (its resume, until its pause). Destroyed, a reader
+// lets go of its own: with no owner left the hold goes, so a program whose
+// only reader of its terminal is gone ends (its natural exit counts the input
+// handles), and one that reads stdin itself is held still. Red before:
+// destroying it left the hold, and an attached program waited for its
+// terminal's end.
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
@@ -59,6 +61,21 @@ const held = () => globalThis.__nimbusInputHandles || 0;
   shim.stdin.pause();
   await tick(20);
   assert.equal(held(), 0);
+}
+
+{
+  // The program's own resume, with no listener, is its own hold.
+  shim.stdin.resume();
+  const input = new shim.tty.ReadStream(0);
+  input.resume();
+  await tick(20);
+  input.destroy();
+  await tick(20);
+  assert.equal(held(), 1, "the program's resume keeps the input held after its reader goes");
+  assert.equal(shim.stdin.readableFlowing, true, 'and flowing');
+  shim.stdin.pause();
+  await tick(20);
+  assert.equal(held(), 0, 'its pause lets go of the last hold');
 }
 
 ended = true;

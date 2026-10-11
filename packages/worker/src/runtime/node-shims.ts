@@ -9731,23 +9731,32 @@ function __makeProcessStdin() {
     r.isRaw = mode !== false;
     return r;
   };
-  r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
-  r.unref = function() { inputReferenced = false; holdInput(false); return r; };
+  r.ref = function() { inputReferenced = true; holdInput(); return r; };
+  r.unref = function() { inputReferenced = false; holdInput(); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
   const liveChildPid = __nimbusLiveInputChannel();
   // The polling infrastructure is unref'd, but a program actively consuming
   // live stdin owns a referenced input handle, as in Node. Otherwise an
   // interactive child exits after its prompt, before a keystroke arrives.
+  // The handle has owners: the program's own reading (its resume, until its
+  // pause) and each other reader of the input (a tty.ReadStream,
+  // __nimbusReader). It is held while one remains.
+  const PROGRAM = {};
+  const inputOwners = new Set();
   let inputReferenced = true, inputHeld = false;
-  function holdInput(want) {
-    const held = !!(want && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
+  function holdInput(owner, want) {
+    if (owner !== undefined) {
+      if (want) inputOwners.add(owner);
+      else inputOwners.delete(owner);
+    }
+    const held = !!(inputOwners.size > 0 && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
     if (!held) globalThis.__nimbusHandleReleased?.();
   }
-  __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
-  __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
+  __eventsMod.prototype.on.call(r, 'end', () => holdInput());
+  __eventsMod.prototype.on.call(r, 'close', () => holdInput());
   if (liveChildPid) {
     try {
       globalThis.__nimbusProcessStdin = r;
@@ -9898,12 +9907,29 @@ function __makeProcessStdin() {
   const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
   r.resume = function() {
     seed();
-    holdInput(true);
+    holdInput(PROGRAM, true);
     return origResume ? origResume() : r;
   };
+  // The program's pause lets go of its own reading; the input flows on while
+  // another reader still reads it.
   r.pause = function() {
-    holdInput(false);
-    return origPause ? origPause() : r;
+    holdInput(PROGRAM, false);
+    if (inputOwners.size === 0 && origPause) origPause();
+    return r;
+  };
+  // Another reader of the input (a tty.ReadStream), its 'data' its own
+  // listener's: it reads, holding the input as the program's resume does;
+  // stops (its backpressure), the hold kept; and lets go of its hold alone.
+  r.__nimbusReader = function() {
+    const owner = {};
+    return {
+      read() { seed(); holdInput(owner, true); if (origResume) origResume(); },
+      stop() { if (origPause) origPause(); },
+      release() {
+        holdInput(owner, false);
+        if (inputOwners.size === 0 && origPause) origPause();
+      },
+    };
   };
   const origOn = r.on.bind(r);
   const calls = Symbol("nimbus.stdin.calls");
@@ -10907,8 +10933,6 @@ builtins.dgram = (() => {
   return { Socket, createSocket: (opts, cb) => { const s = new Socket(opts); if (typeof cb === "function") s.on("message", cb); return s; } };
 })();
 
-// The tty.ReadStreams reading the process's stdin: the last one gone lets go of it.
-let __nimbusTtyStdinReaders = 0;
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
   // The process's terminal: a ReadStream reads the process's stdin, a
@@ -10916,26 +10940,26 @@ builtins.tty = {
   ReadStream: class extends __streamMod.Readable {
     constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
     setRawMode(mode) { this.isRaw = mode !== false; return this; }
+    // One of the input's readers (process.stdin.__nimbusReader): its own hold on it.
     _read() {
       const stdin = __processMod.stdin;
-      if (this._stdin === undefined) {
-        this._stdin = stdin;
-        this._onData = (chunk) => { if (!this.push(chunk)) stdin.pause(); };
+      if (this._input === undefined) {
+        this._input = stdin.__nimbusReader();
+        this._onData = (chunk) => { if (!this.push(chunk)) this._input.stop(); };
         this._onEnd = () => this.push(null);
-        stdin.on("data", this._onData);
-        stdin.once("end", this._onEnd);
-        __nimbusTtyStdinReaders++;
+        __eventsMod.prototype.on.call(stdin, "data", this._onData);
+        __eventsMod.prototype.once.call(stdin, "end", this._onEnd);
       }
-      stdin.resume();
+      this._input.read();
     }
-    // Destroyed, it stops reading stdin. The last of them gone, stdin is
-    // paused, its hold on the input released, unless something else reads it.
+    // Destroyed, it stops reading the input and lets go of its hold, the
+    // program's own and other readers' kept.
     _destroy(error, callback) {
-      const stdin = this._stdin;
-      if (stdin !== undefined) {
+      if (this._input !== undefined) {
+        const stdin = __processMod.stdin;
         stdin.removeListener("data", this._onData);
         stdin.removeListener("end", this._onEnd);
-        if (--__nimbusTtyStdinReaders === 0 && stdin.listenerCount("data") === 0 && stdin.listenerCount("readable") === 0) stdin.pause();
+        this._input.release();
       }
       callback(error);
     }
