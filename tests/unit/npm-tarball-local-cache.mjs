@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Verified immutable tarballs stay local across fresh supervisor cache clients.
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { R2CacheClient } from '../../packages/worker/src/npm/r2-cache.ts';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 import { withColoCache } from './lib/colo-cache.mjs';
@@ -23,7 +24,7 @@ await withColoCache(async colo => {
   const shared = bucket();
   const original = packageTarball({ 'package/index.js': 'module.exports = "immutable";' });
   const integrity = await sriOf(original);
-  const input = original.slice();
+  const input = Buffer.from(original); // Buffer.slice() is a view, not an owned copy.
   assert.equal(await new R2CacheClient(shared, null).putTarball(integrity, input), true);
   input[0] ^= 0xff; // The writer still owns its input after the write.
   for (let run = 0; run < 5; run++) {
