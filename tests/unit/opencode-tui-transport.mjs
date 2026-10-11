@@ -2,11 +2,15 @@
 // Use OpenCode's committed CLI builders, not a copied option grammar.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { parse } from 'acorn';
-import * as walk from 'acorn-walk';
-import yargs from 'yargs/yargs';
-import { classifyStagedArtifact, buildOpenCodeTransportPlan } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
+import { createRequire } from 'node:module';
+import { classifyStagedArtifact, buildOpenCodeTransportPlan, parseOpenCodeArgv } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
+const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
+const { parse } = workerRequire('acorn');
+const walk = coreRequire('acorn-walk');
+const { default: yargs } = await import(workerRequire.resolve('yargs/yargs'));
+console.log('short model parse', JSON.stringify(parseOpenCodeArgv(['-mprovider/model', 'project']).argv));
 
 const source = fs.readFileSync(new URL('../../packages/worker/public/_assets/opencode/1.16.2/index.js', import.meta.url), 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });

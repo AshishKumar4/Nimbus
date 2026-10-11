@@ -5,8 +5,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { parse } from 'acorn';
-import * as walk from 'acorn-walk';
+import { createRequire } from 'node:module';
+const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
+const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
+const { parse } = workerRequire('acorn');
+const walk = coreRequire('acorn-walk');
 
 const out = process.argv[process.argv.indexOf('--out') + 1];
 if (!out) throw new Error('--out is required');
