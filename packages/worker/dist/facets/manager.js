@@ -4179,6 +4179,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             placeEmit(path, bound);
     }
     await paceAfterPass();
+    phase('bind');
     // 4. The snapshot's size guard, in the unit the session DO's memory was
     //    measured in and the require walk counts: raw bytes, a cell's UTF-8
     //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
@@ -4329,6 +4330,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     }
     const fileCount = Object.keys(bundle).length;
     const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
+    phase('guard');
     // What only an import() reaches: phase 2's modules, less any a staged
     // package entry's static walk reaches (a synchronous require of that entry
     // evaluates them too). Each with the lazy modules that import it.
@@ -4350,6 +4352,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // code, through an import()): its images ride in the map, bytes only since
     // they compile on first use, and its reads are named for that import().
     const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths));
+    phase('wasm');
     const readers = evictedReaders(evictedCells);
     // The ES modules the map carries, staged as the process's registry
     // evaluates them (esm-stage.ts), `-e` or stdin code that is one among them
