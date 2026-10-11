@@ -501,9 +501,10 @@ export declare class CompositeVFS implements VFS {
      * readRange and the revision ops: `/` and a mount point are EISDIR;
      * anything else is the backend's, looked up before its capability is asked.
      * `written`: a write's whole content (a compare-and-write's), what
-     * observers are told stands after. `creates`: a missing path is the
-     * backend's to answer, as a compare-and-write expecting nothing there
-     * (revision 0) creates it.
+     * observers are told stands after. `creates`: a missing final component
+     * is the backend's to answer, as a compare-and-write expecting revision 0
+     * (nothing there: O_CREAT|O_EXCL) creates it, atomically only there. Its
+     * parents are the lookup's, as any path's.
      */
     private onCapability;
     private method;
