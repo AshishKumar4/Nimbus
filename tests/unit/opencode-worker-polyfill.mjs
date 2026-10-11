@@ -1,21 +1,22 @@
 #!/usr/bin/env bun
 // Unit test for the in-isolate Web Worker polyfill (opencode-facet-runner.ts →
-// WORKER_POLYFILL_SRC). opencode's TUI is a client/server split: the bare
-// `opencode` TUI client spawns its API server as `new Worker("./worker.js")`
-// and OpenTUI its parser as `new Worker("./parser.worker.js")`, then talks to
-// each over birpc on the worker message channel.
+// WORKER_POLYFILL_SRC). OpenTUI runs its syntax-highlight tree-sitter parser as
+// `new Worker("./parser.worker.js")` and talks to it over birpc on the worker
+// message channel; workerd has no real Worker, so the polyfill runs the parser
+// module in the client's isolate.
 //
-// Contract under test (post defect-#20):
+// Contract under test:
 //   - "./parser.worker.js" imports the real staged module: the polyfill claims
 //     a per-worker context, buffers pre-handler messages, and bridges both
 //     directions over opencode's EXACT Rpc contract.
-//   - "./worker.js" is NEVER imported. A Nimbus attach facet always talks to
-//     the remote `opencode serve` facet, and importing worker.js's chunk graph
-//     into a live facet kills the production workerd process (defect #20).
-//     The polyfill answers the worker RPC surface with an in-polyfill stub.
+//   - opencode's API-server worker is a fail-loud sentinel. A Nimbus TUI
+//     attaches to the `opencode serve` facet over HTTP, so no supported path
+//     spawns it and it is neither built nor staged; both names upstream's
+//     resolver can produce (worker.js, worker.ts) throw at construction, and
+//     nothing is imported.
 //
-// This test installs the polyfill (globalThis.Worker), drives opencode's EXACT
-// Rpc.client contract against both worker kinds, and asserts the round-trips.
+// This test installs the polyfill (globalThis.Worker) and drives opencode's
+// EXACT Rpc.client contract against the parser worker.
 
 import assert from 'node:assert/strict';
 import { WORKER_POLYFILL_SRC } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
@@ -119,62 +120,39 @@ const calls = await Promise.all([
 assert.deepEqual(calls.map((c) => c.echoed), ['a', 'b', 'c'], 'buffered burst resolves in order');
 console.log('  [3] a burst of pre-handler calls resolves in order');
 
-// ── 4: worker.js is answered by the stub, never imported ─────────────────────
-globalThis.__nimbusWorkerImport = async () => {
-  throw new Error('worker.js must never be imported (defect #20)');
+// ── 4: the API-server worker is a fail-loud sentinel, and imports nothing ────
+// Upstream's resolver (cli/cmd/tui/thread.ts target()) can only ever name the
+// built worker.js or the worker.ts source URL it falls back to. Both must throw
+// at construction, and no module import may be attempted for either.
+let imported = null;
+globalThis.__nimbusWorkerImport = async (specifier) => {
+  imported = specifier;
 };
-const realFetch = globalThis.fetch;
-let fetched = null;
-globalThis.fetch = async (url, init) => {
-  fetched = { url, init };
-  return new Response('remote-body', { status: 201, headers: { 'x-nimbus': 'yes' } });
-};
-try {
-  const server = new Worker('./worker.js', { env: { OPENCODE_PROCESS_ROLE: 'worker' } });
-  const serverClient = rpcClient(server);
-  assert.equal(await serverClient.call('checkUpgrade', {}), undefined, 'checkUpgrade is a stub no-op');
-  assert.equal(await serverClient.call('reload', {}), undefined, 'reload is a stub no-op');
-  assert.equal(await serverClient.call('snapshot', {}), null, 'snapshot returns null');
-  const proxied = await serverClient.call('fetch', {
-    url: 'http://127.0.0.1:4096/doc',
-    method: 'GET',
-    headers: { a: 'b' },
-  });
-  assert.deepEqual(fetched, {
-    url: 'http://127.0.0.1:4096/doc',
-    init: { method: 'GET', headers: { a: 'b' }, body: undefined },
-  }, 'stub fetch forwards url/method/headers/body');
-  assert.equal(proxied.status, 201, 'stub fetch maps status');
-  assert.equal(proxied.headers['x-nimbus'], 'yes', 'stub fetch maps headers');
-  assert.equal(proxied.body, 'remote-body', 'stub fetch maps body text');
-  await assert.rejects(
-    () => serverClient.call('server', {}),
-    /does not host the opencode server/,
-    'server() fails loud — the serve facet owns the port',
+for (const spec of [
+  './worker.js',
+  'worker.js',
+  new URL('file:///opencode/cli/cmd/tui/worker.js'),
+  new URL('file:///opencode/cli/cmd/tui/worker.ts'),
+]) {
+  assert.throws(
+    () => new Worker(spec, { env: { OPENCODE_PROCESS_ROLE: 'worker' } }),
+    /API-server worker .* is never built or staged/,
+    `spawning the API-server worker fails loud: ${spec}`,
   );
-  await assert.rejects(
-    () => serverClient.call('mystery', {}),
-    /unsupported TUI worker RPC/,
-    'unknown worker RPC fails loud',
-  );
-} finally {
-  globalThis.fetch = realFetch;
 }
-console.log('  [4] worker.js is stubbed: fetch proxies, lifecycle no-ops, server() and unknowns fail loud');
+assert.equal(imported, null, 'no module was imported for the API-server worker');
+console.log('  [4] the API-server worker fails loud at construction and imports nothing');
 
 // ── 5: unknown spec fails loud ───────────────────────────────────────────────
-let threw = false;
-try {
-  globalThis.__nimbusWorkerImport = async () => {};
-  // eslint-disable-next-line no-new
-  new Worker('./mystery.js', {});
-} catch (e) {
-  threw = /unsupported in-isolate Worker target/.test(String(e));
-}
-assert.ok(threw, 'an unrecognized Worker target fails loud (no silent no-op)');
+assert.throws(
+  () => new Worker('./mystery.js', {}),
+  /unsupported in-isolate Worker target/,
+  'an unrecognized Worker target fails loud (no silent no-op)',
+);
+assert.equal(imported, null, 'an unrecognized Worker target imports nothing');
 console.log('  [5] an unrecognized Worker target fails loud');
 
 console.log(
   'opencode-worker-polyfill OK: parser worker bridges opencode birpc both ways ' +
-    '(buffered pre-handler, ordered, events); worker.js answered by the attach stub, never imported',
+    '(buffered pre-handler, ordered, events); the API-server worker is a fail-loud sentinel',
 );
