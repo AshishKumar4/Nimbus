@@ -28,7 +28,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
@@ -124,6 +124,8 @@ async function workspace() {
   };
   return {
     fs, NM,
+    // The project's owner: what an install of theirs leaves is theirs.
+    user: ws.vfs.as(CRED_SESSION_USER),
     npm: (args, options) => ws.exec(`NPM_REGISTRY=${base} npm ${args}`, options),
     sh: (line) => ws.exec(`export NPM_REGISTRY=${base}; ${line}`),
     tree,
@@ -205,12 +207,12 @@ try {
     assert.equal((await ws.npm('install xc@1.0.0 other@1.0.0')).exitCode, 0);
     // As a crashed install leaves it: xc retired, xc@2 half-published over
     // it from staging, and the journal uncommitted.
-    ws.fs.rename(`${ws.NM}/xc`, `${ws.NM}/.xc-retired-crashed1`);
-    ws.fs.mkdir(`${ws.NM}/.nimbus-staging-crashed1/0/lib`, { recursive: true });
-    ws.fs.writeFile(`${ws.NM}/.nimbus-staging-crashed1/0/lib/rest.js`, '');
-    ws.fs.mkdir(`${ws.NM}/xc`, { recursive: true });
-    ws.fs.writeFile(`${ws.NM}/xc/package.json`, '{"name":"xc","version":"2.0.0"}');
-    ws.fs.writeFile(`${ws.NM}/.nimbus-install-journal`, JSON.stringify({
+    ws.user.rename(`${ws.NM}/xc`, `${ws.NM}/.xc-retired-crashed1`);
+    ws.user.mkdir(`${ws.NM}/.nimbus-staging-crashed1/0/lib`, { recursive: true });
+    ws.user.writeFile(`${ws.NM}/.nimbus-staging-crashed1/0/lib/rest.js`, '');
+    ws.user.mkdir(`${ws.NM}/xc`, { recursive: true });
+    ws.user.writeFile(`${ws.NM}/xc/package.json`, '{"name":"xc","version":"2.0.0"}');
+    ws.user.writeFile(`${ws.NM}/.nimbus-install-journal`, JSON.stringify({
       run: 'crashed1',
       committed: false,
       steps: [
