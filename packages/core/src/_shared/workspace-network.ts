@@ -26,7 +26,14 @@
  * (`EGRESS_TLS_REFUSAL`); an egress that carries no TCP at all refuses in its
  * `connect`.
  */
-export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'>;
+export interface WorkspaceEgressTls {
+  connectTls(target: { hostname: string; port: number }): Promise<{
+    readable: ReadableStream<Uint8Array>;
+    writable: WritableStream<Uint8Array>;
+  }>;
+}
+
+export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'> & Partial<WorkspaceEgressTls>;
 
 export interface WorkspaceNetwork {
   /** The host's egress, or undefined for the isolate's own network. */

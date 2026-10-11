@@ -18,7 +18,7 @@ export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) =>
     #state = 0;
     #protocol = '';
     #extensions = '';
-    #binaryType: BinaryType = 'blob';
+    #binaryType: 'blob' | 'arraybuffer' = 'blob';
     #buffered = 0;
     #sending = Promise.resolve();
 
@@ -46,7 +46,7 @@ export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) =>
     get extensions() { return this.#extensions; }
     get bufferedAmount() { return this.#buffered; }
     get binaryType() { return this.#binaryType; }
-    set binaryType(value: BinaryType) { if (value === 'blob' || value === 'arraybuffer') this.#binaryType = value; }
+    set binaryType(value: 'blob' | 'arraybuffer') { if (value === 'blob' || value === 'arraybuffer') this.#binaryType = value; }
 
     send(value: string | ArrayBufferLike | ArrayBufferView | Blob): void {
       if (this.#state === 0) throw new DOMException('WebSocket is not open', 'InvalidStateError');

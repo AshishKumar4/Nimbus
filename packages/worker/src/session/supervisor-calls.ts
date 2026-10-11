@@ -998,8 +998,20 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     async stdinPrepared(): Promise<void> { return this._call(this._op('stdinPrepared')); }
 
     async netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown> {
-      // The TLS session would be made here, off the workspace's egress: refused by name instead.
-      if (this._network().egress !== undefined) throw new Error(EGRESS_TLS_REFUSAL);
+      const egress = this._network().egress;
+      if (egress !== undefined) {
+        const hostname = typeof payload.host === 'string' ? payload.host : '';
+        const port = Number(payload.port);
+        if (!hostname || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('netTls: bad target');
+        if (typeof egress.connectTls !== 'function') throw Object.assign(new Error(EGRESS_TLS_REFUSAL), { code: 'ERR_NIMBUS_EGRESS_TLS' });
+        try { return await egress.connectTls({ hostname, port }); }
+        catch (error) {
+          if (error instanceof TypeError && error.message === 'The RPC receiver does not implement the method "connectTls".') {
+            throw Object.assign(new Error(EGRESS_TLS_REFUSAL), { code: 'ERR_NIMBUS_EGRESS_TLS' });
+          }
+          throw error;
+        }
+      }
       return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
     }
 

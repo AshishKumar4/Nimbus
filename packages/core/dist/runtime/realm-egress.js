@@ -13,6 +13,7 @@
  * it; the realm's redirect mode is applied here, each hop its own request
  * through the egress, as workerd's fetch follows a Fetcher's.
  */
+import { isWebSocketGuestEvent, isWebSocketHostEvent, RealmWebSockets } from './realm-websocket.js';
 // Each side receives a structured clone it must narrow.
 const record = (value) => typeof value === 'object' && value !== null;
 const headerPairs = (value) => Array.isArray(value) && value.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string');
@@ -22,6 +23,8 @@ const isEgressRequest = (value) => record(value) && typeof value.url === 'string
 const isEgressHead = (value) => record(value) && typeof value.status === 'number' && typeof value.statusText === 'string' && headerPairs(value.headers)
     && typeof value.url === 'string' && typeof value.redirected === 'boolean' && typeof value.body === 'boolean';
 export function isEgressGuestEvent(value) {
+    if (isWebSocketGuestEvent(value))
+        return true;
     if (!record(value) || !Number.isSafeInteger(value.id))
         return false;
     switch (value.type) {
@@ -32,6 +35,8 @@ export function isEgressGuestEvent(value) {
     }
 }
 export function isEgressHostEvent(value) {
+    if (isWebSocketHostEvent(value))
+        return true;
     if (!record(value) || typeof value.id !== 'number')
         return false;
     switch (value.type) {
@@ -109,12 +114,18 @@ export class RealmEgress {
     network;
     post;
     open = new Map();
+    sockets;
     constructor(network, post) {
         this.network = network;
         this.post = post;
+        this.sockets = new RealmWebSockets(network, post);
     }
     /** One of the realm's events: a request, a read of a body, or a cancel. */
     handle(event) {
+        if (isWebSocketGuestEvent(event)) {
+            this.sockets.handle(event);
+            return;
+        }
         switch (event.type) {
             case 'egress':
                 this.start(event.id, event.request);
@@ -185,6 +196,7 @@ export class RealmEgress {
     }
     /** The realm has ended: what it left open is closed. */
     close() {
+        this.sockets.close();
         for (const id of [...this.open.keys()])
             this.cancel(id);
     }
