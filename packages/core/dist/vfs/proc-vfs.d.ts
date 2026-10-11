@@ -22,6 +22,8 @@ export declare class ProcVFS implements VFS {
     private generate;
     stat(path: string): VfsStat | null;
     readFile(path: string): Uint8Array;
+    /** Its files are root's, 0444, its directories 0555: a credential asks them by their mode (the embedder's view is not judged). */
+    access(path: string, mode: number): void;
     readRange(path: string, offset: number, length: number): Uint8Array;
     readdir(path: string): VfsDirent[];
     private readOnly;

@@ -122,6 +122,31 @@ export interface MountOptions {
      */
     resolvesPaths?: boolean;
 }
+/** Options shared by `route` and `mutationRoute`. */
+export interface VfsRouteOptions {
+    readonly follow?: boolean;
+    readonly creating?: boolean;
+    /** Report the lookup's dependencies and stop point instead of rejecting a lookup refusal. */
+    readonly report?: boolean;
+}
+/** Namespace link paths a lookup read on the way, in traversal order (the link itself, not its target). */
+export interface VfsTraversal {
+    readonly links: readonly string[];
+}
+export type VfsLookupRefusalCode = 'ENOENT' | 'ENOTDIR' | 'ELOOP' | 'ENXIO' | 'EACCES';
+export interface VfsRouteRefusal extends VfsTraversal {
+    readonly refusal: {
+        readonly code: VfsLookupRefusalCode;
+        readonly at: string;
+    };
+}
+export interface VfsMutationRoute {
+    readonly path: string;
+    readonly point: string;
+    readonly readOnly: boolean;
+}
+export type VfsRouteReport = (VfsRoute & VfsTraversal) | VfsRouteRefusal;
+export type VfsMutationRouteReport = (VfsMutationRoute & VfsTraversal) | VfsRouteRefusal;
 /** Where a path lands in a principal's namespace (CompositeVFS.route). */
 export interface VfsRoute {
     /** The mount point ('/' for the root). */
@@ -132,6 +157,75 @@ export interface VfsRoute {
     readonly path: string;
     /** Why the source is absent (MountOptions.absentReason), when it is. */
     readonly absentReason?: string;
+}
+/**
+ * The name an open found (CompositeVFS.pin), for the open's decisions: each
+ * operation is on that one name, where the open's lookup landed it, whatever
+ * is mounted or linked there later.
+ */
+export interface PinnedName {
+    /** The namespace's name for it. */
+    readonly name: string;
+    /** Its backend answers only by awaiting. */
+    readonly awaits: boolean;
+    /** The name itself, a link not followed. */
+    lstat(): Awaitable<VfsStat | null>;
+    /** What it leads to: a link the backend resolves itself (MountOptions.resolvesPaths) followed by that backend. */
+    stat(): Awaitable<VfsStat | null>;
+    /** The backend's own refusal of an open asking `mode` (VFS.access); a backend of one identity refuses none. */
+    access(mode: number): Awaitable<void>;
+    /** An empty file made at it (creat(2)): `admit` runs right before the backend is asked. */
+    create(mode: number | undefined, admit?: () => void): Awaitable<void>;
+    truncate(size: number, admit?: () => void): Awaitable<void>;
+    /** Which file is there now (HeldFile.key), or null when nothing is: the key held writes to it are kept under. */
+    key(): Awaitable<string | null>;
+    /** What is there now, read whole (a file this process holds writes to, as its reads see it). */
+    readAll(): Awaitable<Uint8Array>;
+    /**
+     * The file the open decided on (`ino`, its number as this name's stat
+     * answers it), held with `rights` for a description: VFS.openFile where
+     * the backend keeps open files, else by name. ESTALE when the file there
+     * now, or the one the backend opened, is another: the open authorized that
+     * one. Its identity and metadata are what it holds.
+     */
+    hold(rights: {
+        read: boolean;
+        write: boolean;
+    }, ino: number): Awaitable<HeldFile>;
+}
+/**
+ * A file a description holds (PinnedName.hold). On a backend that keeps
+ * open files (VFS.openFile) its content operations reach that file wherever
+ * it is named later; every other operation, and every one on a backend that
+ * keeps none, goes by the name it was opened at, refused (ESTALE) once that
+ * name holds another file (its backend's inode number changed) or none,
+ * asked in a change's turn among the namespace's observed changes, right
+ * before it (on a backend that awaits, that is a stat, then the change). A
+ * backend that numbers no files cannot tell: there, the name is the file.
+ * Its mutations are the opener's view's: refused on a read-only mount, asked
+ * of the namespace's guard at its name, and observed (observeWrites) only
+ * while the namespace shows that file at that name.
+ */
+export interface HeldFile {
+    /** The namespace's name for it, when it was opened. */
+    readonly name: string;
+    /** Its backend answers only by awaiting. */
+    readonly awaits: boolean;
+    /** Which file it is: the same for every hold of it, through any name or view of its backend. */
+    readonly key: string;
+    stat(): Awaitable<VfsStat>;
+    read(offset: number, length: number): Awaitable<Uint8Array>;
+    readAll(): Awaitable<Uint8Array>;
+    /** In place; ENOTSUP where it cannot be written so. `admit` runs right before the backend is asked, after every await. */
+    write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<void>;
+    /** Its whole content, `bytes`. */
+    replace(bytes: Uint8Array, admit?: () => void): Awaitable<void>;
+    truncate(size: number, admit?: () => void): Awaitable<void>;
+    chmod(mode: number, admit?: () => void): Awaitable<void>;
+    chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+    utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+    readdir(): Awaitable<VfsDirent[]>;
+    close(): Awaitable<void>;
 }
 export interface MountInfo {
     readonly point: string;
@@ -335,6 +429,17 @@ export declare class CompositeVFS implements VFS {
      * kept its operand, did not land there.
      */
     private reportWrite;
+    /**
+     * reportWrite of the mutation `prepare` gives, prepared in its turn, after
+     * the observed mutations queued before it (a held-open file's change is
+     * placed where that file is then). Its `spec` null: a change at no name,
+     * reported to no one. `name`: the mutation's name before it is placed.
+     */
+    private reportPrepared;
+    /** `report` in its turn among the observed mutations (takeTurn); a caller that cannot wait is refused while another holds it. */
+    private inTurn;
+    /** reportWrite's report of `spec`'s mutation, `run`, in its turn. */
+    private reportIn;
     /** `run` once every observed mutation queued before it is done; those after it wait for it. */
     private takeTurn;
     /**
@@ -364,10 +469,46 @@ export declare class CompositeVFS implements VFS {
      * `parents`): directories missing on the way are allowed, a file among
      * them is still ENOTDIR, and a link to where nothing is yet leads there.
      */
-    route(path: string, options?: {
-        follow?: boolean;
-        creating?: boolean;
+    route(path: string, options: VfsRouteOptions & {
+        report: true;
+    }): Promise<VfsRouteReport>;
+    route(path: string, options?: VfsRouteOptions & {
+        report?: false;
     }): Promise<VfsRoute>;
+    route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
+    /**
+     * The name `path` leads to now, for an open (PinnedName): links on the
+     * way followed, the last only with `follow`. The open's decisions, and the
+     * description it keeps (PinnedName.hold), go to the backend that lookup
+     * landed on, as this view's principal sees it, whatever is mounted,
+     * unmounted or linked at the name later. A directory the namespace makes
+     * above mount points is the namespace's own, by its name; a mount point
+     * is its backend's root. Inside a backend that resolves its own paths
+     * (MountOptions.resolvesPaths) the name is held as given: a link of the
+     * backend's repointed later is the backend's to follow. `sync`: through the
+     * backends' synchronous faces only.
+     */
+    pin(path: string, options: {
+        follow: boolean;
+        sync: boolean;
+    }): Awaitable<PinnedName>;
+    /**
+     * A pinned target's mutation of the file `place` finds in the mutation's
+     * turn, after the observed mutations before it (the target's name, or
+     * where a file held open is named then; null once it has none): refused on
+     * a read-only mount and by the guard there, `admit` right before the
+     * backend, observed there while `still`. `held(at)`: the held file's own
+     * refusal (it is not the file at `at` now), asked after the before-image is
+     * read, before the guard. A file with no name (unlinked, held open) is no
+     * name's change: only the view's own check is asked.
+     */
+    private changingOn;
+    /** A name an open found on a backend (pin). */
+    private static readonly Pinned;
+    /** A file a description holds (HeldFile), on the backend its pin captured. */
+    private static readonly Held;
+    /** A directory the namespace makes above mount points, pinned (pin): the namespace's own, by its name. */
+    private static readonly NamespaceName;
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
      * (links on the way followed, the last only with `follow`), the mount
@@ -377,14 +518,14 @@ export declare class CompositeVFS implements VFS {
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
      * the lookup stays on synchronous backends. `creating`: as route's.
      */
-    mutationRoute(path: string, options?: {
-        follow?: boolean;
-        creating?: boolean;
-    }): Awaitable<{
-        readonly path: string;
-        readonly point: string;
-        readonly readOnly: boolean;
-    }>;
+    mutationRoute(path: string, options: VfsRouteOptions & {
+        report: true;
+    }): Awaitable<VfsMutationRouteReport>;
+    mutationRoute(path: string, options?: VfsRouteOptions & {
+        report?: false;
+    }): Awaitable<VfsMutationRoute>;
+    mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport>;
+    private mutationRouteOf;
     /**
      * Whether `path` is a directory above a live mount point (not the root):
      * one the namespace keeps a directory for its mounts, so removing it is
@@ -472,11 +613,15 @@ export declare class CompositeVFS implements VFS {
     get principal(): Principal;
     get sync(): SyncVFS;
     private resynthesize;
-    /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
-    writesInPlace(path: string): boolean;
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
     private backend;
+    /** What `mount`'s source gives this view's principal now (the backend itself, before a principal's view of it). */
+    private sourceOf;
+    /** `found` as this view's principal sees it (its `as`), one view per backend. */
+    private backendView;
+    /** `files`' synchronous face, or EAGAIN for a caller that cannot wait (an asynchronous mount). */
+    private synchronousFace;
     /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */
     private absentOn;
     private absent;
@@ -553,7 +698,15 @@ export declare class CompositeVFS implements VFS {
      * here, per path, stable while it stays mounted.
      */
     private identify;
+    /** `identify`, on the mount `path` was found on (a pin's, which may since have left its point). */
+    private identifyOn;
     private statAt;
+    /**
+     * A mount point's stat: its backend root's. Only a backend that cannot
+     * stat its own root (a container that derives stat from a parent listing)
+     * gets a synthesized directory; one with no modes has the namespace's.
+     */
+    private mountPointStat;
     /** The stat of a resolved namespace path, before its identity is stamped. */
     private statResolved;
     /** stat, with ENOENT/ENOTDIR from the backend read as "not there". */

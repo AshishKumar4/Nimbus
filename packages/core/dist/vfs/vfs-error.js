@@ -7,7 +7,7 @@
 export const VFS_ERRNO = {
     E2BIG: -7, EPERM: -1, ENOENT: -2, EIO: -5, ENXIO: -6, EAGAIN: -11, EACCES: -13, EBUSY: -16, EEXIST: -17,
     EXDEV: -18, ENOTDIR: -20, EISDIR: -21, EINVAL: -22, ENOSPC: -28, EROFS: -30, ELOOP: -40,
-    ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116, EBADF: -9,
+    ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116, EBADF: -9, EFBIG: -27,
 };
 /**
  * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which
@@ -148,7 +148,7 @@ export const VFS_STRERROR = {
     ENOTDIR: 'Not a directory', EISDIR: 'Is a directory', EINVAL: 'Invalid argument',
     ENOSPC: 'No space left on device', EROFS: 'Read-only file system', ELOOP: 'Too many levels of symbolic links',
     E2BIG: 'Argument list too long', ENAMETOOLONG: 'File name too long', ENOTEMPTY: 'Directory not empty', ENOTSUP: 'Operation not supported',
-    ESTALE: 'Stale file handle', EBADF: 'Bad file descriptor',
+    ESTALE: 'Stale file handle', EBADF: 'Bad file descriptor', EFBIG: 'File too large',
 };
 /**
  * libuv's description of each code: the words before the syscall in Node's
@@ -163,6 +163,7 @@ export const VFS_DESCRIPTION = {
     EINVAL: 'invalid argument', ENOSPC: 'no space left on device', EROFS: 'read-only file system',
     ELOOP: 'too many symbolic links encountered', ENAMETOOLONG: 'name too long', ENOTEMPTY: 'directory not empty',
     ENOTSUP: 'operation not supported on socket', ESTALE: 'stale file handle', EBADF: 'bad file descriptor',
+    EFBIG: 'file too large',
 };
 /**
  * libuv's description of any code a filesystem call answers, the VFS's own
@@ -170,7 +171,7 @@ export const VFS_DESCRIPTION = {
  */
 export const ERRNO_DESCRIPTION = {
     ...VFS_DESCRIPTION,
-    EBADF: 'bad file descriptor', EFBIG: 'file too large', ENODATA: 'no data available', ENOSYS: 'function not implemented',
+    EBADF: 'bad file descriptor', ENODATA: 'no data available', ENOSYS: 'function not implemented',
     EMFILE: 'too many open files', ENFILE: 'file table overflow', ENOMEM: 'not enough memory', ETXTBSY: 'text file is busy',
     EMLINK: 'too many links', ENODEV: 'no such device', ESPIPE: 'invalid seek', EPIPE: 'broken pipe',
     EINTR: 'interrupted system call', ERANGE: 'result too large', EOVERFLOW: 'value too large for defined data type',
@@ -182,7 +183,7 @@ export function errnoDescription(code) {
 }
 /** Linux errno numbers of the codes {@link ERRNO_DESCRIPTION} names besides the VFS's, negative as libuv reports them. */
 const OTHER_ERRNO = {
-    EFBIG: -27, ENODATA: -61, ENOSYS: -38, EMFILE: -24, ENFILE: -23, ENOMEM: -12, ETXTBSY: -26, EMLINK: -31,
+    ENODATA: -61, ENOSYS: -38, EMFILE: -24, ENFILE: -23, ENOMEM: -12, ETXTBSY: -26, EMLINK: -31,
     ENODEV: -19, ESPIPE: -29, EPIPE: -32, EINTR: -4, ERANGE: -34, EOVERFLOW: -75, ETIMEDOUT: -110, ECANCELED: -125,
     EFAULT: -14,
 };

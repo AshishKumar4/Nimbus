@@ -3,6 +3,88 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- A file on a mount is opened by one rule, and its open description is one
+  implementation (`vfs/mounted-description.js`), for a process's synchronous
+  face, its asynchronous one, and a wave's `open`; one descriptor numbering per
+  process (`runtime/descriptors.js`). Visible changes, Linux's answers:
+  an open asking no access reads; `O_NOFOLLOW` of a mounted link is `ELOOP`
+  (the synchronous face followed it); `O_CREAT|O_EXCL` of a link, even
+  dangling, is `EEXIST` before `ELOOP`; `O_CREAT|O_DIRECTORY` of an absent name
+  is `EINVAL` and makes nothing (one face made a file and failed, the other
+  opened it); a directory opened with write rights opens (the asynchronous face
+  refused it); `O_TRUNC` is the mount's truncate; an `O_APPEND` descriptor
+  starts at offset 0, on SQLite too, and each append leaves it at the end;
+  a mounted `fstat` carries the mount's revision, not the SQLite clock; an
+  explicit negative offset of a read or write, and a seek to no integer, is
+  `EINVAL` (a negative offset read from 0); `O_CREAT|O_DIRECTORY` is `EINVAL`
+  before any lookup, `O_CREAT` of a directory `EISDIR` (`O_EXCL`: `EEXIST`),
+  `O_DIRECTORY|O_NOFOLLOW` of a link `ENOTDIR`, and `O_TRUNC` asks write
+  access whatever access the descriptor has, on SQLite and on a mount alike;
+  `ftruncate` of a descriptor not open for writing is `EINVAL` (it was `EBADF`
+  on SQLite, and truncated on a synchronous mount); a mount whose `writeRange`
+  refuses with `ENOTSUP` holds the writes until fsync or close, as one without
+  `writeRange` does, and a descriptor that awaits writes them as it makes them.
+  Who may open a mounted file for what is the mount's own policy, as for every
+  other operation on it, asked before the open changes anything (the new
+  optional `VFS.access`, which `SqliteFiles` and `/proc` implement): the
+  synchronous face no longer refuses an open with `EACCES` by the mode a
+  backend of one identity reports, and both faces now refuse what a
+  credentialed backend's modes deny. A description holds the file its open
+  found (`CompositeVFS.pin`, a `PinnedName` and its `hold`, a `HeldFile`): an
+  unmount, a mount or a link changed at its name later moves neither its I/O
+  nor its held writes, and a write through it is reported to `observeWrites`
+  only while the namespace shows that file at that name. A backend may keep
+  open files (the new optional `VFS.openFile` and `VfsOpenFile`, which
+  `SqliteFiles` implements; the unused `VFS.open`, `VfsHandle` and
+  `VfsOpenFlags` are removed): a description of one is that file across a
+  rename or an unlink, guarded by leases and observed at the name it has now;
+  one of a backend that keeps none is held by its name, and refuses with
+  `ESTALE` once the name holds another file or none. An open holds the file
+  it decided on: one put at its name meanwhile is `ESTALE`.
+  `MemoryVFS` numbers its files (`ino`). Held writes are keyed by the file
+  (its number in its backend's store, the new optional `VFS.fileStore`, the
+  same through any view or wrapper of it), not its mount and path, apply in their
+  descriptions' open order, and a process's held writes on a file are
+  written before that process cuts it (a truncate, an `O_TRUNC` open, a
+  whole-file write), so nothing brings back what it cut; a flush the process
+  did not ask for that fails is reported by that descriptor's next `fsync` or
+  `close`. A close answers what the backend's close failed with, and
+  `releaseProcess` what every close of its descriptors did, as a wave's
+  `close` of a mounted description does; a description whose flush fails
+  still closes its file, and a killed process's close theirs, writing
+  nothing. A positional write through an
+  `O_APPEND` descriptor lands at the end and leaves the offset where it was.
+  `SqliteVFS.openDescription` asks only search: the open that asks decided
+  the access (a creat(2) of a mode without write writes what it made). `EFBIG`
+  is a VFS error code. Not atomic on a mount that awaits: an `O_APPEND` write
+  (the end is read, then written at) and `O_CREAT|O_EXCL` (a stat, then a
+  create).
+  A wave's `open` of a file on a mount keeps it as the process's description
+  (`WaveDescriptions.describe`, `WaveRouter.open`): that description's
+  writes, appends and truncates act on that file, not on whatever its name
+  leads to later, are refused (`EBADF`) once it is closed rather than made by
+  its name, and stop with its process; the open's receipt carries its
+  descriptor, and a re-sent open answers it again. `WaveScope.isDescribed` is
+  removed. `O_CREAT|O_EXCL` of a name that is a link, followed or not,
+  is `EEXIST` on SQLite too (it created the link's target, or answered
+  `ELOOP` first). Held writes are read back by every read of their file, by
+  path or descriptor, awaited ones included. The synchronous face refuses a
+  descriptor on an asynchronous mount with that mount's `EAGAIN`, not
+  `EBADF`. `CompositeVFS.writesInPlace` is removed.
+- The shell's built-in `node` keeps no descriptor table of its own: an `fs`
+  descriptor is the process's (`NodeFilesystem.open`, `read`, `write`,
+  `fstat`, `ftruncate`, `fsync`, `close`), shared with `fs/promises`, with
+  its file, offset, rights and `O_APPEND`; Node's flag strings and `O_EXCL`,
+  `O_DIRECTORY`, `O_NOFOLLOW`, `O_SYNC` are honored, and an unknown flag
+  string is `ERR_INVALID_ARG_VALUE`.
+- `CompositeVFS.route` and `mutationRoute` take `{ report: true }`: the answer
+  then carries the links the lookup traversed, in order, and a lookup that
+  refuses (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENXIO`, `EACCES`) answers its refusal
+  `{ code, at }` instead of throwing, for a caller that invalidates on what a
+  name depended on. Without it both answer and refuse as before.
+
 ## 2026-10-11: platform 0.8.1, config 0.3.0, core 0.17.0, fabric 0.12.0, worker 0.15.0, loom 0.2.4, sdk 0.13.0, react 0.3.0, cli 0.2.4
 
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the

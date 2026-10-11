@@ -32,8 +32,6 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
     readonly proc: ProcVFS;
     private readonly processes;
-    /** Each scope's descriptors on asynchronous mounts: a process's, whichever bridge it binds per call. */
-    private readonly awaitedDescriptors;
     private readonly namespaces;
     private readonly retired;
     /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */

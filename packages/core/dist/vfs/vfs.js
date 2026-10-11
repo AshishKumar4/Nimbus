@@ -14,6 +14,34 @@
  * that (ENOTSUP) and decides.
  */
 import { isVfsError, syscallError } from './vfs-error.js';
+export function isPromise(value) {
+    return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function';
+}
+/** `value`, which a synchronous face answers at once: one that would wait is its caller's fault, never a value. */
+export function syncValue(value) {
+    if (isPromise(value))
+        throw new Error('synchronous filesystem operation returned a promise');
+    return value;
+}
+/** `file`, opened for no one any more: closed, its answer unheard (nothing was written through it). */
+export function abandon(file) {
+    try {
+        const closed = file.close();
+        if (isPromise(closed))
+            closed.catch(() => { });
+    }
+    catch {
+        // Nothing was written through it.
+    }
+}
+/**
+ * Apply `next` to a value that may or may not be a promise, staying
+ * synchronous when it is not. (Not `then`: a module exporting `then` is a
+ * thenable to `await import()`.)
+ */
+export function andThen(value, next) {
+    return isPromise(value) ? value.then(next) : next(value);
+}
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /**

@@ -81,6 +81,7 @@ const bytes = (value: unknown, method: string) => value instanceof Uint8Array ? 
 const text = (value: unknown, method: string) => typeof value === 'string' ? value : malformed(method);
 const flagOf = (value: unknown, method: string) => typeof value === 'boolean' ? value : malformed(method);
 const stat = (value: unknown, method: string) => isStat(value) ? value : malformed(method);
+const count = (value: unknown, method: string) => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0 ? value : malformed(method);
 let changed: (() => void) | undefined;
 const filesystem: NodeFilesystem = {
   readFile: (path) => bytes(call({ op: 'fs', method: 'readFile', args: [path] }), 'readFile'),
@@ -103,6 +104,13 @@ const filesystem: NodeFilesystem = {
   rename: (from, to) => { call({ op: 'fs', method: 'rename', args: [from, to] }); },
   copyFile: (from, to) => { call({ op: 'fs', method: 'copyFile', args: [from, to] }); },
   chmod: (path, mode) => { call({ op: 'fs', method: 'chmod', args: [path, mode] }); },
+  open: (path, flags) => count(call({ op: 'fs', method: 'open', args: [path, flags] }), 'open'),
+  read: (fd, position, length) => bytes(call({ op: 'fs', method: 'read', args: [fd, position, length] }), 'read'),
+  write: (fd, position, data) => count(call({ op: 'fs', method: 'write', args: [fd, position, data] }), 'write'),
+  fstat: (fd) => stat(call({ op: 'fs', method: 'fstat', args: [fd] }), 'fstat'),
+  ftruncate: (fd, size) => { call({ op: 'fs', method: 'ftruncate', args: [fd, size] }); },
+  fsync: (fd) => { call({ op: 'fs', method: 'fsync', args: [fd] }); },
+  close: (fd) => { call({ op: 'fs', method: 'close', args: [fd] }); },
   get onChange() { return changed; },
   set onChange(listener) {
     changed = listener;
