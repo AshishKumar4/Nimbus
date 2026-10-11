@@ -25,8 +25,8 @@
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
-import { RUNTIME_NODE_LIB_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
-import { generateNodeLibModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
+import { RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { generateNodeDnsModule, generateNodeLibModule, generateNodeLibRestModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
 const SEED = `
@@ -148,17 +148,26 @@ function __nimbusRuntimeModule(path) {
 `;
 
 // The launch map's runtime modules the shims require (manager.ts
-// runtimeModules), as the map's require gives them: Node's library.
-globalThis.__nimbusTestNodeLib = () => {
+// runtimeModules), as the map's require gives them, each once per factory:
+// Node's library, and the modules it requires as a program first needs them.
+const NODE_LIB_MODULES = {
+  [RUNTIME_NODE_LIB_MODULE]: generateNodeLibModule,
+  [RUNTIME_NODE_LIB_REST_MODULE]: generateNodeLibRestModule,
+  [RUNTIME_NODE_DNS_MODULE]: generateNodeDnsModule,
+};
+globalThis.__nimbusTestNodeLib = (loaded, name) => {
+  if (!Object.hasOwn(NODE_LIB_MODULES, name)) throw new Error("a standalone shims factory's map has no " + name);
+  if (loaded.has(name)) return loaded.get(name).exports;
   const moduleObject = { exports: {} };
-  new Function('module', 'exports', generateNodeLibModule())(moduleObject, moduleObject.exports);
+  loaded.set(name, moduleObject);
+  new Function('module', 'exports', 'require', NODE_LIB_MODULES[name]())(moduleObject, moduleObject.exports,
+    (id) => globalThis.__nimbusTestNodeLib(loaded, 'nimbus/' + id.slice(2)));
   return moduleObject.exports;
 };
 const RUNTIME_MODULES = `
-let __nimbusTestNodeLibrary;
+const __nimbusTestNodeLibLoaded = new Map();
 function __nimbusRegistryRequire(id) {
-  if (id !== "./${RUNTIME_NODE_LIB_MODULE}") throw new Error("a standalone shims factory's map has no " + id);
-  return (__nimbusTestNodeLibrary ??= globalThis.__nimbusTestNodeLib());
+  return globalThis.__nimbusTestNodeLib(__nimbusTestNodeLibLoaded, id.slice(2));
 }
 `;
 

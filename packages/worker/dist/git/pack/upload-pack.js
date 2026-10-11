@@ -11,11 +11,15 @@
 import { retrying } from '@nimbus-sh/platform/retry.js';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
 import { PackFormatError } from './format.js';
+import { plainTextMessage, selectRemoteCredentials } from './remote-failure.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 export class UploadPackError extends Error {
     status;
-    constructor(message, status) {
+    failure;
+    constructor(message, status, failure) {
         super(UPLOAD_PACK_ERROR_PREFIX + message);
         this.status = status;
+        this.failure = failure;
         this.name = 'UploadPackError';
     }
 }
@@ -35,10 +39,10 @@ function pktLine(text) {
  * the options'.
  */
 function remote(options) {
+    const auth = selectRemoteCredentials(options.url, options.auth);
     const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
     if (parsed === null || (parsed.username === '' && parsed.password === ''))
-        return { url: withoutSlash(options.url), auth: options.auth };
-    const auth = { username: unescapeUserinfo(parsed.username), password: unescapeUserinfo(parsed.password) };
+        return { url: withoutSlash(options.url), auth };
     parsed.username = '';
     parsed.password = '';
     return { url: withoutSlash(parsed.href), auth };
@@ -46,26 +50,11 @@ function remote(options) {
 function withoutSlash(url) {
     return url.endsWith('/') ? url.slice(0, -1) : url;
 }
-/** A URL's username or password as written: each run of percent-escapes decoded, a stray `%` kept. */
-function unescapeUserinfo(text) {
-    return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
-        try {
-            return decodeURIComponent(run);
-        }
-        catch {
-            return run;
-        }
-    });
-}
 function headers(auth, extra) {
     const result = { 'user-agent': 'git/nimbus', ...extra };
     if (auth && (auth.username || auth.password)) {
         // Basic credentials are UTF-8, as git sends them.
-        const bytes = encoder.encode(auth.username + ':' + auth.password);
-        let binary = '';
-        for (const byte of bytes)
-            binary += String.fromCharCode(byte);
-        result.authorization = 'Basic ' + btoa(binary);
+        result.authorization = 'Basic ' + base64Utf8(auth.username + ':' + auth.password);
     }
     return result;
 }
@@ -79,7 +68,10 @@ async function send(options, path, init) {
     const attempt = async () => {
         let timer = null;
         const stalled = new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
+            timer = setTimeout(() => {
+                const detail = 'no response for ' + Math.round(stallMs / 1000) + ' s';
+                reject(new UploadPackError(detail, undefined, { kind: 'transport', detail }));
+            }, stallMs);
         });
         try {
             return await Promise.race([doFetch(url + path, { ...request, signal: options.signal }), stalled]);
@@ -100,7 +92,10 @@ async function send(options, path, init) {
         });
     }
     catch (error) {
-        throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
+        if (error instanceof UploadPackError)
+            throw error;
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new UploadPackError('the request failed: ' + detail, undefined, { kind: 'transport', detail });
     }
 }
 export { STALL_MS };
@@ -186,13 +181,14 @@ export async function discover(options) {
     const response = await send(options, '/info/refs?service=git-upload-pack', {
         headers: { accept: 'application/x-git-upload-pack-advertisement' },
     });
-    if (response.status === 401 || response.status === 403) {
-        await response.body?.cancel();
-        throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status);
-    }
     if (!response.ok || !response.body) {
-        await response.body?.cancel();
-        throw new UploadPackError('discovery answered HTTP ' + response.status, response.status);
+        // The server's text, as git shows it, with the status.
+        const message = await plainTextMessage(response.headers.get('content-type'), response.body);
+        const failure = { kind: 'status', status: response.status, ...(message === undefined ? {} : { message }) };
+        if (response.status === 401 || response.status === 403) {
+            throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status, failure);
+        }
+        throw new UploadPackError('discovery answered HTTP ' + response.status, response.status, failure);
     }
     const reader = new PktReader(response.body.getReader(), options.stallMs);
     const first = await reader.next();

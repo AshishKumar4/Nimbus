@@ -21,6 +21,7 @@ import { historyPlan, historyResume, historyStep } from './history.js';
 import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
 import { retryingGitHttp } from './transport.js';
+import { observedGitHttp, remoteFailureOf } from './remote-failure.js';
 /**
  * cf-git: a copy of vendor/git.generated.mjs in the facet's own module record
  * (runtime/git-bundle-artifact.ts), there only when the facet is loaded, so
@@ -284,7 +285,7 @@ export const networkWorker = {
             }, 500);
         }
         const git = bundle.git;
-        const http = retryingGitHttp(bundle.gitHttp);
+        const http = observedGitHttp(retryingGitHttp(bundle.gitHttp));
         // Keep progress bounded: phase transitions and completions, plus one
         // timed update every two seconds. cf-git fires this callback per pack
         // object, and each line is a facet-to-supervisor RPC that takes input-gate
@@ -471,6 +472,7 @@ export const networkWorker = {
                 // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
                 await git.fetch({
                     fs, http,
+                    url: opts.url,
                     uploadPack: { discover, requestPack },
                     dir: opts.dir,
                     remote: opts.remote || 'origin',
@@ -483,7 +485,7 @@ export const networkWorker = {
                 });
             }
             else if (opts.op === 'push') {
-                await git.push({ fs, http, dir: opts.dir, remote: opts.remote || 'origin', ref: opts.ref, onProgress, onAuth });
+                await git.push({ fs, http, dir: opts.dir, url: opts.url, remote: opts.remote || 'origin', ref: opts.ref, onProgress, onAuth });
             }
             else {
                 throw new Error('Unknown op: ' + opts.op);
@@ -503,6 +505,7 @@ export const networkWorker = {
                 errorCode: error && typeof error.code === 'string' ? error.code : undefined,
                 // A write git would have failed: git's own lines (pack/mount-writer.ts).
                 gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
+                remoteFailure: remoteFailureOf(e, http),
                 metadataOverlay: overlayStats(),
             });
         }

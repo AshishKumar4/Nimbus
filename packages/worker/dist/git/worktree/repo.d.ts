@@ -70,9 +70,9 @@ export interface ObjectWriter {
     flush(): Promise<void>;
 }
 /**
- * git_config_bool's spellings, of a value as cf-git reads it: a key with no
- * `=` is 'true' there (git's true), and an explicit empty value is ''
- * (git's false).
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
  */
 export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {

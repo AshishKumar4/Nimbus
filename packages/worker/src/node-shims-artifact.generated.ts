@@ -40,9 +40,14 @@ export const JS_INTERPRETER_OPS_BUILD_ID: string = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256: string = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-12b4803c53369862.js";
-export const NODE_LIB_BUILD_ID: string = "12b4803c53369862";
-export const NODE_LIB_SHA256: string = "12b4803c53369862d37495c3536de93f5e660c736443e099452a6cebf8fb7629";
+export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-a60c3bc402bed8e6.js";
+export const NODE_LIB_BUILD_ID: string = "a60c3bc402bed8e6";
+export const NODE_LIB_SHA256: string = "a60c3bc402bed8e6df1cc1387d7699f4c1bf26ddd4425ebe8d68d94beb016b52";
+
+/** dist/runtime/node-lib-module.js generateNodeLibRestModule() */
+export const NODE_LIB_REST_ENTRY: string = "/_assets/runtime/node-lib-rest-f11f64906eddd5c3.js";
+export const NODE_LIB_REST_BUILD_ID: string = "f11f64906eddd5c3";
+export const NODE_LIB_REST_SHA256: string = "f11f64906eddd5c3b42a6b1e9dd04327ef04b5e2344e3f6f2bc1534321b3eacf";
 
 /** dist/runtime/node-lib-module.js generateNodeDnsModule() */
 export const NODE_DNS_ENTRY: string = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
