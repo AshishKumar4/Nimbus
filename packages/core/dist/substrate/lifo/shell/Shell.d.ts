@@ -57,6 +57,13 @@ export interface ShellCommandIdentity {
      * shell runs it, so no command of a process goes uncounted.
      */
     accountWork?(pid: number): () => void;
+    /**
+     * A line this shell runs on process `pid`'s descriptors, until the
+     * returned function is called: `stop` ends it (SessionProcessSupervisor
+     * holdWork). What the pid bound is released after the line has closed
+     * what it opened, however the process ends.
+     */
+    holdWork?(pid: number, stop: () => void): () => void;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;

@@ -994,7 +994,10 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.closeInput(pid);
     }
     catch { }
-    self.supervisorForgetBridge?.(pid);
+    // Its receipts go, and what it bound is released ahead of its output,
+    // so what its last closes flush goes out with it.
+    self.supervisorDeliveries?.forget(pid);
+    self.processes.programEnded(pid);
     await self.processes.releaseOutput(pid, () => {
         closeRelayedSockets(self, pid);
         reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules);
@@ -1100,13 +1103,16 @@ export function _emitShellExecDone(self, pid, _cmd, code, durationMs) {
  * has useful context, then runs the same dump machinery.
  */
 export function _reportExternalExit(self, pid, code, reason) {
+    // Its receipts go however its exit was recorded. What it bound in the
+    // filesystem is the table's to release (SessionProcessSupervisor.holdWork):
+    // once whatever of it the session runs has unwound.
+    self.supervisorDeliveries?.forget(pid);
     if (self.processes.getExit(pid))
         return;
     try {
         self.processes.closeInput(pid);
     }
     catch { }
-    self.supervisorForgetBridge?.(pid);
     void self.processes.releaseOutput(pid, () => {
         closeRelayedSockets(self, pid);
         reportExternalExit(self, pid, code, reason);

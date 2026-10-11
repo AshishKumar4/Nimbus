@@ -65,8 +65,6 @@ export interface SessionSupervisorHost {
 export interface SessionSupervisorOps {
   readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
   readonly bridge: (pid?: number) => RuntimeFsBridge;
-  /** Drop a pid's bridge — a process exit ends its credential's validity. */
-  readonly forget: (pid: number) => void;
   readonly dispose: () => Promise<void>;
   /** Close a live pid's descriptors for a run that starts in place of another. */
   rewind(pid: number): Promise<void>;
@@ -125,11 +123,7 @@ export function buildSessionSupervisorOps(
       ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
       : dispatch(),
   });
-  const forget: SessionSupervisorOps['forget'] = (pid) => {
-    host.supervisorDeliveries?.forget(pid);
-    return store.forget(pid);
-  };
-  return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => {
+  return { dispatch, bridge: store.bridge, rewind: async (pid) => {
     host.supervisorDeliveries?.endReadRun(pid);
     await store.rewind?.(pid);
   }, dispose: store.dispose };

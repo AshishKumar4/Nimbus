@@ -731,10 +731,6 @@ export class NimbusSession extends CloudflareDurableObject {
     supervisorBridge(pid) {
         return this.supervisorOps().bridge(pid);
     }
-    /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
-    supervisorForgetBridge(pid) {
-        this._supervisorOps?.forget(pid);
-    }
     supervisorRewindBridge(pid) { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
     // A storage wait: its input gate keeps this session's events out while the isolate's other objects run.
     // (A timer under blockConcurrencyWhile never fires: the gate holds timers too, and the object resets.)
