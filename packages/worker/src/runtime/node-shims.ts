@@ -9741,6 +9741,7 @@ function __makeStdinSource() {
   }
   function deliver() {
     for (const c of pending) {
+      if (c.destroyed) { pending.delete(c); continue; }
       if (!readingNow(c)) continue;
       if (queue.length > 0) { pending.delete(c); c.push(queue.shift()); }
       else if (failure !== null) { pending.delete(c); c.destroy(failure); }
