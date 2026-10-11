@@ -19,7 +19,8 @@ import { readRange, type PackSummary } from './install.js';
 import { type EntryStat } from '../worktree/dircache.js';
 import { oidFromHex } from './format.js';
 import { PackStreamProcessor, type PackProcessResult } from './processor.js';
-import { type Advertisement, type GitTransportAuth } from './upload-pack.js';
+import { type Advertisement } from './upload-pack.js';
+import type { GitTransportAuth } from './transport.js';
 /** The supervisor calls a clone makes beyond its wave writer's. */
 export interface CloneSupervisor {
     fsWriteRange(path: string, offset: number, bytes: Uint8Array): Promise<unknown>;

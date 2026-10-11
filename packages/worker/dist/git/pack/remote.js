@@ -108,7 +108,7 @@ export async function fetchPack(context, request) {
         ...(request.depth !== undefined ? { depth: request.depth } : {}),
         ...(request.deepenSince !== undefined ? { deepenSince: request.deepenSince } : {}),
         ...(request.deepenNot?.length ? { deepenNot: request.deepenNot } : {}),
-        ...(request.deepenRelative ? { deepenRelative: true } : {}),
+        ...(request.deepenRelative ? { relative: true } : {}),
         ...(filtered ? { filter: request.filter } : {}),
         includeTag: request.includeTag,
     });

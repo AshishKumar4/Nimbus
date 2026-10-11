@@ -20,7 +20,7 @@
  */
 import { type CloneContext, type PendingPack } from './clone.js';
 import { type ReceiveCommand } from './receive-pack.js';
-import { type GitTransportAuth } from './upload-pack.js';
+import type { GitTransportAuth } from './transport.js';
 /** The remote, as an operation reaches it. */
 export interface RemoteTransport {
     url: string;

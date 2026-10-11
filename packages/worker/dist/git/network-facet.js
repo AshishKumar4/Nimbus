@@ -39,6 +39,7 @@ import { tagsHeld } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 import { CHECKOUT_FAILED } from './pack/mount-writer.js';
+import { framedGitBody, GIT_FRAMED_HEADER } from './pack/remote-body.js';
 const WAVE_DIAGNOSTIC_FIELDS = [
     'waves', 'files', 'bytes', 'rpcWallMs', 'maxRpcWallMs', 'producerWaitMs',
     'ownershipVisits', 'maxWavePaths', 'maxWaveBytes', 'retries', 'wholeWaves',
@@ -201,7 +202,8 @@ class GitClonePhaseError extends Error {
     errorCode;
     /** A write git would have failed: git's lines (GitNetworkResult.gitFailure). */
     gitFailure;
-    constructor(phase, message, diagnostic, errorCode, gitFailure) {
+    remoteFailure;
+    constructor(phase, message, diagnostic, errorCode, gitFailure, remoteFailure) {
         super(message);
         this.name = 'GitClonePhaseError';
         this.phase = phase;
@@ -209,7 +211,20 @@ class GitClonePhaseError extends Error {
         this.mutated = diagnostic.mutated;
         this.errorCode = errorCode;
         this.gitFailure = gitFailure;
+        this.remoteFailure = remoteFailure;
     }
+}
+/** A facet's remoteFailure, checked: what it says it is, or undefined. */
+function parseRemoteFailure(value) {
+    if (!value || typeof value !== 'object')
+        return undefined;
+    const failure = value;
+    if (failure.kind === 'transport' && typeof failure.detail === 'string')
+        return { kind: 'transport', detail: failure.detail };
+    if (failure.kind === 'status' && typeof failure.status === 'number' && Number.isInteger(failure.status)) {
+        return { kind: 'status', status: failure.status, ...(typeof failure.message === 'string' ? { message: failure.message } : {}) };
+    }
+    return undefined;
 }
 class GitCloneBudgetExceededError extends GitClonePhaseError {
     code = 'GitCloneBudgetExceeded';
@@ -464,7 +479,7 @@ async function invokeClonePhase(phase, opts, run) {
         throwIfCancelled(run.signal);
     }
     if (invocation.result.success !== true) {
-        throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic, undefined, typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined);
+        throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic, undefined, typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined, parseRemoteFailure(invocation.result.remoteFailure));
     }
     return invocation;
 }
@@ -707,7 +722,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
-        const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, ...facetOpts } = opts;
+        const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, remotePushPack, ...facetOpts } = opts;
         throwIfCancelled(signal);
         const ctxExports = getCtxExports();
         // One run for every binding this operation mints, a fence's included.
@@ -808,7 +823,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         typeof prepare.result.prepared !== 'object') {
                         throw new GitClonePhaseError('clone-prepare', typeof prepare.result.error === 'string'
                             ? prepare.result.error
-                            : 'clone-prepare returned an invalid result', prepare.diagnostic, undefined, typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined);
+                            : 'clone-prepare returned an invalid result', prepare.diagnostic, undefined, typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined, parseRemoteFailure(prepare.result.remoteFailure));
                     }
                     if (!opts.quiet)
                         await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic, signal);
@@ -937,6 +952,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                             ? phaseError.code
                             : phaseError.errorCode,
                         gitFailure: phaseError.gitFailure,
+                        remoteFailure: phaseError.remoteFailure,
                         budget: phaseError instanceof GitCloneBudgetExceededError
                             ? phaseError.budget
                             : undefined,
@@ -1006,7 +1022,8 @@ export async function execGitNetwork(ctx, env, opts, /**
             });
             const call = entrypoint.fetch(new Request('http://git/op', {
                 method: 'POST',
-                body: JSON.stringify({ ...facetOpts, invocationId }),
+                body: remotePushPack ? framedGitBody({ ...facetOpts, invocationId }, remotePushPack) : JSON.stringify({ ...facetOpts, invocationId }),
+                ...(remotePushPack ? { headers: { [GIT_FRAMED_HEADER]: '1' } } : {}),
                 signal,
             })).then(async (response) => {
                 try {
@@ -1051,8 +1068,10 @@ export async function execGitNetwork(ctx, env, opts, /**
             }, result);
             return {
                 success: result.success === true,
+                remote: result.remote,
                 error: typeof result.error === 'string' ? result.error : undefined,
                 errorPhase: result.success === true ? undefined : 'operation',
+                ...(result.success === true ? {} : { remoteFailure: parseRemoteFailure(result.remoteFailure) }),
                 elapsed: Date.now() - start,
                 filesWritten: nonNegativeCounter(result.filesWritten),
                 bytesWritten: nonNegativeCounter(result.bytesWritten),

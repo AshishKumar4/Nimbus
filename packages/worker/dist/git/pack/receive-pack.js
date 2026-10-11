@@ -9,7 +9,9 @@
  * on side-band-64k band 1, its progress on band 2.
  */
 import { PackFormatError } from './format.js';
-import { discover, headers, PktReader, pktLine, repoUrl, text, UploadPackError } from './upload-pack.js';
+import { discover } from './upload-pack.js';
+import { gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
+import { PktReader, pktLine, text } from './pkt-line.js';
 const ZERO = /^0+$/;
 const encoder = new TextEncoder();
 /** The receive-pack side's refs and capabilities. */
@@ -83,12 +85,13 @@ export async function sendPack(options, advertisement, request) {
     });
     // Not retried: a push's body is streamed once, and a retried push could apply twice.
     const doFetch = options.fetch ?? fetch;
+    const target = gitHttpRemote(options);
     let response;
     try {
-        response = await doFetch(repoUrl(options.url) + '/git-receive-pack', {
+        response = await doFetch(target.url + '/git-receive-pack', {
             method: 'POST',
             body,
-            headers: headers(options, {
+            headers: gitHttpHeaders(target.auth, {
                 'content-type': 'application/x-git-receive-pack-request',
                 accept: 'application/x-git-receive-pack-result',
             }),

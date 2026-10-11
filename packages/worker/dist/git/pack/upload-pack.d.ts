@@ -8,11 +8,7 @@
  * fast as its consumer pulls, so nothing between the network and the pack
  * processor buffers more than one side-band packet.
  */
-import { STALL_MS } from './transport.js';
-export interface GitTransportAuth {
-    username: string;
-    password: string;
-}
+import { STALL_MS, type GitTransportAuth } from './transport.js';
 export interface UploadPackOptions {
     url: string;
     auth?: GitTransportAuth;
@@ -43,9 +39,12 @@ export interface PackRequest {
     depth?: number;
     /** Deepen from the receiver's shallow boundary rather than from the tips (git fetch --deepen). */
     relative?: boolean;
+    deepenSince?: number;
+    deepenNot?: string[];
     filter?: string;
     /** Ask for a thin pack: deltas against `haves` the server need not send. */
     thin?: boolean;
+    includeTag?: boolean;
 }
 export interface PackResponse {
     shallows: string[];
@@ -53,12 +52,8 @@ export interface PackResponse {
     /** The pack's bytes; null when the server answered that there is nothing to send. */
     pack: AsyncIterable<Uint8Array> | null;
 }
-export declare class UploadPackError extends Error {
-    readonly status?: number | undefined;
-    constructor(message: string, status?: number | undefined);
-}
 export { STALL_MS };
-export declare function discover(options: UploadPackOptions): Promise<Advertisement>;
+export declare function discover(options: UploadPackOptions, service?: 'git-upload-pack' | 'git-receive-pack'): Promise<Advertisement>;
 /** One request, and the pack it answers with. */
 export declare function requestPack(options: UploadPackOptions, advertised: Set<string>, request: PackRequest): Promise<PackResponse>;
 //# sourceMappingURL=upload-pack.d.ts.map

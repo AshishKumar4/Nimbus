@@ -5,6 +5,7 @@ export declare const CLANG_CALL_TASK: FacetTaskSource<Parameters<typeof import("
 export declare const RUBY_CALL_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").rubyFacetCall>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").rubyFacetCall>>>;
 export declare const BASH_STEP_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").bashFacetStep>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").bashFacetStep>>>;
 export declare const BASH_REQUEST_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").bashRequestStep>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").bashRequestStep>>>;
+export declare const GIT_CALL_TASK: FacetTaskSource<Parameters<typeof import("./git-facet-task.js").gitFacetCall>[0], Awaited<ReturnType<typeof import("./git-facet-task.js").gitFacetCall>>>;
 export declare const ESBUILD_FACET_RUNTIME_SOURCE: string;
 export declare const TRANSFORM_FACET_RUNTIME_SOURCE: string;
 export declare const OPENTUI_BACKEND_CLASS_SOURCE: string;

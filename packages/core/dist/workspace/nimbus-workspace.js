@@ -33,7 +33,7 @@ import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
-import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
@@ -224,6 +224,7 @@ export class NimbusWorkspace {
             if (options.facets) {
                 registerWasmRuntimes({
                     facets: options.facets,
+                    sql: options.sql,
                     vfs,
                     filesystem,
                     registry,
@@ -616,12 +617,24 @@ function registerWasmRuntimes(deps) {
         // call, so a program that keeps serving is refused by name rather than
         // run as a one-shot that dies with it. Same for ruby, where a script is
         // the shape that may bind a port.
+        // The stock build and the one importing the Nimbus extensions (CPYTHON_RUNNER) run on the same runner.
         'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
+            .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
+        [CPYTHON_RUNNER]: lazy(async () => (await import('../runtime/cpython-runner.js'))
             .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
         'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
             .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
             .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
+        [GIT_RUNNER]: lazy(async () => {
+            const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
+                import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
+            ]);
+            return makeGitRunnerFactory({
+                facets: deps.facets, filesystem: deps.filesystem,
+                fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
+            });
+        }),
     };
     for (const [key, factory] of Object.entries(runners)) {
         deps.runtimes.registerRunner(key, factory);

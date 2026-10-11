@@ -21,6 +21,9 @@ import { historyPlan, historyResume, historyStep } from './history.js';
 import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
 import { retryingGitHttp } from './transport.js';
+import { observedGitHttp, remoteFailureOf } from './remote-failure.js';
+import { listRefs, fetchPack, fetchPackResume, pushPack } from './remote.js';
+import { readFramedGitBody } from './remote-body.js';
 /**
  * cf-git: a copy of vendor/git.generated.mjs in the facet's own module record
  * (runtime/git-bundle-artifact.ts), there only when the facet is loaded, so
@@ -207,7 +210,10 @@ export const networkWorker = {
         }
         let opts;
         try {
-            opts = await request.json();
+            const framed = await readFramedGitBody(request);
+            opts = framed.options;
+            if (framed.pack)
+                opts.remotePushPack = framed.pack;
         }
         catch (e) {
             return Response.json({
@@ -284,7 +290,7 @@ export const networkWorker = {
             }, 500);
         }
         const git = bundle.git;
-        const http = retryingGitHttp(bundle.gitHttp);
+        const http = observedGitHttp(retryingGitHttp(bundle.gitHttp));
         // Keep progress bounded: phase transitions and completions, plus one
         // timed update every two seconds. cf-git fires this callback per pack
         // object, and each line is a facet-to-supervisor RPC that takes input-gate
@@ -444,6 +450,25 @@ export const networkWorker = {
                 const prepared = 'stream' in started ? { stream: started.stream } : { fast: started };
                 return respond(true, { prepared, metadataOverlay: overlayStats() });
             }
+            else if (opts.op === 'remote-list') {
+                if (typeof opts.url !== 'string')
+                    throw protocolError('remote URL is missing');
+                return respond(true, { remote: await listRefs({ url: opts.url, auth: opts.auth }, { forPush: opts.forPush === true }) });
+            }
+            else if (opts.op === 'remote-fetch') {
+                if (!opts.remoteFetch)
+                    throw protocolError('remote fetch request is missing');
+                const context = gitPackContext(supervisor, stats, opts, null, null, log, normalizeVfsPath(opts.dir));
+                const remote = opts.remoteFetch.resume
+                    ? await fetchPackResume(context, { pending: opts.remoteFetch.resume, budgetUnits: opts.historyBudgetUnits })
+                    : await fetchPack(context, { ...opts.remoteFetch, jobId: invocationId, budgetUnits: opts.historyBudgetUnits });
+                return respond(true, { remote, metadataOverlay: overlayStats() });
+            }
+            else if (opts.op === 'remote-push') {
+                if (typeof opts.url !== 'string' || !opts.remotePush)
+                    throw protocolError('remote push request is missing');
+                return respond(true, { remote: await pushPack({ url: opts.url, auth: opts.auth }, opts.remotePush, opts.remotePushPack ?? null) });
+            }
             else if (opts.op === 'graph-filters') {
                 // A full clone's changed-path filters (git/pack/graph-filters.ts):
                 // reads the repository's packs, writes its commit-graph only.
@@ -471,6 +496,7 @@ export const networkWorker = {
                 // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
                 await git.fetch({
                     fs, http,
+                    url: opts.url,
                     uploadPack: { discover, requestPack },
                     dir: opts.dir,
                     remote: opts.remote || 'origin',
@@ -483,7 +509,7 @@ export const networkWorker = {
                 });
             }
             else if (opts.op === 'push') {
-                await git.push({ fs, http, dir: opts.dir, remote: opts.remote || 'origin', ref: opts.ref, onProgress, onAuth });
+                await git.push({ fs, http, dir: opts.dir, url: opts.url, remote: opts.remote || 'origin', ref: opts.ref, onProgress, onAuth });
             }
             else {
                 throw new Error('Unknown op: ' + opts.op);
@@ -503,6 +529,7 @@ export const networkWorker = {
                 errorCode: error && typeof error.code === 'string' ? error.code : undefined,
                 // A write git would have failed: git's own lines (pack/mount-writer.ts).
                 gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
+                remoteFailure: remoteFailureOf(e, http),
                 metadataOverlay: overlayStats(),
             });
         }

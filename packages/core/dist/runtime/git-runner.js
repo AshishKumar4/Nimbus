@@ -25,6 +25,7 @@
  * pid it was opened for.
  */
 import { withHostView } from './process-files.js';
+import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
@@ -112,7 +113,7 @@ export function makeGitRunnerFactory(deps) {
             };
             let result;
             try {
-                result = await facet.submit(gitFacetCall, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
+                result = await facet.submit(GIT_CALL_TASK, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
             }
             catch (error) {
                 if (ctx.signal.aborted)
@@ -134,16 +135,6 @@ export function makeGitRunnerFactory(deps) {
 }
 /** A git command may run as long as a facet invocation may. */
 const GIT_TIMEOUT_MS = 300_000;
-/** Runs in the facet: hands the compiled image and the capability to the preamble's __gitRun. */
-async function gitFacetCall(args, facetEnv) {
-    const modules = Reflect.get(globalThis, '__NIMBUS_WASM');
-    const gitMod = modules?.['git.wasm'];
-    const run = Reflect.get(globalThis, '__gitRun');
-    if (!gitMod || typeof run !== 'function') {
-        return { exitCode: 127, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git-runner: the facet has no git image or no __gitRun' };
-    }
-    return await run({ ...args, gitMod, supervisor: facetEnv?.SUPERVISOR });
-}
 /** Bytes to a sink that takes them as they are, else as text decoded once, whole. */
 async function writeOut(sink, bytes) {
     if (bytes.byteLength === 0)
