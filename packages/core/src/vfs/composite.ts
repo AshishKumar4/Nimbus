@@ -1611,9 +1611,10 @@ export class CompositeVFS implements VFS {
   private permits(stat: VfsStat, want: number): boolean {
     const cred = this.viewer.cred;
     // Root searches every directory (posixAccess's root rule is a file's exec);
-    // an entry its backend keeps no mode for is not judged.
+    // an entry its backend keeps no mode for is not judged, and an owner or
+    // group it keeps none of matches no one.
     if (cred === null || cred.uid === 0 || stat.mode === undefined) return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1 }, want, { uid: cred.uid, gid: cred.gid, groups: cred.groups ?? [] });
+    return posixAccess(stat as { mode: number; uid: number; gid: number }, want, cred);
   }
 
   /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
