@@ -5,7 +5,7 @@
  * host/loader policy. NODE_PATH and Node's global folders are not discovered.
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
-import { type ResolvablePackageJson, type SelfReferencingPackageJson } from '../_shared/exports-resolver.js';
+import { type PackageMapPolicy, type ResolvablePackageJson, type SelfReferencingPackageJson } from '../_shared/exports-resolver.js';
 import type { PackageType } from './module-format.js';
 /** Launch/filesystem adapter surface, kept for dependency-collector callers. */
 export interface RequireFs {
@@ -50,6 +50,8 @@ export interface RequireResolverOptions {
     conditions?: readonly string[];
     policy?: RequireResolutionPolicy;
     progress?: WalkProgress;
+    /** Staged guests already carry format facts; only loaders needing type rediscovery collect it. */
+    collectPackageScope?: boolean;
 }
 type PackageConfig = ResolvablePackageJson & SelfReferencingPackageJson & {
     type?: unknown;
@@ -111,7 +113,7 @@ export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: st
 export declare function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<string | null>;
 export declare function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType>;
 export declare function packageJsonVisible(vfs: RequireFs, path: string): Promise<boolean>;
-/** Speculative entry selection reads the same Node map, never import/browser fallbacks. */
-export declare function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[]): string | null;
+/** Node selection by default; speculative builds opt into their named map policy. */
+export declare function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[], buildPolicy?: PackageMapPolicy<string>): string | null;
 export {};
 //# sourceMappingURL=require-resolution.d.ts.map

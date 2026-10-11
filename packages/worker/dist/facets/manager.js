@@ -64,7 +64,7 @@ import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
-import { parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { parseResolvablePackageJson, BUILD_BROWSER_PACKAGE_MAP_POLICY, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore } from './launch-learning-store.js';
@@ -2602,8 +2602,8 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
         // `index.js`, which does not exist.
         const candidates = [];
         if (pkg) {
-            // As require resolves it, under the program's conditions (require-resolution.ts requirePackageEntry).
-            const entry = requirePackageEntry(pkg, '.', options.conditions ?? []);
+            // Speculative staging may oversample permissively; runtime Node resolution remains strict.
+            const entry = requirePackageEntry(pkg, '.', options.conditions ?? [], BUILD_BROWSER_PACKAGE_MAP_POLICY);
             if (entry !== null)
                 candidates.push(entry);
             if (pkg.main !== undefined)

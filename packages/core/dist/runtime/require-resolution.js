@@ -1,4 +1,4 @@
-import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageSelfReferenceSubpath, selectPackageMap, } from '../_shared/exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageSelfReferenceSubpath, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 export const METADATA_CANDIDATE_WORK = 256;
@@ -280,11 +280,11 @@ export function createRequireResolver(host, options = {}) {
             return null;
         }
         if (id.startsWith('#')) {
-            if (id === '#' || id.startsWith('#/') || id.endsWith('/')) {
-                throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
-            }
             const scope = yield* nearestPackageScope(dir, state);
-            if (scope && scope.pkg.imports !== null && typeof scope.pkg.imports === 'object') {
+            if (scope && scope.pkg.imports != null) {
+                if (id === '#' || id.startsWith('#/') || id.endsWith('/')) {
+                    throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
+                }
                 let target;
                 try {
                     target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
@@ -298,9 +298,8 @@ export function createRequireResolver(host, options = {}) {
                 }
                 if (target != null)
                     return yield* finalizeTarget(target, scope.packageJsonPath);
+                throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + ' imported from ' + dir, TypeError);
             }
-            const where = scope ? ' in package ' + scope.packageJsonPath : '';
-            throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined' + where + ' imported from ' + dir, TypeError);
         }
         const self = yield* loadPackageSelf(id, dir, state);
         if (self)
@@ -317,7 +316,7 @@ export function createRequireResolver(host, options = {}) {
         if (found instanceof URL)
             return { builtin: found.pathname, scope: null, packageType: null };
         const path = yield* ask.realpath(found);
-        const scope = yield* nearestPackageScope(parentDir(path), state);
+        const scope = options.collectPackageScope === false ? null : yield* nearestPackageScope(parentDir(path), state);
         return { path, scope, packageType: scope?.type ?? null };
     }
     function* resolveFilePath(path) {
@@ -468,8 +467,10 @@ export async function packageJsonVisible(vfs, path) {
         throw err;
     }
 }
-/** Speculative entry selection reads the same Node map, never import/browser fallbacks. */
-export function requirePackageEntry(pkg, subpath, conditions) {
+/** Node selection by default; speculative builds opt into their named map policy. */
+export function requirePackageEntry(pkg, subpath, conditions, buildPolicy) {
+    if (buildPolicy)
+        return resolvePackageEntry(pkg, subpath, [...DEFAULT_CJS_CONDITIONS, ...conditions], buildPolicy);
     if (pkg.exports == null)
         return subpath === '.' ? pkg.main ?? null : subpath;
     const url = fileUrl('/package.json');
