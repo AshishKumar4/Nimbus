@@ -1,4 +1,5 @@
-import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, registerSource, stringOf, symbolDescription, withElement, } from './intrinsics.js';
+import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, registerSource, resume, resumeReturning, resumeThrowing, stringOf, symbolDescription, withElement, } from './intrinsics.js';
+import { initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The enclosing environment of `env`. */
 export function up(env) {
     const parent = env[0];
@@ -50,6 +51,7 @@ export class FunctionInfo {
     length;
     strict;
     source;
+    stack = null;
     body = null;
     gen = null;
     /** The body evaluates to the return value itself (an arrow's expression body). */
@@ -110,6 +112,8 @@ function enter(fi, scope, fn, thisArg, args, newTarget, home) {
         env[fi.homeSlot] = home;
     if (fi.funcSlot !== 0)
         env[fi.funcSlot] = fn;
+    if (fi.stack !== null)
+        initializeStack(env, fi.stack, fn, thisArg, newTarget !== undefined);
     const params = fi.params;
     if (params !== null) {
         // A parameter past the last argument is undefined: reading the index would
@@ -133,7 +137,37 @@ function run(fi, env) {
     const body = fi.body;
     if (body === null)
         throw new Error('interpreter: a suspending body called synchronously');
-    return finish(fi, body(env));
+    const previous = fi.stack === null ? null : pushStack(env);
+    try {
+        return finish(fi, body(env));
+    }
+    catch (error) {
+        stampStack(error);
+        throw error;
+    }
+    finally {
+        if (fi.stack !== null)
+            popStack(previous);
+    }
+}
+/** One generator step: no shadow activation remains live across a yield/await. */
+function step(env, it, kind, value) {
+    const previous = pushStack(env);
+    try {
+        if (kind === 'next')
+            return resume(it, value);
+        if (kind === 'throw')
+            return resumeThrowing(it, value);
+        return resumeReturning(it, value);
+    }
+    catch (error) {
+        stampStack(error);
+        throw error;
+    }
+    finally {
+        suspendedStack(env);
+        popStack(previous);
+    }
 }
 /**
  * One evaluation of a class: what constructing an instance initializes, and
@@ -179,6 +213,8 @@ const runtime = {
     },
     enter,
     finish,
+    run,
+    step,
     construct(fi, scope, ctor, record, thisArg, args, newTarget) {
         if (record.initialize)
             record.initialize(thisArg);
@@ -200,7 +236,7 @@ const runtime = {
             throw new Error('interpreter: a suspending constructor');
         // Undefined falls through to `this`; anything else is the native
         // constructor's own answer (an object, or the TypeError for a primitive).
-        const value = finish(fi, body(env));
+        const value = run(fi, env);
         if (value !== undefined)
             return value;
         const self = fi.thisSlot === 0 ? TDZ : env[fi.thisSlot];

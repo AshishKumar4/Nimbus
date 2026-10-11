@@ -28,13 +28,13 @@
  * frame (a shared async helper would add ticks to every call).
  */
 const ASYNC_BODY = String.raw `
-      if (fi.body) return finish(fi, fi.body(env));
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       while (!r.done) {
         let value, ok = true;
         try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);`;
 /**
@@ -57,13 +57,13 @@ for (;;) {
     catch (e) { ok = false; value = e; resumed = true; }
     finally {
       if (!resumed) {
-        const end = it.return(MARK);
-        const result = end.done ? end.value : yield* drain(it, end);
+        const end = step(env, it, "return", MARK);
+        const result = end.done ? end.value : yield* drain(env, it, end);
         if (result !== MARK) return ${complete('result')};
       }
     }
   }
-  r = ok ? it.next(value) : it.throw(value);
+  r = step(env, it, ok ? "next" : "throw", value);
 }`.replace(/\n/g, '\n' + indent);
 }
 /**
@@ -78,13 +78,30 @@ for (;;) {
  * environment by the call's arguments object.
  */
 const FACTORIES = String.raw `
-const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
-async function* drain(it, r) {${asyncGeneratorSteps((value) => value, '  ')}
+async function* drain(env, it, r) {${asyncGeneratorSteps((value) => value, '  ')}
 }
 drain.prototype = rt.SafeAsyncGeneratorPrototype;
+function* drainSync(env, it, r) {
+  for (;;) {
+    if (r.done) return r.value;
+    let value, ok = true, resumed = false;
+    try { value = yield r.value; resumed = true; }
+    catch (e) { ok = false; value = e; resumed = true; }
+    finally {
+      if (!resumed) {
+        const end = step(env, it, "return", MARK);
+        const result = end.done ? end.value : yield* drainSync(env, it, end);
+        if (result !== MARK) return result;
+      }
+    }
+    r = step(env, it, ok ? "next" : "throw", value);
+  }
+}
+drainSync.prototype = rt.SafeGeneratorPrototype;
 return {
   plain(fi, scope) {
     const f = (0, function () { return call(fi, scope, f, this, arguments, new.target, undefined); });
@@ -100,7 +117,9 @@ return {
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
-      return finish(fi, fi.body ? fi.body(env) : yield* fi.gen(env));
+      if (fi.body) return run(fi, env);
+      const it = fi.gen(env);
+      return finish(fi, yield* drainSync(env, it, step(env, it, "next", undefined)));
     });
     return f;
   },
@@ -122,9 +141,9 @@ return {
   asyncGenerator(fi, scope, home) {
     const f = (0, async function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
-      if (fi.body) return finish(fi, fi.body(env));
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();${asyncGeneratorSteps((value) => `finish(fi, ${value})`, '      ')}
+      let r = step(env, it, "next", undefined);${asyncGeneratorSteps((value) => `finish(fi, ${value})`, '      ')}
     });
     return f;
   },

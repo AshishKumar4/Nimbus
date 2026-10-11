@@ -15147,7 +15147,7 @@ function __nimbusFatalArrow(error, fromPromise) {
       const text = module === null ? null : textOf(module);
       if (text === null) continue;
       const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
-      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
+      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", offset);
       if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }

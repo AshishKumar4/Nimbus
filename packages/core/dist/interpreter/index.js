@@ -32,6 +32,7 @@ import { own } from './parser-realm.js';
 import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, objectCreate, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { programRequests } from './module-requests.js';
+import { stampStack, stackFrames } from './stack.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 /** The parameters of Node's CommonJS module wrapper. */
@@ -302,8 +303,8 @@ const REALM = {
         return typeof message === 'string' ? message : stringOf(error);
     },
 };
-function unitContext(runtime, source, module, host, moduleScope) {
-    return { source, module, host, runtime, imports: new SafeMap(), moduleScope };
+function unitContext(runtime, source, module, host, moduleScope, stack) {
+    return { source, module, host, runtime, imports: new SafeMap(), moduleScope, stack };
 }
 /** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
 function unitHost(host, origin, parentUrl) {
@@ -321,7 +322,13 @@ export function createInterpreter(hostOps, host) {
     if (host.primordials !== LAUNCH_PRIMORDIALS)
         throw new Error('interpreter: its built-ins were not captured at the launch start');
     const runtime = new InterpreterRuntime(hostOps);
+    const capture = reflectGetOwnPropertyDescriptor(host, 'stackCapture')?.value;
+    const stackUnit = (source, file, esModule) => ({
+        source, file, esModule, capture: typeof capture === 'function' ? capture : null,
+    });
     const interpreter = {
+        captureStack(error, above) { stampStack(error, undefined, above, true); },
+        stackFrames,
         compileFunction(kind, params, body, origin) {
             // A trailing source map is parsed only when the shortened body fails.
             const short = withoutTrailingLineComments(body);
@@ -338,7 +345,7 @@ export function createInterpreter(hostOps, host) {
             const node = ownFunctionExpression(parsed.node);
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
-            const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null);
+            const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null, stackUnit(text, null, false));
             const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
             releaseScopes(root);
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
@@ -353,14 +360,14 @@ export function createInterpreter(hostOps, host) {
                 const program = parsed.program;
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
                 const root = analysis.functionScopeOf(program);
-                const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root), text, 0, root).modulePlan(program, root);
+                const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, path, true)), text, 0, root).modulePlan(program, root);
                 releaseScopes(root);
                 return moduleCell(plan, runtime.ops, host.moduleHelpers);
             }
             const script = parsed.program;
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
-            const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null, stackUnit(text, path, false)), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
@@ -376,7 +383,7 @@ export function createInterpreter(hostOps, host) {
             const program = ownProgram(parse(text, SCRIPT_OPTIONS));
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
-            const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null);
+            const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null, stackUnit(text, null, false));
             const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
             releaseScopes(root);
             if (body.g !== null)

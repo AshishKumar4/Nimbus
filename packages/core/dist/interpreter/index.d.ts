@@ -26,6 +26,7 @@ import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js'
 import { type ModuleCell, type ModuleHelpers } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { type ModuleRequest } from './module-requests.js';
+import { type InterpretedFrame } from './stack.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -42,6 +43,8 @@ export interface InterpreterHost {
     readonly primordials: object;
     /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
     readonly moduleHelpers: ModuleHelpers;
+    /** The launch's single stack path; absent in hosts with no Node stack formatter. */
+    readonly stackCapture?: (error: object, frames: readonly InterpretedFrame[]) => void;
 }
 /**
  * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
@@ -56,6 +59,8 @@ export interface CodeOrigin {
     readonly Function: unknown;
 }
 export interface Interpreter {
+    captureStack(error: object, above?: unknown): void;
+    stackFrames(error: object): readonly InterpretedFrame[] | null;
     /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
     compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
     /**

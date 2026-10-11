@@ -12,6 +12,7 @@
 import type { Code } from './code.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env } from './runtime.js';
+import { type StackInfo } from './stack.js';
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
@@ -39,6 +40,7 @@ export type ModuleExport = {
 };
 /** A module, compiled. */
 export interface ModulePlan {
+    readonly stack: StackInfo;
     /** The module scope's frame (runtime.ts frameTemplate). */
     readonly frame: Env;
     /** Slots of the wrapper's arguments. */

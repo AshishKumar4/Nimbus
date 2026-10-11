@@ -40,6 +40,10 @@ export interface FunctionRuntime<F, E, R> {
     takeFrame(args: IArguments): E;
     /** A body's completion as the function's return value. */
     finish(fi: F, result: unknown): unknown;
+    /** Run a non-suspending body with its interpreted activation. */
+    run(fi: F, env: E): unknown;
+    /** Drive a suspending body for one step, restoring the native caller on suspension. */
+    step(env: E, it: Generator<unknown, unknown, unknown>, kind: 'next' | 'throw' | 'return', value: unknown): IteratorResult<unknown, unknown>;
     /** Run a base class constructor: fields, then the body. */
     construct(fi: F, scope: E, ctor: Function, record: R, thisArg: object, args: IArguments, newTarget: Function): unknown;
     /** Run a derived class constructor, whose `this` comes from super(). */
