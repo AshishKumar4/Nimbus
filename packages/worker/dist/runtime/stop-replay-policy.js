@@ -59,6 +59,9 @@ export const REPLAY_OPERATION_POLICY = {
     fsStorageGrant: { kind: 'observation', args: (a) => a.slice(1) },
     wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
     fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
+    // Directory prefetch owns descriptions and a lease tied to the original
+    // ask. Re-running a stopped program must not replay it as a fresh read.
+    fsReadDirectories: effect,
     fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
     fsWriteRange: effect,
     fsTruncate: effect, writeBatch: effect, writeBatchStream: mutation,

@@ -65,7 +65,9 @@ function fixture() {
     assert.equal(s.calls.length, 1);
     assert.equal(s.pool.local(a.id).entry.ino, 1);
     await s.pool.close(b.id);
+    assert.equal(s.pool.closed(b.id), true, 'logical close is immediate while retirement is queued');
     await s.pool.flush();
+    assert.equal(s.pool.closed(b.id), false, 'after acknowledgement the authority rejects the retired number');
     assert.equal(s.held.has(b.id), false);
     assert.equal(s.held.size, 1, 'unused prefetch is retired but the required open remains real');
     assert.equal(s.pool.owns(a.id), true);
@@ -83,9 +85,11 @@ function fixture() {
   const opened = s.pool.open('/d0', 'd0', async () => ['/d1']);
   await reached.promise;
   s.clock(2000); // expiry and an intervening writer before the old answer arrives
+  s.nodes.set('d0', { ...s.nodes.get('d0'), mtime: 99, revision: 2 });
   finish.resolve();
   const handle = await opened;
   assert.equal(s.pool.local(handle.id), null);
+  assert.equal(s.nodes.get('d0').mtime, 99, 'the authority, not the expired answer, owns the later state');
   assert.equal(s.pool.owns(handle.id), true, 'an already-required descriptor is retained');
   s.hook = null;
   await s.close();

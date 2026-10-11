@@ -35,8 +35,9 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT } from '../../constants.js';
 import { delegationHolder } from './delegation-holder.js';
+import { readDirectoryPool } from './read-directory-pool.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 /** Listings one call may take before it gives the question to the authority. */
@@ -94,6 +95,7 @@ function statOf(entry) {
 }
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
+    let directoryPool = null;
     const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
     // Every wait on the session is timed where it leaves: the authority's calls
     // and the store's listings, fills and barriers. A facet's clock moves only
@@ -102,7 +104,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (!(value instanceof Promise))
             return value;
         const started = Date.now();
-        return value.finally(() => { counts.waitMs += Date.now() - started; });
+        return value.finally(() => { counts.waitMs += Date.now() - started; directoryPool?.io(); });
     };
     // The subtrees this process holds, when it may hold any (it waits in its
     // syscalls): what it decided there is answered here and sent later.
@@ -139,6 +141,8 @@ export function residentFilesystem(session, resident, delegation) {
         content: (key) => resident.content(key),
         fill: (key, entry) => timed(resident.fill(key, entry)),
         barrier: () => timed(resident.barrier()),
+        cursor: () => resident.cursor(),
+        admit: (answer) => resident.admit(answer),
         reserve: (bytes) => resident.reserve(bytes),
         release: (bytes) => resident.release(bytes),
     };
@@ -160,8 +164,14 @@ export function residentFilesystem(session, resident, delegation) {
             ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
             ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
             // What it sent changed the session: the store catches up before it answers next.
-            sent: () => { owed = true; },
+            sent: () => { owed = true; directoryPool?.invalidate(); },
         });
+        if (delegation.readDirectories)
+            directoryPool = readDirectoryPool({
+                call: (request) => { delegated('readDirectories'); return timed(delegation.readDirectories(request)); }, store, client: holder.client,
+                before: async () => { if (holder?.pending())
+                    await holder.send(); },
+            });
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
     const readers = new Set();
@@ -205,6 +215,8 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /** Where an open directory's listing is, while its name still leads to the directory the session opened. */
     const directoryKey = (handleId) => {
+        if (directoryPool?.owns(handleId))
+            return directoryPool.local(handleId)?.key;
         const open = directories.get(handleId);
         if (open === undefined)
             return undefined;
@@ -354,6 +366,7 @@ export function residentFilesystem(session, resident, delegation) {
     const keyFor = (path, follow) => after(resolve(path, follow), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
+        directoryPool?.invalidate();
         delegated(name);
         try {
             return after(call(), (value) => { owed = true; return value; });
@@ -384,12 +397,21 @@ export function residentFilesystem(session, resident, delegation) {
             : (...args) => { delegated(name); return call(...args); });
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
-    fs.inbound = () => { owed = true; };
-    fs.holding = () => holder?.pending() ?? false;
+    fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
+    fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
+    fs.holding = () => (holder?.pending() ?? false) || (directoryPool?.pending() ?? false);
     // What leaves the process is preceded by everything it logged.
-    fs.flush = async () => { await holder?.flush(); };
+    fs.flush = async () => { await holder?.flush(); await directoryPool?.flush(); };
     fs.settle = async () => {
         const failures = [];
+        if (directoryPool) {
+            try {
+                await directoryPool.dispose();
+            }
+            catch (error) {
+                failures.push({ path: '/', dev: 0, ino: 0, error });
+            }
+        }
         // The run's end: what it logged is answered, and the subtrees it held are given back.
         if (holder !== null) {
             try {
@@ -551,6 +573,37 @@ export function residentFilesystem(session, resident, delegation) {
     }), () => authority.realpath(path));
     fs.open = (path, flags) => {
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
+        if (directoryPool && readOnly && flags.read === true && flags.directory === true && flags.followSymlinks !== false && flags.expectedRevision === undefined) {
+            return answer('open', () => after(resolve(path, true), async (key) => {
+                if (key === DELEGATE || key === null || key === '' || entryAt(key)?.type !== 'directory')
+                    return DELEGATE;
+                const handle = await directoryPool.open(path, key, async () => {
+                    // The existing bounded namespace listing owns these names. Walk
+                    // only directories it actually reported; no invented path/prefix.
+                    await listingOf(key);
+                    const candidates = [];
+                    const todo = [key];
+                    for (let at = 0; at < todo.length && candidates.length < DIRECTORY_BATCH_LIMIT - 1; at++) {
+                        const parent = todo[at];
+                        for (const child of store.children(parent) ?? []) {
+                            if (child.type !== 'directory')
+                                continue;
+                            const childKey = parent + '/' + child.name;
+                            const suffix = childKey.slice(key.length + 1);
+                            // Carry the caller's confinement/descriptor root to the
+                            // authority; never replace a beneath lookup with an absolute one.
+                            candidates.push(typeof path === 'string' ? `${path.replace(/\/$/, '')}/${suffix}`
+                                : { ...path, path: `${path.path.replace(/\/$/, '')}/${suffix}` });
+                            todo.push(childKey);
+                            if (candidates.length >= DIRECTORY_BATCH_LIMIT - 1)
+                                break;
+                        }
+                    }
+                    return candidates;
+                });
+                return handle ?? DELEGATE;
+            }), () => openOnSession(path, flags));
+        }
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
             const local = decide('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
@@ -590,6 +643,11 @@ export function residentFilesystem(session, resident, delegation) {
         });
     };
     fs.fstat = (handleId) => {
+        if (directoryPool?.owns(handleId))
+            return answer('fstat', () => {
+                const current = directoryPool.local(handleId);
+                return current ? statOf(current.entry) : DELEGATE;
+            }, () => authority.fstat(handleId));
         if (holder?.owns(handleId)) {
             // Written through: the session's live stat of its file, once what it
             // wrote is there; a name that no longer leads to its file is gone (nlink 0).
@@ -678,6 +736,10 @@ export function residentFilesystem(session, resident, delegation) {
         return changing('ftruncate', () => authority.ftruncate(handleId, size));
     };
     fs.close = (handleId) => {
+        if (directoryPool?.owns(handleId)) {
+            counts.local++;
+            return directoryPool.close(handleId);
+        }
         // A descriptor of the holder's closes here: what it wrote is in the log.
         if (holder?.owns(handleId)) {
             counts.local++;

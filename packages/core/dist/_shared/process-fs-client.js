@@ -1052,6 +1052,9 @@ export function processFsClient(options) {
             // margin (confirmed >= asked).
             return readLease !== null && readLease.logged === logged && now() < readLease.until;
         },
+        readUnchanged(owner) {
+            return !runEnded && readLease?.owner === owner && readLease.logged === logged;
+        },
         readLeaseAsk() {
             if (session.grants === undefined || runEnded)
                 return null;

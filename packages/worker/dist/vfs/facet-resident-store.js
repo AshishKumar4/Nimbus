@@ -2490,6 +2490,16 @@ function __residentNamespaceView(supervisor, device, cred) {
     },
     pages: (k, rev, size, first, last) => __residentPages(supervisor, k, rev, size, first, last),
     barrier: () => __residentLazyBarrier(supervisor),
+    cursor: () => __residentCursor(),
+    async admit(answer) {
+      if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return false;
+      const before = __residentCursor();
+      if (before && answer.epoch === before.epoch && answer.rev < before.rev) return false;
+      await __residentApplyAcquire(supervisor, answer);
+      if (!answer.poison && __nsReady()) return true;
+      __nsBeginLazy(__residentRequire(), { epoch: answer.epoch, rev: answer.rev });
+      return false;
+    },
     reserve: (bytes) => __residentPin(bytes),
     release: (bytes) => __residentUnpin(bytes),
   };

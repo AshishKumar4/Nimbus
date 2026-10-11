@@ -35,6 +35,8 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
+import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -84,6 +86,12 @@ export interface ResidentNamespace {
     fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
     /** The ACQUIRE barrier. */
     barrier(): Promise<boolean>;
+    /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
+    cursor(): {
+        epoch: string;
+        rev: number;
+    } | null;
+    admit(answer: VfsAcquireResult): Promise<boolean>;
     /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
     reserve(bytes: number): boolean;
     /** Return what `reserve` charged. */
@@ -105,6 +113,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
     /** Input from outside the process arrived: the barrier is owed before the next answer. */
     inbound(): void;
+    /** A park's deadline elapsed; never install an abandoned directory open's late answer. */
+    cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
     /**
@@ -173,6 +183,7 @@ export interface ResidentDelegation {
     readonly isHomeRoot?: (key: string) => boolean;
     /** The process's own store's write log (HolderOptions.journal). */
     readonly journal?: ProcessFsJournal;
+    readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

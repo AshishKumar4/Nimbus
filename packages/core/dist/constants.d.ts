@@ -23,6 +23,9 @@ export declare const INODE_CACHE_MAX_ENTRIES = 8192;
 export declare const FS_READ_BATCH_PATH_LIMIT = 1024;
 export declare const FS_READ_BATCH_REQUEST_BYTES: number;
 export declare const FS_LIST_PAGE_LIMIT = 8192;
+/** Authority-owned directory descriptions outstanding from one process's prefetch channels. */
+export declare const DIRECTORY_PREFETCH_LIMIT = 64;
+export declare const DIRECTORY_BATCH_LIMIT = 32;
 export declare const FS_LIST_TREE_MAX_ENTRIES: number;
 export declare const MOUNT_LIST_NAME_LIMIT = 8192;
 export declare const VFS_DELIVERY_RETRY_WINDOW_MS = 5000;

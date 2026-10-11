@@ -21,6 +21,7 @@ interface Options {
 export interface ReadDirectoryPool {
   open(path: RuntimeFsPath, key: string, prefetch: () => Promise<readonly RuntimeFsPath[]>): Promise<RuntimeFileHandle | null>;
   owns(id: number): boolean;
+  closed(id: number): boolean;
   local(id: number): { key: string; entry: ResidentEntry } | null;
   close(id: number): void | Promise<void>;
   /** Only call where a real supervisor/store I/O reply arrived; timers never establish trust. */
@@ -76,11 +77,10 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
   };
   const exchange = async (open: readonly RuntimeFsPath[], wantLease: boolean): Promise<readonly ReadDirectoryDescription[]> => {
     await before();
-    const cursor = store.cursor();
-    if (!cursor) return [];
+    const cursor = store.cursor() ?? { epoch: null, rev: 0 };
     // Captured ONCE outside the retried RPC. A cached once-delivery answer
     // can never obtain a new deadline from the retry's later arrival.
-    const ask = wantLease ? client.readLeaseAsk() : null;
+    const ask = wantLease && cursor.epoch !== null ? client.readLeaseAsk() : null;
     const stamp = generation;
     const cancelAt = cancelled;
     const sentRetire = [...retiring];
@@ -131,6 +131,7 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
       return serial(async () => {
         if (ended) throw failure('ESTALE', 'directory pool ended');
         if (began !== cancelled) throw failure('EAGAIN', 'directory open was cancelled while queued');
+        if (!store.ready() || !store.cursor()) { await drain(); return null; }
         const hit = unused.get(key);
         const current = hit ? local(hit) : null;
         if (hit && current && hit.openedRevision !== null && current.entry.revision === hit.openedRevision) return claim(hit);
@@ -155,6 +156,7 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
       });
     },
     owns: (id) => owned.has(id),
+    closed: (id) => retiring.has(id),
     local: (id) => { const entry = owned.get(id); return entry ? local(entry) : null; },
     close(id) {
       if (!owned.delete(id)) throw failure('EBADF', 'directory description is not open');

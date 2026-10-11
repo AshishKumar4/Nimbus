@@ -6,8 +6,7 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
-export const DIRECTORY_PREFETCH_LIMIT = 64;
-export const DIRECTORY_BATCH_LIMIT = 32;
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT } from '../constants.js';
 export const DIRECTORY_READ_RPC = 'fsReadDirectories';
 const Ids = z.array(z.number().int().nonnegative()).max(DIRECTORY_PREFETCH_LIMIT);
 const Request = z.object({
@@ -126,6 +125,7 @@ export async function readDirectoryBatch(fs, input) {
                 budget.reserved++;
                 let handle;
                 try {
+                    const before = await withRecall(() => fs.stat(path));
                     handle = await withRecall(() => fs.open(path, { read: true, directory: true, followSymlinks: true }));
                     live();
                     const stat = await withRecall(() => fs.fstat(handle.id));
@@ -144,7 +144,8 @@ export async function readDirectoryBatch(fs, input) {
                         continue;
                     }
                     budget.tracked.set(handle.id, { channel: request.channel, claimed: false });
-                    opened.push({ key, handle, dev: stat.dev, ino: stat.ino });
+                    opened.push({ key, handle, dev: stat.dev, ino: stat.ino,
+                        openedRevision: before?.dev === stat.dev && before.ino === stat.ino ? before.revision : null });
                 }
                 catch (error) {
                     if (handle) {

@@ -1967,6 +1967,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       readTrusted() {
         return readLease !== null && readLease.logged === logged && now() < readLease.until;
       },
+      readUnchanged(owner) {
+        return !runEnded && readLease?.owner === owner && readLease.logged === logged;
+      },
       readLeaseAsk() {
         if (session.grants === void 0 || runEnded) return null;
         return { at: now(), logged: answered === logged ? logged : -1 };

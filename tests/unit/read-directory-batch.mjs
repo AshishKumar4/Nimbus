@@ -45,6 +45,10 @@ try {
   await readDirectoryBatch(fs, request([], { retire: held }));
   assert.equal((await readDirectoryBatch(fs, request([`${root}/d89`]))).opened.length, 1);
 
+  const lostChannel = crypto.randomUUID();
+  await readDirectoryBatch(fs, { ...request(), channel: lostChannel, sequence: 2 });
+  await assert.rejects(() => readDirectoryBatch(fs, { ...request([`${root}/d88`]), channel: lostChannel, sequence: 1 }), { code: 'ESTALE' }, 'a late abandoned first request cannot allocate after id-free recovery');
+
   // Rewinding creates another descriptor scope: an old channel must not
   // retire numbers the new run might already have reused.
   await files.rewindProcess(1);

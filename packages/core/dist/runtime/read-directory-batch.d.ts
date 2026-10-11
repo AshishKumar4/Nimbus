@@ -5,8 +5,6 @@
  */
 import { z } from 'zod';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
-export declare const DIRECTORY_PREFETCH_LIMIT = 64;
-export declare const DIRECTORY_BATCH_LIMIT = 32;
 export declare const DIRECTORY_READ_RPC: "fsReadDirectories";
 declare const Request: z.ZodObject<{
     channel: z.ZodString;
@@ -34,6 +32,8 @@ export interface ReadDirectoryDescription {
     /** Identity only: local fstat must use the final admitted namespace, not a stat taken earlier in the batch. */
     readonly dev: number;
     readonly ino: number;
+    /** The name's metadata version before the authority checked open access; null if it changed identity. */
+    readonly openedRevision: number | null;
 }
 export interface ReadDirectoryBatchResult {
     readonly channel: string;

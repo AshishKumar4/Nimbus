@@ -136,6 +136,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsClose: {
         readonly kind: "observation";
     };
+    fsReadDirectories: {
+        readonly kind: "effect";
+    };
     fsReadRange: {
         readonly kind: "observation";
     };
