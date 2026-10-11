@@ -274,6 +274,7 @@ export default { async fetch(request) {
         const { request, get, ClientRequest, default: defaultHttp } = await import('node:http');
         const { request: httpsRequest, default: defaultHttps } = await import('node:https');
         if (request !== http.request || get !== http.get || ClientRequest !== http.ClientRequest || request !== defaultHttp.request || httpsRequest !== defaultHttps.request || httpsRequest !== builtins.https.request) throw new Error('HTTP ESM exports bypass the canonical transport');
+        if (httpsRequest.length !== request.length || defaultHttps.get.length !== get.length) throw new Error('HTTPS factory arity differs from HTTP');
         return Response.json(await httpFetchCases({ ...defaultHttp, request, get, ClientRequest }));
       }
       if (mode === 'review-previous') return Response.json(await httpFetchReviewCases(previousHttp, builtins.dns, __real_net.default, (server) => previousAddress.call(server), (server, callback) => previousListen.call(server, 0, '::1%lo', callback)));

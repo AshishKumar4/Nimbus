@@ -23,7 +23,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     else if (input?.href && input.protocol && input.auth === undefined && input.path === undefined) input = url.urlToHttpOptions(input);
     else { callback = options; options = input; input = undefined; }
     if (typeof options === "function") { callback = options; options = input; }
-    else options = { ...input, ...options };
+    else options = Object.assign(input ?? {}, options);
     return [options || {}, callback];
   };
   const checkPath = (path) => {
@@ -346,13 +346,13 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     Object.defineProperty(ClientRequest.prototype, name, { value: NativeClientRequest.prototype[name], writable: true, configurable: true });
   }
   http.ClientRequest = ClientRequest;
-  http.request = function request(...args) { return new ClientRequest(...args); };
-  http.get = function get(...args) { const req = new ClientRequest(...args); req.end(); return req; };
+  http.request = function request(input, options, callback) { return new ClientRequest(input, options, callback); };
+  http.get = function get(input, options, callback) { const req = new ClientRequest(input, options, callback); req.end(); return req; };
   https.request = function request(input, options, callback) {
     const [opts, cb] = requestOptions(input, options, callback);
     return new ClientRequest({ ...opts, _defaultAgent: https.globalAgent }, cb);
   };
-  https.get = function get(...args) { const req = https.request(...args); req.end(); return req; };
+  https.get = function get(input, options, callback) { const req = https.request(input, options, callback); req.end(); return req; };
   Object.defineProperty(http, installed, { value: (next) => { activeContext = next; } });
 }
 `;
