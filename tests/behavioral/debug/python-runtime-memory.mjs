@@ -27,12 +27,12 @@ try {
   console.log(`CLI warmup: ${JSON.stringify(warmed)}`);
   a.check('the CLI warms the already-installed runtime', warmed.exitCode === 0 && warmed.output.includes('[python] ready'));
   await snapshot('after warmup');
-  const warmed = await diagMemory(sid);
+  const warmedMem = await diagMemory(sid);
   // The 10.6 MiB interpreter image plus the stdlib are read once for the
   // facet's module map; neither may stay pinned in the session's LRU.
   a.check('warm-up holds no runtime image in the session LRU',
-    (warmed.vfsDetail?.lruBytes ?? 0) < 5_000_000,
-    `lruBytes=${warmed.vfsDetail?.lruBytes}`);
+    (warmedMem.vfsDetail?.lruBytes ?? 0) < 5_000_000,
+    `lruBytes=${warmedMem.vfsDetail?.lruBytes}`);
   for (let index = 1; index <= 3; index++) {
     await sleep(30_000);
     await snapshot(`idle ${index * 30}s`);
