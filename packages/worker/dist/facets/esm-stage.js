@@ -24,6 +24,10 @@ import { typeScriptUnderNodeModules } from '@nimbus-sh/core/runtime/module-forma
 import { nodeModulesRefusal } from '@nimbus-sh/core/runtime/typescript-refusal.js';
 import { stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
+/** The map module of row `id` (node-shims' __nimbusEsmName reads it so). */
+export function esmRowName(row, id) {
+    return row[0] === 'module' ? commonJsCellModuleName(row[1]) : `${ESM_FACADE_DIR}${id}.js`;
+}
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
 export const ESM_MISSING_DIR = 'nimbus/missing/';
 /**
@@ -77,7 +81,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     for (const [key, { sites }] of cells) {
         const targets = [];
         targetIds.push(targets);
-        table.push(sites.commonJsNames?.length ? ['module', key, commonJsCellModuleName(key), targets, 1] : ['module', key, commonJsCellModuleName(key), targets]);
+        table.push(sites.commonJsNames?.length ? ['module', key, targets, 1] : ['module', key, targets]);
     }
     const ids = new Map();
     for (let id = 0; id < table.length; id++)
@@ -88,8 +92,9 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         let id = ids.get(`${kind}:${key}`);
         if (id === undefined) {
             id = table.length;
-            const name = `${ESM_FACADE_DIR}${id}.js`;
-            table.push([kind, key, name]);
+            const row = [kind, key];
+            const name = esmRowName(row, id);
+            table.push(row);
             members[name] = source(id, name);
             ids.set(`${kind}:${key}`, id);
         }
@@ -200,7 +205,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                     });
                 const row = await target(resolution, site.attributes);
                 rowTargets.push(row);
-                targets.push(table[row][2]);
+                targets.push(esmRowName(table[row], row));
             }
             catch (error) {
                 rowTargets.push(-1);
