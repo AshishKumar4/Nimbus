@@ -211,8 +211,9 @@ writeFileSync(join(dir, 'https-bridge.js'), httpBridges['node:https'].js);
 writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
-const __real_http = globalThis.process.getBuiltinModule('http');
-const __real_https = globalThis.process.getBuiltinModule('https');
+// The shims' native provider (node-shims.ts), which NATIVE_HTTP_SOURCE reads.
+const __nativeBuiltin = globalThis.process.getBuiltinModule.bind(globalThis.process);
+const __real_http = __nativeBuiltin('http');
 import * as __real_net from 'node:net';
 import * as __real_util from 'node:util';
 import * as __real_url from 'node:url';

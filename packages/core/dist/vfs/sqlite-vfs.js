@@ -649,7 +649,7 @@ const APPEND_RUN_LATENCY_MS = 100;
  */
 const LEAF_READS = new Set([
     'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
-    'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat',
+    'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat', 'statIfPresent',
     'getDefaultAcl', 'readdir', 'contentKey', 'storageKey',
 ]);
 /**
@@ -2255,6 +2255,7 @@ export class SqliteVFS {
             readFileString: (path) => this.readFileString(path, bound),
             stat: (path) => this.stat(path, bound, true),
             lstat: (path) => this.stat(path, bound, false),
+            statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
             utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
             chmod: (path, mode) => this.chmod(path, mode, bound),
             setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
@@ -2419,13 +2420,26 @@ export class SqliteVFS {
     walkPath(path, cred, followLeaf, allowMissing, tree) {
         const root = this.confinedTmpRoots.get(cred.uid);
         let current = this.nameOf(path, cred);
-        // The walk resolveName just did for this name, when nothing since could
-        // have changed where it leads (see lastResolution).
+        // The last walk (see lastResolution), when nothing since could have
+        // changed where it leads: for this name, its answer.
         const last = this.lastResolution;
-        if (last !== null && last.name === current && last.cred === cred && tree === this.inodes
-            && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch
-            && !(followLeaf && last.leafIsLink)) {
+        const reusable = last !== null && last.cred === cred && tree === this.inodes
+            && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch;
+        if (reusable && last.name === current && !(followLeaf && last.leafIsLink)) {
             return { path: last.key, inode: last.inode, name: current };
+        }
+        // For a name directly below it (a namespace walking a path a component at
+        // a time asks for each in turn), its search proof: only the new name is
+        // looked up, so a walk of depth d costs d lookups, not d(d+1)/2.
+        if (reusable && last.inode.kind === 'directory' && current.length > last.name.length + 1
+            && current.charCodeAt(last.name.length) === 0x2f && current.startsWith(last.name)
+            && current.indexOf('/', last.name.length + 1) === -1 && this.accessInode(last.inode, 0o1, cred)) {
+            const key = this.keyOfName(current, root);
+            const inode = tree.get(key);
+            if (inode === undefined)
+                return { path: key, inode: undefined, name: current };
+            if (!(followLeaf && inode.kind === 'symlink'))
+                return this.walked(key, inode, current, cred, tree);
         }
         // Hops are counted, never deduplicated (Linux, MAXSYMLINKS 40): a link
         // met again on a longer path (`loop -> .`) is one more hop, not a cycle.
@@ -2433,9 +2447,11 @@ export class SqliteVFS {
             const parts = current.split('/').filter(Boolean);
             let prefix = '';
             let restarted = false;
+            let reached;
             for (let index = 0; index < parts.length; index++) {
                 prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
                 const inode = tree.get(this.keyOfName(prefix, root));
+                reached = inode;
                 const leaf = index === parts.length - 1;
                 if (!inode) {
                     if (leaf || allowMissing)
@@ -2462,9 +2478,33 @@ export class SqliteVFS {
             if (restarted)
                 continue;
             const key = this.keyOfName(current, root);
-            return { path: key, inode: tree.get(key), name: current };
+            // The leaf was looked up last, under the same name.
+            return this.walked(key, prefix === current ? reached : tree.get(key), current, cred, tree);
         }
         throw vfsKeyError('ELOOP', path);
+    }
+    /** A walk's answer, kept as lastResolution when it found something on the live tree. */
+    walked(key, inode, name, cred, tree) {
+        if (inode !== undefined && tree === this.inodes)
+            this.remember(cred, name, key, inode);
+        return { path: key, inode, name };
+    }
+    /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
+    remember(cred, name, key, inode) {
+        const last = this.lastResolution;
+        if (last === null) {
+            this.lastResolution = {
+                epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name, key, inode, leafIsLink: inode.kind === 'symlink',
+            };
+            return;
+        }
+        last.epoch = this.resolutionEpoch;
+        last.tableEpoch = this.inodes.epoch;
+        last.cred = cred;
+        last.name = name;
+        last.key = key;
+        last.inode = inode;
+        last.leafIsLink = inode.kind === 'symlink';
     }
     /**
      * Walk a plain SQLite path once, checking ancestor search permission. A
@@ -2522,12 +2562,8 @@ export class SqliteVFS {
                     throw vfsKeyError('EACCES', prefix);
             }
         }
-        if (found !== undefined && tree === this.inodes) {
-            this.lastResolution = {
-                epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name: current,
-                key: this.keyOfName(current, root), inode: found, leafIsLink: found.kind === 'symlink',
-            };
-        }
+        if (found !== undefined && tree === this.inodes)
+            this.remember(cred, current, this.keyOfName(current, root), found);
         return { name: current, end: 'found' };
     }
     checkAccess(path, want, cred, options = {}) {
@@ -4498,6 +4534,11 @@ export class SqliteVFS {
             throw vfsKeyError('ENOENT', path);
         return this.statOf(inode);
     }
+    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
+    statIfPresent(path, cred, followLeaf) {
+        const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true }).inode;
+        return inode === undefined ? null : this.statOf(inode);
+    }
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     statOf(inode) {
         return {
@@ -5960,6 +6001,11 @@ export class SqliteVFS {
             readFileString: (path) => dec.decode(this.readWhole(file(path))),
             stat: (path) => this.statOf(resolve(path, 0).inode),
             lstat: (path) => this.statOf(resolve(path, 0, false).inode),
+            statIfPresent: (path, followLeaf = true) => {
+                pinned();
+                const inode = this.checkAccess(path, 0, bound, { followLeaf, allowMissingLeaf: true, tree }).inode;
+                return inode === undefined ? null : this.statOf(inode);
+            },
             utimes: readOnly,
             chmod: readOnly,
             setDefaultAcl: readOnly,
@@ -8056,8 +8102,8 @@ export class SqliteVFS {
                 // cannot all wait for more before their file-ends.
                 const lease = await at.reserve(record.inode.size);
                 at.file = {
-                    streamContentId: record.streamContentId, named: record.inode.path, placed, link: record.inode.kind === 'symlink',
-                    mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
+                    named: record.inode.path, placed, link: record.inode.kind === 'symlink',
+                    mode: record.inode.mode, size: record.inode.size, held: [], index: at.index,
                     credit: { left: record.inode.size, lease },
                     ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
                     ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
@@ -8066,18 +8112,11 @@ export class SqliteVFS {
                 return true;
             }
             case 'file-chunk': {
+                // The decoder yields a file's chunks in order, each its size, after
+                // its file-begin and before its file-end (decodeWriteBatchStream).
                 const file = at.file;
                 if (file === null)
                     return false;
-                at.setPhase('validation');
-                if (record.streamContentId !== file.streamContentId || record.path !== file.named) {
-                    throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-                }
-                if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.size) {
-                    throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-                }
-                file.nextChunk++;
-                file.received += record.data.byteLength;
                 // Held under the wave's credit until the file's call.
                 file.held.push({ data: record.data, release: () => record.retention.release() });
                 return true;
@@ -8086,13 +8125,6 @@ export class SqliteVFS {
                 const file = at.file;
                 if (file === null)
                     return false;
-                at.setPhase('validation');
-                if (record.streamContentId !== file.streamContentId) {
-                    throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-                }
-                if (file.received !== file.size) {
-                    throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
-                }
                 at.setPhase('publish');
                 try {
                     await at.settleBefore();
@@ -9182,39 +9214,25 @@ export class SqliteVFS {
                     if (lease !== null)
                         callLeases.add(lease);
                     callFile = {
-                        streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
+                        path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
                         ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
                         ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
                         ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
                         ...(record.inode.description === undefined ? {} : { description: record.inode.description }),
-                        parts: [], received: 0, nextChunk: 0,
+                        parts: [],
                         credit: { left: record.inode.size, lease },
                     };
                     continue;
                 }
                 if (callFile !== null && record.type === 'file-chunk') {
-                    phase = 'validation';
-                    if (record.streamContentId !== callFile.streamContentId || record.path !== callFile.path) {
-                        throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-                    }
-                    if (record.chunkId !== callFile.nextChunk || callFile.received + record.data.byteLength > callFile.size) {
-                        throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-                    }
-                    callFile.nextChunk++;
-                    callFile.received += record.data.byteLength;
                     // Copied out, and the chunk's credit given back.
                     callFile.parts.push(record.data.slice());
                     record.retention.release();
                     continue;
                 }
                 if (callFile !== null && record.type === 'file-end') {
-                    phase = 'validation';
                     const file = callFile;
                     callFile = null;
-                    if (record.streamContentId !== file.streamContentId)
-                        throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-                    if (file.received !== file.size)
-                        throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
                     phase = 'publish';
                     const bytes = concatBytes(file.parts);
                     file.parts = [];
@@ -9269,8 +9287,6 @@ export class SqliteVFS {
                             break;
                         }
                         case 'file-begin': {
-                            if (activeFile)
-                                throw vfsError('EINVAL', `nested streamed file ${record.inode.path}`);
                             phase = 'validation';
                             this.validateInodeContentShape(record.inode);
                             phase = 'publish';
@@ -9309,11 +9325,8 @@ export class SqliteVFS {
                             }
                             phase = 'stage';
                             activeFile = {
-                                streamContentId: record.streamContentId,
                                 named: record.inode.path,
                                 inode: placedInode,
-                                received: 0,
-                                nextChunk: 0,
                                 cutter: new ContentCutter(),
                                 held: whole ? [] : null,
                                 heldLeases: [],
@@ -9325,19 +9338,10 @@ export class SqliteVFS {
                             break;
                         }
                         case 'file-chunk': {
+                            // The decoder yields a file's chunks in order, each its size,
+                            // between its file-begin and file-end (decodeWriteBatchStream).
                             decodedRecordLease = record.retention;
-                            phase = 'validation';
                             const file = activeFile;
-                            if (!file
-                                || record.streamContentId !== file.streamContentId
-                                || record.path !== file.named) {
-                                throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-                            }
-                            if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
-                                throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-                            }
-                            file.nextChunk++;
-                            file.received += record.data.byteLength;
                             phase = 'stage';
                             if (file.inode.size <= CHUNK_SIZE) {
                                 // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
@@ -9355,14 +9359,7 @@ export class SqliteVFS {
                             break;
                         }
                         case 'file-end': {
-                            phase = 'validation';
                             const file = activeFile;
-                            if (!file || record.streamContentId !== file.streamContentId) {
-                                throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-                            }
-                            if (file.received !== file.inode.size) {
-                                throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
-                            }
                             phase = 'publish';
                             let content;
                             if (file.inode.size === 0)

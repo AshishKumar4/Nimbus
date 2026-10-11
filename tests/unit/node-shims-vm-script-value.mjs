@@ -21,6 +21,8 @@ import { spawnSync } from 'node:child_process';
 import { runtimeExpressionModule } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { withNativeBuiltins } from './lib/native-builtins.mjs';
+import * as hostVm from 'node:vm';
 
 /**
  * `(vm) => descriptions`: each script run with `vm`, as the launch left the
@@ -66,7 +68,10 @@ const factory = new Function(
   '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
 );
 declareNamespace({ metadata: {}, manifest: { 'home/user': [] } });
-const requireFromFacet = factory({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
+// workerd's node:vm, which the shims run on: its surface, and a refusal from each method that would compile code at request time.
+const notImplemented = () => { throw Object.assign(new Error('not implemented'), { code: 'ERR_METHOD_NOT_IMPLEMENTED' }); };
+const workerdVm = { ...hostVm, runInThisContext: notImplemented, runInContext: notImplemented, runInNewContext: notImplemented, compileFunction: notImplemented };
+const requireFromFacet = withNativeBuiltins({ vm: workerdVm }, () => factory({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user'));
 
 let actual;
 try {
