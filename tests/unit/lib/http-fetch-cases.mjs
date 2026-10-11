@@ -34,11 +34,11 @@ export async function httpFetchCases(http) {
     const request = (path, callback, extra = {}) => http.request({ host: '127.0.0.1', port, path, method: 'POST', agent: false, ...extra }, callback);
     const parity = { factories: [http.request.length, http.get.length, http.ClientRequest.length] };
     const inputUrl = new URL('http://127.0.0.1:' + port + '/options');
-    const inputOptions = Object.freeze({ method: 'GET', agent: false, path: '/overridden' });
+    const inputOptions = Object.freeze({ method: 'GET', agent: false, path: '/overridden', headers: Object.freeze({ 'X-Mixed-Case': 'value' }) });
     parity.options = await new Promise((resolve, reject) => {
       const req = http.request(inputUrl, inputOptions, (res) => {
         res.resume();
-        res.on('end', () => resolve([inputUrl.pathname, inputOptions.path, req.path]));
+        res.on('end', () => resolve([inputUrl.pathname, inputOptions.path, req.path, req.getRawHeaderNames()]));
       });
       req.on('error', reject); req.end();
     });
