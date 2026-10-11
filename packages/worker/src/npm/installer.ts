@@ -369,6 +369,7 @@ export class NpmInstaller {
     // skipped, not failed; with no plan (a lockfile kept whole), none is.
     let skipOptional: (at: string, reason: string) => boolean = () => false;
     let kept: ReadonlySet<string> = new Set();
+    const named = new Set((opts?.packages ?? []).map((pkg) => parseExplicitPackageSpec(pkg).name));
     const recordOf = this.lockRecords();
 
     if (packageLock !== null) {
@@ -469,9 +470,10 @@ export class NpmInstaller {
 
     for (const target of hoistPlacements(hoistPlan)) {
       const { pkg } = target;
-      // A named install changes what its plan placed; what the plan keeps
-      // is the installed tree, as the lockfile records it, left as it is.
-      if (opts?.packages && kept.has(target.placement)) continue;
+      // A named install changes what its plan placed and what it names;
+      // the rest the plan keeps is the installed tree, as the lockfile
+      // records it, left as it is.
+      if (opts?.packages && kept.has(target.placement) && !named.has(target.placement)) continue;
       if (!pkg.tarballUrl) {
         // Resolved metadata with no tarball cannot be installed. Silently
         // dropping it here left the package absent from node_modules and

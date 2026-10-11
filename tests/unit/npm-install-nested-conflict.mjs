@@ -224,6 +224,13 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   assert.equal(versionAt(named.root, 'd'), '1.0.0', 'the named version is at root');
   assert.equal(versionAt(named.root, 'a/node_modules/d'), '2.0.0', 'and a nests the d it declared');
   console.log('  named: d@1 at root, a/node_modules/d@2');
+
+  // A named package the lockfile records but the disk lost is installed
+  // again; the rest of the tree is left as the lockfile records it.
+  named.root.removeRecursive(`${NM}/a`);
+  assert.deepEqual((await named.installer.install(PROJ, { pid: 1, packages: ['a@^1.0.0'] })).failed, [], named.log.join('\n'));
+  assert.equal(versionAt(named.root, 'a'), '1.0.0', 'the named package is back');
+  console.log('  named: a package the disk lost is installed again');
 }
 
 console.log('npm-install-nested-conflict: ok');
