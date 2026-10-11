@@ -652,7 +652,14 @@ await check('a description held by its name on an awaiting mount asks for its fi
   let gate = null;
   let entered;
   const entering = new Promise((resolve) => { entered = resolve; });
-  files.vfs.mount('/nr', asyncOnly(backend, { deep: true, beforeCall: (method) => (gate !== null && method === 'rename' ? (entered(), gate) : undefined) }));
+  // The write's first look at the name, while the rename is held: a check made there, before its turn, is stale by the time it writes.
+  let watching = false;
+  let looked;
+  const looking = new Promise((resolve) => { looked = resolve; });
+  files.vfs.mount('/nr', asyncOnly(backend, { deep: true, beforeCall: (method) => {
+    if (gate !== null && method === 'rename') { entered(); return gate; }
+    if (watching && method === 'stat') looked();
+  } }));
   const stop = files.vfs.observeWrites(() => {});
   try {
     const proc = files.bind({ pid: ++pid, cred: USER });
@@ -661,7 +668,9 @@ await check('a description held by its name on an awaiting mount asks for its fi
     gate = new Promise((resolve) => { release = resolve; });
     const renaming = proc.rename('/nr/x', '/nr/y');
     await entering;
+    watching = true;
     const writing = assert.rejects(async () => proc.write(fd.id, 0, enc.encode('NEW')), refused('ESTALE'));
+    await Promise.race([looking, new Promise((resolve) => setTimeout(resolve, 50))]);
     release();
     await renaming;
     await writing;
