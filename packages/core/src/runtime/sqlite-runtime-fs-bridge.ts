@@ -580,20 +580,45 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
-      // A recursive mkdir of a directory already there (`/`, which has no row,
-      // included) changes nothing, so it meets no lease: a sibling's write
-      // makes its parents while another owner holds a subtree beside it. It
-      // stats the name, following links, as coreutils and Node do after
-      // EEXIST: a link to a directory is already there.
-      if (options.recursive && this.stat(path)?.type === 'directory') return;
-      const located = this.locateMutation(path, false, 'mkdir', options.mutationOwner);
+      const owner = options.mutationOwner;
+      let located: Located;
+      if (options.recursive) {
+        const found = this.locate(path, false);
+        if (found === null) {
+          this.leaseAllows(this.pathArgument(path), owner);
+          throw callError('ELOOP', { syscall: 'mkdir', path });
+        }
+        // A recursive mkdir of a directory already there changes nothing, so
+        // it meets no lease: a sibling's write makes its parents while another
+        // owner holds a subtree beside it. It stats the name, following links,
+        // as coreutils and Node do after EEXIST: a link to a directory is
+        // already there.
+        if (this.mayExist(found) && this.stat(path)?.type === 'directory') return;
+        // A lease on a directory also covers names inside it that resolve
+        // elsewhere through a symlink, so the literal path is checked as well.
+        this.leaseAllows(this.pathArgument(path), owner);
+        located = this.reached(found, owner);
+      } else {
+        located = this.locateMutation(path, false, 'mkdir', owner);
+      }
       if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
-      const p = located.path;
-      // `/` exists: mkdir of it is EEXIST, as mkdir(2) says, before any
-      // permission check on its (nonexistent) parent.
-      if (p === '' || this.vfs.exists(p)) throw fsError('EEXIST', 'mkdir', path);
-      this.owned(options.mutationOwner).mkdir(p, { recursive: !!options.recursive, mode: options.mode });
+      // mkdir of what is there is EEXIST, as mkdir(2) says, before any
+      // permission check on its parent (`/` has none).
+      if (this.mayExist(located)) throw fsError('EEXIST', 'mkdir', path);
+      this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
     });
+  }
+
+  /**
+   * Whether anything may be at `located`: a mounted name (its mount
+   * answers), `/` (which has no row), a row, or a link the legacy registry
+   * holds. A walk that met the name absent has looked at all of them.
+   */
+  private mayExist(located: Located): boolean {
+    if (located.mount) return true;
+    if (located.absent) return false;
+    const p = located.path;
+    return p === '' || this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p));
   }
 
   unlink(path: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
@@ -988,7 +1013,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     this.leaseAllows(this.pathArgument(path), owner);
     const located = this.locate(path, followSymlinks);
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
-    // And the name it reaches, on a mount as on SQLite.
+    return this.reached(located, owner);
+  }
+
+  /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
+  private reached(located: Located, owner?: string): Located {
     this.leaseAllows(located.path, owner);
     // The namespace's own guard, which each mount call meets, is presented the lease too.
     if (located.mount && owner !== undefined) return { ...located, mount: this.namespace!.scoped(() => {}, owner).sync };

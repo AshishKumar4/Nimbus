@@ -121,6 +121,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         recursive?: boolean;
         mode?: number;
     } & RuntimeMutationOwner): void;
+    /**
+     * Whether anything may be at `located`: a mounted name (its mount
+     * answers), `/` (which has no row), a row, or a link the legacy registry
+     * holds. A walk that met the name absent has looked at all of them.
+     */
+    private mayExist;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void;
@@ -192,6 +198,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     linkLeadsTo(path: string, link: string): string | null;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
+    /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
+    private reached;
     /**
      * Refuses a mutation at the namespace path `path` that another owner's
      * exclusive-mutation lease covers (EBUSY), or that lies outside the
