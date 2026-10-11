@@ -231,9 +231,12 @@ const FILES = {
     'pipeline(Readable.from(["a", "b"]), sink, (error) => console.log("PIPELINE " + JSON.stringify({ error: error ? error.message : null, got: sink.got, ended: !!sink.ended })));',
   ].join('\n'),
   // The stream front a program runs on is the platform's node:stream, and its
-  // files' streams are its classes: backpressure, lifecycle order, pipeline
-  // and its errors, stream/promises, stream/consumers, destroy, and fs's
-  // read and write streams, as a transcript node writes the same.
+  // files' and children's streams are its classes: backpressure, lifecycle
+  // order, pipeline and its errors, stream/promises, stream/consumers,
+  // destroy, fs's read and write streams (a write stream owns what it has
+  // acknowledged; a read stream's close callback comes after its 'close'),
+  // and a child whose stdout a failing pipeline destroys still closes, as a
+  // transcript node writes the same.
   'stream-lifecycle.js': [
     'const { Readable, Writable, Transform, PassThrough } = require("stream");',
     'const sp = require("stream/promises");',
@@ -272,8 +275,32 @@ const FILES = {
     '  ws.write("p"); ws.end("q");',
     '  await sp.finished(ws);',
     '  log.push("fsw:" + fs.readFileSync("o.txt", "utf8"));',
+    '  const reused = new Uint8Array([97]);',
+    '  const own = fs.createWriteStream("own.txt");',
+    '  await new Promise((resolve) => own.write(reused, () => { reused[0] = 98; own.end(resolve); }));',
+    '  log.push("own:" + fs.readFileSync("own.txt", "utf8"));',
+    '  const rs = fs.createReadStream("s.txt");',
+    '  await new Promise((resolve) => { rs.on("close", () => log.push("rs-close")); rs.close((e) => { log.push("rs-cb:" + (e && e.code)); resolve(); }); });',
+    '  const child = require("child_process").spawn("node", ["-e", "process.stdout.write(\\"x\\")"]);',
+    '  const ends = [];',
+    '  await new Promise((resolve) => {',
+    '    sp.pipeline(child.stdout, new Writable({ write(c, e, cb) { cb(new Error("sink")); } })).catch((e) => ends.push("pipe:" + e.message));',
+    '    child.stderr.resume();',
+    '    child.on("close", (code) => { ends.push("close:" + code); resolve(); });',
+    '  });',
+    '  await tick(5);',
+    '  log.push("cp:" + ends.sort().join(","));',
     '  console.log("STREAMS " + JSON.stringify(log));',
     '})();',
+  ].join('\n'),
+  // The terminal's classes a program constructs itself: a ReadStream reads
+  // the process's stdin, a WriteStream writes its stdout or stderr.
+  'tty.js': [
+    'const tty = require("tty");',
+    'const input = new tty.ReadStream(0);',
+    'let got = "";',
+    'input.on("data", (c) => { got += c; });',
+    'input.on("end", () => { new tty.WriteStream(2).write("TTY-ERR\\n"); new tty.WriteStream(1).write("TTY " + JSON.stringify(got) + "\\n"); });',
   ].join('\n'),
   'url.js': [
     'const url = require("url");',
@@ -419,9 +446,13 @@ try {
     const hostStreams = spawnSync('node', ['-e', FILES['stream-lifecycle.js']], { encoding: 'utf8', cwd: hostDir });
     rmSync(hostDir, { recursive: true, force: true });
     assert.equal(hostStreams.status, 0, hostStreams.stderr);
-    assert.match(hostStreams.stdout, /^STREAMS \[.*"fsw:pq"\]$/m, hostStreams.stdout);
+    assert.match(hostStreams.stdout, /^STREAMS \[.*"fsw:pq","own:a","rs-close","rs-cb:ERR_STREAM_PREMATURE_CLOSE","cp:close:0,pipe:sink"\]$/m, hostStreams.stdout);
     assert.equal(/^STREAMS .*$/m.exec(streamsRun.stdout)?.[0], /^STREAMS .*$/m.exec(hostStreams.stdout)?.[0],
       `streams run as node's do: ${streamsRun.stdout}`);
+
+    const ttyRun = await terminal.run(`cd ${W} && echo TTY-IN | node tty.js`);
+    assert.match(ttyRun.stdout, /^TTY "TTY-IN\\n"$/m, `a tty.ReadStream reads stdin, a tty.WriteStream writes stdout: ${JSON.stringify(ttyRun)}`);
+    assert.match(`${ttyRun.stdout}${ttyRun.stderr ?? ''}`, /TTY-ERR/, 'and fd 2 its stderr');
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });
