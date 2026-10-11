@@ -10,7 +10,7 @@
  * code.
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat, VfsWriteObserver } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 
 function absolute(key: string): string {
@@ -72,10 +72,11 @@ export class SqliteFiles implements VFS {
     return this.view;
   }
 
-  as(cred: VfsCred, actor?: string, options?: { holds?: () => ReadonlySet<string> }): SqliteFiles {
+  as(cred: VfsCred, actor?: string, options?: VfsViewOptions): SqliteFiles {
     return new SqliteFiles(this.engine, this.engine.as(cred, {
       ...(actor === undefined ? {} : { actor }),
       ...(options?.holds === undefined ? {} : { holds: options.holds }),
+      ...(options?.landed === true ? { landed: true } : {}),
     }));
   }
 

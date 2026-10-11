@@ -23,6 +23,7 @@ try {
   const build = await Bun.build({
     entrypoints: [
       './packages/worker/src/session/nimbus-session.ts',
+      './packages/worker/src/session/session-filesystem.ts',
       './packages/worker/src/session/supervisor-rpc.ts',
       './packages/worker/src/hosted/services.ts',
     ],
@@ -49,6 +50,9 @@ try {
   const entry = build.outputs.find((output) => output.path.endsWith('/nimbus-session.js'));
   assert.ok(entry, 'the session entry bundle was emitted');
   const { NimbusSession } = await import(pathToFileURL(entry.path).href);
+  const filesystemEntry = build.outputs.find((output) => output.path.endsWith('/session-filesystem.js'));
+  assert.ok(filesystemEntry, 'the session filesystem entry bundle was emitted');
+  const { SessionFilesystem } = await import(pathToFileURL(filesystemEntry.path).href);
   const rpcEntry = build.outputs.find((output) => output.path.endsWith('/supervisor-rpc.js'));
   assert.ok(rpcEntry, 'the supervisor RPC entry bundle was emitted');
   const { SupervisorRPC } = await import(pathToFileURL(rpcEntry.path).href);
@@ -99,8 +103,8 @@ try {
     notify() {},
     async requestLaunchTurn() { return true; },
   }));
-  session.sqliteFs = rawVfs;
   session.processes = processes;
+  session.filesystem = new SessionFilesystem(rawVfs, session);
   // ensureFacetManager short-circuits on this — the cp verbs under test
   // never reach a real composition. `facetManager` is a derived getter now;
   // the composed field is what a preset sets.
