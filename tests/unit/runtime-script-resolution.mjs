@@ -10,7 +10,7 @@
 //
 // The fix is a seam, not a second execution path: a verb handler receives a
 // continuation back into the standard flow, so the file case reaches the very
-// same resolution → transform → facet dispatch that `bun <file>` takes.
+// same resolution → native staging → facet dispatch that `bun <file>` takes.
 //
 // What has to hold: the resolver agrees with real bun (measured against bun
 // 1.3.1, not recalled), a directory resolves to its index rather than being
@@ -191,11 +191,9 @@ const handler = buildRuntimeHandler(spec, {
     ['/home/user/example-app/cli.ts', '--help', 'extra'],
     'user args after the path reach the script — --help is the script\'s, not the runtime\'s',
   );
-  assert.ok(
-    ran.code.includes('CLI_TS'),
-    'the file\'s source was read and handed to the runner',
-  );
-  assert.equal(transformed.length, 1, 'a .ts target went through the transform path');
+  assert.equal(ran.code, fs.readFileString('home/user/example-app/cli.ts'), 'the original file source reaches the runner');
+  assert.equal(ran.opts.esModule, true, 'the launch is asked to compile and stage the TypeScript entry');
+  assert.equal(transformed.length, 0, 'the runtime handler delegates compilation to the launch');
   assert.equal(out.join(''), 'RAN\n', 'runner stdout reaches the shell');
 }
 

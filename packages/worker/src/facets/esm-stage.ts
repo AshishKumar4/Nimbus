@@ -24,6 +24,9 @@ import {
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
 import { resolveRequireEx, type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { typeScriptUnderNodeModules, type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
+import { nodeModulesRefusal } from '@nimbus-sh/core/runtime/typescript-refusal.js';
+import { stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 
 /**
@@ -102,8 +105,12 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, cwd, isCode, gate }: {
+  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }: {
+    /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
+    stripsTypes?: boolean;
     conditions: readonly string[];
+    /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
+    scope?: ModuleScope;
     /** The process's working directory (EsmResolverOptions.cwd). */
     cwd: string;
     isCode(key: string): boolean;
@@ -179,6 +186,11 @@ export async function stageEsModules(
     }
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
     const key = stripLeadingSlashes(resolution.path);
+    // Node's loader refuses to strip a TypeScript file under node_modules when it loads it.
+    if (stripsTypes && stripsTypeScript(key) && typeScriptUnderNodeModules(key)) {
+      const refused = nodeModulesRefusal(resolution.path);
+      throw Object.assign(new Error(refused.message), { code: refused.code });
+    }
     const staged = ids.get(`module:${key}`);
     if (staged !== undefined) return staged;
     if (resolution.format === 'json') {
@@ -205,7 +217,14 @@ export async function stageEsModules(
         // A provided package by its bare name is the process's own, never an installed copy.
         const resolution = FACET_PROVIDED_PACKAGES.includes(site.specifier)
           ? { url: site.specifier, format: 'builtin' as const, builtin: site.specifier }
-          : await resolver.resolve(site.specifier, parentUrl.href);
+          : await resolver.resolve(site.specifier, parentUrl.href).catch(async (error: unknown) => {
+            // Bun's resolution probes what Node's refuses (a `.js` naming its `.ts`, an extensionless path).
+            const probed = scope === 'bun' ? await requireResolve(site.specifier, parentUrl.pathname) : null;
+            if (probed === null) throw error;
+            const url = new URL('file://');
+            url.pathname = probed;
+            return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' as const : 'commonjs' as const };
+          });
         const row = await target(resolution, site.attributes);
         rowTargets.push(row);
         targets.push(table[row]![2]);

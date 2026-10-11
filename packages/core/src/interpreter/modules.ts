@@ -1,18 +1,24 @@
 /**
- * modules.ts — an ES module as a launch's map runs one: Node's CommonJS
- * wrapper function, linked as runtime/esm-interop.ts says, the way the next
- * launch's cell (async-module-lowering.ts) links the same text. Its imports
- * are requires and its exports the getters of module.exports. compile.ts
- * makes the plan (Compiler.modulePlan); this runs it, with the interop
- * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
+ * modules.ts — an ES module the interpreter evaluates (one a program produced
+ * after its launch began, or a staged one the registry could not evaluate
+ * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
+ * function, linked as runtime/esm-interop.ts says. Its imports are calls of
+ * the require it is given, which resolves them as Node's ESM loader does,
+ * and its exports the getters of module.exports. compile.ts makes the plan
+ * (Compiler.modulePlan); this runs it, with the interop helpers the launch
+ * compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
 import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env, ROOT_ENV, TDZ, tdzError } from './runtime.js';
 
-/** A module cell: Node's CommonJS wrapper function. */
-export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
+/**
+ * A module cell: Node's CommonJS wrapper function. An ES module's is marked
+ * `esModule`: the require it is called with links its static imports, which
+ * the loader resolves as Node's ESM loader does (node-shims' __requireFrom).
+ */
+export type ModuleCell = ((exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown) & { esModule?: true };
 
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
@@ -60,15 +66,13 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
   const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
   const bs = body.s;
   const bg = body.g;
-  return (exportsArg, requireArg, moduleArg, filename, dirname) => {
+  const cell: ModuleCell = (exportsArg, requireArg, moduleArg, filename, dirname) => {
     const env = withElement(frame, 0, ROOT_ENV);
     env[exportsSlot] = exportsArg;
     env[requireSlot] = requireArg;
     env[moduleSlot] = moduleArg;
     env[filenameSlot] = filename;
     env[dirnameSlot] = dirname;
-    // A cell's module is always an ES module's: the next launch lowers
-    // esModuleSource's text, which declares an export.
     const exportsObject: unknown = ops.get(moduleArg, 'exports');
     const define = reflectApply(helpers.exports, undefined, [exportsObject]) as NativeFunction;
     // Instantiation, before any import is evaluated: an import that
@@ -76,8 +80,8 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     // made, as a module's linking provides, and its exports published (link).
     if (instantiate !== null) instantiate(env);
     // The module is linked where the body runs: a module that suspends
-    // (top-level await) rejects for a failure linking it, as its lowered
-    // cell's async body does, rather than throwing.
+    // (top-level await) rejects for a failure linking it, rather than
+    // throwing.
     if (bg === null) {
       link(plan, env, requireArg, helpers, exportsObject, define);
       bs(env);
@@ -88,6 +92,8 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
       return bg(env);
     });
   };
+  cell.esModule = true;
+  return cell;
 }
 
 /** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */

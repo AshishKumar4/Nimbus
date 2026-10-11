@@ -317,13 +317,9 @@ console.log('require-resolver: createRequire ok');
   assert.equal(r.bundle['home/user/app/node_modules/outside.js'], undefined, 'no bin outside its package');
   assert.equal(r.bundle['home/user/app/node_modules/vinext/dist/own.js'], undefined, 'a relative manifest locates no package');
 }
-// A package an ES module imports is staged as an ES import loads it, too.
-// The process runs the module lowered to CommonJS, whose require takes the
-// "require" branch; a module runner that evaluates the same source itself
-// (Vite's, under Astro) imports its externals with import(), which takes the
-// "import" branch. Astro's dev server missed clsx/dist/clsx.mjs, zod/v4,
-// tinyglobby and common-ancestor-path, one per launch, that way. The import
-// branch waits in phase 2, ahead of a deferral table.
+// A package an ES module imports is staged as the registry links it: its
+// "import" branch, required, since the module cannot link without it; the
+// "require" branch, which nothing here loads, is not staged.
 {
   const files = {
     'home/user/app/node_modules/fw/bin.mjs': "import './lib/render.js';",
@@ -340,61 +336,31 @@ console.log('require-resolver: createRequire ok');
   const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
   assert.ok(!('kind' in r), JSON.stringify(r));
   const clsx = 'home/user/app/node_modules/fw/node_modules/clsx/dist/';
-  assert.equal(r.bundle[clsx + 'clsx.js'], files[clsx + 'clsx.js'], "the require branch, which the process's require loads");
-  assert.equal(r.bundle[clsx + 'clsx.mjs'], files[clsx + 'clsx.mjs'], 'and the import branch');
-  assert.deepEqual([...r.speculative], [clsx + 'clsx.mjs'], 'the import branch is phase 2; a package with one entry adds nothing');
+  assert.equal(r.bundle[clsx + 'clsx.mjs'], files[clsx + 'clsx.mjs'], 'the import branch, which the registry links');
+  assert.equal(r.bundle[clsx + 'clsx.js'], undefined, 'and not the require branch');
+  assert.equal(r.bundle['home/user/app/node_modules/same/index.js'], files['home/user/app/node_modules/same/index.js'], "a package's main without exports");
+  assert.deepEqual([...r.speculative], [], 'all of it required');
 }
-// The import branch is optional, and so is the metadata only it reads. A dual
-// package whose import branch sits under its own package scope
-// (esm/package.json) reads that manifest to resolve it: past the bound, it is
-// left out, and the required closure (the require branch) still launches.
-// Metadata the required graph reads stays required.
+// A dual package whose import branch sits under its own package scope
+// (esm/package.json) reads that manifest to resolve it: the manifest is
+// required with the branch.
 {
-  const huge = JSON.stringify({ type: 'module', padding: 'x'.repeat(4096) });
   const files = {
     'home/user/app/node_modules/fw/bin.mjs': "import dual from 'dual'; export default dual;",
     'home/user/app/node_modules/dual/package.json': JSON.stringify({ name: 'dual', exports: { '.': { import: './esm/index.js', default: './cjs/index.js' } } }),
     'home/user/app/node_modules/dual/cjs/index.js': 'module.exports = 1;',
-    'home/user/app/node_modules/dual/esm/package.json': huge,
+    'home/user/app/node_modules/dual/esm/package.json': JSON.stringify({ type: 'module' }),
     'home/user/app/node_modules/dual/esm/index.js': 'export default 1;',
   };
   const vfs = new FakeVfs(files);
   const entry = 'home/user/app/node_modules/fw/bin.mjs';
-  const required = [entry, 'home/user/app/node_modules/dual/cjs/index.js'].reduce((n, path) => n + files[path].length, 0);
-  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry, required + 64);
-  assert.ok(!('kind' in r), `the optional branch's metadata is no refusal: ${JSON.stringify(r)}`);
-  assert.equal(r.bundle['home/user/app/node_modules/dual/cjs/index.js'], files['home/user/app/node_modules/dual/cjs/index.js']);
-  assert.equal(r.bundle['home/user/app/node_modules/dual/esm/package.json'], undefined, 'metadata past the bound is left out');
-  assert.ok(!r.speculative.has('home/user/app/node_modules/dual/package.json'), "the required graph's metadata stays required");
-  const roomy = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
-  assert.equal(roomy.bundle['home/user/app/node_modules/dual/esm/index.js'], files['home/user/app/node_modules/dual/esm/index.js'], 'with room, the import branch is staged');
-  assert.ok(roomy.speculative.has('home/user/app/node_modules/dual/esm/package.json'), 'with the metadata only it read, as optional');
-}
-// The import branch is the weakest evidence phase 2 has (a module runner may
-// load it; the process's own require does not): it waits behind every
-// deferral the code names, tables included. Ahead of them it shed Astro's
-// Shiki grammars (jsx.mjs, markdown.mjs among 118), which a page's code block
-// loads with import().
-{
-  const grammar = 'export default ' + JSON.stringify('x'.repeat(400)) + ';';
-  const files = {
-    'home/user/app/node_modules/fw/bin.mjs': "import clsx from 'clsx'; import './langs.js'; export default clsx;",
-    'home/user/app/node_modules/fw/langs.js': "export const langs = { a: () => import('./g/a.js'), b: () => import('./g/b.js') };",
-    'home/user/app/node_modules/fw/g/a.js': grammar,
-    'home/user/app/node_modules/fw/g/b.js': grammar,
-    'home/user/app/node_modules/clsx/package.json': JSON.stringify({ name: 'clsx', exports: { '.': { import: './clsx.mjs', default: './clsx.js' } } }),
-    'home/user/app/node_modules/clsx/clsx.js': 'module.exports = 1;',
-    'home/user/app/node_modules/clsx/clsx.mjs': 'export default ' + JSON.stringify('y'.repeat(400)) + ';',
-  };
-  const vfs = new FakeVfs(files);
-  const entry = 'home/user/app/node_modules/fw/bin.mjs';
-  const required = [entry, 'home/user/app/node_modules/fw/langs.js', 'home/user/app/node_modules/clsx/clsx.js']
-    .reduce((n, path) => n + files[path].length, 0);
-  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry, required + 2 * grammar.length + 10);
+  const r = await prefetchForRequire(vfs, files[entry], '/home/user/app', '/' + entry);
   assert.ok(!('kind' in r), JSON.stringify(r));
-  assert.deepEqual([...r.speculative].filter((p) => p.endsWith('.js') || p.endsWith('.mjs')),
-    ['home/user/app/node_modules/fw/g/a.js', 'home/user/app/node_modules/fw/g/b.js'], "the code's own table first");
-  assert.equal(r.bundle['home/user/app/node_modules/clsx/clsx.mjs'], undefined, 'the import branch takes only the room left');
+  assert.equal(r.bundle['home/user/app/node_modules/dual/esm/index.js'], files['home/user/app/node_modules/dual/esm/index.js']);
+  assert.equal(r.bundle['home/user/app/node_modules/dual/cjs/index.js'], undefined);
+  for (const manifest of ['dual/package.json', 'dual/esm/package.json']) {
+    assert.ok(!r.speculative.has(`home/user/app/node_modules/${manifest}`), `${manifest}, which the required graph reads, is required`);
+  }
 }
 // A function that passes its first parameter to a require loads what its
 // callers name. @vitejs/plugin-vue resolves the project's compiler so,

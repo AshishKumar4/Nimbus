@@ -155,8 +155,7 @@
    "register",
    "registerHooks",
    "runMain",
-   "stripTypeScriptTypes",
-   "syncBuiltinESMExports"
+   "stripTypeScriptTypes"
   ],
   "extra": [
    "wrap",

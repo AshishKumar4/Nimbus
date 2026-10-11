@@ -355,7 +355,7 @@ export interface FacetExecResult {
    * exec-telemetry.ts); the supervisor folds them with its own phase timings
    * before recording.
    */
-  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number; namespaceRefusals?: number };
+  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number; namespaceRefusals?: number; esmAdoptions?: number };
 }
 
 /**
@@ -1406,7 +1406,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       // Code produced while it ran, for the next launch (commonjs-cell.ts).
       runtimeCode: __nimbusRuntimeCodeLedger(),
       ...(__diag ? { diag: {
-        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0,
+        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0, esmAdoptions: __nimbusEsmAdoptions,
         namespaceRefusals: (globalThis.__nimbusVfsCoherence && globalThis.__nimbusVfsCoherence.namespaceRefusals) || 0,
       } } : {}),
     });
@@ -4910,6 +4910,8 @@ async function _buildPrefetchBundle(
     esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path) }, cells, {
       conditions,
       cwd,
+      scope: moduleScope,
+      stripsTypes: stripTypes !== null && stripTypes !== 'javascript',
       isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
       gate: true,
     });
@@ -7284,6 +7286,7 @@ export class FacetManager {
               namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
               rpcWrites: result.diag?.rpcWrites ?? 0,
               fsRpcReads: result.diag?.fsRpcReads ?? 0,
+              esmAdoptions: result.diag?.esmAdoptions ?? 0,
               cacheHit: vfsState.cacheHit ?? false,
               turns: pacer.chunks,
               exitCode: result.exitCode,
@@ -9156,6 +9159,7 @@ export class FacetManager {
           namespaceRefusals: 0,
           rpcWrites: 0,
           fsRpcReads: 0,
+          esmAdoptions: 0,
           cacheHit,
           turns: pacer.chunks,
           exitCode: 0,

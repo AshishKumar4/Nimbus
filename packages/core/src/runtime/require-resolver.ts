@@ -562,16 +562,12 @@ export async function prefetchForRequire(
     //     require of './x' from this file's directory (pi-coding-agent's bin).
     //   - ESM `import`/`export … from`: Node's ESM resolution (the "import"
     //     conditions, no extension probing), as the process's registry links
-    //     the module (worker facets/esm-stage.ts). A bare specifier is also
-    //     deferred to phase 2 behind every alternative branch the code names,
-    //     tables included (IMPORT_BRANCHES): a module runner that evaluates
-    //     the same source itself (Vite's, under Astro) may resolve it under
-    //     other conditions.
+    //     the module (worker facets/esm-stage.ts), else the CommonJS one,
+    //     which is how Bun's resolution probes.
     const followUps: ReadonlyArray<[RegExp, (specifier: string, staged: ResolveSubpathResult | null) => void]> = [
       [REQUIRE_RE, (specifier, staged) => { if (staged && !policy && namesManifest(specifier)) deferBins(staged.resolved); }],
       [CREATE_REQUIRE_CALL_RE, () => {}],
-      // Resolved in phase 2, where what it reads is optional too.
-      [IMPORT_RE, (specifier) => { if (!policy && !/^[./#]|^file:/.test(specifier)) defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES }); }],
+      [IMPORT_RE, () => {}],
     ];
     // Recursive and concurrently suspended walks each own their cursor
     // (matchAll): mutating a shared RegExp.lastIndex repeats or skips a
@@ -581,7 +577,11 @@ export async function prefetchForRequire(
         const specifier = match[2];
         if (isFacetProvided(specifier)) continue;
         if (closureExceeded || declined) break;
-        const staged = grammar === IMPORT_RE ? await resolveStaticImport(specifier, fromDir) : await resolveStaticDependency(specifier, fromDir);
+        // An import Node's ESM resolution refuses may still load under
+        // Bun's, which probes as require() does (a `.js` naming its `.ts`).
+        const staged = grammar === IMPORT_RE
+          ? await resolveStaticImport(specifier, fromDir) ?? await resolveStaticDependency(specifier, fromDir)
+          : await resolveStaticDependency(specifier, fromDir);
         if (staged) {
           edge(fromFile, staged.resolved);
           await addFile(staged.resolved);
@@ -883,15 +883,6 @@ export function configPackageNames(source: string): string[] {
   return [...names];
 }
 
-
-/**
- * Phase 2's tier for a package's "import" branch beside the "require" branch
- * the process loads: a module runner may import it, the code's own import()
- * calls certainly run. Ahead of a deferral table it shed 118 of Astro's Shiki
- * grammars (jsx.mjs and markdown.mjs among them), which a page's code block
- * loads with import().
- */
-const IMPORT_BRANCHES = Number.MAX_SAFE_INTEGER - 1;
 
 /** Phase 2's last tier: the bins of a package the code located by its manifest. */
 const LOCATED_PACKAGE_BINS = Number.MAX_SAFE_INTEGER;

@@ -4,7 +4,8 @@
 // the entry module imports and joins in its `__MODULE_VFS_BUNDLE` expression;
 // a small bundle may still be inline in that expression. Its code cells are
 // `{ cjs }` modules of their own (core/_shared/commonjs-cell.ts), named in the
-// entry's `__NIMBUS_CODE_CELLS` table, whose text the store adopts. This
+// entry's `__NIMBUS_CODE_CELLS` table, whose text the store adopts. Native ES
+// modules are `{ js }` members, with their files carried separately. This
 // evaluates exactly what the facet evaluates, so a test sees the cells the
 // program gets.
 
@@ -14,7 +15,7 @@ import { residentLoaderConfig } from '../../../packages/fabric/src/process-fabri
 import { readImmutableModuleSource } from '../../../packages/core/src/_shared/staged-source.ts';
 import { stagedAssets } from './staged-assets.mjs';
 import { createRequire as nativeCreateRequire, isBuiltin } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { adaptHttpImports } from './node-http-platform.mjs';
 
@@ -29,6 +30,11 @@ function sideModule(source) {
 /** The `{ cjs }` text of a module-map member, or undefined when it is not one. */
 function cjsText(member) {
   return member && typeof member === 'object' && typeof member.cjs === 'string' ? member.cjs : undefined;
+}
+
+/** The `{ js }` text of a native ES module-map member. */
+function jsText(member) {
+  return member && typeof member === 'object' && typeof member.js === 'string' ? member.js : undefined;
 }
 
 /** The cells of the bundle in `modules` (a Worker Loader config's), whose entry is `entry`. */
@@ -59,7 +65,7 @@ export function moduleMapCodeCells(modules, entry = modules['worker.js'] ? 'work
 
 /** Every module source in the set: what a test searches for a program's text. */
 export function moduleMapText(modules) {
-  return Object.values(modules).map((m) => (typeof m === 'string' ? m : cjsText(m))).filter((m) => m !== undefined).join('\n');
+  return Object.values(modules).map((m) => (typeof m === 'string' ? m : cjsText(m) ?? jsText(m))).filter((m) => m !== undefined).join('\n');
 }
 
 /** Reconstruct a captured boot using only its images and pinned shared assets. */
@@ -103,7 +109,8 @@ const REGISTRY_STAND_IN = 'const __nimbusCreateRequire = globalThis.__nimbusTest
  * them (each by its name, beside the entry), and return the entry's path.
  * `rewrite(name, source)` may adapt a module for this runtime (the
  * `cloudflare:workers` import, say). The entry's registry is the stand-in
- * above, so its `{ cjs }` modules load as the guest loads them.
+ * above, so its `{ cjs }` modules load as the guest loads them. Native `{ js }`
+ * members are files too; `/bundle/` specifiers name this directory on disk.
  */
 export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source) {
   mkdirSync(dir, { recursive: true });
@@ -112,10 +119,14 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
   const names = new Set(Object.keys(modules));
   const local = (source) => source.replace(/(\bfrom\s*|\bimport\s*)"([^"./][^"]*)"/g,
     (whole, lead, spec) => (names.has(spec) ? `${lead}"./${spec}"` : whole));
+  const bundleRoot = resolve(dir) + '/';
+  const onDisk = (source) => source.replace(/(["'])\/bundle\//g, (_whole, quote) => quote + bundleRoot);
   for (const [name, member] of Object.entries(modules)) {
-    const path = join(dir, name);
-    if (typeof member === 'string') {
-      writeFileSync(path, adaptHttpImports(local(rewrite(name, member))).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN));
+    const source = typeof member === 'string' ? member : jsText(member);
+    if (source !== undefined) {
+      const file = join(dir, decodeURIComponent(name));
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, onDisk(adaptHttpImports(local(rewrite(name, source))).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN)));
     } else if (cjsText(member) !== undefined) {
       // A module name is a URL path: the file is where the registry's URL
       // resolution — the stand-in's fileURLToPath — finds it.
@@ -131,6 +142,7 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
 export function generatedModuleSet(generated, entry) {
   const set = { [entry]: generated.code, ...generated.modules };
   for (const [name, text] of Object.entries(generated.codeModules)) set[name] = { cjs: text };
+  for (const [name, text] of Object.entries(generated.esModules)) set[name] = { js: text };
   for (const [name, source] of Object.entries(generated.immutableModules)) set[name] = { cjs: source.text };
   return set;
 }
