@@ -101,6 +101,15 @@ export const DEFERRED = validateDeferrals([
     tracking: 'nuxt memory: isolate split or platform change (user decision)',
   },
   {
+    probe: 'frameworks/vinext-real',
+    excluded: true,
+    reason: "rolldown's wasm memory grows to ~70 MiB in the serving facet (~86 MiB of wasm in all), past a facet's sustained memory; "
+      + 'the 65 s residency check resets it on every run, release ce91490f3 included',
+    approved: 'user, 2026-10-11',
+    owner: 'Main',
+    tracking: 'framework isolate split (user decision 2026-10-11)',
+  },
+  {
     probe: 'frameworks/remix-real',
     assertion: 'react-router dev serves the app through the port route on its first run',
     failure: { detail: ['"last":"no resident process was launched"', '@tailwindcss/oxide/index.js'] },
