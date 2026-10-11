@@ -100,11 +100,12 @@ const watches = () => scheduled.filter(([task]) => task === 'hosting-watch');
     const response = await runtime.hostedFetch(new Request('https://watch.invalid/', { signal: abort.signal, headers: {
       [HOSTED_WATCH_HEADER]: workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: capability,
     } }));
-    assert.equal(response.status, 200);
-    const reader = response.body.getReader();
-    const waiting = reader.read();
+    assert.equal(response.status, 101);
+    const socket = response.webSocket;
+    socket.accept();
+    const closed = new Promise(resolve => socket.addEventListener('close', resolve, { once: true }));
     abort.abort();
-    await assert.rejects(waiting, /abort/i);
+    await closed;
   } finally { await runtime.supervisorOp({ op: 'cancelHostProcess', args: [workerKey] }); await opened; }
 }
 

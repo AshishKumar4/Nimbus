@@ -469,7 +469,7 @@ class PeerProcessHost {
         signal.addEventListener('abort', release, { once: true });
         try {
             return await peerFetchAnswer(await stub.fetch(new Request('https://nimbus-process.invalid/', {
-                signal, headers: { [HOSTED_WATCH_HEADER]: workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: capability },
+                signal, headers: { Upgrade: 'websocket', [HOSTED_WATCH_HEADER]: workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: capability },
             })), capability);
         }
         catch (error) {

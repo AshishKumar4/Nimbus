@@ -15,6 +15,8 @@
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
 import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
+installHostWatchSocket();
 
 /**
  * @param {(config: unknown, info: { loaderId: string, facetName: string, className: string })

@@ -200,8 +200,8 @@ export class PeerHost {
             release: () => {
                 record.closed = true;
                 return releasing ??= (async () => {
-                    for (const [controller, release] of record.watchers) {
-                        controller.close();
+                    for (const [socket, release] of record.watchers) {
+                        socket.close(1000, 'process released');
                         release();
                     }
                     const facet = await opened.promise.catch(() => null);
@@ -248,8 +248,8 @@ export class PeerHost {
             facet.started.then(started.resolve, started.reject);
             facet.lost.catch((error) => {
                 record.failure = error instanceof Error ? error : new Error(String(error));
-                for (const [controller, release] of record.watchers) {
-                    controller.error(record.failure);
+                for (const [socket, release] of record.watchers) {
+                    socket.close(1011, 'process host lost');
                     release();
                 }
             });
@@ -416,7 +416,7 @@ export class PeerHost {
                 record.watchers.delete(held);
                 lease.release();
             };
-            const aborted = () => { held?.error(request.signal.reason); release(); };
+            const aborted = () => { held?.close(1000, 'watch aborted'); release(); };
             try {
                 await lease.ready;
                 request.signal.throwIfAborted();
@@ -424,12 +424,14 @@ export class PeerHost {
                     throw new LostHostedProcess(errorText(record.failure));
                 if (record.closed)
                     throw new Error('Nimbus: the hosted process is no longer running');
-                const body = new ReadableStream({
-                    start(controller) { held = controller; record.watchers.set(controller, release); },
-                    cancel: release,
-                });
+                const [client, server] = Object.values(new WebSocketPair());
+                held = server;
+                record.watchers.set(server, release);
+                server.addEventListener('close', (event) => { server.close(event.code, event.reason); release(); });
+                server.addEventListener('error', release);
+                server.accept();
                 request.signal.addEventListener('abort', aborted, { once: true });
-                return new Response(body, { headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
+                return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
             }
             catch (error) {
                 release();
