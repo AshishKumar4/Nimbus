@@ -107,8 +107,7 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
   assert.ok(NPM_RESOLVE_PREAMBLE.includes(NPM_RESOLVE_NODE_IMPORTS) && NPM_RESOLVE_PREAMBLE.includes(NPM_RESOLVE_SRC), 'the preamble splices the bundle and its imports');
   assert.ok(NPM_RESOLVE_PREAMBLE.indexOf(NPM_RESOLVE_NODE_IMPORTS) < NPM_RESOLVE_PREAMBLE.indexOf(NPM_RESOLVE_SRC));
   // The free-name guard: the bundle reads only its imports and a facet's globals.
-  const imported = new Set([...NPM_RESOLVE_NODE_IMPORTS.matchAll(/import \* as (\w+) from/g)].map((m) => m[1]));
-  const stray = [...freeNames(NPM_RESOLVE_SRC)].filter((name) => !FACET_GLOBALS.has(name) && !imported.has(name) && name !== '__nimbusNpmResolve');
+  const stray = [...freeNames(`${NPM_RESOLVE_NODE_IMPORTS}\n${NPM_RESOLVE_SRC}`, { sourceType: 'module' })].filter((name) => !FACET_GLOBALS.has(name));
   assert.deepEqual(stray, [], 'the bundle reads nothing a facet lacks');
   assert.deepEqual([...freeNames('var g = (() => { const a = 1; function f(b) { return a + b + c + Math.max(d.e, f.g, arguments); } return f; })(); try {} catch ({ h }) { h + i; } label: for (const j of k) { break label; } function m(n = missing) { var missing = 1; return n; } (() => arguments)')].sort(), ['Math', 'arguments', 'c', 'd', 'i', 'k', 'missing'], 'the guard finds free names, and only those (a default does not see the body\'s vars; an arrow has no arguments)');
   console.log('  parity: the preamble bundles core _shared/npm-semver.ts, reading only its imports and a facet\'s globals');
@@ -127,15 +126,15 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
 // assembled with the preamble into the module the Worker Loader runs.
 {
   const bundled = await build({
-    entryPoints: [new URL('../../packages/worker/src/npm/resolve-one-facet.ts', import.meta.url).pathname],
-    bundle: true, format: 'esm', platform: 'neutral', target: 'esnext', keepNames: true, write: false, logLevel: 'silent',
+    entryPoints: [new URL('../../packages/worker/src/loaders/compiled-bodies.generated.ts', import.meta.url).pathname],
+    bundle: true, minify: true, format: 'esm', platform: 'neutral', target: 'esnext', write: false, logLevel: 'silent',
   });
   const dir = mkdtempSync(join(tmpdir(), 'resolve-facet-'));
   let fnSource;
   try {
     const file = join(dir, 'facet.mjs');
     writeFileSync(file, bundled.outputFiles[0].text);
-    fnSource = (await import(pathToFileURL(file).href)).resolveOnePackumentInFacet.toString();
+    fnSource = (await import(pathToFileURL(file).href)).NPM_RESOLVE_ONE_TASK.source;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -841,6 +841,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
   async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcStat(this as any, path, pid, cred); }
   async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcLstat(this as any, path, pid, cred); }
+  async _rpcReadlink(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid, cred); }
   async _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
     return _rpc._rpcChmod(this as any, path, mode, pid, cred);
   }
@@ -985,6 +986,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return encodeExecStream(await _programmatic.rpcExecStream(this as any, command, options));
   }
   async _rpcStartProcess(command: string, options?: SessionExecOptions) { return _programmatic.rpcStartProcess(this as any, command, options); }
+  async _rpcDetachExec(detachId: string) { return _programmatic.rpcDetachExec(this as any, detachId); }
   async _rpcRunCode(code: string, options?: SessionRunCodeOptions) {
     return _programmatic.rpcRunCode(this as any, code, options);
   }

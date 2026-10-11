@@ -113,7 +113,7 @@ async function putObjects(puts, persist, work, wrangler) {
  * its config vars (`wrangler dev --var`). `wrangler` may be a test stand-in.
  * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number, inspectorBase: string | null }>}
  */
-export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false, wrangler = WRANGLER } = {}) {
+export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false, minify = false, wrangler = WRANGLER } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
@@ -177,6 +177,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
         '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,
         ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
+        ...(minify ? ['--minify'] : []),
         ...(inspectorPort===null?[]:['--inspector-port',String(inspectorPort)]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
       owned.add(child);

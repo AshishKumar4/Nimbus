@@ -45,6 +45,8 @@ export interface NimbusSandboxFiles {
     stat(path: string): Promise<NimbusFileStat | null>;
     /** stat without following a symlink leaf. */
     lstat(path: string): Promise<NimbusFileStat | null>;
+    /** Read a symlink's stored target without following its final component. */
+    readlink(path: string): Promise<string | null>;
     rename(from: string, to: string): Promise<void>;
     chmod(path: string, mode: number): Promise<void>;
     /** Read `length` bytes at `offset` without materializing the whole file. */

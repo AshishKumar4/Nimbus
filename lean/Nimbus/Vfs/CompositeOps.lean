@@ -22,7 +22,11 @@
   - `readRange`, `writeFileIfRevision`, `readFileAtRevision`: lookup first (a
     missing path is ENOENT, as on Linux — Main's ruling); an existing path on a
     backend without them → ENOTSUP, nothing changes (`unsupported_is_enotsup`); with
-    them the model only asserts support (revisions are `Coherence`'s).
+    them the model only asserts support (revisions are `Coherence`'s). One
+    exception (Main's ruling, 2026-10-11): `writeFileIfRevision` expecting
+    revision 0 is create-if-absent (O_CREAT|O_EXCL), which only the backend can
+    make atomic, so a missing final component goes to the capability check too
+    (`create_if_absent_reaches_backend`); its parents are the walk's, as any.
   - `copy from to recursive`: across mounts allowed. Source: `/` or an ancestor of
     a live mount that is not itself a mount point → ENOTSUP (a tree holding another
     mount is not copied); a live mount point copies its backend. Target: `/`, a
@@ -55,7 +59,8 @@ structure Caps where
 inductive X where
   | removeRecursive (p : String)
   | readRange (p : String)
-  | writeFileIfRevision (p : String)
+  /-- `creating`: the expected revision is 0, nothing there (create-if-absent). -/
+  | writeFileIfRevision (p : String) (creating : Bool)
   | readFileAtRevision (p : String)
   | copy (a b : String) (recursive : Bool)
   | statMode (p : String)
@@ -208,12 +213,12 @@ def execX (S : St) (P : Principal) : X → XOut × St
           else match e with
             | .file v => (.bytes v, S)
             | _ => (.err "EISDIR", S)
-  | .writeFileIfRevision raw =>
+  | .writeFileIfRevision raw creating =>
     match reach S P true raw with
     | .error e => (.err e, S)
     | .ok p =>
       if synth S.mounts P p then (.err "EISDIR", S)
-      else if (look (treeAt S p) (rel S.mounts p)).isNone then (.err "ENOENT", S)
+      else if (look (treeAt S p) (rel S.mounts p)).isNone && !creating then (.err "ENOENT", S)
       else if !(caps (route S.mounts p).backend).cas then (.err "ENOTSUP", S)
       else (.supported, S)
   | .readFileAtRevision raw =>
@@ -335,9 +340,19 @@ theorem unsupported_is_enotsup (S : St) (P : Principal) (raw : String) (p : Path
     (he : look (treeAt S p) (rel S.mounts p) = some e) :
     ((caps (route S.mounts p).backend).readRange = false → execX caps S P (.readRange raw) = (.err "ENOTSUP", S)) ∧
     ((caps (route S.mounts p).backend).cas = false →
-      execX caps S P (.writeFileIfRevision raw) = (.err "ENOTSUP", S) ∧
+      (∀ c, execX caps S P (.writeFileIfRevision raw c) = (.err "ENOTSUP", S)) ∧
       execX caps S P (.readFileAtRevision raw) = (.err "ENOTSUP", S)) := by
-  refine ⟨fun h => ?_, fun h => ⟨?_, ?_⟩⟩ <;> simp [execX, hp, hs, h, he]
+  refine ⟨fun h => ?_, fun h => ⟨fun c => ?_, ?_⟩⟩ <;> simp [execX, hp, hs, h, he]
+
+/-- A create-if-absent (expected revision 0) of a missing final component is the
+    backend's to answer: it reaches the capability check, never ENOENT, and changes
+    nothing in the model (the backend's atomic create is `Coherence`'s). -/
+theorem create_if_absent_reaches_backend (S : St) (P : Principal) (raw : String) (p : Path)
+    (hp : reach S P true raw = .ok p) (hs : synth S.mounts P p = false)
+    (hm : look (treeAt S p) (rel S.mounts p) = none) :
+    execX caps S P (.writeFileIfRevision raw true) =
+      (if (caps (route S.mounts p).backend).cas then .supported else .err "ENOTSUP", S) := by
+  by_cases h : (caps (route S.mounts p).backend).cas <;> simp [execX, hp, hs, hm, h]
 
 /-- `copy` changes only the target's backend (so a source in another mount is
     untouched). -/

@@ -75,9 +75,11 @@ function workspace() {
   assert.equal((await user.writeFileIfRevision('/home/user/d/e/a.txt', enc.encode('cas'), rev)).ok, true);
   assert.equal((await user.writeFileIfRevision('/home/user/d/e/a.txt', enc.encode('stale'), rev)).ok, false);
   assert.equal(await readText(user, '/home/user/d/e/a.txt'), 'cas');
-  // Through the namespace a CAS is on an existing file (lookup first) ...
-  assert.equal(await code(() => user.writeFileIfRevision('/home/user/fresh.txt', enc.encode('x'), 0)), 'ENOENT');
-  // ... while the backend compares by value, whatever the type: absent is 0 or '0'.
+  // Through the namespace a CAS of a missing file is ENOENT (lookup first),
+  // unless it expects revision 0, nothing there: create-if-absent, the backend's.
+  assert.equal(await code(() => user.writeFileIfRevision('/home/user/fresh.txt', enc.encode('x'), 7)), 'ENOENT');
+  assert.equal((await user.writeFileIfRevision('/home/user/fresh0.txt', enc.encode('x'), 0)).ok, true, 'created through the namespace');
+  // The backend compares by value, whatever the type: absent is 0 or '0'.
   const direct = sqliteFiles(engine, USER);
   assert.equal(direct.writeFileIfRevision('/home/user/fresh.txt', enc.encode('x'), '0').ok, true);
   assert.equal(direct.writeFileIfRevision('/home/user/fresh2.txt', enc.encode('x'), 0).ok, true);

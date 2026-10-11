@@ -14,24 +14,9 @@
  * supervisor's weighted credit pool and transaction builder remain the
  * authoritative hard bounds.
  *
- * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
- * writeBatch flush) stays in this function because cloudflare-parallel
- * serializes it via fn.toString() and cannot import sibling modules across
- * the isolate boundary.
- *
- * Stability invariants (cloudflare-parallel):
- *   - No `this` references.
- *   - No closure capture other than args + preamble names.
- *   - Preamble symbols (streamPackageEntries, streamTarEntries,
- *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
- *     @ts-ignore; __nimbusWaveWriter declared below.
- *   - The install preamble's functions (retryingRegistryFetch,
- *     strongestSriEntry, sriDigestOf, sriDigestsEqual) are imported, never
- *     declared as globals: the preamble embeds each by its own source, and
- *     an import makes this function name it by the same identifier, whatever
- *     the Worker's bundler calls it. A global of that name would make the
- *     bundler rename the module's function away from it (`retryingRegistryFetch2`),
- *     and the facet would call a name its preamble never defines.
+ * The task and imported retry/integrity helpers are compiled together at
+ * build time. Tar streaming and the wave writer are guest preamble bindings;
+ * supervisor authority arrives in env, and all request data in batch.
  */
 import type { FacetPackageSpec } from './install-facet.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';

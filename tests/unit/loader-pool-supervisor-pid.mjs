@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 //
 // Regression: npm install dispatches its write facets through IsolatePool,
 // which mints the SUPERVISOR binding the facet uses for writeBatchStream. S2a's
@@ -85,12 +86,12 @@ programPool.dispose();
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 1000001,
   });
-  await poolG1.map((v) => v, ['a']);
+  await poolG1.map(facetTaskSource("(v) => v"), ['a']);
   const poolG2 = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
-  await poolG2.map((v) => v, ['a']);
+  await poolG2.map(facetTaskSource("(v) => v"), ['a']);
 
   assert.equal(loaderIds.length, 2, 'each pool dispatch calls loader.get once');
   assert.notEqual(loaderIds[0], loaderIds[1],
@@ -111,12 +112,12 @@ programPool.dispose();
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
-  await poolG2b.map((v) => v, ['a']);
+  await poolG2b.map(facetTaskSource("(v) => v"), ['a']);
   const warmPool = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
-  await warmPool.map((v) => v, ['a']);
+  await warmPool.map(facetTaskSource("(v) => v"), ['a']);
   assert.equal(loaderIds.length, 2);
   assert.equal(loaderIds[0], loaderIds[1],
     'identical supervisorPid must reuse the loader id (warm slot preserved)');
@@ -145,7 +146,7 @@ programPool.dispose();
   boundProps.length = 0;
   for (const ctx of [before, after]) {
     const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { network: ISOLATE_NETWORK, tag: 'x', concurrency: 1, supervisorPid: 5 });
-    await pool.map((v) => v, ['a']);
+    await pool.map(facetTaskSource("(v) => v"), ['a']);
     await pool.dispose();
   }
   assert.deepEqual(boundProps, incarnations.map((hostIncarnation) => ({ doId: 'loader-pid-test', pid: 5, route, hostIncarnation, bindingKind: 'infrastructure' })),
@@ -164,7 +165,7 @@ programPool.dispose();
   boundProps.length = 0;
   for (const ctx of [before, after]) {
     const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { network: ISOLATE_NETWORK, tag: 'esbuild-bundle', concurrency: 1 });
-    await pool.map((v) => v, ['a']);
+    await pool.map(facetTaskSource("(v) => v"), ['a']);
     await pool.dispose();
   }
   assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }, { doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }],

@@ -156,6 +156,7 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
+type EsbuildTransformApi = Pick<typeof esbuild, 'transform'>;
 type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
 /**
  * What a transform request runs besides its engine: the functions the
@@ -170,6 +171,17 @@ export interface TransformRuntime {
     rewriteProvidedCommonJsModules(source: string): string;
     stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
 }
+/**
+ * One transform request as a transform host runs it: esbuild (unless the
+ * code is already CommonJS), then, for a module whose dynamic `import()` is
+ * the process's, the rewrite that routes each one to the process's ESM loader.
+ * `engine` is null only before esbuild is loaded, which a rewrite-only
+ * request does not wait for.
+ */
+export declare function runTransformRequest(engine: EsbuildTransformApi | (() => Promise<EsbuildTransformApi>) | null, code: string, options: EsbuildTransformOptions | undefined, runtime: TransformRuntime): Promise<TransformResult | {
+    error: string;
+    typescript: TypeScriptRefusal;
+}>;
 /**
  * One esbuild build in which `plugin` resolves and loads every module: an
  * EsbuildService without a build host builds this way in its own isolate,

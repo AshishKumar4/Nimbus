@@ -97,6 +97,8 @@ export interface ProgrammaticHost extends TimerHost {
     ensureSqliteFs(): void;
     ensureFacetManager(): ComposedFacetManager;
 }
+/** Leave ownership of one invocation, not its process or its output. A scoped session can leave only its own shell. */
+export declare function rpcDetachExec(self: ProgrammaticHost, detachId: string, shellId?: string): SessionResult<'detachExec'>;
 export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
 /** Buffered exec: the exec stream collected into strings by the caller of this function. */
 export declare function rpcExec(self: ProgrammaticHost, command: string, options?: SessionExecOptions): Promise<ExecOutput>;

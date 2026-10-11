@@ -16,6 +16,8 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { residencyMissReport } from '../runtime/residency-miss-report.js';
+import { RESIDENCY_MISS_REPORT_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
@@ -25,7 +27,7 @@ import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
-import { NATIVE_HTTP_IMPORTS } from '../runtime/native-http.js';
+import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -512,29 +514,17 @@ function __nimbusDataReadMisses() {
 function __nimbusExecutedModuleMisses() {
   return [...(globalThis.__nimbusModuleMisses || [])];
 }
-const __nimbusResidencyMissText = ${residencyMissReport.toString()};
+const { residencyMissReport: __nimbusResidencyMissText } = ${RESIDENCY_MISS_REPORT_SOURCE};
 function __nimbusResidencyMissReport() {
   return __nimbusResidencyMissText(__nimbusDataReadMisses());
 }
 `;
 /**
- * The words of that report for the refused reads `keys` (namespace keys, no
- * leading slash): what the guest prints at its exit, and what a one-shot the
- * platform killed is failed with from the misses it reported as it ran
- * (exec). Empty when there are none. Runs in the guest as its own text.
+ * Static `import * as __real_X from 'node:X'` block. Prepended to generated
+ * runtime workers so the shims can forward to workerd's real `node:*` builtins.
+ * See src/_shared/real-node-imports.ts for the rationale and matrix.
  */
-export function residencyMissReport(keys) {
-    if (keys.length === 0)
-        return '';
-    const named = keys.slice(0, 20);
-    return 'node: ' + keys.length + ' file(s) were read synchronously but their content was '
-        + 'never staged into the process, so every one of those reads failed and the program '
-        + 'carried on without the bytes. Failing rather than reporting a result built on them:\n'
-        + named.map((key) => '  /' + key + '\n').join('')
-        + (keys.length > named.length ? '  ... and ' + (keys.length - named.length) + ' more\n' : '')
-        + 'The files exist and an async read (fs.promises.readFile) returns them now; the next '
-        + 'run of the same command stages them up front.\n';
-}
+const REAL_NODE_IMPORTS = getRealNodeImportsCode();
 /**
  * Detect whether a facet bundle imports node:sqlite. When true, the
  * supervisor attaches the sql.js WebAssembly.Module to the facet's Worker
@@ -716,7 +706,7 @@ function entryFrameFile(filename, cwd, esModule) {
 function nodeProgramModule(bundleSource, runtime, usesSqlite, stagedBindings, wasmImports) {
     return moduleSource `
 ${bundleSource.imports}
-${NATIVE_HTTP_IMPORTS}
+${REAL_NODE_IMPORTS}
 ${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(stagedBindings)}

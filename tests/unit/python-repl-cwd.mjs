@@ -33,7 +33,9 @@ plugin({
     }));
   },
 });
-const { pythonReplStep, pythonReplStepRequestFn } = await import('../../packages/worker/src/runtime/python-repl.ts');
+const { pythonReplStep } = await import('../../packages/worker/src/runtime/python-repl.ts');
+const { PYTHON_REPL_TASK } = await import('../../packages/worker/src/loaders/compiled-bodies.generated.ts');
+const pythonReplStepRequestFn = new Function(`return (${PYTHON_REPL_TASK.source});`)();
 
 if (spawnSync('python3', ['--version'], { encoding: 'utf8' }).status !== 0) {
   console.log('python-repl-cwd: SKIPPED (no host python3)');

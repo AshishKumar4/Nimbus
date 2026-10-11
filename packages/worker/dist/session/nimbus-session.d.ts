@@ -348,6 +348,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
     _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+    _rpcReadlink(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
     _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcSetUmask(mask: number, pid?: number): Promise<number>;
     _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<SessionDirectoryEntry[]>;
@@ -502,6 +503,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
             execId?: string | undefined;
         }[];
         startedAt: number;
+    }>;
+    _rpcDetachExec(detachId: string): Promise<{
+        detached: boolean;
     }>;
     _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<{
         command: string;

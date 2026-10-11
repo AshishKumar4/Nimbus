@@ -15,7 +15,7 @@
 // instead of throwing (a dead preamble must not hang a Request).
 
 import assert from 'node:assert/strict';
-import { bashRequestStep, bashFacetStep } from '../../packages/core/src/runtime/bash-runner.ts';
+import { bashRequestStep, bashFacetStep } from '../../packages/core/src/runtime/facet-tasks.ts';
 import { loadPreamble } from './lib/bash-preamble.mjs';
 
 const stepRequest = (args) => new Request('https://bash-facet.invalid/step', {

@@ -18,7 +18,8 @@
  * dispatch.
  */
 import { ISOLATE_NETWORK, networkRef, requireNetwork, workspaceNetwork, } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { djb2, serializeFunction } from './vendor/serialize.js';
+import { djb2 } from './vendor/serialize.js';
+import { requireFacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom } from './budgets.js';
@@ -140,8 +141,8 @@ export class Fanout {
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as IsolatePool.submit. The function is serialized via
-     * the vendored serializeFunction (same as IsolatePool#prepare).
+     * as IsolatePool.submit. The precompiled task expression is forwarded
+     * unchanged on either route (same as IsolatePool#prepare).
      */
     async submitMany(tasks, fn) {
         if (tasks.length === 0)
@@ -217,7 +218,7 @@ export class Fanout {
         // Each peer DO receives the same fnSource string; warm peer
         // loader isolates (keyed on fnHash) reuse across calls with
         // identical fns.
-        const fnSource = serializeFunction(fn);
+        const fnSource = requireFacetTaskSource(fn);
         // Cap peer count at maxPeers (default MAX_PEER_FANOUT). Tasks beyond
         // it bucket into existing shards; each peer runs its bucket through
         // its own IsolatePool, as wide as its own headroom allows.

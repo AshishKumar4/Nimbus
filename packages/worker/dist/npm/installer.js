@@ -43,14 +43,13 @@ import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { Fanout } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
-import { installPackagesInFacet, } from './install-batch-facet.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, readDiagCounters, } from '@nimbus-sh/platform/diag-counters.js';
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { resolveOnePackumentInFacet, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
+import { NPM_INSTALL_BATCH_TASK, NPM_RESOLVE_ONE_TASK } from '../loaders/compiled-bodies.generated.js';
 import { buildSliceForSpecifierWithCap, } from './pre-bundle-facet.js';
 import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
@@ -669,7 +668,7 @@ export class NpmInstaller {
             let results;
             const layerT0 = Date.now();
             try {
-                results = await fanoutPool.submitMany(tasks, resolveOnePackumentInFacet);
+                results = await fanoutPool.submitMany(tasks, NPM_RESOLVE_ONE_TASK);
                 layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms/${layerRoute.taken?.topology}`);
             }
             catch (e) {
@@ -984,7 +983,7 @@ export class NpmInstaller {
         let shardResults;
         try {
             try {
-                shardResults = await fanoutPool.submitMany(tasks, installPackagesInFacet);
+                shardResults = await fanoutPool.submitMany(tasks, NPM_INSTALL_BATCH_TASK);
             }
             catch (e) {
                 const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${batchRoute.taken?.topology})`;

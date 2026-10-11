@@ -107,6 +107,11 @@ export interface VfsWriteEvent {
 }
 /** Told of each landed mutation; a promise it returns holds the event's content until it settles. */
 export type VfsWriteObserver = (event: VfsWriteEvent) => void | Promise<void>;
+/** Which of a write's sides an observer wants read (CompositeVFS.observeWrites): both, neither, or each. */
+export type VfsWriteWants = boolean | {
+    readonly before: boolean;
+    readonly after: boolean;
+};
 export interface VfsMountDescription {
     /** df's "Filesystem" column. */
     source: string;
@@ -191,6 +196,13 @@ export interface VFS {
      * backend without it is never cached.
      */
     readonly changes?: VfsChanges;
+    /**
+     * Whether a write of a whole regular file leaves exactly the bytes it was
+     * given as its content: true for a backend that stores what it is written
+     * (SQLite, memory). One that does not say so (a device that discards or
+     * streams, a /proc) has its content read back where an observer asks.
+     */
+    readonly storesWrites?: boolean;
     describe?(): VfsMountDescription;
     usage?(): Awaitable<VfsUsage | null>;
 }

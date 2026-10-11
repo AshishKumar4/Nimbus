@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // facet-loader-host-options — the port's spec, as the loader pool reads it.
 //
 // `loaderFacetHost` is a rename and nothing else, which is exactly why it needs
@@ -72,7 +73,7 @@ const facetFn = async function probeFacetCall() { return { ok: true }; };
     syscalls: { vfs: {}, pid: 4242 },
     preamble: 'const x = 1;',
   });
-  await facet.submit(facetFn, {});
+  await facet.submit(facetTaskSource("async function probeFacetCall() { return { ok: true }; }"), {});
 
   assert.equal(dispatched.length, 1);
   const { id, code } = dispatched[0];
@@ -94,7 +95,7 @@ const facetFn = async function probeFacetCall() { return { ok: true }; };
     reuse: 'global',
     preamble: 'const x = 1;',
   });
-  await facet.submit(facetFn, {});
+  await facet.submit(facetTaskSource("async function probeFacetCall() { return { ok: true }; }"), {});
 
   assert.equal(dispatched.length, 1);
   const { id, code } = dispatched[0];
@@ -111,7 +112,7 @@ const facetFn = async function probeFacetCall() { return { ok: true }; };
   /** What a facet opened by `host` was loaded with: its loader id and its config. */
   const loaded = async (host, harnessed) => {
     const facet = host.open({ tag: 'probe-network', concurrency: 1, syscalls: { vfs: {}, pid: 7 }, preamble: 'const x = 1;' });
-    await facet.submit(facetFn, {});
+    await facet.submit(facetTaskSource("async function probeFacetCall() { return { ok: true }; }"), {});
     facet.dispose();
     assert.equal(harnessed.dispatched.length, 1);
     return { id: harnessed.dispatched[0].id, config: await harnessed.dispatched[0].code };

@@ -771,18 +771,18 @@ show2('sign unknown', () => crypto.createSign('nope'));
 `,
   // Node's random fills past the Web Crypto quota (65536 bytes a call), as
   // its randomBytes, randomFillSync and randomFill take up to 2 ** 31 - 1;
-  // every 65536-byte piece filled (a piece left zero would be a gap in the chunking).
+  // Length/type and independent draws, not a one-byte tail's random value.
   'random.cjs': SHOW + String.raw`
 const crypto = require('crypto');
 const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
 const dom = (label, f) => { try { f(); console.log(label + ': no error'); } catch (e) { console.log(label + ': ' + e.constructor.name + ' ' + e.name + ' ' + e.code); } };
 const PIECE = 65536;
-// Each piece's bytes (from \`from\` to \`to\`) hold a nonzero one.
+// Keep checking each full quota piece, but a short remainder can validly be
+// all zero. Length/type and independent draws below cover those small tails.
 const filled = (bytes, from = 0, to = bytes.length) => {
   for (let at = from; at < to; at += PIECE) {
-    let any = false;
-    for (let i = at; i < Math.min(to, at + PIECE); i++) if (bytes[i] !== 0) { any = true; break; }
-    if (!any) return false;
+    const part = bytes.subarray(at, Math.min(to, at + PIECE));
+    if (part.length >= 32 && !part.some((byte) => byte !== 0)) return false;
   }
   return true;
 };
@@ -792,6 +792,11 @@ for (const size of [PIECE + 1, 1 << 20, 16 << 20]) {
   show2('randomFillSync ' + size, () => { const b = Buffer.alloc(size); const r = crypto.randomFillSync(b); return [r === b, filled(b)]; });
   show2('pseudoRandomBytes ' + size, () => crypto.pseudoRandomBytes(size).length);
 }
+show2('independent draws', () => {
+  const first = crypto.randomBytes(PIECE + 1);
+  const second = crypto.randomBytes(PIECE + 1);
+  return [first.length, second.length, Buffer.isBuffer(first), Buffer.isBuffer(second), !first.equals(second)];
+});
 show2('randomFillSync region', () => { const b = Buffer.alloc(3 * PIECE); const r = crypto.randomFillSync(b, PIECE / 2, 2 * PIECE); return [r === b, r.length, b.subarray(0, PIECE / 2).every((x) => x === 0), filled(b, PIECE / 2, PIECE / 2 + 2 * PIECE), b.subarray(PIECE / 2 + 2 * PIECE).every((x) => x === 0)]; });
 show2('randomFillSync elements', () => { const u = new Uint32Array(PIECE); crypto.randomFillSync(u, 1, PIECE - 2); return [u[0], u[PIECE - 1], filled(bytesOf(u), 4, 4 * (PIECE - 1))]; });
 show2('randomFillSync array buffer', () => { const a = new ArrayBuffer(PIECE * 2 + 7); return [crypto.randomFillSync(a) === a, filled(new Uint8Array(a))]; });

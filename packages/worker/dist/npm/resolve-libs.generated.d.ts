@@ -10,7 +10,7 @@
  * NPM_RESOLVE_NODE_IMPORTS. Its free names are those imports and a facet's
  * globals (scripts/free-names.mjs).
  *
- * Size: 64.80 KiB
+ * Size: 167.61 KiB
  */
 export declare const NPM_RESOLVE_NODE_IMPORTS: string;
 export declare const NPM_RESOLVE_SRC: string;
