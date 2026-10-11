@@ -6,10 +6,9 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT } from '../constants.js';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
 
-export const DIRECTORY_PREFETCH_LIMIT = 64;
-export const DIRECTORY_BATCH_LIMIT = 32;
 export const DIRECTORY_READ_RPC = 'fsReadDirectories' as const;
 const Ids = z.array(z.number().int().nonnegative()).max(DIRECTORY_PREFETCH_LIMIT);
 const Request = z.object({
@@ -31,6 +30,8 @@ export interface ReadDirectoryDescription {
   /** Identity only: local fstat must use the final admitted namespace, not a stat taken earlier in the batch. */
   readonly dev: number;
   readonly ino: number;
+  /** The name's metadata version before the authority checked open access; null if it changed identity. */
+  readonly openedRevision: number | null;
 }
 export interface ReadDirectoryBatchResult {
   readonly channel: string;
@@ -148,6 +149,7 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
         budget.reserved++;
         let handle: RuntimeFileHandle | undefined;
         try {
+          const before = await withRecall(() => fs.stat(path));
           handle = await withRecall(() => fs.open(path, { read: true, directory: true, followSymlinks: true }));
           live();
           const stat = await withRecall(() => fs.fstat(handle!.id));
@@ -157,7 +159,8 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
           live();
           if (key === null && opened.length > 0) { await close(handle.id); continue; }
           budget.tracked.set(handle.id, { channel: request.channel, claimed: false });
-          opened.push({ key, handle, dev: stat.dev, ino: stat.ino });
+          opened.push({ key, handle, dev: stat.dev, ino: stat.ino,
+            openedRevision: before?.dev === stat.dev && before.ino === stat.ino ? before.revision : null });
         } catch (error) {
           if (handle) { try { await close(handle.id); } catch {} }
           live();

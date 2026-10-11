@@ -264,6 +264,8 @@ export interface ProcessFsClient {
    * ask the session.
    */
   readTrusted(): boolean;
+  /** Ownership/log check only, never a clock check: combine with trust established at an actual I/O resumption. */
+  readUnchanged(owner: string): boolean;
   /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
   readLeaseAsk(): ReadLeaseAsk | null;
   /**
@@ -1297,6 +1299,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // publishes past this lease unanswered only after confirmed + trust +
       // margin (confirmed >= asked).
       return readLease !== null && readLease.logged === logged && now() < readLease.until;
+    },
+    readUnchanged(owner) {
+      return !runEnded && readLease?.owner === owner && readLease.logged === logged;
     },
     readLeaseAsk() {
       if (session.grants === undefined || runEnded) return null;

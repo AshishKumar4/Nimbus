@@ -258,6 +258,8 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     content: (key: string) => (view === null ? undefined : view.content(key)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
     barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+    cursor: () => view?.cursor() ?? null,
+    admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },
   };
@@ -282,6 +284,9 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
   const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
   const fs = residentFilesystem(authority, booting, {
     session,
+    ...(typeof sup.fsReadDirectories === 'function' ? {
+      readDirectories: (request) => supervisor.fsReadDirectories!(request),
+    } : {}),
     isHomeRoot: isHomeDirectory,
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
   });
@@ -740,6 +745,7 @@ function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        __wasiResident?.fs.cancelPendingDirectories();
         resolve(__WASI_EAGAIN);
       }, __WASI_PARK_DEADLINE_MS);
       const finish = (value: Errno) => {
