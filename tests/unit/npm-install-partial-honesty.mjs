@@ -238,6 +238,36 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   console.log('  case4: optional dep skip stays a skip');
 }
 
+// ── Case 4b: an optional package whose REQUIRED dependency fails ─────────
+//
+// npm skips an optional dependency's set: the optional package goes with the
+// dependency it cannot work without, and the install succeeds. Red before:
+// the required edge from the optional package made its failure required.
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
+  const { installer, log } = makeInstaller(ok, ok, (name) => {
+    if (name === 'ok-a') {
+      const r = resolvedResult(name, '1.0.0', { optionalDependencies: { opt: '^1.0.0' } });
+      r.optionalDeps = { opt: '^1.0.0' };
+      return r;
+    }
+    if (name === 'opt') {
+      const r = resolvedResult(name, '1.0.0', { dependencies: { gone: '^1.0.0' } });
+      r.deps = { gone: '^1.0.0' };
+      return r;
+    }
+    if (name === 'gone') return unresolvedResult('registry returned HTTP 404 for gone');
+    return resolvedResult(name, '1.0.0');
+  });
+
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+  assert.deepEqual(result.failed, [], 'the optional set fails no install');
+  assert.ok(/\[skip\] gone/.test(output), `the skip is surfaced:\n${output}`);
+  assert.ok(!result.installed.some((p) => p.startsWith('opt@')), 'and the optional package needing it is not installed');
+  console.log('  case4b: an optional package goes with the required dependency it lost');
+}
+
 // ── Case 5: an install shard that returns short ──────────────────────────
 //
 // The supervisor folded `perPackage` into installed/failed by iterating

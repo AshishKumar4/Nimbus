@@ -210,4 +210,20 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   console.log(`  cycle: ${reason.trim()}`);
 }
 
+// ── a named package is planned with the project's roots ──────────────────
+// `npm install d@1` in a project whose a needs d@^2 at root: the named
+// version wins root, and a, kept from the lockfile, nests the d it
+// declared, as npm's arborist plans it. Red before: only d was resolved, and
+// a was left seeing a root d outside its range.
+{
+  const named = makeInstaller({ a: '^1.0.0' });
+  assert.deepEqual((await named.installer.install(PROJ, { pid: 1 })).failed, [], named.log.join('\n'));
+  assert.equal(versionAt(named.root, 'd'), '2.0.0', 'first, a puts d@2 at root');
+  const result = await named.installer.install(PROJ, { pid: 1, packages: ['d@1.0.0'] });
+  assert.deepEqual(result.failed, [], named.log.join('\n'));
+  assert.equal(versionAt(named.root, 'd'), '1.0.0', 'the named version is at root');
+  assert.equal(versionAt(named.root, 'a/node_modules/d'), '2.0.0', 'and a nests the d it declared');
+  console.log('  named: d@1 at root, a/node_modules/d@2');
+}
+
 console.log('npm-install-nested-conflict: ok');
