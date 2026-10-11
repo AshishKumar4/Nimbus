@@ -27,20 +27,10 @@ export function anonymizeUrl(url) {
 }
 /** The user name and password a URL's authority carries ('' for none). */
 export function urlCredentials(url) {
-    const scheme = url.indexOf('://');
-    if (scheme < 0)
+    if (!URL.canParse(url))
         return { username: '', password: '' };
-    const start = scheme + 3;
-    const slash = url.indexOf('/', start);
-    const end = slash < 0 ? url.length : slash;
-    const at = url.lastIndexOf('@', end - 1);
-    if (at < start)
-        return { username: '', password: '' };
-    const info = url.slice(start, at);
-    const colon = info.indexOf(':');
-    return colon < 0
-        ? { username: unescapeUserinfo(info), password: '' }
-        : { username: unescapeUserinfo(info.slice(0, colon)), password: unescapeUserinfo(info.slice(colon + 1)) };
+    const parsed = new URL(url);
+    return { username: unescapeUserinfo(parsed.username), password: unescapeUserinfo(parsed.password) };
 }
 /** A URL's credentials form one pair and take precedence over the caller's pair, as git's transport does. */
 export function selectRemoteCredentials(url, supplied = { username: '', password: '' }) {
@@ -96,6 +86,12 @@ function redactSecrets(text, secrets) {
             out = out.split(secret).join('<redacted>');
     return out;
 }
+/** A URL's scheme is transport syntax, not secret-bearing input (a password "p" must not redact "http"). */
+function redactDestination(url, secrets) {
+    const scheme = url.indexOf('://');
+    const prefix = scheme < 0 ? 0 : scheme + 3;
+    return url.slice(0, prefix) + redactSecrets(url.slice(prefix), secrets);
+}
 /**
  * git's lines for `failure` of the repository at `url` (as configured or
  * given), `credentials` what the request offered: the server's plain-text
@@ -104,14 +100,14 @@ function redactSecrets(text, secrets) {
  */
 export function remoteFailureText(url, failure, credentials, secrets = []) {
     // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
-    const shown = redactCredentials(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
+    const shown = redactDestination(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
     if (failure.kind === 'transport')
         return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
     // A 401 asks for what was not offered (credential_fill), and there is no terminal to ask at.
     if (failure.status === 401 && !credentials.password) {
         const what = credentials.username ? 'Password' : 'Username';
         const prompt = credentialDescription(url, credentials.username);
-        const safePrompt = redactSecrets(prompt, secrets);
+        const safePrompt = redactDestination(prompt, secrets);
         return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
     }
     const remote = redactCredentials(failure.message ?? '', secrets).trim();
