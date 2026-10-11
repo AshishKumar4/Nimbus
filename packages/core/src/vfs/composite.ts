@@ -188,6 +188,52 @@ export interface MountOptions {
   resolvesPaths?: boolean;
 }
 
+/** Options shared by `route` and `mutationRoute`. */
+export interface VfsRouteOptions {
+  readonly follow?: boolean;
+  readonly creating?: boolean;
+  /** Report the lookup's dependencies and stop point instead of rejecting a lookup refusal. */
+  readonly report?: boolean;
+}
+
+/** Namespace link paths a lookup read on the way, in traversal order (the link itself, not its target). */
+export interface VfsTraversal {
+  readonly links: readonly string[];
+}
+
+export type VfsLookupRefusalCode = 'ENOENT' | 'ENOTDIR' | 'ELOOP' | 'ENXIO' | 'EACCES';
+export interface VfsRouteRefusal extends VfsTraversal {
+  readonly refusal: { readonly code: VfsLookupRefusalCode; readonly at: string };
+}
+export interface VfsMutationRoute {
+  readonly path: string;
+  readonly point: string;
+  readonly readOnly: boolean;
+}
+export type VfsRouteReport = (VfsRoute & VfsTraversal) | VfsRouteRefusal;
+export type VfsMutationRouteReport = (VfsMutationRoute & VfsTraversal) | VfsRouteRefusal;
+
+/** The optional per-lookup recorder `resolve` writes while it walks; absent costs nothing. */
+interface LookupTrace { links: string[]; at: string }
+const LOOKUP_REFUSALS: ReadonlySet<string> = new Set<VfsLookupRefusalCode>(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENXIO', 'EACCES']);
+
+/**
+ * Wrap an opt-in route call: found routes gain their traversal, and a lookup
+ * refusal (a code in `at`'s words) answers as `{ links, refusal }` instead of
+ * rejecting. Recall requests and backend faults still reject.
+ */
+function lookupReport<T extends object>(trace: LookupTrace, run: () => Awaitable<T>): Awaitable<(T & VfsTraversal) | VfsRouteRefusal> {
+  const found = (route: T): T & VfsTraversal => ({ ...route, links: trace.links });
+  const refused = (error: unknown): VfsRouteRefusal => {
+    if (!isVfsError(error) || !LOOKUP_REFUSALS.has(error.code)) throw error;
+    return { links: trace.links, refusal: { code: error.code as VfsLookupRefusalCode, at: trace.at } };
+  };
+  try {
+    const out = run();
+    return isPromise(out) ? out.then(found, refused) : found(out);
+  } catch (error) { return refused(error); }
+}
+
 /** Where a path lands in a principal's namespace (CompositeVFS.route). */
 export interface VfsRoute {
   /** The mount point ('/' for the root). */
@@ -1086,17 +1132,35 @@ export class CompositeVFS implements VFS {
    * `parents`): directories missing on the way are allowed, a file among
    * them is still ENOTDIR, and a link to where nothing is yet leads there.
    */
-  async route(path: string, options?: { follow?: boolean; creating?: boolean }): Promise<VfsRoute> {
-    return awaited({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, false, options?.creating === true), (at): Awaitable<VfsRoute> => {
-      const gone = this.absentOn(at);
-      if (gone !== null) return { point: gone.point, source: null, path: relativeTo(gone.point, at), absentReason: this.absentReason(gone) };
-      const { mount } = this.locate(at);
-      const source = this.backend(mount);
-      if (source === null) return { point: mount.point, source, path: relativeTo(mount.point, at), absentReason: this.absentReason(mount) };
-      // A path the namespace does not show (under a directory above a mount
-      // that its holder does not hold as one) is refused as an operation on it is.
-      return andThen(this.reachable(at, false), () => ({ point: mount.point, source, path: relativeTo(mount.point, at) }));
-    }));
+  route(path: string, options: VfsRouteOptions & { report: true }): Promise<VfsRouteReport>;
+  route(path: string, options?: VfsRouteOptions & { report?: false }): Promise<VfsRoute>;
+  route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
+  async route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport> {
+    const trace: LookupTrace | undefined = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
+    const run = (): Awaitable<VfsRoute> => awaited({ syscall: 'route', path }, () => {
+      // A recalled lookup starts over: keep only the traversal that answers.
+      if (trace !== undefined) { trace.links.length = 0; trace.at = normalizePath(path); }
+      return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (at): Awaitable<VfsRoute> => {
+        const gone = this.absentOn(at);
+        if (gone !== null) {
+          if (trace !== undefined) { trace.at = gone.point; throw this.absent(gone, at); }
+          return { point: gone.point, source: null, path: relativeTo(gone.point, at), absentReason: this.absentReason(gone) };
+        }
+        const { mount } = this.locate(at);
+        const source = this.backend(mount);
+        if (source === null) {
+          if (trace !== undefined) { trace.at = mount.point; throw this.absent(mount, at); }
+          return { point: mount.point, source, path: relativeTo(mount.point, at), absentReason: this.absentReason(mount) };
+        }
+        // A path the namespace does not show (under a directory above a mount
+        // that its holder does not hold as one) is refused as an operation on it is.
+        return andThen(this.reachable(at, false), (value): Awaitable<VfsRoute> => {
+          if (trace !== undefined) trace.at = at;
+          return { point: mount.point, source, path: relativeTo(mount.point, at) };
+        });
+      });
+    });
+    return trace === undefined ? run() : lookupReport(trace, run);
   }
 
   /**
@@ -1205,12 +1269,21 @@ export class CompositeVFS implements VFS {
    * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
    * the lookup stays on synchronous backends. `creating`: as route's.
    */
-  mutationRoute(path: string, options?: { follow?: boolean; creating?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
-    return reported({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, false, options?.creating === true), (at) => {
-      this.present(at);
-      const { mount } = this.locate(at);
-      return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
-    }));
+  mutationRoute(path: string, options: VfsRouteOptions & { report: true }): Awaitable<VfsMutationRouteReport>;
+  mutationRoute(path: string, options?: VfsRouteOptions & { report?: false }): Awaitable<VfsMutationRoute>;
+  mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport>;
+  mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport> {
+    const trace: LookupTrace | undefined = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
+    const run = (): Awaitable<VfsMutationRoute> => reported({ syscall: 'route', path }, () => {
+      if (trace !== undefined) { trace.links.length = 0; trace.at = normalizePath(path); }
+      return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (at) => {
+        if (trace !== undefined) trace.at = this.absentOn(at)?.point ?? at;
+        this.present(at);
+        const { mount } = this.locate(at);
+        return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
+      });
+    });
+    return trace === undefined ? run() : lookupReport(trace, run);
   }
 
   /**
@@ -1586,7 +1659,7 @@ export class CompositeVFS implements VFS {
    * that backend. ELOOP past MAX_LINK_HOPS.
    */
   /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
-  private resolve(input: string, follow: boolean, sync: boolean, creating = false): Awaitable<string> {
+  private resolve(input: string, follow: boolean, sync: boolean, creating = false, trace?: LookupTrace): Awaitable<string> {
     // Linux lookup, component by component. Every component that is not the
     // last (a trailing "" or "." counts as following) must exist and be a
     // directory once links are followed: ENOENT or ENOTDIR otherwise, before
@@ -1611,6 +1684,7 @@ export class CompositeVFS implements VFS {
           if (component === '..') { resolved.pop(); continue; }
           resolved.push(component);
           const prefix = `/${resolved.join('/')}`;
+          if (trace !== undefined) trace.at = prefix;
           const final = i === lastIndex;
           const at = i;
           if (this.isStructural(prefix)) {
@@ -1654,6 +1728,7 @@ export class CompositeVFS implements VFS {
           return andThen(look(), (stat) => {
             if (stat !== null && stat.type === 'symlink' && canLink) {
               if (hops >= MAX_LINK_HOPS) throw new Refusal('ELOOP', input);
+              trace?.links.push(prefix);
               return andThen(ops.readlink!(route.rel), (target) => walk([
                 ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
                 ...target.split('/'),
