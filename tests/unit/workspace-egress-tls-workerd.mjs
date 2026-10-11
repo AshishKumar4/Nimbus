@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives workerd; CI 23 s wall, 36 s CPU, 1.61 GiB peak (2026-10-11).
 // A real session's tls.connect crosses the embedder's optional connectTls RPC.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
