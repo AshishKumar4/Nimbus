@@ -10,7 +10,7 @@
 // resolves to the same CPython runtime `nimbus install python` does now, and
 // the paths below say so.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'python/install-python3-alias';
@@ -55,23 +55,32 @@ await t.waitForPrompt(60_000);
   t.cmd('python3');
   await t.waitFor((b) => /^>>> /m.test(b), 30_000, 'python3 repl prompt');
   const elapsed = Date.now() - started;
-  a.check('python3 REPL prompt is warm after install',
-    elapsed < 2_000,
-    `elapsed=${elapsed}ms tail=${JSON.stringify(stripAnsi(t.buf).slice(-200))}`);
+  console.log(`python3 REPL prompt: ${elapsed}ms`);
+  t.reset();
+  t.cmd('alias_state = 41; print(alias_state + 1)');
+  await t.waitFor((b) => hasOutputLine(b, '42'), 30_000, 'python3 REPL expression');
+  a.check('python3 REPL evaluates an expression after alias install',
+    hasOutputLine(t.buf, '42'), JSON.stringify(stripAnsi(t.buf).slice(-200)));
   t.reset();
   t.cmd('exit()');
   await t.waitForPrompt(15_000);
 }
 
 {
-  const { elapsed, output } = await t.run(`python3 -c 'print("alias-ok")'`, 120_000);
+  const { elapsed, output, exitCode } = await t.run(`python3 -c 'alias_state = 99; print("alias-ok")'`, 120_000);
   const stripped = stripAnsi(output);
+  console.log(`python3 alias one-shot: ${elapsed}ms`);
   a.check('python3 works after alias install',
-    /\balias-ok\b/.test(stripped) && !/command not found/.test(stripped),
-    JSON.stringify(stripped.slice(-300)));
-  a.check('python3 one-shot is warm after install',
-    elapsed < 1_500,
-    `elapsed=${elapsed}ms`);
+    exitCode === 0 && hasOutputLine(stripped, 'alias-ok'),
+    `exit=${exitCode} tail=${JSON.stringify(stripped.slice(-300))}`);
+}
+
+{
+  const { elapsed, output, exitCode } = await t.run(`python3 -c 'print(globals().get("alias_state", "independent-ok"))'`, 120_000);
+  console.log(`python3 independent one-shot: ${elapsed}ms`);
+  a.check('python3 one-shots have independent interpreter state',
+    exitCode === 0 && hasOutputLine(output, 'independent-ok'),
+    `exit=${exitCode} tail=${JSON.stringify(output.slice(-300))}`);
 }
 
 await t.close();

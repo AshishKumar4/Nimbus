@@ -8,7 +8,7 @@
  * of a package benefits subsequent tenants on the platform.
  *
  * Caching layers (top-down):
- *   L1 — per-DO SQLite (warmest, in-memory; ~1 ms per file)
+ *   L1 — per-DO SQLite metadata and bounded, verified local tarball bytes
  *   L2 — caches.default (per-colo; ~50-500 µs hit / ~5-30 ms cold)
  *   L3 — R2 (global; ~30-100 ms regional)
  *   L4 — registry.npmjs.org origin (~100-300 ms cross-region)
@@ -31,8 +31,8 @@
  *   install name be picked independently of the registry package, so
  *   evil's bytes would land on react's key and pass evil's own integrity
  *   check. Keyed by the resolved integrity digest instead, a writer can
- *   only ever address its own bytes, and every read re-hashes what the
- *   store returned before handing it back. The store's contract is
+ *   only ever address its own bytes, and every external read re-hashes what
+ *   the store returned before handing it back. The store's contract is
  *   therefore absolute: an object at key K hashes to K, or it is not
  *   served. Shared storage is treated as untrusted.
  *
@@ -66,6 +66,7 @@ import type { CacheKind, CacheStatEvent, CacheTier } from '@nimbus-sh/core/_shar
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { retryingRegistryFetch } from './registry-retry.js';
 import { sriDigestOf, sriDigestsEqual, sriEntries, type SriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 
 
 /** Schema version baked into every cache key. Bump to invalidate
@@ -188,6 +189,15 @@ type R2BucketLike = {
   ): Promise<unknown>;
   delete(key: string): Promise<unknown>;
 } | null;
+
+// One content-addressed local store per binding, shared by the fresh clients
+// each supervisor call creates. Native bindings are stable, and the weak key
+// lets an obsolete binding and its bytes go together. Never keep caller-owned
+// views: an admitted value is verified while privately owned and reads copy it.
+const LOCAL_TARBALL_CACHE_BYTES = 8 * 1024 * 1024;
+const LOCAL_TARBALL_MAX_BYTES = 2 * 1024 * 1024;
+type LocalTarball = { bytes: Uint8Array; byteLength: number };
+const localTarballs = new WeakMap<NonNullable<R2BucketLike>, ByteLru<string, LocalTarball>>();
 
 // ── L2 (caches.default) helpers ─────────────────────────────────────────
 //
@@ -372,6 +382,7 @@ export interface R2CacheClientStats {
  * graceful-degrade path that mirrors today's behaviour.
  */
 export class R2CacheClient {
+  private readonly localTarballs: ByteLru<string, LocalTarball> | null;
   private _l2HitsPackument = 0;
   private _l3GetsPackument = 0;
   private _l2HitsTarball = 0;
@@ -389,7 +400,16 @@ export class R2CacheClient {
     private readonly tarballBucket: R2BucketLike,
     private readonly packumentBucket: R2BucketLike,
     private readonly readOnly = false,
-  ) {}
+  ) {
+    if (tarballBucket) {
+      let cache = localTarballs.get(tarballBucket);
+      if (!cache) {
+        cache = new ByteLru(LOCAL_TARBALL_CACHE_BYTES, LOCAL_TARBALL_MAX_BYTES);
+        localTarballs.set(tarballBucket, cache);
+      }
+      this.localTarballs = cache;
+    } else this.localTarballs = null;
+  }
 
   private _recordHit(tier: CacheTier, cacheKind: CacheKind, bytes: number): void {
     this._cacheEvents.push({ kind: 'hit', tier, cacheKind, bytes });
@@ -412,7 +432,9 @@ export class R2CacheClient {
    * Get the tarball stored at `integrity`'s content address, or null if
    * absent / unverifiable / oversize-bypassed.
    *
-   * The returned bytes are ALWAYS re-hashed against the address first.
+   * External bytes are ALWAYS re-hashed against the address first. A bounded
+   * local store keeps private copies of those verified immutable bytes; warm
+   * installs need neither an external cache read nor a redundant hash.
    * The bucket is shared by every tenant, so it is treated as untrusted
    * storage: whatever it hands back is only served on if it hashes to
    * the key it was asked for. A caller can therefore consume the bytes
@@ -425,6 +447,23 @@ export class R2CacheClient {
    */
   async getTarball(integrity: string): Promise<Uint8Array | null> {
     const address = parseTarballAddress(integrity);
+    if (!address) return this.getSharedTarball(integrity);
+    const key = tarballKey(address);
+    if (this.localTarballs) {
+      const local = this.localTarballs.get(key);
+      if (local) {
+        this._recordHit('L1', 'tarball', local.bytes.byteLength);
+        return local.bytes.slice();
+      }
+      this._recordMiss('L1', 'tarball');
+    }
+    const bytes = await this.readSharedTarball(address);
+    return bytes && this.keepVerifiedTarball(key, bytes) ? bytes.slice() : bytes;
+  }
+
+  /** Read the external tiers directly, for the L2/L3 diagnostic benchmark. */
+  async getSharedTarball(integrity: string): Promise<Uint8Array | null> {
+    const address = parseTarballAddress(integrity);
     if (!address) {
       // Nothing verifiable to look up. Report the same miss pair as an
       // unconfigured binding: the caller goes to L4 either way.
@@ -432,6 +471,19 @@ export class R2CacheClient {
       this._recordMiss('L3', 'tarball');
       return null;
     }
+    return this.readSharedTarball(address);
+  }
+
+  private keepVerifiedTarball(key: string, bytes: Uint8Array): boolean {
+    // Charge the address as well as ByteLru's entry overhead, so a flood of
+    // tiny tarballs is bounded just as a few large values are.
+    const byteLength = bytes.byteLength + key.length * 2;
+    if (!this.localTarballs || byteLength > LOCAL_TARBALL_MAX_BYTES) return false;
+    this.localTarballs.set(key, { bytes, byteLength });
+    return true;
+  }
+
+  private async readSharedTarball(address: TarballAddress): Promise<Uint8Array | null> {
     // ── L2 fast path (per-colo) ───────────────────────────────────
     const l2Key = new Request(tarballL2Url(address));
     const l2Hit = await l2Get(l2Key);
@@ -518,7 +570,11 @@ export class R2CacheClient {
     if (!this.tarballBucket) return false;
     const address = parseTarballAddress(integrity);
     if (!address) return false;
-    const view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+    const supplied = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+    // Only small values can enter the local store. Snapshot those BEFORE
+    // awaiting verification: the writer still owns and may mutate its input.
+    // Larger values retain the existing external-only path without a copy.
+    const view = supplied.byteLength <= LOCAL_TARBALL_MAX_BYTES ? supplied.slice() : supplied;
     if (view.length > MAX_R2_TARBALL_BYTES) return false;
     if (!await bytesMatchAddress(view, address)) return false;
     let stored: boolean;
@@ -531,6 +587,7 @@ export class R2CacheClient {
       stored = false;
     }
     await this.fillTarballL2(new Request(tarballL2Url(address)), view);
+    this.keepVerifiedTarball(tarballKey(address), view);
     return stored;
   }
 

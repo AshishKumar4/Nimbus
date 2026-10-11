@@ -39,7 +39,7 @@
  * assembly, 16 bytes a commit and one window.
  */
 
-import { ByteLru } from './byte-lru.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import {
   COMMIT_GRAPHS_DIR,
   COMMIT_GRAPH_CHAIN,

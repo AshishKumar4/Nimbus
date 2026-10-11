@@ -387,7 +387,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
             if (Array.isArray(r2Result.events)) {
               for (const e of r2Result.events) {
                 if (!e || (e.kind !== 'hit' && e.kind !== 'miss')) continue;
-                if (e.tier !== 'L2' && e.tier !== 'L3') continue;
+                if (e.tier !== 'L1' && e.tier !== 'L2' && e.tier !== 'L3') continue;
                 if (e.cacheKind !== 'tarball') continue;
                 if (e.kind === 'hit') {
                   cacheStatEvents.push({
