@@ -1,10 +1,38 @@
 // bundle-patches.ts — pure bundle-source transforms for the Nimbus opencode
-// build. Side-effect free and dependency free so build-node.ts (running inside
+// build. Side-effect free so build-node.ts (running inside
 // the opencode clone) and the unit tests can both import them; the only source
 // of truth for each fail-loud bundle seam.
 //
 // Each patch uses `replaceOnce`, which THROWS if its anchor is missing or
 // matches more than once, so an upstream change can never silently no-op.
+
+import ts from 'typescript';
+
+/** The define is always supplied. Fold its undefined guard before substitution
+ * so Bun 1.4 cannot emit the multi-MiB models catalog twice in one chunk. */
+export function nimbusFoldModelsCatalogGuard(source: string, file: string): string {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let folded = 0;
+  const isCatalog = (node: ts.Node) => ts.isIdentifier(node) && node.text === 'OPENCODE_MODELS_DEV';
+  const transformed = ts.transform(parsed, [(context) => {
+    const visit: ts.Visitor = (node) => {
+      if (ts.isConditionalExpression(node) && ts.isBinaryExpression(node.condition)
+        && node.condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+        && ts.isTypeOfExpression(node.condition.left) && isCatalog(node.condition.left.expression)
+        && ts.isStringLiteral(node.condition.right) && node.condition.right.text === 'undefined'
+        && ts.isIdentifier(node.whenTrue) && node.whenTrue.text === 'undefined' && isCatalog(node.whenFalse)) {
+        folded++;
+        return node.whenFalse;
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return (root) => ts.visitNode(root, visit) as ts.SourceFile;
+  }]);
+  try {
+    if (folded !== 1) throw new Error(`models catalog guard: expected one configured snapshot guard in ${file}, found ${folded}`);
+    return ts.createPrinter().printFile(transformed.transformed[0]);
+  } finally { transformed.dispose(); }
+}
 
 function replaceOnce(src: string, find: string, repl: string, label: string, file: string): string {
   const first = src.indexOf(find)
@@ -481,7 +509,7 @@ export const OPENTUI_FFI_CHUNK_MARKER = 'OpenTUI native FFI is not available'
 // platform `self` is the DedicatedWorkerGlobalScope; on Nimbus the worker runs
 // in the client's facet isolate, so it must use the per-worker context the
 // Worker polyfill claims — NOT the shared globalThis (which would collide with
-// the opencode API-server worker). The build-time `define: { self }` can't
+// the client's own scope). The build-time `define: { self }` can't
 // reach this ref because the `var self` local shadows the global identifier, so
 // patch the initializer to claim the context when the polyfill is active. Inert
 // under a normal Bun run (no __nimbusWorkerClaim → falls back to globalThis).
@@ -493,174 +521,4 @@ export function nimbusPatchParserWorker(source: string, file: string): string {
     'nimbus parser.worker self-scope patch',
     file,
   )
-}
-
-// opencode's TUI API server (src/cli/cmd/tui/worker.ts) drives its message
-// channel through the BARE Web-Worker scope refs `onmessage`/`postMessage`
-// (src/util/rpc.ts listen/emit — in a real Worker these are the
-// DedicatedWorkerGlobalScope's members). On Nimbus the client and both workers
-// share one facet isolate, and the split build shares chunks between index.js
-// and worker.js — so the pre-split approach (a build-level `define` rebinding
-// those identifiers across the whole worker bundle) would clobber the client's
-// copy of the shared code. Instead the two seams take an EXPLICIT scope
-// parameter: the worker entry claims its per-worker context and threads it
-// through (see nimbusPatchTuiWorkerEntry). When no scope is passed — a normal
-// Bun run, where the module top-level IS the worker scope — the seams write to
-// globalThis, which is exactly what the bare refs resolved to upstream.
-export function nimbusPatchRpcWorkerScope(source: string, file: string): string {
-  const label = 'nimbus rpc worker-scope patch'
-  source = replaceOnce(
-    source,
-    `export function listen(rpc: Definition) {
-  onmessage = async (evt) => {`,
-    `export function listen(rpc: Definition, scope?: { onmessage: any; postMessage: (data: string) => void }) {
-  const target: any = scope ?? globalThis
-  target.onmessage = async (evt: MessageEvent) => {`,
-    label,
-    file,
-  )
-  source = replaceOnce(
-    source,
-    `      postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
-    `      target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
-    label,
-    file,
-  )
-  source = replaceOnce(
-    source,
-    `export function emit(event: string, data: unknown) {
-  postMessage(JSON.stringify({ type: "rpc.event", event, data }))`,
-    `export function emit(event: string, data: unknown, scope?: { postMessage: (data: string) => void }) {
-  ;((scope ?? globalThis) as any).postMessage(JSON.stringify({ type: "rpc.event", event, data }))`,
-    label,
-    file,
-  )
-  return source
-}
-
-// opencode's birpc transport (src/util/rpc.ts) is fire-and-forget on the error
-// path: the server `listen` dispatch does `const result = await rpc[method](input)`
-// with NO try/catch, and the client `client()` only ever settles a pending call
-// on a `rpc.result` frame. So when a server method REJECTS — far more common on
-// Nimbus's VFS/DO substrate than on native Bun — the server posts NOTHING back,
-// the client's `pending.set(id, resolve)` entry is never deleted, and its Promise
-// never settles. Each leaked entry retains the resolver plus the caller's entire
-// awaiting continuation; the TUI fans out RPC per keystroke, so the leak is
-// activity-scaled and OOMs the 128 MiB facet in ~10-15 s.
-//
-// This seam closes the transport contract so a rejected method still settles the
-// caller and frees the pending entry (the right, proper fix — a strict superset
-// of upstream that also cures a latent upstream HANG on any throwing method, on
-// every host). It is NOT registry-gated: the happy path is byte-for-byte
-// identical (results still resolve through the same `rpc.result` frame), and the
-// error path is pure fail-loud added behaviour, correct under Bun and workerd
-// alike. It runs AFTER nimbusPatchRpcWorkerScope (chained in build-node.ts's
-// rpc.ts onLoad) so the server anchor matches the `target.postMessage` form that
-// patch produces; the client anchors are untouched by the scope patch.
-export function nimbusPatchRpcFailLoud(source: string, file: string): string {
-  const label = 'nimbus rpc fail-loud patch'
-
-  // SERVER — wrap the dispatch in try/catch and post a mirrored `rpc.error`
-  // frame (same id field) on rejection, so the client can settle+free the call.
-  source = replaceOnce(
-    source,
-    `      const result = await rpc[parsed.method](parsed.input)
-      target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))`,
-    `      try {
-        const result = await rpc[parsed.method](parsed.input)
-        target.postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))
-      } catch (error) {
-        target.postMessage(JSON.stringify({ type: "rpc.error", error: error instanceof Error ? error.message : String(error), id: parsed.id }))
-      }`,
-    label,
-    file,
-  )
-
-  // CLIENT — the pending map now stores { resolve, reject } instead of the bare
-  // resolver. Settle on `rpc.result` via `entry.resolve`, and add the `rpc.error`
-  // branch that REJECTS and deletes the entry (releasing the resolver + the
-  // caller's continuation). Both frames delete the entry — no path leaks.
-  source = replaceOnce(
-    source,
-    `  const pending = new Map<number, (result: any) => void>()`,
-    `  const pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void }>()`,
-    label,
-    file,
-  )
-  source = replaceOnce(
-    source,
-    `    if (parsed.type === "rpc.result") {
-      const resolve = pending.get(parsed.id)
-      if (resolve) {
-        resolve(parsed.result)
-        pending.delete(parsed.id)
-      }
-    }`,
-    `    if (parsed.type === "rpc.result") {
-      const entry = pending.get(parsed.id)
-      if (entry) {
-        entry.resolve(parsed.result)
-        pending.delete(parsed.id)
-      }
-    }
-    if (parsed.type === "rpc.error") {
-      const entry = pending.get(parsed.id)
-      if (entry) {
-        entry.reject(new Error(parsed.error))
-        pending.delete(parsed.id)
-      }
-    }`,
-    label,
-    file,
-  )
-  source = replaceOnce(
-    source,
-    `      return new Promise((resolve) => {
-        pending.set(requestId, resolve)
-        target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
-      })`,
-    `      return new Promise((resolve, reject) => {
-        pending.set(requestId, { resolve, reject })
-        target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
-      })`,
-    label,
-    file,
-  )
-  return source
-}
-
-// The worker entry claims the per-worker messaging context the in-isolate
-// Worker polyfill parks on `globalThis.__nimbusWorkerClaim` during this
-// module's import. The claim is read at MODULE-BODY START — before the entry's
-// top-level awaits — so a parser worker constructed while those awaits are
-// pending cannot overwrite the claim first. Undefined under a normal Bun run
-// (real Worker scope), which makes the Rpc seams fall back to globalThis.
-export function nimbusPatchTuiWorkerEntry(source: string, file: string): string {
-  const label = 'nimbus tui worker-entry scope patch'
-  source = replaceOnce(
-    source,
-    `ensureProcessMetadata("worker")`,
-    `ensureProcessMetadata("worker")
-
-const __nimbusWorkerScope = (globalThis as any).__nimbusWorkerClaim
-  ? (globalThis as any).__nimbusWorkerClaim()
-  : undefined`,
-    label,
-    file,
-  )
-  source = replaceOnce(
-    source,
-    `  Rpc.emit("global.event", event)`,
-    `  Rpc.emit("global.event", event, __nimbusWorkerScope)`,
-    label,
-    file,
-  )
-  source = replaceOnce(
-    source,
-    `Rpc.listen(rpc)`,
-    `Rpc.listen(rpc, __nimbusWorkerScope)`,
-    label,
-    file,
-  )
-  return source
 }

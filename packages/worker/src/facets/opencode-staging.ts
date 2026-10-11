@@ -38,7 +38,7 @@ import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import {
   OPENCODE_CHUNKS_PACK,
   OPENCODE_TREE_SITTER_WASMS,
-  OPENCODE_TUI_WORKERS,
+  OPENCODE_TUI_PARSER_WORKER,
   OPENCODE_YOGA_WASM,
 } from '../opencode-artifact.generated.js';
 import {
@@ -152,25 +152,16 @@ async function yogaModuleEntry(
   return { [YOGA_WASM_MODULE_NAME]: { wasm: bytes } };
 }
 
-async function tuiWorkerModuleEntries(env: OpencodeAssetsEnv): Promise<Record<string, string>> {
-  const workers = OPENCODE_TUI_WORKERS;
-  if (!workers) {
+async function parserWorkerModuleEntry(env: OpencodeAssetsEnv): Promise<Record<string, string>> {
+  const parser = OPENCODE_TUI_PARSER_WORKER;
+  if (!parser) {
     throw new Error(
-      'opencode TUI worker bundles are not staged — rerun ' +
+      'the OpenTUI parser worker bundle is not staged — rerun ' +
         'scripts/bundle-opencode.mjs with an opencode dist that built ' +
-        'worker.js + parser.worker.js (build-node.ts entrypoints)',
+        'parser.worker.js (build-node.ts entrypoints)',
     );
   }
-  // Parser only: the TUI's API-server worker (worker.js) is answered by the
-  // in-polyfill RPC stub and NEVER imported (defect #20 — its chunk graph is a
-  // process-killer), and the attach map carries no chunk modules, so the real
-  // worker.js's import graph could not even link.
-  const entries = await Promise.all(
-    [workers.parser].map(
-      async (file) => [file, await fetchOpencodeWorkerSource(env, file)] as const,
-    ),
-  );
-  return Object.fromEntries(entries);
+  return { [parser]: await fetchOpencodeWorkerSource(env, parser) };
 }
 
 // In-flight (never resident) chunk-pack fetch+parse dedupe: concurrent
@@ -207,7 +198,7 @@ export async function assembleOpencodeFacetConfig(
   const assets = requireAssets(env, 'staged opencode artifact');
   const attached = spec.mode === 'attached';
 
-  const [bundle, sources, sqliteModules, treeSitterModules, openTuiModules, chunkModules, workerModules, yogaModules] =
+  const [bundle, sources, sqliteModules, treeSitterModules, openTuiModules, chunkModules, parserModule, yogaModules] =
     await Promise.all([
       fetchOpencodeBundle(assets, attached ? 'attach' : 'default'),
       fetchNodeFacetSources(assets),
@@ -222,10 +213,10 @@ export async function assembleOpencodeFacetConfig(
       // the #20 process-killer — is structurally impossible in the attach
       // facet. Serve/oneshot keep the split build and expand the pack.
       attached ? Promise.resolve({}) : chunkModuleEntries(assets),
-      // The TUI client spawns its API server + OpenTUI parser as in-isolate
-      // Workers, and OpenTUI lays out frames with yoga-layout. Only the
-      // attached renderer reaches those; serve + one-shot skip them.
-      attached ? tuiWorkerModuleEntries(assets) : Promise.resolve({}),
+      // OpenTUI spawns its syntax-highlight parser as an in-isolate Worker and
+      // lays out frames with yoga-layout. Only the attached renderer reaches
+      // those; serve + one-shot skip them.
+      attached ? parserWorkerModuleEntry(assets) : Promise.resolve({}),
       attached ? yogaModuleEntry(assets) : Promise.resolve({}),
     ]);
 
@@ -254,7 +245,7 @@ export async function assembleOpencodeFacetConfig(
       ...treeSitterModules,
       ...openTuiModules,
       ...chunkModules,
-      ...workerModules,
+      ...parserModule,
       ...yogaModules,
       ...opencodeBuiltinBridgeModules(spec.mode),
     },
