@@ -70,7 +70,7 @@ console.log('  ok  a warm resolve answers what the cold one did');
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx });
   installer.npmCache.putRegistryEntries(cold.cacheWrites);
   const lockfile = new Map([['pkg', { name: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' }]]);
-  const { resolved } = installer.lockfileToResolved(lockfile);
+  const { resolved } = installer.lockfileToResolved(lockfile, installer.lockRecords());
   assert.deepEqual(plain(resolved.get('pkg')), plain(cold.pkg), "a lockfile's package is the one its resolve answered");
   console.log("  ok  a lockfile's package is the one its resolve answered");
 }
