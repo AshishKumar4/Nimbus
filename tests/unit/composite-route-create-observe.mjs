@@ -156,4 +156,23 @@ const routed = (route) => ({ point: route.point, path: route.path });
   console.log('  observeWrites reads only the sides an observer wants, and a writeFile\'s after from its bytes');
 }
 
+// ── A tree copied into itself through two mounts of one backend ────────────
+// Found by the regenerated refinement fixture (case 187: copy /pc to
+// /proc/new, both mounts of one backend): the copy met the directory it had
+// just made inside the tree it was walking and copied it again, without end
+// (RangeError: Maximum call stack size exceeded). It copies the tree as it
+// was when the copy began, as the model says.
+{
+  const backend = new MemoryVFS();
+  backend.mkdir('/b/data', { recursive: true });
+  backend.writeFile('/b/data/f', enc.encode('x'));
+  const vfs = new CompositeVFS(new MemoryVFS());
+  vfs.mount('/pc', backend);
+  vfs.mount('/proc', backend);
+  assert.equal(await vfs.copy('/pc', '/proc/new', { recursive: true }), 4, 'new, new/b, new/b/data, new/b/data/f');
+  assert.deepEqual(backend.readdir('/new').map((entry) => entry.name), ['b']);
+  assert.equal(dec.decode(backend.readFile('/new/b/data/f')), 'x');
+  console.log('  a tree copied into itself through two mounts copies the tree as it was');
+}
+
 console.log('composite-route-create-observe: ok');
