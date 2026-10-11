@@ -12184,7 +12184,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
-      cell = __nimbusRuntimeModule(normalizedPath, text, esModule ? "module" : __nimbusFileFormat(filename));
+      // In the format the loader gives the file: a typeless .js, imported or
+      // required, is CommonJS or an ES module by its syntax, as Node detects it.
+      cell = __nimbusRuntimeModule(normalizedPath, text, __nimbusFileFormat(filename));
       compiledText = text;
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
