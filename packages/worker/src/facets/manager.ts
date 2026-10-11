@@ -2041,8 +2041,7 @@ type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
  * length) plus 1%, a row per chunk and head, and a page of slack.
  */
 /** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
-function esmStageSize(esm: EsmStage | undefined): Record<string, number> | null {
-  if (esm === undefined) return null;
+function esmStageSize(esm: EsmStage): Record<string, number> {
   let text = 0;
   let columns = 0;
   for (const staged of esm.modules.values()) {
@@ -2102,6 +2101,8 @@ interface FacetVfsState {
    * CommonJS as Node would run it.
    */
   esm?: EsmStage;
+  /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
+  esmSize?: Record<string, number>;
   /**
    * The files staged only to run whose module is an emit: the map carries the
    * emit and not the file, which no read asked for. A synchronous read of one
@@ -4962,7 +4963,7 @@ async function _buildPrefetchBundle(
   return {
     bundle,
     ...(emits.size > 0 ? { emits } : {}),
-    ...(esm ? { esm } : {}),
+    ...(esm ? { esm, esmSize: esmStageSize(esm) } : {}),
     ...(codeOnly.size > 0 ? { codeOnly } : {}),
     cursor,
     reachableCount: fileCount,
@@ -8976,7 +8977,7 @@ export class FacetManager {
       if (this.debugEnabled) {
         this.processes.appendOutput(entry.pid, 'stderr',
           `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
-          + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(esmStageSize(vfsState.esm))} (${pacer.chunks} turns so far)\n`);
+          + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(vfsState.esmSize ?? null)} (${pacer.chunks} turns so far)\n`);
       }
       const planStart = Date.now();
       const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
