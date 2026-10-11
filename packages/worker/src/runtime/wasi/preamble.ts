@@ -257,7 +257,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
     content: (key: string) => (view === null ? undefined : view.content(key)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
-    barrier: (lease: boolean) => (view === null ? Promise.resolve({ ok: false }) : view.barrier(lease)),
+    barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },
   };

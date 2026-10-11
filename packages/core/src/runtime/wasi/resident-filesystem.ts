@@ -47,7 +47,7 @@ import type {
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
-import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats, ReadLeaseTerms } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -92,22 +92,12 @@ export interface ResidentNamespace {
   content(key: string): Uint8Array | undefined;
   /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
   fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
-  /**
-   * The ACQUIRE barrier, asking for the process's read lease too when
-   * `lease`: whether it landed, and the lease its answer carried (the
-   * process's to hold, whether or not it landed).
-   */
-  barrier(lease: boolean): Promise<ResidentBarrier>;
+  /** The ACQUIRE barrier. */
+  barrier(): Promise<boolean>;
   /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
   reserve(bytes: number): boolean;
   /** Return what `reserve` charged. */
   release(bytes: number): void;
-}
-
-/** What a barrier did (ResidentNamespace.barrier). */
-export interface ResidentBarrier {
-  readonly ok: boolean;
-  readonly readLease?: ReadLeaseTerms;
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -175,8 +165,6 @@ export interface ResidentFilesystemStats {
   filledBytes: number;
   /** ACQUIRE barriers taken. */
   barriers: number;
-  /** Barriers owed for input that the process's trusted read lease answered, asking nothing. */
-  leasedBarriers: number;
   /** Wall time the process spent waiting on the session for any of the above, in ms. */
   waitMs: number;
   /** File bytes pinned for descriptors now, and how many buffers hold them. */
@@ -290,7 +278,7 @@ export interface ResidentDelegation {
 }
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
   // Every wait on the session is timed where it leaves: the authority's calls
   // and the store's listings, fills and barriers. A facet's clock moves only
   // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -331,15 +319,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     listTree: (key) => timed(resident.listTree(key)),
     content: (key) => resident.content(key),
     fill: (key, entry) => timed(resident.fill(key, entry)),
-    barrier: (lease) => timed(resident.barrier(lease)),
+    barrier: () => timed(resident.barrier()),
     reserve: (bytes) => resident.reserve(bytes),
     release: (bytes) => resident.release(bytes),
   };
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
   /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
   let owed = false;
-  /** Owed for a change, not only for input: no read lease answers for what the process itself changed. */
-  let changed = false;
   if (delegation !== undefined) {
     holder = delegationHolder({
       session: delegation.session,
@@ -355,7 +341,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
       ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
       // What it sent changed the session: the store catches up before it answers next.
-      sent: () => { owed = true; changed = true; },
+      sent: () => { owed = true; },
     });
   }
   /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
@@ -473,34 +459,6 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
-   * Whether the barrier owed is asked now: owed for input alone, the
-   * process's trusted read lease answers it (nothing it holds has changed: a
-   * change recalls the lease first, and the lease is untrusted before that is
-   * answered; ProcessFsClient.readTrusted).
-   */
-  const asking = (): boolean => {
-    if (!owed) return false;
-    if (changed || holder === null || !holder.client.readTrusted()) return true;
-    owed = false;
-    counts.leasedBarriers++;
-    return false;
-  };
-  /** The barrier, asking for the read lease too; whether it landed. */
-  const barrier = (): Promise<boolean> => {
-    counts.barriers++;
-    const client = holder?.client;
-    const ask = client?.readLeaseAsk() ?? null;
-    return store.barrier(ask !== null).then(({ ok, readLease }) => {
-      if (readLease !== undefined && client !== undefined) {
-        client.readLeaseAnswered(readLease);
-        if (ok && store.ready()) client.readLeased(readLease, ask!);
-      }
-      if (ok && store.ready()) { owed = false; changed = false; }
-      return ok;
-    });
-  };
-
-  /**
    * Answer from the store when it can, else from the authority: the barrier
    * first when one is owed, then `local`, whose DELEGATE hands the call on.
    */
@@ -514,10 +472,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return remote();
     };
     if (!store.ready()) { delegated(name); return remote(); }
-    if (asking()) {
-      return barrier().then((ok) => {
+    if (owed) {
+      counts.barriers++;
+      return store.barrier().then((ok) => {
         // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
         if (!ok || !store.ready()) { delegated(name); return remote(); }
+        owed = false;
         return after(local(), settle);
       });
     }
@@ -535,9 +495,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (value !== DELEGATE) counts.local++;
       return value;
     };
-    if (asking()) {
-      return barrier().then((ok) => {
+    if (owed) {
+      counts.barriers++;
+      return store.barrier().then((ok) => {
         if (!ok || !store.ready()) return DELEGATE;
+        owed = false;
         return after(local(), settle);
       });
     }
@@ -552,10 +514,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const changing = <T>(name: string, call: () => T | Promise<T>): T | Promise<T> => {
     delegated(name);
     try {
-      return after(call(), (value) => { owed = true; changed = true; return value; });
+      return after(call(), (value) => { owed = true; return value; });
     } catch (error) {
       owed = true;
-      changed = true;
       throw error;
     }
   };
@@ -742,7 +703,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           const there = entryAt(key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
           delegated('open');
-          return after(holder!.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; changed = true; return handle; });
+          return after(holder!.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return handle; });
         });
       };
       return after(through(), (handle) => (handle === DELEGATE ? changing('open', () => authority.open(path, flags)) : handle));
@@ -925,15 +886,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // A name it changes: the files the process holds open at or under it write through first.
     if (op.type === 'rename') holder!.changing([op.from, op.to]);
     else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.changing([op.call.path]);
-    return holder!.client.submit(op).then(() => { owed = true; changed = true; }, (error: unknown) => { owed = true; changed = true; throw error; });
+    return holder!.client.submit(op).then(() => { owed = true; }, (error: unknown) => { owed = true; throw error; });
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
   /** Where the store places `path` (its directory resolved, the name itself not followed), current first; DELEGATE when it cannot say. */
   const placedKey = (path: RuntimeFsPath): string | Delegate | Promise<string | Delegate> => {
     if (holder === null || !store.ready()) return DELEGATE;
-    if (!asking()) return keyFor(path, false);
-    return barrier().then((ok) => {
+    if (!owed) return keyFor(path, false);
+    counts.barriers++;
+    return store.barrier().then((ok) => {
       if (!ok || !store.ready()) return DELEGATE;
+      owed = false;
       return keyFor(path, false);
     });
   };

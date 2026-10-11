@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
-import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats, ReadLeaseTerms } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -82,21 +82,12 @@ export interface ResidentNamespace {
     content(key: string): Uint8Array | undefined;
     /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
     fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
-    /**
-     * The ACQUIRE barrier, asking for the process's read lease too when
-     * `lease`: whether it landed, and the lease its answer carried (the
-     * process's to hold, whether or not it landed).
-     */
-    barrier(lease: boolean): Promise<ResidentBarrier>;
+    /** The ACQUIRE barrier. */
+    barrier(): Promise<boolean>;
     /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
     reserve(bytes: number): boolean;
     /** Return what `reserve` charged. */
     release(bytes: number): void;
-}
-/** What a barrier did (ResidentNamespace.barrier). */
-export interface ResidentBarrier {
-    readonly ok: boolean;
-    readonly readLease?: ReadLeaseTerms;
 }
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
 export interface PinnedContent {
@@ -160,8 +151,6 @@ export interface ResidentFilesystemStats {
     filledBytes: number;
     /** ACQUIRE barriers taken. */
     barriers: number;
-    /** Barriers owed for input that the process's trusted read lease answered, asking nothing. */
-    leasedBarriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */
     waitMs: number;
     /** File bytes pinned for descriptors now, and how many buffers hold them. */

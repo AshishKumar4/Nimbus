@@ -2251,29 +2251,25 @@ async function __residentBootLazy(supervisor) {
  * again from nothing at the authority's cursor: names are listed again on
  * demand, never served from a state the cursor has left.
  */
-async function __residentLazyBarrier(supervisor, lease) {
+async function __residentLazyBarrier(supervisor) {
   if (!__residentReady) throw new Error("Nimbus: __residentLazyBarrier before __residentBind");
   const t = __residentT;
   const cursor = __residentCursor();
   let answer = null;
   if (cursor !== null) {
-    try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, lease ? { namespace: true, lease: true } : { namespace: true }); }
+    try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true }); }
     catch { answer = null; }
   }
-  // The process's read lease, held once answered, applied or not (resident-filesystem.ts).
-  const readLease = answer?.readLease;
-  const landed = (ok) => (readLease === undefined ? { ok } : { ok, readLease });
   if (answer && !answer.poison && typeof answer.epoch === "string" && typeof answer.rev === "number") {
     await __residentApplyAcquire(supervisor, answer);
-    if (__nsReady()) return landed(true);
+    if (__nsReady()) return true;
     answer = { epoch: __residentCursor().epoch, rev: __residentCursor().rev };
   }
   if (answer && typeof answer.epoch === "string" && typeof answer.rev === "number") {
     __nsBeginLazy(t, { epoch: answer.epoch, rev: answer.rev });
-    return landed(true);
+    return true;
   }
-  // A namespace started again holds nothing a lease vouched for.
-  return { ok: await __residentBootLazy(supervisor), ...(readLease === undefined ? {} : { readLease }) };
+  return __residentBootLazy(supervisor);
 }
 
 
@@ -2320,7 +2316,7 @@ function __residentNamespaceView(supervisor, device, cred) {
       const bytes = view.content(k);
       return bytes === undefined ? null : bytes;
     },
-    barrier: (lease) => __residentLazyBarrier(supervisor, lease === true),
+    barrier: () => __residentLazyBarrier(supervisor),
     reserve: (bytes) => __residentPin(bytes),
     release: (bytes) => __residentUnpin(bytes),
   };
