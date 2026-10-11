@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6838fe3597f834322945dfda8ba29381d1fd9e46492b9aada7e72b504ef4fe73",
+  "fingerprint": "56ee276ddb12c76295c214e4a1867d063049a276fd9f1503a31c2f8e25edb20c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1210,7 +1210,7 @@
     "packages/core/dist/vfs/sqlite-files.d.ts": "0dc58d5841cc1090efa54eefb438a185a4d36759b13ca641bc90117ae09627fb",
     "packages/core/dist/vfs/sqlite-files.d.ts.map": "385b5a466a0ba57c7f2aa49d6bc23c92e89d084dcbe46f2de05ab0161ef50c41",
     "packages/core/dist/vfs/sqlite-files.js": "861dfbaaed4970b50f614c95bf20cad29a506864fc38a1760e7ac61f47bda197",
-    "packages/core/dist/vfs/sqlite-vfs.d.ts": "55d5cb950460e6946ab4bb9a329b56925deff36739c042cf142747130428a809",
+    "packages/core/dist/vfs/sqlite-vfs.d.ts": "718397293f30acfbf98148776bc2668086b3d68075705d8888214730bc8fc98d",
     "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "69e9002d25a055ebdfa841f65dfdbc31239589de1d08e9d9d661967d53620f14",
     "packages/core/dist/vfs/sqlite-vfs.js": "d7c8f61cbacaf51570d18244bc6baa70bec33e8b19328a08fb9ba5ce241be33b",
     "packages/core/dist/vfs/vfs-error.d.ts": "d735c8ac028a6d746b398fe9bb407fc72f118cb86eca1e708383c12621803079",
@@ -1626,7 +1626,7 @@
     "packages/core/src/vfs/recall.ts": "229c7f336961cdbc1908e8cdab481e0f740814212c4ab8a1d98df4cc0b1e3993",
     "packages/core/src/vfs/seed-project.ts": "941cc9b670ac3127247439a94e092b3c4f81098fa113d7e1d52a3d3600e39669",
     "packages/core/src/vfs/sqlite-files.ts": "7d4e5ac02f8a4037e282fb035da9262214be3eecc0abfd9cbfdfd7a34d031264",
-    "packages/core/src/vfs/sqlite-vfs.ts": "d9c24650a23cfd289ecb52d1b53cd837b5e952d036cc8b9fb7b3c9321e95febd",
+    "packages/core/src/vfs/sqlite-vfs.ts": "1263bda8e3f330d0f469de2741dc12ca58370d557b24bdb4ef17e1d12e4a6895",
     "packages/core/src/vfs/vfs-error.ts": "e6d19ddbf76c48946adfc3a4342e52a5ea464e9e2e57a80c8675b046f547c397",
     "packages/core/src/vfs/vfs.ts": "8ed953a6c93885fdf4709ab43a7863b43f61e1d700fd3dc2a90405da7dbd5d17",
     "packages/core/src/workspace/named-shells.ts": "280f61ea14a9aef4a31ddcda074fd791a05d864370d716d8ae22a400d62c2793",
