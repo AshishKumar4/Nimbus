@@ -2056,11 +2056,14 @@ function esmStageSize(esm: EsmStage): Record<string, number> {
 }
 
 /** A launch's per-module costs, for its exec telemetry record. */
-function execBreakdown(state: { transforms?: BundleCellTransformStats; esmSize?: Record<string, number> }): Pick<ExecTelemetryRecord, 'transforms' | 'esm'> {
+function execBreakdown(state: { cacheHit?: boolean; transforms?: BundleCellTransformStats; esmSize?: Record<string, number>; phases?: Record<string, number> }): Pick<ExecTelemetryRecord, 'transforms' | 'esm' | 'phases'> {
+  // A cache hit built nothing: the numbers are the launch that built it.
+  if (state.cacheHit) return {};
   const t = state.transforms;
   return {
     ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
     ...(state.esmSize ? { esm: state.esmSize } : {}),
+    ...(state.phases ? { phases: state.phases } : {}),
   };
 }
 
@@ -2111,6 +2114,8 @@ interface FacetVfsState {
   esm?: EsmStage;
   /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
   esmSize?: Record<string, number>;
+  /** Where its build's time went, by phase, in ms (the walk, enrichment, transforms, fitting, staging, the rest, serialization). */
+  phases?: Record<string, number>;
   /**
    * The files staged only to run whose module is an emit: the map carries the
    * emit and not the file, which no read asked for. A synchronous read of one
@@ -4570,6 +4575,10 @@ async function _buildPrefetchBundle(
   // is being assembled must be reported as invalidated, not silently missed.
   const admitted = await vfs.acquire(null, 0);
   const cursor = { epoch: admitted.epoch, rev: admitted.rev };
+  // Where the build's time went, by phase (ms; the clock moves across its turns): its exec telemetry.
+  const phases: Record<string, number> = {};
+  let phaseFrom = Date.now();
+  const phase = (name: string) => { const now = Date.now(); phases[name] = (phases[name] ?? 0) + now - phaseFrom; phaseFrom = now; };
 
   // Modules earlier runs executed belong to the complete required graph.
   // Adding them later as enrichment let final pruning remove one imported
@@ -4584,6 +4593,7 @@ async function _buildPrefetchBundle(
     maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
   // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
   const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
+  phase('walk');
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -4751,12 +4761,14 @@ async function _buildPrefetchBundle(
     codeOnly.add(path);
   };
   let transforms: BundleCellTransformStats | undefined;
+  phase('enrich');
   const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformBundleModules.
     transforms = await transformBundleModules(bundle, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
+    phase('transforms');
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
@@ -4957,6 +4969,7 @@ async function _buildPrefetchBundle(
     const entries = async (dir: string) => {
       try { return new Map((await vfs.readdir(dir)).map((entry) => [entry.name, entry.type])); } catch { return null; }
     };
+    phase('fit');
     esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
       conditions,
       cwd,
@@ -4971,10 +4984,13 @@ async function _buildPrefetchBundle(
     // as it spent each lowered module's emit: each staged byte is spent once.
     // A pass's bundle weight here cost a launch over lodash-es a turn of its own.
     for (const key of esm.modules.keys()) emits.delete(key);
+    phase('stage');
   }
+  phase('rest');
 
   return {
     bundle,
+    phases,
     ...(emits.size > 0 ? { emits } : {}),
     ...(esm ? { esm, esmSize: esmStageSize(esm) } : {}),
     ...(codeOnly.size > 0 ? { codeOnly } : {}),
@@ -6675,6 +6691,7 @@ export class FacetManager {
     // (N18): taken now, while the cells exist, for every launch this state
     // serves (a cache hit included).
     vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
+    const serializeFrom = Date.now();
     vfsState.bundleSource = await buildFacetVfsBundleSource(
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
@@ -6687,6 +6704,7 @@ export class FacetManager {
         runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
       },
     );
+    if (vfsState.phases) vfsState.phases.serialize = Date.now() - serializeFrom;
     vfsState.cacheHit = false;
 
     // Serialization is total: bundleSource/serializedManifest/serializedMetadata
