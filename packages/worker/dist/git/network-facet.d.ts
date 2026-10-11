@@ -26,13 +26,8 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
+import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
-/**
- * The clone's job marker, in its git directory from prepare until the clone
- * is whole: the proof an abort needs that the destination is the clone's,
- * and what tells every other git command the repository is not yet one.
- */
-export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep = {
     step: 'plan';
@@ -142,31 +137,6 @@ export interface GitNetworkOpts {
     /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
     batchConcurrency?: number;
 }
-export interface GitSupervisorRpcCounters {
-    stat: number;
-    lstat: number;
-    readdir: number;
-    readFile: number;
-    fsReadRange: number;
-    /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
-    fsWriteRange: number;
-    rename: number;
-    /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
-    lock: number;
-    writeBatchStream: number;
-    readlink: number;
-    symlink: number;
-    legacySymlinkSubtree: number;
-    stdout: number;
-    /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
-    fileApi: number;
-}
-export interface GitMetadataOverlayStats {
-    entries: number;
-    accountedBytes: number;
-    maxEntries: number;
-    maxAccountedBytes: number;
-}
 export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
@@ -184,7 +154,7 @@ export interface GitNetworkPhaseDiagnostic {
         total?: number;
     };
     w7Waves: number;
-    supervisorRpc: GitSupervisorRpcCounters;
+    supervisorRpc: SupervisorRpcCounters;
     /** The invocation's wave writer: what it published and how long it waited. */
     waves?: WaveStats;
 }
@@ -195,8 +165,8 @@ export interface GitNetworkResult {
     elapsed: number;
     filesWritten: number;
     bytesWritten: number;
-    supervisorRpc: GitSupervisorRpcCounters;
-    metadataOverlay: GitMetadataOverlayStats;
+    supervisorRpc: SupervisorRpcCounters;
+    metadataOverlay: MetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
@@ -258,11 +228,8 @@ export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: 
  * every batch and history piece, a fence's reload, fetch/pull/push).
  */ network: WorkspaceNetwork): Promise<GitNetworkResult>;
 /**
- * Generate the dynamic worker code for the git network facet.
- *
- * Exports `default { async fetch(request, workerEnv) { ... } }`.
- * Reads op args from the POST body, runs isomorphic-git with a buffered
- * fs adapter, and flushes writes through W7 v3.
+ * The git network facet's module: the pack layer's bundle (pack/facet.ts),
+ * whose network worker (pack/network-worker.ts) it exports.
  */
 export declare function assembleGitNetworkFacetSource(): string;
 //# sourceMappingURL=network-facet.d.ts.map

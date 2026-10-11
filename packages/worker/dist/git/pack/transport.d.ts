@@ -23,6 +23,7 @@
  * each wait jittered by a quarter); every retry is logged by its caller
  * with its cause. Nothing else is retried.
  */
+import type { HttpClient } from '../../../vendor/git-http.generated.js';
 export declare const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */
 export declare const RETRY_BACKOFF_MS: readonly number[];
@@ -40,28 +41,11 @@ export declare const UPLOAD_PACK_ERROR_PREFIX = "git upload-pack: ";
 export declare function isLostTransport(message: string): boolean;
 /** The wait before try `attempt + 2` (0-based `attempt` of the one that failed). */
 export declare function retryDelay(attempt: number, schedule?: readonly number[]): Promise<void>;
-/** cf-git's HTTP client surface (isomorphic-git's GitHttp). */
-export interface GitHttpRequest {
-    url: unknown;
-    method?: string;
-    body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
-    [key: string]: unknown;
-}
-export interface GitHttpResponse {
-    statusCode: number;
-    body?: {
-        cancel?: () => unknown;
-    } | null;
-    [key: string]: unknown;
-}
-export interface GitHttp {
-    request(req: GitHttpRequest): Promise<GitHttpResponse>;
-}
 /**
  * cf-git's HTTP client under this policy (a push's: its fetch speaks
  * upload-pack.ts): a GET that fails before its answer, or is answered with a
  * transient status, is tried again; a receive-pack POST is not.
  * `schedule` is for tests.
  */
-export declare function retryingGitHttp(base: GitHttp, schedule?: readonly number[]): GitHttp;
+export declare function retryingGitHttp(base: HttpClient, schedule?: readonly number[]): HttpClient;
 //# sourceMappingURL=transport.d.ts.map

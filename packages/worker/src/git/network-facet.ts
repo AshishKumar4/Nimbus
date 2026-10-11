@@ -32,13 +32,11 @@ import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
-import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE, RPC_DISPOSE_PREAMBLE } from '../loaders/generated-workers.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
+import { createSupervisorRpcCounters, type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
@@ -46,12 +44,6 @@ import { CHECKOUT_FAILED } from './pack/mount-writer.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 
-/**
- * The clone's job marker, in its git directory from prepare until the clone
- * is whole: the proof an abort needs that the destination is the clone's,
- * and what tells every other git command the repository is not yet one.
- */
-export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
 
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep =
@@ -134,33 +126,6 @@ export interface GitNetworkOpts {
   batchConcurrency?: number;
 }
 
-export interface GitSupervisorRpcCounters {
-  stat: number;
-  lstat: number;
-  readdir: number;
-  readFile: number;
-  fsReadRange: number;
-  /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
-  fsWriteRange: number;
-  rename: number;
-  /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
-  lock: number;
-  writeBatchStream: number;
-  readlink: number;
-  symlink: number;
-  legacySymlinkSubtree: number;
-  stdout: number;
-  /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
-  fileApi: number;
-}
-
-export interface GitMetadataOverlayStats {
-  entries: number;
-  accountedBytes: number;
-  maxEntries: number;
-  maxAccountedBytes: number;
-}
-
 export type GitCloneInvocationPhase =
   | 'clone-prepare'
   | 'clone-batch'
@@ -179,7 +144,7 @@ export interface GitNetworkPhaseDiagnostic {
   error?: string;
   lastProgress?: { phase: string; loaded: number; total?: number };
   w7Waves: number;
-  supervisorRpc: GitSupervisorRpcCounters;
+  supervisorRpc: SupervisorRpcCounters;
   /** The invocation's wave writer: what it published and how long it waited. */
   waves?: WaveStats;
 }
@@ -210,8 +175,8 @@ export interface GitNetworkResult {
   elapsed: number;
   filesWritten: number;
   bytesWritten: number;
-  supervisorRpc: GitSupervisorRpcCounters;
-  metadataOverlay: GitMetadataOverlayStats;
+  supervisorRpc: SupervisorRpcCounters;
+  metadataOverlay: MetadataOverlayStats;
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
@@ -264,24 +229,7 @@ const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 
-const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
-  stat: 0,
-  lstat: 0,
-  readdir: 0,
-  readFile: 0,
-  fsReadRange: 0,
-  fsWriteRange: 0,
-  rename: 0,
-  lock: 0,
-  writeBatchStream: 0,
-  readlink: 0,
-  symlink: 0,
-  legacySymlinkSubtree: 0,
-  stdout: 0,
-  fileApi: 0,
-};
-
-const EMPTY_METADATA_OVERLAY_STATS: GitMetadataOverlayStats = {
+const EMPTY_METADATA_OVERLAY_STATS: MetadataOverlayStats = {
   entries: 0,
   accountedBytes: 0,
   maxEntries: 0,
@@ -305,31 +253,18 @@ function parseGitNetworkErrorCode(value: unknown): GitNetworkErrorCode | undefin
   return value === 'GitCloneBudgetExceeded' ? value : undefined;
 }
 
-function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
-  const counters = value && typeof value === 'object'
-    ? value as Partial<Record<keyof GitSupervisorRpcCounters, unknown>>
+function parseSupervisorRpcCounters(value: unknown): SupervisorRpcCounters {
+  const reported = value && typeof value === 'object'
+    ? value as Partial<Record<keyof SupervisorRpcCounters, unknown>>
     : {};
-  return {
-    stat: nonNegativeCounter(counters.stat),
-    lstat: nonNegativeCounter(counters.lstat),
-    readdir: nonNegativeCounter(counters.readdir),
-    readFile: nonNegativeCounter(counters.readFile),
-    fsReadRange: nonNegativeCounter(counters.fsReadRange),
-    fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
-    rename: nonNegativeCounter(counters.rename),
-    lock: nonNegativeCounter(counters.lock),
-    writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
-    readlink: nonNegativeCounter(counters.readlink),
-    symlink: nonNegativeCounter(counters.symlink),
-    legacySymlinkSubtree: nonNegativeCounter(counters.legacySymlinkSubtree),
-    stdout: nonNegativeCounter(counters.stdout),
-    fileApi: nonNegativeCounter(counters.fileApi),
-  };
+  const counters = createSupervisorRpcCounters();
+  for (const key of Object.keys(counters) as (keyof SupervisorRpcCounters)[]) counters[key] = nonNegativeCounter(reported[key]);
+  return counters;
 }
 
-function parseMetadataOverlayStats(value: unknown): GitMetadataOverlayStats {
+function parseMetadataOverlayStats(value: unknown): MetadataOverlayStats {
   const stats = value && typeof value === 'object'
-    ? value as Partial<Record<keyof GitMetadataOverlayStats, unknown>>
+    ? value as Partial<Record<keyof MetadataOverlayStats, unknown>>
     : {};
   return {
     entries: nonNegativeCounter(stats.entries),
@@ -340,11 +275,11 @@ function parseMetadataOverlayStats(value: unknown): GitMetadataOverlayStats {
 }
 
 function addSupervisorRpcCounters(
-  total: GitSupervisorRpcCounters,
+  total: SupervisorRpcCounters,
   value: unknown,
 ): void {
   const counters = parseSupervisorRpcCounters(value);
-  for (const key of Object.keys(total) as (keyof GitSupervisorRpcCounters)[]) {
+  for (const key of Object.keys(total) as (keyof SupervisorRpcCounters)[]) {
     total[key] += counters[key];
   }
 }
@@ -517,7 +452,7 @@ async function invokeFacet(
       outcome: 'timeout',
       error: `git clone budget exhausted before ${phase}`,
       w7Waves: 0,
-      supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+      supervisorRpc: createSupervisorRpcCounters(),
     };
     if (budgetContext) {
       throw new GitCloneBudgetExceededError(
@@ -550,7 +485,7 @@ async function invokeFacet(
           outcome: 'timeout',
           error: message,
           w7Waves: 0,
-          supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+          supervisorRpc: createSupervisorRpcCounters(),
         };
         reject(new GitCloneBudgetExceededError(
           phase,
@@ -606,7 +541,7 @@ async function invokeFacet(
       outcome: controller.signal.aborted ? 'timeout' : 'error',
       error: message,
       w7Waves: 0,
-      supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+      supervisorRpc: createSupervisorRpcCounters(),
     };
     throw new GitClonePhaseError(phase, message, diagnostic);
   } finally {
@@ -1069,7 +1004,7 @@ export async function execGitNetwork(
         elapsed: Date.now() - start,
         filesWritten: 0,
         bytesWritten: 0,
-        supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+        supervisorRpc: createSupervisorRpcCounters(),
         metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
       };
     }
@@ -1090,7 +1025,7 @@ export async function execGitNetwork(
         elapsed: Date.now() - start,
         filesWritten: 0,
         bytesWritten: 0,
-        supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+        supervisorRpc: createSupervisorRpcCounters(),
         metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
       };
     }
@@ -1134,7 +1069,7 @@ export async function execGitNetwork(
         const jobId = opts.cloneJobId ?? crypto.randomUUID();
         const optionsHash = await hashCloneOptions(opts);
         const phases: GitNetworkPhaseDiagnostic[] = [];
-        const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
+        const supervisorRpc = createSupervisorRpcCounters();
         let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
         let filesWritten = 0;
         let bytesWritten = 0;
@@ -1278,7 +1213,7 @@ export async function execGitNetwork(
                   outcome: 'error',
                   error: phaseErrorMessage(error),
                   w7Waves: 0,
-                  supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+                  supervisorRpc: createSupervisorRpcCounters(),
                 },
               );
           if (!phases.some(phase => phase.invocationId === phaseError.diagnostic.invocationId)) {
@@ -1345,7 +1280,7 @@ export async function execGitNetwork(
           elapsed: Date.now() - start,
           filesWritten: 0,
           bytesWritten: 0,
-          supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+          supervisorRpc: createSupervisorRpcCounters(),
           metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
           graphFilters,
         };
@@ -1432,1347 +1367,16 @@ export async function execGitNetwork(
       elapsed: Date.now() - start,
       filesWritten: 0,
       bytesWritten: 0,
-      supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+      supervisorRpc: createSupervisorRpcCounters(),
       metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
     };
   }
 }
 
 /**
- * Generate the dynamic worker code for the git network facet.
- *
- * Exports `default { async fetch(request, workerEnv) { ... } }`.
- * Reads op args from the POST body, runs isomorphic-git with a buffered
- * fs adapter, and flushes writes through W7 v3.
+ * The git network facet's module: the pack layer's bundle (pack/facet.ts),
+ * whose network worker (pack/network-worker.ts) it exports.
  */
 export function assembleGitNetworkFacetSource(): string {
-  return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + RPC_DISPOSE_PREAMBLE + '\n' + GIT_PACK_SRC + '\n' +
-    generateGitNetworkFacetCode();
-}
-
-function generateGitNetworkFacetCode(): string {
-  return `
-// Must precede the .toString() embeds below, whose bodies call __name(...).
-${ESBUILD_NAME_GLOBAL_SHIM}
-
-const WHOLE_FILE_RPC_SAFE_BYTES = ${MAX_RPC_SAFE_PAYLOAD_BYTES};
-const READ_RANGE_BYTES = 4 * 1024 * 1024;
-const METADATA_MAX_ENTRIES = 100_000;
-const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
-const METADATA_ENTRY_OVERHEAD_BYTES = 256;
-const CLONE_JOB_MARKER = ${JSON.stringify(GIT_CLONE_JOB_MARKER)};
-const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
-
-
-function protocolError(message) {
-  return new Error('git clone protocol: ' + message);
-}
-
-function requireProtocolString(value, label, maxLength = 1024) {
-  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
-    throw protocolError(label + ' is invalid');
-  }
-  return value;
-}
-
-function requireOid(value, label) {
-  if (typeof value !== 'string' || !OID_PATTERN.test(value)) {
-    throw protocolError(label + ' is invalid');
-  }
-  return value;
-}
-
-function requireMetadataNumber(value, label) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw protocolError(label + ' is invalid');
-  }
-  return value;
-}
-
-function requirePositiveMetadataNumber(value, label) {
-  const number = requireMetadataNumber(value, label);
-  if (number === 0) throw protocolError(label + ' is invalid');
-  return number;
-}
-
-function cloneJobMarkerPath(dir) {
-  return normalizePath(dir) + '/.git/' + CLONE_JOB_MARKER;
-}
-
-/** The marker a clone's phases write first: it names the job that owns .git (git/clone-job.ts reads it). */
-function cloneJobMarker(opts) {
-  return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
-}
-
-// normalizePath is provided by the W7 frame preamble (from _shared/w7-frame.ts),
-// prepended to this facet worker — semantically identical, do not redeclare.
-
-function parentOf(p) {
-  return p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
-}
-
-// fs.promises.readFile takes its encoding bare as well as on an options
-// object, and cf-git uses both spellings. Honouring only the object form
-// hands text call sites raw bytes; see the supervisor-side adapter in
-// ./commands.ts for what that silently cost .gitignore.
-function wantsUtf8(options) {
-  const encoding = typeof options === 'string' ? options : (options && options.encoding);
-  return encoding === 'utf8' || encoding === 'utf-8';
-}
-
-function enoent(filepath) {
-  const err = new Error('ENOENT: no such file or directory, ' + filepath);
-  err.code = 'ENOENT'; err.errno = -2;
-  return err;
-}
-
-function enotdir(filepath) {
-  const err = new Error('ENOTDIR: not a directory, ' + filepath);
-  err.code = 'ENOTDIR'; err.errno = -20;
-  return err;
-}
-
-function eisdir(filepath) {
-  const err = new Error('EISDIR: illegal operation on a directory, ' + filepath);
-  err.code = 'EISDIR'; err.errno = -21;
-  return err;
-}
-
-function enotempty(filepath) {
-  const err = new Error('ENOTEMPTY: directory not empty, ' + filepath);
-  err.code = 'ENOTEMPTY'; err.errno = -39;
-  return err;
-}
-
-function einval(filepath) {
-  const err = new Error('EINVAL: invalid argument, ' + filepath);
-  err.code = 'EINVAL'; err.errno = -22;
-  return err;
-}
-
-function eio(filepath, detail) {
-  const err = new Error('EIO: failed to read ' + filepath + ': ' + detail);
-  err.code = 'EIO'; err.errno = -5;
-  return err;
-}
-
-function eloop(filepath) {
-  const err = new Error('ELOOP: too many symbolic links encountered, ' + filepath);
-  err.code = 'ELOOP'; err.errno = -40;
-  return err;
-}
-
-function statObj(metadata, followSymlink) {
-  const isLink = metadata.kind === 'symlink' && !followSymlink;
-  const isDir = metadata.kind === 'dir';
-  const isFile = metadata.kind === 'file' || (metadata.kind === 'symlink' && followSymlink);
-  const mtimeMs = metadata.mtimeMs;
-  const ctimeMs = metadata.ctimeMs;
-  const atimeMs = metadata.atimeMs;
-  return {
-    isFile: () => isFile, isDirectory: () => isDir, isSymbolicLink: () => isLink,
-    size: metadata.size,
-    mode: (isLink ? 0o120000 : isDir ? 0o040000 : 0o100000) | (metadata.mode & 0o7777),
-    type: isLink ? 'symlink' : isDir ? 'dir' : 'file',
-    mtimeMs, mtime: new Date(mtimeMs),
-    ctimeMs, ctime: new Date(ctimeMs),
-    atimeMs, atime: new Date(atimeMs),
-    uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1,
-  };
-}
-
-function convertSupervisorStat(st) {
-  if (!st) return null;
-  const mtimeMs = Number(st.mtime) || Date.now();
-  const ctimeMs = Number(st.ctime) || mtimeMs;
-  const atimeMs = Number(st.atime) || mtimeMs;
-  const isDir = st.type === 'directory' || st.type === 'dir';
-  const isLink = st.type === 'symlink';
-  return {
-    isFile: () => !isDir && !isLink,
-    isDirectory: () => isDir,
-    isSymbolicLink: () => isLink,
-    size: Number(st.size) || 0,
-    mode: (isLink ? 0o120000 : isDir ? 0o040000 : 0o100000) |
-      ((Number(st.mode) || (isDir ? 0o755 : isLink ? 0o777 : 0o644)) & 0o7777),
-    type: isDir ? 'dir' : isLink ? 'symlink' : 'file',
-    mtimeMs, mtime: new Date(mtimeMs),
-    ctimeMs, ctime: new Date(ctimeMs),
-    atimeMs, atime: new Date(atimeMs),
-    // The supervisor's git reports these same fields, so an index either side wrote stays warm.
-    uid: Number(st.uid) || 0, gid: Number(st.gid) || 0,
-    dev: Number(st.dev) || 0, ino: Number(st.ino) || 0, nlink: 1,
-  };
-}
-
-function metadataFromSupervisorStat(st) {
-  if (!st) return null;
-  const converted = convertSupervisorStat(st);
-  return {
-    kind: converted.isDirectory() ? 'dir' : converted.isSymbolicLink() ? 'symlink' : 'file',
-    size: converted.size,
-    mode: converted.mode & 0o7777,
-    mtimeMs: converted.mtimeMs,
-    ctimeMs: converted.ctimeMs,
-    atimeMs: converted.atimeMs,
-  };
-}
-
-function createSupervisorRpcCounters() {
-  return {
-    stat: 0, lstat: 0, readdir: 0, readFile: 0,
-    fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
-    legacySymlinkSubtree: 0, stdout: 0, fileApi: 0,
-  };
-}
-
-function emptyMetadataOverlayStats() {
-  return {
-    entries: 0,
-    accountedBytes: 0,
-    maxEntries: METADATA_MAX_ENTRIES,
-    maxAccountedBytes: METADATA_MAX_ACCOUNTED_BYTES,
-  };
-}
-
-/**
- * A piece's earlier attempts may have left a partial temporary pack (each
- * attempt names its own): it goes before the piece runs again. What the
- * failed attempt published otherwise (files, a named pack) is the same
- * content addressed by the same names, which this attempt rewrites.
- */
-async function discardEarlierAttempts(context, opts, prefix, suffix) {
-  if (!(opts.attempt > 1)) return;
-  const writer = context.writer();
-  writer.setPin(context.marker.path, context.marker.text, true);
-  for (let attempt = 1; attempt < opts.attempt; attempt++) {
-    const name = opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix;
-    await writer.remove('.git/objects/pack/' + prefix + name);
-    // Its idx and rev, if it reached install.ts.
-    await writer.remove('.git/objects/pack/tmp_idx_' + name);
-    await writer.remove('.git/objects/pack/tmp_rev_' + name);
-  }
-  await writer.flush();
-}
-
-/** The supervisor's ranged calls, counted, as git/pack/facet-packs.ts takes them. */
-function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
-  // Paths reach the supervisor as this facet's fs sends them: normalized.
-  const counted = (name, call) => {
-    stats.supervisorRpc[name]++;
-    return useRpcResource(call(), (result) => result);
-  };
-  return {
-    // Pack bytes bypass the session's content cache: a cached range pins its
-    // chunks in the session's heap (512 x 64 KiB), which the clone shares.
-    fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(normalizePath(path), offset, length)),
-    fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(normalizePath(path), offset, bytes)),
-    fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(normalizePath(path), size)),
-    rename: (from, to) => counted('rename', () => supervisor.rename(normalizePath(from), normalizePath(to))),
-    unlink: (path) => counted('rename', () => supervisor.unlink(normalizePath(path))),
-    ensureDirectory,
-    async readdir(path) {
-      stats.supervisorRpc.readdir++;
-      try {
-        const entries = await useRpcResource(supervisor.readdir(normalizePath(path)), (result) => result);
-        return entries.map((entry) => typeof entry === 'string' ? entry : entry.name);
-      } catch {
-        return [];
-      }
-    },
-  };
-}
-
-/**
- * What git/pack/clone.ts needs of this facet: the supervisor's ranged writes
- * (under the clone's lease, which the binding presents), and wave writers
- * rooted at the clone that report each published wave's receipts.
- */
-function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRoot = null) {
-  const dir = normalizePath(opts.dir);
-  const counted = (name, call) => {
-    stats.supervisorRpc[name]++;
-    return useRpcResource(call(), (result) => result);
-  };
-  // A pack's ranged writes, as its waves (the wave writer's deadline), stop at the phase deadline.
-  const mutation = (name, call) => {
-    if (deadline !== null && Date.now() >= deadline) {
-      return Promise.reject(new Error('git ' + (opts.phase || opts.op) + ' passed its phase deadline'));
-    }
-    return counted(name, call);
-  };
-  return {
-    supervisor: {
-      fsWriteRange: (path, offset, bytes) => mutation('fsWriteRange', () => supervisor.fsWriteRange(path, offset, bytes)),
-      fsTruncate: (path, size) => mutation('fsWriteRange', () => supervisor.fsTruncate(path, size)),
-      fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
-      rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
-      // A commit-graph chain's lock (graph-filters.ts): created exclusively, written, made read-only, removed.
-      fsOpen: (path, flags) => mutation('lock', () => supervisor.fsOpen(path, flags)),
-      fsWrite: (handle, offset, bytes) => mutation('lock', () => supervisor.fsWrite(handle, offset, bytes)),
-      fsClose: (handle) => counted('lock', () => supervisor.fsClose(handle)),
-      chmod: (path, mode) => mutation('lock', () => supervisor.chmod(path, mode)),
-      unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
-      async readdir(path) {
-        stats.supervisorRpc.readdir++;
-        try {
-          const entries = await useRpcResource(supervisor.readdir(normalizePath(path)), (result) => result);
-          return entries.map((entry) => typeof entry === 'string' ? entry : entry.name);
-        } catch {
-          return [];
-        }
-      },
-    },
-    writer(onReceipts) {
-      const waves = __nimbusWaveWriter.createWaveWriter({
-        supervisor: {
-          // The writer's fence for this attempt goes with it: the session refuses a late original.
-          writeBatchStream(stream, fence) {
-            stats.supervisorRpc.writeBatchStream++;
-            return supervisor.writeBatchStream(stream, fence);
-          },
-          // The session issues the epoch the writer's waves are admitted under.
-          openWaveWriter() {
-            return typeof supervisor.openWaveWriter === 'function' ? supervisor.openWaveWriter() : Promise.resolve(null);
-          },
-        },
-        root,
-        worktreeRoot,
-        base: dir,
-        deadline,
-        onWave(report) {
-          stats.filesWritten += report.files;
-          stats.bytesWritten += report.bytes;
-          if (onReceipts) onReceipts(report.receipts);
-        },
-      });
-      if (opts.onMount !== true) return waves;
-      // On a mount a file past a wave's limit is written through the session's file API (pack/mount-writer.ts).
-      return __nimbusGitPack.mountWriter(waves, facetFileApi(supervisor, stats, deadline), dir, (receipts) => {
-        stats.filesWritten += receipts.length;
-        for (const receipt of receipts) stats.bytesWritten += receipt.size;
-        if (onReceipts) onReceipts(receipts);
-      });
-    },
-    dir,
-    url: opts.url,
-    auth: opts.auth,
-    marker: { path: '.git/' + CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
-    onProgress: (line) => log('remote: ' + line + '\\n'),
-  };
-}
-
-/**
- * The session's file API through the facet's binding (pack/mount-writer.ts
- * FileApi), its lease presented by the binding, each call counted; within
- * the phase's deadline as withinDeadline admits calls (a close or an
- * unlink, cleaning up, past it too).
- */
-function facetFileApi(supervisor, stats, deadline = null) {
-  const call = (counter, fn) => {
-    stats.supervisorRpc[counter]++;
-    return useRpcResource(fn(), (result) => result);
-  };
-  return __nimbusGitPack.withinDeadline({
-    mkdir: (path, options) => call('fileApi', () => supervisor.mkdir(path, options)),
-    unlink: (path) => call('fileApi', () => supervisor.unlink(path)),
-    discard: (path) => call('fileApi', () => supervisor.unlink(path)),
-    fsOpen: (path, flags) => call('fileApi', () => supervisor.fsOpen(path, flags)),
-    fsWrite: (id, offset, bytes) => call('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
-    fsFstat: (id) => call('fileApi', () => supervisor.fsFstat(id)),
-    fsClose: (id) => call('fileApi', () => supervisor.fsClose(id)),
-    rename: (from, to) => call('rename', () => supervisor.rename(from, to)),
-  }, deadline);
-}
-
-/**
- * Create the buffered fs adapter isomorphic-git will use.
- * Writes buffer in-memory; reads check buffer then fall back to supervisor.
- *
- * Every write is a record for the wave writer (__nimbusWaveWriter, from
- * @nimbus-sh/platform src/wave-writer.ts), which publishes them in W7 waves, one in flight
- * while the next buffers. The adapter keeps the closed-world metadata
- * overlay a clone reads back; the writer keeps the buffered bytes.
- *
- * With a worktreeRoot (fetch, pull, push in an existing repository) the
- * adapter writes that worktree the way git's checkout does (entry.c
- * create_directories, has_symlink_leading_path): below its top, .git
- * aside, a leading component that is not a real directory (a link, dangling
- * or not, or a file) is deleted and replaced by a directory rather than
- * followed, and a file replaces a link at its own path rather than writing
- * through it.
- */
-function createBufferedFs(
-  supervisor,
-  stats,
-  authoritativeRoot,
-  authoritativeRootMetadata,
-  phaseDeadline = null,
-  worktreeRoot = null,
-  onMount = false,
-) {
-  // On a mount, a file past a wave's limit is written in place (pack/mount-writer.ts).
-  const fileApi = onMount ? facetFileApi(supervisor, stats, phaseDeadline) : null;
-  const metadata = new Map();
-  const children = new Map();
-  const textEncoder = new TextEncoder();
-  let metadataAccountedBytes = 0;
-  let overlayFailure = null;
-  let mutationQueue = Promise.resolve();
-
-  function stampEntry(entry, mtimeMs) {
-    entry.atimeMs = mtimeMs;
-    entry.mtimeMs = mtimeMs;
-    entry.ctimeMs = mtimeMs;
-  }
-
-  // Each record carries its overlay metadata (fetch and pull have no other
-  // record of a buffered file); a cut stamps the wave's mtime on it, so the
-  // overlay's stat agrees with what the wave publishes.
-  const writer = __nimbusWaveWriter.createWaveWriter({
-    supervisor: {
-      writeBatchStream(stream, fence) {
-        stats.supervisorRpc.writeBatchStream++;
-        return supervisor.writeBatchStream(stream, fence);
-      },
-      openWaveWriter() {
-        return typeof supervisor.openWaveWriter === 'function' ? supervisor.openWaveWriter() : Promise.resolve(null);
-      },
-    },
-    root: authoritativeRoot,
-    worktreeRoot,
-    deadline: phaseDeadline,
-    directoryMode(path) {
-      const entry = metadata.get(path);
-      return entry && entry.kind === 'dir' ? entry.mode : undefined;
-    },
-    onCut(cut) {
-      for (const dir of cut.directories) {
-        const entry = metadata.get(dir);
-        if (entry && entry.kind === 'dir') stampEntry(entry, cut.mtimeMs);
-      }
-      for (const file of cut.files) {
-        const entry = file.meta || metadata.get(file.path);
-        if (entry && (entry.kind === 'file' || entry.kind === 'symlink')) stampEntry(entry, cut.mtimeMs);
-      }
-    },
-    onWave(report) {
-      stats.filesWritten += report.files;
-      stats.bytesWritten += report.bytes;
-    },
-    onResend(lost) {
-      console.warn('[git] write wave re-sent', JSON.stringify(lost));
-    },
-  });
-
-  function assertFlushHealthy() {
-    if (overlayFailure) throw overlayFailure;
-    writer.assertHealthy();
-  }
-
-  async function awaitPendingFlush() {
-    await writer.settled();
-    assertFlushHealthy();
-  }
-
-  // No read reports a link, or resolves through one, before the link is
-  // durable: a read waits out every link written and not yet published.
-  async function awaitPublishedSymlinks() {
-    if (writer.hasUnpublishedSymlinks) await flushWave();
-  }
-
-  // A read the overlay cannot answer goes to the supervisor, which must
-  // already hold every write the adapter has made.
-  async function awaitSupervisorReadable() {
-    await awaitPublishedSymlinks();
-    await awaitPendingFlush();
-  }
-
-  async function flushWave() {
-    if (overlayFailure) throw overlayFailure;
-    await writer.flush();
-  }
-
-  function isAuthoritativePath(path) {
-    return authoritativeRoot !== null &&
-      (path === authoritativeRoot || path.startsWith(authoritativeRoot + '/'));
-  }
-
-  function metadataCost(path, entry) {
-    const targetBytes = entry.kind === 'symlink'
-      ? textEncoder.encode(entry.target).byteLength
-      : 0;
-    return METADATA_ENTRY_OVERHEAD_BYTES + textEncoder.encode(path).byteLength + targetBytes;
-  }
-
-  function addChild(path) {
-    const parent = parentOf(path);
-    let names = children.get(parent);
-    if (!names) children.set(parent, names = new Set());
-    const name = path.slice(parent ? parent.length + 1 : 0);
-    if (name) names.add(name);
-  }
-
-  function removeChild(path) {
-    const parent = parentOf(path);
-    const names = children.get(parent);
-    if (!names) return;
-    const name = path.slice(parent ? parent.length + 1 : 0);
-    names.delete(name);
-    if (names.size === 0) children.delete(parent);
-  }
-
-  function setMetadata(path, entry) {
-    if (!isAuthoritativePath(path)) return;
-    const previous = metadata.get(path);
-    const previousCost = previous ? metadataCost(path, previous) : 0;
-    const nextCost = metadataCost(path, entry);
-    const nextEntries = metadata.size + (previous ? 0 : 1);
-    const nextBytes = metadataAccountedBytes - previousCost + nextCost;
-    if (nextEntries > METADATA_MAX_ENTRIES || nextBytes > METADATA_MAX_ACCOUNTED_BYTES) {
-      const error = new Error(
-        'git clone metadata overlay exceeded its bound (' + nextEntries + ' entries, ' +
-        nextBytes + ' accounted bytes)',
-      );
-      overlayFailure = error;
-      throw error;
-    }
-    metadata.set(path, entry);
-    metadataAccountedBytes = nextBytes;
-    if (!previous) addChild(path);
-    if (entry.kind === 'dir' && !children.has(path)) children.set(path, new Set());
-  }
-
-  function removeMetadata(path, recursive) {
-    if (!isAuthoritativePath(path)) return;
-    const paths = [path];
-    if (recursive) {
-      for (let index = 0; index < paths.length; index++) {
-        const parent = paths[index];
-        for (const name of children.get(parent) || []) {
-          paths.push(parent + '/' + name);
-        }
-      }
-    }
-    paths.sort((left, right) => right.length - left.length);
-    for (const candidate of paths) {
-      const previous = metadata.get(candidate);
-      if (!previous) continue;
-      metadataAccountedBytes -= metadataCost(candidate, previous);
-      metadata.delete(candidate);
-      children.delete(candidate);
-      removeChild(candidate);
-    }
-  }
-
-  function ensureMetadataParents(path, timestamp) {
-    if (!isAuthoritativePath(path)) return;
-    let parent = parentOf(path);
-    while (isAuthoritativePath(parent)) {
-      if (!metadata.has(parent)) {
-        setMetadata(parent, {
-          kind: 'dir', size: 0, mode: 0o755,
-          mtimeMs: timestamp, ctimeMs: timestamp, atimeMs: timestamp,
-        });
-      }
-      if (parent === authoritativeRoot) break;
-      parent = parentOf(parent);
-    }
-  }
-
-  function recordDirectory(path) {
-    if (!isAuthoritativePath(path)) return;
-    const existing = metadata.get(path);
-    if (existing && existing.kind === 'dir') return;
-    const now = Date.now();
-    ensureMetadataParents(path, now);
-    setMetadata(path, {
-      kind: 'dir', size: 0, mode: 0o755,
-      mtimeMs: now, ctimeMs: now, atimeMs: now,
-    });
-  }
-
-  function resolveMetadataPath(path, followFinal = true) {
-    const seen = new Set();
-    let current = normalizePath(path);
-    for (let depth = 0; depth < 40; depth++) {
-      const parts = current.split('/').filter(Boolean);
-      let prefix = '';
-      let followed = false;
-      for (let index = 0; index < parts.length; index++) {
-        prefix = prefix ? prefix + '/' + parts[index] : parts[index];
-        const entry = metadata.get(prefix);
-        if (!entry) continue;
-        const isFinal = index === parts.length - 1;
-        if (entry.kind === 'symlink' && (followFinal || !isFinal)) {
-          if (seen.has(prefix)) throw eloop(path);
-          seen.add(prefix);
-          const target = entry.target.startsWith('/')
-            ? normalizePath(entry.target)
-            : normalizePath(parentOf(prefix) + '/' + entry.target);
-          const remainder = parts.slice(index + 1).join('/');
-          current = remainder ? normalizePath(target + '/' + remainder) : target;
-          followed = true;
-          break;
-        }
-        if (!isFinal && entry.kind !== 'dir') throw enotdir(path);
-      }
-      if (!followed) return { path: current, entry: metadata.get(current) };
-    }
-    throw eloop(path);
-  }
-
-  function overlayStats() {
-    return {
-      entries: metadata.size,
-      accountedBytes: metadataAccountedBytes,
-      maxEntries: METADATA_MAX_ENTRIES,
-      maxAccountedBytes: METADATA_MAX_ACCOUNTED_BYTES,
-    };
-  }
-
-  if (authoritativeRoot !== null && authoritativeRootMetadata) {
-    setMetadata(authoritativeRoot, authoritativeRootMetadata);
-  }
-
-  // alreadyDurable records that these exact bytes are known to be durably
-  // published at path (the caller read them back), so waves can assert the
-  // pin's presence without ever re-writing unchanged content.
-  function pinFile(path, data, alreadyDurable = false) {
-    writer.setPin(normalizePath(path), data, alreadyDurable);
-  }
-
-  function unpinFile(path) {
-    writer.clearPin(normalizePath(path));
-  }
-
-  // Mutations apply in call order: each waits for the one before it, and the
-  // writer admits its record (cutting a wave first when it would not fit).
-  function bufferMutation(mutate) {
-    const operation = mutationQueue.then(async () => {
-      assertFlushHealthy();
-      return mutate();
-    });
-    mutationQueue = operation.then(() => undefined, () => undefined);
-    return operation;
-  }
-
-  // A file the writer holds, or a stat of one, for a path no wave has published.
-  function bufferedStat(path, followSymlink) {
-    const buffered = writer.bufferedRecord(path);
-    if (!buffered) return null;
-    const now = Date.now();
-    return statObj(buffered.meta || {
-      kind: buffered.kind, size: buffered.size, mode: 0o644,
-      mtimeMs: now, ctimeMs: now, atimeMs: now,
-    }, followSymlink);
-  }
-
-  function bufferedDirectoryStat(followSymlink) {
-    const now = Date.now();
-    return statObj({
-      kind: 'dir', size: 0, mode: 0o755,
-      mtimeMs: now, ctimeMs: now, atimeMs: now,
-    }, followSymlink);
-  }
-
-  function readBuffered(path, opts) {
-    const data = writer.buffered(path);
-    if (data === undefined) return undefined;
-    return wantsUtf8(opts) ? new TextDecoder().decode(data) : data;
-  }
-
-  const fs = {
-    promises: {
-      async readFile(filepath, opts) {
-        assertFlushHealthy();
-        await awaitPublishedSymlinks();
-        const p = normalizePath(filepath);
-        // Check buffer first (insertion order preserves what git wrote)
-        const buffered = readBuffered(p, opts);
-        if (buffered !== undefined) return buffered;
-        if (writer.isBufferedDelete(p)) throw enoent(filepath);
-        const resolved = resolveMetadataPath(p);
-        const durablePath = resolved.path;
-        if (durablePath !== p) {
-          const target = readBuffered(durablePath, opts);
-          if (target !== undefined) return target;
-        }
-        if (resolved.entry && resolved.entry.kind === 'dir') throw enoent(filepath);
-        if (!resolved.entry && isAuthoritativePath(durablePath)) throw enoent(filepath);
-
-        // Fall through to the supervisor. Ordinary RPC values have a 32 MiB
-        // structured-clone ceiling, so reconstruct larger files through the
-        // existing bounded range RPC instead of sending one oversized value.
-        // This is intentionally size-based rather than pack-path-specific: it
-        // preserves the fs.readFile contract for every large binary file.
-        await awaitSupervisorReadable();
-        let size = resolved.entry && resolved.entry.kind === 'file'
-          ? resolved.entry.size
-          : null;
-        if (size === null) {
-          stats.supervisorRpc.stat++;
-          size = await useRpcResource(
-            supervisor.stat(durablePath),
-            (result) => result === null || result === undefined ? null : Number(result.size),
-          );
-        }
-        if (size === null) throw enoent(filepath);
-        if (!Number.isSafeInteger(size) || size < 0) {
-          throw eio(filepath, 'invalid file size ' + String(size));
-        }
-
-        let data;
-        if (size > WHOLE_FILE_RPC_SAFE_BYTES) {
-          data = new Uint8Array(size);
-          for (let offset = 0; offset < size;) {
-            const expected = Math.min(READ_RANGE_BYTES, size - offset);
-            stats.supervisorRpc.fsReadRange++;
-            const bytesRead = await useRpcResource(
-              supervisor.fsReadRange(durablePath, offset, expected),
-              (result) => {
-                if (result === null || result === undefined) {
-                  throw eio(filepath, 'range ' + offset + '..' + (offset + expected) + ' is missing');
-                }
-                const chunk = result instanceof Uint8Array ? result : new Uint8Array(result);
-                if (chunk.byteLength !== expected) {
-                  throw eio(
-                    filepath,
-                    'range ' + offset + '..' + (offset + expected) +
-                      ' returned ' + chunk.byteLength + ' bytes',
-                  );
-                }
-                data.set(chunk, offset);
-                return chunk.byteLength;
-              },
-            );
-            offset += bytesRead;
-          }
-        } else {
-          stats.supervisorRpc.readFile++;
-          data = await useRpcResource(supervisor.readFileBytes(durablePath), (result) => {
-            if (result === null || result === undefined) throw enoent(filepath);
-            const content = result instanceof Uint8Array ? result : new Uint8Array(result);
-            return content.slice();
-          });
-        }
-        if (wantsUtf8(opts)) return new TextDecoder().decode(data);
-        return data;
-      },
-
-      async writeFile(filepath, data, opts) {
-        assertFlushHealthy();
-        const p = normalizePath(filepath);
-        // Every buffered record owns its ArrayBuffer: the W7 stream transfers
-        // what it enqueues, and isomorphic-git hands writeFile subarray views
-        // of a pack-sized parent, and pako's pooled output as whole views of
-        // a shared buffer (both detached a later wave in production). So the
-        // bytes are copied here, once, unconditionally.
-        let buf;
-        if (typeof data === 'string') {
-          buf = new TextEncoder().encode(data); // fresh ArrayBuffer
-        } else {
-          const src = data instanceof Uint8Array ? data : new Uint8Array(data);
-          buf = new Uint8Array(src.length);
-          buf.set(src);
-        }
-        return bufferMutation(async () => {
-          const now = Date.now();
-          ensureMetadataParents(p, now);
-          const mode = opts && (Number(opts.mode) & 0o111) ? 0o755 : 0o644;
-          const fileMetadata = {
-            kind: 'file', size: buf.length, mode,
-            mtimeMs: now, ctimeMs: now, atimeMs: now,
-          };
-          setMetadata(p, fileMetadata);
-          if (fileApi !== null && buf.length > __nimbusGitPack.MOUNT_WAVE_FILE_MAX) {
-            // What the waves hold before it lands first; then the file, as a program writes it.
-            await writer.flush();
-            const stat = await __nimbusGitPack.replaceFile(fileApi, '/' + p, mode, buf);
-            stampEntry(fileMetadata, stat.mtimeMs);
-            stats.filesWritten++;
-            stats.bytesWritten += buf.length;
-            return;
-          }
-          await writer.file(p, mode, buf, fileMetadata);
-        });
-      },
-
-      // unlink(2) and rmdir(2): a buffered delete removes the whole subtree at
-      // its path, so neither may take a directory it would not take on disk.
-      // unlink refuses a directory; rmdir refuses a non-directory and a
-      // directory that still holds anything (untracked files a checkout leaves).
-      async unlink(filepath) {
-        assertFlushHealthy();
-        const p = normalizePath(filepath);
-        if ((await fs.promises.lstat(filepath)).isDirectory()) throw eisdir(filepath);
-        return bufferMutation(async () => {
-          removeMetadata(p, false);
-          await writer.remove(p);
-        });
-      },
-
-      async readdir(filepath) {
-        assertFlushHealthy();
-        await awaitPublishedSymlinks();
-        const p = normalizePath(filepath);
-        const resolved = resolveMetadataPath(p);
-        const local = resolved.entry;
-        if (local || isAuthoritativePath(resolved.path)) {
-          if (!local) throw enoent(filepath);
-          if (local.kind !== 'dir') throw enotdir(filepath);
-          return [...(children.get(resolved.path) || [])];
-        }
-        await awaitSupervisorReadable();
-        // Start with supervisor's view
-        let names = [];
-        stats.supervisorRpc.readdir++;
-        const entries = await useRpcResource(supervisor.readdir(resolved.path), (result) => result);
-        names = Array.isArray(entries) ? entries.map(e => e.name) : [];
-        const set = new Set(names);
-        // Add buffered children: anything whose parent == p
-        const prefix = resolved.path ? resolved.path + '/' : '';
-        const buffered = writer.bufferedPaths();
-        for (const paths of [buffered.files, buffered.directories]) {
-          for (const bp of paths) {
-            if (!bp.startsWith(prefix)) continue;
-            const rest = bp.slice(prefix.length);
-            if (!rest) continue;
-            const firstSeg = rest.split('/')[0];
-            if (firstSeg) set.add(firstSeg);
-          }
-        }
-        // Remove deleted
-        for (const dp of buffered.deletes) {
-          if (!dp.startsWith(prefix)) continue;
-          const rest = dp.slice(prefix.length);
-          if (rest.indexOf('/') < 0) set.delete(rest);
-        }
-        return [...set];
-      },
-
-      async mkdir(filepath) {
-        assertFlushHealthy();
-        const p = normalizePath(filepath);
-        if (!p) return;
-        return bufferMutation(async () => {
-          recordDirectory(p);
-          await writer.directory(p);
-        });
-      },
-
-      async rmdir(filepath, options) {
-        assertFlushHealthy();
-        const p = normalizePath(filepath);
-        if (!(options && options.recursive)) {
-          if (!(await fs.promises.lstat(filepath)).isDirectory()) throw enotdir(filepath);
-          if ((await fs.promises.readdir(filepath)).length > 0) throw enotempty(filepath);
-        }
-        return bufferMutation(async () => {
-          removeMetadata(p, true);
-          await writer.remove(p, true);
-        });
-      },
-
-      async rm(filepath) {
-        assertFlushHealthy();
-        const p = normalizePath(filepath);
-        return bufferMutation(async () => {
-          removeMetadata(p, true);
-          await writer.remove(p, true);
-        });
-      },
-
-      async stat(filepath) {
-        assertFlushHealthy();
-        await awaitPublishedSymlinks();
-        const p = normalizePath(filepath);
-        const resolved = resolveMetadataPath(p);
-        if (resolved.entry) return statObj(resolved.entry, true);
-        if (isAuthoritativePath(resolved.path)) {
-          throw enoent(filepath);
-        }
-        const buffered = bufferedStat(p, true);
-        if (buffered) return buffered;
-        if (writer.isBufferedDirectory(p)) return bufferedDirectoryStat(true);
-        if (writer.isBufferedDelete(p)) throw enoent(filepath);
-        if (!p) return bufferedDirectoryStat(true);
-        await awaitSupervisorReadable();
-        stats.supervisorRpc.stat++;
-        const st = await useRpcResource(supervisor.stat(resolved.path), (result) => result);
-        if (!st) throw enoent(filepath);
-        return convertSupervisorStat(st);
-      },
-
-      async lstat(filepath) {
-        assertFlushHealthy();
-        await awaitPublishedSymlinks();
-        const p = normalizePath(filepath);
-        const resolved = resolveMetadataPath(p, false);
-        const local = resolved.entry;
-        if (local) return statObj(local, false);
-        if (isAuthoritativePath(resolved.path)) {
-          throw enoent(filepath);
-        }
-        const buffered = bufferedStat(resolved.path, false);
-        if (buffered) return buffered;
-        if (writer.isBufferedDirectory(resolved.path)) return bufferedDirectoryStat(false);
-        if (writer.isBufferedDelete(resolved.path)) throw enoent(filepath);
-        if (!resolved.path) return bufferedDirectoryStat(false);
-        await awaitSupervisorReadable();
-        stats.supervisorRpc.lstat++;
-        const st = await useRpcResource(supervisor.lstat(resolved.path), (result) => result);
-        if (!st) throw enoent(filepath);
-        return convertSupervisorStat(st);
-      },
-
-      async chmod() { /* no-op */ },
-      async symlink(target, filepath) {
-        assertFlushHealthy();
-        const p = normalizePath(filepath);
-        const value = String(target);
-        return bufferMutation(async () => {
-          const now = Date.now();
-          ensureMetadataParents(p, now);
-          const linkMetadata = {
-            kind: 'symlink', target: value,
-            size: textEncoder.encode(value).byteLength,
-            mode: 0o777,
-            mtimeMs: now, ctimeMs: now, atimeMs: now,
-          };
-          setMetadata(p, linkMetadata);
-          await writer.symlink(p, value, linkMetadata);
-        });
-      },
-      async readlink(filepath) {
-        assertFlushHealthy();
-        await awaitPublishedSymlinks();
-        const p = normalizePath(filepath);
-        const resolved = resolveMetadataPath(p, false);
-        const local = resolved.entry;
-        if (local && local.kind === 'symlink') return local.target;
-        if (local) throw einval(filepath);
-        if (isAuthoritativePath(resolved.path)) throw enoent(filepath);
-        await awaitSupervisorReadable();
-        stats.supervisorRpc.readlink++;
-        return useRpcResource(supervisor.readlink(resolved.path), result => {
-          if (result === null || result === undefined) throw enoent(filepath);
-          return String(result);
-        });
-      },
-    },
-  };
-
-  return {
-    fs,
-    flushWave,
-    overlayStats,
-    pinFile,
-    unpinFile,
-    waveStats: () => writer.stats(),
-  };
-}
-
-export default {
-  async fetch(request, workerEnv) {
-    const supervisor = workerEnv && workerEnv.SUPERVISOR;
-    if (!supervisor) {
-      return Response.json({
-        success: false, error: 'SUPERVISOR binding missing in facet env',
-        filesWritten: 0, bytesWritten: 0,
-        supervisorRpc: createSupervisorRpcCounters(),
-        metadataOverlay: emptyMetadataOverlayStats(),
-      }, { status: 500 });
-    }
-
-    let opts;
-    try {
-      opts = await request.json();
-    } catch (e) {
-      return Response.json({
-        success: false, error: 'Invalid request body: ' + (e && e.message),
-        filesWritten: 0, bytesWritten: 0,
-        supervisorRpc: createSupervisorRpcCounters(),
-        metadataOverlay: emptyMetadataOverlayStats(),
-      }, { status: 400 });
-    }
-
-    const phase = opts.phase === 'clone-prepare' ||
-        opts.phase === 'clone-batch' ||
-        opts.phase === 'clone-history' ||
-        opts.phase === 'clone-finish'
-      ? opts.phase
-      : 'operation';
-    const invocationId = typeof opts.invocationId === 'string'
-      ? opts.invocationId
-      : 'unavailable';
-    const startedAt = Date.now();
-    const startedMonotonic = performance.now();
-    const stats = {
-      filesWritten: 0,
-      bytesWritten: 0,
-      supervisorRpc: createSupervisorRpcCounters(),
-    };
-    let mutated = false;
-    let lastProgress = null;
-    const respond = (success, payload = {}, status = 200) => {
-      const endedAt = Date.now();
-      const error = !success && typeof payload.error === 'string'
-        ? payload.error
-        : undefined;
-      return Response.json({
-        success,
-        ...payload,
-        mutated,
-        filesWritten: stats.filesWritten,
-        bytesWritten: stats.bytesWritten,
-        supervisorRpc: stats.supervisorRpc,
-        diagnostic: {
-          phase,
-          invocationId,
-          startedAt,
-          endedAt,
-          elapsed: Math.max(0, Math.round(performance.now() - startedMonotonic)),
-          outcome: success ? 'success' : 'error',
-          mutated,
-          error,
-          lastProgress,
-          w7Waves: stats.supervisorRpc.writeBatchStream,
-          supervisorRpc: stats.supervisorRpc,
-          waves: waveStats(),
-        },
-      }, { status });
-    };
-    if (phase !== 'operation') {
-      const expectedPath = '/git/' + phase + '/' + encodeURIComponent(invocationId);
-      if (new URL(request.url).pathname !== expectedPath) {
-        return respond(false, {
-          error: 'git clone protocol: request trace marker does not match its phase identity',
-          metadataOverlay: emptyMetadataOverlayStats(),
-        }, 400);
-      }
-    }
-    const log = (msg) => {
-      if (opts.quiet) return;
-      stats.supervisorRpc.stdout++;
-      try { useRpcResource(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch {}
-    };
-
-    // Import the pre-bundled isomorphic-git + http/web.
-    // The bundle is provided via LOADER.load()'s modules record;
-    // see scripts/bundle-git.mjs and src/runtime/git-bundle-artifact.ts.
-    let git, http;
-    try {
-      const bundle = await import('./git-bundle.js');
-      git = bundle.git;
-      // http/web has both { request } named and { default: { request } };
-      // the namespace bundle.gitHttp exposes request directly, which is
-      // what isomorphic-git looks for.
-      http = __nimbusGitPack.retryingGitHttp(bundle.gitHttp);
-    } catch (e) {
-      return respond(false, {
-        error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),
-        metadataOverlay: emptyMetadataOverlayStats(),
-      }, 500);
-    }
-
-    // Keep progress bounded: phase transitions/completions, plus one timed
-    // update every two seconds.
-    // isomorphic-git fires this callback per packfile object — thousands
-    // of times for a medium repo. Each call does supervisor.stdout(...),
-    // a facet→supervisor RPC that consumes input-gate time on the
-    // supervisor DO and serialises behind other in-flight async work
-    // (including shell keystrokes). Also emit unconditionally on phase
-    // completion (loaded === total) so users still see the final frame
-    // and any phase transition.
-    let lastLogAt = 0;
-    let lastLoggedPhase = '';
-    const onProgress = async (e) => {
-      if (!e || !e.phase) return;
-      const now = Date.now();
-      lastProgress = {
-        phase: e.phase,
-        loaded: Number(e.loaded) || 0,
-        total: Number.isFinite(Number(e.total)) ? Number(e.total) : undefined,
-      };
-      const phaseChanged = e.phase !== lastLoggedPhase;
-      const phaseDone = e.total && e.loaded === e.total;
-      const dueByTime = now - lastLogAt >= 2000;
-      if (!phaseChanged && !phaseDone && !dueByTime) return;
-      lastLogAt = now;
-      lastLoggedPhase = e.phase;
-      log('\\r[git] ' + e.phase + ' ' + (e.loaded || 0) + '/' + (e.total || '?'));
-    };
-    const onAuth = () => opts.auth || { username: '', password: '' };
-
-    let flushWave = async () => {};
-    let overlayStats = emptyMetadataOverlayStats;
-    let waveStats = () => undefined;
-    try {
-      if (typeof opts.dir !== 'string') throw new Error('git ' + opts.op + ': dir required');
-      let authoritativeRoot = null;
-      let authoritativeRootMetadata = null;
-      let prepared = null;
-      const phaseDeadline = phase === 'operation'
-        ? null
-        : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
-      if (phase === 'clone-batch' || phase === 'clone-history' || phase === 'clone-finish') {
-        if (opts.op !== 'clone') throw protocolError(phase + ' requires clone operation');
-        requireProtocolString(opts.jobId, 'job id', 128);
-        requireProtocolString(opts.optionsHash, 'options hash', 128);
-        if (opts.exclusiveDestination !== true) throw protocolError(phase + ' requires an exclusive destination');
-        const root = normalizePath(opts.exclusiveMutationRoot || opts.dir);
-        const context = gitPackContext(supervisor, stats, opts, root, phaseDeadline, log);
-        mutated = true;
-        if (phase === 'clone-batch') {
-          await discardEarlierAttempts(context, opts, 'tmp_pack_', '_' + (opts.batch && opts.batch.index));
-          const batch = await __nimbusGitPack.cloneBatch(context, {
-            jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
-            index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
-            batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
-            capabilities: opts.capabilities,
-            partial: opts.partial === true,
-            local: opts.local === true,
-          });
-          return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
-        }
-        if (phase === 'clone-history') {
-          const history = opts.history || {};
-          let step;
-          if (history.step === 'checkout-plan') {
-            step = await __nimbusGitPack.clonePlanFromStore(context, {
-              commit: requireOid(history.commit, 'streamed commit'),
-              blobsPerBatch: opts.blobsPerBatch,
-              sparse: opts.sparse === true,
-            });
-          } else if (history.step === 'plan') {
-            step = await __nimbusGitPack.historyPlan(context, {
-              lists: history.lists,
-              present: history.present,
-              blobsPerBatch: opts.historyBlobsPerBatch,
-            });
-          } else if (history.step === 'resume') {
-            step = await __nimbusGitPack.historyResume(context, { ...history, budgetUnits: opts.historyBudgetUnits });
-          } else {
-            await discardEarlierAttempts(context, opts, 'tmp_pack_', '_' + history.piece);
-            step = await __nimbusGitPack.historyStep(context, {
-              jobId: opts.jobId + (opts.attempt > 1 ? '_' + opts.attempt : ''),
-              kind: history.kind,
-              piece: history.piece,
-              head: history.head,
-              depth: history.depth,
-              source: history.source,
-              capabilities: opts.capabilities,
-              budgetUnits: opts.historyBudgetUnits,
-              tagInterest: history.tagInterest,
-            });
-          }
-          return respond(true, { history: step, metadataOverlay: emptyMetadataOverlayStats() });
-        }
-        const finished = await __nimbusGitPack.cloneFinish(context, {
-          shares: opts.shares,
-          full: opts.full === true,
-          cacheTreeBytes: opts.cacheTreeBytes,
-          tags: opts.tags,
-          graph: opts.graph,
-          checkoutFailed: opts.checkoutFailed === true,
-        });
-        // The marker goes last: until it does, a failure leaves the clone abortable.
-        // A checkout that failed keeps it: the clone's cleanup (git's junk mode) is still to come.
-        if (opts.checkoutFailed !== true) {
-          const writer = context.writer();
-          await writer.remove('.git/' + CLONE_JOB_MARKER);
-          await writer.flush();
-        }
-        return respond(true, { finished, metadataOverlay: emptyMetadataOverlayStats() });
-      }
-      if (phase === 'clone-prepare') {
-        if (opts.op !== 'clone') throw protocolError('prepare requires clone operation');
-        requireProtocolString(opts.jobId, 'job id', 128);
-        requireProtocolString(opts.optionsHash, 'options hash', 128);
-        if (!opts.url) throw new Error('clone: url required');
-        const cloneRoot = normalizePath(opts.dir);
-        if (!cloneRoot) {
-          throw new Error('fatal: destination path ' + JSON.stringify(opts.dir) +
-            ' already exists and is not an empty directory.');
-        }
-        let existing = null;
-        let firstMissing = null;
-        const cloneRootParts = cloneRoot.split('/');
-        for (let index = 0; index < cloneRootParts.length; index++) {
-          const candidate = cloneRootParts.slice(0, index + 1).join('/');
-          const isFinal = index === cloneRootParts.length - 1;
-          stats.supervisorRpc.lstat++;
-          const candidateStat = await useRpcResource(
-            supervisor.lstat(candidate),
-            result => result,
-          );
-          const isDirectory = candidateStat &&
-            (candidateStat.type === 'directory' || candidateStat.type === 'dir');
-          if ((!isFinal && candidateStat && !isDirectory) ||
-              (isFinal && candidateStat && candidateStat.type === 'symlink')) {
-            throw new Error("fatal: destination path '" + opts.dir +
-              "' already exists and is not an empty directory.");
-          }
-          if (!candidateStat && firstMissing === null) firstMissing = candidate;
-          if (isFinal) existing = candidateStat;
-        }
-        const exclusiveRoot = normalizePath(opts.exclusiveMutationRoot || cloneRoot);
-        if (opts.exclusiveDestination === true &&
-            (exclusiveRoot !== (firstMissing || cloneRoot) ||
-             (cloneRoot !== exclusiveRoot && !cloneRoot.startsWith(exclusiveRoot + '/')))) {
-          throw new Error('git clone exclusive mutation root does not cover its destination');
-        }
-        stats.supervisorRpc.legacySymlinkSubtree++;
-        const hasLegacySymlink = await useRpcResource(
-          supervisor.hasLegacySymlinkUnder(exclusiveRoot),
-          result => result === true,
-        );
-        if (hasLegacySymlink) {
-          throw new Error("fatal: destination path '" + opts.dir +
-            "' already exists and is not an empty directory.");
-        }
-        if (existing) {
-          const isDirectory = existing.type === 'directory' || existing.type === 'dir';
-          if (!isDirectory) {
-            throw new Error("fatal: destination path '" + opts.dir +
-              "' already exists and is not an empty directory.");
-          }
-          stats.supervisorRpc.readdir++;
-          const entries = await useRpcResource(supervisor.readdir(cloneRoot), result => result);
-          if (!Array.isArray(entries) || entries.length !== 0) {
-            throw new Error("fatal: destination path '" + opts.dir +
-              "' already exists and is not an empty directory.");
-          }
-          if (opts.exclusiveDestination === true) {
-            authoritativeRootMetadata = metadataFromSupervisorStat(existing);
-          }
-        }
-        if (opts.exclusiveDestination === true) authoritativeRoot = exclusiveRoot;
-      } else if (opts.op === 'clone') {
-        throw protocolError('clone requires its phases (prepare, batch, history, finish)');
-      }
-
-      const bufferedFs = createBufferedFs(
-        supervisor,
-        stats,
-        authoritativeRoot,
-        authoritativeRootMetadata,
-        phaseDeadline,
-        // fetch, pull and push work in a repository that already exists.
-        phase === 'operation' ? normalizePath(opts.dir) : null,
-        opts.onMount === true,
-      );
-      const fs = bufferedFs.fs;
-      // cf-git reads packed objects by range and stores a fetched pack as it arrives (git/pack/facet-packs.ts).
-      fs.packs = __nimbusGitPack.facetPacks(facetPacksSupervisor(supervisor, stats, async (dir) => {
-        // A clone's objects/pack may exist only in this fs's pending writes: publish it first.
-        await fs.promises.mkdir(dir);
-        await bufferedFs.flushWave();
-      }));
-      flushWave = bufferedFs.flushWave;
-      overlayStats = bufferedFs.overlayStats;
-      waveStats = bufferedFs.waveStats;
-
-      if (phase === 'clone-prepare') {
-        if (opts.filter !== undefined && opts.depth === undefined) {
-          throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
-        }
-        if (opts.exclusiveDestination !== true) throw protocolError('clone requires an exclusive destination');
-        const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
-        // Nothing is written until the server is known to serve the clone.
-        const advertisement = await __nimbusGitPack.cloneDiscover(context, { filter: opts.filter });
-        if (authoritativeRoot !== null && authoritativeRoot !== normalizePath(opts.dir)) {
-          mutated = true;
-          await fs.promises.mkdir(opts.dir);
-          await flushWave();
-        }
-        mutated = true;
-        bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
-        await fs.promises.mkdir(normalizePath(opts.dir) + '/.git');
-        await fs.promises.writeFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
-        // No Git metadata wave starts until ownership is durable. If this first
-        // W7 stream loses its response, a cold abort can still prove ownership
-        // from the marker; a missing or mismatched marker is never authority.
-        await flushWave();
-        // A full clone through the fast path starts as a depth-1 one: its
-        // worktree first, its history after (clone-history). A server
-        // without filter or wants by id sends its one pack (cloneStream).
-        const started = await __nimbusGitPack.cloneFast(context, {
-          ref: opts.ref || undefined,
-          depth: opts.depth === undefined ? 1 : opts.depth,
-          history: opts.depth === undefined,
-          jobId: opts.jobId,
-          filter: opts.filter,
-          blobsPerBatch: opts.blobsPerBatch,
-          budgetUnits: opts.historyBudgetUnits,
-          sparse: opts.sparse === true,
-        }, advertisement);
-        prepared = started.stream ? { stream: started.stream } : { fast: started };
-        return respond(true, { prepared, metadataOverlay: overlayStats() });
-      } else if (opts.op === 'graph-filters') {
-        // A full clone's changed-path filters (git/pack/graph-filters.ts):
-        // reads the repository's packs, writes its commit-graph only.
-        const root = normalizePath(opts.dir);
-        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
-        const step = opts.graphFilters || {};
-        const graphFilters = step.step === 'plan'
-          ? await __nimbusGitPack.graphFiltersPlan(context)
-          : step.step === 'piece'
-            ? await __nimbusGitPack.graphFiltersPiece(context, step)
-            : step.step === 'discard'
-              ? await __nimbusGitPack.graphFiltersDiscard(context, step)
-              : await __nimbusGitPack.graphFiltersAssemble(context, step);
-        return respond(true, { graphFilters, metadataOverlay: overlayStats() });
-      } else if (opts.op === 'fetch-objects') {
-        // A partial clone's missing objects (git/promisor.ts): one request,
-        // stored as a promisor pack. Writes land below the repository only.
-        const root = normalizePath(opts.dir);
-        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
-        const fetched = await __nimbusGitPack.fetchObjects(context, { oids: opts.oids, jobId: invocationId });
-        return respond(true, { fetched, metadataOverlay: overlayStats() });
-      } else if (opts.op === 'fetch') {
-        // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
-        await git.fetch({
-          fs, http,
-          uploadPack: { discover: __nimbusGitPack.discover, requestPack: __nimbusGitPack.requestPack },
-          dir: opts.dir,
-          remote: opts.remote || 'origin',
-          ref: opts.ref || undefined,
-          depth: opts.depth,
-          relative: opts.relative === true,
-          singleBranch: true,
-          onProgress,
-          onAuth,
-        });
-      } else if (opts.op === 'push') {
-        await git.push({
-          fs, http,
-          dir: opts.dir,
-          remote: opts.remote || 'origin',
-          ref: opts.ref,
-          onProgress,
-          onAuth,
-        });
-      } else {
-        throw new Error('Unknown op: ' + opts.op);
-      }
-
-      if (phase === 'operation') await flushWave();
-
-      return respond(true, { metadataOverlay: overlayStats() });
-    } catch (e) {
-      // Best-effort flush of partial state so user can inspect what landed
-      try { await flushWave(); } catch {}
-      return respond(false, {
-        error: (e && e.message) || String(e),
-        errorCode: e && typeof e.code === 'string' ? e.code : undefined,
-        // A write git would have failed: git's own lines (pack/mount-writer.ts).
-        gitFailure: e instanceof __nimbusGitPack.GitWriteFailure ? e.lines : undefined,
-        metadataOverlay: overlayStats(),
-      });
-    }
-  },
-};
-`;
+  return GIT_PACK_NODE_IMPORTS + '\n' + GIT_PACK_SRC + '\nexport default __nimbusGitPack.networkWorker;\n';
 }
