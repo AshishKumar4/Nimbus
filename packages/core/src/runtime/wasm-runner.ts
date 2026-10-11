@@ -343,27 +343,7 @@ export function makeWasmRunner(deps: {
       limited.byteOffset + limited.byteLength,
     ) as ArrayBuffer;
 
-    // The submitted function runs INSIDE the facet isolate. It reads
-    // the precompiled WebAssembly.Module the facet host injected via
-    // globalThis.__NIMBUS_WASM, instantiates it (with WASI imports
-    // when needed), and either calls the named export or _start.
-    //
-    // The fn must be self-contained: serialised via fn.toString,
-    // closure references are NOT available inside the facet.
- 
-    /**
-     * What `WebAssembly.instantiate` resolves to: the instance for a compiled
-     * module, `{ instance, module }` for bytes. The engine's own types describe
-     * only the first, which is what the facet host's table holds — the second
-     * is named because the checks below are what keep a table filled with
-     * anything else from yielding an instance-less object.
-     */
- 
-    /**
-     * A direct-mode export: integer args in, one scalar — or nothing — out.
-     * `WebAssembly.Exports` types every export as a bare `Function`, which
-     * carries no signature of its own.
-     */
+
     // PID + log integration. The runtime-registry's contract is
     // runtime-agnostic at the PID layer; node + bun get this for
     // free via runFresh → facetMgr.exec which spawns through the

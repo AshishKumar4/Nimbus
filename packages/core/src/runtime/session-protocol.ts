@@ -48,6 +48,12 @@ export const SessionFileStatSchema = z.object({
   revision: z.number().optional(),
 });
 export type SessionFileStat = z.infer<typeof SessionFileStatSchema>;
+/** Runtime stat uses zero for unknown metadata; the session wire exposes that as absent. */
+export function sessionFileStatOf(stat: SessionFileStat | null): SessionFileStat | null {
+  if (stat === null) return null;
+  const { ino, revision, ...fields } = stat;
+  return { ...fields, ...(ino === undefined || ino === 0 ? {} : { ino }), ...(revision === undefined || revision === 0 ? {} : { revision }) };
+}
 export const SessionDirectoryEntrySchema = z.object({ name: z.string(), type: z.string() });
 export type SessionDirectoryEntry = z.infer<typeof SessionDirectoryEntrySchema>;
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
+import { sessionFileStatOf } from '../../packages/core/src/runtime/session-protocol.ts';
 
 const process = {
   pid: 7, command: 'server', argv: ['server'], cwd: '/home/user', state: 'running',
@@ -38,6 +39,8 @@ replies.stat = { type: 'file', size: 3, mtime: 1, mode: 0o644 };
 assert.deepEqual(await client.files.stat('/mounted/file'), replies.stat, 'a backend without revision or inode reports neither');
 replies.readlink = null;
 assert.equal(await client.files.readlink('/missing'), null);
+assert.deepEqual(sessionFileStatOf({ ...replies.stat, ino: 0, revision: 0 }), replies.stat, 'runtime unknown sentinels are absent on the session wire');
+assert.equal(sessionFileStatOf(null), null);
 
 replies.installRuntime = { ...install, exitCode: '0' };
 await assert.rejects(client.runtimes.install('python'), (error) => error.name === 'ZodError' && error.issues.some((issue) => issue.path[0] === 'exitCode'));

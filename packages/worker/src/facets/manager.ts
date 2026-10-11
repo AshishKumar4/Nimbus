@@ -808,12 +808,7 @@ function __nimbusResidencyMissReport() {
 }
 `;
 
-/**
- * The words of that report for the refused reads `keys` (namespace keys, no
- * leading slash): what the guest prints at its exit, and what a one-shot the
- * platform killed is failed with from the misses it reported as it ran
- * (exec). Empty when there are none. Runs in the guest as its own text.
- */
+
 /**
  * Static `import * as __real_X from 'node:X'` block. Prepended to generated
  * runtime workers so the shims can forward to workerd's real `node:*` builtins.

@@ -387,7 +387,7 @@ export interface TransformRuntime {
  * `engine` is null only before esbuild is loaded, which a rewrite-only
  * request does not wait for.
  */
-async function runTransformRequest(
+export async function runTransformRequest(
   engine: EsbuildTransformApi | (() => Promise<EsbuildTransformApi>) | null,
   code: string,
   options: EsbuildTransformOptions | undefined,

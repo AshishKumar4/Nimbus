@@ -32,21 +32,9 @@ export const OPENTUI_WASM_MODULE_NAME = 'opentui.wasm';
 export const OPENTUI_BACKEND_GLOBAL = '__nimbusOpenTUIBackend';
 
 /**
- * The backend class body, facet-runnable. SINGLE-SOURCED from OpenTUIWasmBackend
- * (opentui-wasm-backend.ts) via `.toString()`: the class and its module-scope
- * helpers are serialized from the real implementation, so the facet runs
- * byte-equivalent logic and cannot drift. The parity test
- * (tests/unit/opentui-facet-backend-parity.mjs) evaluates this string and drives
- * the full backend contract through it. Mirrors npm-resolve-preamble (policy fns
- * embedded via fn.toString() + a parity test).
- *
- * esbuild (`keepNames`, via wrangler) wraps every named function/class as
- * `__name(fn, "fn")`, so `.toString()` of the BUNDLED class/helpers references
- * `__name` by bare identifier — a binding that does NOT cross the facet isolate
- * boundary. We re-declare it (and `__defProp` it depends on) at the top of the
- * injected source, exactly as loader-pool's ESBUILD_RUNTIME_SHIM does for the
- * resolver/git facets. (Parity tests load un-bundled TS source, so they never
- * surface this — only the deployed, esbuild-bundled worker does.)
+ * The backend and its dependencies are compiled together at build time.
+ * Host minification cannot rename bindings inside the emitted expression.
+ * The parity test evaluates these actual bytes against the module's backend.
  */
 const OPENTUI_BACKEND_CLASS_SRC = `const { OpenTUIWasmBackend } = ${OPENTUI_BACKEND_CLASS_SOURCE};`;
 

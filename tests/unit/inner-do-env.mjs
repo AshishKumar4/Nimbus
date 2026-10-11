@@ -43,10 +43,11 @@ class RpcStub {
 const other = { kept: true };
 const env = { P: remote, GREETING: 'hi', OTHER: other };
 const main = { P: class {}, notAClass: 1 };
-// As the generated module runs them: from their source, so nothing outside them is reachable.
-const fromSource = (fn) => (0, eval)(`(${fn.toString()})`);
-const { NimbusDurableObjectClasses } = fromSource(innerDoAdapter)(
-  fromSource(innerDoIdFromName), ['P', 'ABSENT'], main, { env, RpcStub, WorkerEntrypoint },
+// Execute the actual build-time expression the generated module carries.
+const { INNER_DO_ADAPTER_SOURCE } = await import('../../packages/fabric/src/compiled-bodies.generated.ts');
+const compiled = (0, eval)(INNER_DO_ADAPTER_SOURCE);
+const { NimbusDurableObjectClasses } = compiled.innerDoAdapter(
+  compiled.innerDoIdFromName, ['P', 'ABSENT'], main, { env, RpcStub, WorkerEntrypoint },
 );
 
 // The env: P is a local namespace; the rest as it was.

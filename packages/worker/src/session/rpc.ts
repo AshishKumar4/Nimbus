@@ -23,6 +23,7 @@
  */
 
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
+import { sessionFileStatOf, type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
@@ -412,12 +413,12 @@ export async function _rpcWriteProtectedRootFile(
   fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
   fs.chmod(protectedPath, 0o444);
 }
-export async function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any> {
-  return self.supervisorOp({ op: 'stat', args: [path], pid, cred });
+export async function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
+  return sessionFileStatOf(await self.supervisorOp({ op: 'stat', args: [path], pid, cred }) as SessionFileStat | null);
 }
 
-export async function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any> {
-  return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
+export async function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
+  return sessionFileStatOf(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred }) as SessionFileStat | null);
 }
 
 export async function _rpcReadlink(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null> {
