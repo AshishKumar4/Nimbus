@@ -14,6 +14,7 @@
  * through the egress, as workerd's fetch follows a Fetcher's.
  */
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { type WebSocketGuestEvent, type WebSocketHostEvent } from './realm-websocket.js';
 /** A header list as it crosses: in order, a name once per value (set-cookie). */
 export type HeaderPairs = readonly (readonly [string, string])[];
 /** A request the realm sends off the box: its body whole, its redirect mode the realm's. */
@@ -35,7 +36,7 @@ export interface EgressHead {
     readonly body: boolean;
 }
 /** What the realm posts for a request. */
-export type EgressGuestEvent = {
+export type EgressGuestEvent = WebSocketGuestEvent | {
     readonly type: 'egress';
     readonly id: number;
     readonly request: EgressRequest;
@@ -51,7 +52,7 @@ export type EgressGuestEvent = {
     readonly id: number;
 };
 /** What the host posts back for it. */
-export type EgressHostEvent = {
+export type EgressHostEvent = WebSocketHostEvent | {
     readonly type: 'egress-head';
     readonly id: number;
     readonly head: EgressHead;
@@ -82,6 +83,7 @@ export declare class RealmEgress {
     private readonly network;
     private readonly post;
     private readonly open;
+    private readonly sockets;
     constructor(network: WorkspaceNetwork, post: (event: EgressHostEvent) => void);
     /** One of the realm's events: a request, a read of a body, or a cancel. */
     handle(event: EgressGuestEvent): void;

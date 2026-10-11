@@ -50,6 +50,7 @@ import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -146,6 +147,7 @@ function __nimbusRawSocket() {
 if (typeof __real_net !== "undefined") {
   const __realNet = __real_net.default ?? __real_net;
   const __NativeSocket = __realNet.Socket;
+  const __egressSocketHolds = new WeakMap();
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
   // What a connect refuses before it opens anything (a bad port, a missing
   // one, a lookup that is no function), thrown from connect as Node throws
@@ -170,6 +172,21 @@ if (typeof __real_net !== "undefined") {
       // Already connecting: the native connect refuses it, opening nothing.
       if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
       __nativeConnectChecks((Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args))[0]);
+      if (globalThis.__nimbusEgress === true) {
+        const socket = this;
+        let state = __egressSocketHolds.get(socket);
+        if (!state) {
+          state = { hold: null };
+          __egressSocketHolds.set(socket, state);
+          const ref = socket.ref, unref = socket.unref;
+          socket.ref = function () { state.hold?.(true); Reflect.apply(ref, this, arguments); return this; };
+          socket.unref = function () { state.hold?.(false); Reflect.apply(unref, this, arguments); return this; };
+        }
+        if (!state.hold) {
+          const hold = state.hold = __nimbusHoldSocket();
+          socket.once('close', () => { hold(false); if (state.hold === hold) state.hold = null; });
+        }
+      }
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
@@ -7839,6 +7856,7 @@ const __diagChannelMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  tls module (W3: forward to workerd, override createServer) ─────
 // ═══════════════════════════════════════════════════════════════════════
+${EGRESS_TLS_CLIENT_SOURCE}
 const __tlsMod = (() => {
   const real = (typeof __real_tls !== 'undefined') ? (__real_tls.default ?? __real_tls) : null;
   if (!real) {
@@ -7988,19 +8006,11 @@ const __tlsMod = (() => {
     return socket;
   };
   const connect = (...args) => {
-    // Under a workspace egress a TLS socket cannot be made: the egress's
-    // connect carries plain TCP only, and making the session here would go
-    // around it. The refusal names the limit; HTTPS by fetch is unaffected.
-    if (globalThis.__nimbusEgress === true) {
-      const refused = realNet ? new realNet.Socket() : null;
-      const error = nodeError(Error, 'ERR_NIMBUS_EGRESS_TLS', ${JSON.stringify(EGRESS_TLS_REFUSAL)});
-      if (!refused) throw error;
-      queueMicrotask(() => refused.destroy(error));
-      return refused;
-    }
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
-    if (!proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
-    const socket = proxied ? proxiedConnect(...args) : real.connect(...args);
+    const egressed = globalThis.__nimbusEgress === true;
+    if (egressed || !proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
+    const socket = egressed ? __nimbusEgressTlsConnect(real, realNet, args, notImplemented)
+      : proxied ? proxiedConnect(...args) : real.connect(...args);
     let closed = false;
     let hold = null;
     socket.once('close', () => { closed = true; hold?.(false); });
@@ -8008,11 +8018,13 @@ const __tlsMod = (() => {
     const ref = socket.ref, unref = socket.unref;
     socket.ref = function () {
       if (!closed) hold(true);
-      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+      if (typeof ref === 'function') Reflect.apply(ref, this, arguments);
+      return this;
     };
     socket.unref = function () {
       hold(false);
-      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+      if (typeof unref === 'function') Reflect.apply(unref, this, arguments);
+      return this;
     };
     return socket;
   };
@@ -10913,6 +10925,11 @@ ${NODE_WS_UPGRADE_SOURCE}
 // ERR_NET_SOCKET_NOT_AVAILABLE so callers fail loud.  W8 will route
 // raw outbound TCP through supervisor RPC.
 builtins.net = (() => {
+  if (globalThis.__nimbusEgress === true && typeof __real_net !== 'undefined') {
+    const native = __real_net.default ?? __real_net;
+    return { ...native, get Server() { return builtins.http.Server; },
+      createServer: (options, handler) => builtins.http.createServer(typeof options === 'function' ? options : handler) };
+  }
   class Socket extends __eventsMod {
     constructor() {
       super();

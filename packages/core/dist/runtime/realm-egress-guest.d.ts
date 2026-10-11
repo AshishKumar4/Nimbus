@@ -11,7 +11,7 @@ export interface RealmEgressGuest {
 }
 /**
  * Route this realm's `fetch` through its host (`post` crosses to it), and
- * refuse a WebSocket, which cannot cross, with `webSocketRefusal`. The host
+ * relay WebSocket frames unless the caller supplies `webSocketRefusal`. The host
  * sends each request out through the egress and follows its redirects as the
  * realm asked; a response is the realm's once its head arrives, and its body
  * is read from the host as the realm reads it. Fails as Node's fetch fails:
@@ -21,5 +21,5 @@ export interface RealmEgressGuest {
  * lives while its event loop has work: each holds it, as an active socket
  * holds a Node process; a body it is not reading holds nothing.
  */
-export declare function routeFetchThroughHost(post: (event: EgressGuestEvent) => void, waiting: () => void, webSocketRefusal: string): RealmEgressGuest;
+export declare function routeFetchThroughHost(post: (event: EgressGuestEvent) => void, waiting: () => void, webSocketRefusal?: string): RealmEgressGuest;
 //# sourceMappingURL=realm-egress-guest.d.ts.map

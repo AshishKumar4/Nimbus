@@ -145,11 +145,47 @@ export class TestEgress extends WorkerEntrypoint {
   }
 }
 
-/**
- * The SDK's session, its workspace under the test egress when the probe runs
- * with NIMBUS_TEST_EGRESS=1, as an embedder that names each session to its
- * egress would write it.
- */
+export class TestTlsEgress extends TestEgress {
+  override async connect(socket: Socket): Promise<void> {
+    const { localAddress } = await socket.opened as { localAddress?: string };
+    if (localAddress === 'tcp-refused.invalid:7') throw new Error('egress refused this TCP destination');
+    if (localAddress === `${EGRESS_TEST_HOST}:7`) {
+      const reader = socket.readable.getReader();
+      const first = await reader.read();
+      reader.releaseLock();
+      const writer = socket.writable.getWriter();
+      if (!first.done) await writer.write(first.value);
+      await writer.close();
+      return;
+    }
+    if (localAddress !== `${EGRESS_TEST_HOST}:443`) return super.connect(socket);
+    await readRequestLine(socket.readable);
+    const writer = socket.writable.getWriter();
+    await writer.write(new TextEncoder().encode('plain-egress-ready\n'));
+    await socket.closed.catch(() => {});
+    writer.releaseLock();
+  }
+
+  async connectTls(target: { hostname: string; port: number }): Promise<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }> {
+    if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
+    if (target.hostname !== EGRESS_TEST_HOST || target.port !== 443) throw new Error('unexpected TLS destination');
+    let reply: ReadableByteStreamController;
+    let input = '';
+    return {
+      readable: new ReadableStream<Uint8Array>({ type: 'bytes', start(controller) { reply = controller; } }),
+      writable: new WritableStream<Uint8Array>({
+        write(chunk) {
+          input += new TextDecoder().decode(chunk);
+          if (!input.includes('\r\n\r\n')) return;
+          reply.enqueue(new TextEncoder().encode('via-egress-tls ' + target.hostname + ':' + target.port + ' ' + input.split('\r\n', 1)[0] + '\n'));
+          reply.close();
+        },
+      }),
+    };
+  }
+}
+
+/** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
   /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
   #dataMounted = false;
@@ -172,6 +208,10 @@ export class NimbusSession extends SdkNimbusSession {
 
   protected override workspaceEgress() {
     if ((this.env as { NIMBUS_TEST_EGRESS?: string }).NIMBUS_TEST_EGRESS !== '1') return super.workspaceEgress();
+    if ((this.env as { NIMBUS_TEST_EGRESS_TLS?: string }).NIMBUS_TEST_EGRESS_TLS === '1') {
+      return (this.ctx as unknown as { exports: { TestTlsEgress(options: { props: object }): Fetcher } })
+        .exports.TestTlsEgress({ props: { session: this.ctx.id.toString() } });
+    }
     return (this.ctx as unknown as { exports: { TestEgress(options: { props: object }): Fetcher } })
       .exports.TestEgress({ props: { session: this.ctx.id.toString() } });
   }
