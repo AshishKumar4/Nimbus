@@ -27,7 +27,7 @@
 import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
 import type { HttpClient } from '../../../vendor/git-http.generated.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
-import { selectRemoteCredentials } from './remote-failure.js';
+import { selectRemoteCredentials, type RemoteFailure } from './remote-failure.js';
 
 export interface GitTransportAuth { username: string; password: string }
 
@@ -97,4 +97,11 @@ export function retryingGitHttp(base: HttpClient, schedule: readonly number[] = 
       });
     },
   };
+}
+
+export class UploadPackError extends Error {
+  constructor(message: string, readonly status?: number, readonly failure?: RemoteFailure) {
+    super(UPLOAD_PACK_ERROR_PREFIX + message);
+    this.name = 'UploadPackError';
+  }
 }

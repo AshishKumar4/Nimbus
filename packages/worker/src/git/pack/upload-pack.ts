@@ -10,7 +10,8 @@
  */
 
 import { retrying } from '@nimbus-sh/platform/retry.js';
-import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
+import { PktReader, pktLine, text } from './pkt-line.js';
 import { PackFormatError } from './format.js';
 import { plainTextMessage, type RemoteFailure } from './remote-failure.js';
 
@@ -51,6 +52,7 @@ export interface PackRequest {
   filter?: string;
   /** Ask for a thin pack: deltas against `haves` the server need not send. */
   thin?: boolean;
+  includeTag?: boolean;
 }
 
 export interface PackResponse {
@@ -60,24 +62,9 @@ export interface PackResponse {
   pack: AsyncIterable<Uint8Array> | null;
 }
 
-export class UploadPackError extends Error {
-  constructor(message: string, readonly status?: number, readonly failure?: RemoteFailure) {
-    super(UPLOAD_PACK_ERROR_PREFIX + message);
-    this.name = 'UploadPackError';
-  }
-}
-
 const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-function pktLine(text: string): Uint8Array {
-  const body = encoder.encode(text);
-  const out = new Uint8Array(body.byteLength + 4);
-  out.set(encoder.encode((body.byteLength + 4).toString(16).padStart(4, '0')));
-  out.set(body, 4);
-  return out;
-}
 
 /**
  * The repository's URL without credentials, and the credentials to send: a
@@ -123,83 +110,9 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit 
 
 export { STALL_MS };
 
-/** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
-class PktReader {
-  private buffer: Uint8Array = new Uint8Array(0);
-  private done = false;
-
-  constructor(private readonly reader: ReadableStreamDefaultReader<Uint8Array>, private readonly stallMs = STALL_MS) {}
-
-  /** The next chunk, or a stall error when none comes in time (the read is cancelled). */
-  private read(): Promise<ReadableStreamReadResult<Uint8Array>> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const stalled = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reject(new UploadPackError('the server sent nothing for ' + Math.round(this.stallMs / 1000) + ' s'));
-        void this.reader.cancel().catch(() => undefined);
-      }, this.stallMs);
-    });
-    const read = this.reader.read().catch((error: unknown) => {
-      // A response cut off mid-stream is the transport's failure, as a stall is.
-      throw error instanceof UploadPackError ? error
-        : new UploadPackError('the response broke off: ' + (error instanceof Error ? error.message : String(error)));
-    });
-    return Promise.race([read, stalled]).finally(() => {
-      if (timer !== null) clearTimeout(timer);
-    });
-  }
-
-  private async fill(needed: number): Promise<boolean> {
-    while (this.buffer.byteLength < needed) {
-      if (this.done) return false;
-      const { done, value } = await this.read();
-      if (done) {
-        this.done = true;
-        return this.buffer.byteLength >= needed;
-      }
-      if (this.buffer.byteLength === 0) {
-        this.buffer = value;
-      } else {
-        const merged = new Uint8Array(this.buffer.byteLength + value.byteLength);
-        merged.set(this.buffer);
-        merged.set(value, this.buffer.byteLength);
-        this.buffer = merged;
-      }
-    }
-    return true;
-  }
-
-  /** The next packet's payload, null for a flush, undefined at the stream's end. */
-  async next(): Promise<Uint8Array | null | undefined> {
-    if (!await this.fill(4)) {
-      if (this.buffer.byteLength === 0) return undefined;
-      throw new UploadPackError('stream ended inside a packet length');
-    }
-    const length = parseInt(decoder.decode(this.buffer.subarray(0, 4)), 16);
-    if (!Number.isInteger(length) || (length > 0 && length < 4)) throw new UploadPackError('bad packet length');
-    if (length === 0 || length === 1 || length === 2) {
-      this.buffer = this.buffer.subarray(4);
-      return null;
-    }
-    if (!await this.fill(length)) throw new UploadPackError('stream ended inside a packet');
-    const payload = this.buffer.subarray(4, length);
-    this.buffer = this.buffer.subarray(length);
-    return payload;
-  }
-
-  cancel(): Promise<void> {
-    return this.reader.cancel();
-  }
-}
-
-function text(payload: Uint8Array): string {
-  const line = decoder.decode(payload);
-  return line.endsWith('\n') ? line.slice(0, -1) : line;
-}
-
-export async function discover(options: UploadPackOptions): Promise<Advertisement> {
-  const response = await send(options, '/info/refs?service=git-upload-pack', {
-    headers: { accept: 'application/x-git-upload-pack-advertisement' },
+export async function discover(options: UploadPackOptions, service: 'git-upload-pack' | 'git-receive-pack' = 'git-upload-pack'): Promise<Advertisement> {
+  const response = await send(options, '/info/refs?service=' + service, {
+    headers: { accept: 'application/x-' + service + '-advertisement' },
   });
   if (!response.ok || !response.body) {
     // The server's text, as git shows it, with the status.
@@ -212,7 +125,7 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
   }
   const reader = new PktReader(response.body.getReader(), options.stallMs);
   const first = await reader.next();
-  if (!first || text(first) !== '# service=git-upload-pack') throw new UploadPackError('not a smart HTTP server');
+  if (!first || text(first) !== '# service=' + service) throw new UploadPackError('not a smart HTTP server');
   if (await reader.next() !== null) throw new UploadPackError('advertisement header lacks its flush');
   const advertisement: Advertisement = { refs: new Map(), symrefs: new Map(), capabilities: new Set() };
   let firstRef = true;
@@ -248,7 +161,7 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised: Set<string>, request: PackRequest): string[] {
   // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
-  const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
+  const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])].filter((capability) => advertised.has(capability));
   if (!advertised.has('side-band-64k')) throw new UploadPackError('the server does not offer side-band-64k');
   if (request.thin && advertised.has('thin-pack')) capabilities.push('thin-pack');
   if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {

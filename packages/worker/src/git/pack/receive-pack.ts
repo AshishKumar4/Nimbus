@@ -9,8 +9,9 @@
  * on side-band-64k band 1, its progress on band 2.
  */
 import { PackFormatError } from './format.js';
-import { discover, PktReader, pktLine, text, UploadPackError, type Advertisement, type UploadPackOptions } from './upload-pack.js';
-import { gitHttpHeaders, gitHttpRemote } from './transport.js';
+import { discover, type Advertisement, type UploadPackOptions } from './upload-pack.js';
+import { gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
+import { PktReader, pktLine, text } from './pkt-line.js';
 
 /** One ref update: the remote checks `old` as it applies it; all zeros for `new` deletes. */
 export interface ReceiveCommand {
