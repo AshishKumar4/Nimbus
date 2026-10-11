@@ -23,6 +23,10 @@ export interface NpmInstallInvocation {
    * in-process install path, which owns the package.json update itself.
    */
   saveDev: boolean;
+  /** `-O` / `--save-optional`: record the spec under optionalDependencies. */
+  saveOptional: boolean;
+  /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
+  allowPeerConflicts: boolean;
 }
 
 const INSTALL_ARG_SPEC = {
@@ -67,6 +71,8 @@ export function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation 
     loglevel: parseNpmLogLevel(parsed.flags.loglevel),
     production: parsed.flags.production === true || omittedDependencyTypes(args).has('dev'),
     saveDev: parsed.flags['save-dev'] === true,
+    saveOptional: parsed.flags['save-optional'] === true,
+    allowPeerConflicts: parsed.flags.force === true || parsed.flags['legacy-peer-deps'] === true,
   };
 }
 

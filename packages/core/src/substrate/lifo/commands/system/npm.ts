@@ -3,17 +3,17 @@ import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../../_shared/work
 import { resolveContext, type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
-import { resolve, join } from '../../utils/path.js';
+import { basename, dirname, resolve, join } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
-import { placementName } from '../../../../_shared/npm-placement.js';
 import {
-	canonicalTreePath, holdTree, planTree, projectRoots, requiredFailures,
-	type TreePackage, type TreeResolution, type TreeRoot,
+	canonicalTreePath, depthOf, holdTree, namedPackages, placementName, planTree, projectRoots, requiredFailures, saveNamed,
+	type ProjectManifest, type TreePackage, type TreeResolution, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
+import { renameOutcome } from '../../../../vfs/vfs-error.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
 	RegistryPackumentSchema,
@@ -36,15 +36,13 @@ export const NPM_VERSION = '10.0.0';
 
 // ─── Types ───
 
-interface PackageJson {
+interface PackageJson extends ProjectManifest {
 	name?: string;
 	version?: string;
 	description?: string;
 	main?: string;
 	bin?: string | Record<string, string>;
 	scripts?: Record<string, string>;
-	dependencies?: Record<string, string>;
-	devDependencies?: Record<string, string>;
 	license?: string;
 	author?: string | { name: string };
 }
@@ -72,6 +70,12 @@ export interface NpmInstallPort {
     pid: number;
     /** `--save-dev`: what is named is saved to devDependencies. */
     saveDev?: boolean;
+    /** `--save-optional`: what is named is saved to optionalDependencies. */
+    saveOptional?: boolean;
+    /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
+    allowPeerConflicts?: boolean;
+    /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
+    signal?: AbortSignal;
     /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
     registry: string;
     production?: boolean;
@@ -194,7 +198,8 @@ async function fetchAndStreamPackage(
 async function readProjectPackageJson(vfs: VFS, cwd: string): Promise<PackageJson | null> {
 	const pkgPath = join(cwd, 'package.json');
 	try {
-		return JSON.parse((await vfs.readFileString(pkgPath)));
+		const pkg: unknown = JSON.parse(await vfs.readFileString(pkgPath));
+		return typeof pkg === 'object' && pkg !== null && !Array.isArray(pkg) ? pkg : null;
 	} catch {
 		return null;
 	}
@@ -256,100 +261,137 @@ export function registerBinCommand(registry: CommandRegistry, binName: string, s
 interface TreeInstall {
 	/** The `node_modules` the tree lands in. */
 	targetBase: string;
+	/** The install's own view: its publication and rollback outlive a Ctrl-C, which revokes the command's. */
 	vfs: VFS;
 	/** Every registry request goes through it (the workspace's, under an egress). */
 	network: WorkspaceNetwork;
 	npmRegistry: string;
+	/** The command's: it stops the install before publication, never during it. */
 	signal: AbortSignal;
 	stdout: CommandOutputStream;
 	stderr: CommandOutputStream;
 	registry: CommandRegistry;
 	kernel?: Kernel;
-	/** Where a root's bins are linked: a global install's bin directory. */
+	/** A global install: npm's shallow layout, and the roots' bins linked into this directory. */
 	globalBinDir?: string;
+	/** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning. */
+	allowPeerConflicts?: boolean;
 }
 
-/**
- * A package the shell's plan knows, by the name it is installed under (an
- * alias's, not the registry's): its registry version (`info`, to fetch), or
- * its manifest on disk (kept).
- */
-type ShellPackage = TreePackage & { readonly info?: RegistryVersionInfo };
+/** A package the shell resolved, by the name it installs under (an alias's), with its registry version to fetch. */
+type ResolvedShellPackage = TreePackage & { readonly info: RegistryVersionInfo };
+
+/** A package installed before this install: its manifest on disk. */
+type InstalledShellPackage = TreePackage;
 
 /**
- * A retired copy: the package that was at `<dir>/<name>`, moved aside to
- * `<dir>/.<name>-retired-<run>` while an install replaces it, as arborist
- * retires one (a dot name no resolver asks for). The name says whose copy it
- * is, so an install that finds one whose target is missing (it crashed after
- * retiring) restores it.
+ * The install journal, at `<node_modules>/.nimbus-install-journal`: every
+ * rename publication makes, recorded before it starts and once its outcome
+ * is known, and `committed` once every package is published. An install
+ * that did not finish (a crash, a lost isolate) is undone from it by the
+ * next, and only from what it records.
  */
-const RETIRED = /^\.(.+)-retired-[a-z0-9]+$/;
+const JOURNAL = '.nimbus-install-journal';
 
-/** Every retired copy under `dir`'s node_modules trees, with the target it is beside. */
-async function retiredCopies(vfs: VFS, dir: string, out: Array<{ retired: string; target: string }> = []): Promise<Array<{ retired: string; target: string }>> {
-	let entries: Array<{ name: string }>;
-	try {
-		entries = (await vfs.readdir(dir)) as Array<{ name: string }>;
-	} catch {
-		return out;
-	}
-	for (const { name } of entries) {
-		const retired = RETIRED.exec(name);
-		if (retired) {
-			out.push({ retired: join(dir, name), target: join(dir, retired[1]!) });
-		} else if (name.startsWith('@')) {
-			await retiredCopies(vfs, join(dir, name), out);
-		} else if (!name.startsWith('.')) {
-			await retiredCopies(vfs, join(dir, name, 'node_modules'), out);
-		}
-	}
-	return out;
+/** A rename publication makes: `kind` says whose content `from` holds. */
+interface JournalStep {
+	/** retire: the installed copy moved aside; publish: a staged package moved in; carry: a kept package moved from a retired copy into the new tree. */
+	readonly kind: 'retire' | 'publish' | 'carry';
+	readonly from: string;
+	readonly to: string;
+	/** begun: not known to have finished; done: `to` holds all of it (what is left at `from` is residue); none: nothing moved. */
+	state: 'begun' | 'done' | 'none';
+}
+
+interface Journal {
+	readonly run: string;
+	readonly steps: JournalStep[];
+	committed: boolean;
 }
 
 /** The kernel-less shell's install queues are one namespace. */
 const NO_KERNEL = {};
 
 /**
- * `run` holding the tree `install` lands in (core _shared/npm-tree.ts
- * holdTree): an install and what its caller reads and writes besides
- * (the project's package.json).
+ * Undo what `journal` records, newest first: a published package goes (its
+ * content is new), and a retired or carried copy moves back, over any
+ * residue a rename left where it came from. A step that may have moved part
+ * of an installed copy (begun, its outcome unknown, both names there) is
+ * not guessed at: both are kept, and named. Answers whether every installed
+ * copy is back where it was.
  */
-async function lockTree<T>(install: TreeInstall, run: () => Promise<T>): Promise<T> {
-	const canonical = await canonicalTreePath((path) => install.vfs.realpath(path), install.targetBase);
-	const held = holdTree(install.kernel ?? NO_KERNEL, canonical);
-	const release = typeof held === 'function' ? held : await held;
-	try {
-		return await run();
-	} finally {
-		release();
+async function undoJournal(vfs: VFS, journal: Journal, stderr: CommandOutputStream): Promise<boolean> {
+	let restored = true;
+	for (const step of [...journal.steps].reverse()) {
+		const { kind, from, to } = step;
+		let state = step.state;
+		try {
+			if (state === 'begun') {
+				const atFrom = await vfs.exists(from);
+				const atTo = await vfs.exists(to);
+				state = !atTo ? 'none' : !atFrom ? 'done' : kind === 'publish' ? 'done' : 'begun';
+			}
+			if (state === 'none') continue;
+			if (kind === 'publish') {
+				// Staged and published content alike are this install's own.
+				await vfs.remove(to, { recursive: true, force: true });
+				await vfs.remove(from, { recursive: true, force: true });
+				continue;
+			}
+			if (state === 'begun') {
+				await stderr.write(`npm ERR! could not tell whether ${from} or ${to} holds the installed copy; both are kept\n`);
+				restored = false;
+				continue;
+			}
+			await vfs.remove(from, { recursive: true, force: true });
+			await vfs.mkdir(dirname(from), { recursive: true });
+			await vfs.rename(to, from);
+		} catch (error) {
+			await stderr.write(`npm ERR! could not restore ${from}; its copy is kept at ${to}: ${describeError(error)}\n`);
+			restored = false;
+		}
 	}
+	return restored;
+}
+
+const describeError = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/**
+ * Every package installed under `modulesDir`'s tree, at its placement: a
+ * linked package (a symlink) is the link's, and not walked into.
+ */
+async function installedPlacements(vfs: VFS, modulesDir: string, prefix = '', out: string[] = []): Promise<string[]> {
+	for await (const name of packagesIn(vfs, modulesDir)) {
+		const placement = prefix + name;
+		out.push(placement);
+		if (!(await vfs.isSymlink(join(modulesDir, name)))) await installedPlacements(vfs, join(modulesDir, name, 'node_modules'), `${placement}/node_modules/`, out);
+	}
+	return out;
 }
 
 /**
  * Install `roots` and what they depend on under `install.targetBase`, as
- * npm's arborist does it. Its caller holds the tree (lockTree).
+ * npm's arborist does it. Its caller holds the tree (holdTree).
  *
- * Recover: a retired copy whose target is missing (an install that crashed
- * after retiring it) is moved back first. One whose target is there is left
- * alone: no install deletes a retired copy it did not make.
+ * Recover: an install the journal records as unfinished is undone first.
  *
- * Plan: the one engine's (planTree), reading versions and manifests from the
- * registry one package at a time and what is installed from node_modules.
- * A required placement that cannot be filled fails the install before it
- * changes anything; an optional one is skipped with what it takes along.
+ * Plan: the one engine's (core _shared/npm-tree.ts planTree), reading
+ * versions and manifests from the registry one package at a time and what
+ * is installed from node_modules. A required failure fails the install
+ * before it changes anything. A stop (the command's signal) after the plan
+ * changes nothing either.
  *
  * Reify: every package is fetched, verified and extracted into this run's
- * own staging directory, then published, shallowest first: the package
- * there is retired beside it (RETIRED), the new one moved in, and the old
- * one's own node_modules moved under it. Each step is recorded before it is
- * made; a failure undoes every recorded step in reverse, and a retired copy
- * that could not be restored is kept and named. Retired copies are removed
- * only once every package is published. `failed` names what failed; empty,
- * the install is complete.
+ * own staging directory; one that fails there is left out with its optional
+ * set, or fails the install when it is required. Then, under the journal:
+ * what the tree no longer holds (extraneous, or left out) is retired;
+ * each package published shallowest first, the copy it replaces retired
+ * beside it; and each kept package an ancestor's retirement took along is
+ * carried back into place. A failure undoes the journal. Once every package
+ * is published, the journal is committed and the retired copies go.
  */
 async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Promise<{ installed: string[]; failed: string[] }> {
 	const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
-	const describe = (e: unknown) => e instanceof Error ? e.message : String(e);
 	const fail = async (name: string, message: string): Promise<{ installed: string[]; failed: string[] }> => {
 		if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
 			await stderr.write(`npm ERR! network error fetching ${name}\n`);
@@ -359,155 +401,163 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 		}
 		return { installed: [], failed: [name] };
 	};
+	const journalPath = join(targetBase, JOURNAL);
+	const writeJournal = async (journal: Journal) => {
+		await vfs.writeFile(journalPath, JSON.stringify(journal));
+	};
 
 	// ── Recover ──
+	if (await vfs.exists(journalPath)) {
+		let journal: Journal | null = null;
+		try { journal = JSON.parse(await vfs.readFileString(journalPath)); } catch { journal = null; }
+		if (journal !== null && !journal.committed && !(await undoJournal(vfs, journal, stderr))) {
+			return await fail(targetBase, 'an install that did not finish could not be undone; its copies are kept as named above');
+		}
+		if (journal?.committed) {
+			for (const { kind, to, state } of journal.steps) if (kind === 'retire' && state !== 'none') await vfs.remove(to, { recursive: true, force: true });
+		}
+		await vfs.remove(journalPath, { force: true });
+	}
 	// A staging directory left behind holds only new packages: no install
-	// in this isolate is using it while this one holds the node_modules.
+	// into this tree is using it while this one holds it.
 	try {
-		for (const { name } of (await vfs.readdir(targetBase)) as Array<{ name: string }>) {
+		for (const { name } of await vfs.readdir(targetBase)) {
 			if (name.startsWith('.nimbus-staging-')) await vfs.remove(join(targetBase, name), { recursive: true, force: true });
 		}
 	} catch { /* no node_modules yet */ }
-	for (const { retired, target } of await retiredCopies(vfs, targetBase)) {
-		if (await vfs.exists(target)) continue;
-		try {
-			await vfs.rename(retired, target);
-			await stderr.write(`npm WARN restored ${target}, retired by an install that did not finish\n`);
-		} catch (e) {
-			await stderr.write(`npm ERR! could not restore ${target}; its copy is kept at ${retired}: ${describe(e)}\n`);
-			return { installed: [], failed: [target] };
-		}
-	}
 
 	// ── Plan ──
-	const plan = await planTree<ShellPackage>(roots, {
-		async resolve(layer) {
-			const answers: Array<TreeResolution<ShellPackage>> = [];
-			for (const { edge } of layer) {
-				await stdout.write(`  ${edge.name}${edge.range ? '@' + edge.range : ''}...\n`);
+	const plan = await planTree<ResolvedShellPackage, InstalledShellPackage>(roots, {
+		async resolve(requests) {
+			const answers: Array<TreeResolution<ResolvedShellPackage>> = [];
+			for (const { name, range } of requests) {
+				await stdout.write(`  ${name}${range ? '@' + range : ''}...\n`);
 				try {
-					const info = await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal);
-					answers.push({ package: { ...info, name: edge.name, info } });
-				} catch (e) {
-					answers.push({ failed: describe(e) });
+					const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal);
+					answers.push({ package: { ...info, name, info } });
+				} catch (error) {
+					answers.push({ failed: describeError(error) });
 				}
 			}
 			return answers;
 		},
-		installed: (placements) => Promise.all(placements.map(async (placement): Promise<ShellPackage | null> => {
+		installed: (placements) => Promise.all(placements.map(async (placement): Promise<InstalledShellPackage | null> => {
 			try {
-				const pkg = JSON.parse(await vfs.readFileString(join(targetBase, placement, 'package.json')));
-				return typeof pkg?.version === 'string' ? { ...pkg, name: placementName(placement) } : null;
+				const pkg: PackageJson = JSON.parse(await vfs.readFileString(join(targetBase, placement, 'package.json')));
+				return typeof pkg.version === 'string' ? { ...pkg, name: placementName(placement), version: pkg.version } : null;
 			} catch { return null; }
 		})),
 		peerMismatch: async (edge, at, version) => {
 			await stderr.write(`npm WARN peer ${edge.name}@${edge.range} from ${edge.from} is met by ${at}@${version}\n`);
 		},
-	});
+	}, { shallow: install.globalBinDir !== undefined, allowPeerConflicts: install.allowPeerConflicts });
 	const [requiredFailure] = requiredFailures(plan);
 	if (requiredFailure) return await fail(requiredFailure.edge.name, requiredFailure.reason);
-	for (const { at, edge } of plan.failures) {
-		if (plan.skipped.has(at)) await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${plan.reasons.get(at)}\n`);
+	for (const { id, edge } of plan.failures) {
+		await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${plan.reasons.get(id)}\n`);
 	}
-	// A skipped package already on disk goes, as arborist removes a failed
-	// optional set (a kept one, or the copy a skipped one would replace).
-	const removals = async () => {
-		const out: string[] = [];
-		for (const at of plan.skipped) if (await vfs.exists(join(targetBase, at))) out.push(at);
-		return out;
-	};
-	if (plan.planned.every(({ at }) => plan.skipped.has(at)) && (await removals()).length === 0) return { installed: [], failed: [] };
+	signal.throwIfAborted();
 
 	// ── Reify ──
 	const run = Math.random().toString(36).slice(2, 10);
 	const staging = join(targetBase, `.nimbus-staging-${run}`);
-	const stagedAt = (i: number) => join(staging, String(i));
-	const { planned } = plan;
+	const planned = [...plan.nodes.values()].flatMap((node) => node.planned ? [node] : []);
+	const stagedAt = new Map(planned.map((node, i) => [node.at, join(staging, String(i))]));
 	try {
-		for (let i = 0; i < planned.length; i++) {
-			const { edge, at, pkg } = planned[i];
-			if (plan.skipped.has(at)) continue;
+		for (const node of planned) {
+			if (plan.skipped.has(node.at)) continue;
 			try {
 				// writeTarballStream throws when the archive carried no manifest
 				// and writes package.json last, so a return is a complete package.
-				await fetchAndStreamPackage(network, pkg.info!.dist.tarball, pkg.info!.dist.integrity, stagedAt(i), vfs, signal, stderr);
-			} catch (e) {
-				if (!plan.skip(at, describe(e))) return await fail(edge.name, describe(e));
-				await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${describe(e)}\n`);
+				await fetchAndStreamPackage(network, node.pkg.info.dist.tarball, node.pkg.info.dist.integrity, stagedAt.get(node.at) ?? staging, vfs, signal, stderr);
+			} catch (error) {
+				if (plan.fail(node.at, describeError(error)) === null) return await fail(node.edge.name, describeError(error));
+				await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${node.edge.name}: ${describeError(error)}\n`);
 			}
 		}
-		const order = planned.map((_, i) => i)
-			.filter((i) => !plan.skipped.has(planned[i].at))
-			.sort((x, y) => planned[x].at.split('/node_modules/').length - planned[y].at.split('/node_modules/').length);
+		signal.throwIfAborted();
 
-		// Each publish (and each removal), its steps recorded before they are made.
-		const published: Array<{ target: string; retired: string; steps: Set<'retire' | 'publish' | 'modules'> }> = [];
-		const retiredFor = (target: string) => {
-			const slash = target.lastIndexOf('/');
-			return `${target.slice(0, slash)}/.${target.slice(slash + 1)}-retired-${run}`;
+		const tree = new Set([...plan.nodes.keys()].filter((at) => !plan.skipped.has(at)));
+		// What is on disk the tree does not hold goes (npm prunes it); a
+		// global prefix's own packages are its roots, and stay.
+		const onDisk = await installedPlacements(vfs, targetBase);
+		const removals = onDisk.filter((at) => !tree.has(at) && ![...tree].some((kept) => at.startsWith(kept + '/node_modules/') && !plan.nodes.has(at) && plan.nodes.get(kept)?.planned === false));
+		const publish = planned.filter((node) => tree.has(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
+		if (publish.length === 0 && removals.length === 0) return { installed: [], failed: [] };
+
+		const journal: Journal = { run, steps: [], committed: false };
+		const retiredFor = (target: string) => join(dirname(target), `.${basename(target)}-retired-${run}`);
+		const retiredAt = new Map<string, string>();
+		const step = async (kind: JournalStep['kind'], from: string, to: string) => {
+			const entry: JournalStep = { kind, from, to, state: 'begun' };
+			journal.steps.push(entry);
+			await writeJournal(journal);
+			try {
+				await vfs.mkdir(dirname(to), { recursive: true });
+				await vfs.rename(from, to);
+				entry.state = 'done';
+			} catch (error) {
+				const outcome = renameOutcome(error);
+				if (outcome !== undefined) entry.state = outcome === 'all' ? 'done' : 'none';
+				await writeJournal(journal);
+				throw error;
+			}
+			await writeJournal(journal);
 		};
 		// The package the step being made is for, should it fail.
-		let current = planned[order[0] ?? 0]?.edge.name ?? targetBase;
+		let current = targetBase;
 		try {
 			// Deepest first, so a package goes before the one it is nested in.
-			for (const at of (await removals()).sort((x, y) => y.split('/node_modules/').length - x.split('/node_modules/').length)) {
+			for (const at of removals.sort((x, y) => depthOf(y) - depthOf(x))) {
 				current = placementName(at);
 				const target = join(targetBase, at);
-				const step = { target, retired: retiredFor(target), steps: new Set<'retire' | 'publish' | 'modules'>() };
-				published.push(step);
-				step.steps.add('retire');
-				await vfs.rename(target, step.retired);
+				if (!(await vfs.exists(target))) continue;
+				await step('retire', target, retiredFor(target));
+				retiredAt.set(at, retiredFor(target));
 			}
-			for (const i of order) {
-				current = planned[i].edge.name;
-				const target = join(targetBase, planned[i].at);
-				const slash = target.lastIndexOf('/');
-				const step = { target, retired: retiredFor(target), steps: new Set<'retire' | 'publish' | 'modules'>() };
-				published.push(step);
+			for (const node of publish) {
+				current = node.edge.name;
+				const target = join(targetBase, node.at);
 				if (await vfs.exists(target)) {
-					step.steps.add('retire');
-					await vfs.rename(target, step.retired);
+					await step('retire', target, retiredFor(target));
+					retiredAt.set(node.at, retiredFor(target));
 				}
-				try { await vfs.mkdir(target.slice(0, slash), { recursive: true }); } catch { /* exists */ }
-				step.steps.add('publish');
-				await vfs.rename(stagedAt(i), target);
-				// The package's files are replaced; what is installed under it stays.
-				if (step.steps.has('retire') && await vfs.exists(join(step.retired, 'node_modules')) && !(await vfs.exists(join(target, 'node_modules')))) {
-					step.steps.add('modules');
-					await vfs.rename(join(step.retired, 'node_modules'), join(target, 'node_modules'));
-				}
+				await step('publish', stagedAt.get(node.at) ?? staging, target);
 			}
-		} catch (e) {
-			// Undo, newest first: what each recorded step may have done is
-			// checked on disk, and a retired copy not put back is kept.
-			for (const { target, retired, steps } of published.reverse()) {
-				try {
-					if (steps.has('modules') && await vfs.exists(join(target, 'node_modules')) && !(await vfs.exists(join(retired, 'node_modules')))) {
-						await vfs.rename(join(target, 'node_modules'), join(retired, 'node_modules'));
-					}
-					if (steps.has('publish') && (!steps.has('retire') || await vfs.exists(retired)) && await vfs.exists(target)) {
-						await vfs.remove(target, { recursive: true });
-					}
-					if (steps.has('retire') && await vfs.exists(retired) && !(await vfs.exists(target))) await vfs.rename(retired, target);
-				} catch (undo) {
-					await stderr.write(`npm ERR! could not restore ${target}; its previous copy is kept at ${retired}: ${describe(undo)}\n`);
-				}
+			// A kept package whose ancestor was retired (replaced, or bundling
+			// its own node_modules) went with it: it moves back into the tree,
+			// beside whatever the new ancestor bundles.
+			const kept = [...plan.nodes.values()].filter((node) => !node.planned && tree.has(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
+			for (const node of kept) {
+				const target = join(targetBase, node.at);
+				if (await vfs.exists(target)) continue;
+				const ancestor = [...retiredAt.keys()].filter((at) => node.at.startsWith(at + '/node_modules/')).sort((x, y) => depthOf(y) - depthOf(x))[0];
+				if (ancestor === undefined) continue;
+				current = node.at;
+				const source = (retiredAt.get(ancestor) ?? '') + node.at.slice(ancestor.length);
+				if (await vfs.exists(source)) await step('carry', source, target);
 			}
-			return await fail(current, describe(e));
+		} catch (error) {
+			const restored = await undoJournal(vfs, journal, stderr);
+			if (restored) await vfs.remove(journalPath, { force: true });
+			return await fail(current, describeError(error));
 		}
+		journal.committed = true;
+		await writeJournal(journal);
 		// Published: the retired copies this run made are the old tree's.
-		for (const { retired, steps } of published) {
-			if (!steps.has('retire')) continue;
-			try { await vfs.remove(retired, { recursive: true, force: true }); } catch (e) {
-				await stderr.write(`npm WARN could not remove ${retired}: ${describe(e)}\n`);
+		for (const { kind, to, state } of journal.steps) {
+			if (kind !== 'retire' || state === 'none') continue;
+			try { await vfs.remove(to, { recursive: true, force: true }); } catch (error) {
+				await stderr.write(`npm WARN could not remove ${to}: ${describeError(error)}\n`);
 			}
 		}
+		await vfs.remove(journalPath, { force: true });
 		if (install.globalBinDir) {
-			for (const i of order) {
-				if (planned[i].edge.from === '') await linkGlobalBins(planned[i].pkg.info!, join(targetBase, planned[i].at), install.globalBinDir, install);
+			for (const node of publish) {
+				if (node.edge.from === '') await linkGlobalBins(node.pkg.info, join(targetBase, node.at), install.globalBinDir, install);
 			}
 		}
-		return { installed: order.map((i) => `${planned[i].pkg.name}@${planned[i].pkg.version}`), failed: [] };
+		return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [] };
 	} finally {
 		try { await vfs.remove(staging, { recursive: true, force: true }); } catch { /* none was made */ }
 	}
@@ -602,6 +652,9 @@ async function npmInstall(
 			registry: npmRegistry,
 			production: invocation.production,
 			saveDev: invocation.saveDev,
+			saveOptional: invocation.saveOptional,
+			allowPeerConflicts: invocation.allowPeerConflicts,
+			signal: ctx.signal,
 			npmLog,
 			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
 		});
@@ -620,61 +673,67 @@ async function npmInstall(
 }
 
 /**
- * The shell's own install port: npm's one engine (installTree) over the
- * command's view, network and streams, for a host that gives the command no
- * port of its own (a library's shell). A local install plans the project's
- * roots with the packages named, under the tree's lock, and saves what was
- * named to package.json once the install is complete.
+ * The shell's own install port: npm's one engine (installTree) for a host
+ * that gives the command no port of its own (a library's shell). Its view
+ * of the filesystem is the command's identity's, not bound to the command's
+ * signal: a Ctrl-C stops the install before it publishes, and never takes
+ * away what it needs to finish or undo a publication. A local install plans
+ * the project's roots with the packages named, under the tree's hold, and
+ * saves what was named to package.json once the install is complete.
  */
 function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): NpmInstallPort {
 	return {
 		async install(spec) {
+			const signal = spec.signal ?? ctx.signal;
+			const vfs = ctx.vfsUntilExit?.() ?? ctx.vfs;
 			const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
 			const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
-			if (globalBinDir) {
-				for (const dir of [targetBase, globalBinDir]) {
-					try { (await ctx.vfs.mkdir(dir, { recursive: true })); } catch { /* exists */ }
-				}
-			}
 			const tree: TreeInstall = {
-				targetBase, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal: ctx.signal,
+				targetBase, vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
 				...(globalBinDir ? { globalBinDir } : {}),
+				...(spec.allowPeerConflicts ? { allowPeerConflicts: true } : {}),
 			};
 			// The project's package.json is read and written under the tree's
-			// lock, so two installs at once add to it one after the other.
-			return lockTree(tree, async () => {
-				const project = spec.global ? null : (await readProjectPackageJson(ctx.vfs, spec.projectDir));
-				const named = spec.packages.map(splitPackageSpec);
-				const roots = projectRoots(project, named, { production: spec.production === true });
+			// hold, so two installs at once add to it one after the other.
+			const canonical = await canonicalTreePath((path) => vfs.realpath(path), targetBase);
+			const held = holdTree(kernel ?? NO_KERNEL, canonical, signal);
+			const release = typeof held === 'function' ? held : await held;
+			try {
+				if (globalBinDir) {
+					for (const dir of [targetBase, globalBinDir]) await vfs.mkdir(dir, { recursive: true });
+				}
+				// A global prefix's packages are its roots: each kept as it is.
+				const project: PackageJson | null = spec.global ? null : await readProjectPackageJson(vfs, spec.projectDir);
+				const implicit: string[] = [];
+				if (spec.global) for await (const name of packagesIn(vfs, targetBase)) implicit.push(name);
+				const named = namedPackages(project, spec.packages, { saveDev: spec.saveDev, saveOptional: spec.saveOptional });
+				const roots = projectRoots(project, named, { production: spec.production === true, implicit });
 				if (roots.length === 0) {
 					await ctx.stdout.write('up to date, audited 0 packages\n');
 					return { installed: [], failed: [] };
 				}
 				await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
 				const result = await installTree(roots, tree);
-				if (result.failed.length > 0 || !project || named.length === 0) return result;
+				if (result.failed.length > 0 || project === null || named.length === 0) return result;
 				// What the command line named is saved to package.json, once it installed.
 				try {
-					const pkg = (await readProjectPackageJson(ctx.vfs, spec.projectDir)) ?? project;
-					for (const { name } of named) {
-						let versionStr = 'latest';
+					const installedAs = async (name: string) => {
 						try {
-							const ipkg = JSON.parse((await ctx.vfs.readFileString(join(targetBase, name, 'package.json'))));
-							// An alias (`mine@npm:real@^1`) saves the package it
-							// installed, as npm does: "mine": "npm:real@^1.1.0".
-							versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
-						} catch { /* ignore */ }
-						const field = spec.saveDev ? 'devDependencies' : 'dependencies';
-						pkg[field] = { ...pkg[field], [name]: versionStr };
-					}
-					(await writeProjectPackageJson(ctx.vfs, spec.projectDir, pkg));
+							const pkg: PackageJson = JSON.parse(await vfs.readFileString(join(targetBase, name, 'package.json')));
+							return typeof pkg.version === 'string' ? { version: pkg.version, registryName: pkg.name ?? name } : null;
+						} catch { return null; }
+					};
+					const versions = new Map(await Promise.all(named.map(async ({ name }) => [name, await installedAs(name)] as const)));
+					await writeProjectPackageJson(vfs, spec.projectDir, saveNamed((await readProjectPackageJson(vfs, spec.projectDir)) ?? project, named, (name) => versions.get(name) ?? null));
 					return result;
-				} catch (e) {
-					await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
+				} catch (error) {
+					await ctx.stderr.write(`npm ERR! ${describeError(error)}\n`);
 					return { installed: result.installed, failed: named.map(({ name }) => name) };
 				}
-			});
+			} finally {
+				release();
+			}
 		},
 	};
 }

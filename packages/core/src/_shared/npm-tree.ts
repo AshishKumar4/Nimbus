@@ -1,29 +1,94 @@
 /**
- * npm-tree.ts — the plan of npm's one install engine: the tree a set of
- * roots needs, built as npm's arborist builds it, from what a host answers.
+ * npm-tree.ts — npm's one install engine: the ideal tree a project's roots
+ * need, built as npm's arborist builds it (build-ideal-tree, place-dep,
+ * can-place-dep, calc-dep-flags, optional-set), from what a host answers.
  * Both hosts install through it: the worker's (worker npm/installer.ts:
- * resolver facets a layer at a time, the lockfile for what is installed) and
- * the shell's own (lifo commands/system/npm.ts shellInstallPort: the registry
- * one package at a time, node_modules for what is installed).
+ * resolver facets a layer at a time, its lockfile for what is installed) and
+ * the shell's own (lifo commands/system/npm.ts shellInstallPort: the
+ * registry one package at a time, node_modules for what is installed).
  *
- * One breadth-first walk over every root's edges puts each package where the
- * rule both share says (npm-placement.ts). A package already installed is a
- * copy the walk sees and keeps when it meets an edge; a kept package's own
- * edges are walked again, so a replacement elsewhere in the tree (a root
- * upgraded past a dependent's range) nests the copy that dependent needs.
+ * Placements are paths relative to the project's node_modules: `react` at
+ * root, `pkg/node_modules/dep` nested. Node walks node_modules upward from
+ * the importer, so a nested copy is found by its dependent and what is
+ * beneath it, and by nobody else.
  *
- * A placement is required when a path of required edges reaches it from a
- * root; the rest is optional: every path to it passes through an
- * optionalDependencies edge (or an optional root). One that cannot be placed
- * (unresolved, refused, too deep) fails the install when required; when
- * optional it is skipped, with what needs it on the way and what only they
- * need, as arborist skips an optional dependency's set.
+ * The walk is breadth-first, a layer at a time, each layer's edges in npm's
+ * order (by the dependent's depth and path, then by name). An edge already
+ * met by the copy Node's walk finds from its dependent stays as it is; any
+ * other, and every edge the command line names (an explicit request), is
+ * resolved and placed as PlaceDep places it: from the dependent (a peer:
+ * from the dependent's parent) up toward the root, at the highest place
+ * where it does not conflict. A copy there that the new one may replace (it
+ * is no newer, and everything relying on it accepts the new one) is
+ * replaced; one that already meets the edge is kept; a copy the new one
+ * would shadow from something beneath that needs it is a conflict. What is
+ * installed is read as the walk reaches it: a copy no edge meets is not part
+ * of the tree, and goes.
+ *
+ * A request that cannot be met (unresolved, refused, too deep, a peer
+ * conflict with the project's own dependency) is a failure of that request,
+ * not of its place: another request for the same name places on its own. A
+ * placement is required when a path of required edges reaches it from the
+ * project; the rest is optional. A required failure fails the install; an
+ * optional one is left out with its optional set (optional-set.js): what
+ * needs it up to the optionalDependencies edges into the set, and what only
+ * those need.
  */
 
-import { MAX_NEST_DEPTH, decidePlacement, nestedPlacement, visiblePlacements, type PlacementEdge } from './npm-placement.js';
+import { isExactVersion, isSemverRange, rangeSubset, satisfiesRange, versionAtLeast } from './npm-semver.js';
+import { parseRegistryRequest, splitPackageSpec } from './npm-spec.js';
 
-/** An edge of the tree: optional when it is an optionalDependencies entry (or an optional root). */
-export type TreeEdge = PlacementEdge & { readonly optional: boolean };
+// ── Placements ───────────────────────────────────────────────────────────────
+
+const NM = '/node_modules/';
+
+/** `name` under `parent`; `''` is the project itself. */
+export function nestedPlacement(parent: string, name: string): string {
+  return parent ? `${parent}${NM}${name}` : name;
+}
+
+/** The containing placement, `''` at root. */
+export function parentPlacement(placement: string): string {
+  const i = placement.lastIndexOf(NM);
+  return i < 0 ? '' : placement.slice(0, i);
+}
+
+/** The package name a placement holds. */
+export function placementName(placement: string): string {
+  const i = placement.lastIndexOf(NM);
+  return i < 0 ? placement : placement.slice(i + NM.length);
+}
+
+/** How deep a placement is: 1 at root. */
+export function depthOf(placement: string): number {
+  return placement === '' ? 0 : placement.split(NM).length;
+}
+
+/** Placements Node's walk visits for `name` from inside `from`, nearest first, root last. */
+export function visiblePlacements(from: string, name: string): string[] {
+  const out: string[] = [];
+  let dir = from;
+  while (dir) {
+    out.push(`${dir}${NM}${name}`);
+    dir = parentPlacement(dir);
+  }
+  out.push(name);
+  return out;
+}
+
+/** Whether `placement` is `ancestor` or beneath it (`''`: everything is). */
+function within(placement: string, ancestor: string): boolean {
+  return ancestor === '' || placement === ancestor || placement.startsWith(ancestor + NM);
+}
+
+/**
+ * A cycle with mutually incompatible ranges has no finite layout without
+ * links: a request that would nest deeper than this fails rather than
+ * nesting without end.
+ */
+export const MAX_NEST_DEPTH = 16;
+
+// ── Packages and edges ───────────────────────────────────────────────────────
 
 /** The fields of a manifest its edges are read from. */
 export interface TreeManifest {
@@ -33,34 +98,190 @@ export interface TreeManifest {
   readonly peerDependenciesMeta?: Readonly<Record<string, { readonly optional?: boolean } | undefined>>;
 }
 
-/** A package a host knows: its name, version and manifest. */
+/** A package a host knows: its name and version, and the manifest its edges are read from. */
 export interface TreePackage extends TreeManifest {
   readonly name: string;
   readonly version: string;
 }
 
+/** A dependency edge: `name` at `range` (an `npm:` alias's included), asked for by the package at `from` (`''`: the project). */
+export interface TreeEdge {
+  readonly name: string;
+  readonly range: string;
+  readonly from: string;
+  readonly kind: 'dep' | 'peer';
+  /** An optionalDependencies entry (or an optional root): its failure skips its set. */
+  readonly optional: boolean;
+  /** Named on the command line: resolved even where an installed copy already meets it. */
+  readonly explicit: boolean;
+}
+
 /**
- * The edges a manifest asks for from `from`, as npm reads them: one per name
- * among its dependencies and optional ones (an optionalDependencies entry
- * overrides a dependencies one), and the peers it requires.
+ * The edges a manifest asks for from `from`, as npm's Node loads them: the
+ * peers it requires, then its dependencies, then its optional dependencies
+ * (an optionalDependencies entry replaces a dependencies one).
  */
 export function manifestEdges(manifest: TreeManifest, from: string): TreeEdge[] {
   const byName = new Map<string, TreeEdge>();
-  for (const [name, range] of Object.entries(manifest.dependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: false });
-  for (const [name, range] of Object.entries(manifest.optionalDependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: true });
-  const edges = [...byName.values()];
   const optionalPeers = manifest.peerDependenciesMeta ?? {};
   for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
-    if (optionalPeers[name]?.optional !== true && !byName.has(name)) edges.push({ name, range, from, kind: 'peer', optional: false });
+    if (optionalPeers[name]?.optional !== true) byName.set(name, { name, range, from, kind: 'peer', optional: false, explicit: false });
   }
-  return edges;
+  for (const [name, range] of Object.entries(manifest.dependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: false, explicit: false });
+  for (const [name, range] of Object.entries(manifest.optionalDependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: true, explicit: false });
+  return [...byName.values()];
 }
 
-/** What a host answers for an edge it resolves. */
+/** Whether `version` meets an edge's `range`: any version, for a range that is not semver (a tag, a URL). */
+function meets(version: string, edge: Pick<TreeEdge, 'name' | 'range'>): boolean {
+  const { range } = parseRegistryRequest(edge.name, edge.range);
+  return !isSemverRange(range) || satisfiesRange(version, range);
+}
+
+// ── Roots ────────────────────────────────────────────────────────────────────
+
+/** A root of the tree: an edge from the project. */
+export interface TreeRoot {
+  readonly name: string;
+  readonly range: string;
+  /** An optionalDependencies entry of the project. */
+  readonly optional?: boolean;
+  /** Named on the command line: resolved even where an installed copy meets it. */
+  readonly explicit?: boolean;
+}
+
+/** The project's manifest, as its roots and saves read it. */
+export interface ProjectManifest {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean } | undefined>;
+  [field: string]: unknown;
+}
+
+/** Where a named package is saved: npm's save types. */
+export type SaveType = 'prod' | 'dev' | 'optional' | 'peer' | 'peerOptional';
+
+const SAVE_FIELD: Readonly<Record<SaveType, 'dependencies' | 'devDependencies' | 'optionalDependencies' | 'peerDependencies'>> = {
+  prod: 'dependencies', dev: 'devDependencies', optional: 'optionalDependencies', peer: 'peerDependencies', peerOptional: 'peerDependencies',
+};
+
+/** The save type npm infers for `name` from where the project declares it (add-rm-pkg-deps inferSaveType); prod when it does not. */
+export function inferSaveType(manifest: ProjectManifest | null, name: string): SaveType {
+  for (const type of ['dev', 'optional', 'prod', 'peerOptional'] as const) {
+    if (manifest?.[SAVE_FIELD[type]]?.[name] === undefined) continue;
+    if (type === 'peerOptional' && manifest.peerDependenciesMeta?.[name]?.optional !== true) return 'peer';
+    return type;
+  }
+  return 'prod';
+}
+
+/** A package named on the command line: `name`, the spec it gives (null: none), and where it is saved. */
+export interface NamedPackage {
+  readonly name: string;
+  readonly range: string | null;
+  readonly saveType: SaveType;
+}
+
+/**
+ * The packages a command line names, as npm adds them: each saved where the
+ * flags say (`--save-dev`, `--save-optional`), else where the project
+ * already declares it; a bare name (or `*`) the project declares keeps the
+ * declared spec.
+ */
+export function namedPackages(manifest: ProjectManifest | null, specs: readonly string[], flags: { saveDev?: boolean; saveOptional?: boolean } = {}): NamedPackage[] {
+  return specs.map((spec) => {
+    const { name, range } = splitPackageSpec(spec);
+    const saveType: SaveType = flags.saveDev ? 'dev' : flags.saveOptional ? 'optional' : inferSaveType(manifest, name);
+    const declared = manifest?.[SAVE_FIELD[saveType]]?.[name];
+    return { name, range: (range === null || range === '*') && declared !== undefined ? declared : range, saveType };
+  });
+}
+
+/**
+ * A project's roots, as npm's Node loads its edges, the later replacing the
+ * earlier of one name: its required peers, its dependencies, its optional
+ * dependencies, its devDependencies (unless `production`); then the packages
+ * named on the command line, explicit requests, optional where they are
+ * saved as optional. `implicit`: names the project needs without declaring
+ * them (a global prefix's installed packages), each met by what is there.
+ */
+export function projectRoots(
+  manifest: ProjectManifest | null,
+  named: readonly NamedPackage[],
+  { production = false, implicit = [] }: { production?: boolean; implicit?: readonly string[] } = {},
+): TreeRoot[] {
+  const roots = new Map<string, TreeRoot>();
+  for (const name of implicit) roots.set(name, { name, range: '*' });
+  for (const edge of manifestEdges(manifest ?? {}, '')) roots.set(edge.name, { name: edge.name, range: edge.range, optional: edge.optional });
+  if (!production) {
+    for (const [name, range] of Object.entries(manifest?.devDependencies ?? {})) roots.set(name, { name, range });
+  }
+  for (const { name, range, saveType } of named) {
+    roots.set(name, { name, range: range ?? '', optional: saveType === 'optional', explicit: true });
+  }
+  return [...roots.values()];
+}
+
+/**
+ * The project's manifest with what the command line named saved, as npm
+ * saves it after an install: each package that installed (`installed`: its
+ * version, and its registry name when that is not the name it installs
+ * under) under its save type, at `^version` unless the spec given is a range
+ * `^version` would widen; out of the fields its save type excludes; an
+ * optional one also under dependencies (npm's affordance for older npms).
+ * One that did not install keeps the spec given.
+ */
+export function saveNamed(
+  manifest: ProjectManifest,
+  named: readonly NamedPackage[],
+  installed: (name: string) => { version: string; registryName: string } | null,
+): ProjectManifest {
+  const out: ProjectManifest = { ...manifest };
+  const field = (type: SaveType): Record<string, string> => {
+    const key = SAVE_FIELD[type];
+    const current = out[key];
+    const copy = { ...current };
+    out[key] = copy;
+    return copy;
+  };
+  const remove = (key: 'dependencies' | 'devDependencies' | 'optionalDependencies' | 'peerDependencies', name: string) => {
+    const current = out[key];
+    if (current?.[name] === undefined) return;
+    const { [name]: _gone, ...rest } = current;
+    out[key] = rest;
+  };
+  for (const { name, range, saveType } of named) {
+    if (saveType === 'prod') { remove('devDependencies', name); remove('peerDependencies', name); }
+    else if (saveType === 'dev') remove('dependencies', name);
+    else if (saveType === 'optional') remove('peerDependencies', name);
+    else { remove('dependencies', name); remove('optionalDependencies', name); }
+    const spec = range ?? '*';
+    const got = installed(name);
+    let saved = spec;
+    if (got !== null) {
+      // reify.js #saveIdealTree: a range the saved `^version` would widen is kept as given.
+      const { range: requested, alias } = parseRegistryRequest(name, spec);
+      const prefixed = `^${got.version}`;
+      const isRange = isSemverRange(requested) && !isExactVersion(requested) && requested !== '*' && requested !== '' && requested !== 'latest';
+      const range = isRange && !rangeSubset(prefixed, requested) ? requested : prefixed;
+      saved = alias || got.registryName !== name ? `npm:${got.registryName}@${range}` : range;
+    }
+    const target = field(saveType);
+    if (saved !== '*' || target[name] === undefined) target[name] = saved;
+    if (saveType === 'optional') field('prod')[name] = target[name];
+  }
+  return out;
+}
+
+// ── The plan ─────────────────────────────────────────────────────────────────
+
+/** What a host answers for a request it resolves. */
 export type TreeResolution<P extends TreePackage> =
   /**
-   * The package for the edge; one of another name (the host swapped it) is
-   * placed under that name. With `skipIfOptional`, the host leaves it out
+   * The package for the request; one of another name (the host swapped it)
+   * is placed under that name. With `skipIfOptional`, the host leaves it out
    * when it turns out optional (a native binding it cannot run), saying why.
    */
   | { readonly package: P; readonly skipIfOptional?: string }
@@ -71,224 +292,357 @@ export type TreeResolution<P extends TreePackage> =
   /** Left out by the host on purpose (a package it provides itself): no failure, and nothing placed. */
   | { readonly omitted: string };
 
-/** What the plan is built from. */
-export interface TreeHost<P extends TreePackage> {
-  /** Resolve a layer of edges, together, each for its placement (`at`); an answer per edge, in order. */
-  resolve(layer: ReadonlyArray<{ readonly edge: TreeEdge; readonly at: string }>): Promise<ReadonlyArray<TreeResolution<P>>>;
-  /** The packages already at `placements`, before this install; null where there is none. */
-  installed(placements: readonly string[]): Promise<ReadonlyArray<P | null>>;
-  /** A peer met by a copy outside its range, as npm warns of one. */
+/** What the plan is built from: `P`, the packages it resolves; `I`, those already installed. */
+export interface TreeHost<P extends TreePackage, I extends TreePackage> {
+  /** Resolve requests together (each name and range once); an answer per request, in order. */
+  resolve(requests: ReadonlyArray<Pick<TreeEdge, 'name' | 'range' | 'optional'>>): Promise<ReadonlyArray<TreeResolution<P>>>;
+  /** The packages installed at `placements` before this install; null where there is none. */
+  installed(placements: readonly string[]): Promise<ReadonlyArray<I | null>>;
+  /** A peer met by a copy outside its range, which npm allows where the conflict is not the project's own. */
   peerMismatch?(edge: TreeEdge, at: string, version: string): void | Promise<void>;
 }
 
-/** A placement the plan could not fill. */
+/** A request the plan could not meet. */
 export interface TreeFailure {
   readonly edge: TreeEdge;
-  readonly at: string;
   readonly reason: string;
-  /** The host refused it; else it could not be resolved (or would nest too deep). */
+  /** The host refused it; else it could not be resolved, nest, or meet a peer. */
   readonly refused: boolean;
+  /** Its id in the plan's graph: `required`, `skipped` and `reasons` name it so. */
+  readonly id: string;
 }
 
-export interface TreePlan<P extends TreePackage> {
-  /** Packages to place, in the order the walk decided them; `at` is their placement. */
-  readonly planned: ReadonlyArray<{ readonly edge: TreeEdge; readonly at: string; readonly pkg: P }>;
-  /** Packages already installed that the tree keeps, by placement. */
-  readonly kept: ReadonlyMap<string, P>;
-  /** Placements that could not be filled; a required one fails the install. */
+/** A placement of the tree: a package placed by this install, or one installed before it that the tree keeps. */
+export type TreeNode<P extends TreePackage, I extends TreePackage> =
+  | { readonly at: string; readonly planned: true; readonly pkg: P; readonly edge: TreeEdge }
+  | { readonly at: string; readonly planned: false; readonly pkg: I };
+
+export interface TreePlan<P extends TreePackage, I extends TreePackage> {
+  /** The tree, by placement: placed and kept packages alike, the skipped among them. */
+  readonly nodes: ReadonlyMap<string, TreeNode<P, I>>;
+  /** Requests the plan could not meet. */
   readonly failures: readonly TreeFailure[];
-  /** Placements reached from a root by a path of required edges. */
+  /** Placements (and failure ids) a path of required edges reaches from the project. */
   readonly required: ReadonlySet<string>;
-  /**
-   * Placements left out: optional ones that failed or that their host leaves
-   * out when optional (`reasons`), what needs them, and what only those
-   * need. A kept package among them is removed.
-   */
+  /** Placements (and failure ids) left out: optional failures, what the host leaves out, and their optional sets. */
   readonly skipped: ReadonlySet<string>;
-  /** Why each optional placement that failed, or that its host left out, is skipped. */
+  /** Why each optional failure, or package its host leaves out, is left out (by placement or failure id). */
   readonly reasons: ReadonlyMap<string, string>;
+  /** Installed placements the tree does not keep (extraneous now). */
+  readonly extraneous: ReadonlySet<string>;
   /**
-   * Skip `at`, which failed after the plan (its download, its archive), with
-   * what it takes along; false, and nothing skipped, when it is required.
+   * Leave out `at`, which failed after the plan (its download, its
+   * archive), with its optional set: the placements left out (with any
+   * already left out), or null when it is required and fails the install.
    */
-  skip(at: string, reason: string): boolean;
+  fail(at: string, reason: string): ReadonlySet<string> | null;
 }
 
-/** A root of the tree: a project's dependency, or a package named to install. */
-export interface TreeRoot {
-  readonly name: string;
-  readonly range: string;
-  /** An optionalDependencies entry of the project. */
-  readonly optional?: boolean;
+/** The required failures of `plan`: any fails the install. */
+export function requiredFailures(plan: Pick<TreePlan<TreePackage, TreePackage>, 'failures' | 'required'>): TreeFailure[] {
+  return plan.failures.filter(({ id }) => plan.required.has(id));
 }
 
-/**
- * A project's roots, as npm installs them: its dependencies, its
- * devDependencies (unless `production`; a name in both is a dependency), its
- * optionalDependencies (optional, over the same name elsewhere), and the
- * packages named on the command line, which win their names.
- */
-export function projectRoots(
-  manifest: {
-    readonly dependencies?: Readonly<Record<string, string>>;
-    readonly devDependencies?: Readonly<Record<string, string>>;
-    readonly optionalDependencies?: Readonly<Record<string, string>>;
-  } | null,
-  named: ReadonlyArray<{ readonly name: string; readonly range: string | null }>,
-  { production = false }: { production?: boolean } = {},
-): TreeRoot[] {
-  const roots = new Map<string, TreeRoot>();
-  for (const [name, range] of Object.entries(manifest?.dependencies ?? {})) roots.set(name, { name, range });
-  if (!production) {
-    for (const [name, range] of Object.entries(manifest?.devDependencies ?? {})) if (!roots.has(name)) roots.set(name, { name, range });
-  }
-  for (const [name, range] of Object.entries(manifest?.optionalDependencies ?? {})) roots.set(name, { name, range, optional: true });
-  for (const { name, range } of named) roots.set(name, { name, range: range ?? '' });
-  return [...roots.values()];
+/** A dependency graph edge: into `to` (a placement or failure id) from `from` (`''`: the project). */
+interface GraphEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly optional: boolean;
+}
+
+const localeCompare = (a: string, b: string): number => a.localeCompare(b, 'en');
+
+/** npm's order for a layer: by the dependent's depth, its path, then the name. */
+function npmOrder(a: TreeEdge, b: TreeEdge): number {
+  return depthOf(a.from) - depthOf(b.from) || localeCompare(a.from, b.from) || localeCompare(a.name, b.name);
+}
+
+export interface PlanOptions {
+  /** Global installs: dependencies stay beneath the package that needs them (npm's shallow strategy). */
+  readonly shallow?: boolean;
+  /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
+  readonly allowPeerConflicts?: boolean;
 }
 
 /** Plan the tree `roots` need, from what `host` answers. */
-export async function planTree<P extends TreePackage>(roots: readonly TreeRoot[], host: TreeHost<P>): Promise<TreePlan<P>> {
-  // Placements installed (as probed) and planned, with their packages.
-  const placed = new Map<string, P>();
-  const kept = new Map<string, P>();
-  const pending = new Set<string>();
+export async function planTree<P extends TreePackage, I extends TreePackage>(
+  roots: readonly TreeRoot[],
+  host: TreeHost<P, I>,
+  options: PlanOptions = {},
+): Promise<TreePlan<P, I>> {
+  const rootEdges: TreeEdge[] = roots.map(({ name, range, optional, explicit }) => ({
+    name, range, from: '', kind: 'dep', optional: optional === true, explicit: explicit === true,
+  }));
+  const nodes = new Map<string, TreeNode<P, I>>();
+  // Installed packages read so far that no edge has met yet.
+  const candidates = new Map<string, I>();
   const probed = new Set<string>();
-  // Placements decided (planned or failed), and those whose edges are walked.
-  const settled = new Set<string>();
-  const walked = new Set<string>();
-  const planned: Array<{ edge: TreeEdge; at: string; pkg: P }> = [];
-  const failures: TreeFailure[] = [];
+  // Every edge of the tree (the project's, and each node's), by the name it asks for.
+  const dependents = new Map<string, TreeEdge[]>();
+  const index = (edges: readonly TreeEdge[]) => {
+    for (const edge of edges) {
+      const list = dependents.get(edge.name) ?? [];
+      dependents.set(edge.name, list);
+      list.push(edge);
+    }
+  };
+  const unindex = (from: string) => {
+    for (const [name, list] of dependents) dependents.set(name, list.filter((edge) => edge.from !== from));
+  };
+  index(rootEdges);
+  const failures = new Map<string, TreeFailure>();
+  // Who asked for each failed request (its graph's edges in), and which edges failed.
+  const failedAskers = new Map<string, GraphEdge[]>();
+  const failedEdges = new Set<string>();
+  const omitted = new Set<string>();
   const whenOptional = new Map<string, string>();
-  // Who asks for each placement, and by which kind of edge.
-  const askers = new Map<string, Array<{ from: string; optional: boolean }>>();
-  const asked = (at: string, edge: TreeEdge) => {
-    const list = askers.get(at) ?? [];
-    askers.set(at, list);
-    list.push({ from: edge.from, optional: edge.optional });
+  // Resolutions by request, for the life of the plan.
+  const resolutions = new Map<string, TreeResolution<P>>();
+  const rootNames = new Set(roots.map(({ name }) => name));
+  const requestKey = (edge: Pick<TreeEdge, 'name' | 'range'>) => `${edge.name}\0${edge.range}`;
+
+  const fail = (edge: TreeEdge, reason: string, refused: boolean) => {
+    const id = `!${requestKey(edge)}`;
+    if (!failures.has(id)) failures.set(id, { edge, reason, refused, id });
+    const askers = failedAskers.get(id) ?? [];
+    failedAskers.set(id, askers);
+    askers.push({ from: edge.from, to: id, optional: edge.optional });
+    failedEdges.add(`${edge.from}\0${edge.name}`);
   };
 
-  let queue: TreeEdge[] = roots.map(({ name, range, optional }) => ({ name, range, from: '', kind: 'dep', optional: optional === true }));
+  // The package Node's walk finds for `name` from inside `from`, placed or installed.
+  const nearest = (from: string, name: string): { at: string; pkg: TreePackage; kept: boolean } | null => {
+    for (const at of visiblePlacements(from, name)) {
+      const node = nodes.get(at);
+      if (node) return { at, pkg: node.pkg, kept: true };
+      const candidate = candidates.get(at);
+      if (candidate) return { at, pkg: candidate, kept: false };
+    }
+    return null;
+  };
+  // The tree's edges for `name` that Node's walk answers from `at`.
+  const reliersOn = (at: string, name: string): TreeEdge[] =>
+    (dependents.get(name) ?? []).filter((edge) => nearest(edge.from, name)?.at === at);
+
+  /** Keep the installed copy at `at`: it is part of the tree now, and its edges are walked. */
+  const keep = (at: string, next: TreeEdge[]) => {
+    const candidate = candidates.get(at);
+    if (!candidate) return;
+    candidates.delete(at);
+    nodes.set(at, { at, planned: false, pkg: candidate });
+    const edges = manifestEdges(candidate, at);
+    index(edges);
+    next.push(...edges);
+  };
+
+  type Place = { kind: 'keep'; at: string } | { kind: 'place'; at: string } | { kind: 'conflict' };
+  /** Whether `pkg` may go into `target`'s node_modules for `edge` (can-place-dep). */
+  const canPlace = (edge: TreeEdge, pkg: TreePackage, target: string, deepest: string): Place => {
+    const at = nestedPlacement(target, pkg.name);
+    const current = nodes.get(at)?.pkg ?? candidates.get(at);
+    if (current) {
+      // checkCanPlaceCurrent.
+      if (current.version === pkg.version && meets(current.version, edge)) return edge.explicit ? { kind: 'place', at } : { kind: 'keep', at };
+      if (versionAtLeast(pkg.version, current.version) && reliersOn(at, pkg.name).every((e) => meets(pkg.version, e))) return { kind: 'place', at };
+      if (meets(current.version, edge) && !edge.explicit) return { kind: 'keep', at };
+      return target === deepest && edge.kind !== 'peer' ? { kind: 'place', at } : { kind: 'conflict' };
+    }
+    // checkCanPlaceNoCurrent: the target's own edge for the name must take
+    // it, and what Node's walk from the target finds now must not be
+    // shadowed from anything beneath that relies on it and the new copy
+    // would not meet.
+    const targetNode = target === '' ? null : nodes.get(target);
+    const own = target === edge.from ? undefined
+      : (target === '' ? rootEdges : targetNode ? manifestEdges(targetNode.pkg, target) : []).find((e) => e.name === pkg.name);
+    if (own && !meets(pkg.version, own)) return { kind: 'conflict' };
+    const visible = target === edge.from ? null : nearest(target, pkg.name);
+    if (visible && reliersOn(visible.at, pkg.name).some((e) => within(e.from, target) && meets(visible.pkg.version, e) && !meets(pkg.version, e))) {
+      return { kind: 'conflict' };
+    }
+    return { kind: 'place', at };
+  };
+  /** Where `pkg` goes for `edge`, as PlaceDep walks: from the deepest target up, the highest before a conflict. */
+  const placeFor = (edge: TreeEdge, pkg: TreePackage): Place => {
+    const deepest = edge.kind === 'peer' ? parentPlacement(edge.from) : edge.from;
+    let found: Place = { kind: 'conflict' };
+    for (let target = deepest; ; target = parentPlacement(target)) {
+      const verdict = canPlace(edge, pkg, target, deepest);
+      if (verdict.kind === 'conflict') break;
+      found = verdict;
+      if (verdict.kind === 'keep' || target === '') break;
+      // npm's shallow strategy: nothing above a top-level package's own node_modules.
+      if (options.shallow && parentPlacement(target) === '') break;
+    }
+    return found;
+  };
+
+  let queue = [...rootEdges];
   while (queue.length > 0) {
-    // What is installed where these edges look, read once.
+    queue.sort(npmOrder);
+    // What is installed where this layer's edges look, read once.
     const unprobed = [...new Set(queue.flatMap((edge) => visiblePlacements(edge.from, edge.name)))]
-      .filter((at) => !probed.has(at) && !placed.has(at) && !pending.has(at));
+      .filter((at) => !probed.has(at) && !nodes.has(at));
     for (const at of unprobed) probed.add(at);
     if (unprobed.length > 0) {
       const found = await host.installed(unprobed);
       unprobed.forEach((at, i) => {
         const pkg = found[i];
-        if (pkg) { placed.set(at, pkg); kept.set(at, pkg); }
+        if (pkg) candidates.set(at, pkg);
       });
     }
 
-    const layer: Array<{ edge: TreeEdge; at: string }> = [];
+    // Edges met as they are, peers met by a copy at another version, and
+    // what is left to resolve: each request once.
     const next: TreeEdge[] = [];
+    const toPlace: TreeEdge[] = [];
     for (const edge of queue) {
-      const decision = decidePlacement(edge, placed, pending);
-      if (decision.kind === 'wait') { next.push(edge); continue; }
-      if (decision.kind === 'met') {
-        if (decision.mismatch) await host.peerMismatch?.(edge, decision.at, placed.get(decision.at)!.version);
-        asked(decision.at, edge);
-        // A kept package: its edges are the tree's too.
-        const keptPkg = kept.get(decision.at);
-        if (keptPkg && !walked.has(decision.at)) {
-          walked.add(decision.at);
-          next.push(...manifestEdges(keptPkg, decision.at));
+      const seen = edge.explicit ? null : nearest(edge.from, edge.name);
+      if (seen && meets(seen.pkg.version, edge)) {
+        keep(seen.at, next);
+        continue;
+      }
+      if (seen?.kept && edge.kind === 'peer') {
+        // The project's own dependency is npm's ERESOLVE; another's, npm's warning.
+        if (seen.at === edge.name && rootNames.has(edge.name) && !options.allowPeerConflicts) {
+          fail(edge, `ERESOLVE: ${edge.from} needs peer ${edge.name}@${edge.range}, and the project depends on ${edge.name}@${seen.pkg.version}`, false);
+        } else {
+          await host.peerMismatch?.(edge, seen.at, seen.pkg.version);
         }
         continue;
       }
-      asked(decision.at, edge);
-      if (settled.has(decision.at)) continue;
-      if (decision.kind === 'too-deep') {
-        settled.add(decision.at);
-        failures.push({ edge, at: decision.at, refused: false, reason: `${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels (cycle with incompatible ranges)` });
+      toPlace.push(edge);
+    }
+    const requests = [...new Map(toPlace.filter((edge) => !resolutions.has(requestKey(edge))).map((edge) => [requestKey(edge), edge])).values()];
+    if (requests.length > 0) {
+      const answers = await host.resolve(requests.map(({ name, range, optional }) => ({ name, range, optional })));
+      requests.forEach((edge, i) => resolutions.set(requestKey(edge), answers[i] ?? { failed: 'the resolver returned no answer' }));
+    }
+
+    for (const edge of toPlace) {
+      // An edge before it in this layer may have placed what meets it.
+      const seen = edge.explicit ? null : nearest(edge.from, edge.name);
+      if (seen?.kept && meets(seen.pkg.version, edge)) continue;
+      const answer = resolutions.get(requestKey(edge)) ?? { failed: 'the resolver returned no answer' };
+      if ('failed' in answer) { fail(edge, answer.failed, false); continue; }
+      if ('refused' in answer) { fail(edge, answer.refused, true); continue; }
+      if ('omitted' in answer) { omitted.add(requestKey(edge)); continue; }
+      const { package: pkg } = answer;
+      const place = placeFor(edge, pkg);
+      if (place.kind === 'conflict') {
+        if (edge.kind === 'peer' && seen) await host.peerMismatch?.(edge, seen.at, seen.pkg.version);
+        else fail(edge, `${edge.name}@${edge.range} from ${edge.from || 'the project'} has no place: every copy it would replace or shadow is needed`, false);
         continue;
       }
-      pending.add(decision.at);
-      layer.push({ edge, at: decision.at });
+      if (place.kind === 'keep') {
+        keep(place.at, next);
+        continue;
+      }
+      if (depthOf(place.at) > MAX_NEST_DEPTH) {
+        fail(edge, `${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels (cycle with incompatible ranges)`, false);
+        continue;
+      }
+      if (nodes.has(place.at)) unindex(place.at);
+      candidates.delete(place.at);
+      probed.add(place.at);
+      nodes.set(place.at, { at: place.at, planned: true, pkg, edge });
+      if (answer.skipIfOptional !== undefined) whenOptional.set(place.at, answer.skipIfOptional);
+      const edges = manifestEdges(pkg, place.at);
+      index(edges);
+      next.push(...edges);
     }
     queue = next;
-    if (layer.length === 0) continue;
-
-    const answers = await host.resolve(layer);
-    layer.forEach(({ edge, at }, i) => {
-      pending.delete(at);
-      settled.add(at);
-      const answer = answers[i];
-      if (answer === undefined) {
-        failures.push({ edge, at, refused: false, reason: 'the resolver returned no answer' });
-      } else if ('failed' in answer) {
-        failures.push({ edge, at, refused: false, reason: answer.failed });
-      } else if ('refused' in answer) {
-        failures.push({ edge, at, refused: true, reason: answer.refused });
-      } else if ('package' in answer) {
-        const { package: pkg } = answer;
-        // A swap answers with another name: the package goes where that name would.
-        const actual = pkg.name === edge.name ? at : at === edge.name ? pkg.name : nestedPlacement(edge.from, pkg.name);
-        if (actual !== at) {
-          asked(actual, edge);
-          if (placed.has(actual)) return;
-          settled.add(actual);
-        }
-        // What was installed here is replaced: its manifest is not the tree's.
-        kept.delete(actual);
-        placed.set(actual, pkg);
-        walked.add(actual);
-        planned.push({ edge, at: actual, pkg });
-        if (answer.skipIfOptional !== undefined) whenOptional.set(actual, answer.skipIfOptional);
-        queue.push(...manifestEdges(pkg, actual));
-      }
-    });
   }
 
-  // Required: reached from a root by a path of required edges, through
-  // planned and kept packages alike; the rest is optional.
+  // ── The tree's graph: each edge into the copy Node's walk finds ──
+  const edgesIn = new Map<string, GraphEdge[]>();
+  const edgesOut = new Map<string, GraphEdge[]>();
+  const link = (graphEdge: GraphEdge) => {
+    const into = edgesIn.get(graphEdge.to) ?? [];
+    edgesIn.set(graphEdge.to, into);
+    into.push(graphEdge);
+    const out = edgesOut.get(graphEdge.from) ?? [];
+    edgesOut.set(graphEdge.from, out);
+    out.push(graphEdge);
+  };
+  const linkEdges = (from: string, edges: readonly TreeEdge[]) => {
+    for (const edge of edges) {
+      if (failedEdges.has(`${from}\0${edge.name}`) || omitted.has(requestKey(edge))) continue;
+      const to = visiblePlacements(from, edge.name).find((at) => nodes.has(at));
+      if (to !== undefined) link({ from, to, optional: edge.optional });
+    }
+  };
+  // Only what the project reaches is the tree: a copy a replacement left
+  // unreferenced goes, and an installed one is extraneous.
+  linkEdges('', rootEdges);
+  const reached = new Set<string>();
+  const pending = (edgesOut.get('') ?? []).map(({ to }) => to);
+  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+    if (reached.has(at)) continue;
+    reached.add(at);
+    const node = nodes.get(at);
+    if (!node) continue;
+    linkEdges(at, manifestEdges(node.pkg, at));
+    for (const { to } of edgesOut.get(at) ?? []) if (!reached.has(to)) pending.push(to);
+  }
+  const extraneous = new Set(candidates.keys());
+  for (const [at, node] of [...nodes]) {
+    if (reached.has(at)) continue;
+    nodes.delete(at);
+    if (!node.planned) extraneous.add(at);
+  }
+  for (const askers of failedAskers.values()) for (const asker of askers) if (asker.from === '' || nodes.has(asker.from)) link(asker);
+  for (const id of [...failures.keys()]) if (!edgesIn.has(id)) failures.delete(id);
+
+  // Required: reached by a path of required edges (calc-dep-flags).
   const required = new Set<string>();
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const [at, list] of askers) {
-      if (!required.has(at) && list.some(({ from, optional }) => !optional && (from === '' || required.has(from)))) {
-        required.add(at);
-        grew = true;
+  const unflagged = (edgesOut.get('') ?? []).filter(({ optional }) => !optional).map(({ to }) => to);
+  for (let at = unflagged.pop(); at !== undefined; at = unflagged.pop()) {
+    if (required.has(at)) continue;
+    required.add(at);
+    for (const { to, optional } of edgesOut.get(at) ?? []) if (!optional && !required.has(to)) unflagged.push(to);
+  }
+
+  // optional-set.js: from `id` up its required edges in, to the
+  // optionalDependencies edges into the set; then gather-dep-set.js: with
+  // what the set needs that nothing outside it needs.
+  const optionalSet = (id: string): Set<string> => {
+    const set = new Set([id]);
+    for (const member of set) for (const { from, optional } of edgesIn.get(member) ?? []) if (!optional && from !== '') set.add(from);
+    const deps = new Set(set);
+    for (const member of deps) for (const { to, optional } of edgesOut.get(member) ?? []) if (!optional) deps.add(to);
+    for (let changed = true; changed && deps.size > 0;) {
+      changed = false;
+      for (const dep of deps) {
+        if (set.has(dep) || !(edgesIn.get(dep) ?? []).some(({ from, optional }) => !optional && !deps.has(from))) continue;
+        deps.delete(dep);
+        changed = true;
       }
     }
-  }
-  // What a skipped placement takes with it: what needs it by a required
-  // edge (optional too, or it would have been required), and what only
-  // skipped placements ask for.
+    return deps;
+  };
   const skipped = new Set<string>();
   const reasons = new Map<string, string>();
-  const skip = (at: string, reason: string) => {
-    reasons.set(at, reason);
-    const queued = [at];
-    while (queued.length > 0) {
-      const member = queued.pop()!;
-      if (skipped.has(member)) continue;
-      skipped.add(member);
-      for (const { from, optional } of askers.get(member) ?? []) if (!optional && from !== '' && askers.has(from)) queued.push(from);
-      for (const [other, list] of askers) {
-        if (!skipped.has(other) && !required.has(other) && list.every(({ from }) => skipped.has(from))) queued.push(other);
-      }
-    }
+  const leaveOut = (id: string, reason: string): ReadonlySet<string> | null => {
+    if (required.has(id)) return null;
+    reasons.set(id, reason);
+    for (const member of optionalSet(id)) skipped.add(member);
+    return skipped;
   };
-  for (const { at, reason } of failures) if (!required.has(at)) skip(at, reason);
-  for (const [at, reason] of whenOptional) if (!required.has(at)) skip(at, reason);
+  for (const failure of failures.values()) leaveOut(failure.id, failure.reason);
+  for (const [at, reason] of whenOptional) if (nodes.has(at)) leaveOut(at, reason);
 
   return {
-    planned, kept, failures, required, skipped, reasons,
-    skip: (at, reason) => {
-      if (required.has(at)) return false;
-      skip(at, reason);
-      return true;
-    },
+    nodes,
+    failures: [...failures.values()],
+    required,
+    skipped,
+    reasons,
+    extraneous,
+    fail: leaveOut,
   };
 }
 
-/** The required placements of `plan` that could not be filled: any fails the install. */
-export function requiredFailures(plan: Pick<TreePlan<TreePackage>, 'failures' | 'required'>): TreeFailure[] {
-  return plan.failures.filter(({ at }) => plan.required.has(at));
-}
+// ── One install into a tree at a time ────────────────────────────────────────
 
 /**
  * Installs into one node_modules tree, one at a time, in the order they
@@ -303,9 +657,9 @@ const heldTrees = new WeakMap<object, Map<string, Array<() => void>>>();
  * Hold the tree at `canonical` in `namespace` for one install, and give it
  * back with the release this answers, once the install is done: at once
  * when no install holds it, else (a promise) once those before have given it
- * back.
+ * back. One that `signal` stops while it waits never holds it (an AbortError).
  */
-export function holdTree(namespace: object, canonical: string): (() => void) | Promise<() => void> {
+export function holdTree(namespace: object, canonical: string, signal?: AbortSignal): (() => void) | Promise<() => void> {
   const held = heldTrees.get(namespace) ?? new Map<string, Array<() => void>>();
   if (held.size === 0) heldTrees.set(namespace, held);
   const release = () => {
@@ -315,10 +669,26 @@ export function holdTree(namespace: object, canonical: string): (() => void) | P
   };
   const waiting = held.get(canonical);
   if (waiting === undefined) {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     held.set(canonical, []);
     return release;
   }
-  return new Promise((resolve) => waiting.push(() => resolve(release)));
+  const { promise, resolve, reject } = Promise.withResolvers<() => void>();
+  const admit = () => {
+    signal?.removeEventListener('abort', abandon);
+    resolve(release);
+  };
+  const abandon = () => {
+    const at = waiting.indexOf(admit);
+    if (at >= 0) waiting.splice(at, 1);
+    reject(signal?.reason);
+  };
+  if (signal?.aborted) abandon();
+  else {
+    signal?.addEventListener('abort', abandon, { once: true });
+    waiting.push(admit);
+  }
+  return promise;
 }
 
 /**
