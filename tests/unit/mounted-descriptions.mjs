@@ -987,7 +987,12 @@ await check('a held write overlays its file through a source that wraps the same
   backend.writeFile('/x', enc.encode('0123'));
   // A wrapper that keeps its receiver: a getter of the backend's is asked of the wrapper.
   const wrapped = () => new Proxy(backend, {
-    get: (target, key, receiver) => (key === 'writeRange' ? undefined : Reflect.get(target, key, receiver)),
+    get(target, key, receiver) {
+      if (key === 'writeRange') return undefined;
+      if (key === 'sync') return receiver;
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
     has: (target, key) => key !== 'writeRange' && key in target,
   });
   files.vfs.mount('/fw', wrapped);
