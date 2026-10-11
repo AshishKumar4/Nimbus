@@ -11050,16 +11050,7 @@ __NodeModule.globalPaths = [];
 // Node's lookup path list: every ancestor's node_modules, nearest first,
 // never a node_modules/node_modules.
 __NodeModule._nodeModulePaths = (from) => {
-  const resolved = __pathMod.resolve(String(from));
-  if (resolved === "/") return ["/node_modules"];
-  const paths = [];
-  const parts = resolved.split("/");
-  for (let i = parts.length; i > 0; i--) {
-    if (parts[i - 1] === "node_modules") continue;
-    const dir = parts.slice(0, i).join("/");
-    paths.push((dir || "") + "/node_modules");
-  }
-  return paths;
+  return requireNodeModulePaths(__pathMod.resolve(String(from)));
 };
 // Module._resolveFilename: a builtin's id as asked, a staged binding's name,
 // or the file \`request\` names from \`parent\` (or from each of
@@ -11069,7 +11060,7 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
   let dirs = [__nimbusModuleDir(parent)];
   // options.paths' directories, from the working directory, each validated as
   // path.resolve does: a relative request's as it is searched, a bare one's first.
-  const relative = request.startsWith("./") || request.startsWith("../");
+  const relative = request === "." || request === ".." || request.startsWith("./") || request.startsWith("../");
   const absolute = (dir) => {
     if (typeof dir !== "string") throw invalidArgType("paths[0]", "string", dir);
     return __pathMod.resolve(dir);
@@ -11078,9 +11069,10 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
     if (Array.isArray(options.paths)) dirs = relative ? options.paths : options.paths.map(absolute);
     else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
-  for (const dir of dirs) {
-    const resolved = __resolveFrom(request, absolute(dir));
-    if (resolved) return "/" + resolved.replace(/^\\/+/, "");
+  const lookup = relative ? dirs : [__nimbusModuleDir(parent)];
+  for (const dir of lookup) {
+    const found = __requireResolver.resolveSync(request, absolute(dir), relative ? undefined : { paths: dirs.map(absolute) });
+    if (found) return found.builtin ? "node:" + found.builtin : found.path;
   }
   throw __nimbusModuleNotFound(request, parent);
 };
@@ -11820,298 +11812,21 @@ function __fileExists(path) {
   if (typeof __nsUnknown === "function" && __nsUnknown(k, true, false) !== null) __fsMod.statSync("/" + k);
   return false;
 }
-// W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
-// directories (it has to — __resolveNodeModule and __resolveImportsField call
-// it to check whether a node_modules/<pkg> directory exists). __resolveFile's
-// empty-extension probe needs the inverse: "is this an actual file?" — so the
-// loop falls through to /index.js when "base" is a directory rather than
-// short-circuiting and returning the directory path (which __loadModule then
-// can't read, throwing "Cannot read module: <dir>"). See W3 retro §S3 for
-// the fastify ret/dist/types failure.
-function __pathIsFile(path) {
-  const k = path.replace(/^\\/+/, "");
-  const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
-  return !!st && st.isFile();
-}
-function __resolveFile(base) {
-  // Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):
-  //
-  //   1. LOAD_AS_FILE -- try base, base.js, base.mjs, base.cjs, base.json
-  //      as a regular file. The empty-ext probe uses __pathIsFile (not
-  //      __fileExists) so a directory at "base" does NOT short-circuit
-  //      here; it falls through to the LOAD_AS_DIRECTORY block below.
-  //      See W3.5-plan.md §1 Failure 1.
-  //
-  //   2. LOAD_AS_DIRECTORY -- if "base" resolves to a directory:
-  //      a. If <base>/package.json has a "main" field -- recurse on it.
-  //         (Bug class C, audit 2026-05-11: this branch was missing,
-  //          so require("./mod") where mod/package.json#main="entry.js"
-  //          and no mod/index.js -- "Cannot find module ./mod".)
-  //      b. Else fall through to <base>/index.{js,cjs,mjs,json}.
-  //
-  // Must mirror the install-time pre-bundler at require-resolver.ts:
-  // resolveFile so prefetch + runtime agree on which file a given
-  // require() will load.
-  const fileExts = ["", ".js", ".mjs", ".cjs", ".json"];
-  for (const ext of fileExts) {
-    const cand = base + ext;
-    if (ext === "") {
-      if (__pathIsFile(cand)) return cand;
-      continue;
-    }
-    if (__fileExists(cand)) return cand;
-  }
-  // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
-  const pkgJsonPath = base.replace(/\\/+$/, "") + "/package.json";
-  if (__pathIsFile(pkgJsonPath)) {
-    let pkg = null;
-    try { pkg = JSON.parse(__readFileOr(pkgJsonPath, "null")); } catch { /* fall through */ }
-    if (pkg && typeof pkg.main === "string" && pkg.main.length > 0) {
-      const mainStripped = pkg.main.replace(/^\\.\\/+/, "").replace(/^\\/+/, "");
-      // Normalize so a parent-relative main (e.g. web-streams-polyfill's
-      // ponyfill/package.json declaring main "../dist/ponyfill") collapses
-      // its ".." segments instead of probing a literal "dir/../dist" path
-      // that __fileExists never matches.
-      const mainBase = __vfsNormalizePath(base.replace(/\\/+$/, "") + "/" + mainStripped).replace(/^\\/+/, "");
-      // Recurse: main itself may be a directory (e.g. main: "lib") or
-      // a file without extension. Guard against pkg.main === "." which
-      // would re-enter this same base and stack-overflow.
-      if (mainBase !== base && mainBase !== base.replace(/\\/+$/, "")) {
-        const resolved = __resolveFile(mainBase);
-        if (resolved) return resolved;
-      }
-    }
-  }
-  const indexExts = ["/index.js", "/index.cjs", "/index.mjs", "/index.json"];
-  for (const ext of indexExts) {
-    const cand = base + ext;
-    if (__fileExists(cand)) return cand;
-  }
-  // TypeScript sources, probed only once every candidate above has missed, so
-  // the specifiers whose resolution changes are exactly those that resolve to
-  // nothing today. Must agree with the prefetch resolver or a file is shipped
-  // that this cannot find; both come from src/_shared/typescript-specifiers.ts
-  // and tests/unit/typescript-specifier-resolution.mjs compares them.
-  const baseTrim = base.replace(/\\/+$/, "");
-  for (const cand of typescriptFallbackCandidates(baseTrim)) {
-    if (__pathIsFile(cand)) return cand;
-  }
-  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
-    const cand = baseTrim + ext;
-    if (__pathIsFile(cand)) return cand;
-  }
-  return null;
-}
-
-// ── Resolution, credential and upgrade rules, compiled from @nimbus-sh/core ──
-// _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
-// resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
-// DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
-// TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
-// (function declarations, so the fetch patch above can call them).
+// Resolution is the compiled core generator, over the guest's resident fs.
+// Metadata/refusal handling stays here; selection and probing never do.
 ${NODE_SHIM_RESOLUTION_PREAMBLE}
-
-/** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
-const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default", ...__nimbusConditions];
-/** The fallback for a map whose entry is only under import: import's conditions, and the program's own. */
-const __NIMBUS_IMPORT_FALLBACK_CONDITIONS = [...DEFAULT_ESM_CONDITIONS, ...__nimbusConditions];
-
-/**
- * Read and parse a package.json from VFS. Returns null on miss/parse-fail.
- */
-function __readPkgJson(pkgDir) {
-  const s = __readFileOr(pkgDir + "/package.json", null);
-  if (!s) return null;
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-/**
- * Resolve a single subpath inside an installed package (pkgDir).
- *   - subpath: '.' for root entry, './foo' for explicit subpath, etc.
- *   - Honours pkg.exports (subpath maps, wildcards, conditions).
- *   - Falls back to module/main for root, raw subpath probing otherwise.
- *   - Final filesystem probe via __resolveFile (extension list).
- *
- * Returns a VFS-relative path to the resolved file, or null.
- */
-function __resolvePkgSubpath(pkgDir, pkg, subpath) {
-  if (!pkg) pkg = __readPkgJson(pkgDir);
-  if (!pkg) {
-    // No package.json — try direct probe
-    if (subpath === ".") return __resolveFile(pkgDir + "/index");
-    return __resolveFile(pkgDir + "/" + subpath.replace(/^\\.\\/+/, ""));
-  }
-  let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
-  // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
-  // dist/.mjs files were transformed to CJS
-  // by transformEsmInBundle (facets/manager.ts). Without this,
-  // packages like nuxt — whose exports map only contains
-  // {types, import} for the root subpath — return null from the CJS
-  // walk and dead-end with "Cannot find module 'nuxt'" even though
-  // dist/index.mjs is in the bundle and runnable as CJS. We only fall
-  // back when the package actually declares an exports map (so we
-  // don't shadow legit "package not installed" misses).
-  if (entry == null && pkg.exports != null) {
-    entry = resolvePackageEntry(pkg, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
-  }
-  if (entry != null) {
-    // Strip leading ./ from the resolver result
-    const stripped = entry.replace(/^\\.\\/+/, "");
-    const resolved = __resolveFile(pkgDir + "/" + stripped);
-    if (resolved) return resolved;
-    // W2.6a D2: exports/main yielded a target but the file doesn't exist
-    // in the bundle (capped out, or the package mis-declares its main).
-    // Fall through to the direct-probe path so we get index.js when the
-    // declared entry is missing. Without this fallback, packages whose
-    // exports point at a file evicted by the content cap return null and
-    // the require chain dead-ends with "Cannot find module" — even though
-    // a perfectly good index.js sits next to it.
-  }
-  // Fallback: probe the directory for a usable entry. This catches
-  //   (a) exports map yielded null (forbidden / no condition matched)
-  //   (b) exports map yielded a path whose file isn't on disk
-  //   (c) main yielded a path whose file isn't on disk
-  if (subpath === ".") {
-    // Try main again under the extension-list resolver, then fall through
-    // to /index probing. The shared resolvePackageEntry already prefers
-    // exports → module → main, so re-probing main here only triggers when
-    // entry was null OR entry's file was missing.
-    if (typeof pkg.main === 'string') {
-      const mainStripped = pkg.main.replace(/^\\.\\/+/, "");
-      const r = __resolveFile(pkgDir + "/" + mainStripped);
-      if (r) return r;
-    }
-    return __resolveFile(pkgDir + "/index");
-  }
-  const rel = subpath.replace(/^\\.\\/+/, "");
-  return __resolveFile(pkgDir + "/" + rel);
-}
-
-
-/**
- * Resolve a bare specifier (e.g. "react", "@scope/pkg", "pkg/sub/path")
- * by walking up node_modules from fromDir. Returns the resolved file or null.
- */
-function __resolveNodeModule(name, fromDir) {
-  // Split into pkgName + subpath
-  let pkgName, subpath;
-  if (name.startsWith("@")) {
-    const parts = name.split("/");
-    if (parts.length < 2) return null;
-    pkgName = parts.slice(0, 2).join("/");
-    subpath = parts.length > 2 ? "./" + parts.slice(2).join("/") : ".";
-  } else {
-    const slashIdx = name.indexOf("/");
-    if (slashIdx > 0) {
-      pkgName = name.substring(0, slashIdx);
-      subpath = "./" + name.substring(slashIdx + 1);
-    } else {
-      pkgName = name;
-      subpath = ".";
-    }
-  }
-
-  // Walk up directories looking for node_modules/<pkgName>.
-  // Audit §3.7 (P7 fastify case): the prior loop was right, but the
-  // visited-set keyed on dir-with-leading-slash-stripped while node_modules
-  // existence checks used the same form, so iteration COULD terminate early
-  // when hitting "" (empty string) at the root. Explicit termination on
-  // empty string + always-also-check root node_modules covers both.
-  let dir = (fromDir || "").replace(/^\\/+/, "");
-  const visited = new Set();
-  while (true) {
-    if (visited.has(dir)) break;
-    visited.add(dir);
-    const nmDir = (dir ? dir + "/" : "") + "node_modules/" + pkgName;
-    if (__fileExists(nmDir)) {
-      const resolved = __resolvePkgSubpath(nmDir, null, subpath);
-      if (resolved) return resolved;
-    }
-    if (!dir) break;
-    const lastSlash = dir.lastIndexOf("/");
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
-  }
-  return null;
-}
-
-/**
- * Node's "package scope" of a directory (readPackageScope): the nearest
- * enclosing package.json, walking up from fromDir. The FIRST package.json
- * found is the scope, even when it lacks the field the caller wants — the
- * imports field and the self-reference rule both belong to the importing
- * module's own package, never to an ancestor past it. The walk never
- * crosses a node_modules directory: a file that sits directly under one
- * belongs to no package, not to the project above it. Returns { dir, pkg }
- * (pkg null when the file is unparseable) or null when no package.json
- * encloses fromDir.
- */
-function __nearestPackageScope(fromDir) {
-  let dir = (fromDir || "").replace(/^\\/+/, "");
-  while (true) {
-    if (dir === "node_modules" || dir.endsWith("/node_modules")) return null;
-    const pkgJsonPath = (dir ? dir + "/" : "") + "package.json";
-    if (__fileExists(pkgJsonPath)) {
-      return { dir, pkg: __readPkgJson(dir) };
-    }
-    if (!dir) return null;
-    const lastSlash = dir.lastIndexOf("/");
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
-  }
-}
-
-/**
- * Resolve a #name imports-field specifier from the nearest enclosing
- * package.json. Returns the resolved file or null.
- */
-function __resolveImportsField(name, fromDir) {
-  // First package.json wins, even if no imports field (Node spec: imports
-  // field of the importing module's package).
-  const scope = __nearestPackageScope(fromDir);
-  if (!scope || !scope.pkg || !scope.pkg.imports) return null;
-  const dir = scope.dir;
-  const target = resolveExports(scope.pkg.imports, name, __NIMBUS_CJS_CONDITIONS);
-  if (!target) return null;
-  // Imports targets are relative to the package root (dir)
-  if (target.startsWith("./")) {
-    return __resolveFile((dir ? dir + "/" : "") + target.slice(2));
-  }
-  if (target.startsWith("/")) {
-    return __resolveFile(target.slice(1));
-  }
-  // Bare specifier — re-resolve as a node_module from this dir
-  return __resolveNodeModule(target, dir);
-}
-
-/**
- * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
- * itself (\`require('<its-name>')\`, \`require('<its-name>/sub')\`) resolves
- * through that package's own \`exports\` map — only when the nearest
- * package.json has \`exports\` AND its \`name\` matches, and only through
- * \`exports\` (no main/index probing: a subpath the map does not expose is
- * not exported). Sits between the imports-field branch and the
- * node_modules walk, where Node puts it. Returns the resolved file or null.
- *
- * Conditions are the ones the node_modules walk uses for the same
- * require: the runtime's CJS set first, the ESM set when the map exposes
- * the subpath only under \`import\` (dynamic import() is lowered onto this
- * require chain, see __resolvePkgSubpath).
- *
- * Tri-state, as in Node: null when the rule does not apply (the caller
- * walks node_modules); { resolved: null } when the enclosing package claims
- * the name but its map does not expose the subpath or the target is
- * missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
- * there and never consults node_modules, so neither does the caller.
- */
-function __resolvePackageSelf(name, fromDir) {
-  const scope = __nearestPackageScope(fromDir);
-  if (!scope || !scope.pkg) return null;
-  const subpath = packageSelfReferenceSubpath(scope.pkg, name);
-  if (subpath === null) return null;
-  let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
-  if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
-  if (entry == null) return { resolved: null };
-  return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, "")) };
-}
+const __requireResolver = createRequireResolver({
+  kind(path) {
+    if (!__fileExists(path)) return null;
+    const st = __fsMod.statSync(path, { throwIfNoEntry: false });
+    return !st ? null : st.isDirectory() ? "directory" : st.isFile() ? "file" : null;
+  },
+  readText(path) { return __readFileOr(path, null); },
+  realpath(path) { return __fsMod.realpathSync(path); },
+  isBuiltin(specifier) {
+    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
+  },
+}, { conditions: __nimbusConditions, policy: NIMBUS_TYPESCRIPT_REQUIRE_POLICY });
 
 /**
  * Load and execute a JS/JSON module from VFS.
@@ -12302,62 +12017,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir) {
-  // An absolute file: URL is a specifier Node accepts: \`import(href)\` is the
-  // portable way to load a path a resolver just handed back, and it is what
-  // every package that resolves before it imports emits — @nuxt/cli's
-  // loadKit does \`import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)\`.
-  // A require() of one comes through this one resolver too, so the scheme
-  // has to come off before the specifier is classified: with it on,
-  // the file: URL misses the absolute-path branch below and gets looked up as
-  // if it were the name of a package.
-  if (typeof id === "string" && id.startsWith("file:")) {
-    let filePath;
-    try {
-      const u = new URL(id);
-      // .pathname drops the query a cache-busting importer appends
-      // (\`import(href + "?t=" + Date.now())\` is the standard HMR spelling),
-      // and the decode is what node:url's fileURLToPath does with it.
-      filePath = decodeURIComponent(u.pathname);
-    } catch { filePath = id.replace(/^file:\\/\\//, ""); }
-    id = filePath;
-  }
-  // X.5-P: literal "." / ".." are CommonJS aliases for "./" / "../".
-  // Pre-fix they slipped past the startsWith("./")/("../") guards (which
-  // require >= 3 / >= 4 chars respectively) and fell into the bare-spec
-  // branch — querying __resolveNodeModule for a package literally named
-  // "." → "Cannot find module '.'" (verify-90993b3 §3 bucket P:
-  // fastify via ajv/dist/compile/jtd, redis via @redis/client/dist/lib/client).
-  // Normalize so they take the relative-resolve branch (which then probes
-  // index.js / package.json#main via __resolveFile). See
-  if (id === ".") id = "./";
-  else if (id === "..") id = "../";
-  // Relative path
-  if (id.startsWith("./") || id.startsWith("../") || id.startsWith("/")) {
-    let base;
-    if (id.startsWith("/")) {
-      base = id.replace(/^\\/+/, "");
-    } else {
-      // VFS paths are stored without leading /. __pathMod.resolve treats
-      // a non-absolute fromDir as relative-to-cwd which would corrupt the
-      // result (audit §3.7-bug). Force-absolutise fromDir before resolving,
-      // then strip the leading / again.
-      const absFromDir = fromDir.startsWith("/") ? fromDir : "/" + fromDir;
-      base = __pathMod.resolve(absFromDir, id).replace(/^\\/+/, "");
-    }
-    return __resolveFile(base);
-  }
-  // imports field (#name)
-  if (id.startsWith("#")) {
-    return __resolveImportsField(id, fromDir);
-  }
-  // Bare specifier: the enclosing package's own name resolves through its
-  // exports map (Node's LOAD_PACKAGE_SELF), then node_modules resolution.
-  // Once the enclosing package claims the name, its map is the whole
-  // answer: a subpath it does not expose is not found, never a
-  // node_modules copy's.
-  const self = __resolvePackageSelf(id, fromDir);
-  if (self) return self.resolved;
-  return __resolveNodeModule(id, fromDir);
+  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\\/+/, ""));
+  if (!found) return null;
+  return found.builtin ? "node:" + found.builtin : found.path.replace(/^\\/+/, "");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -13385,6 +13047,7 @@ function __requireFrom(id, fromDir, parent, required = true) {
   }
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
+  if (resolved.startsWith("node:")) return __requireFrom(resolved, fromDir, parent, required);
   return __loadModule(resolved, resolved, required, parent);
 }
 

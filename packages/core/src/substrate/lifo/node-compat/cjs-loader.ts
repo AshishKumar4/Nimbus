@@ -4,8 +4,8 @@
  * lifo command runtime's packages alike.
  *
  * A name is a built-in (`fs`, `node:fs`), a `#` import of the nearest
- * package.json's "imports", a relative or absolute file (exact, then `.js`,
- * `.mjs`, `.json`; a directory's index.js), or a package: the nearest
+ * package.json's "imports", a relative or absolute file (Node's exact, `.js`,
+ * `.json`, `.node` and main/index probing), or a package: the nearest
  * node_modules up from the requiring module's directory, then the global
  * /usr/lib/node_modules and the legacy /usr/share/pkg/node_modules, its
  * entry from "exports" (by the shared resolver, _shared/exports-resolver.ts,
@@ -15,22 +15,22 @@
  * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
  * realm's native ES module loader, not the CommonJS wrapper.
  */
-import type { NodeFilesystem } from './filesystem.js';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
 import { Buffer } from './buffer.js';
 import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
-import { declaredPackageType, isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
+import { isEsModuleFile } from '../../../runtime/module-format.js';
 import { fileURLToPath, pathToFileURL } from './url.js';
-import { resolve, dirname, join, extname } from '../utils/path.js';
-import {
-	DEFAULT_CJS_CONDITIONS,
-	parseResolvablePackageJson,
-	resolveExports,
-	type ResolvablePackageJson,
-} from '../../../_shared/exports-resolver.js';
+import { resolve, dirname } from '../utils/path.js';
+import { invalidArgType } from '../../../_shared/node-error.js';
+import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, requireNodeModulePaths, type CommonJsResolution, type RequireResolverOptions, type RequireResolveOptions } from '../../../runtime/require-resolution.js';
 
-const REQUIRE_CONDITIONS = [...DEFAULT_CJS_CONDITIONS, 'module-sync'];
+/** Lifo's product package registry folders; intentionally not Node's globals. */
+const LIFO_REQUIRE_POLICY = {
+	...NIMBUS_TYPESCRIPT_REQUIRE_POLICY,
+	name: 'lifo-typescript-and-product-global-folders',
+	globalFolders: ['/usr/lib/node_modules', '/usr/share/pkg/node_modules'],
+};
 
 /** Node's error for a module `require` cannot find: its message and its code. */
 export function moduleNotFound(name: string): Error {
@@ -46,16 +46,6 @@ export function stripShebang(src: string): string {
 	}
 	return src;
 }
-
-/** Nearest package.json "type" walking up from a file (Node.js semantics), read synchronously inside `require`. */
-function packageType(filename: string, vfs: NodeFilesystem): PackageType {
-	for (let dir = dirname(filename); ; dir = dirname(dir)) {
-		const pkgPath = join(dir, 'package.json');
-		if (vfs.exists(pkgPath)) return declaredPackageType(vfs.readFileString(pkgPath));
-		if (dirname(dir) === dir) return null;
-	}
-}
-
 
 // The wrapper every module runs in: CommonJS's five names and the globals a
 // module may find as free variables, then import()'s loader under a name the
@@ -132,27 +122,64 @@ const rollupNativeStub = {
  * console and process (each module has its own, as the node command's
  * modules always have had).
  */
-export function createCjsLoader(context: NodeContext, scope: (filename: string) => ModuleScope): CjsLoader {
+export function createCjsLoader(context: NodeContext, scope: (filename: string) => ModuleScope, options: RequireResolverOptions = {}): CjsLoader {
 	const filesystem = context.filesystem;
 	const moduleMap = createModuleMap(context);
 	const builtins = new Map<string, unknown>();
 	let native: NativeModuleLoader | undefined;
 	const cache: Record<string, unknown> = Object.create(null);
+	const classified = new Map<string, CommonJsResolution>();
+	const resolver = createRequireResolver({
+		kind(path) {
+			const fs = filesystem();
+			return !fs.exists(path) ? null : fs.isDirectory(path) ? 'directory' : fs.isFile(path) ? 'file' : null;
+		},
+		readText(path) { return filesystem().readFileString(path); },
+		realpath(path) { return filesystem().realpath(path); },
+		isBuiltin(id) { return !!moduleMap[id.startsWith('node:') ? id.slice(5) : id]; },
+	}, { ...options, policy: options.policy ?? LIFO_REQUIRE_POLICY });
 
 	// createRequire(filename) is require as a module at `filename` has it: a path, or a file: URL's decoded path.
-	moduleMap.module = () => createModuleShim(moduleMap, (filename) => {
-		const path = filename instanceof URL || String(filename).startsWith('file:') ? fileURLToPath(filename) : String(filename);
-		return requireFrom(dirname(path), path);
-	});
+	moduleMap.module = () => {
+		const shim = createModuleShim(moduleMap, (filename) => {
+			const path = filename instanceof URL || String(filename).startsWith('file:') ? fileURLToPath(filename) : String(filename);
+			return requireFrom(dirname(path), path);
+		});
+		const api = {
+			_resolveFilename(id: string, parent?: { filename?: string }, _isMain?: boolean, request?: { paths?: string[] }) {
+				return requireFrom(dirname(parent?.filename ?? context.filename)).resolve(id, request);
+			},
+			_resolveLookupPaths(id: string, parent?: { filename?: string }) {
+				return requireFrom(dirname(parent?.filename ?? context.filename)).resolve.paths!(id);
+			},
+			_nodeModulePaths: requireNodeModulePaths,
+			globalPaths: [...((options.policy ?? LIFO_REQUIRE_POLICY).globalFolders ?? [])],
+		};
+		Object.assign(shim.Module, api);
+		return Object.assign(shim, api);
+	};
 
 	function requireFrom(dir: string, parentFilename?: string): RequireFunction {
 		const req = ((id: string) => requireModule(id, dir, parentFilename)) as RequireFunction;
-		req.resolve = (id: string) => {
+		req.resolve = (id: string, options?: { paths?: string[] }) => {
+			if (typeof id !== 'string') throw invalidArgType('request', 'string', id);
 			const name = id.startsWith('node:') ? id.slice(5) : id;
-			if (moduleMap[name]) return name;
-			const path = resolveFilename(name, dir);
+			if (moduleMap[name]) return id;
+			if (options?.paths !== undefined && !Array.isArray(options.paths)) {
+				throw Object.assign(new TypeError('The property "options.paths" must be an Array'), { code: 'ERR_INVALID_ARG_VALUE' });
+			}
+			const paths = options?.paths?.map((path) => {
+				if (typeof path !== 'string') throw invalidArgType('paths[0]', 'string', path);
+				return resolve(context.cwd, path);
+			});
+			const path = resolveFilename(id, dir, { paths });
 			if (path === null) throw moduleNotFound(id);
 			return path;
+		};
+		req.resolve.paths = (id: string) => {
+			if (moduleMap[id.startsWith('node:') ? id.slice(5) : id]) return null;
+			return id === '.' || id === '..' || id.startsWith('./') || id.startsWith('../')
+				? [dir] : [...requireNodeModulePaths(dir), ...((options.policy ?? LIFO_REQUIRE_POLICY).globalFolders ?? [])];
 		};
 		req.cache = cache;
 		return req;
@@ -164,95 +191,19 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			if (!builtins.has(name)) builtins.set(name, moduleMap[name]());
 			return builtins.get(name);
 		}
-		const path = resolveFilename(name, dir);
-		if (path !== null) return load(path, undefined, parentFilename);
+		const path = resolveFilename(id, dir);
+		if (path !== null) return path.startsWith('node:') ? requireModule(path, dir, parentFilename) : load(path, undefined, parentFilename);
 		if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
 		throw moduleNotFound(name);
 	}
 
-	function resolveFilename(name: string, dir: string): string | null {
-		if (name.startsWith('#')) return resolvePackageImport(name, dir);
-		if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) return resolveFile(name, dir);
-		return resolveNodeModule(name, dir);
-	}
-
-	function resolveFile(name: string, fromDir: string): string | null {
-		const absPath = resolve(fromDir, name);
-		if (filesystem().exists(absPath)) {
-			try {
-				if (filesystem().stat(absPath).type === 'file') return absPath;
-				const indexPath = join(absPath, 'index.js');
-				if (filesystem().exists(indexPath)) return indexPath;
-			} catch { /* fall through */ }
-		}
-		if (!extname(absPath)) {
-			for (const ext of ['.js', '.mjs', '.json']) {
-				if (filesystem().exists(absPath + ext)) return absPath + ext;
-			}
-		}
-		return null;
-	}
-
-	/** The nearest package.json at or above `dir`, its directory and its entry fields. */
-	function nearestPackage(dir: string): { dir: string; pkg: ResolvablePackageJson | null } | null {
-		for (let current = dir; ; current = dirname(current)) {
-			const pkgPath = join(current, 'package.json');
-			if (filesystem().exists(pkgPath)) return { dir: current, pkg: parseResolvablePackageJson(filesystem().readFileString(pkgPath)) };
-			if (dirname(current) === current) return null;
-		}
-	}
-
-	/** A `#` name from the nearest package.json's "imports", as Node reads it (the nearest package.json wins). */
-	function resolvePackageImport(name: string, fromDir: string): string | null {
-		const nearest = nearestPackage(fromDir);
-		const target = nearest?.pkg ? resolveExports(nearest.pkg.imports, name, REQUIRE_CONDITIONS) : null;
-		return target && nearest ? resolveFile(target, nearest.dir) : null;
-	}
-
-	function resolveNodeModule(name: string, fromDir: string): string | null {
-		const parts = name.split('/');
-		const scoped = name.startsWith('@');
-		if (scoped && parts.length < 2) return null;
-		const packageName = scoped ? `${parts[0]}/${parts[1]}` : parts[0];
-		const rest = parts.slice(scoped ? 2 : 1);
-		const subpath = rest.length > 0 ? rest.join('/') : null;
-
-		for (let current = fromDir; ; current = dirname(current)) {
-			const candidate = join(current, 'node_modules', packageName);
-			if (filesystem().exists(candidate)) {
-				const resolved = resolvePackageEntry(candidate, subpath);
-				if (resolved) return resolved;
-			}
-			if (dirname(current) === current) break;
-		}
-		for (const base of ['/usr/lib/node_modules', '/usr/share/pkg/node_modules']) {
-			const candidate = join(base, packageName);
-			if (filesystem().exists(candidate)) {
-				const resolved = resolvePackageEntry(candidate, subpath);
-				if (resolved) return resolved;
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * A package's file for `subpath` (null for its root), as Node's require
-	 * finds it: where the package declares "exports", they decide (a subpath
-	 * they do not export, or export as null, is not found); else the subpath
-	 * as a file, or for the root its "main", then its index.js.
-	 */
-	function resolvePackageEntry(pkgDir: string, subpath: string | null): string | null {
-		const pkgJsonPath = join(pkgDir, 'package.json');
-		const pkg = filesystem().exists(pkgJsonPath) ? parseResolvablePackageJson(filesystem().readFileString(pkgJsonPath)) : null;
-		const relative = (target: string) => (target.startsWith('.') || target.startsWith('/') ? target : `./${target}`);
-		if (pkg?.exports !== undefined && pkg.exports !== null) {
-			const target = resolveExports(pkg.exports, subpath ? `./${subpath}` : '.', REQUIRE_CONDITIONS);
-			return target ? resolveFile(relative(target), pkgDir) : null;
-		}
-		if (subpath) return resolveFile(`./${subpath}`, pkgDir);
-		const main = pkg?.main ? resolveFile(relative(pkg.main), pkgDir) : null;
-		const indexPath = join(pkgDir, 'index.js');
-		return main ?? (filesystem().exists(indexPath) ? indexPath : null);
+	function resolveFilename(name: string, dir: string, request?: RequireResolveOptions): string | null {
+		const found = resolver.resolveSync(name, dir, request);
+		if (!found) return null;
+		if (found.builtin) return name.startsWith('#') ? 'node:' + found.builtin : name;
+		if (!found.path) return null;
+		classified.set(found.path, found);
+		return found.path;
 	}
 
 	function wrapperArguments(filename: string, module: { exports: unknown }, moduleScope: ModuleScope): unknown[] {
@@ -282,7 +233,8 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		}
 
 		const clean = stripShebang(source);
-		const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => packageType(filename, filesystem()));
+		const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => classified.has(filename)
+			? classified.get(filename)!.packageType : resolver.packageScopeSync(dirname(filename))?.type ?? null);
 		if (esm) {
 			if (!native) throw new Error('Native ES modules require a lifo native module loader');
 			return native.requireModule(filename, parentFilename);
