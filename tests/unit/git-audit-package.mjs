@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,7 +19,10 @@ try {
     assert.equal(bytes.byteLength, file.size);
     if (!blobs.some((blob) => blob.key === file.content)) blobs.push({ key: file.content, sha256: file.sha256, size: file.size, ...(file.size < 32768 ? { base64: bytes.toString('base64') } : {}) });
   }
-  console.log('GIT_AUDIT_PACKAGE ' + JSON.stringify({ manifest, blobs }));
+  const metadata = JSON.stringify({ manifest, blobs });
+  const output = process.argv.indexOf('--out');
+  if (output >= 0) writeFileSync(process.argv[output + 1], metadata);
+  else console.log('GIT_AUDIT_PACKAGE ' + metadata);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
