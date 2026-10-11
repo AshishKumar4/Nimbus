@@ -1012,17 +1012,18 @@ export async function execGitNetwork(ctx, env, opts, /**
             }
             const invocationId = crypto.randomUUID();
             const startedAt = Date.now();
+            const facet = entrypoint;
             /** One invocation of the facet, within what is left of the operation's time. */
             const invoke = async (options) => {
                 const remaining = outerDeadline - Date.now();
                 if (remaining <= 0) {
                     throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
                 }
-                let timeoutHandle;
+                let timeoutHandle = null;
                 const timeout = new Promise((_, reject) => {
                     timeoutHandle = setTimeout(() => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)), remaining);
                 });
-                const call = entrypoint.fetch(new Request('http://git/op', {
+                const call = facet.fetch(new Request('http://git/op', {
                     method: 'POST',
                     body: remotePushPack ? framedGitBody(options, remotePushPack) : JSON.stringify(options),
                     ...(remotePushPack ? { headers: { [GIT_FRAMED_HEADER]: '1' } } : {}),

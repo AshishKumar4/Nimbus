@@ -152,15 +152,30 @@ let __wasiProcessGone = null;
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
 let __wasiResident = null;
+/**
+ * The store the last process of this facet left (a warm facet, FacetSpec.warm):
+ * whose names it holds, and the device the session's filesystem reports. The
+ * next process of the same credential continues it.
+ */
+let __wasiKept = null;
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
     const store = __wasiResidentStore;
-    store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+    const who = `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
+    const kept = __wasiKept !== null && __wasiKept.who === who ? __wasiKept : null;
+    __wasiKept = null;
     store.__residentSetStorage(undefined, supervisor);
-    let view = null;
-    const ready = (async () => {
+    // A kept store answers as it stood at its cursor: the process's first
+    // answer takes the barrier from there (inbound, below), so it reads
+    // everything that happened since, as a barrier inside one process does.
+    let view = kept === null ? null : store.__residentNamespaceView(supervisor, kept.device, cred);
+    if (view !== null && !view.ready())
+        view = null;
+    if (view === null)
+        store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+    const ready = view !== null ? Promise.resolve(view) : (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
         if (root === null || !(await store.__residentBootLazy(supervisor)))
@@ -213,6 +228,10 @@ function __wasiStartResident(sup, cred) {
         isHomeRoot: isHomeDirectory,
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
     });
+    if (kept !== null && view !== null)
+        fs.inbound();
+    void ready.then((booted) => { if (booted !== null)
+        __wasiKept = { who, device: booted.device }; });
     return { fs, ready };
 }
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */

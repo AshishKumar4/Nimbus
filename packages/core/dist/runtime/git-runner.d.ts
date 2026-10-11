@@ -20,9 +20,12 @@
  * UTF-8: cat-file, archive, a diff of a Latin-1 file).
  *
  * The image is read once per session, uncached (3.7 MB of runtime blob that
- * would otherwise displace the user's working set); facets are opened per
- * invocation, because the supervisor capability a facet holds is bound to the
- * pid it was opened for.
+ * would otherwise displace the user's working set). A git that ran to its
+ * end leaves its facet warm (FacetSpec.warm) for the next one: the image
+ * compiled, and the resident store of what it read, which the next process
+ * of the same credential brings forward by one barrier instead of reading it
+ * all again. One git at a time runs in a warm facet; a git started while
+ * another runs (its child, or one beside it) takes another.
  */
 import type { RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';

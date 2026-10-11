@@ -143,6 +143,14 @@ export interface IsolatePoolOptions {
     /** A runtime program's explicit pid/run capability; helpers keep their infrastructure binding. */
     processSupervisor?: SupervisorBindingProps;
     /**
+     * Hand the SUPERVISOR binding to each call (`execute`'s second argument,
+     * merged into the function's env) instead of the worker's env. The loader
+     * key then names no process, so a warm worker made for one process's call
+     * can serve the next process's, and never holds a capability between them.
+     * Only an RPC dispatch carries it: `submitRequest` refuses such a pool.
+     */
+    supervisorPerCall?: boolean;
+    /**
      * Raw JavaScript source prepended to every generated worker module.
      * Lets callers inject bundled helpers, such as a tar parser. The user
      * function can reference top-level names declared in the preamble as if
@@ -247,6 +255,8 @@ export interface LoaderWorkerModuleSourceOptions {
         id: string;
     }>;
     hasBindings: boolean;
+    /** `execute(arg, bindings)`: the call's bindings, over the worker's env (IsolatePoolOptions.supervisorPerCall). */
+    callBindings?: boolean;
 }
 /** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
 export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerModuleSourceOptions): string;
@@ -293,6 +303,8 @@ export declare class IsolatePool {
     /** Set by dispose() — queued dispatches reject instead of running. */
     private disposed;
     private bindings;
+    /** The bindings each call carries (IsolatePoolOptions.supervisorPerCall). */
+    private callBindings;
     private readonly preamble;
     private readonly preambleHash;
     /**
