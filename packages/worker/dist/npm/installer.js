@@ -243,7 +243,8 @@ export class NpmInstaller {
                 devOnly, advised, registry, installed: lockedAt, shallow: opts.global === true, allowPeerConflicts: opts.allowPeerConflicts === true,
             });
             ({ plan, resolved, nested } = tree);
-            usedLockfile = lockfile !== null && [...plan.nodes.values()].every((node) => !node.planned) && plan.extraneous.size === 0;
+            // The lockfile answered every edge: nothing resolved, nothing failed, nothing extraneous.
+            usedLockfile = lockfile !== null && plan.failures.length === 0 && plan.extraneous.size === 0 && [...plan.nodes.values()].every((node) => !node.planned);
             if (usedLockfile)
                 log(`Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.`);
             phases['resolve'] = Date.now() - phaseStart;
