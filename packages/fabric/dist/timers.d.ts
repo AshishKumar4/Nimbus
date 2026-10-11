@@ -19,6 +19,7 @@ export interface TimerStorage {
     put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<boolean>;
     setAlarm?(scheduledTime: number): Promise<void>;
+    getAlarm?(): Promise<number | null>;
 }
 /** The hosting actor's context, as the timer coordination reads it. */
 export interface TimerContext {
@@ -164,10 +165,14 @@ export declare class Timers {
      * next schedule call).
      */
     dispatch(handlers: TimerHandlers, onLegacyAlarm?: () => void, alarmInfo?: TimerAlarmInfo): Promise<void>;
-    /** The reasons a running dispatch fired, and how long it has run; null while none runs. */
-    firing(now?: number): {
-        reasons: string[];
-        ms: number;
-    } | null;
+    /** The platform alarm, the reasons it carries, and the dispatch running: what it fired and for how long. */
+    state(now?: number): Promise<{
+        alarmAt: number | null;
+        reasons: Record<string, number> | null;
+        dispatching: {
+            reasons: string[];
+            ms: number;
+        } | null;
+    }>;
 }
 //# sourceMappingURL=timers.d.ts.map

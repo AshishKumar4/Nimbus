@@ -228,8 +228,9 @@ export class PacedWork {
     }
     /** The launches suspended waiting for a turn, and how long the oldest has waited. */
     state(now = Date.now()) {
-        const oldest = this.waiters.reduce((at, waiter) => (at === null || waiter.since < at ? waiter.since : at), null);
-        return { waiting: this.waiters.length, oldestMs: oldest === null ? null : now - oldest };
+        // Suspended in order; a pump keeps the order of those it leaves.
+        const oldest = this.waiters[0];
+        return { waiting: this.waiters.length, oldestMs: oldest === undefined ? null : now - oldest.since };
     }
 }
 /**

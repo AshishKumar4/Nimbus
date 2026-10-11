@@ -51,7 +51,7 @@ import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
-import { TIMER_REASONS_KEY, timers } from '@nimbus-sh/fabric/timers.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
 import { isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
 import { isCirrusHmrPath, readPortCapability, normalizeForwardedHttpPath, readPortReservationByName, readoptCapability, routeToSessionPort, } from './port-capability.js';
 import { registerServingPort } from './serving-port.js';
@@ -338,17 +338,14 @@ const FanoutBenchBodySchema = z.object({
 /**
  * What a launch of this session can be waiting on, read where it waits: each
  * one-shot not yet running and its stage, the launches the pacer holds for a
- * turn, the alarm dispatch running and what it fired, the alarm and the
- * reasons it carries, and the ledger's waits (_diag/session's `launch`).
+ * turn, the alarm, its reasons and the dispatch running, and the ledger's
+ * waits (_diag/session's `launch`).
  */
 async function launchDiagnosis(self) {
-    const manager = self.facetManagerComposed?.manager ?? null;
     const ledger = loaderLedgerStats(self.ctx);
     return {
-        ...(manager ? manager.launchState() : { reapingMs: null, launches: [], pacer: null }),
-        dispatching: timers(self, self.ctx).firing(),
-        alarmAt: await self.ctx.storage.getAlarm(),
-        alarmReasons: (await self.ctx.storage.get(TIMER_REASONS_KEY)) ?? null,
+        ...(self.facetManagerComposed?.manager.launchState() ?? { launches: [], pacer: null }),
+        timers: await timers(self, self.ctx).state(),
         ledger: { inFlight: ledger.inFlightWorkers, waiters: ledger.waiters, pauseMs: ledger.pauseMs },
     };
 }
@@ -835,9 +832,9 @@ async function routeFetch(self, request) {
             // path (Phase B skipped). Probes assert ≥1 after a forced
             // close + reconnect on the same isolate.
             warmJoinCount: self._b4WarmJoinCount ?? 0,
-            // What a launch can be waiting on: its stage (the table's reap, the
-            // ledger's admission, its preparation), a turn the pacer has not been
-            // granted, the alarm dispatch still running, the alarm and its reasons.
+            // What a launch can be waiting on: its stage (the ledger's admission,
+            // its preparation), a turn the pacer has not been granted, the alarm
+            // and the dispatch still running.
             launch: await launchDiagnosis(self),
             // Live shell state — useful for confirming the in-memory
             // shell agrees with SQL. Null when no shell is currently

@@ -4464,8 +4464,6 @@ export class FacetManager {
     launchPump;
     /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
     launching = new Map();
-    /** Since when a one-shot's spawn has waited for the table's reap of ended processes; null while none does. */
-    reapingSince = null;
     launchTasks = new Set();
     launchesClosed = false;
     // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -6019,13 +6017,7 @@ export class FacetManager {
             entry = found;
         }
         else {
-            this.reapingSince ??= Date.now();
-            try {
-                await this.processes.reap();
-            }
-            finally {
-                this.reapingSince = null;
-            }
+            await this.processes.reap();
             // A child of the command that ran it, so under its credential: the
             // program's syscalls answer under the credential the table holds for
             // its pid. At the top of the table it ran as the session user whoever
@@ -6355,7 +6347,6 @@ export class FacetManager {
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now = Date.now()) {
         return {
-            reapingMs: this.reapingSince === null ? null : now - this.reapingSince,
             launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
             pacer: this.launchPump.state(now),
         };
