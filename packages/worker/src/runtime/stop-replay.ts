@@ -16,7 +16,7 @@ import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './st
  *                        nonce, boundary, outbound, promote }.
  *   arm(canStop, whyNot) before the entry: records the run's draws when it can
  *                        stop, replays the stopped run's.
- *   write / acked        each streamed chunk of output on its way out.
+ *   write / ackedRun     each streamed chunk of output on its way out, and the ones a call took.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
  *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
@@ -452,16 +452,17 @@ const __nimbusStopReplay = (() => {
       run.pending[run.pending.length] = chunk;
       return chunk;
     },
-    acked(chunk) {
+    // The chunks one call carried, as written (in their order in pending): taken off in one pass.
+    ackedRun(chunks) {
       if (!run) return;
       const pending = run.pending;
+      let kept = 0;
+      let next = 0;
       for (let i = 0; i < pending.length; i++) {
-        if (pending[i] === chunk) {
-          for (let j = i; j < pending.length - 1; j++) pending[j] = pending[j + 1];
-          pending.length = pending.length - 1;
-          return;
-        }
+        if (next < chunks.length && pending[i] === chunks[next]) { next++; continue; }
+        pending[kept++] = pending[i];
       }
+      pending.length = kept;
     },
     // A synchronous read of stdin that wants bytes and finds \\\`available\\\`
     // (\\\`ended\\\`: no more will come): how many it returns, or -1 when it has
