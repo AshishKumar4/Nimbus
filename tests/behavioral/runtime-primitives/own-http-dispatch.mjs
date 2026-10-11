@@ -86,7 +86,8 @@ async function exercise({ dir, sourceUrl, proxyUrl, upgrade }) {
     for await (const part of request) { buffers &&= Buffer.isBuffer(part); parts.push(part); }
     response.writeHead(201, 'Created', { 'x-native': 'yes', 'set-cookie': ['a=1', 'b=2'] });
     response.end(JSON.stringify({
-      method: request.method, url: request.url, phase: enteredPhase,
+      method: request.method, url: request.url, phase,
+      admittedAfterReturn: !enteredPhase.endsWith('-call'),
       native: request instanceof http.IncomingMessage && response instanceof http.ServerResponse,
       buffers, bytes: Array.from(Buffer.concat(parts)),
       headers: ['if-modified-since', 'user-agent', 'content-type'].map(name => [name, request.headers[name]]),
@@ -321,17 +322,10 @@ try {
   assert.ok(actualLine, output);
   const { upgraded, ...actual } = JSON.parse(actualLine);
   console.log('NIMBUS ' + JSON.stringify({ ...actual, upgraded }));
-  // Approved dispatch-only scope: the native client flattens set-cookie.
-  // workerd v1.20260926.1 internal_http_incoming.ts #setFetchResponse reads
-  // each field through Headers.get rather than getSetCookie. Assert the gap
-  // separately, exactly: its fix must turn this test red until it is updated.
-  const { cookies: nodeCookies, ...nodeHttp } = expected.viaHttp;
-  const { cookies: nativeCookies, ...nativeHttp } = actual.viaHttp;
-  assert.deepEqual(nodeCookies, ['a=1', 'b=2']);
-  assert.equal(nativeCookies, 'a=1, b=2', 'known native set-cookie failure; update this assertion when workerd fixes it');
-  console.log('KNOWN_WORKERD_FAILURE: http headers set-cookie = ' + JSON.stringify(nativeCookies) + '; Node = ' + JSON.stringify(nodeCookies));
+  assert.equal(actual.viaHttp.body.admittedAfterReturn, true);
+  assert.equal(actual.viaFetch.body.admittedAfterReturn, true);
   const { upgraded: _nodeUpgraded, ...nodeExpected } = expected;
-  assert.deepEqual({ ...actual, viaHttp: nativeHttp }, { ...nodeExpected, viaHttp: nodeHttp },
+  assert.deepEqual(actual, nodeExpected,
     'the common HTTP contract, shared-view coherence, a stream proxied through and cross-pid routing match Node');
   // The port route's answer is the one the process's own server is held to, for every spelling.
   assert.deepEqual(upgraded.none.own, [200, 'app:GET /app']);
