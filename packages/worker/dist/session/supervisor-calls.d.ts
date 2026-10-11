@@ -180,7 +180,6 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         followSymlinks?: boolean;
     }): Promise<Awaited<ReturnType<RuntimeFsBridge["stat"]>>>;
     lstat(path: string): Promise<any>;
-    hasLegacySymlinkUnder(path: string): Promise<boolean>;
     utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt>;
     chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt>;
     access(path: RuntimeFsPath, mode: number): Promise<void>;

@@ -6,8 +6,8 @@
 // false for registry-only entries. `readlink` still returned the
 // target afterwards (stale registry entry).
 //
-// Post-fix: mkRm checks SymlinkRegistry FIRST; if symlink, deletes
-// the registry entry, leaving the target file alone.
+// Post-fix: rm removes the link itself (a native symlink), leaving the
+// target file alone.
 
 import { mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 

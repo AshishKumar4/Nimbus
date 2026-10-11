@@ -24,7 +24,6 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly writeFileStat: "once";
     readonly stat: "joined";
     readonly lstat: "joined";
-    readonly hasLegacySymlinkUnder: "joined";
     readonly utimes: "once";
     readonly chmod: "once";
     readonly access: "joined";

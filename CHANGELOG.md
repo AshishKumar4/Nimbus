@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: the legacy symlink registry is gone. `@nimbus-sh/core/vfs/symlink-registry.js`
+  (`SymlinkRegistry`, `getSymlinkRegistry`, `LEGACY_SYMLINK_REGISTRY_PATH`) and the
+  supervisor's `hasLegacySymlinkUnder` call are removed. No Nimbus since the core
+  package wrote that registry, and schema v2 and v3 stores never carried one over,
+  so a root `/.nimbus-symlinks.json` is now an ordinary file: it no longer defines
+  symlinks, and an exclusive mutation elsewhere no longer holds it busy.
 - Breaking: low-level `Facet.submit`, `IsolatePool` and `Fanout` calls now
   accept `FacetTaskSource` values, not functions or closures. Compile the
   task and its dependencies at build time, then pass its expression to

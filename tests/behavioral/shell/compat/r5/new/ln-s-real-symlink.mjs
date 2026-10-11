@@ -6,7 +6,7 @@
 // stale content. Broken for scripts that depend on symlink semantics
 // (e.g. node_modules/.bin shims, /usr/lib alternatives).
 //
-// Post-fix: SymlinkRegistry stores (link → target) pairs; reads through
+// Post-fix: ln -s makes a native symlink; reads through
 // the link resolve to the target's current content; deleting the target
 // causes reads through the link to fail (ENOENT-style).
 

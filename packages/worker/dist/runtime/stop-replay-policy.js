@@ -36,7 +36,7 @@ const mutation = { kind: 'mutation' };
  */
 export const REPLAY_OPERATION_POLICY = {
     readFile: read, readFileBytes: read, writeFile: effect, writeFileStat: effect,
-    stat: read, lstat: read, hasLegacySymlinkUnder: read, utimes: effect,
+    stat: read, lstat: read, utimes: effect,
     chmod: effect, access: read, chown: effect, setUmask: read,
     readdir: read, exists: read, mkdir: effect, rmdir: effect, rename: effect,
     unlink: effect, readlink: read, fsLinkLeadsTo: read, symlink: effect,
