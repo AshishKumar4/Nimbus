@@ -120,7 +120,17 @@ function redactDestination(url: string, secrets: readonly string[], credentialPr
   const parts = originalUrlParts(url);
   if (!parts) return '<invalid remote URL>';
   const patterns = secrets.filter((secret) => secret.length > 0).map(secretPattern);
-  const mask = (data: string): string => patterns.reduce((text, pattern) => text.replace(pattern, '<redacted>'), data);
+  const mask = (data: string): string => patterns.reduce((text, pattern) => {
+    // A raw match cannot begin/end inside an escape: the "2" in %20 is
+    // encoding syntax, not the character "2" or any part of the secret.
+    const boundaries = new Set([0]);
+    for (let at = 0; at < text.length;) {
+      at += /^%[0-9a-fA-F]{2}/.test(text.slice(at, at + 3)) ? 3 : 1;
+      boundaries.add(at);
+    }
+    return text.replace(pattern, (match: string, offset: number) =>
+      boundaries.has(offset) && boundaries.has(offset + match.length) ? '<redacted>' : match);
+  }, data);
   const at = parts.authority.lastIndexOf('@');
   const host = parts.authority.slice(at + 1);
   const username = at < 0 ? '' : parts.authority.slice(0, at).split(':', 1)[0];

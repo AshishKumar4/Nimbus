@@ -58,6 +58,8 @@ assert.equal(remoteFailureText('https://u@h:8443/repo.git', { kind: 'status', st
   "fatal: could not read Password for 'https://u@h:8443': terminal prompts disabled\n", 'credential-prompt delimiters remain intact');
 assert.equal(remoteFailureText('https://HOST.Example:443/repo.git', { kind: 'status', status: 403 }, none),
   "fatal: unable to access 'https://HOST.Example:443/repo.git/': The requested URL returned error: 403\n", 'native git preserves host case and explicit default port spelling');
+assert.equal(remoteFailureText('https://h/a%2Fb?x=%20', { kind: 'status', status: 403 }, none, ['2']),
+  "fatal: unable to access 'https://h/a%2Fb?x=%20/': The requested URL returned error: 403\n", 'escape digits are encoding syntax, not secret data');
 for (const url of ['https://h/r?TOKEN-9=public', 'https://h/r?%54OKEN%2d9=public', 'https://h/%54OKEN%2d9/r']) {
   const message = remoteFailureText(url, { kind: 'status', status: 403 }, none, ['TOKEN-9']);
   assert.equal(message.includes('TOKEN-9'), false, 'secret-bearing query names are redacted');
