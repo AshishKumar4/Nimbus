@@ -751,7 +751,7 @@ class __NimbusInterpretedCallSite {
   getEnclosingLineNumber() { return this.#frame.enclosingLine; }
   getEnclosingColumnNumber() { return this.#frame.enclosingColumn; }
   getEvalOrigin() { return undefined; }
-  isToplevel() { return this.#frame.top || this.#frame.type === null; }
+  isToplevel() { return this.#frame.top; }
   isEval() { return false; }
   isNative() { return false; }
   isConstructor() { return this.#frame.constructor; }
