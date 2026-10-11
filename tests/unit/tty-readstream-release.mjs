@@ -11,9 +11,11 @@ import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
-// A live input channel (a child_process child's): its supervisor long-polls it.
+// A live input channel (a child_process child's): its supervisor long-polls
+// it, until the test ends it.
+let ended = false;
 const supervisor = {
-  async cpReadStdin(_pid, waitMs) { await tick(Math.min(waitMs, 20)); return { data: new Uint8Array(0), ended: false }; },
+  async cpReadStdin(_pid, waitMs) { await tick(Math.min(waitMs, 20)); return { data: new Uint8Array(0), ended }; },
 };
 const shim = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   'const __pendingIO = [];' + generateShimsCode() + '\nreturn { tty: builtins.tty, stdin: __processMod.stdin };')(
@@ -59,4 +61,5 @@ const held = () => globalThis.__nimbusInputHandles || 0;
   assert.equal(held(), 0);
 }
 
+ended = true;
 console.log('tty-readstream-release: ok');
