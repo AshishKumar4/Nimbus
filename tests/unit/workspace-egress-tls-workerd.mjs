@@ -45,6 +45,7 @@ try {
     const result = await run(source);
     assert.equal(result.status, 0, result.stdout);
     assert.match(result.stdout, /secure true true/);
+    assert.match(result.stdout, /TLS refs true true/);
     assert.match(result.stdout, /answer via-egress-tls egress-test\.invalid:443 HEAD \/tls-proof HTTP\/1\.0/);
     const plain = await run(`
       const net = require('net');
@@ -79,6 +80,13 @@ try {
     assert.equal(rejected.status, 0, rejected.stdout);
     assert.match(rejected.stdout, /refused egress refused this TLS destination/);
     assert.doesNotMatch(rejected.stdout, /unexpected secureConnect/);
+    const timeout = await run(`
+      const socket = require('tls').connect({ port: 443, host: 'egress-test.invalid', timeout: 30 });
+      socket.on('timeout', () => { console.log('TLS options timeout'); socket.destroy(); });
+      socket.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+    `);
+    assert.equal(timeout.status, 0, timeout.stdout);
+    assert.match(timeout.stdout, /TLS options timeout/);
     const upgraded = await run(String.raw`
       const tls = require('tls');
       const plain = require('net').connect(443, 'egress-test.invalid', () => plain.write('GET /start HTTP/1.0\r\nHost: egress-test.invalid\r\n\r\n'));

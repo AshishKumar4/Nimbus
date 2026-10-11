@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { hostSqlite } from './lib/host-sqlite.mjs';
-import { inlineWebSocketArguments } from './lib/inline-websocket-arguments.mjs';
+
 
 const require = createRequire(import.meta.url);
 const { WebSocket, WebSocketServer } = createRequire(require.resolve('wrangler/package.json'))('ws');

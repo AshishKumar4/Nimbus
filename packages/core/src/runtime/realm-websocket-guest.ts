@@ -1,4 +1,5 @@
 import { isWebSocketHostEvent, type WebSocketGuestEvent, type WebSocketHostEvent } from './realm-websocket.js';
+import { webSocketClose, webSocketConstructor, webSocketSend } from './websocket-arguments.js';
 
 /** A WebSocket's native event surface, with its transport owned by the host. */
 export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) => void, waiting: () => void, nextId: () => number) {
@@ -22,23 +23,17 @@ export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) =>
     #buffered = 0;
     #sending = Promise.resolve();
 
-    constructor(input: string | URL, protocols: string | string[] = []) {
+    constructor(input: unknown, options: unknown = []) {
       super();
-      const url = new URL(String(input));
-      if (url.protocol === 'http:') url.protocol = 'ws:';
-      if (url.protocol === 'https:') url.protocol = 'wss:';
-      if ((url.protocol !== 'ws:' && url.protocol !== 'wss:') || url.hash || url.username || url.password) throw new DOMException('Invalid WebSocket URL', 'SyntaxError');
-      const offered = typeof protocols === 'string' ? [protocols] : [...protocols].map(String);
-      if (new Set(offered).size !== offered.length || offered.some((protocol) => !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(protocol))) throw new DOMException('Invalid WebSocket protocols', 'SyntaxError');
+      if (arguments.length === 0) throw new TypeError('WebSocket constructor: 1 argument required');
+      const { url, headers } = webSocketConstructor(input, options);
       this.url = url.href;
       this.#id = nextId();
-      const headers: [string, string][] = [['Upgrade', 'websocket']];
-      if (offered.length) headers.push(['Sec-WebSocket-Protocol', offered.join(', ')]);
       url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
       sockets.set(this.#id, (event) => this.#answer(event));
       handlers.set(this, new Map());
       waiting();
-      post({ type: 'egress-ws', id: this.#id, url: url.href, headers });
+      post({ type: 'egress-ws', id: this.#id, url: url.href, headers: [...headers] });
     }
 
     get readyState() { return this.#state; }
@@ -46,17 +41,13 @@ export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) =>
     get extensions() { return this.#extensions; }
     get bufferedAmount() { return this.#buffered; }
     get binaryType() { return this.#binaryType; }
-    set binaryType(value: 'blob' | 'arraybuffer') { if (value === 'blob' || value === 'arraybuffer') this.#binaryType = value; }
+    set binaryType(value: unknown) { this.#binaryType = value === 'arraybuffer' ? 'arraybuffer' : 'blob'; }
 
-    send(value: string | ArrayBufferLike | ArrayBufferView | Blob): void {
+    send(input: unknown): void {
+      if (arguments.length === 0) throw new TypeError('WebSocket.send: 1 argument required');
+      const { data: payload, length } = webSocketSend(input);
       if (this.#state === 0) throw new DOMException('WebSocket is not open', 'InvalidStateError');
       if (this.#state !== 1) return;
-      let payload: string | Uint8Array | Promise<Uint8Array>;
-      if (typeof value === 'string') payload = value;
-      else if (value instanceof Blob) payload = value.arrayBuffer().then((buffer) => new Uint8Array(buffer));
-      else if (ArrayBuffer.isView(value)) payload = new Uint8Array(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-      else payload = new Uint8Array(new Uint8Array(value));
-      const length = typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value instanceof Blob ? value.size : value.byteLength;
       this.#buffered += length;
       this.#sending = this.#sending.then(async () => {
         const data = await payload;
@@ -65,9 +56,8 @@ export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) =>
       });
     }
 
-    close(code?: number, reason = ''): void {
-      if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) throw new DOMException('Invalid WebSocket close code', 'InvalidAccessError');
-      if (new TextEncoder().encode(reason).byteLength > 123) throw new DOMException('WebSocket close reason is too long', 'SyntaxError');
+    close(inputCode?: unknown, inputReason?: unknown): void {
+      const { code, reason } = webSocketClose(inputCode, inputReason);
       if (this.#state >= 2) return;
       this.#state = 2;
       this.#sending = this.#sending.then(() => { post({ type: 'egress-ws-close', id: this.#id, code, reason }); });

@@ -89,6 +89,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     options: { host: options.host ?? previous?._host ?? 'localhost', port: Number(options.port ?? previous?._handle?.options.port), addressType: 0 },
   } });
   const socket = real.connect({ ...options, socket: carrier }, callback);
+  if (!previous && options.timeout) socket.setTimeout(options.timeout);
   ready.catch((error) => socket.destroy(error));
   return socket;
 }
