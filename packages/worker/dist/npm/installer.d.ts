@@ -219,13 +219,15 @@ export declare class NpmInstaller {
      */
     private applyW6Registry;
     /**
-     * A lockfile entry's registry record, read once however often the
-     * checks, the walk and the reconstruction of one install ask for it.
+     * A lockfile entry's registry record, read once however often one install
+     * asks for it: null where the cache has none of that package (an alias's
+     * name, retargeted, holds another's).
      */
     private lockRecords;
     /**
-     * Remove the placements `previous` (the last install's lockfile) holds and
-     * `plan` does not. Answers how many were removed.
+     * Remove the placements of `previous` (the last install's lockfile, and
+     * what an optional failure left out) that `plan` does not hold. Answers
+     * how many were removed.
      */
     private pruneExtraneous;
     /**

@@ -101,6 +101,8 @@ export interface ProjectManifest {
     } | undefined>;
     [field: string]: unknown;
 }
+/** Whether a parsed package.json is a manifest: a JSON object (an array is not). */
+export declare function isManifest(value: unknown): value is ProjectManifest;
 /** Where a named package is saved: npm's save types. */
 export type SaveType = 'prod' | 'dev' | 'optional' | 'peer' | 'peerOptional';
 /** The save type npm infers for `name` from where the project declares it (add-rm-pkg-deps inferSaveType); prod when it does not. */
@@ -135,17 +137,14 @@ export declare function projectRoots(manifest: ProjectManifest | null, named: re
 }): TreeRoot[];
 /**
  * The project's manifest with what the command line named saved, as npm
- * saves it after an install: each package that installed (`installed`: its
- * version, and its registry name when that is not the name it installs
- * under) under its save type, at `^version` unless the spec given is a range
- * `^version` would widen; out of the fields its save type excludes; an
- * optional one also under dependencies (npm's affordance for older npms).
- * One that did not install keeps the spec given.
+ * saves it after an install: each package that installed (`installed`: the
+ * version under its name) under its save type, at `^version` unless the
+ * spec given is a range `^version` would widen, an alias as the package it
+ * names; out of the fields its save type excludes; an optional one also
+ * under dependencies (npm's affordance for older npms). One that did not
+ * install keeps the spec given.
  */
-export declare function saveNamed(manifest: ProjectManifest, named: readonly NamedPackage[], installed: (name: string) => {
-    version: string;
-    registryName: string;
-} | null): ProjectManifest;
+export declare function saveNamed(manifest: ProjectManifest, named: readonly NamedPackage[], installed: (name: string) => string | null): ProjectManifest;
 /** What a host answers for a request it resolves. */
 export type TreeResolution<P extends TreePackage> = 
 /**

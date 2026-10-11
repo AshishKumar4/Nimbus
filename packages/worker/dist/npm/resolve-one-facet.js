@@ -193,11 +193,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     //    which is how the second install in a session came back with lower
     //    versions than the first (measured: totalist, readdirp, mrmime,
     //    milliparsec, dot-prop, eta on json-server@1.0.0-beta.15).
+    //    Records are the registry package's (an alias's target's), by its name.
     const cached = (() => {
         const entries = spec.cachedEntries || [];
         if (entries.length === 0)
             return null;
-        const candidates = entries.filter((e) => e.name === request.installName);
+        const candidates = entries.filter((e) => e.name === request.registryName);
         if (candidates.length === 0)
             return null;
         // A staged version the cache lacks is fetched, never answered by another.
@@ -209,12 +210,11 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (cached) {
         // Platform constraints + optionalDependencies round-trip so the ABI
         // policy makes the same decisions on warm-cache hits.
-        const pkgFromCache = resolvedFromRecord(cached);
+        const pkgFromCache = { ...resolvedFromRecord(cached), name: request.installName };
+        if (request.alias)
+            cacheWrites.push(registryRecord(pkgFromCache, Date.now()));
         adviseStagedBindingVersion(pkgFromCache);
-        const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
-        if (nativeReject)
-            return nativeReject;
-        return out(pkgFromCache, 0, 'cache-hit');
+        return outNativeExecutable(pkgFromCache, 0, 'cache-hit') ?? out(pkgFromCache, 0, 'cache-hit');
     }
     const hasVersions = (value) => value !== null && typeof value === 'object' && 'versions' in value && !!value.versions;
     // `value[key]` as JavaScript reads it, a primitive's through its wrapper; undefined for null and undefined.
@@ -419,8 +419,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const native = outNativeExecutable(pkg, bytes, packumentSource);
     if (native?.pkg === null)
         return native;
-    // 5. Stage cache writes.
-    cacheWrites.push(registryRecord(pkg, Date.now()));
+    // 5. Stage cache writes: the registry package's, under its name; an
+    //    alias's version also under the alias, which is what its lockfile
+    //    entries read.
+    cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }, Date.now()));
+    if (request.alias)
+        cacheWrites.push(registryRecord(pkg, Date.now()));
     // Top-5 sibling versions.
     const sorted = Object.keys(data.versions)
         .map((v) => ({ v, p: PARSE_SEMVER(v) }))
@@ -434,7 +438,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         if (!otherData)
             continue;
         try {
-            cacheWrites.push(registryRecord(versionToResolved(otherData), Date.now()));
+            cacheWrites.push(registryRecord({ ...versionToResolved(otherData), name: request.registryName }, Date.now()));
         }
         catch { /* skip malformed */ }
     }
