@@ -3,7 +3,7 @@
 // Exercise installed public packages, not the repository's patched dependency.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
@@ -100,7 +100,20 @@ try {
   const dependencies = {};
   const packages = [];
   const vendorBytes = readFileSync(join(root, 'packages/worker/vendor/git.generated.mjs'));
-  for (const pkg of ['platform', 'core', 'fabric', 'worker']) {
+  // worker and every Nimbus package it depends on, as the release publishes them together.
+  const manifestOf = (dir) => JSON.parse(readFileSync(join(root, 'packages', dir, 'package.json'), 'utf8'));
+  const dirOf = new Map(readdirSync(join(root, 'packages')).map((dir) => [manifestOf(dir).name, dir]));
+  const closure = new Set();
+  const visit = (dir) => {
+    if (closure.has(dir)) return;
+    closure.add(dir);
+    for (const dep of Object.keys(manifestOf(dir).dependencies ?? {})) {
+      if (!dep.startsWith('@nimbus-sh/')) continue;
+      visit(dirOf.get(dep));
+    }
+  };
+  visit('worker');
+  for (const pkg of closure) {
     const directory = join(root, 'packages', pkg);
     const filename = run('bun', ['pm', 'pack', '--destination', work, '--quiet'], directory).trim();
     const tarball = resolve(work, filename);
