@@ -49,6 +49,8 @@ const SOURCE = [
   '  const saved = Error.prepareStackTrace;',
   '  Error.prepareStackTrace = (_e, sites) => sites.filter((s) => /\\/(frames\\.mjs|bridge\\.cjs)$/.test(s.getFileName() ?? "")).map((s) => [s.getFunctionName(),s.getTypeName(),s.getMethodName(),s.getFileName(),s.getLineNumber(),s.getColumnNumber(),s.isConstructor(),s.isAsync(),s.isToplevel(),s.getThis() === undefined,s.getFunction() === undefined,String(s)]);',
   '  console.log("SITES " + JSON.stringify(middle()));',
+  '  console.log("SITES " + JSON.stringify(instance.method()));',
+  '  console.log("SITES " + JSON.stringify(new C().stack));',
   '  Error.prepareStackTrace = saved;',
   '}',
   'afterAwait();',
@@ -92,7 +94,7 @@ try {
     assert.equal(run.status, script.startsWith('fatal-') ? 1 : 0, `Node premise: ${script}: ${text}`);
     expected[script] = said(script.startsWith('fatal-') ? run.stderr.replaceAll(disk, ROOT) : text, script.startsWith('fatal-'));
   }
-  assert.equal(expected['adopt.cjs'].length, 19, 'every frame and CallSite fixture ran under Node');
+  assert.equal(expected['adopt.cjs'].length, 21, 'every frame and CallSite fixture ran under Node');
   assert.match(expected['fatal-runtime.cjs'], /fatal\.mjs:\d+\n[^\n]+\n[ \t]*\^+\n/, 'Node prints the module source and arrow for an unhandled rejection');
 } finally {
   rmSync(disk, { recursive: true, force: true });
