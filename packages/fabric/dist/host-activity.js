@@ -1,5 +1,6 @@
 export const HOST_WATCH_HEADER = 'x-nimbus-host-watch';
 export const HOST_INCARNATION_HEADER = 'x-nimbus-host-incarnation';
+export const HOST_WATCH_MODULE = '__nimbus_host_watch.js';
 export class HostActivity {
     observations = new Set();
     owners = 0;
@@ -126,7 +127,7 @@ export function observeResidentConfig(config, capability) {
     if (typeof config.mainModule !== 'string' || typeof config.modules !== 'object' || config.modules === null)
         throw new TypeError('resident worker has no module map');
     const modules = config.modules;
-    const entry = '__nimbus_host_watch.js';
+    const entry = HOST_WATCH_MODULE;
     if (Object.hasOwn(modules, entry))
         throw new Error('resident worker uses a reserved module name');
     modules[entry] = `import { NimbusProcess as Base } from ${JSON.stringify('./' + config.mainModule)};

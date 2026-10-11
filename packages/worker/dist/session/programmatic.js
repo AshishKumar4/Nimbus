@@ -169,7 +169,7 @@ function startShellJob(self, command, options, job, named) {
             controller.abort(reason);
         }
         catch { /* already settled */ }
-    });
+    }, controller.signal);
     const emit = (stream, sink) => (data) => {
         if (job.background) {
             try {

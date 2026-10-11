@@ -5,6 +5,7 @@ export interface HostActivityLease {
 }
 export declare const HOST_WATCH_HEADER = "x-nimbus-host-watch";
 export declare const HOST_INCARNATION_HEADER = "x-nimbus-host-incarnation";
+export declare const HOST_WATCH_MODULE = "__nimbus_host_watch.js";
 interface Observation {
     readonly open: (signal: AbortSignal) => Promise<Response>;
     readonly lost: (error: Error) => void;

@@ -277,12 +277,11 @@ export class SessionProcessSupervisor {
         for (const [pid, pieces] of this.held)
             for (const work of pieces) {
                 work.observation?.release();
-                if (!work.stopped)
-                    work.observation = observe(pid);
+                work.observation = !work.stopped && !work.signal?.aborted ? observe(pid) : undefined;
             }
     }
     holdWork(pid, stop, signal) {
-        const work = { stop, stopped: false, observation: this.observeWork?.(pid) };
+        const work = { stop, stopped: false, signal, observation: signal?.aborted ? undefined : this.observeWork?.(pid) };
         const stopObserving = () => work.observation?.release();
         signal?.addEventListener('abort', stopObserving, { once: true });
         if (signal?.aborted)
