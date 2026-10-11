@@ -11739,37 +11739,26 @@ const __childProcessMod = (() => {
     };
   }
 
-  // Read the parent's actual stdin (seeded input or the live terminal
-  // pump), not an empty spawn payload. The private relay remains absent
+  // The parent's actual fd 0 (seeded input or the live terminal pump), not
+  // an empty spawn payload: a consumer of its own, as the child's inherited
+  // descriptor is, its bytes as they came. The private relay remains absent
   // from child.stdin, and relinquishes the input when the child exits.
   function _inheritStdin(child) {
-    const input = __processMod.stdin;
+    const relay = new __streamMod.Readable({ read() { __nimbusStdinSource.want(relay); } });
+    __nimbusStdinSource.attach(relay);
     let stopped = false;
-    const cleanup = () => {
-      stopped = true;
-      input.removeListener('data', forward);
-      input.removeListener('end', end);
-      if (input.listenerCount('data') === 0) input.pause();
-    };
-    const end = () => { if (!stopped) void _queueStdinEnd(child); };
-    const forward = (chunk) => {
+    relay.on('end', () => { if (!stopped) void _queueStdinEnd(child); });
+    relay.on('data', (chunk) => {
       if (stopped) return;
-      input.pause();
+      relay.pause();
       const task = _queueStdinWrite(child, _toBytes(chunk)).then(() => {
-        if (!stopped) input.resume();
+        if (!stopped) relay.resume();
       }, (error) => {
         if (!stopped) child.emit('error', error);
       });
       __pendingIO.push(task);
-    };
-    child.once('exit', cleanup);
-    // Attach the byte consumer before starting the stdin pump. Bypass only
-    // stdin's optional text-decoding listener wrapper: an inherited fd
-    // carries its bytes, not the parent's chosen listener encoding.
-    __eventsMod.prototype.on.call(input, 'data', forward);
-    input.once('end', end);
-    input.resume();
-    if (input.readableEnded) end();
+    });
+    child.once('exit', () => { stopped = true; relay.destroy(); });
   }
 
   /** Build a fresh ChildProcess emitter with real streams. */
@@ -13277,58 +13266,55 @@ async function __nimbusPrepareStdin() {
     if (__nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended) __nimbusStdinFollower = __nimbusFollowStdin(pid);
   }
 }
-function __makeProcessStdin() {
-  const r = new __streamMod.PassThrough();
-  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
-  r.fd = 0;
-  let seeded = false;
-  let encoding = null;
-  r.isTTY = __nimbusAttachedTty;
-  r.isRaw = false;
-  r.setRawMode = function(mode) {
-    r.isRaw = mode !== false;
-    return r;
-  };
-  r.ref = function() { inputReferenced = true; holdInput(); return r; };
-  r.unref = function() { inputReferenced = false; holdInput(); return r; };
-  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+// fd 0's one source, and its consumers. The source is what the first
+// consumer starts (seed): a `< file`'s stream, the live channel's pump, or
+// what fd 0 held. Its consumers (process.stdin, each tty.ReadStream, a
+// child's inherited fd 0) are Readables of their own, as Node's are separate
+// handles on fd 0: each chunk goes to one consumer reading now (its read
+// outstanding, not paused), as a read of one fd takes it, and waits here while
+// none is; each sees the end when it reads after it. The live channel's
+// packets also carry its signals and resizes, so its pump reads on while no
+// one reads data. A consumer flowing and referenced holds the input open
+// (__nimbusInputHandles), as a reading Node stdin does: pausing, unref'ing,
+// ending or destroying one lets go of its own hold, and of nothing else.
+function __makeStdinSource() {
   const liveChildPid = __nimbusLiveInputChannel();
-  // The polling infrastructure is unref'd, but a program actively consuming
-  // live stdin owns a referenced input handle, as in Node. Otherwise an
-  // interactive child exits after its prompt, before a keystroke arrives.
-  // The handle has owners: the program's own reading (its resume, until its
-  // pause) and each other reader of the input (a tty.ReadStream,
-  // __nimbusReader). It is held while one remains.
-  const PROGRAM = {};
-  const inputOwners = new Set();
-  let inputReferenced = true, inputHeld = false;
-  function holdInput(owner, want) {
-    if (owner !== undefined) {
-      if (want) inputOwners.add(owner);
-      else inputOwners.delete(owner);
+  const queue = [];
+  const consumers = new Set();
+  const pending = new Set();
+  const unreferenced = new WeakSet();
+  let seeded = false, ended = false, failure = null, fileReader = null, inputHeld = false;
+  const readingNow = (c) => c.readableFlowing !== false || c._readableState.readableListening;
+  function update() {
+    let held = false;
+    if (liveChildPid) {
+      for (const c of consumers) {
+        if (c.readableFlowing === true && !unreferenced.has(c) && !c.readableEnded && !c.destroyed) { held = true; break; }
+      }
     }
-    const held = !!(inputOwners.size > 0 && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
     if (!held) globalThis.__nimbusHandleReleased?.();
   }
-  __eventsMod.prototype.on.call(r, 'end', () => holdInput());
-  __eventsMod.prototype.on.call(r, 'close', () => holdInput());
-  if (liveChildPid) {
-    try {
-      globalThis.__nimbusProcessStdin = r;
-      const pending = Array.isArray(globalThis.__nimbusPendingProcessInput)
-        ? globalThis.__nimbusPendingProcessInput.splice(0)
-        : [];
-      globalThis.__nimbusPendingProcessInputBytes = 0;
-      for (const chunk of pending) r.write(String(chunk));
-      if (globalThis.__nimbusPendingProcessInputEnded) {
-        globalThis.__nimbusPendingProcessInputEnded = false;
-        queueMicrotask(() => r.end());
-      }
-    } catch {}
+  function deliver() {
+    for (const c of pending) {
+      if (c.destroyed) { pending.delete(c); continue; }
+      if (!readingNow(c)) continue;
+      if (queue.length > 0) { pending.delete(c); c.push(queue.shift()); }
+      else if (failure !== null) { pending.delete(c); c.destroy(failure); }
+      else if (ended) { pending.delete(c); c.push(null); }
+    }
+    // A `< file` is read as its consumers read it.
+    if (fileReader !== null) {
+      if (queue.length > 0) fileReader.pause();
+      else if (pending.size > 0) fileReader.resume();
+    }
+    update();
   }
+  function write(chunk) { queue.push(chunk); deliver(); }
+  function end() { ended = true; deliver(); }
+  function fail(error) { failure = error; deliver(); }
   async function pumpLiveStdin() {
     let readFailures = 0;
     // What fd 0's follower took after process.stdin took the channel over
@@ -13389,10 +13375,10 @@ function __makeProcessStdin() {
       // The queue hands back bytes; a Readable given a string would encode
       // it again.
       if (packet && packet.data && packet.data.byteLength > 0) {
-        r.write(__BufferMod.from(packet.data));
+        write(__BufferMod.from(packet.data));
       }
       if (packet && packet.ended) {
-        r.end();
+        end();
         break;
       }
       // Diagnostic hook (runner-installed, NIMBUS_DIAG_EXEC-gated): the pump's
@@ -13412,27 +13398,29 @@ function __makeProcessStdin() {
       let from = file.offset;
       if (__nimbusSyncStdin !== null || __nimbusQueuedStdin !== null || __nimbusStdinTaken) {
         const first = __nimbusStdinRemainder();
-        if (first.length > 0) r.write(first);
+        if (first.length > 0) write(first);
         if (__nimbusQueuedStdin === null || __nimbusQueuedStdin.ended) {
-          queueMicrotask(() => r.end());
+          queueMicrotask(end);
           return;
         }
         from = __nimbusQueuedStdin.from;
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
-      source.on("error", (err) => r.destroy(err));
-      source.pipe(r);
+      fileReader = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
+      fileReader.on("data", write);
+      fileReader.on("end", end);
+      fileReader.on("error", fail);
+      deliver();
       return;
     }
     if (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       // What fd 0 held at the start and synchronous reads left comes first;
       // the pump reads on from there unless that was all of it.
       const first = __nimbusStdinRemainder();
-      if (first.length > 0) r.write(first);
+      if (first.length > 0) write(first);
       if (__nimbusStdinEnded()) {
-        queueMicrotask(() => r.end());
+        queueMicrotask(end);
         return;
       }
       const pump = pumpLiveStdin().catch((e) => {
@@ -13447,7 +13435,7 @@ function __makeProcessStdin() {
         __nimbusReleaseStderr(trace + "\n");
         const exitGate = __nimbusOutputGate();
         try { Promise.resolve(exitGate).then(() => __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\n"), () => undefined)).catch(() => {}); } catch {}
-        try { r.end(); } catch {}
+        end();
       });
       __nimbusLiveStdinPump = pump;
       return;
@@ -13456,39 +13444,41 @@ function __makeProcessStdin() {
       // A Buffer, as Node's stdin chunks are: `s += chunk` and
       // chunk.toString() read text, where a bare Uint8Array reads "104,105".
       const data = __nimbusStdinRemainder();
-      if (data.length > 0) r.write(data);
-      r.end();
+      if (data.length > 0) write(data);
+      end();
     });
   };
-  r.__nimbusStartLivePump = seed;
-  const origResume = typeof r.resume === "function" ? r.resume.bind(r) : null;
-  const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
-  r.resume = function() {
-    seed();
-    holdInput(PROGRAM, true);
-    return origResume ? origResume() : r;
+  return {
+    seed,
+    // A consumer of fd 0: `stream`, a Readable whose _read is want's.
+    attach(stream) {
+      consumers.add(stream);
+      const { pause, resume } = stream;
+      stream.pause = function() { const out = Reflect.apply(pause, this, arguments); update(); return out; };
+      stream.resume = function() { seed(); const out = Reflect.apply(resume, this, arguments); deliver(); return out; };
+      stream.ref = function() { unreferenced.delete(stream); update(); return stream; };
+      stream.unref = function() { unreferenced.add(stream); update(); return stream; };
+      stream.on("end", update);
+      stream.on("close", () => { consumers.delete(stream); pending.delete(stream); update(); });
+    },
+    want(stream) { seed(); pending.add(stream); deliver(); },
   };
-  // The program's pause lets go of its own reading; the input flows on while
-  // another reader still reads it.
-  r.pause = function() {
-    holdInput(PROGRAM, false);
-    if (inputOwners.size === 0 && origPause) origPause();
+}
+const __nimbusStdinSource = __makeStdinSource();
+function __makeProcessStdin() {
+  const r = new __streamMod.Readable({ read() { __nimbusStdinSource.want(r); } });
+  __nimbusStdinSource.attach(r);
+  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
+  r.fd = 0;
+  let encoding = null;
+  r.isTTY = __nimbusAttachedTty;
+  r.isRaw = false;
+  r.setRawMode = function(mode) {
+    r.isRaw = mode !== false;
     return r;
   };
-  // Another reader of the input (a tty.ReadStream), its 'data' its own
-  // listener's: it reads, holding the input as the program's resume does;
-  // stops (its backpressure), the hold kept; and lets go of its hold alone.
-  r.__nimbusReader = function() {
-    const owner = {};
-    return {
-      read() { seed(); holdInput(owner, true); if (origResume) origResume(); },
-      stop() { if (origPause) origPause(); },
-      release() {
-        holdInput(owner, false);
-        if (inputOwners.size === 0 && origPause) origPause();
-      },
-    };
-  };
+  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  r.__nimbusStartLivePump = __nimbusStdinSource.seed;
   const origOn = r.on.bind(r);
   const calls = Symbol("nimbus.stdin.calls");
   function wrapDataListener(listener) {
@@ -13528,7 +13518,7 @@ function __makeProcessStdin() {
   // ended stdin at once, and every Vite dev server (Astro's included) shut
   // itself down seconds after it started.
   r.on = function(event, listener) {
-    if (event === "data" || event === "readable") seed();
+    if (event === "data" || event === "readable") __nimbusStdinSource.seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
       const ret = origOn(event, wrapped);
@@ -13538,8 +13528,6 @@ function __makeProcessStdin() {
     return origOn(event, listener);
   };
   r.addListener = r.on;
-  const origRead = r.read.bind(r);
-  r.read = function(size) { seed(); return origRead(size); };
   return r;
 }
 
@@ -15900,34 +15888,19 @@ builtins.dgram = (() => {
 
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
-  // The process's terminal: a ReadStream reads the process's stdin, a
+  // The process's terminal: a ReadStream reads fd 0, as process.stdin does, a
   // WriteStream writes its stdout (fd 2: its stderr).
   ReadStream: class extends __streamMod.Readable {
-    constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
+    constructor(fd) {
+      super();
+      this.fd = fd;
+      this.isTTY = __nimbusAttachedTty;
+      this.isRaw = false;
+      __nimbusStdinSource.attach(this);
+    }
     setRawMode(mode) { this.isRaw = mode !== false; return this; }
-    // One of the input's readers (process.stdin.__nimbusReader): its own hold on it.
-    _read() {
-      const stdin = __processMod.stdin;
-      if (this._input === undefined) {
-        this._input = stdin.__nimbusReader();
-        this._onData = (chunk) => { if (!this.push(chunk)) this._input.stop(); };
-        this._onEnd = () => this.push(null);
-        __eventsMod.prototype.on.call(stdin, "data", this._onData);
-        __eventsMod.prototype.once.call(stdin, "end", this._onEnd);
-      }
-      this._input.read();
-    }
-    // Destroyed, it stops reading the input and lets go of its hold, the
-    // program's own and other readers' kept.
-    _destroy(error, callback) {
-      if (this._input !== undefined) {
-        const stdin = __processMod.stdin;
-        stdin.removeListener("data", this._onData);
-        stdin.removeListener("end", this._onEnd);
-        this._input.release();
-      }
-      callback(error);
-    }
+    // A consumer of fd 0 of its own (__makeStdinSource).
+    _read() { __nimbusStdinSource.want(this); }
   },
   WriteStream: class extends __streamMod.Writable {
     constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; }
