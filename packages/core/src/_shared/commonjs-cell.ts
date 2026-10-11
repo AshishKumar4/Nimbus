@@ -376,6 +376,8 @@ export const RUNTIME_PARSER_MODULE = 'nimbus/parser.js';
 export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 export const RUNTIME_NODE_LIB_REST_MODULE = 'nimbus/node-lib-rest.js';
 export const RUNTIME_NODE_DNS_MODULE = 'nimbus/node-dns.js';
+/** The native ES module host's functions (worker runtime/node-esm-module.ts), compiled when a program first meets an ES module. */
+export const RUNTIME_NODE_ESM_MODULE = 'nimbus/node-esm.js';
 
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key: string): string {
