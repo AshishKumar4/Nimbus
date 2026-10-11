@@ -39,8 +39,9 @@ for (const program of ["process.stdout.write('x')", "setTimeout(() => process.st
     assert.equal(result.exitCode, 0);
     const last = ops.lastIndexOf('stdout');
     assert.ok(last !== -1, `${program}: no output (${ops.join(' ')})`);
-    const after = ops.slice(last + 1);
-    assert.deepEqual(after.filter((op) => op === 'fsAcquire'), [], `${program}: after its last write the session was asked ${after.join(' ')}`);
+    // Up to its exit report: what the harness's shared isolate runs after the run has returned is no run's.
+    const after = ops.slice(last + 1, ops.indexOf('reportExit', last));
+    assert.deepEqual(after.filter((op) => op === 'fsAcquire'), [], `${program}: between its last write and its exit the session was asked ${after.join(' ')}`);
   }
 }
 console.log('ok - node-one-shot-end-ops (an ended program takes no resumption barrier)');

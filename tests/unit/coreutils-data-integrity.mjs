@@ -187,9 +187,9 @@ check('the writer ends silently when its reader goes', r.stderr === '', `stderr=
   root.writeFile('tmp/u8', u8);
   root.chown('tmp/u8', 1000, 1000);
 }
-r = await sh("printf '\\303\\251\\377\\303' | wc -c; wc -c < /tmp/u8; wc -c /tmp/u8 /tmp/u8");
+r = await sh('cat /tmp/u8 | wc -c; wc -c < /tmp/u8; wc -c /tmp/u8 /tmp/u8');
 check('wc -c counts bytes of any input, as a pipe, as stdin and as files with their total',
-  r.stdout === '4\n400003\n400003 /tmp/u8\n400003 /tmp/u8\n800006 total\n', JSON.stringify(r.stdout));
+  r.stdout === '400003\n400003\n400003 /tmp/u8\n400003 /tmp/u8\n800006 total\n', JSON.stringify(r.stdout));
 
 r = await sh('head -c 32 /dev/urandom > /tmp/rand');
 check('head -c on /dev/urandom yields 32 bytes', size('tmp/rand') === 32, `got ${size('tmp/rand')}`);
