@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "5c754034d014ed1dd691d2ef85080278d2b49434033576dcdf26bafe88d37648",
+  "fingerprint": "529232093d6fce94259d8ecfd690215b0b5dbf1798fffb45a1235a26d76dce5f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1720,8 +1720,8 @@
     "packages/fabric/dist/table-ids.d.ts.map": "cc3a80c60e2875281b4ca06f077af51a07953cf8b6dfe23a30a5a0c6800baefc",
     "packages/fabric/dist/table-ids.js": "e4da64e985d829747414115e98badcd673d04319b6fa826a9ee9d20f5bfb16ea",
     "packages/fabric/dist/timers.d.ts": "f99af778ffd2fa2bbe9e6f1b179688b047c5fbc1d4e34b6dfa6661d760a30435",
-    "packages/fabric/dist/timers.d.ts.map": "bb3faacb481fa606139ff96724a8c40e88b55ca7d146d4b0e629aac2f536549e",
-    "packages/fabric/dist/timers.js": "f0824a1c1abb57ab886694fbcdc483d5a967346f6f9466ed502b97fa8fdbc44f",
+    "packages/fabric/dist/timers.d.ts.map": "4d9c57cc6f90a113886699578bc109c63ca74037af9857604b5a8187061da179",
+    "packages/fabric/dist/timers.js": "e8e3d17b1280c0e0722fef801e34e3df464092a243eb0b4c0927185eaf833e7b",
     "packages/fabric/dist/turn-budget.d.ts": "e029279f4e04a7a7fac065034044415d53743a6f17afca4fa74411749950b1cc",
     "packages/fabric/dist/turn-budget.d.ts.map": "953299baeebf935dd016f35f627b7b9504d7a6739538deece3bd2a4502bcd603",
     "packages/fabric/dist/turn-budget.js": "8e26e3b911fb8e6a235db073844913caf661c475d48e9b2a4a40bbe0ad4d13eb",
@@ -1771,7 +1771,7 @@
     "packages/fabric/src/sealed.ts": "4a7c5b7b26979c136273dc6f29b8a4c8762462c4cdf7e989ba72cf54152a8154",
     "packages/fabric/src/supervisor-props.ts": "391b58fa3a813c1e85ad4e0743895cb4c8f22f4a87fcf10ebd6abd9dfab85a93",
     "packages/fabric/src/table-ids.ts": "b82aa0879cf050a251e0e92899a70b3337e1ad086868ed62370af53fbc7b8b03",
-    "packages/fabric/src/timers.ts": "8a09bc29a627f7283ef67aa6e48a6fe2369c8068f28cb6da9a8f5df5ab4a5c2a",
+    "packages/fabric/src/timers.ts": "f800d346b7cc9a6a618302f51ad130122d72a9e69b2f9e4da16abcad13574849",
     "packages/fabric/src/turn-budget.ts": "e649b92d1fc6b1a2108a40988533724ecf500c587d5eb5f02bfb69dad26d2db7",
     "packages/fabric/src/vendor/errors.ts": "012d824fa8854a47e1864af42595b729e5348635dd0965d28d8aaed04efa6434",
     "packages/fabric/src/vendor/serialize.ts": "f7ed512f00b718b1aa2ca67ecee4a94b3c18bbfd460a106115c4c2c8c30e3719",
