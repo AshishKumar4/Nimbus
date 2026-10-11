@@ -40,7 +40,7 @@ await t.waitForPrompt(60_000);
 const A = makeAsserter('require-resolution/imports-field');
 
 // The synthetic packages are CommonJS (no "type"): their files require,
-// which an ES module's scope has no name for (module-format-matches-node).
+// which an ES module's scope has no name for (module-format-matches-node-workerd).
 
 // ── Check 1: synthetic-exact ────────────────────────────────────────
 //
