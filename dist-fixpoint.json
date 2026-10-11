@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e2fae67f13b84ab6c334d8519a3739e46070c1bc57bda3a3a822f7956b979311",
+  "fingerprint": "e1ad5f9c8b7c8640b88fcf35b26586730563e1fb2ac056b8aa3a827841919743",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3004,7 +3004,7 @@
     "packages/worker/src/session/vite-command.ts": "f251022a1f2dfe148dadb8f98369e25354b5a1ab2ed945dba870cb51401a33c7",
     "packages/worker/src/session/ws-relay.ts": "d688b7e14f4fd3d21af77ddc021abc57d25a38d07d5e7127010995e0fe7d1ab9",
     "packages/worker/src/session/ws.ts": "485cf5c3920183129a8e325ed97fc8c288237f2da6bd364ca977497477c4d0ae",
-    "packages/worker/src/shell/npm-bin-entrypoints.ts": "474329da82c7f6d3aa807be4c8f2114a7c2f924e9b3a5c036478f6b026048078",
+    "packages/worker/src/shell/npm-bin-entrypoints.ts": "5355b7fbbbb5c0152cfc73e33894ce7d8c3981092b478a69f876e0f82985fa21",
     "packages/worker/src/sqlite-wasm-bundle.generated.ts": "d66507810a5cfff08991e9d496723bdee884d2f4912904c04ca6144a56053add",
     "packages/worker/src/tailwind-play.generated.ts": "508a577936c065c7c4dc7c448e74f0568f7922d09957ef872bab92cc0fb07f7b",
     "packages/worker/src/types/diff.d.ts": "755443898573fbbbb849388dcd17dd01adb8cff9bf3e16497353e366983ed6a3",
