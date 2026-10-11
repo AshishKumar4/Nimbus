@@ -462,7 +462,7 @@ export function noteClientActivity(host: HibHost, ctx: any): void {
  * reasons so a rollback from a future deploy that added new reasons doesn't
  * leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive' | 'hosting-watch';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive';
 
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
@@ -511,7 +511,6 @@ export function dispatchAlarm(
   ctx: any,
   pumpResidentLaunches?: () => Promise<void>,
   alarmInfo?: AlarmInvocationInfo,
-  hostingWatch?: () => Promise<number | null>,
 ): Promise<void> {
   return timers(host, ctx).dispatch({
     'w9-flush': () => {
@@ -529,10 +528,6 @@ export function dispatchAlarm(
     },
     'resident-keepalive': (now) => {
       const rearmAt = residentKeepaliveFired(host, now);
-      if (rearmAt !== null) return { rearmAt };
-    },
-    'hosting-watch': async () => {
-      const rearmAt = await hostingWatch?.() ?? null;
       if (rearmAt !== null) return { rearmAt };
     },
   }, () => {

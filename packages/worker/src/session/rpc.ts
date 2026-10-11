@@ -45,7 +45,7 @@ import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
+import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
@@ -1566,8 +1566,8 @@ const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
  * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
  * the hosting watch armed through the object's own scheduler.
  */
-export function peerHostFor(ctx: DurableObjectState, env: unknown, scheduleWatch: (at: number) => Promise<void>): PeerHost {
-  return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema, scheduleWatch });
+export function peerHostFor(ctx: DurableObjectState, env: unknown): PeerHost {
+  return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema });
 }
 
 interface PeerHostRpcHost {
@@ -1577,16 +1577,16 @@ interface PeerHostRpcHost {
 export function _rpcProcessHostProbe(self: PeerHostRpcHost): { isolateToken: string } {
   return self.peerHost.probe();
 }
-export function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
+export function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
   return self.peerHost.host(boot, opts);
 }
-export function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<{ ok: boolean }> {
+export function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
   return self.peerHost.awaitOpen(workerKey);
 }
-export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<{ payload: unknown }> {
+export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ payload: unknown }>> {
   return self.peerHost.awaitBoot(workerKey);
 }
-export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse> {
+export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
   return self.peerHost.routeHttp(workerKey, wire);
 }
 export function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{ cancelled: boolean }> {

@@ -655,7 +655,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
       this.ctx,
       () => this._pumpResidentLaunches(),
       alarmInfo,
-      () => this.peerHost.watchFired(),
     );
   }
 
@@ -937,7 +936,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // resident process on THIS object (fabric PeerHost).
   private _peerHost: PeerHost | null = null;
   get peerHost(): PeerHost {
-    return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env, (at) => timers(this, this.ctx).arm('hosting-watch', at));
+    return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env);
   }
   _rpcProcessHostProbe(): { isolateToken: string } {
     return _rpc._rpcProcessHostProbe(this);

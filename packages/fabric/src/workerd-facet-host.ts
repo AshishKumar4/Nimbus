@@ -351,6 +351,10 @@ export function deleteFacetStorage(ctx: DurableObjectState, name: string): void 
   if (sql) forgetFacetStorage(sql, name);
 }
 
+export function abortFacet(ctx: DurableObjectState, name: string, reason: Error): void {
+  facetContainer(ctx).abort(name, reason);
+}
+
 
 
 /**
@@ -489,6 +493,7 @@ function spawnResident(
   }
   if (explicit) book.live.add(name);
   // A journaling process: the session holds its facet's name until its log is drained.
+  params.created?.(name);
   params.journal?.opened(name);
   // The facet's worker is one Dynamic Worker in flight for as long as the
   // process is resident, not only while a call is open: its WebSockets and

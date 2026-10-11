@@ -18,42 +18,48 @@ interface Observation {
 
 export class HostActivity {
   private readonly observations = new Set<Observation>();
-  private owners = 0;
-  private generation = 0;
+  private readonly owners = new Set<() => void>();
 
-  observe(open: Observation['open'], lost: Observation['lost']): () => void {
-    const observation: Observation = { open, lost, failed: null };
+  observe(open: Observation['open'], lost: Observation['lost'], incarnation?: string): () => void {
+    const observation: Observation = { open, lost, incarnation, failed: null };
     this.observations.add(observation);
-    if (this.owners) this.start(observation);
+    if (this.owners.size) this.start(observation);
     return () => { this.observations.delete(observation); observation.current?.abort.abort(); };
   }
 
-  acquire(): HostActivityLease {
-    const generation = this.generation;
-    this.owners++;
-    let released = false;
-    const ready = this.observations.size ? Promise.all([...this.observations].map((observation) => this.start(observation))).then(() => undefined) : undefined;
+  acquire(signal?: AbortSignal): HostActivityLease {
+    signal?.throwIfAborted();
+    let rejectReady: ((reason: unknown) => void) | undefined;
+    const cancel = () => {
+      signal?.removeEventListener('abort', release);
+      rejectReady?.(signal?.aborted ? signal.reason : new DOMException('Host validation aborted', 'AbortError'));
+    };
+    const release = () => {
+      if (!this.owners.delete(cancel)) return;
+      cancel();
+      if (this.owners.size === 0) this.stop();
+    };
+    this.owners.add(cancel);
+    const ready = this.observations.size ? new Promise<void>((resolve, reject) => {
+      rejectReady = reject;
+      Promise.all([...this.observations].map((observation) => this.start(observation))).then(() => resolve(), reject);
+    }) : undefined;
     ready?.catch(() => {});
-    return { ready, release: () => {
-      if (released) return;
-      released = true;
-      if (generation !== this.generation || --this.owners !== 0) return;
-      this.stop();
-    } };
+    signal?.addEventListener('abort', release, { once: true });
+    return { ready, release };
   }
 
   async run<T>(work: () => T | Promise<T>, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
-    const lease = this.acquire();
-    signal?.addEventListener('abort', lease.release, { once: true });
+    const lease = this.acquire(signal);
     try { await lease.ready; signal?.throwIfAborted(); return await work(); }
-    finally { signal?.removeEventListener('abort', lease.release); lease.release(); }
+    finally { lease.release(); }
   }
 
   /** End every old lease; a reused session starts with a fresh ownership epoch. */
   close(): void {
-    this.generation++;
-    this.owners = 0;
+    for (const cancel of this.owners) cancel();
+    this.owners.clear();
     this.stop();
   }
 

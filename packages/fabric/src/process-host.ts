@@ -68,6 +68,8 @@
 
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { hostActivity } from './host-activity.js';
+import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
 import { z } from 'zod/v4';
@@ -87,6 +89,8 @@ import {
 import {
   HOSTED_WEBSOCKET_CAPABILITY_HEADER,
   HOSTED_WEBSOCKET_KEY_HEADER,
+  HOSTED_WATCH_HEADER,
+  HOSTED_FAILURE_HEADER,
   headerPairs,
   isolateToken,
   type HostedHttpRequest,
@@ -171,6 +175,7 @@ class FacetProcessHost implements ProcessHost {
     const loss = new HostLoss(facet.lost);
     return {
       ...facet,
+      started: hostActivity(this.ctx).run(() => loss.route(() => facet.started)),
       lost: loss.signal,
       handleHttpRequest: (request: Request) => loss.route(() => facet.handleHttpRequest(request)),
       handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
@@ -203,12 +208,14 @@ function describeImageDelivery(delivery: ProcessImageDelivery): string {
  * process already running. Measured: 1 shared pair in 24 fresh peers.
  */
 const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
+const PEER_OWNERS_KEY_PREFIX = 'process-peer:';
+interface PeerOwner { workerKey: string; peerName: string }
 
 /** The host-process surface a sibling session DO exposes. */
 interface ProcessPeerStub {
   _rpcProcessHostProbe(): Promise<{ isolateToken: string }>;
-  _rpcHostProcess(boot: ResidentBootSpec, opts: HostProcessOpts): Promise<{ ok: boolean }>;
-  _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean }>;
+  _rpcHostProcess(boot: ResidentBootSpec, opts: HostProcessOpts): Promise<{ ok: boolean; incarnation: string }>;
+  _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean; incarnation: string }>;
   _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }>;
   _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
   _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }>;
@@ -235,7 +242,7 @@ function peerNamespace(env: object): HostNamespaceBinding {
 }
 
 const PeerProbeResult = z.object({ isolateToken: z.string() });
-const PeerOpenResult = z.object({ ok: z.boolean() });
+const PeerOpenResult = z.object({ ok: z.boolean(), incarnation: z.string() });
 const PeerBootResult = z.object({ payload: z.unknown() });
 const PeerCancelResult = z.object({ cancelled: z.boolean() });
 const PeerHttpResult = z.object({
@@ -244,6 +251,12 @@ const PeerHttpResult = z.object({
   headers: z.array(z.tuple([z.string(), z.string()])),
   body: z.instanceof(ReadableStream).nullable(),
 });
+const PeerFailure = z.object({ hostLost: z.string() });
+function peerAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
+  const failure = PeerFailure.safeParse(value);
+  if (failure.success) throw new ProcessHostLost(failure.data.hostLost);
+  return schema.parse(value);
+}
 
 function processPeerStub(value: object, peerName: string): ProcessPeerStub {
   const dispatch = hostOpDispatch(value, `ProcessFabric peer '${peerName}'`);
@@ -258,13 +271,13 @@ function processPeerStub(value: object, peerName: string): ProcessPeerStub {
   }
   const adapter: ProcessPeerStub = {
     _rpcProcessHostProbe: async () => PeerProbeResult.parse(await dispatch({ op: 'processHostProbe', args: [] })),
-    _rpcHostProcess: async (boot, opts) => PeerOpenResult.parse(await dispatch({ op: 'hostProcess', args: [boot, opts] })),
-    _rpcAwaitHostedOpen: async (key) => PeerOpenResult.parse(await dispatch({ op: 'awaitHostedOpen', args: [key] })),
+    _rpcHostProcess: async (boot, opts) => peerAnswer(PeerOpenResult, await dispatch({ op: 'hostProcess', args: [boot, opts] })),
+    _rpcAwaitHostedOpen: async (key) => peerAnswer(PeerOpenResult, await dispatch({ op: 'awaitHostedOpen', args: [key] })),
     _rpcAwaitHostedBoot: async (key) => {
-      const result = PeerBootResult.parse(await dispatch({ op: 'awaitHostedBoot', args: [key] }));
+      const result = peerAnswer(PeerBootResult, await dispatch({ op: 'awaitHostedBoot', args: [key] }));
       return { payload: result.payload };
     },
-    _rpcRouteHostedHttp: async (key, request) => PeerHttpResult.parse(await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
+    _rpcRouteHostedHttp: async (key, request) => peerAnswer(PeerHttpResult, await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
     _rpcCancelHostProcess: async (key) => PeerCancelResult.parse(await dispatch({ op: 'cancelHostProcess', args: [key] })),
     fetch: async (request) => {
       const response = await Reflect.apply(fetchFn, value, [request]);
@@ -306,6 +319,8 @@ class PeerProcessHost implements ProcessHost {
   private readonly tokensInUse = new Map<number, string>();
   /** workerKey → how to end an open process whose host reports its reset (hostLost). */
   private readonly opens = new Map<string, { capability: string; lose: (cause: unknown) => void }>();
+  private reconciliation: Promise<void> | undefined;
+  private closed = false;
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -319,6 +334,7 @@ class PeerProcessHost implements ProcessHost {
     this.ns = peerNamespace(env);
     this.env = (env ?? {}) as ResidentFacetEnv;
     this.coordDoId = ctx.id.toString();
+    onColdStart(ctx, () => this.closed ? Promise.resolve() : this.reconcile());
   }
 
   /**
@@ -331,9 +347,10 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
-    return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
+    return this.reconcile().then(() => processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume));
   }
   async open(params: ProcessHostParams): Promise<HostedProcess> {
+    if (this.closed) throw new Error('Nimbus: the process host is closed');
     if (params.facet) {
       // A durable application's facet must be a child of the COORDINATOR's
       // Durable Object — its `app-slot-<n>` row and retained SQLite live in
@@ -344,19 +361,20 @@ class PeerProcessHost implements ProcessHost {
           + 'the peer substrate cannot serve one',
       );
     }
+    await this.reconcile();
     const placement = await this._place(params.pid);
     // Minted per open, held only by this coordinator and the peer that hosts
     // the process. The workerKey is derivable from a pid; this is not.
     const webSocketCapability = crypto.randomUUID();
 
-    // Held open for the process's whole life: it is the lifecycle, and it is
-    // also what keeps the hosting DO resident. It settles when a `lifetime`
-    // runner exits or when a `boot` runner's host is cancelled, and rejects if
-    // the peer dies under either.
-    // The peer mints the process's binding from these, for THIS object: the
-    // coordinator's doId, route and delivery instance.
     const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
-    const hostLeg = placement.stub._rpcHostProcess(params.boot, {
+    const loss = new HostLoss();
+    let stopObserving = () => {};
+    let started: Promise<unknown>;
+    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
+    try {
+    await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { workerKey: params.workerKey, peerName: placement.peerName } satisfies PeerOwner);
+    const opened = await placement.stub._rpcHostProcess(params.boot, {
       coordinatorDoId: supervisor.doId,
       route: supervisor.route,
       pid: supervisor.pid,
@@ -368,34 +386,26 @@ class PeerProcessHost implements ProcessHost {
       webSocketCapability,
       startArgs: params.startArgs,
     });
-    hostLeg.catch(() => {});
-    // The held leg failing is one way the peer's loss shows (a coordinator's
-    // own release settles it cleanly); the peer's next incarnation reporting
-    // it (hostLost) from its own alarm is another.
-    const loss = new HostLoss(hostLeg);
-    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
-    // The peer starts the runner as part of hosting it; this reads back that
-    // one boot payload without re-running anything, so `started` means exactly
-    // what it means on a facet. Racing the host leg is what turns a peer that
-    // died before the boot landed into a rejection rather than a hang — the
-    // peer that would have answered is the thing that is gone.
-    const started = loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload));
+    stopObserving = hostActivity(this.ctx).observe(async (signal) => {
+      const response = await placement.stub.fetch(new Request('https://nimbus-process.invalid/', {
+        signal, headers: { [HOSTED_WATCH_HEADER]: params.workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: webSocketCapability },
+      }));
+      return peerFetchAnswer(response, webSocketCapability);
+    }, (error) => loss.lose(error), opened.incarnation);
+    started = hostActivity(this.ctx).run(() => loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload)));
     started.catch(() => {});
-    // Do not return a handle for a process that was never opened. Opening a
-    // facet of one's own DO either throws or does not, before any handle
-    // exists; this is that same moment, one hop away.
-    try {
-      await Promise.race([
-        placement.stub._rpcAwaitHostedOpen(params.workerKey),
-        hostLeg.then(() => ({ ok: true })),
-      ]);
     } catch (error) {
+      stopObserving();
+      loss.release();
       this.tokensInUse.delete(params.pid);
       this.opens.delete(params.workerKey);
       // Awaited, not fired off: a spawn that rejects must mean nothing was
       // left running, which is what a throw from `processes().spawn` means on
       // the other substrate.
-      try { await this._cancel(params.workerKey, placement.peerName); }
+      try {
+        await this._cancel(params.workerKey, placement.peerName);
+        await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
+      }
       finally { disposeRpcResource(placement.stub); }
       throw error;
     }
@@ -403,22 +413,21 @@ class PeerProcessHost implements ProcessHost {
     let released = false;
     return {
       started,
-      // The held leg IS the process's residency here, and it settles cleanly
-      // when the coordinator releases. The host going away under a process
-      // that was up rejects this, and the fabric ends the process on it.
       lost: loss.signal,
       handleHttpRequest: (request: Request) =>
-        loss.route(() => routeThroughPeer(placement.stub, params.workerKey, request)),
+        loss.route(() => routeThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
       handleWebSocketRequest: (request: Request) =>
         loss.route(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
       release: async () => {
         if (released) return;
         released = true;
+        stopObserving();
         loss.release();
         this.tokensInUse.delete(params.pid);
         this.opens.delete(params.workerKey);
         try {
           await this._cancel(params.workerKey, placement.peerName);
+          await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
         } finally {
           disposeRpcResource(placement.stub);
         }
@@ -427,6 +436,27 @@ class PeerProcessHost implements ProcessHost {
         `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
         + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
+  }
+
+  private reconcile(): Promise<void> {
+    if (!this.reconciliation) {
+      this.reconciliation = this.clearPlacements().catch((error) => { this.reconciliation = undefined; throw error; });
+    }
+    return this.reconciliation;
+  }
+
+  private async clearPlacements(): Promise<void> {
+    const rows = await this.ctx.storage.list<PeerOwner>({ prefix: PEER_OWNERS_KEY_PREFIX });
+    await Promise.all([...rows].map(async ([key, row]) => {
+      await this._cancel(row.workerKey, row.peerName);
+      await this.ctx.storage.delete(key);
+    }));
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    hostActivity(this.ctx).close();
+    await this.clearPlacements();
   }
 
   hostLost(workerKey: string, capability: string): boolean {
@@ -508,12 +538,9 @@ class PeerProcessHost implements ProcessHost {
     let stub: ProcessPeerStub;
     try {
       stub = processPeerStub(this.ns.get(this.ns.idFromName(peerName)), peerName);
-    } catch {
-      return Promise.resolve();
-    }
+    } catch (error) { return Promise.reject(error); }
     const cancelled = Promise.resolve(stub._rpcCancelHostProcess(workerKey))
       .then(() => undefined)
-      .catch(() => { /* peer already gone — the held leg is severed either way */ })
       .finally(() => disposeRpcResource(stub));
     this.ctx.waitUntil(cancelled);
     return cancelled;
@@ -550,7 +577,7 @@ class HostLoss {
 
   lose(error: unknown): ProcessHostLost {
     if (this.gone === null) {
-      this.gone = new ProcessHostLost(error);
+      this.gone = error instanceof ProcessHostLost ? error : new ProcessHostLost(error);
       this.reject(this.gone);
     }
     return this.gone;
@@ -565,7 +592,7 @@ class HostLoss {
   route<T>(leg: () => Promise<T>): Promise<T> {
     if (this.gone !== null) return Promise.reject(this.gone);
     const call = leg().catch((error: unknown) => {
-      throw this.gone ?? (!this.released && isHostReset(error) ? this.lose(error) : error);
+      throw this.gone ?? (!this.released && (error instanceof ProcessHostLost || isHostReset(error)) ? this.lose(error) : error);
     });
     return Promise.race([call, this.signal]);
   }
@@ -574,9 +601,11 @@ class HostLoss {
 async function routeThroughPeer(
   stub: ProcessPeerStub,
   workerKey: string,
+  capability: string,
   request: Request,
 ): Promise<Response> {
   const result = await stub._rpcRouteHostedHttp(workerKey, {
+    capability,
     method: request.method,
     url: request.url,
     headers: headerPairs(request.headers),
@@ -596,7 +625,7 @@ async function routeThroughPeer(
  * `Response` — socket and all — is handed back rather than reconstructed,
  * which is the whole reason this is not an RPC.
  */
-function routeWebSocketThroughPeer(
+async function routeWebSocketThroughPeer(
   stub: ProcessPeerStub,
   workerKey: string,
   capability: string,
@@ -605,5 +634,10 @@ function routeWebSocketThroughPeer(
   const headers = new Headers(request.headers);
   headers.set(HOSTED_WEBSOCKET_KEY_HEADER, workerKey);
   headers.set(HOSTED_WEBSOCKET_CAPABILITY_HEADER, capability);
-  return stub.fetch(new Request(request.url, { method: request.method, headers }));
+  return peerFetchAnswer(await stub.fetch(new Request(request.url, { method: request.method, headers })), capability);
+}
+
+async function peerFetchAnswer(response: Response, capability: string): Promise<Response> {
+  if (response.headers.get(HOSTED_FAILURE_HEADER) === capability) throw new ProcessHostLost(await response.text());
+  return response;
 }

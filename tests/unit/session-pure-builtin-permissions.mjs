@@ -245,7 +245,7 @@ try {
   const unvalidated = Promise.reject(new Error('host validation refused child admission'));
   void unvalidated.catch(() => {});
   processes.setWorkObservation((pid) => ({
-    ready: processes.get(pid)?.argv[0] === 'cat' ? unvalidated : undefined,
+    ready: /^cat(?: |$)/.test(processes.get(pid)?.command ?? '') ? unvalidated : undefined,
     release() {},
   }));
   for (const command of ['cat', 'sudo']) {
