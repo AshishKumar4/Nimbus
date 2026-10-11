@@ -9,6 +9,7 @@ import { createEsmResolver } from '../../../_shared/esm-resolver.js';
 import { cjsModuleExportNames } from '../../../runtime/cjs-module-exports.js';
 import { NODE_BUILTIN_EXPORTS } from '../../../runtime/node-builtin-exports.js';
 import { escapedIdentifierNames, readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
+import { hasTopLevelAwait } from '../../../runtime/esm-require-hoist.js';
 import { applySourceEdits, containsModuleSyntax, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from '../../../runtime/javascript-ast.js';
 import { builtinFacadeModule, bunScopeNames, commonJsFacadeModule, ESM_HOST_MODULE, ESM_META_MODULE, metaModuleSource, relativeSpecifier, stageEsModule, } from '../../../runtime/native-esm.js';
 import { dirname } from '../utils/path.js';
@@ -76,19 +77,6 @@ function installHooks() {
         }
         return module;
     })();
-}
-/** Await nodes are removed when their containing function finishes parsing. */
-function hasTopLevelAwait(source) {
-    const awaits = [];
-    parseStatements(source, MODULE_PARSE_OPTIONS, { onNode(node) {
-            if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await))
-                awaits.push(node.start);
-            else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-                while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start)
-                    awaits.pop();
-            }
-        } });
-    return awaits.length > 0;
 }
 /** Node's require(esm) result, over Bun's engine-evaluated namespace. */
 function requiredNamespace(record, namespace) {

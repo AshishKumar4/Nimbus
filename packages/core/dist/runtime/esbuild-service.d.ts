@@ -165,8 +165,7 @@ type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
  */
 export interface TransformRuntime {
     rewriteDynamicImports(code: string, parentUrl: string): string;
-    readModuleImportSites(code: string): ImportSites;
-    bunScopeNames(code: string): string[];
+    readEsModule(code: string, scope: ModuleScope | undefined): ImportSites;
     rewriteProvidedCommonJsModules(source: string): string;
     stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
 }
@@ -174,7 +173,7 @@ export interface TransformRuntime {
  * One transform request as a transform host runs it. An ES module the
  * process's registry evaluates natively (native-esm.ts) answers with its
  * code and, as its map, the JSON of its import sites
- * (dynamic-import-rewrite.ts readModuleImportSites), which the session stages
+ * (native-esm.ts readEsModule), which the session stages
  * it by; TypeScript and JSX are compiled with their module syntax kept, and
  * staged so when they have some. CommonJS keeps its code, each dynamic
  * `import()` routed to the process's ESM loader. `engine` is null only before

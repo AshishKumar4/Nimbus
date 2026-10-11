@@ -24,7 +24,7 @@ import { type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
  * or the JSON module of the file at a key. A row's map module is its name
  * (esmRowName): its cell's module for a staged module, else its facade by id.
  */
-export type EsmModuleRow = readonly [kind: 'module', key: string, targets: readonly number[], bunScope?: 1] | readonly [kind: 'commonjs', key: string] | readonly [kind: 'builtin', builtin: string] | readonly [kind: 'json', key: string];
+export type EsmModuleRow = readonly [kind: 'module', key: string, targets: readonly number[], flags?: number] | readonly [kind: 'commonjs', key: string] | readonly [kind: 'builtin', builtin: string] | readonly [kind: 'json', key: string];
 /** The map module of row `id` (node-shims' __nimbusEsmName reads it so). */
 export declare function esmRowName(row: EsmModuleRow, id: number): string;
 /** A specifier Node's loader refuses: the error its import fails with. */
