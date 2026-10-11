@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
@@ -154,10 +154,10 @@ interface Mount {
     /** Inode numbers for a backend that has none, by path, stable while mounted. */
     inos: Map<string, number>;
 }
-/** One observeWrites registration: its observer, and where it wants content read. */
+/** One observeWrites registration: its observer, and where it wants content read, per side. */
 interface WriteWatch {
     observer: VfsWriteObserver;
-    wants: (path: string, principal: Principal) => boolean;
+    wants: (path: string, principal: Principal) => VfsWriteWants;
 }
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
 interface WriteWatches {
@@ -295,11 +295,13 @@ export declare class CompositeVFS implements VFS {
      * it (a process's, a W7 stream's), its content held until the observer is
      * done. Any other backend's mutations are reported as they are made
      * through this namespace: each costs a stat of its path before, and,
-     * where `wants` says (by default, everywhere), a read of its content
-     * before and after.
+     * where `wants` says (by default, everywhere; per side when it answers
+     * `{ before, after }`), a read of its content before and after. What a
+     * writeFile or a compare-and-write leaves is the bytes it was given, so
+     * its after costs no read.
      */
     observeWrites(observer: VfsWriteObserver, options?: {
-        wants?: (path: string, principal: Principal) => boolean;
+        wants?: (path: string, principal: Principal) => VfsWriteWants;
     }): () => void;
     /**
      * Subscribe to `mount`'s backend when it reports its own writes (a source
@@ -341,6 +343,8 @@ export declare class CompositeVFS implements VFS {
      * is held in `held`, let go when the observers are done.
      */
     private capture;
+    /** Content the observers are told of, held in `held` until they are done. */
+    private keep;
     /** Every point something is mounted at, root first, in mount order: whether or not its source answers this principal now. */
     mountPoints(): readonly string[];
     /** The mounts this view's principal has now, root first, in mount order. */
@@ -356,9 +360,13 @@ export declare class CompositeVFS implements VFS {
      * its own paths is lexical. A mount absent for this principal (any mount
      * on the path, rule 1) answers a null source, with its absentReason.
      * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
+     * `creating`: the lookup of a write that makes its parents (writeFile's
+     * `parents`): directories missing on the way are allowed, a file among
+     * them is still ENOTDIR, and a link to where nothing is yet leads there.
      */
     route(path: string, options?: {
         follow?: boolean;
+        creating?: boolean;
     }): Promise<VfsRoute>;
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
@@ -367,10 +375,11 @@ export declare class CompositeVFS implements VFS {
      * The lookup is the mutations' own (onMutation's), so a writer that asks
      * before it writes lands where the operation would. Rejects as that
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
-     * the lookup stays on synchronous backends.
+     * the lookup stays on synchronous backends. `creating`: as route's.
      */
     mutationRoute(path: string, options?: {
         follow?: boolean;
+        creating?: boolean;
     }): Awaitable<{
         readonly path: string;
         readonly point: string;
@@ -491,6 +500,10 @@ export declare class CompositeVFS implements VFS {
     /**
      * readRange and the revision ops: `/` and a mount point are EISDIR;
      * anything else is the backend's, looked up before its capability is asked.
+     * `written`: a write's whole content (a compare-and-write's), what
+     * observers are told stands after. `creates`: a missing path is the
+     * backend's to answer, as a compare-and-write expecting nothing there
+     * (revision 0) creates it.
      */
     private onCapability;
     private method;
@@ -552,7 +565,11 @@ export declare class CompositeVFS implements VFS {
     private readdirOf;
     private emptyIfMissing;
     private onFile;
-    /** `parents`: missing directories on the way are made first (makeTree), where the lookup lands. */
+    /**
+     * `parents`: missing directories on the way are made first (makeTree),
+     * where the lookup lands. `written`: the whole content it writes, what
+     * observers are told stands after (WriteSpec.written).
+     */
     private onMutation;
     /**
      * Refuses this view's mutation at each of `paths` (the names it was given

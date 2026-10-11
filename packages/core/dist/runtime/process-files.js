@@ -224,17 +224,35 @@ class GuardedProcessBridge {
     acquireExclusiveMutation(path, options) {
         this.guard();
         const delegate = options?.delegate;
-        if (delegate === undefined || this.pid === undefined)
+        if (this.pid === undefined)
             return this.target.acquireExclusiveMutation(path, options);
         // A delegation is the process's: it ends with the process's scope.
-        return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
+        if (delegate !== undefined)
+            return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
+        // So does a lease it takes for itself: a process that ends holding one
+        // (killed, its host lost) leaves no subtree held behind it.
+        const lease = this.target.acquireExclusiveMutation(path, options);
+        const end = () => {
+            this.scope.leases.delete(lease.owner);
+            this.target.releaseExclusiveMutation(lease.owner);
+        };
+        this.scope.leases.set(lease.owner, end);
+        this.scope.subscriptions.add(end);
+        return lease;
     }
     releaseExclusiveMutation(owner) {
         this.guard();
-        if (this.pid !== undefined && this.delegations.holds(this.pid, owner))
+        if (this.pid !== undefined && this.delegations.holds(this.pid, owner)) {
             this.delegations.release(this.pid, owner);
-        else
+            return;
+        }
+        const end = this.scope.leases.get(owner);
+        if (end === undefined) {
             this.target.releaseExclusiveMutation(owner);
+            return;
+        }
+        this.scope.subscriptions.delete(end);
+        end();
     }
     awaitRecall(owner, waitMs) {
         this.guard();
