@@ -602,8 +602,9 @@ export function residentFilesystem(session, resident, delegation) {
                             const suffix = childKey.slice(key.length + 1);
                             // Carry the caller's confinement/descriptor root to the
                             // authority; never replace a beneath lookup with an absolute one.
-                            candidates.push(typeof path === 'string' ? `${path.replace(/\/$/, '')}/${suffix}`
-                                : { ...path, path: `${path.path.replace(/\/$/, '')}/${suffix}` });
+                            const base = (typeof path === 'string' ? path : path.path).replace(/\/$/, '');
+                            const nested = base === '' ? suffix : `${base}/${suffix}`;
+                            candidates.push(typeof path === 'string' ? nested : { ...path, path: nested });
                             todo.push(childKey);
                             if (candidates.length >= DIRECTORY_BATCH_LIMIT - 1)
                                 break;

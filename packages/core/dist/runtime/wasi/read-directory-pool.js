@@ -42,6 +42,7 @@ export function readDirectoryPool({ call, store, client, before }) {
     const claim = (entry) => {
         if (entry.key !== null && unused.get(entry.key)?.handle.id === entry.handle.id)
             unused.delete(entry.key);
+        retiring.delete(entry.handle.id);
         owned.set(entry.handle.id, entry);
         claiming.add(entry.handle.id);
         return entry.handle;
@@ -71,13 +72,20 @@ export function readDirectoryPool({ call, store, client, before }) {
         finally {
             reserved -= open.length;
         }
-        if (result.channel !== channel || result.sequence !== sentSequence)
+        if (result.channel !== channel || result.sequence !== sentSequence) {
+            uncertain += open.length;
+            invalidate();
             throw failure('ESTALE', 'directory batch reply belongs to another request');
+        }
         for (const id of result.retired)
             retiring.delete(id);
         for (const id of result.claimed)
             claiming.delete(id);
         uncertain = 0; // advancing the channel retires an abandoned earlier answer
+        // Account for every received ID before admission can yield or fail.
+        // Successful adoption transfers it from this retirement set to unused/owned.
+        for (const entry of result.opened)
+            retiring.add(entry.handle.id);
         const lease = result.acquire.readLease;
         if (lease)
             client.readLeaseAnswered(lease); // ownership precedes any admission/yield
@@ -85,7 +93,14 @@ export function readDirectoryPool({ call, store, client, before }) {
         const applies = current !== null && (current.epoch === result.acquire.epoch
             ? current.rev <= result.acquire.rev
             : current.epoch === cursor.epoch && generation === stamp);
-        const admitted = applies && await store.admit(result.acquire);
+        let admitted;
+        try {
+            admitted = applies && await store.admit(result.acquire);
+        }
+        catch (error) {
+            invalidate();
+            throw error;
+        }
         trustedAtIo = false;
         if (lease && ask && admitted && !result.acquire.poison && generation === stamp && cancelled === cancelAt) {
             client.readLeased(lease, ask);
@@ -137,15 +152,16 @@ export function readDirectoryPool({ call, store, client, before }) {
                 if (!required)
                     return null;
                 for (const entry of opened.slice(1)) {
-                    if (entry.key !== null && entry.key !== required.key && local(entry) && !unused.has(entry.key))
+                    const current = local(entry);
+                    if (entry.key !== null && entry.key !== required.key && current && current.entry.revision === entry.openedRevision && !unused.has(entry.key)) {
+                        retiring.delete(entry.handle.id);
                         unused.set(entry.key, entry);
-                    else
-                        retiring.add(entry.handle.id);
+                    }
                 }
                 // Even if the lease was recalled before admission, the required
                 // real descriptor is the completed open; never reopen it by name.
                 return claim(required);
-            });
+            }).catch((error) => { invalidate(); throw error; });
         },
         owns: (id) => owned.has(id),
         closed: (id) => retiring.has(id),
