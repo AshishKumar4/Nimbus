@@ -113,7 +113,7 @@ for (const delivered of [false, true]) {
       if (this.sqliteFs) return;
       this.sqliteFs = {
         publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
-        acquireGlobalExclusiveMutation() {
+        seizeGlobalExclusiveMutation() {
           guardActive = true;
           return { root: '', owner: 'destroy-owner' };
         },
@@ -148,7 +148,7 @@ for (const delivered of [false, true]) {
     ensureSqliteFs() {},
     sqliteFs: {
       publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
-      acquireGlobalExclusiveMutation() {
+      seizeGlobalExclusiveMutation() {
         guardActive = true;
         return { root: '', owner: 'destroy-owner' };
       },

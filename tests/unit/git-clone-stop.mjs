@@ -6,11 +6,11 @@
 //     record goes, then its lease; it ends 130.
 //   - A kill of a background clone's process stops it the same way.
 //   - A destroy during a clone goes ahead: it stops the clone (through the
-//     session's facet manager, as a session has one), which leaves its junk
-//     to the wipe and writes nothing after its record goes, and is answered
-//     once the clone has let go of its lease. A lease no process holds is
-//     still refused, EBUSY, which the remote API answers 409, before anything
-//     is stopped: the session's shell runs the next line.
+//     session's facet manager, as a session has one), whose every wait ends
+//     with its stop, which leaves its junk and record to the wipe, and
+//     completes. A lease no process holds is still refused, EBUSY, which the
+//     remote API answers 409, before anything is stopped: the session's
+//     shell runs the next line.
 //
 // Red before: execGitNetwork took no stop, so the clone ran on past a Ctrl-C
 // or a kill, and a destroy during a clone answered 500 EBUSY.
@@ -43,16 +43,17 @@ const until = async (what, done) => {
 /**
  * A session whose git clones reach a facet that does what a prepare does
  * first (the job's marker, then a file of the clone, as the binding's lease
- * owner) and then runs until its caller lets it go.
+ * owner) and then runs until its caller lets it go. `assets` serves the
+ * staged git module the facet is loaded with.
  */
-async function cloneSession() {
+async function cloneSession(assets = stagedAssets) {
   const box = await programmaticHost();
   const { ws, host } = box;
   // What a facet writes, it writes as its process's credential: the session user's here.
   const user = ws.processes.cred(ws.shellProcessPid);
   const facet = { prepared: 0, released: 0 };
   const env = {
-    ASSETS: stagedAssets,
+    ASSETS: assets,
     LOADER: {
       load(code) {
         const owner = code.env.SUPERVISOR.props.mutationOwner;
@@ -87,6 +88,38 @@ async function cloneSession() {
   host.facetManager.setVfs(ws.vfs, ws.filesystem);
   const records = () => [...box.rows.keys()].filter((key) => key.startsWith('git-clone-job:'));
   return { box, ws, host, facet, records };
+}
+
+// ── A destroy during a clone's first load of its git module (cold, shared
+//    by the isolate, and here slower than any stop bound): the clone ends on
+//    its stop, the load going on for whoever else waits for it, and the
+//    destroy completes. First: the module is loaded once per isolate ──
+{
+  let asked = 0;
+  let load;
+  const loading = new Promise((resolve) => { load = resolve; });
+  const { box, ws, host, facet, records } = await cloneSession({
+    async fetch(request) {
+      asked++;
+      await loading;
+      return stagedAssets.fetch(request);
+    },
+  });
+  try {
+    const clone = ws.exec('git clone https://example.invalid/r.git /home/user/r');
+    await until('the clone is loading its git module', () => asked === 1);
+    assert.equal(records().length, 1, 'the clone is recorded');
+    const destroyed = await rpcDestroy(host, { reason: 'test' });
+    assert.equal(destroyed.ok, true, 'the destroy completes');
+    const ended = await Promise.race([clone.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 0))]);
+    assert.equal(ended, true, 'the clone ended on its stop, the load still going');
+    assert.equal(facet.prepared, 0, 'nothing of it was loaded');
+    assert.deepEqual(records(), [], 'its record went with the wipe');
+    console.log('  a destroy during a cold clone\'s module load completes, the clone ended on its stop');
+  } finally {
+    load();
+    box.close();
+  }
 }
 
 // ── Ctrl-C: the junk goes, then the record, then the lease; 130 ──

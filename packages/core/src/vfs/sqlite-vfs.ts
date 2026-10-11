@@ -4238,6 +4238,17 @@ export class SqliteVFS {
     return { root: '', owner };
   }
 
+  /**
+   * Hold the whole session for one owner over the leases held now, each of
+   * which ends: a write that presents one is ESTALE from then on. A
+   * destroy's, once it has stopped the work that held them: what they held,
+   * it wipes.
+   */
+  seizeGlobalExclusiveMutation(): ExclusiveMutationLease {
+    for (const owner of [...this.exclusiveMutationLeases.keys()]) this.releaseExclusiveMutation(owner);
+    return this.acquireGlobalExclusiveMutation();
+  }
+
   releaseExclusiveMutation(owner: string): void {
     this.readLeases.delete(owner);
     this.endLease(owner);

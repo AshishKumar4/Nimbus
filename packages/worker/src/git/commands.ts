@@ -2775,8 +2775,7 @@ export async function runGitCommand(
         // a dynamic worker with its own CPU budget, not the supervisor DO.
         // It owns the lease from when it is called, and releases it. `signal`
         // is its stop: a Ctrl-C or a kill removes the junk, as git's signal
-        // handler does; a destroy leaves it to the wipe, and writes nothing
-        // after its record goes.
+        // handler does, then the record; a destroy leaves both to its wipe.
         const doClone = async (job: CloneJobRecord, pid: number, signal: AbortSignal): Promise<number> => {
           let cloned = false;
           try {
@@ -2832,7 +2831,10 @@ export async function runGitCommand(
             const code = result.cancelled !== undefined ? exitCodeForAbortSignal(signal)
               : result.gitFailure !== undefined ? 128 : 1;
             if (result.cancelled === undefined) ctx.stderr.write(result.gitFailure ?? `\n[git] clone failed: ${result.error}\n`);
-            if (result.cleanup !== true || result.cancelled?.reason === SESSION_DESTROYED) {
+            // A destroy's wipe takes its junk and its record (or, if the wipe
+            // fails, the next start's recovery does): it writes nothing more.
+            if (result.cancelled?.reason === SESSION_DESTROYED) return code;
+            if (result.cleanup !== true) {
               await deleteCloneJob(doCtx.storage, job.dir);
               return code;
             }
@@ -2906,6 +2908,9 @@ export async function runGitCommand(
             root: mutationLease.root,
             ...(place.mount ? { mount: true } : {}),
           };
+          // Stopped before it wrote anything (its lease taken, its destination
+          // proven): it ends, its record never written.
+          if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
           try {
             await writeCloneJob(doCtx.storage, job);
           } catch (error) {
