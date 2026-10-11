@@ -93,6 +93,8 @@ const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
     },
   };
   const doCtx = { id: { toString: () => 'do-quiet-test' }, waitUntil() {} };
+  // A remote the ops name: one that is not configured is refused before the facet, as git refuses it.
+  assert.equal((await git('/home/user/repo', ['remote', 'add', 'origin', 'https://example.invalid/r.git'])).code, 0);
   for (const args of [['fetch', '-q'], ['pull', '--quiet', 'origin', 'main'], ['push', 'origin', 'main', '-q']]) {
     bodies.length = 0;
     const result = await git('/home/user/repo', args, { doCtx, doEnv });

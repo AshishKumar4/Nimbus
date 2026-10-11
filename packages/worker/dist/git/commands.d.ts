@@ -15,6 +15,7 @@ import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type CleanupBridge } from './clone-job.js';
+import { type ConfigOverrides } from './config-params.js';
 import { DirCache } from './worktree/dircache.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
@@ -39,6 +40,8 @@ export interface ParsedGitGlobals {
     subArgs: string[];
     /** The directory the subcommand runs in, after every `-C`. */
     dir: string;
+    /** `-c <name>=<value>` (config-params.ts). */
+    config: ConfigOverrides;
 }
 /**
  * The options git accepts BEFORE the subcommand. `-C <path>` runs the

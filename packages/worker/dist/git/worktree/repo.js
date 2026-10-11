@@ -38,11 +38,13 @@ function isAbsent(error) {
         || (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'));
 }
 /**
- * git_config_bool's spellings, of a value as cf-git reads it: a key with no
- * `=` is 'true' there (git's true), and an explicit empty value is ''
- * (git's false).
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
  */
 export function configBool(value) {
+    if (value === null)
+        return true;
     if (typeof value === 'boolean')
         return value;
     if (typeof value !== 'string')
@@ -328,8 +330,8 @@ export class WorktreeRepo {
     async worktree() {
         this.worktreeConfig ??= {
             fs: this.fs,
-            filemode: (await this.config('core.filemode')) !== false,
-            autocrlf: (await this.config('core.autocrlf')) === 'true',
+            filemode: configBool(await this.config('core.filemode')) !== false,
+            autocrlf: configBool(await this.config('core.autocrlf')) === true,
             counters: this.counters,
         };
         return this.worktreeConfig;

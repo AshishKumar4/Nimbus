@@ -19,6 +19,7 @@
 //     go to the server as Basic credentials, UTF-8, the URL without them.
 
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -165,8 +166,15 @@ try {
     const repo = '/home/user/repo';
     assert.equal((await session.git(repo, ['remote', 'add', 'refusing', refusing.url + '/repo.git'])).code, 0);
     const refused = await session.git(repo, ['fetch', 'refusing']);
-    assert.equal(refused.code, 1);
-    assert.match(refused.stderr, /fetch failed: git upload-pack: authentication failed \(HTTP 403\)/);
+    // Asynchronous: the HTTP server must keep answering while native git runs.
+    const child = spawn('git', ['-C', join(work, 'host'), 'fetch', refusing.url + '/repo.git'], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' }, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let expected = '';
+    child.stderr.on('data', (bytes) => { expected += bytes; });
+    const code = await new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject); });
+    const fatal = (text) => text.split('\n').filter((line) => /^(fatal|remote):/.test(line)).join('\n');
+    assert.deepEqual([refused.code, fatal(refused.stderr)], [code, fatal(expected)], 'refusal code and diagnostic match host git');
   } finally {
     refusing.stop();
   }
