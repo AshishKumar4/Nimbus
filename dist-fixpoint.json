@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "235d2ce2ce6286252e1619b37a7a7a58f506ccbb38f1c9ebf4bd6e6eb44b0724",
+  "fingerprint": "d6181c00ae5dc53b2aa2c455b82f2839f1f0f862fb9e12b981cb3c89554afac9",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2225,7 +2225,7 @@
     "packages/worker/dist/napi-wasm-artifacts.generated.js": "333cf3bdf88dcc4b8fab2fac971e1d9fe00326e530422164e9b477c7e496c4cd",
     "packages/worker/dist/node-shims-artifact.generated.d.ts": "da1fe846382c14726e47862a5a0773b99bafe583a17ca64eed5063c347ecd01d",
     "packages/worker/dist/node-shims-artifact.generated.d.ts.map": "163f39b4f5a17cefcb907fe4c8a19f7008ff62345ff059de6cc0dee6a54a9754",
-    "packages/worker/dist/node-shims-artifact.generated.js": "bdf839ef55f01d055e117b5a2fd0cd66f031503547c0301aa679e6b978106532",
+    "packages/worker/dist/node-shims-artifact.generated.js": "26e740a5e7f03d3c753f9432736de560d2c0ced21956dece5c1c71143cc85bf3",
     "packages/worker/dist/npm/bin-links.d.ts": "462f7efdd8e018f05b584fe0feba5b9f5ed3c2f11b072e6ed13b20b64011eb47",
     "packages/worker/dist/npm/bin-links.d.ts.map": "d4e53df95eb0095c8fb547194ea942950665c371cdf2893f0958092c7156b836",
     "packages/worker/dist/npm/bin-links.js": "51ab2a03611d4a11da54ade736f513c09f01764c1fa5a4450ebd641b2a7ebb2c",
@@ -2838,7 +2838,7 @@
     "packages/worker/src/loaders/process-host.ts": "ce828b1243e03d0e5270067446496547cb1657072faeff76b5be66a38e52b1ad",
     "packages/worker/src/loaders/vendor/VERSION": "8f3d930ba66f53a88fd7af1dca4aa9501a2ceb8d4490dc77afe1089fd13b75de",
     "packages/worker/src/napi-wasm-artifacts.generated.ts": "5cb64b9fa058d6dcacc0c76f85dff9bea2e3749ac5b4b489437bc17fa6058d7b",
-    "packages/worker/src/node-shims-artifact.generated.ts": "81408782d1b20b95280ef78867f75d584a593cfffa923bef2e8393bfc9c70b50",
+    "packages/worker/src/node-shims-artifact.generated.ts": "67aac90c5df1d23893b5cb38e3cb558840c361ddd33eb456321f4b3ba5c01560",
     "packages/worker/src/npm/bin-links.ts": "856358dd10ed2d44df0a296c6daee9630890333c80a8e99b597d4a05a64ee945",
     "packages/worker/src/npm/cache-keys.ts": "b3e8fc3ac7a98d381f3ec8efb072f54087b699e9f0a29b685a72e3871a1a6130",
     "packages/worker/src/npm/cache.ts": "d3f341c6570752cee3f4afd89455d943e536a37b1b0febc46c8d14d38e017bc0",
