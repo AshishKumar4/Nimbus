@@ -353,6 +353,13 @@ export interface RuntimeFsBridge {
   /** Stateless ranged read: clamped at EOF; null when the path is absent. */
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Awaitable<Uint8Array | null>;
   /**
+   * Whether a ranged read of `path` reaches a backend that offers one.
+   * Absent on bridges that predate it (then every path is assumed ranged).
+   * Lets a whole-file reader take one whole read instead of degrading each
+   * 64 KiB piece to a whole-file read through readRangeOrWhole.
+   */
+  hasRangedRead?(path: RuntimeFsPath): Awaitable<boolean>;
+  /**
    * Stateless ranged write: updates only the chunks the range touches
    * (never a whole-file rewrite), zero-filling any gap past EOF.
    * Creates the file when missing. Every byte is written, so the receipt

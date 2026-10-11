@@ -132,6 +132,58 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   files.vfs.unmount('/mnt/own');
 }
 
+// A whole image read is one version, never a mix: a same-size rewrite mid-read
+// fails loudly, and a backend with no ranged read costs one whole-file read.
+{
+  const image = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 13) & 0xff);
+  await vfs.writeFile('/home/user/image.wasm', image);
+  const st = await vfs.stat('/home/user/image.wasm');
+  assert.ok(st.revision !== undefined && st.revision > 0, 'sqlite stats carry a revision to verify against');
+  const seen = await vfs.readArrayBufferUncached('/home/user/image.wasm');
+  assert.deepEqual(new Uint8Array(seen), image, 'a quiet image reads whole');
+
+  // A same-size rewrite between two reads must not assemble bytes from both.
+  const other = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 29 + 7) & 0xff);
+  const view = files.view({ pid: 60, cred: USER });
+  let reads = 0;
+  const origRead = view.readRangeUncached.bind(view);
+  view.readRangeUncached = async (path, offset, length) => {
+    reads++;
+    const bytes = await origRead(path, offset, length);
+    if (reads === 1) await vfs.writeFile('/home/user/image.wasm', other);
+    return bytes;
+  };
+  assert.equal(await code(() => view.readArrayBufferUncached('/home/user/image.wasm')), 'ESTALE',
+    'a same-size rewrite mid-read fails loudly');
+  assert.deepEqual(await vfs.readFile('/home/user/image.wasm'), other, 'the rewrite itself landed');
+
+  // A backend with no ranged read costs one whole-file read, not one per piece:
+  // the capability check sees the missing method and no piece is attempted.
+  const held = new Map([['/big.wasm', image]]);
+  let wholeReads = 0;
+  let pieces = 0;
+  const flat = {
+    stat: (p) => (held.has(p) ? { type: 'file', size: held.get(p).byteLength, mtimeMs: 1, revision: 7, mode: 0o100644, uid: 1000, gid: 1000, ino: 99, nlink: 1, dev: 5 } : null),
+    readFile: (p) => { wholeReads++; return held.get(p) ?? null; },
+    readRange: (p, offset, length) => {
+      pieces++;
+      const bytes = held.get(p) ?? new Uint8Array(0);
+      return bytes.slice(offset, offset + length);
+    },
+    writeFile: (p, bytes) => { held.set(p, bytes); },
+    readdir: () => [...held.keys()].map((k) => ({ name: k.slice(1), type: 'file' })),
+  };
+  flat.sync = flat;
+  files.vfs.mount('/mnt/flat', flat);
+  const flatView = files.view({ pid: 61, cred: USER });
+  delete flat.readRange;
+  const flatBytes = await flatView.readArrayBufferUncached('/mnt/flat/big.wasm');
+  assert.deepEqual(new Uint8Array(flatBytes), image, 'a non-ranged backend still reads whole');
+  assert.equal(wholeReads, 1, `one whole-file read, not one per 64 KiB piece (got ${wholeReads})`);
+  assert.equal(pieces, 0, `no piece is attempted once the capability is absent (got ${pieces})`);
+  files.vfs.unmount('/mnt/flat');
+}
+
 // writeFileFrom publishes a file whole once its bytes have arrived, on SQLite
 // and on a mount alike; refused before a byte is read where writeFile would
 // be refused, and nothing is published from a source that ends short.

@@ -30,8 +30,10 @@ try {
   const warmedMem = await diagMemory(sid);
   // The 10.6 MiB interpreter image is read once for the facet's module map
   // and never enters the session's LRU (14,887,665 B before the fix). The
-  // ~3.8 MiB that remains is the guest's own stdlib prefetch into its
-  // facet-side resident store, which its lifecycle owns, not the session.
+  // ~3.8 MiB that remains is still session-LRU retention: the warm-up boot
+  // prefetches the guest stdlib through the session, and those reads stay
+  // cached. That is ordinary demand-paged content, not a second pinned
+  // image, and it drains under session pressure.
   a.check('warm-up holds no runtime image in the session LRU',
     (warmedMem.vfsDetail?.lruBytes ?? 0) < 4_500_000,
     `lruBytes=${warmedMem.vfsDetail?.lruBytes}`);
