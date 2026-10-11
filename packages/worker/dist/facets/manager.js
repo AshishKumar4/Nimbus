@@ -1654,6 +1654,14 @@ function esmStageSize(esm) {
         table: JSON.stringify({ table: esm.table, missing: esm.missing }).length,
     };
 }
+/** A launch's per-module costs, for its exec telemetry record. */
+function execBreakdown(state) {
+    const t = state.transforms;
+    return {
+        ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
+        ...(state.esmSize ? { esm: state.esmSize } : {}),
+    };
+}
 /** What a module map costs the facet's store that adopts it (N18). A denial is a head row only; a code-only file is none. */
 function moduleMapStorageBytes(bundle, codeOnly) {
     let bytes = 0;
@@ -6328,6 +6336,7 @@ export class FacetManager {
                             fsRpcReads: result.diag?.fsRpcReads ?? 0,
                             esmAdoptions: result.diag?.esmAdoptions ?? 0,
                             cacheHit: vfsState.cacheHit ?? false,
+                            ...execBreakdown(vfsState),
                             turns: pacer.chunks,
                             exitCode: result.exitCode,
                             at: Date.now(),
@@ -8169,6 +8178,7 @@ export class FacetManager {
                                 fsRpcReads: 0,
                                 esmAdoptions: 0,
                                 cacheHit,
+                                ...execBreakdown(vfsState),
                                 turns: pacer.chunks,
                                 exitCode: 0,
                                 at: Date.now(),
