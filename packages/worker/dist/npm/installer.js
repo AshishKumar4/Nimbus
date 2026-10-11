@@ -309,27 +309,32 @@ export class NpmInstaller {
             return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
         }
         // ── Phase 3: Diff (cache check) ─────────────────────────────────
-        // Per placement: a nested copy is checked at its own directory.
+        // Per placement: a nested copy is checked at its own directory. A
+        // project in the engine is read there, one lookup a placement, as its
+        // bulk paths read it; a mounted one through the invoking principal's view.
         phaseStart = Date.now();
         setInstallPhase('diff');
         const toFetch = [];
+        const engine = engineDir === null ? null : this.store.as(opts.cred);
+        const manifestAt = async (placement) => engine === null
+            ? project.readFileString(`${nmDir}/${placement}/package.json`)
+            : engine.readFileString(`${engineDir}/node_modules/${placement}/package.json`);
         for (const target of hoistPlacements(hoistPlan)) {
             const { pkg } = target;
             // Already installed at the placement: that version, and (where the
             // lockfile records it) the same package, an alias's target included.
-            const pkgJsonPath = nmDir + '/' + target.placement + '/package.json';
             const locked = lockfile?.get(target.placement);
-            if (await project.exists(pkgJsonPath) && (locked === undefined || locked.integrity === pkg.integrity)) {
+            if (locked === undefined || locked.integrity === pkg.integrity) {
+                let version;
                 try {
-                    const existing = JSON.parse(await project.readFileString(pkgJsonPath));
-                    if (existing.version === pkg.version) {
-                        // Already installed at correct version — skip
-                        installed.push(`${pkg.name}@${pkg.version}`);
-                        cachedHits++;
-                        continue;
-                    }
+                    version = JSON.parse(await manifestAt(target.placement)).version;
                 }
-                catch { /* corrupt package.json — reinstall */ }
+                catch { /* none, or corrupt: install it */ }
+                if (version === pkg.version) {
+                    installed.push(`${pkg.name}@${pkg.version}`);
+                    cachedHits++;
+                    continue;
+                }
             }
             // Not present in the VFS at the right version — fetch it. The batch
             // facet consults the shared L2 (caches.default) + L3 (R2) tarball
@@ -390,7 +395,7 @@ export class NpmInstaller {
         // them, but those of a package that failed.
         // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
         const linked = failedAt.size === 0 ? resolved : new Map([...resolved].filter(([at]) => !failedAt.has(at)));
-        await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, []));
+        await withRecall(() => this.linkBins(linked, engine === null ? { fs: project, nmDir } : { engine, nmDir: `${engineDir}/node_modules` }, []));
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         // The lockfile is the inventory pruning reads, so it records what is on
