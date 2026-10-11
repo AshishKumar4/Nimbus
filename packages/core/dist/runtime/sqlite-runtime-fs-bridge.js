@@ -707,7 +707,7 @@ export class SqliteRuntimeFsBridge {
         },
         mounted: (id) => {
             const node = this.waveDescription(id);
-            return node?.mounted ? node : undefined;
+            return node?.mounted && node.append !== undefined ? node : undefined;
         },
         handle: (id) => {
             const handleId = this.scope.waveDescriptions.get(id);
