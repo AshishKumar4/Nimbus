@@ -115,7 +115,10 @@ export function createAuthority(vfsOptions) {
   const kfs = rawVfs.as(CRED_SESSION_USER);
   // The session's filesystem authority, as the session holds it: where an embedder mounts.
   const files = new ProcessFiles(rawVfs);
-  const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {}, getFilesystemAuthority: () => files };
+  const processes = new SessionProcessSupervisor();
+  // As a workspace composes them (nimbus-workspace.ts): a process's end and release reach its filesystem.
+  processes.setRelease((pid) => files.releaseProcess(pid), (pid) => files.processEnded(pid));
+  const host = { sqliteFs: rawVfs, processes, ensureSqliteFs() {}, getFilesystemAuthority: () => files };
   const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
     const handler = Reflect.get(rpc, method);
     if (typeof handler !== 'function') throw new Error(`no rpc.ts implementation of the routed ${method}`);

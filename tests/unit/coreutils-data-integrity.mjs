@@ -178,6 +178,19 @@ check('cat of an endless device streams to a reader that stops', r.stdout === '1
   `stdout=${JSON.stringify(r.stdout)} exit=${r.exitCode}`);
 check('the writer ends silently when its reader goes', r.stderr === '', `stderr=${r.stderr}`);
 
+// wc -c counts bytes, whatever they decode to: multibyte characters, a
+// sequence a chunk boundary cuts, bytes that are no UTF-8 at all.
+{
+  const u8 = new Uint8Array(400003);
+  for (let i = 0; i < 400002; i += 2) { u8[i] = 0xc3; u8[i + 1] = 0xa9; }
+  u8[400002] = 0xff;
+  root.writeFile('tmp/u8', u8);
+  root.chown('tmp/u8', 1000, 1000);
+}
+r = await sh('cat /tmp/u8 | wc -c; wc -c < /tmp/u8; wc -c /tmp/u8 /tmp/u8');
+check('wc -c counts bytes of any input, as a pipe, as stdin and as files with their total',
+  r.stdout === '400003\n400003\n400003 /tmp/u8\n400003 /tmp/u8\n800006 total\n', JSON.stringify(r.stdout));
+
 r = await sh('head -c 32 /dev/urandom > /tmp/rand');
 check('head -c on /dev/urandom yields 32 bytes', size('tmp/rand') === 32, `got ${size('tmp/rand')}`);
 

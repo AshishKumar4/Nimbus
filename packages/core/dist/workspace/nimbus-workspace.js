@@ -167,7 +167,7 @@ export class NimbusWorkspace {
         // Its processes bind to this filesystem, so a reap releases them here,
         // and their output waits for what they wrote to be published: the one
         // place the table and the filesystem meet.
-        processes.setRelease((pid) => filesystem.releaseProcess(pid));
+        processes.setRelease((pid) => filesystem.releaseProcess(pid), (pid) => filesystem.processEnded(pid));
         filesystem.holdOutput(processes);
         const env = { ...defaultEnv(home), ...options.env };
         // The identity every shell command runs as. A host that supplied one keeps

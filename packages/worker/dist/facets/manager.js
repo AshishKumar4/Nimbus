@@ -996,10 +996,13 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       __nimbusProgramStopped = true;
     }
 
+    // The runtime's own turns, on the platform's timer: a program timer's
+    // resumption barrier is the program's, and its round trip (and the read
+    // lease it is answered with) is nothing an ended program needs.
     async function __drainPendingIO(maxPasses = 12) {
       let __settledIO = 0;
       for (let __pass = 0; __pass < maxPasses; __pass++) {
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => globalThis.__nimbusRawSetTimeout(r, 0));
         if (__pendingIO.length <= __settledIO) break;
         const __slice = __pendingIO.slice(__settledIO);
         __settledIO = __pendingIO.length;
@@ -1446,7 +1449,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => globalThis.__nimbusRawSetTimeout(resolve, 0));
     __nimbusRuntime = {
       supervisor: __supervisor,
       pendingIO: __pendingIO,
