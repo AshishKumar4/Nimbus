@@ -42,6 +42,7 @@ export class SessionProcessSupervisor {
     terminators = new Map();
     /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
     held = new Map();
+    observeWork = null;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     logActivity = null;
     /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -271,23 +272,39 @@ export class SessionProcessSupervisor {
      * host was lost: nothing of it here is left to unwind) is released at its
      * end.
      */
-    holdWork(pid, stop) {
-        const work = { stop, stopped: false };
+    setWorkObservation(observe) {
+        this.observeWork = observe;
+        for (const [pid, pieces] of this.held)
+            for (const work of pieces) {
+                work.observation?.release();
+                if (!work.stopped)
+                    work.observation = observe(pid);
+            }
+    }
+    holdWork(pid, stop, signal) {
+        const work = { stop, stopped: false, observation: this.observeWork?.(pid) };
+        const stopObserving = () => work.observation?.release();
+        signal?.addEventListener('abort', stopObserving, { once: true });
+        if (signal?.aborted)
+            stopObserving();
         let pieces = this.held.get(pid);
         if (!pieces)
             this.held.set(pid, pieces = new Set());
         pieces.add(work);
         let done = false;
-        return () => {
+        const release = () => {
             if (done)
                 return;
             done = true;
+            signal?.removeEventListener('abort', stopObserving);
+            stopObserving();
             const now = this.held.get(pid);
             now?.delete(work);
             if (now?.size === 0)
                 this.held.delete(pid);
             this.releaseEnded(pid);
         };
+        return Object.defineProperty(release, 'ready', { get: () => work.observation?.ready });
     }
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     terminate(pid, reason) {
@@ -301,6 +318,7 @@ export class SessionProcessSupervisor {
             if (work.stopped)
                 continue;
             work.stopped = true;
+            work.observation?.release();
             try {
                 work.stop(reason);
             }

@@ -53,7 +53,7 @@ export async function registerHostedCommands(self, workspace) {
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: runAsProcess,
         accountWork: (worker) => self.processes.beginWork(worker),
-        holdWork: (worker, stop) => self.processes.holdWork(worker, stop),
+        holdWork: (worker, stop, signal) => self.processes.holdWork(worker, stop, signal),
     });
     // `kill` is the shell's builtin; the session's own processes (resident
     // servers, the vite shim), numbered in this table's pid space, are reached

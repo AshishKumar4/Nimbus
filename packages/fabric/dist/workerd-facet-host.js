@@ -13,8 +13,9 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { hostActivity, HOST_WATCH_HEADER, observeResidentConfig } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
-import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, } from './composition.js';
@@ -284,6 +285,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     // is gone. Both cases are reported instead.
     let evaluated = false;
     let released = false;
+    const watchCapability = crypto.randomUUID();
     let markLost = () => { };
     const lost = new Promise((_, reject) => { markLost = reject; });
     lost.catch(() => { });
@@ -297,7 +299,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             throw gone;
         }
         evaluated = true;
-        return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
+        return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) };
     };
     const book = slotBook(ctx);
     const ledger = sessionLedger(ctx);
@@ -334,11 +336,13 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     const endResidency = claimAdmission(ctx, params.pid) ?? beginLoaderFetch(ctx, launchWorkerKey(params.pid), undefined, params.pid);
     facetOfPid(ctx).set(params.pid, name);
     let disposed = false;
+    let stopObserving = () => { };
     const release = async () => {
         if (disposed)
             return;
         disposed = true;
         released = true;
+        stopObserving();
         facetOfPid(ctx).delete(params.pid);
         endResidency();
         try {
@@ -404,18 +408,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     // A caller reads whichever of `started` and the lifecycle it needs, so keep
     // the runtime from reporting the other as an unhandled rejection.
     started.catch(() => { });
-    // A facet's isolate dies on its own (out of memory, out of CPU) and this
-    // object goes on (measured: the journal probe, 2026-10-07). A journaling
-    // resident's class holds held() open while its isolate lives, from its
-    // creation (a lifetime run is watched while it runs): a platform reset of
-    // it is the process lost too. Anything else that ends the call is not: a
-    // run's own stop aborts the facet with its stop record, and a release ends it.
-    if (params.journal) {
-        Promise.resolve().then(() => facet.held()).catch((error) => {
-            if (!released && isHostReset(error))
-                markLost(error instanceof Error ? error : new Error(String(error)));
-        });
-    }
+    stopObserving = hostActivity(ctx).observe((signal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } })), (error) => { if (!released)
+        markLost(error); });
     return {
         started,
         lost,
@@ -452,14 +446,18 @@ function startFailure(error, name, pid) {
  * assembles its module map at most once and the bytes never stay resident in
  * the hosting DO's heap.
  */
-function residentProcessClass(env, disk, supervisor, params, loaderKey) {
+function residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) {
     const loader = env.LOADER;
     if (!loader || typeof loader.get !== 'function') {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Resident processes require '
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
     return loader
-        .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+        .get(facetLoaderKey('process', loaderKey), async () => {
+        const config = observeResidentConfig(await residentWorkerConfig(env, disk, supervisor, params.boot), watchCapability);
+        assertModuleMapWithinCodeLimit(configModules(config));
+        return applyFacetLimits('process', config);
+    })
         .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 async function runOneShot(ctx, env, supervisor, supervise, params, consume) {

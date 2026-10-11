@@ -10,6 +10,7 @@ import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runti
 import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
@@ -1013,6 +1014,7 @@ async function destroySession(self, options) {
     // admits no process, and a request that would ready the session waits for
     // the one it makes again (rpcDestroy, ensureRuntimeReady).
     self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+    hostActivity(self.ctx).close();
     const reason = typeof options.reason === 'string' && options.reason.trim()
         ? options.reason.trim().slice(0, 200)
         : null;

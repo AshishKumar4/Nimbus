@@ -26,6 +26,11 @@ import type { ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
+export interface ProcessWorkObservation {
+    readonly ready?: Promise<void>;
+    release(): void;
+}
+export type HeldProcessWork = (() => void) & Pick<ProcessWorkObservation, 'ready'>;
 export interface ProcessSpawnOptions {
     /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
     longRunning?: boolean;
@@ -63,6 +68,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private terminators;
     /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
     private readonly held;
+    private observeWork;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     private logActivity;
     /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -185,7 +191,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * host was lost: nothing of it here is left to unwind) is released at its
      * end.
      */
-    holdWork(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
+    setWorkObservation(observe: (pid: number) => ProcessWorkObservation): void;
+    holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork;
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     private terminate;
     cred(pid: number): VfsCred;

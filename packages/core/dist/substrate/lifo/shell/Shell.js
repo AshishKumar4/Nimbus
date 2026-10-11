@@ -222,6 +222,11 @@ export class Shell {
         }
     }
     bindTerminalInput() {
+        const terminal = this.terminal;
+        terminal.signal?.addEventListener('abort', () => {
+            if (this.terminal === terminal)
+                this.abortController?.abort();
+        }, { once: true });
         this.terminal.onData((data, submission) => this.handleInput(data, submission));
         this.terminal.onSubmission?.((data, id, deliver, repl) => {
             const submission = new ShellInputSubmission(id, (event) => this.terminal.shellIntegration?.(event));
@@ -347,8 +352,10 @@ export class Shell {
             stdinStream = options?.stdin;
         }
         const identity = this.resolveCommandIdentity(options?.commandContext);
-        const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason));
+        const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
         try {
+            if (stopped?.ready)
+                await stopped.ready;
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {
                 runExitTrap: options?.runExitTrap === true,
                 stdin: stdinStream,
@@ -1060,8 +1067,10 @@ export class Shell {
         this.terminal.write(COMMAND_START);
         let status = null;
         const identity = this.resolveCommandIdentity(undefined);
-        const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason));
+        const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
         try {
+            if (stopped?.ready)
+                await stopped.ready;
             // Saved beside the line, which does not wait for it: a reader's recall
             // the save meets (core README, process model) costs the line nothing.
             // A save that fails loses that line's history, not the line.
