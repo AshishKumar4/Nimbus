@@ -9,7 +9,7 @@
  * (remoteFailureText), and exits as git does (128; a pull, whose fetch is
  * git's child, 1).
  */
-import type { GitHttp } from './transport.js';
+import type { HttpClient } from '../../../vendor/git-http.generated.js';
 /** Why a request to the git server failed. */
 export type RemoteFailure = 
 /** No answer: the connection, DNS, TLS or the stream failed. `detail` says how. */
@@ -62,7 +62,7 @@ export declare function plainTextMessage(contentType: string | null, body: Reada
  */
 export declare function remoteFailureOf(error: unknown, http?: ObservedGitHttp): RemoteFailure | undefined;
 /** cf-git's HTTP client, with the failure of its last request kept (`failureOf`). */
-export interface ObservedGitHttp extends GitHttp {
+export interface ObservedGitHttp extends HttpClient {
     /** What `error` (thrown by cf-git) says failed at the server, or undefined when it is not a server's failure. */
     failureOf(error: unknown): RemoteFailure | undefined;
 }
@@ -72,5 +72,5 @@ export interface ObservedGitHttp extends GitHttp {
  * plain text, which cf-git still reads after). cf-git's HttpError for that
  * status, or the transport's own error, is then known for what it is.
  */
-export declare function observedGitHttp(http: GitHttp): ObservedGitHttp;
+export declare function observedGitHttp(http: HttpClient): ObservedGitHttp;
 //# sourceMappingURL=remote-failure.d.ts.map

@@ -577,6 +577,7 @@ interface CfGit {
   expandRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
   currentBranch(args: { fs: unknown; gitdir: string; fullname?: boolean }): Promise<string | undefined>;
   getConfig(args: { fs: unknown; dir?: string; gitdir?: string; path: string }): Promise<unknown>;
+  getConfigAll(args: { fs: unknown; dir?: string; gitdir?: string; path: string }): Promise<unknown[]>;
   setConfig(args: { fs: unknown; gitdir: string; path: string; value: string }): Promise<void>;
   findMergeBase(args: { fs: unknown; dir: string; oids: string[] }): Promise<string[]>;
   merge(args: { fs: unknown; dir: string; ours: string; theirs: string; author: GitIdent; committer: GitIdent; noUpdateBranch: boolean }):

@@ -194,7 +194,7 @@ export function observedGitHttp(http: HttpClient): ObservedGitHttp {
       const headers = (response.headers ?? {}) as Record<string, string>;
       const contentType = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
       answered = { kind: 'status', status: response.statusCode, ...(isPlainText(contentType) ? { message: new TextDecoder().decode(bytes) } : {}) };
-      return { ...response, body: replay(bytes) as unknown as GitHttpResponse['body'] };
+      return { ...response, body: replay(bytes) };
     },
     failureOf(error) {
       if (thrown !== null && thrown.error === error) return thrown.failure;
