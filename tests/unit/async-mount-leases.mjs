@@ -400,17 +400,17 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
 // teardown finishes, then reports that the buffered bytes are lost.
 {
   const plain = new MemoryVFS(USER);
-  /** `vfs` with no writeRange nor open files, its credentialed and synchronous views too: a descriptor buffers. */
+  /** `vfs` with no writeRange, its credentialed and synchronous views too: a descriptor buffers. */
   const unranged = (vfs) => new Proxy(vfs, {
     get(target, key) {
-      if (key === 'writeRange' || key === 'openFile') return undefined;
+      if (key === 'writeRange') return undefined;
       const value = target[key];
       if (key === 'sync') return value === undefined ? undefined : unranged(value);
       if (typeof value !== 'function') return value;
       if (key === 'as') return (...args) => unranged(value.apply(target, args));
       return value.bind(target);
     },
-    has: (target, key) => key !== 'writeRange' && key !== 'openFile' && key in target,
+    has: (target, key) => key !== 'writeRange' && key in target,
   });
   ws.filesystem.vfs.mount('/b', unranged(plain));
   const files = box.files;

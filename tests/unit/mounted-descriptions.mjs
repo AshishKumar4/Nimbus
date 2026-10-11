@@ -157,7 +157,6 @@ await check('a mount whose writeRange refuses (ENOTSUP) holds the writes, read b
   const refusing = new Proxy(backend, {
     get(target, key) {
       if (key === 'writeRange') return () => { throw new VfsError('ENOTSUP', 'no ranges here', '/x'); };
-      if (key === 'openFile') return undefined;
       if (key === 'sync') return refusing;
       const value = target[key];
       return typeof value === 'function' ? value.bind(target) : value;
@@ -189,15 +188,15 @@ await check('a credentialed mount refuses an open its modes deny, before the rea
   files.vfs.unmount('/q');
 });
 
-/** `vfs` that writes no range and keeps no open file (a mount that cannot write in place): a description holds its writes. */
+/** `vfs` that writes no range (a mount that cannot write in place): a description holds its writes. */
 const unranged = (vfs) => new Proxy(vfs, {
   get(target, key) {
-    if (key === 'writeRange' || key === 'openFile') return undefined;
+    if (key === 'writeRange') return undefined;
     if (key === 'sync') return unranged(target);
     const value = target[key];
     return typeof value === 'function' ? value.bind(target) : value;
   },
-  has: (target, key) => key !== 'writeRange' && key !== 'openFile' && key in target,
+  has: (target, key) => key !== 'writeRange' && key in target,
 });
 
 // An O_SYNC description's own writes are flushed as made; it reads the
@@ -398,8 +397,7 @@ await check('a write in flight when its mount leaves its point is not heard as a
   const held = new Promise((resolve) => { release = resolve; });
   let entered;
   const entering = new Promise((resolve) => { entered = resolve; });
-  // The file the open holds (VFS.openFile) is written in place.
-  files.vfs.mount('/f1', asyncOnly(first, { deep: true, beforeCall: (method) => (method === 'write' ? (entered(), held) : undefined) }));
+  files.vfs.mount('/f1', asyncOnly(first, { deep: true, beforeCall: (method) => (method === 'writeRange' ? (entered(), held) : undefined) }));
   const proc = files.bind({ pid: ++pid, cred: USER });
   const fd = await proc.open('/f1/x', { read: true, write: true });
   const heard = [];
@@ -528,16 +526,14 @@ await check('O_TRUNC asks to write, whatever access the descriptor has, on every
 });
 
 // ── A description's held writes, and every later change of their file ──
-/** `vfs` that writes no range in place (ENOTSUP) and keeps no open file, but truncates. */
+/** `vfs` that writes no range in place (ENOTSUP), but truncates. */
 const refusingRanges = (vfs) => new Proxy(vfs, {
   get(target, key) {
     if (key === 'writeRange') return () => { throw new VfsError('ENOTSUP', 'no ranges here', '/'); };
-    if (key === 'openFile') return undefined;
     if (key === 'sync') return refusingRanges(target);
     const value = target[key];
     return typeof value === 'function' ? value.bind(target) : value;
   },
-  has: (target, key) => key !== 'openFile' && key in target,
 });
 
 await check('held writes are written before any later change of their file, which nothing brings back', async () => {
@@ -606,8 +602,10 @@ await check('held writes overlay the file of the backend they were made on, not 
 
 // ── A description holds its file, not its name ──
 await check('a description of a file its mount keeps open is that file across a rename, and the new file at its name is another', async () => {
-  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const other = createSqliteVfsTestHarness();
+  const backend = sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL);
   backend.writeFile('/x', enc.encode('old'));
+  backend.chown('/x', 1000, 1000);
   files.vfs.mount('/o', backend);
   try {
     const proc = files.bind({ pid: ++pid, cred: USER });

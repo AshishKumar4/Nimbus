@@ -6,7 +6,7 @@
  * entries carry the uid/gid given at construction), and its own revision per
  * entry so a cache over it can tell a change.
  */
-import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsOpenFile, VfsStat } from './vfs.js';
+import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 
 type Entry = {
@@ -148,26 +148,7 @@ export class MemoryVFS implements VFS {
   writeRange(path: string, offset: number, bytes: Uint8Array): void {
     const call = { syscall: 'open', path };
     if (this.find(path, call) === null) this.writeFile(path, EMPTY);
-    this.writeAt(this.file(path, call), offset, bytes);
-  }
-
-  truncate(path: string, size: number): void {
-    this.truncateTo(this.file(path, { syscall: 'open', path }), size);
-  }
-
-  /** The entry itself: renamed or unlinked, it is still what its holder reads and writes. */
-  openFile(path: string): VfsOpenFile {
-    const entry = this.file(path, { syscall: 'open', path });
-    return {
-      stat: () => this.stats(entry),
-      read: (offset, length) => entry.data.slice(offset, offset + length),
-      write: (offset, bytes) => this.writeAt(entry, offset, bytes),
-      truncate: (size) => this.truncateTo(entry, size),
-      close: () => {},
-    };
-  }
-
-  private writeAt(entry: Entry, offset: number, bytes: Uint8Array): void {
+    const entry = this.file(path, call);
     const next = new Uint8Array(Math.max(entry.data.length, offset + bytes.length));
     next.set(entry.data);
     next.set(bytes, offset);
@@ -175,7 +156,8 @@ export class MemoryVFS implements VFS {
     this.touch(entry);
   }
 
-  private truncateTo(entry: Entry, size: number): void {
+  truncate(path: string, size: number): void {
+    const entry = this.file(path, { syscall: 'open', path });
     const next = new Uint8Array(size);
     next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
     entry.data = next;
