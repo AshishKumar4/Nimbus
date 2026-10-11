@@ -291,26 +291,34 @@ export function requiredFailures(plan: Pick<TreePlan<TreePackage>, 'failures' | 
 }
 
 /**
- * Installs into one node_modules tree, one at a time: each waits for the one
- * before it. Keyed by the tree's namespace (a workspace's kernel, a session's
- * store) and its canonical path there (`canonical`), so two paths to one tree
- * (a prefix through a symlink) are one queue.
+ * Installs into one node_modules tree, one at a time, in the order they
+ * asked. Keyed by the tree's namespace (a workspace's kernel, a session's
+ * store) and its canonical path there, so two paths to one tree (a prefix
+ * through a symlink) are one queue. A held tree's entry lists who waits for
+ * it next.
  */
-const installQueues = new WeakMap<object, Map<string, Promise<unknown>>>();
+const heldTrees = new WeakMap<object, Map<string, Array<() => void>>>();
 
 /**
- * `run` once no other install into the tree at `canonical` in `namespace` is
- * running; at once when none is.
+ * Hold the tree at `canonical` in `namespace` for one install, and give it
+ * back with the release this answers, once the install is done: at once
+ * when no install holds it, else (a promise) once those before have given it
+ * back.
  */
-export function withTreeLock<T>(namespace: object, canonical: string, run: () => Promise<T>): Promise<T> {
-  const queues = installQueues.get(namespace) ?? new Map<string, Promise<unknown>>();
-  if (queues.size === 0) installQueues.set(namespace, queues);
-  const before = queues.get(canonical);
-  const done = before === undefined ? run() : before.then(run, run);
-  const release = () => { if (queues.get(canonical) === settled) queues.delete(canonical); };
-  const settled: Promise<unknown> = done.then(release, release);
-  queues.set(canonical, settled);
-  return done;
+export function holdTree(namespace: object, canonical: string): (() => void) | Promise<() => void> {
+  const held = heldTrees.get(namespace) ?? new Map<string, Array<() => void>>();
+  if (held.size === 0) heldTrees.set(namespace, held);
+  const release = () => {
+    const next = held.get(canonical)?.shift();
+    if (next === undefined) held.delete(canonical);
+    else next();
+  };
+  const waiting = held.get(canonical);
+  if (waiting === undefined) {
+    held.set(canonical, []);
+    return release;
+  }
+  return new Promise((resolve) => waiting.push(() => resolve(release)));
 }
 
 /**

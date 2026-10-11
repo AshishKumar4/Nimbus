@@ -11,7 +11,7 @@ import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { placementName } from '../../../../_shared/npm-placement.js';
 import {
-	canonicalTreePath, planTree, projectRoots, requiredFailures, withTreeLock,
+	canonicalTreePath, holdTree, planTree, projectRoots, requiredFailures,
 	type TreePackage, type TreeResolution, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
@@ -311,12 +311,18 @@ const NO_KERNEL = {};
 
 /**
  * `run` holding the tree `install` lands in (core _shared/npm-tree.ts
- * withTreeLock): an install and what its caller reads and writes besides
+ * holdTree): an install and what its caller reads and writes besides
  * (the project's package.json).
  */
 async function lockTree<T>(install: TreeInstall, run: () => Promise<T>): Promise<T> {
 	const canonical = await canonicalTreePath((path) => install.vfs.realpath(path), install.targetBase);
-	return withTreeLock(install.kernel ?? NO_KERNEL, canonical, run);
+	const held = holdTree(install.kernel ?? NO_KERNEL, canonical);
+	const release = typeof held === 'function' ? held : await held;
+	try {
+		return await run();
+	} finally {
+		release();
+	}
 }
 
 /**

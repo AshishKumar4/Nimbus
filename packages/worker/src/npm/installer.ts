@@ -43,7 +43,7 @@ import {
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import { placementName, visiblePlacements } from '@nimbus-sh/core/_shared/npm-placement.js';
-import { canonicalTreePath, planTree, projectRoots, withTreeLock, type TreeResolution } from '@nimbus-sh/core/_shared/npm-tree.js';
+import { canonicalTreePath, holdTree, planTree, projectRoots, type TreeResolution } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -263,43 +263,44 @@ export class NpmInstaller {
     // with every link resolved; a mounted project has none.
     const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
     const engineDir = await engineKey(view, this.store, '/' + projDir);
-    // One install into a project at a time (core npm-tree.ts withTreeLock),
+    // One install into a project at a time (core npm-tree.ts holdTree),
     // keyed by where it is: its engine key, else (mounted) its resolved path.
     // The tree's own state, and this installer's progress and log sinks, are
     // the running install's until it returns.
     const where = engineDir ?? await canonicalTreePath(async (path) => view.realpath(path), '/' + projDir);
-    return withTreeLock(this.store, where, async () => {
-      // Per-invocation progress wins over whatever the ctor bound — the
-      // installer is shared, the terminal it should speak to is not.
-      const previousProgress = this.onProgress;
-      if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
-      // This invocation's terminal, while the command runs. Work that outlives
-      // it (the background pre-bundle) still logs through `log`, and once the
-      // command has returned and the prompt is back, that goes to the console
-      // instead: never into the next command's output, nor this one's prompt.
-      const progress = this.onProgress;
-      let returned = false;
-      const log = (msg: string) => {
-        if (!returned) {
-          progress?.(msg);
-          return;
-        }
-        try { console.log('[npm:late] ' + msg); } catch {}
-      };
-      this.npmLog = opts?.npmLog ?? (() => {});
-
-      // Reset phase to 'idle' on any exit path so /api/_diag/memory
-      // never reports a stale phase after a crash unwound the install.
-      // The DO reboot would zero this anyway; finally is defense against
-      // a non-fatal mid-install throw.
-      try { return await this._installInner(projDir, nmDir, opts, log, start, view, engineDir); }
-      finally {
-        returned = true;
-        setInstallPhase('idle');
-        this.npmLog = () => {};
-        this.onProgress = previousProgress;
+    const held = holdTree(this.store, where);
+    const release = typeof held === 'function' ? held : await held;
+    // Per-invocation progress wins over whatever the ctor bound — the
+    // installer is shared, the terminal it should speak to is not.
+    const previousProgress = this.onProgress;
+    if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
+    // This invocation's terminal, while the command runs. Work that outlives
+    // it (the background pre-bundle) still logs through `log`, and once the
+    // command has returned and the prompt is back, that goes to the console
+    // instead: never into the next command's output, nor this one's prompt.
+    const progress = this.onProgress;
+    let returned = false;
+    const log = (msg: string) => {
+      if (!returned) {
+        progress?.(msg);
+        return;
       }
-    });
+      try { console.log('[npm:late] ' + msg); } catch {}
+    };
+    this.npmLog = opts?.npmLog ?? (() => {});
+
+    // Reset phase to 'idle' on any exit path so /api/_diag/memory
+    // never reports a stale phase after a crash unwound the install.
+    // The DO reboot would zero this anyway; finally is defense against
+    // a non-fatal mid-install throw.
+    try { return await this._installInner(projDir, nmDir, opts, log, start, view, engineDir); }
+    finally {
+      returned = true;
+      setInstallPhase('idle');
+      this.npmLog = () => {};
+      this.onProgress = previousProgress;
+      release();
+    }
   }
 
   private async _installInner(
