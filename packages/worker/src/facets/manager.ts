@@ -2041,18 +2041,16 @@ type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
  */
 /** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
 function esmStageSize(esm: EsmStage): Record<string, number> {
+  // Counted, not serialized: every build takes it, a launch over pi's 1074 modules included.
   let text = 0;
   let columns = 0;
   for (const staged of esm.modules.values()) {
     text += staged.text.length;
-    columns += JSON.stringify(staged.columns).length;
+    columns += staged.columns.length;
   }
   let members = 0;
   for (const member of Object.values(esm.members)) members += member.length;
-  return {
-    ms: esm.ms, modules: esm.modules.size, rows: esm.table.length, missing: esm.missing.length, text, columns, members,
-    table: JSON.stringify({ table: esm.table, missing: esm.missing }).length,
-  };
+  return { ms: esm.ms, modules: esm.modules.size, rows: esm.table.length, missing: esm.missing.length, text, columns, members };
 }
 
 /** A launch's per-module costs, for its exec telemetry record. */
