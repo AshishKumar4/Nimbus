@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
-import { moduleMapText, storedBootModules } from './lib/module-map-bundle.mjs';
+import { moduleMapText, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
@@ -122,7 +122,7 @@ async function settle(world) {
     'a launch spread across turns still carries the program it was asked to run',
   );
 
-  assert.deepEqual(await storedBootModules(world, fs), config.modules,
+  assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
     'every process-owned chunk and immutable source reached the module map');
 }
 

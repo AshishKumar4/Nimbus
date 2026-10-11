@@ -557,7 +557,7 @@ export class NimbusWorkspace {
     // released.
     const stop = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
-    const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason));
+    const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason), signal);
     let exitCode = 1;
     try {
       const result = await runCommand(shell, command, { ...(named ? options : { ...options, cwd: undefined, env: undefined }), signal });
@@ -740,7 +740,8 @@ function workspaceShellIdentity(
     const endWork = processes.beginWork(child.pid);
     // Its program is this workspace's work behind its pid: a kill stops it.
     const stop = new AbortController();
-    const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason));
+    const signal = parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal;
+    const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason), signal);
     let exitCode = 1;
     try {
       // The child inherits its parent's descriptors, environment and directory.
@@ -754,7 +755,7 @@ function workspaceShellIdentity(
         terminalStdin: parent.terminalStdin,
         isFdTerminal: parent.isFdTerminal,
         isFdPipe: parent.isFdPipe,
-        signal: parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal,
+        signal,
         runAs: runAsProcess,
       });
       exitCode = ended.status;

@@ -17,6 +17,14 @@ import { createRequire as nativeCreateRequire, isBuiltin } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { adaptHttpImports } from './node-http-platform.mjs';
+import { HOST_WATCH_MODULE } from '../../../packages/fabric/src/host-activity.ts';
+
+/** The program's image excludes the host's fixed observation adapter. */
+export function processImageModules(config) {
+  const { [HOST_WATCH_MODULE]: observer, ...modules } = config.modules;
+  if (typeof observer !== 'string') throw new Error('the resident has no host observation adapter');
+  return modules;
+}
 
 const SIDE = /^import (\w+) from "(__nimbus_vfs_bundle_\d+\.js)";$/gm;
 

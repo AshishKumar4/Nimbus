@@ -28,7 +28,7 @@ import {
   residentLoaderConfig,
 } from '../../packages/fabric/src/process-fabric.ts';
 import { createFacetWorld, createFacetCtx, captureProcessBoots } from './facet-host-harness.mjs';
-import { storedBootModules } from './lib/module-map-bundle.mjs';
+import { storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
@@ -85,7 +85,7 @@ assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
 assert.equal(imageA, facetImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
-assert.deepEqual(await storedBootModules(world, fs), configs().at(-1).modules,
+assert.deepEqual(await storedBootModules(world, fs), processImageModules(configs().at(-1)),
   'the facet booted from the stored recipe and shared assets, read when it loaded');
 const cells = decodeCommonJsPackBytes(fs.readFileUncached(packA));
 for (const [module, member] of Object.entries(world.bootSpecs.at(-1).code.assetModules)) {

@@ -92,7 +92,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
   /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
-  private readonly held = new Map<number, Set<{ stop: (reason?: SignalAbortReason) => void; stopped: boolean; observation?: ProcessWorkObservation }>>();
+  private readonly held = new Map<number, Set<{ stop: (reason?: SignalAbortReason) => void; stopped: boolean; signal?: AbortSignal; observation?: ProcessWorkObservation }>>();
   private observeWork: ((pid: number) => ProcessWorkObservation) | null = null;
   /** Fires after every appendOutput/markExit once log persistence is wired. */
   private logActivity: (() => void) | null = null;
@@ -339,12 +339,12 @@ export class SessionProcessSupervisor implements ProcessOutput {
     this.observeWork = observe;
     for (const [pid, pieces] of this.held) for (const work of pieces) {
       work.observation?.release();
-      if (!work.stopped) work.observation = observe(pid);
+      work.observation = !work.stopped && !work.signal?.aborted ? observe(pid) : undefined;
     }
   }
 
   holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork {
-    const work = { stop, stopped: false, observation: this.observeWork?.(pid) };
+    const work = { stop, stopped: false, signal, observation: signal?.aborted ? undefined : this.observeWork?.(pid) };
     const stopObserving = () => work.observation?.release();
     signal?.addEventListener('abort', stopObserving, { once: true });
     if (signal?.aborted) stopObserving();

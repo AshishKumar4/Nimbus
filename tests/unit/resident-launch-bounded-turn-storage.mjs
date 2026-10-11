@@ -23,7 +23,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
-import { storedBootModules } from './lib/module-map-bundle.mjs';
+import { storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -151,7 +151,7 @@ assert.ok(
 
 // And the map the facet boots from is still exactly what was generated.
 const [config] = [...world.configs.values()];
-assert.deepEqual(await storedBootModules(world, fs), config.modules,
+assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
   'sliced process images and shared assets reassemble the exact generated map');
 
 console.log(

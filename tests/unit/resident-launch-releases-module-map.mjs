@@ -141,7 +141,7 @@ assert.equal(world.configs.size, 1, 'exactly one module map was built for the la
 // by-path members are read back inside the start callback, which is why the
 // launch frame does not have to be what holds them.
 const [config] = [...world.configs.values()];
-assert.equal(config.mainModule, 'worker.js', 'the facet boots the generated entry');
+assert.match(config.modules[config.mainModule], /from "\.\/worker\.js"/, 'the host adapter imports the generated entry');
 const entrySource = config.modules['worker.js'];
 assert.equal(typeof entrySource, 'string', 'the entry resolved to source');
 assert.ok(moduleMapText(config.modules).includes('module.exports = 1;'), 'the resolved map carries the program');

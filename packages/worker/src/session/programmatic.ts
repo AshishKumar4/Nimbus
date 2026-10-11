@@ -305,7 +305,7 @@ function startShellJob(
   // pid's release waits for its shell to close what it opened.
   const stopped = self.processes.holdWork(pid, (reason) => {
     try { controller.abort(reason); } catch { /* already settled */ }
-  });
+  }, controller.signal);
 
   const emit = (stream: 'stdout' | 'stderr', sink?: (data: Uint8Array) => void | Promise<void>) => (data: Uint8Array) => {
     if (job.background) {

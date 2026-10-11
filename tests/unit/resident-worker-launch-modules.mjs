@@ -17,6 +17,8 @@
 //      modules, text modules and main module.
 
 import assert from 'node:assert/strict';
+import { HOST_WATCH_MODULE } from '../../packages/fabric/src/host-activity.ts';
+import { processImageModules } from './lib/module-map-bundle.mjs';
 
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
@@ -80,10 +82,10 @@ const HELPER = 'export const helper = true;';
   });
 
   assert.ok(spawned.pid > PID_GEN_STRIDE, 'a pid of this generation');
-  assert.deepEqual(spawned.boot, { ok: true, facetName: spawned.boot.facetName, mainModule: 'runner.js' }, 'the boot payload is the runner\'s');
+  assert.deepEqual(spawned.boot, { ok: true, facetName: spawned.boot.facetName, mainModule: HOST_WATCH_MODULE }, 'the boot payload is the runner\'s');
   assert.equal(gen1.world.configs.size, 1, 'one module map was built');
   const [config] = [...gen1.world.configs.values()];
-  assert.equal(config.mainModule, 'runner.js', 'the isolate boots from the named main module');
+  assert.match(config.modules[config.mainModule], /from "\.\/runner\.js"/, 'the host adapter boots from the named main module');
   assert.equal(config.modules['runner.js'], RUNNER, 'and workerCode sits under that name');
   assert.equal(config.modules['helper.js'], HELPER, 'inline modules ride by value');
   assert.equal(config.modules['lib.js'], LIB, 'the text module landed under its module name, read by path');
@@ -95,7 +97,7 @@ const HELPER = 'export const helper = true;';
   const answered = await spawned.facet.fetch(new Request('http://worker.local/hello?x=1'));
   assert.equal(answered.status, 200);
   const body = await answered.json();
-  assert.equal(body.mainModule, 'runner.js', 'the facet routed to the process that booted from runner.js');
+  assert.equal(body.mainModule, HOST_WATCH_MODULE, 'the facet routed to the process that imported runner.js');
   assert.equal(body.url, 'http://worker.local/hello?x=1', 'the request reached the handle intact');
   assert.equal(body.facetName, spawned.boot.facetName, 'and it is the same facet the boot ran in');
 
@@ -146,7 +148,8 @@ const HELPER = 'export const helper = true;';
   assert.equal(gen2.world.configs.size, 1, 'the re-driven launch built its module map and booted');
   const [second] = [...gen2.world.configs.values()];
   assert.equal(second.mainModule, first.mainModule, 'the same main module');
-  assert.deepEqual(second.modules, first.modules, 'the same modules — inline and text alike');
+  assert.deepEqual(processImageModules(second), processImageModules(first), 'the same program modules — inline and text alike');
+  assert.notEqual(second.modules[HOST_WATCH_MODULE], first.modules[HOST_WATCH_MODULE], 'a new process has a fresh host capability');
   assert.equal(second.modules['runner.js'], RUNNER);
   assert.equal(second.modules['lib.js'], LIB, 'the text module was restored by path from the journalled image');
   assert.equal(second.modules['helper.js'], HELPER);

@@ -14,6 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
+import { HOST_WATCH_HEADER, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 
 /**
  * @param {(config: unknown, info: { loaderId: string, facetName: string, className: string })
@@ -83,21 +84,11 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     return instance;
   };
 
-  /** facetName → its isolate's death, which a runtime resident's held() call hears. */
-  const deaths = new Map();
-  const deathOf = (name) => {
-    let death = deaths.get(name);
-    if (!death) {
-      let reject;
-      death = { promise: new Promise((_, r) => { reject = r; }), reject };
-      death.promise.catch(() => {});
-      deaths.set(name, death);
-    }
-    return death;
-  };
+  const incarnations = new WeakMap();
+  const watches = new Map();
   const die = (name, error) => {
-    deaths.get(name)?.reject(error);
-    deaths.delete(name);
+    for (const controller of watches.get(name) ?? []) controller.error(error);
+    watches.delete(name);
   };
 
   const facets = {
@@ -106,9 +97,17 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
         async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
-        async fetch(request) { return (await ensure(name, start)).fetch(request); },
-        // A runtime resident's class holds this open while its isolate lives.
-        held() { return deathOf(name).promise; },
+        async fetch(request) {
+          const instance = await ensure(name, start);
+          if (!request.headers.has(HOST_WATCH_HEADER)) return instance.fetch(request);
+          let incarnation = incarnations.get(instance);
+          if (!incarnation) incarnations.set(instance, incarnation = crypto.randomUUID());
+          let active = watches.get(name);
+          if (!active) watches.set(name, active = new Set());
+          let held;
+          const body = new ReadableStream({ start(controller) { held = controller; active.add(controller); }, cancel() { active.delete(held); } });
+          return new Response(body, { headers: { [HOST_INCARNATION_HEADER]: incarnation } });
+        },
         // The journal reader's (LOADER.load above).
         async numberings() { return (await ensure(name, start)).numberings(); },
         async number(numbering) { return (await ensure(name, start)).number(numbering); },
@@ -121,8 +120,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     // durable release relies on.
     // Whoever aborts or deletes a facet ended it, and what held it open
     // hears nothing (a release ignores it; a previous incarnation is gone).
-    abort(name) { live.delete(name); deaths.delete(name); },
-    delete(name) { live.delete(name); deaths.delete(name); resetProcessFacetStorage(name); },
+    abort(name) { live.delete(name); die(name, new Error('facet aborted')); },
+    delete(name) { live.delete(name); die(name, new Error('facet deleted')); resetProcessFacetStorage(name); },
   };
 
   return {

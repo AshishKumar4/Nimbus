@@ -206,7 +206,7 @@ for (const mode of PROCESS_HOST_MODES) {
     assert.ok(boot.config.modules['ruby+stdlib.wasm'].wasm instanceof ArrayBuffer,
       'a wasm image arrives as bytes the loader can compile');
     assert.equal(boot.config.modules['boot.js'], 'export const x = 1', 'inline modules survive');
-    assert.equal(boot.config.mainModule, 'worker.js');
+    assert.match(boot.config.modules[boot.config.mainModule], /from "\.\/worker\.js"/, 'the host adapter imports the generated main');
 
     // (4) one handle surface: the route target reaches the running facet.
     const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'));

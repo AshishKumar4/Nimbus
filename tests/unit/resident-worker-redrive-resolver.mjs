@@ -93,7 +93,7 @@ const RUNNER_V2 = 'export default { fetch: () => new Response("v2") };';
   assert.equal(recipe.resident, undefined);
 
   const [config] = [...gen2.world.configs.values()];
-  assert.equal(config.mainModule, 'runner.js');
+  assert.match(config.modules[config.mainModule], /from "\.\/runner\.js"/, 'the host adapter imports the resolved runner');
   assert.equal(config.modules['runner.js'], RUNNER_V2, "the re-driven process boots what the embedder resolved, not what was launched");
 
   const rows = [...session.storage.keys()].filter((k) => k.startsWith('resident-launch:'));

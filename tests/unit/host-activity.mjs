@@ -67,6 +67,17 @@ function setup() {
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
 {
+  const t = setup(), processes = new SessionProcessSupervisor();
+  const abort = new AbortController();
+  const work = processes.holdWork(100, () => {}, abort.signal);
+  abort.abort();
+  processes.setWorkObservation(() => t.activity.acquire());
+  await turns();
+  assert.equal(t.calls.length, 0, 'late runtime composition cannot reactivate cancelled work');
+  work(); t.remove();
+}
+
+{
   const t = setup(), box = await testBox();
   box.workspace.processes.setWorkObservation(() => t.activity.acquire());
   const first = await box.workspace.exec('echo admitted');
