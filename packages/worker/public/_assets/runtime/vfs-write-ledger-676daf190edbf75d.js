@@ -874,6 +874,27 @@ var __nimbusProcessFsModule = (() => {
       }
     }
   }
+  async function openWaveEpoch(open, options = {}) {
+    const backoffMs = options.retry?.backoffMs ?? LOST_CALL_RESEND_BACKOFF_MS;
+    const timers = options.timers ?? GLOBAL_TIMERS;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await open();
+      } catch (error) {
+        if (!isLostFencedCall(error) || attempt >= backoffMs.length)
+          throw error;
+        options.resent?.(lostCallAttributes({
+          operation: "openWaveWriter",
+          attempt: attempt + 1,
+          of: backoffMs.length,
+          reason: error instanceof Error ? error.message : String(error)
+        }));
+        await new Promise((resolve) => {
+          timers.setTimeout(resolve, retryDelayMs(backoffMs, attempt));
+        });
+      }
+    }
+  }
   function waveAttemptsOf(bytes) {
     return piecesOf(bytes, SEND_SLICE_BYTES);
   }
@@ -1401,7 +1422,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
       await retirePending();
       const openedAt = now();
-      const writer = await session.openWriter(counters.epochs === 0);
+      const first = counters.epochs === 0;
+      const writer = await openWaveEpoch(() => session.openWriter(first), { ...options.retry === void 0 ? {} : { retry: options.retry }, timers });
       epoch = { writer, openedAt, numbering: null };
       counters.epochs++;
       ack = 0;
@@ -2003,7 +2025,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     if (held.length === 0) return drained;
     const numberings = await journal.numberings();
     if (numberings.length === 0 || numberings[0].jid > held[0].jid) {
-      const writer = await session.openWriter(false);
+      const writer = await openWaveEpoch(() => session.openWriter(false), {
+        ...options.retry === void 0 ? {} : { retry: options.retry },
+        ...options.timers === void 0 ? {} : { timers: options.timers }
+      });
       const numbering = { writer, seq: 1, jid: held[0].jid };
       await journal.number(numbering);
       numberings.unshift(numbering);
