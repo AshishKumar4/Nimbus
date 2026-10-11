@@ -26,6 +26,7 @@ import {
   validateFileChunks,
   validateInodeShape,
   withUmask,
+  type WaveDescriptions,
   type WaveLocalOp,
   type WaveRouter,
   type WaveScope,
@@ -34,6 +35,7 @@ import {
   type WriteBatchStreamResult,
   type WriteStreamOptions,
 } from './wave-contracts.js';
+import type { Description } from './descriptors.js';
 
 /** A routed file arriving: where it was named and placed, and its chunks held until its call. */
 interface RoutedFile {
@@ -625,6 +627,7 @@ export class WaveIngest {
       placeSync,
       placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
       reach: options.mountReach,
+      ...(options.descriptions === undefined ? {} : { descriptions: options.descriptions }),
       // Right before each call to the backend: the wave is still admitted, and not cancelled.
       guard: () => {
         signal.throwIfAborted();
@@ -996,8 +999,20 @@ export class WaveIngest {
       }
       case 'call': {
         const call = record.call;
-        // A description's call is the description's: its file is this filesystem's (a mount keeps none).
+        // A description's call is the description's: the engine's on this
+        // filesystem, and a close of any the binding's (closeDescribed).
         if (call.call === 'close' || ('description' in call && call.description !== undefined && scope.isDescribed(call.description))) return false;
+        // A truncate through the binding's description of a file on a mount: that file, wherever its name leads now.
+        const described = call.call === 'ftruncate' && call.description !== undefined ? at.descriptions?.mounted(call.description) : undefined;
+        if (described !== undefined && call.call === 'ftruncate') {
+          at.setPhase('publish');
+          await at.settleBefore();
+          reached();
+          at.guard();
+          await backend(Promise.resolve(described.truncate(call.size)));
+          at.committed(null, 0);
+          return true;
+        }
         if (call.call !== 'mkdir') at.routes.clear();
         const placed = await mountOf(
           call.call === 'mkdir' ? 'directory'
@@ -1009,9 +1024,16 @@ export class WaveIngest {
         await at.settleBefore();
         reached();
         // Made under the umask the process made it with, as on this filesystem (W7Call umask).
-        const stat = await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, owner));
-        // An open's answer is the file's stat (its description writes it by number).
-        at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null, 0);
+        const as = withUmask(cred, 'umask' in call ? call.umask : undefined);
+        if (call.call === 'open') {
+          // Its answer is the file's stat; with `description`, the binding keeps the file it found.
+          const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
+          if (call.description !== undefined) at.descriptions?.describe(call.description, opened.file, opened.stat.ino, { read: call.read === true, write: true });
+          at.committed({ path: call.path, ...opened.stat }, 0);
+          return true;
+        }
+        await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, as, at.guard, owner));
+        at.committed(null, 0);
         return true;
       }
       case 'rename': {
@@ -1048,7 +1070,9 @@ export class WaveIngest {
       }
       case 'file-begin': {
         if (record.inode.description !== undefined && scope.isDescribed(record.inode.description)) return false;
-        const placed = await mountOf('file', record.inode.path);
+        // A write or append through the binding's description of a file on a mount: that file, wherever its name leads now.
+        const described = record.inode.description !== undefined && record.inode.call !== undefined ? at.descriptions?.mounted(record.inode.description) : undefined;
+        const placed = described !== undefined ? record.inode.path : await mountOf('file', record.inode.path);
         if (placed === null) return false;
         if (record.inode.kind === 'symlink') at.routes.clear();
         at.setPhase('validation');
@@ -1071,6 +1095,7 @@ export class WaveIngest {
           ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
           ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
           ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
+          ...(described === undefined ? {} : { described }),
         };
         return true;
       }
@@ -1091,6 +1116,14 @@ export class WaveIngest {
           await at.settleBefore();
           reached();
           const bytes = concatBytes(file.held.map((chunk) => chunk.data));
+          const node = file.described;
+          if (node !== undefined) {
+            at.guard();
+            await backend(Promise.resolve(file.call === 'append' ? node.append(bytes) : node.write(file.offset ?? 0, bytes)));
+            const now = await backend(Promise.resolve(node.stat()));
+            at.committed({ path: file.named, ino: now.ino, mode: now.mode, size: now.size, mtimeMs: now.mtime, ctimeMs: now.ctime, uid: now.uid, gid: now.gid, dev: now.dev }, bytes.byteLength);
+            return true;
+          }
           const stat = await backend(router.apply(file.call !== undefined
             ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
             : file.link

@@ -23,6 +23,8 @@ import { parentKey } from '../vfs/path.js';
 import type { VfsOpenDescription, VfsStat } from '../vfs/sqlite-vfs.js';
 import { vfsError } from '../vfs/vfs-error.js';
 import type { VfsCred } from './os-contracts.js';
+import type { Description } from './descriptors.js';
+import type { PinnedFile } from '../vfs/composite.js';
 
 export interface WriteBatchStreamProgress {
   /** 1-based sequence of the last durable publish group; zero means none. */
@@ -214,6 +216,13 @@ export interface WaveRouter {
    * presents it here.
    */
   apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
+  /**
+   * open(2) of a name the namespace places on a mount (W7Call open), decided
+   * as every open is (openOnMount), `guard` run right before it changes
+   * anything: the file it found (CompositeVFS.pin, presenting `owner`, never
+   * the wave's admission: a description outlives its wave) and its stat.
+   */
+  open(call: Extract<W7PathCall, { call: 'open' }>, cred: VfsCred, guard: () => void, owner?: string): Promise<{ file: PinnedFile; stat: RoutedStat }>;
 }
 
 /**
@@ -258,8 +267,17 @@ export interface WaveDescriptions {
    * descriptor of it, or null when no file has that number any more.
    */
   adopt(id: string, ino: number, rights: { read: boolean; write: boolean }, path: string, cred: VfsCred): number | null;
-  /** The description `id` names, or undefined (never opened, or closed). */
+  /** The description `id` names on this filesystem, or undefined (never opened, closed, or a mount's). */
   node(id: string): VfsOpenDescription | undefined;
+  /** The description of a file on a mount `id` names (describe), or undefined. */
+  mounted(id: string): Description | undefined;
+  /**
+   * Keep `file`, pinned by a wave's open of a name on a mount
+   * (WaveRouter.open), as description `id`, each write in its mount before
+   * it is answered: the session's descriptor of it, which the process
+   * reads, stats and closes as any of its own.
+   */
+  describe(id: string, file: PinnedFile, ino: number, rights: { read: boolean; write: boolean }): number;
   /** The session's descriptor of `id`, or undefined. */
   handle(id: string): number | undefined;
   close(id: string): void;

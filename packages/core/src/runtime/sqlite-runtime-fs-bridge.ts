@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import { BUFFERED_WRITE_BYTES, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
+import { BUFFERED_WRITE_BYTES, describeMounted, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
@@ -676,18 +676,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private readonly waveDescriptions: WaveDescriptions = {
     adopt: (id, ino, rights, path, cred) => {
       const node = this.rawVfs.describeInode(ino, path, cred, rights, this.vfs.principal, this.vfs.holds);
-      if (node === null) return null;
-      const handle = this.descriptors.issue(node, openFlags({ read: rights.read, write: rights.write }));
-      // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
-      const prior = this.scope.waveDescriptions.get(id);
-      if (prior !== undefined && this.scope.handles.has(prior)) this.close(prior);
-      this.scope.waveDescriptions.set(id, handle.id);
-      return handle.id;
+      return node === null ? null : this.keepWaveDescription(id, node, rights);
     },
+    // Each write of a wave's description is in its mount before the wave is answered (sync).
+    describe: (id, file, ino, rights) => this.keepWaveDescription(id, describeMounted({
+      scope: this.scope, refuse: (code, syscall) => fsError(code, syscall, file.name), sync: true, bufferedWriteBytes: this.bufferedWriteBytes,
+    }, file, ino), rights),
     node: (id) => {
-      const handleId = this.scope.waveDescriptions.get(id);
-      // A wave's description is one this binding adopted: the engine's, on SQLite.
-      return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node as VfsOpenDescription | undefined;
+      const node = this.waveDescription(id);
+      // The engine's, on this filesystem: a mount's is the binding's alone (mounted).
+      return node === undefined || node.mounted ? undefined : node as VfsOpenDescription;
+    },
+    mounted: (id) => {
+      const node = this.waveDescription(id);
+      return node?.mounted ? node : undefined;
     },
     handle: (id) => {
       const handleId = this.scope.waveDescriptions.get(id);
@@ -700,6 +702,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (this.scope.handles.has(handleId)) this.close(handleId);
     },
   };
+
+  private waveDescription(id: string): Description | undefined {
+    const handleId = this.scope.waveDescriptions.get(id);
+    return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+  }
+
+  /** `node`, the description a wave's open of `id` made: the session's descriptor of it. */
+  private keepWaveDescription(id: string, node: Description, rights: { read: boolean; write: boolean }): number {
+    const handle = this.descriptors.issue(node, openFlags({ read: rights.read, write: rights.write }));
+    // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
+    const prior = this.scope.waveDescriptions.get(id);
+    if (prior !== undefined && this.scope.handles.has(prior)) this.close(prior);
+    this.scope.waveDescriptions.set(id, handle.id);
+    return handle.id;
+  }
 
   /**
    * A lease; with `held`, a process's own (ProcessFiles' bridge), which ends

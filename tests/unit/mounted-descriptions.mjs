@@ -14,6 +14,7 @@ import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { asyncOnly } from './lib/async-memory-vfs.mjs';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const enc = new TextEncoder();
@@ -446,6 +447,38 @@ await check('held writes are read back through an asynchronous mount above their
     files.vfs.unmount('/outer/inner');
   }
   assert.equal(dec.decode(inner.readFile('/x')), 'ab23456789');
+});
+
+// ── A wave's open of a file on a mount keeps it as the process's description ──
+await check('a wave\'s description of a mounted file holds it: its writes, appends and truncates go there after a remount', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  files.vfs.mount('/g', first);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const wave = async (ops) => {
+    const result = await proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    return result;
+  };
+  try {
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'g/x', mode: 0o644, read: true, description: 'd1' } }]);
+    assert.equal(opened.receipts.length, 1, 'the open answers its file');
+    files.vfs.unmount('/g');
+    files.vfs.mount('/g', second);
+    await wave([
+      { type: 'call', call: { call: 'write', path: 'g/x', description: 'd1', offset: 0, data: enc.encode('FI') } },
+      { type: 'call', call: { call: 'append', path: 'g/x', description: 'd1', data: enc.encode('!') } },
+    ]);
+    assert.equal(dec.decode(first.readFile('/x')), 'FIrst!', 'the file it opened');
+    await wave([{ type: 'call', call: { call: 'ftruncate', path: 'g/x', description: 'd1', size: 2 } }]);
+    assert.equal(dec.decode(first.readFile('/x')), 'FI');
+    assert.equal(dec.decode(second.readFile('/x')), 'second', 'never the one mounted since');
+    await wave([{ type: 'call', call: { call: 'close', path: 'g/x', description: 'd1' } }]);
+  } finally {
+    files.vfs.unmount('/g');
+  }
 });
 
 {

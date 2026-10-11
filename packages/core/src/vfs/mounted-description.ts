@@ -94,22 +94,32 @@ function openAccess(flags: RuntimeFileHandle['flags'], there: VfsStat, describes
   return (flags.read ? 4 : 0) | (flags.write && (!describes || there.type !== 'directory') ? 2 : 0);
 }
 
-export interface MountedDescriptionOptions extends MountedOpen {
-  /** The name opened, in the namespace. */
-  name: string;
+/** What a mounted description is held with, whatever opened it. */
+export interface MountedDescriptionContext {
   /** The descriptors' scope: whose pending writes this process reads (processView). */
   scope: DescriptorScope;
-  /** The file `name` leads to now (CompositeVFS.pin): what the open and its description hold, whatever later moves at the name. */
-  pin(name: string, follow: boolean): Awaitable<PinnedFile>;
+  refuse: Refuse;
   /** O_SYNC: each write in the mount before it returns. */
   sync: boolean;
   /** What a description holds unwritten before a write is EFBIG. */
   bufferedWriteBytes: number;
 }
 
+export interface MountedDescriptionOptions extends MountedOpen, MountedDescriptionContext {
+  /** The name opened, in the namespace. */
+  name: string;
+  /** The file `name` leads to now (CompositeVFS.pin): what the open and its description hold, whatever later moves at the name. */
+  pin(name: string, follow: boolean): Awaitable<PinnedFile>;
+}
+
 /** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export function openMounted(options: MountedDescriptionOptions): Awaitable<Description> {
-  return andThen(options.pin(options.name, openFollows(options.flags)), (file) => andThen(openOnMount(file, options, true), (stat) => new MountedDescription(options, file, stat)));
+  return andThen(options.pin(options.name, openFollows(options.flags)), (file) => andThen(openOnMount(file, options, true), (stat) => describeMounted(options, file, stat.ino ?? 0)));
+}
+
+/** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
+export function describeMounted(context: MountedDescriptionContext, file: PinnedFile, ino: number): Description {
+  return new MountedDescription(context, file, ino);
 }
 
 type Held = { offset: number | null; bytes: Uint8Array };
@@ -136,8 +146,8 @@ class MountedDescription implements Description {
   private pending: Held[] = [];
   private held = 0;
 
-  constructor(private readonly options: MountedDescriptionOptions, private readonly pinned: PinnedFile, stat: VfsStat) {
-    this.ino = stat.ino ?? 0;
+  constructor(private readonly options: MountedDescriptionContext, private readonly pinned: PinnedFile, ino: number) {
+    this.ino = ino;
     if (pinned.awaits) this.awaits = true;
     this.files = pinned.files;
     this.at = pinned.path;
