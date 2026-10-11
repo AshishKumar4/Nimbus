@@ -3,8 +3,8 @@
  * roots needs, built as npm's arborist builds it, from what a host answers.
  * Both hosts install through it: the worker's (worker npm/installer.ts:
  * resolver facets a layer at a time, the lockfile for what is installed) and
- * the shell's own (lifo commands/system/npm-install.ts: the registry one
- * package at a time, node_modules for what is installed).
+ * the shell's own (lifo commands/system/npm.ts shellInstallPort: the registry
+ * one package at a time, node_modules for what is installed).
  *
  * One breadth-first walk over every root's edges puts each package where the
  * rule both share says (npm-placement.ts). A package already installed is a

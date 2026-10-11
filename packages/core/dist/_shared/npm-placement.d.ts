@@ -1,10 +1,8 @@
 /**
- * npm-placement.ts — where a package lands in `node_modules`, for both of
- * Nimbus's install engines: the worker's resolver walk (worker
- * npm/installer.ts) and the shell's fallback npm (lifo
- * commands/system/npm.ts). Each walks the dependency graph breadth-first and
- * asks decidePlacement about every edge; what they differ in is how they
- * fetch (a layer of resolver facets at once, or one package at a time).
+ * npm-placement.ts — where a package lands in `node_modules`: the rule the
+ * install engine's plan (npm-tree.ts) asks about every edge as it walks the
+ * dependency graph breadth-first, whichever host answers it (the worker's
+ * resolver facets, or the shell's registry reads).
  *
  * Placement paths are relative to the project's `node_modules`: `react` at
  * root, `pkg-types/node_modules/confbox` nested under the dependent whose

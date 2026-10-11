@@ -34,7 +34,7 @@ import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, still
 import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
 import { placementName, visiblePlacements } from '@nimbus-sh/core/_shared/npm-placement.js';
-import { planTree, projectRoots } from '@nimbus-sh/core/_shared/npm-tree.js';
+import { canonicalTreePath, planTree, projectRoots, withTreeLock } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -108,41 +108,48 @@ export class NpmInstaller {
         const start = Date.now();
         const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
         const nmDir = projDir + '/node_modules';
-        // Per-invocation progress wins over whatever the ctor bound — the
-        // installer is shared, the terminal it should speak to is not.
-        const previousProgress = this.onProgress;
-        if (opts?.onProgress !== undefined)
-            this.onProgress = opts.onProgress;
-        // This invocation's terminal, while the command runs. Work that outlives
-        // it (the background pre-bundle) still logs through `log`, and once the
-        // command has returned and the prompt is back, that goes to the console
-        // instead: never into the next command's output, nor this one's prompt.
-        const progress = this.onProgress;
-        let returned = false;
-        const log = (msg) => {
-            if (!returned) {
-                progress?.(msg);
-                return;
-            }
+        // One install into a tree at a time (core npm-tree.ts withTreeLock): the
+        // tree's own state, and this installer's progress and log sinks, are the
+        // running install's until it returns.
+        const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
+        const canonical = await canonicalTreePath(async (path) => view.realpath(path), '/' + nmDir);
+        return withTreeLock(this.store, canonical, async () => {
+            // Per-invocation progress wins over whatever the ctor bound — the
+            // installer is shared, the terminal it should speak to is not.
+            const previousProgress = this.onProgress;
+            if (opts?.onProgress !== undefined)
+                this.onProgress = opts.onProgress;
+            // This invocation's terminal, while the command runs. Work that outlives
+            // it (the background pre-bundle) still logs through `log`, and once the
+            // command has returned and the prompt is back, that goes to the console
+            // instead: never into the next command's output, nor this one's prompt.
+            const progress = this.onProgress;
+            let returned = false;
+            const log = (msg) => {
+                if (!returned) {
+                    progress?.(msg);
+                    return;
+                }
+                try {
+                    console.log('[npm:late] ' + msg);
+                }
+                catch { }
+            };
+            this.npmLog = opts?.npmLog ?? (() => { });
+            // Reset phase to 'idle' on any exit path so /api/_diag/memory
+            // never reports a stale phase after a crash unwound the install.
+            // The DO reboot would zero this anyway; finally is defense against
+            // a non-fatal mid-install throw.
             try {
-                console.log('[npm:late] ' + msg);
+                return await this._installInner(projDir, nmDir, opts, log, start);
             }
-            catch { }
-        };
-        this.npmLog = opts?.npmLog ?? (() => { });
-        // Reset phase to 'idle' on any exit path so /api/_diag/memory
-        // never reports a stale phase after a crash unwound the install.
-        // The DO reboot would zero this anyway; finally is defense against
-        // a non-fatal mid-install throw.
-        try {
-            return await this._installInner(projDir, nmDir, opts, log, start);
-        }
-        finally {
-            returned = true;
-            setInstallPhase('idle');
-            this.npmLog = () => { };
-            this.onProgress = previousProgress;
-        }
+            finally {
+                returned = true;
+                setInstallPhase('idle');
+                this.npmLog = () => { };
+                this.onProgress = previousProgress;
+            }
+        });
     }
     async _installInner(projDir, nmDir, opts, log, start) {
         const registry = npmRegistryOrigin(opts?.registry);
@@ -201,6 +208,9 @@ export class NpmInstaller {
         let resolved;
         let nested;
         let usedLockfile = false;
+        // An optional placement that fails after the plan (its download) is
+        // skipped, not failed; with no plan (a lockfile kept whole), none is.
+        let skipOptional = () => false;
         const recordOf = this.lockRecords();
         if (packageLock !== null) {
             ({ resolved, nested } = packageLock);
@@ -246,6 +256,8 @@ export class NpmInstaller {
             const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry, installed: lockedAt });
             resolved = tree.resolved;
             nested = tree.nested;
+            if (tree.skip)
+                skipOptional = tree.skip;
             phases['resolve'] = Date.now() - phaseStart;
             // Transitive platform-gate refusals. Required ones join `failed`
             // with their reason; optional-edge ones stay out of the outcome
@@ -352,8 +364,14 @@ export class NpmInstaller {
             totalFiles += batchResult.filesWritten;
             for (const name of batchResult.installed)
                 installed.push(name);
-            for (const name of batchResult.failed)
+            for (const name of batchResult.failed) {
+                const at = toFetch.find(({ pkg }) => `${pkg.name}@${pkg.version}` === name)?.placement;
+                if (at !== undefined && skipOptional(at, 'its download failed')) {
+                    log(`[resolve-fanout] [skip] ${name} — optional: its download failed`);
+                    continue;
+                }
                 failed.push(name);
+            }
         }
         phases['fetch+write'] = Date.now() - phaseStart;
         const commitCount = this.storageCommitCount() - commitsBefore;
@@ -760,7 +778,7 @@ export class NpmInstaller {
             `, dispatch barriers=${dispatchBarriers}, ` +
             `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
             (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''));
-        return { resolved, nested, unresolved, rejected };
+        return { resolved, nested, unresolved, rejected, skip: plan.skip };
     }
     /**
      * Batch install via two-tier fan-out (Fanout).
