@@ -12691,11 +12691,13 @@ function __nimbusEsmExportError(error, id, requested, name) {
     let lineStart = 0;
     for (let i = staged.indexOf("\\n"); i !== -1 && i < offset; i = staged.indexOf("\\n", i + 1)) { line++; lineStart = i + 1; }
     let specifier = requested;
+    // Where the specifier is in the module's source: before it, the imported name.
+    let sourceColumn = -1;
     if (offset !== -1) {
       const column = offset - lineStart - (line === 1 ? module.head : 0);
       let delta = 0;
       for (const [, at, length, text] of __nimbusColumnEdits(module)?.get(line) ?? []) {
-        if (at + delta === column && length === quoted.length) { specifier = text.slice(1, -1); break; }
+        if (at + delta === column && length === quoted.length) { specifier = text.slice(1, -1); sourceColumn = at; break; }
         delta += length - text.length;
       }
     } else if (!staged.includes("'" + requested + "'") && !staged.includes(JSON.stringify(requested))) {
@@ -12707,7 +12709,7 @@ function __nimbusEsmExportError(error, id, requested, name) {
       : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
     // Node's arrow: the imported name, on the declaration's line.
     const source = __nimbusModuleSourceText(module);
-    const end = offset === -1 ? source.length : __nimbusTextOffset(source, line, 1) + 1;
+    const end = sourceColumn === -1 ? source.length : __nimbusTextOffset(source, line, sourceColumn + 1);
     const before = source.slice(0, end);
     const found = __nimbusLastIdentifier(before, name);
     let arrow = null;
@@ -12719,7 +12721,9 @@ function __nimbusEsmExportError(error, id, requested, name) {
       const generated = __nimbusTextOffset(text, fromLine, __nimbusGeneratedColumn(module, fromLine, lineOf[lineOf.length - 1].length + 1)) + (fromLine === 1 ? module.head : 0);
       arrow = __nimbusArrowOf(module, text, generated, generated + name.length);
     }
-    error.stack = (arrow === null ? "" : arrow) + "SyntaxError: " + error.message;
+    // Its frames as they were, under the message as Node words it.
+    const frames = typeof error.stack === "string" ? error.stack.split("\\n").filter((frame) => frame.startsWith("    at ")) : [];
+    error.stack = (arrow === null ? "" : arrow) + "SyntaxError: " + error.message + (frames.length > 0 ? "\\n" + frames.join("\\n") : "");
     __nimbusDecorated.add(error);
     return;
   }
