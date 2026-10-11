@@ -359,6 +359,7 @@ function __nimbusRawSocket() {
 {
   const __realNet = __nativeBuiltin("net");
   const __NativeSocket = __realNet.Socket;
+  const __egressSocketHolds = new WeakMap();
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
   // What a connect refuses before it opens anything (a bad port, a missing
   // one, a lookup that is no function), thrown from connect as Node throws
@@ -383,6 +384,21 @@ function __nimbusRawSocket() {
       // Already connecting: the native connect refuses it, opening nothing.
       if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
       __nativeConnectChecks((Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args))[0]);
+      if (globalThis.__nimbusEgress === true) {
+        const socket = this;
+        let state = __egressSocketHolds.get(socket);
+        if (!state) {
+          state = { hold: null };
+          __egressSocketHolds.set(socket, state);
+          const ref = socket.ref, unref = socket.unref;
+          socket.ref = function () { state.hold?.(true); Reflect.apply(ref, this, arguments); return this; };
+          socket.unref = function () { state.hold?.(false); Reflect.apply(unref, this, arguments); return this; };
+        }
+        if (!state.hold) {
+          const hold = state.hold = __nimbusHoldSocket();
+          socket.once('close', () => { hold(false); if (state.hold === hold) state.hold = null; });
+        }
+      }
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
@@ -12027,6 +12043,101 @@ const __diagChannelMod = __nativeBuiltin("diagnostics_channel");
 // ═══════════════════════════════════════════════════════════════════════
 // ──  tls module (W3: forward to workerd, override createServer) ─────
 // ═══════════════════════════════════════════════════════════════════════
+
+function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
+  let options = {}, callback;
+  if (args[0] !== null && typeof args[0] === 'object') { options = { ...args[0] }; callback = args[1]; }
+  else {
+    options.port = args[0];
+    let i = 1;
+    if (typeof args[i] === 'string') options.host = args[i++];
+    if (args[i] !== null && typeof args[i] === 'object') Object.assign(options, args[i++]);
+    callback = args[i];
+  }
+  const previous = options.socket;
+  const target = async () => {
+    if (previous?.connecting) await new Promise((resolve, reject) => {
+      previous.once('connect', resolve); previous.once('error', reject);
+    });
+    const bound = previous?._handle?.options;
+    const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
+    const port = Number(options.port ?? bound?.port);
+    if (options.servername !== undefined && options.servername !== host) throw notImplemented('options.servername', 'the egress makes TLS with the destination hostname as its SNI');
+    if (previous) previous.destroy();
+    return { host, port };
+  };
+  let reader, writer, resource;
+  let endedRead = false, endedWrite = false, stopped = false;
+  let resolveClosed;
+  const closed = new Promise((resolve) => { resolveClosed = resolve; });
+  const finish = () => {
+    if (!endedRead || !endedWrite) return;
+    resource?.[Symbol.dispose]?.();
+    resource = undefined;
+    resolveClosed();
+  };
+  let admit;
+  const admitted = new Promise((resolve) => { admit = resolve; });
+  const ready = admitted.then(async () => {
+    await __nimbusRawSocket();
+    const where = await target();
+    if (stopped) return;
+    resource = await __supervisor.netTls(previous ? 'upgrade' : 'open', '', where);
+    if (stopped) {
+      await Promise.all([resource.readable.cancel(), resource.writable.abort()]);
+      resource[Symbol.dispose]?.(); resource = undefined;
+      return;
+    }
+    reader = resource.readable.getReader();
+    writer = resource.writable.getWriter();
+  });
+  ready.catch(() => {});
+  const close = async () => {
+    if (stopped) return;
+    stopped = true;
+    previous?.destroy();
+    await Promise.all([reader?.cancel().catch(() => {}), writer?.abort().catch(() => {})]);
+    endedRead = endedWrite = true;
+    finish();
+  };
+  const readable = new ReadableStream({ type: 'bytes',
+    async pull(controller) {
+      try {
+        await ready;
+        if (stopped) { controller.close(); return; }
+        const next = await reader.read();
+        if (next.done) { endedRead = true; controller.close(); finish(); }
+        else controller.enqueue(new Uint8Array(next.value));
+      } catch (error) { controller.error(error); }
+    },
+    cancel: close,
+  });
+  const writable = new WritableStream({
+    async write(chunk) { await ready; if (!stopped) await writer.write(chunk); },
+    async close() { await ready; if (!stopped) await writer.close(); endedWrite = true; finish(); },
+    abort: close,
+  });
+  const transport = {
+    readable, writable, opened: ready.then(() => ({})), closed,
+    secureTransport: 'on', upgraded: false, close,
+    startTls() { throw new TypeError('Cannot startTls on a TLS socket.'); },
+  };
+  let carrier;
+  const initial = {
+    ...transport, secureTransport: 'starttls',
+    startTls() { carrier._handle = null; admit(); return transport; },
+  };
+  carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
+    socket: initial, reader: readable.getReader({ mode: 'byob' }), writer: writable.getWriter(),
+    bytesRead: 0, bytesWritten: 0, reading: false,
+    options: { host: options.host ?? previous?._host ?? 'localhost', port: Number(options.port ?? previous?._handle?.options.port), addressType: 0 },
+  } });
+  const socket = real.connect({ ...options, socket: carrier }, callback);
+  if (!previous && options.timeout) socket.setTimeout(options.timeout);
+  ready.catch((error) => socket.destroy(error));
+  return socket;
+}
+
 const __tlsMod = (() => {
   const real = __nativeBuiltin("tls");
   // A socket tls.connect opens holds the program until it closes or is
@@ -12172,6 +12283,7 @@ const __tlsMod = (() => {
     return socket;
   };
   const connect = (...args) => {
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-ff4ec4e75e8dad82.js
     // Under a workspace egress a TLS socket cannot be made: the egress's
     // connect carries plain TCP only, and making the session here would go
     // around it. The refusal names the limit; HTTPS by fetch is unaffected.
@@ -12181,9 +12293,13 @@ const __tlsMod = (() => {
       queueMicrotask(() => refused.destroy(error));
       return refused;
     }
+========
+>>>>>>>> main:packages/worker/public/_assets/runtime/node-shims-36eced02a0450782.js
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
-    if (!proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
-    const socket = proxied ? proxiedConnect(...args) : real.connect(...args);
+    const egressed = globalThis.__nimbusEgress === true;
+    if (egressed || !proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
+    const socket = egressed ? __nimbusEgressTlsConnect(real, realNet, args, notImplemented)
+      : proxied ? proxiedConnect(...args) : real.connect(...args);
     let closed = false;
     let hold = null;
     socket.once('close', () => { closed = true; hold?.(false); });
@@ -12191,11 +12307,13 @@ const __tlsMod = (() => {
     const ref = socket.ref, unref = socket.unref;
     socket.ref = function () {
       if (!closed) hold(true);
-      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+      if (typeof ref === 'function') Reflect.apply(ref, this, arguments);
+      return this;
     };
     socket.unref = function () {
       hold(false);
-      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+      if (typeof unref === 'function') Reflect.apply(unref, this, arguments);
+      return this;
     };
     return socket;
   };
@@ -16473,6 +16591,11 @@ Object.defineProperty(builtins, "https", {
 // ERR_NET_SOCKET_NOT_AVAILABLE so callers fail loud.  W8 will route
 // raw outbound TCP through supervisor RPC.
 builtins.net = (() => {
+  if (globalThis.__nimbusEgress === true && typeof __real_net !== 'undefined') {
+    const native = __real_net.default ?? __real_net;
+    return { ...native, get Server() { return builtins.http.Server; },
+      createServer: (options, handler) => builtins.http.createServer(typeof options === 'function' ? options : handler) };
+  }
   class Socket extends __eventsMod {
     constructor() {
       super();
