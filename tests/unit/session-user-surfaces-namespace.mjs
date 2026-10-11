@@ -11,7 +11,6 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { serveEditorFs } from '../../packages/worker/src/session/editor-fs.ts';
 import { rpcDeleteFile } from '../../packages/worker/src/session/programmatic.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -75,12 +74,11 @@ console.log('  files.delete removes a mounted path');
   console.log('  a write beside a held subtree goes ahead');
 }
 
-// ── mkdir keeps the namespace's answers: a registry link is there, and a
+// ── mkdir keeps the namespace's answers: a link is there, and a
 //    nonrecursive mkdir meets the lease before its lookup ──────────────────
-// FilthySwordtail's review of 29f7ce62e. A compatibility link only the
-// legacy registry holds (/home/user/link -> real-dir) is a name that is
-// there: mkdir -p of it is the directory it leads to, and mkdir of it is
-// EEXIST, never a native directory shadowing it. And a nonrecursive mkdir
+// FilthySwordtail's review of 29f7ce62e. A link (/home/user/link ->
+// real-dir) is a name that is there: mkdir -p of it is the directory it
+// leads to, and mkdir of it is EEXIST. And a nonrecursive mkdir
 // in a held subtree is refused by the lease before its lookup can answer
 // for it (EACCES under a directory it may not search).
 {
@@ -88,13 +86,12 @@ console.log('  files.delete removes a mounted path');
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
   kernel.mkdir('home/user/real-dir', { recursive: true });
-  getSymlinkRegistry(engine).set('home/user/link', 'real-dir');
+  kernel.symlink('real-dir', 'home/user/link');
   const fs = new ProcessFiles(engine).namespaceFs(CRED_KERNEL);
   fs.mkdir('/home/user/link', { recursive: true });
-  assert.equal(kernel.exists('home/user/link'), false, 'mkdir -p of a registry link makes nothing in its place');
-  assert.equal(getSymlinkRegistry(engine).isSymlink('home/user/link'), true, 'and the link stands');
+  assert.equal(kernel.isSymlink('home/user/link'), true, 'mkdir -p of a link makes nothing in its place');
   assert.throws(() => fs.mkdir('/home/user/link'), (error) => error.code === 'EEXIST', 'mkdir of it is EEXIST');
-  assert.equal(kernel.exists('home/user/link'), false);
+  assert.equal(kernel.isSymlink('home/user/link'), true);
 
   kernel.mkdir('home/user/held/private', { recursive: true });
   kernel.chmod('home/user/held/private', 0o700);

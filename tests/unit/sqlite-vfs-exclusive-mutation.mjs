@@ -2,7 +2,6 @@
 
 import assert from 'node:assert/strict';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -11,26 +10,14 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
-const legacySymlinks = getSymlinkRegistry(rawVfs);
 vfs.mkdir('workspace');
 const leadingParentLease = rawVfs.acquireExclusiveMutation('/workspace/new/nested/repo', {
   includeMissingAncestors: true,
 });
 assert.equal(leadingParentLease.root, 'workspace/new');
 rawVfs.releaseExclusiveMutation(leadingParentLease.owner);
-assert.equal(legacySymlinks.hasAtOrBelow('preexisting'), false);
-vfs.writeFile('.nimbus-symlinks.json', '{"preexisting/link":"target.txt"}');
-const proofLease = rawVfs.acquireExclusiveMutation('/preexisting');
-assert.equal(
-  legacySymlinks.hasAtOrBelow('preexisting'),
-  true,
-  'clone destination proof used a stale legacy-registry cache',
-);
-rawVfs.releaseExclusiveMutation(proofLease.owner);
-assert.equal(legacySymlinks.delete('preexisting/link'), true);
 vfs.mkdir('repo');
-legacySymlinks.set('repo/legacy-link', 'target.txt');
-vfs.mkdir('repo');
+vfs.symlink('target.txt', 'repo/held-link');
 const lease = rawVfs.acquireExclusiveMutation('/repo');
 
 assert.throws(
@@ -45,20 +32,9 @@ assert.equal(vfs.exists('repo/concurrent.txt'), false);
 vfs.mkdir('repo/injected/../../outside-dir', { recursive: true });
 assert.equal(vfs.exists('repo/injected'), false);
 assert.equal(vfs.isDirectory('outside-dir'), true);
-assert.throws(
-  () => legacySymlinks.set('repo/concurrent-link', 'target.txt'),
-  /EBUSY: repo\/concurrent-link: locked by an exclusive mutation at \/repo/,
-);
-assert.throws(
-  () => legacySymlinks.delete('repo/legacy-link'),
-  /EBUSY: repo\/legacy-link: locked by an exclusive mutation at \/repo/,
-);
-assert.equal(legacySymlinks.readlink('repo/legacy-link'), 'target.txt');
-assert.throws(
-  () => vfs.writeFile('.nimbus-symlinks.json', '{"repo/injected":"target.txt"}'),
-  /EBUSY: \.nimbus-symlinks\.json: locked while an exclusive mutation is active/,
-);
-assert.equal(legacySymlinks.readlink('repo/injected'), null);
+assert.throws(() => vfs.symlink('target.txt', 'repo/concurrent-link'), { code: 'EBUSY' });
+assert.throws(() => vfs.unlink('repo/held-link'), { code: 'EBUSY' });
+assert.equal(vfs.readlink('repo/held-link'), 'target.txt');
 
 vfs.writeFile('outside.txt', 'outside');
 assert.equal(vfs.readFileString('outside.txt'), 'outside');
@@ -102,7 +78,7 @@ assert.match(escaped.error.message, /EPERM: escape\.txt: outside the exclusive m
 assert.equal(vfs.exists('escape.txt'), false);
 
 rawVfs.releaseExclusiveMutation(lease.owner);
-assert.equal(legacySymlinks.delete('repo/legacy-link'), true);
+vfs.unlink('repo/held-link');
 vfs.writeFile('repo/concurrent.txt', 'after-release');
 assert.equal(vfs.readFileString('repo/concurrent.txt'), 'after-release');
 

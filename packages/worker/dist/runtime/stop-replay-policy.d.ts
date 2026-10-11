@@ -41,9 +41,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     lstat: {
         readonly kind: "observation";
     };
-    hasLegacySymlinkUnder: {
-        readonly kind: "observation";
-    };
     utimes: {
         readonly kind: "effect";
     };

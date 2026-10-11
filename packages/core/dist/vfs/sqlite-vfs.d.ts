@@ -324,7 +324,7 @@ export interface CredentialedVfs {
     /**
      * The key storage holds `path` under for this credential: a confined
      * caller's /tmp/x is var/agents/<p>/tmp/x. For state kept by storage key
-     * rather than by name, such as the legacy symlink registry. It is not a
+     * rather than by name, such as exclusive mutation leases. It is not a
      * name the caller uses, so it is never reported back to one.
      */
     storageKey(path: string): string;

@@ -7,7 +7,6 @@ import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importGitFacetWorker } from './lib/git-facet-worker.mjs';
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
@@ -68,9 +67,6 @@ export const git = {
   const supervisor = {
     async stat(path) { return bridge.stat(path); },
     async lstat(path) { return bridge.stat(path, { followSymlinks: false }); },
-    async hasLegacySymlinkUnder(path) {
-      return getSymlinkRegistry(rawVfs).hasAtOrBelow(path);
-    },
     async readdir(path) { return bridge.readdir(path); },
     async readFileBytes(path) { return bridge.readFile(path); },
     async fsReadRange() { throw new Error('unexpected fsReadRange'); },

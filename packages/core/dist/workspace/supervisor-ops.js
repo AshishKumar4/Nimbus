@@ -24,7 +24,6 @@ export const SUPERVISOR_OP_TABLE = {
     writeFileStat: 'once',
     stat: 'joined',
     lstat: 'joined',
-    hasLegacySymlinkUnder: 'joined',
     utimes: 'once',
     chmod: 'once',
     access: 'joined',

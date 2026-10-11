@@ -40,7 +40,6 @@ import { enc, dec } from '../_shared/bytes.js';
 import { decodeWriteBatchStream, w7ChunkCount, w7Chunks, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
-import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
 import { RecallRequired, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
@@ -3663,13 +3662,6 @@ export class SqliteVFS {
         const normalized = normalizeVfsPath(key);
         // Another owner's lease first (EBUSY), whoever asks; then a lease
         // holder's own root (EPERM), which bounds where its work may land.
-        if (owner === null &&
-            normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
-            this.exclusiveMutationLeases.size > 0) {
-            // A session-wide hold that says why says it here too.
-            const global = [...this.exclusiveMutationLeases.values()].find((lease) => lease.root === '');
-            return { code: 'EBUSY', detail: global?.reason ?? 'locked while an exclusive mutation is active' };
-        }
         for (const [holder, lease] of this.exclusiveMutationLeases) {
             const { root } = lease;
             if (!this.mutationMeets(lease, normalized) || holder === owner)

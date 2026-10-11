@@ -47,7 +47,6 @@ export const git = {
     const supervisor = {
       async stat() { return null; },
       async lstat() { return null; },
-      async hasLegacySymlinkUnder() { return false; },
       async readdir() { return []; },
       async readFileBytes(path) { return files.get(path) ?? null; },
       async fsReadRange() { throw new Error('unexpected fsReadRange'); },
