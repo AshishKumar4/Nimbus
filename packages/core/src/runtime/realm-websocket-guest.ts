@@ -45,9 +45,11 @@ export function routeWebSocketsThroughHost(post: (event: WebSocketGuestEvent) =>
 
     send(input: unknown): void {
       if (arguments.length === 0) throw new TypeError('WebSocket.send: 1 argument required');
-      const { data: payload, length } = webSocketSend(input);
+      const value = webSocketSend(input);
       if (this.#state === 0) throw new DOMException('WebSocket is not open', 'InvalidStateError');
       if (this.#state !== 1) return;
+      const payload = typeof value === 'string' || value instanceof Uint8Array ? value : value.arrayBuffer().then((buffer) => new Uint8Array(buffer));
+      const length = typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value instanceof Uint8Array ? value.byteLength : value.size;
       this.#buffered += length;
       this.#sending = this.#sending.then(async () => {
         const data = await payload;

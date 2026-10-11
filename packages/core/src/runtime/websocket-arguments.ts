@@ -1,14 +1,32 @@
-import { toUSVString, types } from 'node:util';
-
 // Node v22.22.3's undici WebSocket/WebIDL entrypoints. Native WebSocket has
 // no message-transport hook; conversions stay here, separate from the relay.
+const toUSVString = (value: unknown): string => {
+  const string = `${value as string}` as string & { toWellFormed(): string };
+  return string.toWellFormed();
+};
+const arrayBufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')!.get!;
+const isArrayBuffer = (value: unknown): value is ArrayBuffer => {
+  try { Reflect.apply(arrayBufferLength, value, []); return true; }
+  catch { return false; }
+};
 const object = (value: unknown): value is Record<PropertyKey, unknown> => value !== null && (typeof value === 'object' || typeof value === 'function');
 const domString = (value: unknown): string => {
   if (typeof value === 'symbol') throw new TypeError('A symbol cannot be converted to a DOMString');
   return String(value);
 };
 const protocols = (value: unknown): string[] => {
-  if (object(value) && Symbol.iterator in value) return Array.from(value as unknown as Iterable<unknown>, domString);
+  if (object(value) && Symbol.iterator in value) {
+    const method = value[Symbol.iterator];
+    if (typeof method !== 'function') throw new TypeError('Protocols are not iterable');
+    const iterator = Reflect.apply(method, value, []) as Iterator<unknown>;
+    if (!iterator || typeof iterator.next !== 'function') throw new TypeError('Protocols are not iterable');
+    const sequence = [];
+    for (;;) {
+      const next = iterator.next();
+      if (next.done) return sequence;
+      sequence.push(domString(next.value));
+    }
+  }
   return [domString(value)];
 };
 
@@ -16,8 +34,9 @@ export function webSocketConstructor(input: unknown, options: unknown): { url: U
   const init = object(options) && !(Symbol.iterator in options) ? options : { protocols: options };
   const offered = protocols(init.protocols === undefined ? [] : init.protocols);
   const headers = new Headers(init.headers == null ? undefined : init.headers as HeadersInit);
+  const text = toUSVString(input as string);
   const url = (() => {
-    try { return new URL(toUSVString(input as string)); }
+    try { return new URL(text); }
     catch (error) { throw new DOMException(String(error), 'SyntaxError'); }
   })();
   if (url.protocol === 'http:') url.protocol = 'ws:';
@@ -31,24 +50,23 @@ export function webSocketConstructor(input: unknown, options: unknown): { url: U
   return { url, headers };
 }
 
-export function webSocketSend(value: unknown): { data: string | Uint8Array | Promise<Uint8Array>; length: number } {
+export function webSocketSend(value: unknown): string | Uint8Array | Blob {
   if (object(value)) {
     const tag = value[Symbol.toStringTag];
     if (value instanceof Blob || ((tag === 'Blob' || tag === 'File')
       && (typeof value.stream === 'function' || typeof value.arrayBuffer === 'function'))) {
       const blob = value as unknown as Blob;
-      return { data: blob.arrayBuffer().then((buffer) => new Uint8Array(buffer)), length: blob.size };
+      return blob;
     }
-    if (ArrayBuffer.isView(value) || types.isArrayBuffer(value)) {
-      const buffer = ArrayBuffer.isView(value) ? value.buffer : value as ArrayBuffer;
+    if (ArrayBuffer.isView(value) || isArrayBuffer(value)) {
+      const buffer = ArrayBuffer.isView(value) ? value.buffer : value;
       if ('resizable' in buffer && buffer.resizable || 'growable' in buffer && buffer.growable) throw new TypeError('Received a resizable ArrayBuffer');
       const data = ArrayBuffer.isView(value)
         ? new Uint8Array(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) : new Uint8Array(new Uint8Array(buffer));
-      return { data, length: data.byteLength };
+      return data;
     }
   }
-  const data = toUSVString(value as string);
-  return { data, length: new TextEncoder().encode(data).byteLength };
+  return toUSVString(value as string);
 }
 
 export function webSocketClose(code: unknown, reason: unknown): { code: number | undefined; reason: string } {

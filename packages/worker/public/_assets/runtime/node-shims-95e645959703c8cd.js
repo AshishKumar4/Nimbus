@@ -383,8 +383,8 @@ if (typeof __real_net !== "undefined") {
         const hold = __nimbusHoldSocket();
         __egressSocketHolds.set(socket, hold);
         const ref = socket.ref, unref = socket.unref;
-        socket.ref = function () { hold(true); return Reflect.apply(ref, this, arguments); };
-        socket.unref = function () { hold(false); return Reflect.apply(unref, this, arguments); };
+        socket.ref = function () { hold(true); Reflect.apply(ref, this, arguments); return this; };
+        socket.unref = function () { hold(false); Reflect.apply(unref, this, arguments); return this; };
         socket.once('close', () => {
           hold(false); __egressSocketHolds.delete(socket);
           socket.ref = ref; socket.unref = unref;
@@ -12221,6 +12221,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     options: { host: options.host ?? previous?._host ?? 'localhost', port: Number(options.port ?? previous?._handle?.options.port), addressType: 0 },
   } });
   const socket = real.connect({ ...options, socket: carrier }, callback);
+  if (!previous && options.timeout) socket.setTimeout(options.timeout);
   ready.catch((error) => socket.destroy(error));
   return socket;
 }
@@ -12386,11 +12387,13 @@ const __tlsMod = (() => {
     const ref = socket.ref, unref = socket.unref;
     socket.ref = function () {
       if (!closed) hold(true);
-      return typeof ref === 'function' ? Reflect.apply(ref, this, arguments) : this;
+      if (typeof ref === 'function') Reflect.apply(ref, this, arguments);
+      return this;
     };
     socket.unref = function () {
       hold(false);
-      return typeof unref === 'function' ? Reflect.apply(unref, this, arguments) : this;
+      if (typeof unref === 'function') Reflect.apply(unref, this, arguments);
+      return this;
     };
     return socket;
   };

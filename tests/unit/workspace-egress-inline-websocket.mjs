@@ -76,6 +76,7 @@ try {
   assert.match(refused.stdout, /refused .*403/);
   const fixture = readFileSync(new URL('./lib/inline-websocket-arguments.mjs', import.meta.url), 'utf8').replace('export async function', 'async function');
   const base = 'ws://127.0.0.1:' + server.address().port;
+  const hostStart = headers.length;
   const expected = await new Promise((resolve, reject) => {
     const child = spawn('node', ['--input-type=module', '-e', fixture + `\nconsole.log(JSON.stringify(await inlineWebSocketArguments(${JSON.stringify(base)})));`], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
@@ -84,10 +85,14 @@ try {
     child.on('error', reject);
     child.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve(JSON.parse(out)) : reject(new Error(err)); });
   });
+  const hostHeaders = headers.slice(hostStart);
+  const guestStart = headers.length;
   const actual = await run(fixture + `\nconsole.log(JSON.stringify(await inlineWebSocketArguments('wss://egress.invalid')));`);
   assert.equal(actual.exitCode, 0, actual.stderr);
   assert.deepEqual(JSON.parse(actual.stdout), expected, 'every argument form uses Node conversions');
-  assert.deepEqual(headers.slice(-2), ['yes', 'yes'], 'Node WebSocketInit headers reached the egress server');
+  assert.deepEqual(headers.slice(guestStart), hostHeaders, 'Node WebSocketInit headers reached the egress server');
+  assert.equal(hostHeaders.at(-1), 'yes');
+  assert.ok(hostHeaders.includes('list'));
 } finally {
   await new Promise((resolve) => server.close(resolve));
 }
