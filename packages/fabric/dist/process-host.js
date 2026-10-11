@@ -196,6 +196,14 @@ const PeerHttpResult = z.object({
 });
 const PeerFailure = z.object({ hostLost: z.string() });
 function peerAnswer(schema, value) {
+    try {
+        return parsePeerAnswer(schema, value);
+    }
+    finally {
+        disposeRpcResource(value);
+    }
+}
+function parsePeerAnswer(schema, value) {
     const failure = PeerFailure.safeParse(value);
     if (failure.success)
         throw new ProcessHostLost(failure.data.hostLost);
@@ -211,15 +219,15 @@ function processPeerStub(value, peerName) {
             + 'upgrade leg still travels as a service-binding fetch.');
     }
     const adapter = {
-        _rpcProcessHostProbe: async () => PeerProbeResult.parse(await dispatch({ op: 'processHostProbe', args: [] })),
+        _rpcProcessHostProbe: async () => peerAnswer(PeerProbeResult, await dispatch({ op: 'processHostProbe', args: [] })),
         _rpcHostProcess: async (boot, opts) => peerAnswer(PeerOpenResult, await dispatch({ op: 'hostProcess', args: [boot, opts] })),
         _rpcAwaitHostedOpen: async (key) => peerAnswer(PeerOpenResult, await dispatch({ op: 'awaitHostedOpen', args: [key] })),
         _rpcAwaitHostedBoot: async (key) => {
             const result = peerAnswer(PeerBootResult, await dispatch({ op: 'awaitHostedBoot', args: [key] }));
             return { payload: result.payload };
         },
-        _rpcRouteHostedHttp: async (key, request) => peerAnswer(PeerHttpResult, await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
-        _rpcCancelHostProcess: async (key) => PeerCancelResult.parse(await dispatch({ op: 'cancelHostProcess', args: [key] })),
+        _rpcRouteHostedHttp: async (key, request) => parsePeerAnswer(PeerHttpResult, await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
+        _rpcCancelHostProcess: async (key) => peerAnswer(PeerCancelResult, await dispatch({ op: 'cancelHostProcess', args: [key] })),
         fetch: async (request) => {
             const response = await Reflect.apply(fetchFn, value, [request]);
             if (!(response instanceof Response))
