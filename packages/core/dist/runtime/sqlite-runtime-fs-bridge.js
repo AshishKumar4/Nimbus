@@ -3,7 +3,7 @@ import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js
 import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { andThen, readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
+import { andThen, isPromise, readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -363,9 +363,12 @@ export class SqliteRuntimeFsBridge {
                 const namespace = this.namespace;
                 const node = openMounted({
                     files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
-                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => andThen(namespace.mutationRoute(name, { follow: true }), (route) => route.path),
+                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => andThen(namespace.mutationRoute(name, { follow: true, sync: true }), (route) => route.path),
                     awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
                 });
+                // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.
+                if (isPromise(node))
+                    throw new Error('internal: a mounted open on the synchronous face awaited');
                 return this.descriptors.issue(node, normalizedFlags);
             }
             const p = located.path;

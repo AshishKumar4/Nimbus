@@ -376,10 +376,13 @@ export declare class CompositeVFS implements VFS {
      * before it writes lands where the operation would. Rejects as that
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
      * the lookup stays on synchronous backends. `creating`: as route's.
+     * `sync`: through the backends' synchronous faces only, as the `sync`
+     * view looks up (an asynchronous mount refuses).
      */
     mutationRoute(path: string, options?: {
         follow?: boolean;
         creating?: boolean;
+        sync?: boolean;
     }): Awaitable<{
         readonly path: string;
         readonly point: string;
