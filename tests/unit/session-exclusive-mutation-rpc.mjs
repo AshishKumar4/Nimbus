@@ -97,7 +97,8 @@ for (const delivered of [false, true]) {
   await assert.rejects(
     rpcDestroy({
       ensureSqliteFs() {},
-      sqliteFs: { publishedFor: () => null, hasExclusiveMutation: () => true },
+      sqliteFs: { publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => true },
+      processes: { getAll: () => [] },
     }),
     /EBUSY: session has an active exclusive filesystem mutation/,
   );

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { memoryStorage } from './lib/do-storage.mjs';
 
 
@@ -44,9 +45,12 @@ function registerCloneHarness() {
       waitUntilPromises.push(promise);
     },
   };
+  // The command's process (pid 1, commandContext): a background clone runs as a child of it.
+  const processes = new SessionProcessSupervisor();
+  processes.spawn('sh', ['sh'], '/home/user', { cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
   // Same registration shape init.ts uses — the module is already loaded here,
   // so the lazy import init.ts needs is simply the handler itself.
-  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}));
+  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}, undefined, undefined, processes));
   assert.equal(typeof gitCommand, 'function');
   return {
     gitCommand,

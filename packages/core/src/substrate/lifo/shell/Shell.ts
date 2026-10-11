@@ -15,7 +15,7 @@ import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
-import { signalAbortReason } from './signals.js';
+import { signalAbortReason, type SignalAbortReason } from './signals.js';
 import { complete, type CompletionContext } from './completer.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
@@ -119,7 +119,7 @@ export interface ShellCommandIdentity {
    * holdWork). What the pid bound is released after the line has closed
    * what it opened, however the process ends.
    */
-  holdWork?(pid: number, stop: () => void): () => void;
+  holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
 }
 
 export class Shell {
@@ -450,7 +450,7 @@ export class Shell {
     }
 
     const identity = this.resolveCommandIdentity(options?.commandContext);
-    const stopped = identity.holdWork?.(identity.pid, () => abortController.abort());
+    const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason));
     try {
       const exitCode = await this.interpreter.executeLine(
         cmd,
@@ -1186,7 +1186,7 @@ export class Shell {
     this.terminal.write(COMMAND_START);
     let status: number | null = null;
     const identity = this.resolveCommandIdentity(undefined);
-    const stopped = identity.holdWork?.(identity.pid, () => lineAbort.abort());
+    const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason));
     try {
       // Saved beside the line, which does not wait for it: a reader's recall
       // the save meets (core README, process model) costs the line nothing.
