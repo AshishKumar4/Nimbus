@@ -193,8 +193,12 @@ export function supervisorCalls(base) {
             const pid = this[TRANSPORT]().props?.pid;
             return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : 0;
         }
-        _call(promise) {
-            return useRpcResource(promise, (value) => value);
+        async _call(promise) {
+            const value = await useRpcResource(promise, (reply) => reply);
+            if (value !== null && (typeof value === 'object' || typeof value === 'function') && Object.hasOwn(value, Symbol.dispose)) {
+                Reflect.deleteProperty(value, Symbol.dispose);
+            }
+            return value;
         }
         async _cacheRead(plan, produce) {
             const client = new R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, this[TRANSPORT]().env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);

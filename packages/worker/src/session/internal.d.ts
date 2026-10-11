@@ -85,6 +85,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   shell: Shell | null;
   shellProcessPid: number | null;
   terminal: WebSocketTerminal | null;
+  dispatchTerminalInput(frame: string): void;
   facetManagerComposed: ComposedFacetManager | null;
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */

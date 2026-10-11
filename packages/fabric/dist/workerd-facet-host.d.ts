@@ -185,7 +185,9 @@ export interface JournalReaderEnv {
             mainModule: string;
             modules: Record<string, string>;
         }): {
-            getDurableObjectClass(name: string): unknown;
+            getDurableObjectClass(name: string, options?: {
+                limits: FacetResourceLimits;
+            }): unknown;
         };
     };
 }

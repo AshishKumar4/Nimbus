@@ -54,7 +54,8 @@ import { initSession as _w11InitSession } from './init.js';
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind } from './ws.js';
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind, terminalInput } from './ws.js';
+import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
@@ -1181,6 +1182,18 @@ export class NimbusSession extends CloudflareDurableObject {
     // S7: bodies extracted to ./ws.ts. Class retains the
     // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
     // relaxed for the methods (default-public; was async/private).
+    terminalInputDispatcher = null;
+    dispatchTerminalInput = (frame) => {
+        if (!this.terminalInputDispatcher) {
+            const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
+            this.terminalInputDispatcher = (input) => stub._rpcTerminalInput(input);
+        }
+        void this.terminalInputDispatcher(frame).catch((error) => {
+            console.error('[nimbus] terminal input request failed:', error);
+            this.terminal?.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    };
+    _rpcTerminalInput(frame) { return terminalInput(this, frame); }
     async webSocketMessage(ws, message) {
         const { kind } = wsKind(ws);
         if (kind === 'shell' || kind === 'process-logs' || kind === 'cirrus-hmr')

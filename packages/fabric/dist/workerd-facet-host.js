@@ -633,12 +633,12 @@ export function facetJournal(ctx, env, name) {
             facets.abort(name, new Error('Nimbus: its write log is drained'));
         }
         catch { /* not running */ }
-        const worker = loader.load({
+        const worker = loader.load(applyFacetLimits('process', {
             compatibilityDate: CF_COMPAT_DATE,
             mainModule: 'reader.js',
             modules: { 'reader.js': PROCESS_FS_JOURNAL_READER_SOURCE },
-        });
-        reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader') }));
+        }));
+        reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader', { limits: facetLimits('process') }) }));
         return reader;
     };
     return {

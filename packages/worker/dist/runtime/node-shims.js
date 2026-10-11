@@ -102,7 +102,7 @@ const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined"
 // What process.exit throws to end the program where it stands; its host
 // catches it as the exit.
 class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+  constructor(code) { super("process.exit(" + code + ")"); this.code = code & 255; }
 }
 // Node's internal errors (core _shared/node-error.ts), first: the shims, the
 // preambles below and the code they load make them by name, and the cell
@@ -10038,20 +10038,21 @@ function __nimbusOutputGate() {
 // Send a line to the session's stderr for this process, at its gate: every
 // diagnostic Nimbus prints for a process, as its own output is. Answers once
 // sent (never rejects); the run's pending writes wait for it too.
+let __nimbusUnreportedStderr = "";
 function __nimbusReleaseStderr(line) {
   if (!__supervisor || typeof __supervisor.stderr !== "function") return Promise.resolve();
   const send = () => __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined);
   const gate = __nimbusOutputGate();
   let task;
-  try { task = gate === null ? send() : gate.then(send); } catch { return Promise.resolve(); }
-  task = Promise.resolve(task).catch(() => {});
+  try { task = gate === null ? send() : gate.then(send); } catch { __nimbusUnreportedStderr += line; return Promise.resolve(); }
+  task = Promise.resolve(task).catch(() => { __nimbusUnreportedStderr += line; });
   if (typeof __pendingIO !== "undefined" && Array.isArray(__pendingIO)) __pendingIO.push(task);
   return task;
 }
 
 function __nimbusReportProcessExit(code, reason) {
   if (__nimbusProcessExitReported) return;
-  __nimbusProcessExitCode = Number(code ?? 0);
+  __nimbusProcessExitCode = Number(code ?? 0) & 255;
   __nimbusProgramStopped = true;
   try { if (typeof globalThis.__nimbusStopProgramTimers === "function") globalThis.__nimbusStopProgramTimers(); } catch {}
   try { if (__nimbusProcessExitResolve) __nimbusProcessExitResolve(__nimbusProcessExitCode); } catch {}
@@ -10396,7 +10397,7 @@ function __nimbusExitAtEnd() {
     __processMod._exiting = true;
     __nimbusEmitExit(__processMod.exitCode || 0);
   }
-  return __processMod.exitCode || 0;
+  return (__processMod.exitCode || 0) & 255;
 }
 
 // ── What nothing caught ──
