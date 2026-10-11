@@ -3,13 +3,15 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
-## 2026-10-11: platform 0.8.1, config 0.3.0, core 0.17.0, fabric 0.12.0, worker 0.15.0, loom 0.2.4, sdk 0.13.0, react 0.3.0, cli 0.2.4
+## Unreleased
 
 - Fixed: peer process hosts use activity-owned, abortable loss observation and
   validate incarnation on use; idle peers no longer hold a permanent hosting
   RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy
   throwaway-only hosting records without a physical facet name, logs that the
   peer facet could not be named, and never guesses which facet to delete.
+
+## 2026-10-11: platform 0.8.1, config 0.3.0, core 0.17.0, fabric 0.12.0, worker 0.15.0, loom 0.2.4, sdk 0.13.0, react 0.3.0, cli 0.2.4
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the
   namespace's `WaveIngest` (`@nimbus-sh/core/runtime/wave-ingest.js`,
   `ProcessFiles.waves`). `CredentialedVfs.writeStream` and `writeBatchPlaced`
