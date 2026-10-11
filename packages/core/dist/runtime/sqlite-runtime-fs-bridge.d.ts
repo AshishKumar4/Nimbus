@@ -77,7 +77,11 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): VfsMutationReceipt;
     /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
     open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
-    /** `run` on descriptor `id` for this synchronous face: a description on an asynchronous mount refuses, as its mount does. */
+    /**
+     * Descriptor `id`, for this synchronous face: a description on an
+     * asynchronous mount refuses, as its mount does. Every other answers in
+     * the caller's turn, so its operations' answers are values.
+     */
     private now;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;

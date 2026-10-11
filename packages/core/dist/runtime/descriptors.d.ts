@@ -87,6 +87,7 @@ export declare class Descriptors {
     private opened;
     read(id: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(id: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
+    private writeAt;
     close(id: number): void;
     /**
      * Writes what the description's file has held: a buffered mount handle's

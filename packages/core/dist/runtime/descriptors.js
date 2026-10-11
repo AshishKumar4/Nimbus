@@ -7,7 +7,7 @@
  * awaiting when its mount does (`awaits`): the synchronous face refuses
  * that one as it refuses its mount, before anything is done.
  */
-import { andThen } from '../vfs/vfs.js';
+import { andThen, isPromise } from '../vfs/vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
 /** An open's flags as its descriptor keeps them: neither access asked is O_RDONLY. */
 export function openFlags(flags) {
@@ -125,35 +125,44 @@ export class Descriptors {
             throw fsError('EBADF', 'fd', String(id));
         return opened;
     }
+    // A descriptor's reads and writes answer in the caller's turn without a
+    // callback where the description does (andThen allocates one per call).
     read(id, offset, length) {
         const { handle, node } = this.opened(id);
         if (!handle.flags.read)
             throw fsError('EBADF', 'read', handle.path);
         const start = offset == null ? handle.position : Math.max(0, offset);
-        return andThen(node.read(start, Math.max(0, length)), (out) => {
-            if (offset == null)
-                handle.position = start + out.byteLength;
+        const out = node.read(start, Math.max(0, length));
+        if (offset != null)
             return out;
-        });
+        if (isPromise(out))
+            return out.then((bytes) => read(handle, start, bytes));
+        return read(handle, start, out);
     }
     write(id, offset, bytes) {
         const { handle, node } = this.opened(id);
         if (!handle.flags.write)
             throw fsError('EBADF', 'write', handle.path);
         if (handle.flags.append && node.append) {
-            return andThen(node.append(bytes), (end) => {
-                handle.position = end;
-                return bytes.byteLength;
-            });
+            const end = node.append(bytes);
+            if (isPromise(end))
+                return end.then((at) => moved(handle, at, bytes));
+            return moved(handle, end, bytes);
         }
         const start = handle.flags.append
             ? node.end?.() ?? andThen(node.stat(), (stat) => stat.size)
             : offset == null ? handle.position : Math.max(0, offset);
-        return andThen(start, (at) => andThen(node.write(at, bytes), () => {
-            if (offset == null || handle.flags.append)
-                handle.position = at + bytes.byteLength;
-            return bytes.byteLength;
-        }));
+        if (isPromise(start))
+            return start.then((at) => this.writeAt(handle, node, at, offset, bytes));
+        return this.writeAt(handle, node, start, offset, bytes);
+    }
+    writeAt(handle, node, at, offset, bytes) {
+        const written = node.write(at, bytes);
+        if (offset != null && !handle.flags.append)
+            return isPromise(written) ? written.then(() => bytes.byteLength) : bytes.byteLength;
+        if (isPromise(written))
+            return written.then(() => moved(handle, at + bytes.byteLength, bytes));
+        return moved(handle, at + bytes.byteLength, bytes);
     }
     close(id) {
         const opened = this.opened(id);
@@ -214,4 +223,14 @@ export class Descriptors {
     fchmod(id, mode) { return this.opened(id).node.chmod(mode); }
     fchown(id, uid, gid) { return this.opened(id).node.chown(uid, gid); }
     futimes(id, atime, mtime) { return this.opened(id).node.utimes(atime, mtime); }
+}
+/** A read at the descriptor's offset: the offset moved past what it read. */
+function read(handle, start, bytes) {
+    handle.position = start + bytes.byteLength;
+    return bytes;
+}
+/** A write at the descriptor's offset (or its end): the offset left at `end`. */
+function moved(handle, end, bytes) {
+    handle.position = end;
+    return bytes.byteLength;
 }

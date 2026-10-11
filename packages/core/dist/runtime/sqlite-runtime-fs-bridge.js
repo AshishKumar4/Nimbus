@@ -3,7 +3,7 @@ import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js
 import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
+import { andThen, readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -363,7 +363,7 @@ export class SqliteRuntimeFsBridge {
                 const namespace = this.namespace;
                 const node = openMounted({
                     files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
-                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => namespace.realpath(name),
+                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => andThen(namespace.mutationRoute(name, { follow: true }), (route) => route.path),
                     awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
                 });
                 return this.descriptors.issue(node, normalizedFlags);
@@ -401,18 +401,23 @@ export class SqliteRuntimeFsBridge {
             return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags);
         });
     }
-    /** `run` on descriptor `id` for this synchronous face: a description on an asynchronous mount refuses, as its mount does. */
-    now(id, run) {
+    /**
+     * Descriptor `id`, for this synchronous face: a description on an
+     * asynchronous mount refuses, as its mount does. Every other answers in
+     * the caller's turn, so its operations' answers are values.
+     */
+    now(id) {
         const node = this.descriptors.description(id);
         if (node.awaits)
             throw awaitsRefusal(node.path());
-        return run();
     }
     read(handleId, offset, length) {
-        return this.now(handleId, () => this.descriptors.read(handleId, offset, length));
+        this.now(handleId);
+        return this.descriptors.read(handleId, offset, length);
     }
     write(handleId, offset, bytes) {
-        return this.now(handleId, () => this.descriptors.write(handleId, offset, bytes));
+        this.now(handleId);
+        return this.descriptors.write(handleId, offset, bytes);
     }
     close(handleId) {
         this.descriptors.close(handleId);
@@ -565,8 +570,10 @@ export class SqliteRuntimeFsBridge {
         });
     }
     fsync(handleId) {
-        if (handleId !== undefined)
-            this.now(handleId, () => this.descriptors.fsync(handleId));
+        if (handleId === undefined)
+            return;
+        this.now(handleId);
+        void this.descriptors.fsync(handleId);
     }
     /**
      * Every per-path revision here is the caller's: `p` is its own name for a
@@ -747,7 +754,8 @@ export class SqliteRuntimeFsBridge {
         if ('root' in path)
             return path.root + '/' + path.path;
         const directory = path.directory;
-        if (this.now(directory, () => this.descriptors.description(directory).stat()).type !== 'directory')
+        this.now(directory);
+        if (this.descriptors.description(directory).stat().type !== 'directory')
             throw fsError('ENOTDIR', 'path', path.path);
         if (path.path.startsWith('/'))
             return path.path;
@@ -940,15 +948,15 @@ export class SqliteRuntimeFsBridge {
     }
     /** The absolute path a descriptor was opened at. */
     descriptorPath(handleId) { return '/' + normalizeVfsPath(this.descriptors.path(handleId)); }
-    fstat(handleId) { return this.now(handleId, () => this.descriptors.fstat(handleId)); }
+    fstat(handleId) { this.now(handleId); return this.descriptors.fstat(handleId); }
     dup(handleId) { return this.descriptors.dup(handleId); }
-    seek(handleId, offset, whence) { return this.now(handleId, () => this.descriptors.seek(handleId, offset, whence)); }
+    seek(handleId, offset, whence) { this.now(handleId); return this.descriptors.seek(handleId, offset, whence); }
     setStatus(handleId, status) { this.descriptors.setStatus(handleId, status); }
-    readdirHandle(handleId) { return this.now(handleId, () => this.descriptors.readdir(handleId)); }
-    ftruncate(handleId, size) { this.now(handleId, () => this.descriptors.ftruncate(handleId, size)); }
-    fchmod(handleId, mode) { this.now(handleId, () => this.descriptors.fchmod(handleId, mode)); }
-    fchown(handleId, uid, gid) { this.now(handleId, () => this.descriptors.fchown(handleId, uid, gid)); }
-    futimes(handleId, atime, mtime) { this.now(handleId, () => this.descriptors.futimes(handleId, atime, mtime)); }
+    readdirHandle(handleId) { this.now(handleId); return this.descriptors.readdir(handleId); }
+    ftruncate(handleId, size) { this.now(handleId); void this.descriptors.ftruncate(handleId, size); }
+    fchmod(handleId, mode) { this.now(handleId); void this.descriptors.fchmod(handleId, mode); }
+    fchown(handleId, uid, gid) { this.now(handleId); void this.descriptors.fchown(handleId, uid, gid); }
+    futimes(handleId, atime, mtime) { this.now(handleId); void this.descriptors.futimes(handleId, atime, mtime); }
 }
 /** A `..` component in a path's spelling. */
 const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;

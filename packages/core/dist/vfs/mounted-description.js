@@ -68,7 +68,7 @@ function statAfter({ files, name, refuse }) {
 }
 /** open(2) of a mounted file, and the description its descriptors share. */
 export function openMounted(options) {
-    return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription({ ...options, name: file }, stat)));
+    return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription(options, file, stat)));
 }
 /**
  * The description of `name` on a mount. A write goes in place (writeRange);
@@ -89,13 +89,13 @@ class MountedDescription {
     inPlace = true;
     pending = [];
     held = 0;
-    constructor(options, stat) {
+    constructor(options, name, stat) {
         this.options = options;
         this.ino = stat.ino ?? 0;
         if (options.awaits)
             this.awaits = true;
         this.files = options.files;
-        this.name = options.name;
+        this.name = name;
         this.immediate = options.sync || options.awaits;
     }
     path() { return this.name; }
@@ -113,12 +113,21 @@ class MountedDescription {
         return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.name, offset, length);
     }
     write(offset, bytes) {
-        return andThen(this.inPlaceOr(offset, bytes, () => this.hold(offset, bytes)), () => bytes.byteLength);
+        const written = this.inPlaceAt(offset, bytes);
+        if (written === undefined)
+            return this.hold(offset, bytes);
+        return isPromise(written) ? written.then((end) => (end === undefined ? this.hold(offset, bytes) : bytes.byteLength)) : bytes.byteLength;
     }
-    /** At the end as it is then; a held one goes at the end as it stands at the flush. */
+    /** At the end as it is then (answers that end); a held one goes at the end as it stands at the flush. */
     append(bytes) {
-        const held = () => andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));
-        return this.inPlace ? andThen(this.files.stat(this.name), (there) => this.inPlaceOr(there?.size ?? 0, bytes, held)) : held();
+        if (!this.inPlace)
+            return this.heldAppend(bytes);
+        return andThen(this.files.stat(this.name), (there) => {
+            const written = this.inPlaceAt(there?.size ?? 0, bytes);
+            if (written === undefined)
+                return this.heldAppend(bytes);
+            return isPromise(written) ? written.then((end) => end ?? this.heldAppend(bytes)) : written;
+        });
     }
     truncate(size) { return need(this.files.truncate, this.options.refuse, 'ftruncate').call(this.files, this.name, size); }
     readdir() {
@@ -158,27 +167,35 @@ class MountedDescription {
             return isPromise(file) ? null : file;
         }, this.name);
     }
-    /** In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written. */
-    inPlaceOr(offset, bytes, otherwise) {
+    heldAppend(bytes) {
+        return andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));
+    }
+    /**
+     * `bytes` written in place at `offset` when the mount can (writeRange):
+     * the end written. Undefined from its first refusal (none, or ENOTSUP):
+     * the description holds its writes from then on.
+     */
+    inPlaceAt(offset, bytes) {
         const writeRange = this.files.writeRange;
         if (!this.inPlace || writeRange === undefined) {
             this.inPlace = false;
-            return otherwise();
+            return undefined;
         }
-        const cannot = (error) => {
-            if (!isVfsError(error, 'ENOTSUP'))
-                throw error;
-            this.inPlace = false;
-            return otherwise();
-        };
         let written;
         try {
             written = writeRange.call(this.files, this.name, offset, bytes);
         }
         catch (error) {
-            return cannot(error);
+            return this.cannot(error);
         }
-        return isPromise(written) ? written.then(() => offset + bytes.byteLength, cannot) : offset + bytes.byteLength;
+        const end = offset + bytes.byteLength;
+        return isPromise(written) ? written.then(() => end, (error) => this.cannot(error)) : end;
+    }
+    cannot(error) {
+        if (!isVfsError(error, 'ENOTSUP'))
+            throw error;
+        this.inPlace = false;
+        return undefined;
     }
 }
 /** `file` with `writes` applied in order (an append at the end as it then is): what a flush writes, and what a process reads. */
