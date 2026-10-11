@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // fanout-dynamic-worker-routing — Fanout spends the Durable Object's
 // documented Dynamic Worker budget, and only what is left of it.
 //
@@ -87,7 +88,7 @@ async function run(width, { ctx = freshCtx(), world = makeWorld() } = {}) {
     onRoute: (route) => routes.push(route),
   });
   const tasks = Array.from({ length: width }, (_, i) => ({ key: `task-${i}`, args: i }));
-  const results = await pool.submitMany(tasks, (x) => x);
+  const results = await pool.submitMany(tasks, facetTaskSource("(x) => x"));
   assert.deepEqual(results, tasks.map((t) => t.args), `width ${width}: results in input order`);
   return { world, route: routes[0], routes };
 }
@@ -163,7 +164,7 @@ for (const width of [5, 8, DO_DYNAMIC_WORKER_LIMIT]) {
     getEntrypoint: () => ({ async execute() { throw new Error('task failed'); } }),
   });
   const pool = new Fanout(world.env, ctx, { network: ISOLATE_NETWORK, tag: 'routing-test', omitSupervisor: true, timeoutMs: 0 });
-  await assert.rejects(pool.submitMany([{ key: 'k', args: 1 }, { key: 'l', args: 2 }], (x) => x), /task failed/);
+  await assert.rejects(pool.submitMany([{ key: 'k', args: 1 }, { key: 'l', args: 2 }], facetTaskSource("(x) => x")), /task failed/);
   assert.equal((await run(DO_DYNAMIC_WORKER_LIMIT, { ctx })).route.topology, 'in-do',
     'a failed batch gives its width back');
 }
@@ -197,7 +198,7 @@ for (const width of [5, 8, DO_DYNAMIC_WORKER_LIMIT]) {
   };
   const batch = (tag) => new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag, omitSupervisor: true, timeoutMs: 0 }).submitMany(
     Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => ({ key: `${tag}-${i}`, args: i })),
-    (x) => x,
+    facetTaskSource("(x) => x"),
   );
   const first = await batch('resolve-layer');
   assert.deepEqual(first, [...Array(DO_DYNAMIC_WORKER_LIMIT).keys()]);

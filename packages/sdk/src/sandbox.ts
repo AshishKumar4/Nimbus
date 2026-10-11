@@ -107,6 +107,8 @@ export interface NimbusSandboxFiles {
   stat(path: string): Promise<NimbusFileStat | null>;
   /** stat without following a symlink leaf. */
   lstat(path: string): Promise<NimbusFileStat | null>;
+  /** Read a symlink's stored target without following its final component. */
+  readlink(path: string): Promise<string | null>;
   rename(from: string, to: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
   /** Read `length` bytes at `offset` without materializing the whole file. */
@@ -338,6 +340,7 @@ export class NimbusSandbox {
       _rpcWriteFile: (path, content, _pid, cred) => this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)]),
       _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)]),
       _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)]),
+      _rpcReadlink: (path, _pid, cred) => this.remoteRpc('readlink', [path, ...fileWireOptions(cred)]),
       _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)]),
       _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)]),
       _rpcFsReadRange: (path, offset, length, _pid, cred) =>
@@ -504,6 +507,10 @@ export class NimbusSandbox {
       lstat: async (path: string): Promise<NimbusFileStat | null> => {
         await this.ready();
         return this.rpc(this.stub()._rpcLstat(path, undefined, cred));
+      },
+      readlink: async (path: string): Promise<string | null> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcReadlink(path, undefined, cred));
       },
       rename: async (from: string, to: string): Promise<void> => {
         await this.ready();

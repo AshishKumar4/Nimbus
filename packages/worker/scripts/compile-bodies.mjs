@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compiledBodies } from '../../../scripts/lib/compiled-bodies.mjs';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -81,3 +81,5 @@ export async function compileFacetBodies() {
   }
   for (const [path, source] of written) writeFileSync(path, source);
 }
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) await compileFacetBodies();

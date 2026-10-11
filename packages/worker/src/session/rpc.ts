@@ -420,6 +420,10 @@ export async function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?
   return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
 }
 
+export async function _rpcReadlink(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null> {
+  return self.supervisorOp({ op: 'readlink', args: [path], pid, cred }) as Promise<string | null>;
+}
+
 export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
   await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }

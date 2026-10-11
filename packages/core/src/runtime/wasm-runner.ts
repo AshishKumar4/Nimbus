@@ -350,24 +350,7 @@ export function makeWasmRunner(deps: {
     //
     // The fn must be self-contained: serialised via fn.toString,
     // closure references are NOT available inside the facet.
-    type WasmCallResult = {
-      ok: boolean;
-      mode: 'direct' | 'wasi';
-      result?: number | string;
-      exports?: string[];
-      stdout?: string;
-      stderr?: string;
-      streamedOutput?: boolean;
-      exitCode?: number;
-      error?: string;
-      fsStats?: ResidentFilesystemStats | null;
-      fsDiff?: {
-        filesWritten: Record<string, string>;
-        filesDeleted: string[];
-        dirsCreated: string[];
-        dirsDeleted: string[];
-      };
-    };
+ 
     /**
      * What `WebAssembly.instantiate` resolves to: the instance for a compiled
      * module, `{ instance, module }` for bytes. The engine's own types describe
@@ -375,9 +358,7 @@ export function makeWasmRunner(deps: {
      * is named because the checks below are what keep a table filled with
      * anything else from yielding an instance-less object.
      */
-    type WasmInstantiateResult =
-      | WebAssembly.Instance
-      | { instance: WebAssembly.Instance; module: WebAssembly.Module };
+ 
     /**
      * A direct-mode export: integer args in, one scalar — or nothing — out.
      * `WebAssembly.Exports` types every export as a bare `Function`, which
@@ -868,3 +849,24 @@ export const wasmFacetCall = async function wasmFacetCall(
       if (typeof out === 'bigint') return { ok: true, mode: 'direct', result: out.toString(), exports: exportNames };
       return { ok: true, mode: 'direct', result: out, exports: exportNames };
 };
+
+type WasmCallResult = {
+      ok: boolean;
+      mode: 'direct' | 'wasi';
+      result?: number | string;
+      exports?: string[];
+      stdout?: string;
+      stderr?: string;
+      streamedOutput?: boolean;
+      exitCode?: number;
+      error?: string;
+      fsStats?: ResidentFilesystemStats | null;
+      fsDiff?: {
+        filesWritten: Record<string, string>;
+        filesDeleted: string[];
+        dirsCreated: string[];
+        dirsDeleted: string[];
+      };
+};
+
+type WasmInstantiateResult = WebAssembly.Instance | { instance: WebAssembly.Instance; module: WebAssembly.Module };

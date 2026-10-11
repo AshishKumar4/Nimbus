@@ -43,6 +43,9 @@ export const SessionFileStatSchema = z.object({
   ctime: z.number().optional(),
   mtime: z.number(),
   mode: z.number(),
+  /** Optional when the filesystem backend does not report a stable inode or revision. */
+  ino: z.number().optional(),
+  revision: z.number().optional(),
 });
 export type SessionFileStat = z.infer<typeof SessionFileStatSchema>;
 export const SessionDirectoryEntrySchema = z.object({ name: z.string(), type: z.string() });
@@ -163,6 +166,7 @@ const SessionResultSchemas = {
   writeFile: z.number(), // The committed filesystem revision, not a byte count.
   stat: SessionFileStatSchema.nullable(),
   lstat: SessionFileStatSchema.nullable(),
+  readlink: z.string().nullable(),
   readdir: z.array(SessionDirectoryEntrySchema),
   rename: z.undefined(),
   chmod: z.undefined(),
@@ -254,6 +258,7 @@ export interface SessionRpc {
   _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'writeFile'>>;
   _rpcStat(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'stat'>>;
   _rpcLstat(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'lstat'>>;
+  _rpcReadlink(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readlink'>>;
   _rpcReaddir(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readdir'>>;
   _rpcRename(from: string, to: string, pid?: undefined, cred?: VfsCred): Promise<void>;
   _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;

@@ -12,6 +12,9 @@ const replies = {
   startProcess: { command: 'server', pid: 7, process, ports: [port], startedAt: 1 },
   listProcesses: [process], listPorts: [port], installRuntime: install, ensureRuntimes: [install],
   writeFile: 0, mkdir: undefined,
+  stat: { type: 'file', size: 3, mtime: 1, mode: 0o644, ino: 41, revision: 7 },
+  lstat: { type: 'symlink', size: 7, mtime: 1, mode: 0o777, ino: 42, revision: 8 },
+  readlink: '../file',
 };
 const client = Nimbus.connect({ endpoint: 'https://protocol.test', fetch: async (_url, init) => {
   const { op } = JSON.parse(init.body);
@@ -28,6 +31,13 @@ assert.deepEqual(await client.runtimes.install('python'), install);
 assert.deepEqual(await client.runtimes.ensure(['python']), [install]);
 assert.equal(await client.files.write('/home/user/file', ''), undefined, 'numeric zero is a present wire result, and the public write is void');
 assert.equal(await client.files.mkdir('/home/user/directory'), undefined, 'a truly void wire result needs no result property');
+assert.deepEqual(await client.files.stat('/file'), replies.stat, 'remote stat preserves inode and revision');
+assert.deepEqual(await client.files.lstat('/link'), replies.lstat, 'remote lstat preserves the symlink metadata');
+assert.equal(await client.files.readlink('/link'), '../file', 'remote readlink returns the stored target verbatim');
+replies.stat = { type: 'file', size: 3, mtime: 1, mode: 0o644 };
+assert.deepEqual(await client.files.stat('/mounted/file'), replies.stat, 'a backend without revision or inode reports neither');
+replies.readlink = null;
+assert.equal(await client.files.readlink('/missing'), null);
 
 replies.installRuntime = { ...install, exitCode: '0' };
 await assert.rejects(client.runtimes.install('python'), (error) => error.name === 'ZodError' && error.issues.some((issue) => issue.path[0] === 'exitCode'));

@@ -296,6 +296,9 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     case 'lstat':
       fileOptions(args[1]);
       return ctx.stub._rpcLstat(stringArg(args[0], 'path'));
+    case 'readlink':
+      fileOptions(args[1]);
+      return ctx.stub._rpcReadlink(stringArg(args[0], 'path'));
     case 'rename':
       fileOptions(args[2]);
       return ctx.stub._rpcRename(stringArg(args[0], 'from'), stringArg(args[1], 'to'));

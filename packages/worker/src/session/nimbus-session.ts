@@ -871,6 +871,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
   async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcStat(this as any, path, pid, cred); }
   async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcLstat(this as any, path, pid, cred); }
+  async _rpcReadlink(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid, cred); }
   async _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
     return _rpc._rpcChmod(this as any, path, mode, pid, cred);
   }
