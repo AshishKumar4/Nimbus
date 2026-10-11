@@ -2054,7 +2054,7 @@ function esmStageSize(esm: EsmStage): Record<string, number> {
 }
 
 /** A launch's per-module costs, for its exec telemetry record. */
-function execBreakdown(state: { cacheHit?: boolean; transforms?: BundleCellTransformStats; esmSize?: Record<string, number>; phases?: Record<string, number> }): Pick<ExecTelemetryRecord, 'transforms' | 'esm' | 'phases'> {
+function execBreakdown(state: { cacheHit?: boolean; transforms?: BundleCellTransformStats; esmSize?: Record<string, number>; phases?: Record<string, number>; reachableCount?: number; rawBytes?: number }): Pick<ExecTelemetryRecord, 'transforms' | 'esm' | 'phases' | 'closure'> {
   // A cache hit built nothing: the numbers are the launch that built it.
   if (state.cacheHit) return {};
   const t = state.transforms;
@@ -2062,6 +2062,7 @@ function execBreakdown(state: { cacheHit?: boolean; transforms?: BundleCellTrans
     ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
     ...(state.esmSize ? { esm: state.esmSize } : {}),
     ...(state.phases ? { phases: state.phases } : {}),
+    ...(state.reachableCount !== undefined ? { closure: { files: state.reachableCount, bytes: state.rawBytes ?? 0 } } : {}),
   };
 }
 

@@ -78,6 +78,8 @@ export interface ExecTelemetryRecord {
   esm?: Record<string, number>;
   /** Where the build's time went, by phase, in ms (FacetVfsState.phases); absent on a cache hit. */
   phases?: Record<string, number>;
+  /** What the build reached: files and their bytes (FacetVfsState.reachableCount, rawBytes); absent on a cache hit. */
+  closure?: { files: number; bytes: number };
   /**
    * Durable Object turns the bundle build was paged across — the alarm
    * round trips `TurnBudget` took before the process could start. 0 when the
