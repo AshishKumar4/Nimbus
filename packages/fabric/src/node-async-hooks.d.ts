@@ -3,7 +3,7 @@
  * against workers-types only (no @types/node), and pulling all of
  * @types/node for one class would let untyped node surface leak into
  * workerd code. workerd ships AsyncLocalStorage under `nodejs_compat`
- * (probe-verified 2026-05-04, see the matrix at worker's node-shims.ts generateShimsCode);
+ * (probe-verified 2026-05-04, see the matrix in worker's runtime/node-shims-imports.ts);
  * bun and node ship it natively.
  */
 declare module 'node:async_hooks' {

@@ -5,7 +5,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import { generateShimsCode as shims } from '../../../packages/worker/src/runtime/node-shims.ts';
-import { NATIVE_HTTP_IMPORTS } from '../../../packages/worker/src/runtime/native-http.ts';
+import { NODE_SHIMS_IMPORTS } from '../../../packages/worker/src/runtime/node-shims-imports.ts';
 
 const hostFetch = globalThis.fetch.bind(globalThis);
 const hostTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
@@ -108,9 +108,9 @@ export function generateShimsCode() {
   return `${bindings()}\nconst __pendingIO = [];\n${shims()}`;
 }
 
-/** A generated runner's workerd HTTP import, mapped to this platform seam. */
+/** A generated runner's workerd imports, mapped to this platform seam (the host's builtins). */
 export function adaptHttpImports(source) {
-  return source.includes(NATIVE_HTTP_IMPORTS) ? source.replace(NATIVE_HTTP_IMPORTS, bindings()) : source;
+  return source.includes(NODE_SHIMS_IMPORTS) ? source.replace(NODE_SHIMS_IMPORTS, bindings()) : source;
 }
 
 /**

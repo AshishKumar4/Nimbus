@@ -16,9 +16,6 @@
  */
 import { FETCH_HTTP_CLIENT_SOURCE } from './fetch-http-client.js';
 
-/** What NATIVE_HTTP_SOURCE reaches that is not a Node builtin: every runner's module imports it. */
-export const NATIVE_HTTP_IMPORTS = `import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';`;
-
 export const NATIVE_HTTP_SOURCE = `
 ${FETCH_HTTP_CLIENT_SOURCE}
 // The platform's HTTP modules and the net they connect over, taken as the

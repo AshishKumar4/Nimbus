@@ -42,7 +42,7 @@ import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
-import { NATIVE_HTTP_IMPORTS } from '../runtime/native-http.js';
+import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
@@ -1020,7 +1020,7 @@ function nodeProgramModule(
 ): ModuleSource {
   return moduleSource`
 ${bundleSource.imports}
-${NATIVE_HTTP_IMPORTS}
+${NODE_SHIMS_IMPORTS}
 ${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(stagedBindings)}
