@@ -29,7 +29,8 @@
  * most one per link record in flight (a known leak, by that name pattern).
  */
 
-import type { CompositeVFS } from '../vfs/composite.js';
+import type { Awaitable } from '../vfs/vfs.js';
+import type { CompositeVFS, VfsMutationRoute } from '../vfs/composite.js';
 import type { RoutedStat, RoutedWaveRecord, WaveRouter } from './wave-contracts.js';
 import type { VfsCred, VfsRemoval, VfsStat } from '../vfs/vfs.js';
 import { VFS_DESCRIPTION, VfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
@@ -58,7 +59,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
           const cut = at.lastIndexOf('/');
           return attempt(at.slice(0, cut) || '/', missing === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${missing}`);
         };
-        let route: ReturnType<CompositeVFS['mutationRoute']>;
+        let route: Awaitable<VfsMutationRoute>;
         try {
           route = ns.mutationRoute(at, { follow: true });
         } catch (error) {
@@ -125,7 +126,7 @@ function pinOf(ns: CompositeVFS, dir: string): () => void | Promise<void> {
     throw new VfsError('ESTALE', 'the directory a wave placed this record in moved under it', dir);
   };
   return () => {
-    let route: ReturnType<CompositeVFS['mutationRoute']>;
+    let route: Awaitable<VfsMutationRoute>;
     try {
       route = ns.mutationRoute(dir, { follow: true });
     } catch {
