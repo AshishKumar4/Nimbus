@@ -253,12 +253,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  readFile(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): Uint8Array | null {
+  readFile(path: RuntimeFsPath, options: { followSymlinks?: boolean; cached?: boolean } = {}): Uint8Array | null {
     return called({ syscall: 'open', path }, () => {
       const located = this.locate(path, options.followSymlinks !== false);
       if (located === null || located.absent) return null;
       try {
-        if (!located.mount) return this.vfs.readFile(located.path);
+        // cached === false reads straight from SQL, neither consulting nor
+        // populating the LRU: a whole runtime image is read once for a
+        // facet's module map, never re-read from this isolate. Mount
+        // backends have no LRU, so their readFile is already uncached.
+        if (!located.mount) {
+          return options.cached === false
+            ? this.vfs.readFileUncached(located.path)
+            : this.vfs.readFile(located.path);
+        }
         return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
       } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
@@ -330,23 +338,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.rawVfs.revision();
   }
 
-  /**
-   * Whether a ranged read of `path` reaches a backend that offers one:
-   * SQLite always does; a mount does exactly when its backend defines
-   * readRange. No bytes are read, so the answer costs nothing.
-   */
-  hasRangedRead(path: RuntimeFsPath): boolean {
-    if (!this.namespace) return true;
-    const spelled = typeof path === 'string' ? path : path.path;
-    const route = (this.namespace as unknown as { locate(p: string): { mount: { source: unknown } } }).locate(spelled);
-    const source = route.mount.source;
-    const backend = typeof source === 'function' ? null : source;
-    // The mount backend itself, not the composite's routing view (whose
-    // readRange always exists and degrades per piece): absent readRange on
-    // the backend is the ENOTSUP the piece path would meet.
-    if (backend === null) return true;
-    return typeof (backend as { readRange?: unknown }).readRange === 'function';
-  }
   readRange(
     path: RuntimeFsPath,
     offset: number,
