@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "98c2b96388b4e927d6c980960e27f719a550ba72bc2e6cc5b5c1b8c8881a5ec5",
+  "fingerprint": "334a711f02100bfc42871e33cf82363ff34d7b05d03547a20d547f8d06dc5424",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1193,8 +1193,8 @@
     "packages/core/dist/vfs/memory.d.ts.map": "e44d6b35339cd5fe76084a6c537229944981a6c3adaf8806f04c5f3e7819bfcf",
     "packages/core/dist/vfs/memory.js": "d0565e2993bc6b30c935d69dfa30d966ab6a190c09fd594ea43b36929de4abb9",
     "packages/core/dist/vfs/mounted-description.d.ts": "00c8a5abaa2c77fc65d6de2616cc0c03d3c366513ffb8bb2a9489e4e8d7b5ca3",
-    "packages/core/dist/vfs/mounted-description.d.ts.map": "0ba1bc81cf7d25a764ff6577683f6859d1a9f6cf5a7254646371f79c7bec563b",
-    "packages/core/dist/vfs/mounted-description.js": "bec79b655bfd48989fa982466a5e9def9fe48b2ab05107b813b0c897d0334bc6",
+    "packages/core/dist/vfs/mounted-description.d.ts.map": "a811188167512498dd4838b36e92109f4d4adf8167bd40b08776dd83993a4043",
+    "packages/core/dist/vfs/mounted-description.js": "b33393276fe5163a2f9fce2f9d322e3d99fc7bd9881d5ffafa9f934e1a889d13",
     "packages/core/dist/vfs/move.d.ts": "e16193681ad07f22eb0709ae19d715d64cbf5293a2b2a3556cc4b311f9d9910b",
     "packages/core/dist/vfs/move.d.ts.map": "5a62e31f3a48e75a26e858dcc7524b1b277649e8c0c72d6d6649c03b6a9e082c",
     "packages/core/dist/vfs/move.js": "2de8881fe7518ec8c531a80cd89e187a7ff755e1a4e57de2adb4245d2585b34e",
@@ -1629,7 +1629,7 @@
     "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
     "packages/core/src/vfs/events.ts": "a82e23482840ed5aba75366596b287701f4b94e566532ca7188eb66b84a7fbaf",
     "packages/core/src/vfs/memory.ts": "5db75ef524832e6dafe52efba2925b9b29be8e7253f593d34274c052c3370dfd",
-    "packages/core/src/vfs/mounted-description.ts": "4f15fe124ed9281a4c0148922698937db767acbe7096bb2a8fe1a7959eea1df1",
+    "packages/core/src/vfs/mounted-description.ts": "28a1b800d4a7607d527bf20fa7a1dc40a1557c3c018e7dd3e9eba74647cafbb5",
     "packages/core/src/vfs/move.ts": "6e591c2f3e7b4f4e529ee52e0f849ccb7ba7218bffdcd9e491977f375a840679",
     "packages/core/src/vfs/path-revisions.ts": "6caf8c2a9185400c4c516609d369d40015e0cd69542afe75461c7695695637b1",
     "packages/core/src/vfs/path.ts": "78d829ad225a5bc803622ce155f8993611dad4eb9f6bff9459ec72d859a4e2bb",

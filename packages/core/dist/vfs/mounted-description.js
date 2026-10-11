@@ -49,21 +49,26 @@ export function openOnMount(open, describes, settled) {
             return andThen(settled?.(), () => {
                 if (there !== null && !flags.truncate)
                     return there;
-                const changed = there === null
-                    ? files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode })
-                    : need(files.truncate, refuse, 'open').call(files, name, 0);
-                return andThen(changed, () => andThen(files.stat(name), (after) => {
-                    if (after === null)
-                        throw refuse('ENOENT', 'open');
-                    return after;
-                }));
+                if (there !== null) {
+                    // A description needs only the file's inode, which truncating keeps; a wave answers the stat after.
+                    const truncated = need(files.truncate, refuse, 'open').call(files, name, 0);
+                    return describes ? andThen(truncated, () => there) : andThen(truncated, () => statAfter(open));
+                }
+                return andThen(files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), () => statAfter(open));
             });
         });
     });
 }
+function statAfter({ files, name, refuse }) {
+    return andThen(files.stat(name), (after) => {
+        if (after === null)
+            throw refuse('ENOENT', 'open');
+        return after;
+    });
+}
 /** open(2) of a mounted file, and the description its descriptors share. */
 export function openMounted(options) {
-    return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => mountedDescription({ ...options, name: file }, stat)));
+    return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription({ ...options, name: file }, stat)));
 }
 /**
  * The description of `name` on a mount. A write goes in place (writeRange);
@@ -74,105 +79,122 @@ export function openMounted(options) {
  * with them applied. Writes made by awaiting, or under O_SYNC, are flushed
  * as each is made, so a write's answer is what the mount did.
  */
-function mountedDescription(options, stat) {
-    const { files, name, refuse, scope } = options;
-    const immediate = options.sync || options.awaits;
-    let inPlace = true;
-    let pending = [];
-    let held = 0;
-    const whole = () => andThen(files.stat(name), (there) => (there === null ? new Uint8Array(0) : files.readFile(name)));
-    // `file` with `writes` applied in order (an append at the end as it then
-    // is): what a flush writes, and what this process reads.
-    const apply = (writes, base) => {
-        // A copy: a backend may hand out its own buffer, which must not change before the flush.
-        let file = base.slice();
-        for (const write of writes) {
-            const at = write.offset ?? file.byteLength;
-            if (at + write.bytes.byteLength > file.byteLength) {
-                const grown = new Uint8Array(at + write.bytes.byteLength);
-                grown.set(file);
-                file = grown;
-            }
-            file.set(write.bytes, at);
-        }
-        return file;
-    };
-    // A flush that fails loses what it held (lastClose says so): taken before it reads.
-    const flush = () => {
-        if (pending.length === 0)
+class MountedDescription {
+    options;
+    ino;
+    mounted = true;
+    files;
+    name;
+    immediate;
+    inPlace = true;
+    pending = [];
+    held = 0;
+    constructor(options, stat) {
+        this.options = options;
+        this.ino = stat.ino ?? 0;
+        if (options.awaits)
+            this.awaits = true;
+        this.files = options.files;
+        this.name = options.name;
+        this.immediate = options.sync || options.awaits;
+    }
+    path() { return this.name; }
+    stat() {
+        return andThen(this.files.stat(this.name), (there) => {
+            if (there === null)
+                throw this.options.refuse('ENOENT', 'fstat');
+            const now = runtimeStatOf(there);
+            const view = this.viewed();
+            return view ? { ...now, size: view.byteLength } : now;
+        });
+    }
+    read(offset, length) {
+        const view = this.viewed();
+        return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.name, offset, length);
+    }
+    write(offset, bytes) {
+        return andThen(this.inPlaceOr(offset, bytes, () => this.hold(offset, bytes)), () => bytes.byteLength);
+    }
+    /** At the end as it is then; a held one goes at the end as it stands at the flush. */
+    append(bytes) {
+        const held = () => andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));
+        return this.inPlace ? andThen(this.files.stat(this.name), (there) => this.inPlaceOr(there?.size ?? 0, bytes, held)) : held();
+    }
+    truncate(size) { return need(this.files.truncate, this.options.refuse, 'ftruncate').call(this.files, this.name, size); }
+    readdir() {
+        return andThen(this.files.readdir(this.name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
+    }
+    chmod(mode) { return need(this.files.chmod, this.options.refuse, 'fchmod').call(this.files, this.name, mode); }
+    chown(uid, gid) { return need(this.files.chown, this.options.refuse, 'fchown').call(this.files, this.name, uid, gid); }
+    utimes(atime, mtime) { return need(this.files.utimes, this.options.refuse, 'futimes').call(this.files, this.name, atime, mtime); }
+    /** A flush that fails loses what it held (lastClose says so): taken before it reads. */
+    flush() {
+        if (this.pending.length === 0)
             return;
-        const writes = pending;
-        pending = [];
-        held = 0;
-        return andThen(whole(), (file) => files.writeFile(name, apply(writes, file)));
-    };
-    const hold = (offset, bytes) => {
-        if (held + bytes.byteLength > options.bufferedWriteBytes)
-            throw refuse('EFBIG', 'write');
-        pending.push({ offset, bytes: bytes.slice() });
-        held += bytes.byteLength;
-        return immediate ? andThen(flush(), () => bytes.byteLength) : bytes.byteLength;
-    };
-    // This process's view of the file while it holds writes to it, by any of its descriptions (processView).
-    const viewed = () => (immediate ? undefined : processView(scope, () => {
-        const file = whole();
-        return isPromise(file) ? null : file;
-    }, name));
-    // In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written.
-    const inPlaceOr = (offset, bytes, otherwise) => {
-        if (!inPlace || files.writeRange === undefined) {
-            inPlace = false;
+        const writes = this.pending;
+        this.pending = [];
+        this.held = 0;
+        return andThen(this.whole(), (file) => this.files.writeFile(this.name, apply(writes, file)));
+    }
+    close() { return this.flush(); }
+    pendingBytes() { return this.held; }
+    applyPending(file) { return apply(this.pending, file); }
+    whole() {
+        return andThen(this.files.stat(this.name), (there) => (there === null ? new Uint8Array(0) : this.files.readFile(this.name)));
+    }
+    hold(offset, bytes) {
+        if (this.held + bytes.byteLength > this.options.bufferedWriteBytes)
+            throw this.options.refuse('EFBIG', 'write');
+        this.pending.push({ offset, bytes: bytes.slice() });
+        this.held += bytes.byteLength;
+        return this.immediate ? andThen(this.flush(), () => bytes.byteLength) : bytes.byteLength;
+    }
+    /** This process's view of the file while it holds writes to it, by any of its descriptions (processView). */
+    viewed() {
+        if (this.immediate)
+            return undefined;
+        return processView(this.options.scope, () => {
+            const file = this.whole();
+            return isPromise(file) ? null : file;
+        }, this.name);
+    }
+    /** In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written. */
+    inPlaceOr(offset, bytes, otherwise) {
+        const writeRange = this.files.writeRange;
+        if (!this.inPlace || writeRange === undefined) {
+            this.inPlace = false;
             return otherwise();
         }
         const cannot = (error) => {
             if (!isVfsError(error, 'ENOTSUP'))
                 throw error;
-            inPlace = false;
+            this.inPlace = false;
             return otherwise();
         };
         let written;
         try {
-            written = files.writeRange(name, offset, bytes);
+            written = writeRange.call(this.files, this.name, offset, bytes);
         }
         catch (error) {
             return cannot(error);
         }
         return isPromise(written) ? written.then(() => offset + bytes.byteLength, cannot) : offset + bytes.byteLength;
-    };
-    const statNow = () => andThen(files.stat(name), (there) => {
-        if (there === null)
-            throw refuse('ENOENT', 'fstat');
-        const now = runtimeStatOf(there);
-        const view = viewed();
-        return view ? { ...now, size: view.byteLength } : now;
-    });
-    const op = (fn, syscall) => (...args) => need(fn, refuse, syscall).call(files, name, ...args);
-    return {
-        ino: stat.ino ?? 0,
-        mounted: true,
-        ...(options.awaits ? { awaits: true } : {}),
-        path: () => name,
-        stat: statNow,
-        read: (offset, length) => {
-            const view = viewed();
-            return view ? view.slice(offset, offset + length) : readRangeOrWhole(files, name, offset, length);
-        },
-        write: (offset, bytes) => andThen(inPlaceOr(offset, bytes, () => hold(offset, bytes)), () => bytes.byteLength),
-        // At the end as it is then; a held one goes at the end as it stands at the flush.
-        append: (bytes) => {
-            const held = () => andThen(hold(null, bytes), () => andThen(statNow(), (now) => now.size));
-            return inPlace ? andThen(files.stat(name), (there) => inPlaceOr(there?.size ?? 0, bytes, held)) : held();
-        },
-        truncate: op(files.truncate, 'ftruncate'),
-        readdir: () => andThen(files.readdir(name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type }))),
-        chmod: op(files.chmod, 'fchmod'),
-        chown: op(files.chown, 'fchown'),
-        utimes: op(files.utimes, 'futimes'),
-        flush,
-        close: flush,
-        pendingBytes: () => held,
-        applyPending: (base) => apply(pending, base),
-    };
+    }
+}
+/** `file` with `writes` applied in order (an append at the end as it then is): what a flush writes, and what a process reads. */
+function apply(writes, base) {
+    // A copy: a backend may hand out its own buffer, which must not change before the flush.
+    let file = base.slice();
+    for (const write of writes) {
+        const at = write.offset ?? file.byteLength;
+        if (at + write.bytes.byteLength > file.byteLength) {
+            const grown = new Uint8Array(at + write.bytes.byteLength);
+            grown.set(file);
+            file = grown;
+        }
+        file.set(write.bytes, at);
+    }
+    return file;
 }
 /** A mount's optional operation, or ENOTSUP when it has none. */
 function need(fn, refuse, syscall) {
