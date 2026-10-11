@@ -1665,6 +1665,7 @@ function execBreakdown(state) {
         ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
         ...(state.esmSize ? { esm: state.esmSize } : {}),
         ...(state.phases ? { phases: state.phases } : {}),
+        ...(state.reachableCount !== undefined ? { closure: { files: state.reachableCount, bytes: state.rawBytes ?? 0 } } : {}),
     };
 }
 /** What a module map costs the facet's store that adopts it (N18). A denial is a head row only; a code-only file is none. */

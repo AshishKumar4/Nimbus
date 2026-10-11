@@ -770,11 +770,12 @@ function walkEsmResolver(vfs, progress, readText, conditions) {
         },
         readText,
         isBuiltin: (specifier) => isFacetProvided(specifier),
-        async cjsResolve(specifier, parentPath) {
-            const dir = parentPath.slice(0, parentPath.lastIndexOf('/'));
-            const found = await resolveRequireEx(vfs, specifier, dir, (path) => readText('/' + path), progress, conditions);
-            return found ? '/' + found.resolved : null;
-        },
+        // No "Did you mean" hint: the walk shows no refusal (resolveImportWith,
+        // resolveDeferredImport), and an import it refuses is resolved as
+        // require() resolves it next. Staging gives the program its refusals,
+        // hints included (worker facets/esm-stage.ts). A hint here was a
+        // CommonJS resolution per refused import, every launch.
+        cjsResolve: () => null,
     }, { conditions });
 }
 async function resolveImportWith(esm, specifier, fromDir) {
