@@ -10,6 +10,17 @@ published independently in the `@nimbus-sh` npm scope.
   RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy
   throwaway-only hosting records without a physical facet name, logs that the
   peer facet could not be named, and never guesses which facet to delete.
+- Breaking: W7 wave ingestion lives above the SQLite engine, in the
+  namespace's `WaveIngest` (`@nimbus-sh/core/runtime/wave-ingest.js`,
+  `ProcessFiles.waves`). `CredentialedVfs.writeStream` and `writeBatchPlaced`
+  and `SqliteVFS.setWaveRouter` and `placesHere` are removed: stream a wave with
+  `waves.writeStream(view, stream, options)`, place a batch with
+  `waves.writeBatch(view, payload)`, ask `waves.placesHere(view, names)`. A
+  view opens a wave's storage with `wave(options, work)`. The wave contracts
+  (`WriteStreamOptions`, `WriteBatchStreamResult`, `WaveRouter`, `WaveSequence`,
+  `ROUTED_FILE_MAX`, `linkedSignal`, …) move from `vfs/sqlite-vfs.js` to
+  `runtime/wave-contracts.js`. `seedProject` and `shouldSeedProject` take the
+  filesystem authority (`{ engine, waves }`) instead of the engine.
 - Breaking: the legacy symlink registry is gone. `@nimbus-sh/core/vfs/symlink-registry.js`
   (`SymlinkRegistry`, `getSymlinkRegistry`, `LEGACY_SYMLINK_REGISTRY_PATH`) and the
   supervisor's `hasLegacySymlinkUnder` call are removed. No Nimbus since the core

@@ -105,6 +105,8 @@ export class SessionProcessSupervisor implements ProcessOutput {
   private readonly endWaiters = new Map<number, ((exitCode: number) => void)[]>();
   /** Releases an ended process's filesystem binding; see setRelease. */
   private release: ((pid: number) => Promise<void>) | null = null;
+  /** Tells that filesystem the process has ended, at its end; see setRelease. */
+  private ended: ((pid: number) => void) | null = null;
   /** Each ended pid's release, begun at its end: what a prune reports and waits for before it forgets the entry. */
   private readonly releases = new Map<number, Promise<{ error: unknown } | null>>();
   /** Who waits for a pid's release to run (released), until it begins. */
@@ -471,6 +473,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
   exit(pid: number, exitCode: number): void {
     const wasRunning = this.table.get(pid)?.state === 'running';
     this.table.exit(pid, exitCode);
+    if (wasRunning) this.ended?.(pid);
     this.releaseEnded(pid);
     this.publishEnd(pid, wasRunning);
     this.terminators.delete(pid);
@@ -486,6 +489,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
   kill(pid: number, exitCode?: number, reason?: SignalAbortReason): boolean {
     const wasRunning = this.table.get(pid)?.state === 'running';
     const killed = this.table.kill(pid, exitCode);
+    if (wasRunning) this.ended?.(pid);
     this.releaseEnded(pid);
     this.publishEnd(pid, wasRunning);
     this.terminate(pid, reason);
@@ -526,9 +530,12 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * host: every end marks this table), so nothing it held outlives it to be
    * found by the next caller, a destroy among them. A prune reports how it
    * went (a descriptor's buffered bytes it lost) and forgets the entry.
+   * `ended` is told at the end itself, before any held work has stopped:
+   * what the process can no longer use (its read lease) goes then.
    */
-  setRelease(release: (pid: number) => Promise<void>): void {
+  setRelease(release: (pid: number) => Promise<void>, ended?: (pid: number) => void): void {
     this.release = release;
+    this.ended = ended ?? null;
   }
 
   /**

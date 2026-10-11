@@ -9,6 +9,7 @@ import {
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { bytes, filePayload } from './lib/staged-import.mjs';
 
@@ -40,6 +41,7 @@ const TRANSPORT_SLACK_BYTES = 256 * 1024 + 64 * 1024 + 4 * 1024;
 {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const vfs = rawVfs.as(CRED_KERNEL);
   const data = bytes(MAX_TX_BLOB_BYTES * 3, 11);
   const startTransactions = harness.transactionCount;
@@ -56,7 +58,7 @@ const TRANSPORT_SLACK_BYTES = 256 * 1024 + 64 * 1024 + 4 * 1024;
       }
     },
   );
-  const result = await vfs.writeStream(stream);
+  const result = await waves.writeStream(vfs, stream);
   assert.equal(result.ok, true);
   assert.equal(checked, true, 'the stream never ran past one transaction of bytes');
   assert.deepEqual(vfs.readFile('boundary.bin'), data);
@@ -72,12 +74,13 @@ const TRANSPORT_SLACK_BYTES = 256 * 1024 + 64 * 1024 + 4 * 1024;
 {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const vfs = rawVfs.as(CRED_KERNEL);
   const entries = Array.from({ length: 8 }, (_, index) => ({
     path: `concurrent-${index}.bin`,
     data: bytes(MAX_TX_BLOB_BYTES * 2 + index + 1, index * 13),
   }));
-  const writes = entries.map((entry) => vfs.writeStream(
+  const writes = entries.map((entry) => waves.writeStream(vfs,
     encodeWriteBatchStream(filePayload(entry.path, entry.data)),
   ));
   let timeout;
@@ -139,6 +142,7 @@ function corruptFileEndCheck(frame) {
 {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const vfs = rawVfs.as(CRED_KERNEL);
   const oldData = bytes(31, 2);
   const replacement = bytes(MAX_TX_BLOB_BYTES + 7, 29);
@@ -153,7 +157,7 @@ function corruptFileEndCheck(frame) {
       controller.close();
     },
   });
-  const result = await vfs.writeStream(stream);
+  const result = await waves.writeStream(vfs, stream);
   assert.equal(result.ok, false);
   assert.equal(result.error.phase, 'decode');
   assert.match(result.error.message, /file-end check mismatch/);
@@ -171,6 +175,7 @@ function corruptFileEndCheck(frame) {
 {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const vfs = rawVfs.as(CRED_KERNEL);
   const abort = new AbortController();
   const source = encodeWriteBatchStream(filePayload(
@@ -202,7 +207,7 @@ function corruptFileEndCheck(frame) {
     },
   }, { highWaterMark: 0 });
 
-  const result = await vfs.writeStream(stream, { signal: abort.signal });
+  const result = await waves.writeStream(vfs, stream, { signal: abort.signal });
   assert.equal(result.ok, false);
   assert.equal(result.error.phase, 'decode');
   assert.match(result.error.message, /unit cancellation/);

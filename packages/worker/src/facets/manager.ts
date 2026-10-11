@@ -1143,7 +1143,12 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
         })
         .then(() => __supervisor[method](__rpcBatchBytes(__batch), __batch.at, __batch.run))
         .then(() => __nimbusStopReplay.ackedRun(__batch.chunks))
-        .catch((e) => __onRpcDrop(__batch.size, e));
+        .catch((e) => {
+          __onRpcDrop(__batch.size, e);
+          // Its reader has gone (a parent closed its end of this child's
+          // pipe): the writes fail, EPIPE, as Node's do (__nimbusWriteLiveOutput).
+          if (e && e.code === "EPIPE") throw e;
+        });
       __batch.task = __task;
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
@@ -1362,10 +1367,13 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       __nimbusProgramStopped = true;
     }
 
+    // The runtime's own turns, on the platform's timer: a program timer's
+    // resumption barrier is the program's, and its round trip (and the read
+    // lease it is answered with) is nothing an ended program needs.
     async function __drainPendingIO(maxPasses = 12) {
       let __settledIO = 0;
       for (let __pass = 0; __pass < maxPasses; __pass++) {
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => globalThis.__nimbusRawSetTimeout(r, 0));
         if (__pendingIO.length <= __settledIO) break;
         const __slice = __pendingIO.slice(__settledIO);
         __settledIO = __pendingIO.length;
@@ -1383,7 +1391,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     if (__residencyReport) {
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
-      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport))?.catch(() => {});
     }
     // A run after a stop that ended before printing all the stopped run had
     // printed did not retrace it: what it printed past that is not the
@@ -1856,7 +1864,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => globalThis.__nimbusRawSetTimeout(resolve, 0));
     __nimbusRuntime = {
       supervisor: __supervisor,
       pendingIO: __pendingIO,
@@ -5433,6 +5441,8 @@ export class FacetManager {
    * journal recovery rides the first pump.
    */
   private readonly launchPump: PacedWork;
+  /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+  private readonly launching = new Map<number, { stage: 'admission' | 'prepare'; since: number }>();
   private readonly launchTasks = new Set<Promise<void>>();
   private launchesClosed = false;
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -7095,9 +7105,11 @@ export class FacetManager {
     // no more maps at once than may run. Killed or refused while it waits, it
     // never ran.
     let admitted = false;
+    this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
     try {
       return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
         admitted = true;
+        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
         // Paced like a resident launch: a tree too large for one turn costs
@@ -7353,8 +7365,17 @@ export class FacetManager {
       if (isDynamicWorkerDeadlock(err) && !opts.skipSpawn) this._end(entry.pid, { code: 1 });
       throw err;
     } finally {
+      this.launching.delete(entry.pid);
       opts.signal?.removeEventListener('abort', onShellAbort);
     }
+  }
+
+  /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+  launchState(now = Date.now()): { launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
+    return {
+      launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
+      pacer: this.launchPump.state(now),
+    };
   }
 
   /**
@@ -8053,6 +8074,7 @@ export class FacetManager {
           },
           onLoaded: () => {
             pacer.settle();
+            this.launching.delete(entry.pid);
             if (!diagSink) return;
             diagSink.loadMs = Date.now() - __loadStart;
             __runStart = Date.now();

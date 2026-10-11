@@ -44,12 +44,12 @@ function setup() {
   const engineAs = vfs.as.bind(vfs);
   vfs.as = (cred) => new Proxy(engineAs(cred), {
     get(target, key) {
-      if (key !== 'writeStream') return Reflect.get(target, key, target);
-      return async (stream, options) => {
+      if (key !== 'wave') return Reflect.get(target, key, target);
+      return async (options, work) => {
         const hold = state.hold;
         state.hold = null;
         if (hold) await hold;
-        const result = await target.writeStream(stream, options);
+        const result = await target.wave(options, work);
         for (const { path } of result.receipts) published.push(path);
         return result;
       };

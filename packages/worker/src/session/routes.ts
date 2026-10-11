@@ -59,6 +59,7 @@ import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
 import { isHostedWebSocket, isHostedWatch } from '@nimbus-sh/fabric/peer-host.js';
 import {
   isCirrusHmrPath,
@@ -369,6 +370,21 @@ const FanoutBenchBodySchema = z.object({
   n: z.coerce.number().optional(),
   sleepMs: z.coerce.number().optional(),
 }).passthrough();
+
+/**
+ * What a launch of this session can be waiting on, read where it waits: each
+ * one-shot not yet running and its stage, the launches the pacer holds for a
+ * turn, the alarm, its reasons and the dispatch running, and the ledger's
+ * waits (_diag/session's `launch`).
+ */
+async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown>> {
+  const ledger = loaderLedgerStats(self.ctx);
+  return {
+    ...(self.facetManagerComposed?.manager.launchState() ?? { launches: [], pacer: null }),
+    timers: await timers(self, self.ctx).state(),
+    ledger: { inFlight: ledger.inFlightWorkers, waiters: ledger.waiters, pauseMs: ledger.pauseMs },
+  };
+}
 
 async function parseJsonBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   const value = await request.json();
@@ -850,6 +866,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // path (Phase B skipped). Probes assert ≥1 after a forced
         // close + reconnect on the same isolate.
         warmJoinCount: (self as any)._b4WarmJoinCount ?? 0,
+        // What a launch can be waiting on: its stage (the ledger's admission,
+        // its preparation), a turn the pacer has not been granted, the alarm
+        // and the dispatch still running.
+        launch: await launchDiagnosis(self),
         // Live shell state — useful for confirming the in-memory
         // shell agrees with SQL. Null when no shell is currently
         // attached (between wsClose and next /ws upgrade).
@@ -946,7 +966,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           kernel.chown(root, cred.uid, cred.gid);
           const writer = self.ensureSqliteFs().as(cred);
           const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {
-            writeStream: (stream) => writer.writeStream(stream),
+            writeStream: (stream) => self.getFilesystemAuthority().waves.writeStream(writer, stream),
             sql: self.ctx.storage.sql,
           });
           return Response.json({ ...result, vfs: self.ensureSqliteFs().getStats().sql.phases });
@@ -1082,14 +1102,14 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         vfs.mkdir(`${root}/wire`, { recursive: true });
         await phase('vfsWriteStreamWire', async () => {
           for (let i = 0; i < body.files; i += body.perWave) {
-            const result = await vfs.writeStream(await wire('wire', i));
+            const result = await self.getFilesystemAuthority().waves.writeStream(vfs, await wire('wire', i));
             if (!result.ok) throw new Error(result.error.message);
           }
         });
         vfs.mkdir(`${root}/stream`, { recursive: true });
         await phase('vfsWriteStream', async () => {
           for (let i = 0; i < body.files; i += body.perWave) {
-            const result = await vfs.writeStream(encodeWriteBatchStream(payload('stream', i)));
+            const result = await self.getFilesystemAuthority().waves.writeStream(vfs, encodeWriteBatchStream(payload('stream', i)));
             if (!result.ok) throw new Error(result.error.message);
           }
         });

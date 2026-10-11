@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { CHUNK_SIZE, MAX_TX_BLOB_BYTES } from '../../packages/platform/src/limits.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
@@ -206,6 +207,7 @@ for (const [name, mutate] of [
 // replacement transaction and read the original generation on the same VFS.
 {
   const { harness, raw, vfs } = open();
+  const waves = new WaveIngest(null);
   vfs.writeFile('affected', 'stream original');
   const revision = vfs.revision();
   // The chunk insert of the replacement's own transaction. (The injector
@@ -213,7 +215,7 @@ for (const [name, mutate] of [
   // on a chunk view whose shared buffer the encoder had transferred.)
   harness.setFaultInjector((statement) => statement.sql.startsWith('INSERT INTO vfs_chunks')
     ? new Error('injected stream chunk failure') : null);
-  const result = await vfs.writeStream(encodeWriteBatchStream(batch('affected', replacement.slice())));
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream(batch('affected', replacement.slice())));
   harness.clearFault();
   assert.equal(result.ok, false);
   assert.match(result.error.message, /injected stream chunk failure/);
@@ -227,6 +229,7 @@ for (const [name, mutate] of [
 // parameter count of each statement stays within SQLite's limit.
 {
   const { harness, vfs } = open();
+  const waves = new WaveIngest(null);
   const files = Array.from({ length: 40 }, (_, i) => [`pkg/lib/file-${i}.js`, new TextEncoder().encode(`module.exports = ${i};`)]);
   const inodes = [{ path: 'pkg', parentPath: '', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 },
     { path: 'pkg/lib', parentPath: 'pkg', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
@@ -235,7 +238,7 @@ for (const [name, mutate] of [
     inodes.push({ path, parentPath: 'pkg/lib', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 });
     chunks.push({ path, chunkId: 0, data });
   }
-  const result = await vfs.writeStream(encodeWriteBatchStream({ inodes, chunks }));
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({ inodes, chunks }));
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(vfs.readdir('pkg/lib').length, 40);
   assert.equal(vfs.readFileString('pkg/lib/file-39.js'), 'module.exports = 39;');

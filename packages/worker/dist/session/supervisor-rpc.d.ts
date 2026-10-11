@@ -103,11 +103,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     }>;
     openWaveWriter(first?: boolean): Promise<string | null>;
     retireWaveWriter(writer: string): Promise<void>;
-    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: import("@nimbus-sh/platform/wave-writer.js").WaveFence, owner?: string): Promise<import("@nimbus-sh/core/vfs/sqlite-vfs.js").WriteBatchStreamResult>;
-    putRegistryEntries(entries: any[]): Promise<{
-        written: number;
-        failed: number;
-    }>;
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: import("@nimbus-sh/platform/wave-writer.js").WaveFence, owner?: string): Promise<import("@nimbus-sh/core/runtime/wave-contracts.js").WriteBatchStreamResult>;
     getCachedTarball(integrity: string): Promise<{
         bytes: Uint8Array | null;
         events: import("@nimbus-sh/core/_shared/cache-stats.js").CacheStatEvent[];
@@ -174,6 +170,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         stdoutClosed: boolean;
         stderrClosed: boolean;
     }>;
+    cpCloseOutput(childPid: number, fd: 1 | 2): Promise<void>;
     cpKill(childPid: number, signal: string): Promise<boolean>;
     cpWait(childPid: number, waitMs: number, acquire?: import("./rpc.js").FsAcquireArgs, knownStarted?: boolean): Promise<{
         done: boolean;

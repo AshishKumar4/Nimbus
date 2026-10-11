@@ -61,7 +61,6 @@ export const SUPERVISOR_OP_TABLE = {
     writeBatchStream: null,
     openWaveWriter: null,
     retireWaveWriter: null,
-    putRegistryEntries: null,
     stdout: null,
     stderr: null,
     prefetch: null,
@@ -78,6 +77,7 @@ export const SUPERVISOR_OP_TABLE = {
     cpReadStdin: null,
     cpReadOutput: null,
     cpDrainOutput: null,
+    cpCloseOutput: null,
     cpKill: null,
     cpWait: null,
     cpBlocked: null,
@@ -143,7 +143,7 @@ const SUPERVISOR_OPS_WITHIN = new Set([
     'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
     'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedOpen', 'awaitHostedBoot',
     'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'hostLost',
-    'transform', 'allocatePort', 'putRegistryEntries', 'getCachedTarball',
+    'transform', 'allocatePort', 'getCachedTarball',
 ]);
 /** Whether `op` makes something of its process's visible outside the session (SUPERVISOR_OPS_WITHIN). */
 export function supervisorOpLeaves(op) {

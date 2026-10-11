@@ -1,5 +1,5 @@
 /**
- * The namespace as every wave's router (SqliteVFS.setWaveRouter). A W7 wave
+ * The namespace as every wave's router (WaveIngest). A W7 wave
  * is streamed to the session's SQLite filesystem, whoever sends it (a
  * process's binding, or a command holding the engine), and each of its
  * records lands where the namespace puts a mutation of that name: its
@@ -29,7 +29,7 @@
  * most one per link record in flight (a known leak, by that name pattern).
  */
 import type { CompositeVFS } from '../vfs/composite.js';
-import type { WaveRouter } from '../vfs/sqlite-vfs.js';
+import type { WaveRouter } from './wave-contracts.js';
 import type { VfsCred } from '../vfs/vfs.js';
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export declare const LINK_SLOT_SUFFIX = ".nimbus-wave";

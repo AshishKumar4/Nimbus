@@ -96,7 +96,7 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
   // The W7 encoder takes ownership of every chunk buffer: it enqueues them into
   // a type:'bytes' stream, which transfers them. Each batch encodes its own
   // copy, the discipline the shared-wave installer follows to stay retryable.
-  const runInstallBatch = () => userVfs.writeStream(encodeWriteBatchStream({
+  const runInstallBatch = () => authority.waves.writeStream(userVfs, encodeWriteBatchStream({
     inodes: [
       { path: installRoot, parentPath: `${customPrefix}/lib`, isDir: true, size: 0, mtime: Date.now(), mode: 0o755, chunkCount: 0 },
       { path: packageDir, parentPath: installRoot, isDir: true, size: 0, mtime: Date.now(), mode: 0o755, chunkCount: 0 },

@@ -19,6 +19,7 @@
  *   - Basename injection (commit 2) handles the /preview/ basepath wiring.
  */
 import type { SqliteVFS } from './sqlite-vfs.js';
+import type { WaveIngest } from '../runtime/wave-ingest.js';
 /** Sentinel: if present, seed never runs again (until user deletes it). */
 export declare const SEED_SENTINEL_PATH = "home/user/.nimbus-seeded";
 /** Project root. Absolute VFS path (no leading slash). */
@@ -38,7 +39,12 @@ export interface SeedFile {
     content: string;
 }
 export declare const SEED_FILES: SeedFile[];
-export declare function shouldSeedProject(vfs: SqliteVFS): boolean;
+/** The session's filesystem and the namespace's placement of what it writes there (ProcessFiles). */
+export interface SeedFilesystem {
+    readonly engine: SqliteVFS;
+    readonly waves: WaveIngest;
+}
+export declare function shouldSeedProject(filesystem: SeedFilesystem): boolean;
 /**
  * Returns true if the sentinel is present (seed has completed at least once).
  * Used to gate MOTD hints about the starter app.
@@ -56,7 +62,7 @@ export declare function hasSeededProject(vfs: SqliteVFS): boolean;
  * is idempotent. If (1) itself fails mid-transaction, sqlite rolls back and
  * we start clean next boot.
  */
-export declare function seedProject(vfs: SqliteVFS, opts?: {
+export declare function seedProject(filesystem: SeedFilesystem, opts?: {
     log?: (msg: string) => void;
 }): {
     seeded: boolean;

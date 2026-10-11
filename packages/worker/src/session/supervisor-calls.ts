@@ -72,7 +72,7 @@ import {
   type SupervisorAnswer,
   type SupervisorAnsweredMethod,
 } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -157,7 +157,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       const run = this._runId();
       if (props?.bindingKind === 'infrastructure') {
         if (run !== undefined) throw new Error('infrastructure supervisor cannot carry a process run');
-        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
           throw new Error('infrastructure supervisor refuses guest-originated operations');
         }
       } else if (run === undefined) throw new Error('process supervisor binding requires a run');
@@ -760,34 +760,6 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       }
     }
 
-    /**
-     * Bulk-write npm registry cache entries (resolved packument metadata)
-     * in ONE RPC. Used by the resolver-facet to flush a wave of resolved
-     * packages back to the supervisor without per-entry round-trips.
-     *
-     * `entries` is an array of RegistryCacheEntry from src/npm-cache.ts:
-     *   { name, version, tarballUrl, integrity, depsJson, exportsJson,
-     *     main, moduleField, binJson, fetchedAt }
-     *
-     * Returns { written, failed } — partial writes are tolerated; cache
-     * is best-effort (resolver correctness depends on the returned
-     * ResolvedPackage[], not on cache hits).
-     */
-    async putRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> {
-      // Phase 2 A'.2: track the inbound array's resident byte cost.
-      // Each registry entry is ~500 B (deps + integrity + tarballUrl);
-      // a wave of 100 entries is ~50 KiB. Bounded; counted in
-      // streamingBuffersBytes for visibility.
-      const REGISTRY_ENTRY_BYTES = 512;
-      const payloadBytes = (Array.isArray(entries) ? entries.length : 0) * REGISTRY_ENTRY_BYTES;
-      rpcPayloadStart(payloadBytes);
-      try {
-        return await this._call(this._op('putRegistryEntries', [entries]));
-      } finally {
-        rpcPayloadEnd(payloadBytes);
-      }
-    }
-
     // ── R2-backed npm cache RPC [W4] ─────────────────────────────────────
     //
     // The R2 buckets are bindings on the SUPERVISOR worker (not the
@@ -1045,6 +1017,11 @@ export function supervisorCalls<Base extends Class>(base: Base) {
 
     async cpDrainOutput(childPid: number): Promise<{ stdout: Uint8Array; stderr: Uint8Array; stdoutClosed: boolean; stderrClosed: boolean }> {
       return this._call(this._op('cpDrainOutput', [childPid]));
+    }
+
+    /** The parent closes its read end of the child's fd 1 or 2: the child's writes there fail, EPIPE. */
+    async cpCloseOutput(childPid: number, fd: 1 | 2): Promise<void> {
+      return this._call(this._op('cpCloseOutput', [childPid, fd]));
     }
 
     async cpKill(childPid: number, signal: string): Promise<boolean> {

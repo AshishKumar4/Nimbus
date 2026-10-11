@@ -52,11 +52,12 @@
  */
 import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
-import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
+import type { FacetRegistryEvent } from './resolve-facet.js';
+import { type RegistryCacheEntry } from './registry-record.js';
 /**
  * Argument shape: ONE package's resolution work.
  *
- * cachedHit (optional): a FacetCachedEntry the supervisor already has
+ * cachedHit (optional): a registry record the supervisor already has
  * for this name. The task uses it to short-circuit the fetch when
  * it satisfies the requested range. If null/missing, the task asks the
  * supervisor for the packument.
@@ -69,7 +70,7 @@ export interface ResolveOneSpec {
      * versions) so the per-task RPC payload stays small. The task picks
      * the best version that satisfies range.
      */
-    cachedEntries: FacetCachedEntry[];
+    cachedEntries: RegistryCacheEntry[];
     /** X.5-G G1: this spec came from an optionalDependencies edge, so
      *  platform-native bindings silent-skip rather than failing the parent. */
     isOptional: boolean;
@@ -95,7 +96,7 @@ export interface ResolveOneResult {
      * the resolved version + up to 5 recent versions seen in the
      * packument. Empty for cache-hit-only resolutions.
      */
-    cacheWrites: any[];
+    cacheWrites: RegistryCacheEntry[];
     /** [npm] log lines, forwarded by the supervisor. */
     messages: string[];
     /** Registry telemetry events to emitRegistryEvent. */
@@ -165,8 +166,7 @@ export interface ResolveOneResult {
  * submitMany invocation `fn(item, env)` lines up.
  *
  * `env` is the loader-isolate env supplied by Fanout.
- * `env.SUPERVISOR` is the supervisor-rpc binding (putRegistryEntries,
- * getPackument).
+ * `env.SUPERVISOR` is the supervisor-rpc binding (getPackument).
  */
 export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
     SUPERVISOR: {

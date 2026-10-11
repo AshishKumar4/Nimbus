@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -8,6 +9,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const harness = createSqliteVfsTestHarness();
 try {
   const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const plain = raw.as(CRED_KERNEL);
   plain.mkdir('a'); plain.mkdir('b'); plain.writeFile('a/file', 'old');
   const a = raw.acquireExclusiveMutation('a');
@@ -50,7 +52,7 @@ try {
   }).getReader();
   let releaseInput;
   const inputReady = new Promise((resolve) => { releaseInput = resolve; });
-  const writing = publisher.writeStream(new ReadableStream({
+  const writing = waves.writeStream(publisher, new ReadableStream({
     type: 'bytes',
     async pull(controller) {
       await inputReady;

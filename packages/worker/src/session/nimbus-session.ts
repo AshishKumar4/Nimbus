@@ -908,7 +908,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcNetTls(action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> { return _rpc._rpcNetTls(this as any, action, token, payload, pid, run); }
   async _rpcOutbound(action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> { return _rpc._rpcOutbound(this as any, action, payload, pid, run); }
   async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
-  async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> { return _rpc._rpcStdout(this as any, pid, data, at, run); }
   async _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> { return _rpc._rpcStderr(this as any, pid, data, at, run); }
   async _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void> { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
@@ -975,6 +974,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid, writerId, maxBytes); }
   async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs, acquire, pid); }
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
+  async _rpcCpCloseOutput(childPid: number, fd: 1 | 2): Promise<void> { return _rpc._rpcCpCloseOutput(this as any, childPid, fd); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
   async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid, knownStarted); }
   async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
@@ -1325,7 +1325,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     // Idempotent: guarded by shouldSeedProject() which checks both a
     // sentinel file and the project dir. Safe to call on every boot.
     try {
-      seedProject(this.sqliteFs!, { log: (msg) => console.log(msg) });
+      seedProject(this.getFilesystemAuthority(), { log: (msg) => console.log(msg) });
     } catch (e: any) {
       console.error('[nimbus] seedProject failed:', e?.message || e);
     }

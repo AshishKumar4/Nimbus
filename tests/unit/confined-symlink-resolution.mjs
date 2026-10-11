@@ -275,7 +275,7 @@ a.mkdirBatch(['/home/user/tmp-dir/batch-dir']);
 assert.ok(a.isDirectory('/tmp/batch-dir'));
 // A stream frames canonical paths, without the leading slash.
 {
-  const result = await a.writeStream(encodeWriteBatchStream({
+  const result = await authority.waves.writeStream(a, encodeWriteBatchStream({
     inodes: [batchFile('home/user/tmp-dir/streamed', 'home/user/tmp-dir')],
     chunks: [{ path: 'home/user/tmp-dir/streamed', chunkId: 0, data: enc.encode('x') }],
   }));

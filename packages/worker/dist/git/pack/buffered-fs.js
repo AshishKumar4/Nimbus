@@ -18,8 +18,9 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { ROUTED_FILE_MAX } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { facetFileApi, METADATA_MAX_ACCOUNTED_BYTES, METADATA_MAX_ENTRIES, READ_RANGE_BYTES, supervisorStat, WHOLE_FILE_RPC_SAFE_BYTES, } from './facet-supervisor.js';
-import { MOUNT_WAVE_FILE_MAX, replaceFile } from './mount-writer.js';
+import { replaceFile } from './mount-writer.js';
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
 function parentOf(path) {
     return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
@@ -378,7 +379,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 const mode = executable ? 0o755 : 0o644;
                 const fileMetadata = { kind: 'file', size: buf.length, mode, mtimeMs: now, ctimeMs: now, atimeMs: now };
                 setMetadata(p, fileMetadata);
-                if (fileApi !== null && buf.length > MOUNT_WAVE_FILE_MAX) {
+                if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {
                     // What the waves hold before it lands first; then the file, as a program writes it.
                     await writer.flush();
                     const stat = await replaceFile(fileApi, '/' + p, mode, buf);

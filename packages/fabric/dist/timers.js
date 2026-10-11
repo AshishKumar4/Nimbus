@@ -37,26 +37,11 @@ export const TIMER_REASONS_KEY = 'w1_next_alarm_reasons';
 /** How many times {@link Timers.arm} asks before it gives up and throws. */
 const TIMER_ARM_ATTEMPTS = 3;
 /**
- * The async context of a running dispatch's handlers. A schedule request
- * made inside it lands in the dispatch's arm collection instead of the
- * chain — a handler that AWAITED a chained schedule would be waiting on an
- * entry queued behind the dispatch it is running inside, which is a
- * deadlock. `Outbox.queue` awaits `timers.schedule`, so any handler that
- * queues into an outbox reaches this. The dispatcher folds the collected
- * arms into the reason map before its own re-arm.
- *
- * AsyncLocalStorage, not a host field, so the redirect is scoped to the
- * dispatch's OWN async context: a concurrent turn that schedules while a
- * handler awaits external IO takes the normal chain path and keeps its own
- * turn-gated persistence. Requires the `nodejs_compat` (or `nodejs_als`)
- * compatibility flag on workerd.
- *
- * The collection closes when the dispatcher folds it. Work a handler started
- * and did not await (a re-driven launch, waitUntil'd) keeps the context after
- * the dispatch is done; its later arms take the chain, which runs after the
- * dispatch's own write, instead of a collection nothing will read again.
+ * The epoch of the dispatch whose handlers are running, in their async
+ * context: an arm they make once a reset voided it writes nothing, as the
+ * dispatch itself does not (see {@link Timers.reset}).
  */
-const dispatchArms = new AsyncLocalStorage();
+const dispatchEpoch = new AsyncLocalStorage();
 /**
  * One actor's timers: the reason map over its ONE platform alarm.
  *
@@ -98,19 +83,8 @@ export class Timers {
      */
     schedule(reason, whenMs) {
         const { host, ctx } = this;
-        // From inside a dispatch handler, hand the arm to the dispatcher
-        // instead of the chain (see dispatchArms): the fold keeps EDF
-        // semantics, and the dispatch's own write and re-arm carry it. The
-        // setAlarm gate matches the chain path's, so both paths refuse alike
-        // on a runtime without alarms.
-        const collection = dispatchArms.getStore();
-        if (collection?.open) {
-            if (typeof ctx?.storage?.setAlarm !== 'function')
-                return Promise.resolve(false);
-            collection.arms.push({ reason, whenMs });
-            return Promise.resolve(true);
-        }
-        const epoch = host._timerEpoch ?? 0;
+        const inDispatch = dispatchEpoch.getStore();
+        const epoch = inDispatch?.host === host ? inDispatch.epoch : host._timerEpoch ?? 0;
         // Serialize every read-modify-write of the reasons map through one
         // per-instance chain: two schedulers firing back-to-back from one activity
         // hook would otherwise interleave their get→put cycles and silently drop
@@ -126,9 +100,11 @@ export class Timers {
                     return false;
                 const map = { ...(existing || {}) };
                 // Earliest-deadline-first: only update if new request is sooner or
-                // this reason has no pending entry.
+                // this reason has no pending entry. A deadline a running dispatch
+                // fired is no pending entry: this request replaces it, and that
+                // dispatch no longer drops it.
                 let written;
-                if (!(reason in map) || whenMs < map[reason]) {
+                if (!(reason in map) || whenMs < map[reason] || host._timerFiring?.get(reason) === map[reason]) {
                     map[reason] = whenMs;
                     written = ctx.storage.put(TIMER_REASONS_KEY, map);
                 }
@@ -139,6 +115,9 @@ export class Timers {
                 const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
                 // Joined: either failing is the one failure, and neither is left unhandled.
                 await Promise.all([written, armed]);
+                // Armed: what the map holds for it is this request's or sooner, and a
+                // dispatch that fired it keeps that, whichever attempt wrote it.
+                host._timerFiring?.delete(reason);
                 return true;
             }
             catch (e) {
@@ -146,9 +125,7 @@ export class Timers {
                 return false;
             }
         };
-        const chained = (host._timerChain ?? Promise.resolve()).then(run, run);
-        host._timerChain = chained;
-        return chained;
+        return link(host, run);
     }
     /**
      * {@link schedule}, for a caller that cannot go on unarmed: a refused arm
@@ -181,12 +158,16 @@ export class Timers {
      * For each pending reason whose deadline has passed, run its handler.
      * Handlers are awaited in place: the alarm invocation is the fresh turn a
      * re-entering subsystem asked for, and it has to stay the one paying for the
-     * work it just released.
+     * work it just released. They run off the chain: what they wait for may
+     * itself wait on an arm, from inside a handler or from anywhere else.
      *
      * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
-     * earliest remaining deadline. If no reasons remain, deletes the map key and
-     * does NOT call setAlarm — the DO becomes hibernation-eligible after the 10s
-     * idle window.
+     * earliest remaining deadline, the map read again for it: what was armed
+     * while the handlers ran is kept, and a fired reason goes unless it was
+     * armed again meanwhile. Until then the map keeps every fired reason, so an
+     * alarm retried after a reset mid-handler fires them again.
+     * If no reasons remain, deletes the map key and does NOT call setAlarm —
+     * the DO becomes hibernation-eligible after the 10s idle window.
      *
      * Forward/back-compat: unknown reasons silently dropped. `onLegacyAlarm`
      * covers an alarm that fires with no map at all — a deploy from before the
@@ -196,58 +177,63 @@ export class Timers {
      */
     dispatch(handlers, onLegacyAlarm, alarmInfo) {
         const { host, ctx } = this;
-        const epoch = host._timerEpoch ?? 0;
-        const current = () => (host._timerEpoch ?? 0) === epoch;
-        // Same serialization as schedule: the dispatcher's read→handlers→write
-        // cycle must not interleave with an activity-hook schedule.
-        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo));
-        host._timerChain = chained;
-        return chained;
+        return dispatchBody(host, ctx, host._timerEpoch ?? 0, handlers, onLegacyAlarm, alarmInfo);
+    }
+    /** The platform alarm, the reasons it carries, and the dispatch running: what it fired and for how long. */
+    async state(now = Date.now()) {
+        const { _timerFiring: fired, _timerFiringSince: since } = this.host;
+        return {
+            alarmAt: (await this.ctx.storage.getAlarm?.()) ?? null,
+            reasons: (await this.ctx.storage.get(TIMER_REASONS_KEY)) ?? null,
+            dispatching: fired === undefined || since === undefined ? null : { reasons: [...fired.keys()], ms: now - since },
+        };
     }
 }
+/** `step` queued on `host`'s chain after every read-modify-write of the map before it. */
+function link(host, step) {
+    const chained = (host._timerChain ?? Promise.resolve()).then(step, step);
+    host._timerChain = chained;
+    return chained;
+}
 /**
- * One dispatch. `current` answers whether the epoch it was requested in still
- * stands: once a reset voids it, no further handler runs and nothing is
- * written or armed — the reset's caller is wiping this state, and a write
- * after the wipe would outlive it.
+ * One dispatch, requested in `epoch`: once a reset voids it, no further
+ * handler runs and nothing is written or armed — the reset's caller is wiping
+ * this state, and a write after the wipe would outlive it. The map is read,
+ * and written back, on the chain; the handlers run between, off it.
  */
-async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
-    // Collect schedule requests made inside handler context (see
-    // dispatchArms) and fold them into the map below, so an in-dispatch arm
-    // neither deadlocks on the chain nor races the write.
-    const collection = { arms: [], open: true };
+async function dispatchBody(host, ctx, epoch, handlers, onLegacyAlarm, alarmInfo) {
+    const current = () => (host._timerEpoch ?? 0) === epoch;
+    const now = Date.now();
+    const fired = new Map();
+    const rearms = new Map();
     try {
-        const now = Date.now();
-        const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY));
+        const existing = await link(host, async () => (await ctx?.storage?.get?.(TIMER_REASONS_KEY)));
         if (!current())
             return;
-        const map = { ...(existing || {}) };
-        const hadMap = Object.keys(map).length > 0;
-        if (!hadMap) {
-            dispatchArms.run(collection, () => onLegacyAlarm?.());
+        // Snapshot fireable reasons BEFORE running any of them, so a handler
+        // that schedules itself for the next cycle doesn't get immediately
+        // re-fired in the same dispatch.
+        for (const [reason, when] of Object.entries(existing ?? {})) {
+            if (when <= now)
+                fired.set(reason, when);
+        }
+        host._timerFiring = fired;
+        host._timerFiringSince = now;
+        if (Object.keys(existing ?? {}).length === 0) {
+            dispatchEpoch.run({ host, epoch }, () => onLegacyAlarm?.());
         }
         else {
-            // Snapshot fireable reasons BEFORE running any of them, so a
-            // handler that schedules itself for the next cycle doesn't get
-            // immediately re-fired in the same dispatch.
-            const fired = [];
-            for (const [reason, when] of Object.entries(map)) {
-                if (when <= now)
-                    fired.push(reason);
-            }
-            for (const reason of fired) {
+            for (const reason of [...fired.keys()]) {
                 if (!current())
                     return;
-                delete map[reason];
                 const handler = handlers[reason];
                 // Unknown reasons silently dropped (forward-compat).
                 if (!handler)
                     continue;
                 try {
-                    const result = await dispatchArms.run(collection, () => handler(now, alarmInfo));
-                    if (result && typeof result.rearmAt === 'number') {
-                        map[reason] = result.rearmAt;
-                    }
+                    const result = await dispatchEpoch.run({ host, epoch }, () => handler(now, alarmInfo));
+                    if (result && typeof result.rearmAt === 'number')
+                        rearms.set(reason, result.rearmAt);
                 }
                 catch (e) {
                     console.warn(`[nimbus/W1] dispatch ${reason} threw:`, errorText(e));
@@ -258,37 +244,48 @@ async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
         // writing it back — or arming for it — would revive what was ended.
         if (!current())
             return;
-        // Fold the in-dispatch arms, earliest-deadline-first per reason.
-        collection.open = false;
-        for (const arm of collection.arms) {
-            if (!(arm.reason in map) || arm.whenMs < map[arm.reason]) {
-                map[arm.reason] = arm.whenMs;
+        await link(host, async () => {
+            const stored = (await ctx.storage.get(TIMER_REASONS_KEY));
+            if (!current())
+                return;
+            const map = { ...(stored || {}) };
+            for (const reason of fired.keys())
+                delete map[reason];
+            for (const [reason, at] of rearms) {
+                if (!(reason in map) || at < map[reason])
+                    map[reason] = at;
             }
-        }
-        // Re-arm or clear, issued in the turn the epoch was checked in: a reset
-        // after this point wipes and disarms after these, never before.
-        const setAlarmFn = ctx?.storage?.setAlarm;
-        if (Object.keys(map).length > 0) {
-            const written = ctx.storage.put(TIMER_REASONS_KEY, map);
-            const armed = typeof setAlarmFn === 'function'
-                ? setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)))
-                : undefined;
-            // Joined: a failed write or re-arm surfaces here, in the one warning below.
-            await Promise.all([written, armed]);
-        }
-        else if (hadMap) {
-            try {
-                await ctx.storage.delete(TIMER_REASONS_KEY);
+            // Re-arm or clear, issued in the turn the epoch was checked in: a reset
+            // after this point wipes and disarms after these, never before.
+            const setAlarmFn = ctx?.storage?.setAlarm;
+            if (Object.keys(map).length > 0) {
+                const written = ctx.storage.put(TIMER_REASONS_KEY, map);
+                // Not at the time of the alarm being run: that is no change to the
+                // platform, which then counts it delivered.
+                const at = Math.min(...Object.values(map));
+                const armed = typeof setAlarmFn === 'function'
+                    ? setAlarmFn.call(ctx.storage, alarmInfo !== undefined && at <= alarmInfo.scheduledTime ? alarmInfo.scheduledTime + 1 : at)
+                    : undefined;
+                // Joined: a failed write or re-arm surfaces here, in the one warning below.
+                await Promise.all([written, armed]);
             }
-            catch { }
-            // No remaining reasons → no setAlarm call → DO becomes
-            // hibernation-eligible after the 10s idle window.
-        }
+            else if (stored !== undefined) {
+                try {
+                    await ctx.storage.delete(TIMER_REASONS_KEY);
+                }
+                catch { }
+                // No remaining reasons → no setAlarm call → DO becomes
+                // hibernation-eligible after the 10s idle window.
+            }
+        });
     }
     catch (e) {
         console.warn('[nimbus/W1] timers.dispatch threw:', errorText(e));
     }
     finally {
-        collection.open = false;
+        if (host._timerFiring === fired) {
+            host._timerFiring = undefined;
+            host._timerFiringSince = undefined;
+        }
     }
 }

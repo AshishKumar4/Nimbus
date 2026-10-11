@@ -67,3 +67,16 @@ export function textSink(write: (text: string) => void | Promise<void>): (bytes:
   const writer = new SinkWriter({ write });
   return (bytes) => writer.write(bytes);
 }
+
+/** `parts`, one after another, in one array. */
+export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  let length = 0;
+  for (const part of parts) length += part.byteLength;
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
