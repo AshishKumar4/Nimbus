@@ -840,6 +840,9 @@ export function supervisorCalls(base) {
         async netTls(action, token, payload) {
             const egress = this._network().egress;
             if (egress !== undefined) {
+                this._caller({ op: 'netTls' });
+                if (action !== 'open' && action !== 'upgrade')
+                    throw new Error('netTls: unknown action ' + action);
                 const hostname = typeof payload.host === 'string' ? payload.host : '';
                 const port = Number(payload.port);
                 if (!hostname || !Number.isInteger(port) || port < 1 || port > 65535)

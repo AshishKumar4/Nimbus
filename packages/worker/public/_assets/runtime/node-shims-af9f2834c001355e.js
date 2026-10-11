@@ -12151,7 +12151,10 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     resource = undefined;
     resolveClosed();
   };
-  const ready = Promise.resolve(__nimbusRawSocket()).then(async () => {
+  let admit;
+  const admitted = new Promise((resolve) => { admit = resolve; });
+  const ready = admitted.then(async () => {
+    await __nimbusRawSocket();
     const where = await target();
     if (stopped) return;
     resource = await __supervisor.netTls(previous ? 'upgrade' : 'open', '', where);
@@ -12200,7 +12203,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     readable: placeholderRead, writable: placeholderWrite, opened: Promise.resolve({}), closed: new Promise(() => {}),
     secureTransport: 'starttls', upgraded: false,
     close,
-    startTls() { carrier._handle = null; return transport; },
+    startTls() { carrier._handle = null; admit(); return transport; },
   };
   carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
     socket: initial, reader: placeholderRead.getReader({ mode: 'byob' }), writer: placeholderWrite.getWriter(),
@@ -15465,6 +15468,363 @@ builtins.process = __processMod;
 const __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
 builtins.console = __consoleMod;
 
+
+function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
+  const installed = Symbol.for("nimbus.http.fetch-client");
+  if (http[installed]) { http[installed](context); return; }
+  let activeContext = context;
+  const NativeClientRequest = http.ClientRequest;
+  const NativeIncomingMessage = http.IncomingMessage;
+  const Writable = Object.getPrototypeOf(http.OutgoingMessage.prototype).constructor;
+  const hostOptions = ["hostname", "host"];
+  const unavailableOptions = [["createConnection", "function"], ["lookup", "function"], ["socketPath", "string"], ["maxHeaderSize", "number"]];
+  const booleanOptions = ["insecureHTTPParser", "joinDuplicateHeaders"];
+  const fail = (code, message, Base = Error) => nodeError(Base, code, message);
+  const reset = (message) => Object.assign(new Error(message), { code: "ECONNRESET" });
+  const abortError = (cause) => Object.assign(new Error("The operation was aborted", { cause }), { code: "ABORT_ERR", name: "AbortError" });
+  const duration = (value) => {
+    if (typeof value !== "number") throw invalidArgType("msecs", "number", value);
+    if (!Number.isFinite(value) || value < 0) throw fail("ERR_OUT_OF_RANGE", 'The value of "msecs" is out of range. It must be a non-negative finite number. Received ' + value, RangeError);
+    return Math.min(value, 2147483647);
+  };
+  const requestOptions = (input, options, callback) => {
+    if (typeof input === "string") input = url.urlToHttpOptions(new URL(input));
+    else if (input?.href && input.protocol && input.auth === undefined && input.path === undefined) input = url.urlToHttpOptions(input);
+    else { callback = options; options = input; input = undefined; }
+    if (typeof options === "function") { callback = options; options = input; }
+    else options = Object.assign(input ?? {}, options);
+    return [options || {}, callback];
+  };
+  const checkPath = (path) => {
+    if (/[^\u0021-\u00ff]/.test(path)) throw fail("ERR_UNESCAPED_CHARACTERS", "Request path contains unescaped characters", TypeError);
+    if (/^(?:[/\\]{2}|[^/\\]*:)/.test(path)) throw fail("ERR_INVALID_ARG_VALUE", "options.path must be a path-only request target", TypeError);
+  };
+  class IncomingMessage extends NativeIncomingMessage {
+    #reader;
+    #reading = false;
+    #idle;
+    constructor(response, idle, joinDuplicateHeaders) {
+      super();
+      this.#idle = idle;
+      this.statusCode = response.status;
+      this.statusMessage = response.statusText;
+      this.url = response.url;
+      this.joinDuplicateHeaders = joinDuplicateHeaders;
+      const headers = [];
+      for (const [name, value] of response.headers) {
+        if (name === "set-cookie") continue;
+        headers.push(name, value);
+      }
+      for (const cookie of response.headers.getSetCookie()) headers.push("set-cookie", cookie);
+      this._addHeaderLines(headers, headers.length);
+      this.#reader = response.body?.getReader();
+    }
+    _read() {
+      if (this.#reading) return;
+      if (!this.#reader) { this.complete = true; this.push(null); return; }
+      this.#reading = true;
+      void this.#pump();
+    }
+    async #pump() {
+      try {
+        while (!this.destroyed) {
+          const next = await this.#reader.read();
+          if (this.destroyed) return;
+          if (next.done) { this.complete = true; this.push(null); return; }
+          this.#idle.touch();
+          if (!this.push(next.value)) return;
+        }
+      } catch (error) { this.destroy(error); }
+      finally { this.#reading = false; }
+    }
+    _destroy(error, callback) {
+      if (!this.complete && this.#reader) this.#reader.cancel(error).catch(() => {});
+      NativeIncomingMessage.prototype._destroy.call(this, error, callback);
+    }
+    setTimeout(msecs, callback) {
+      this.#idle.setTimeout(msecs);
+      if (callback) this.once("timeout", callback);
+      return this;
+    }
+  }
+  class ClientRequest extends http.OutgoingMessage {
+    #context;
+    #controller = new AbortController();
+    #writer;
+    #queued = false;
+    #prepared;
+    #deferred;
+    #started = false;
+    #timer;
+    #incoming;
+    #signal;
+    #counted = false;
+    #contentLength;
+    #completeBody;
+    #bytesWritten = 0;
+    socket = null;
+    connection = null;
+    reusedSocket = false;
+    aborted = false;
+    maxHeadersCount = Infinity;
+    constructor(input, options, callback) {
+      super();
+      this.#context = activeContext;
+      [options, callback] = requestOptions(input, options, callback);
+      const defaultAgent = options._defaultAgent || http.globalAgent;
+      this.agent = options.agent === false ? new defaultAgent.constructor() : options.agent ?? defaultAgent;
+      if (typeof this.agent === "object" && typeof this.agent.addRequest !== "function") throw invalidArgType("options.agent", ["Agent-like Object", "undefined", "false"], this.agent);
+      const expected = this.agent?.protocol || defaultAgent.protocol;
+      this.protocol = options.protocol || expected;
+      if (this.protocol !== expected) throw fail("ERR_INVALID_PROTOCOL", 'Protocol "' + this.protocol + '" not supported. Expected "' + expected + '"', TypeError);
+      const defaultPort = options.defaultPort || this.agent?.defaultPort || 80;
+      this.port = String(options.port || defaultPort);
+      for (const name of hostOptions) if (options[name] != null && typeof options[name] !== "string") throw invalidArgType("options." + name, ["string", "undefined", "null"], options[name]);
+      this.host = options.hostname || options.host || "localhost";
+      if (options.method != null && typeof options.method !== "string") throw invalidArgType("options.method", "string", options.method);
+      this.method = options.method ? options.method.toUpperCase() : "GET";
+      if (!/^[!#$%&'*+.^_\u0060|~0-9A-Za-z-]+$/.test(this.method)) throw fail("ERR_INVALID_HTTP_TOKEN", 'Method must be a valid HTTP token ["' + options.method + '"]', TypeError);
+      this.path = options.path || "/";
+      checkPath(this.path);
+      for (const [name, type] of unavailableOptions) {
+        if (options[name] === undefined) continue;
+        if (typeof options[name] !== type) throw invalidArgType("options." + name, type, options[name]);
+        throw fail("ERR_OPTION_NOT_IMPLEMENTED", "The options." + name + " option is not implemented");
+      }
+      for (const name of booleanOptions) if (options[name] !== undefined && typeof options[name] !== "boolean") throw invalidArgType("options." + name, "boolean", options[name]);
+      this.joinDuplicateHeaders = options.joinDuplicateHeaders;
+      const headers = options.headers;
+      if (Array.isArray(headers)) {
+        if (headers.length % 2) throw fail("ERR_INVALID_ARG_VALUE", "The argument 'headers' is invalid", TypeError);
+        for (let i = 0; i < headers.length; i += 2) this.setHeader(headers[i], headers[i + 1]);
+      } else {
+        if (headers != null) for (const [name, value] of Object.entries(headers)) this.setHeader(name, value);
+        if ((options.setHost ?? options.setDefaultHeaders ?? true) && !this.getHeader("host")) {
+          let host = this.host.includes(":") && !this.host.startsWith("[") ? "[" + this.host + "]" : this.host;
+          if (+this.port !== +defaultPort) host += ":" + this.port;
+          this.setHeader("Host", host);
+        }
+        if (options.auth && !this.getHeader("authorization")) this.setHeader("Authorization", "Basic " + Buffer.from(options.auth).toString("base64"));
+      }
+      if (callback) this.once("response", callback);
+      if (options.timeout !== undefined) this.setTimeout(options.timeout);
+      if (options.signal !== undefined) {
+        const signal = options.signal;
+        if (!(signal instanceof AbortSignal)) throw invalidArgType("signal", "AbortSignal", signal);
+        this.#signal = signal;
+        const cancel = () => this.destroy(abortError(signal.reason));
+        if (signal.aborted) queueMicrotask(cancel);
+        else signal.addEventListener("abort", cancel, { once: true });
+        this.once("close", () => signal.removeEventListener("abort", cancel));
+      }
+    }
+    #start() {
+      if (this.#queued || this.destroyed || this.#signal?.aborted) return;
+      this.#queued = true;
+      try {
+        this.#context.queued();
+        this.#counted = true;
+        const headers = [];
+        for (const name of this.getHeaderNames()) {
+          const value = this.getHeader(name);
+          if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
+          else headers.push([name, String(value)]);
+        }
+        const contentLength = this.getHeader("content-length");
+        this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
+          headers, framed: contentLength !== undefined || this.hasHeader("transfer-encoding"), contentLength: this.#contentLength, body: this.#completeBody };
+        if (contentLength !== undefined) this._contentLength = Number(contentLength);
+        this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
+        this._headerSent = true;
+      } catch (error) { this.destroy(error); this.#resume(); return; }
+      // A complete end body is admitted by Writable's existing deferred finish.
+      // Incremental writes must be admitted before they can finish.
+      if (this.#contentLength === undefined) queueMicrotask(() => this.#admit());
+    }
+    #admit() {
+      const request = this.#prepared;
+      this.#prepared = undefined;
+      if (request && !this.destroyed && !this.#signal?.aborted) {
+        try { this.#open(request); }
+        catch (error) { this.destroy(error); }
+      }
+      this.#resume();
+    }
+    #open(request) {
+      checkPath(request.path);
+      const target = new URL(request.protocol + "//" + (request.host.includes(":") && !request.host.startsWith("[") ? "[" + request.host + "]" : request.host));
+      target.port = request.port;
+      const address = request.path && request.path !== "/" ? new URL(request.path, target) : target;
+      const headers = request.headers;
+      if (request.method !== "GET" && request.method !== "HEAD" && !request.framed) {
+        headers.push(request.contentLength === undefined ? ["transfer-encoding", "chunked"] : ["content-length", String(request.contentLength)]);
+      }
+      let body;
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        if (request.body !== undefined) body = request.body;
+        else {
+          const stream = new TransformStream();
+          this.#writer = stream.writable.getWriter();
+          body = stream.readable;
+        }
+      }
+      this.#context.started(request);
+      this.#started = true;
+      this.#touch();
+      const response = fetch(address, { method: request.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });
+      this.#completeBody = undefined;
+      Promise.resolve(response).then((response) => {
+        if (this.destroyed) { response.body?.cancel().catch(() => {}); return; }
+        const incoming = this.#incoming = this.res = new IncomingMessage(response, {
+          touch: () => this.#touch(), setTimeout: (msecs) => this.setTimeout(msecs),
+        }, this.joinDuplicateHeaders);
+        this.#touch();
+        incoming.on("error", (error) => { if (!this.destroyed) this.emit("error", error); });
+        incoming.once("close", () => {
+          if (!incoming.complete || !this._writableState.finished) { this.destroy(); return; }
+          // A completed exchange closes its transport, not its already-finished Writable.
+          // OutgoingMessage deliberately disables Writable autoDestroy for this lifetime.
+          if (this.destroyed) return;
+          this.destroyed = true;
+          if (this.#timer !== undefined) clearTimeout(this.#timer);
+          this.#writer = undefined;
+          queueMicrotask(() => this.emit("close"));
+        });
+        if (!this.emit("response", incoming)) incoming._dump();
+      }, (error) => { if (!this.destroyed) this.destroy(error); });
+    }
+    #afterAdmission(operation) {
+      if (this.#started || this.destroyed || this.#signal?.aborted) { operation(); return; }
+      // Native Writable has one outstanding write callback, never a second queue.
+      this.#deferred = operation;
+      this.#start();
+    }
+    #resume() {
+      const operation = this.#deferred;
+      this.#deferred = undefined;
+      if (operation) operation();
+    }
+    _write(chunk, encoding, callback) {
+      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
+      this.#afterAdmission(() => {
+        if (!this.destroyed && this.#writer) this.#writer.write(new Uint8Array(chunk)).then(() => { this.#touch(); callback(); }, callback);
+        else callback();
+      });
+    }
+    #checkLength(chunk, encoding, ending) {
+      if (!this.strictContentLength || this.finished || this.destroyed) return;
+      if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) return;
+      const length = chunk == null ? 0 : typeof chunk === "string" ? Buffer.byteLength(chunk, typeof encoding === "string" ? encoding : undefined) : chunk.byteLength;
+      const actual = this.#bytesWritten + length;
+      const expected = this._contentLength ?? (ending && this.hasHeader("content-length") ? Number(this.getHeader("content-length")) : null);
+      if (expected !== null && this._hasBody && !this._removedContLen && !this.chunkedEncoding && !this.hasHeader("transfer-encoding")) {
+        if (actual > expected || (ending && actual !== expected)) throw fail("ERR_HTTP_CONTENT_LENGTH_MISMATCH", "Response body's content-length of " + actual + " byte(s) does not match the content-length of " + expected + " byte(s) set in header");
+      }
+      return actual;
+    }
+    write(chunk, encoding, callback) {
+      if (this.finished) return http.OutgoingMessage.prototype.write.call(this, chunk, encoding, callback);
+      const length = this.#checkLength(chunk, encoding, false);
+      const accepted = Writable.prototype.write.call(this, chunk, encoding, callback);
+      if (length !== undefined) this.#bytesWritten = length;
+      return accepted;
+    }
+    end(chunk, encoding, callback) {
+      if (this.destroyed) return this;
+      if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
+      else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      if (this.finished) return http.OutgoingMessage.prototype.end.call(this, chunk, encoding, callback);
+      if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) throw invalidArgType("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+      const length = this.#checkLength(chunk, encoding, true);
+      if (!this.#queued && this.writableLength === 0) {
+        this.#contentLength = 0;
+        if (this.method !== "GET" && this.method !== "HEAD") {
+          if (chunk == null) this.#completeBody = Buffer.alloc(0);
+          else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
+          else if (chunk instanceof Uint8Array) this.#completeBody = new Uint8Array(chunk);
+          this.#contentLength = this.#completeBody?.byteLength;
+        }
+      }
+      this.#start();
+      if (this.#contentLength !== undefined && !this.strictContentLength) return http.OutgoingMessage.prototype.end.call(this, undefined, undefined, callback);
+      if (chunk != null) Writable.prototype.write.call(this, this.#completeBody ?? chunk, encoding);
+      Writable.prototype.end.call(this, callback);
+      if (length !== undefined) this.#bytesWritten = length;
+      this.finished = true;
+      return this;
+    }
+    emit(event, ...args) {
+      if (event === "finish") {
+        if (this.destroyed) return false;
+        this.#admit();
+        if (!this.destroyed && this.#writer) this.#writer.close().catch((error) => this.destroy(error));
+      }
+      if (event === "close" && this.destroyed) {
+        this._closed = true;
+        if (this.#counted) { this.#counted = false; this.#context.finished(this); }
+      }
+      return super.emit(event, ...args);
+    }
+    cork() { return Writable.prototype.cork.call(this); }
+    uncork() { return Writable.prototype.uncork.call(this); }
+    get writableLength() { return this._writableState.length; }
+    get writableCorked() { return this._writableState.corked; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    flushHeaders() { this.#start(); }
+    _implicitHeader() { this.#start(); }
+    abort() {
+      if (this.aborted) return;
+      this.aborted = true;
+      if (!this.#started) {
+        this.destroy();
+        queueMicrotask(() => this.emit("abort"));
+      } else {
+        queueMicrotask(() => this.emit("abort"));
+        this.destroy();
+      }
+    }
+    destroy(error) {
+      if (this.destroyed) return this;
+      this.destroyed = true;
+      return Writable.prototype.destroy.call(this, error);
+    }
+    _destroy(error, callback) {
+      if (this.#timer !== undefined) clearTimeout(this.#timer);
+      this.#prepared = undefined;
+      this.#completeBody = undefined;
+      this.#controller.abort(error);
+      if (this.#incoming && !this.#incoming.complete) this.#incoming.destroy(reset("aborted"));
+      if (!this.#incoming && error == null && (!this.aborted || this.#started)) error = reset("socket hang up");
+      if (this.#writer) this.#writer.abort(error).catch(() => {});
+      callback(error);
+    }
+    setTimeout(msecs, callback) {
+      this.timeout = duration(msecs);
+      if (callback) this.once("timeout", callback);
+      this.#touch();
+      return this;
+    }
+    clearTimeout(callback) { return this.setTimeout(0, callback); }
+    #touch() {
+      if (this.#timer !== undefined) { clearTimeout(this.#timer); this.#timer = undefined; }
+      if (!this.timeout || !this.#started || this.destroyed) return;
+      this.#timer = setTimeout(() => { this.emit("timeout"); this.#incoming?.emit("timeout"); this.destroy(abortError()); }, this.timeout);
+    }
+  }
+  for (const name of ["onSocket", "addTrailers", "setNoDelay", "setSocketKeepAlive"]) {
+    Object.defineProperty(ClientRequest.prototype, name, { value: NativeClientRequest.prototype[name], writable: true, configurable: true });
+  }
+  http.ClientRequest = ClientRequest;
+  http.request = function request(input, options, callback) { return new ClientRequest(input, options, callback); };
+  http.get = function get(input, options, callback) { const req = new ClientRequest(input, options, callback); req.end(); return req; };
+  https.request = function request(input, options, callback) {
+    const [opts, cb] = requestOptions(input, options, callback);
+    return new ClientRequest({ ...opts, _defaultAgent: https.globalAgent }, cb);
+  };
+  https.get = function get(input, options, callback) { const req = https.request(input, options, callback); req.end(); return req; };
+  Object.defineProperty(http, installed, { value: (next) => { activeContext = next; } });
+}
+
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
 // Only this runtime's listener registrations can claim a local request. Neither
@@ -15480,6 +15840,11 @@ Object.defineProperty(builtins, "http", {
       ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
     const net = typeof __real_net !== "undefined"
       ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
+    const https = typeof __real_https !== "undefined"
+      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
+    const url = typeof __real_url !== "undefined"
+      ? (__real_url.default ?? __real_url) : globalThis.process.getBuiltinModule("url");
+    const buffer = typeof __real_buffer !== "undefined" ? __real_buffer : globalThis.process.getBuiltinModule("buffer");
     const ports = new Map();
     // The event loop reads listening handles; this is a view, not admission.
     globalThis.__portRegistry = Object.freeze({
@@ -15488,46 +15853,21 @@ Object.defineProperty(builtins, "http", {
     });
     const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
-    // Native clients keep consuming their IncomingMessage after fetch has
-    // returned headers. Their close event is the end of the exchange (EOF,
-    // body error or cancellation), not the request-body finish event.
-    // https.get/request use this same ClientRequest class; prototype hooks
-    // cover named ESM imports and direct construction too. No response/error
-    // listeners are installed, preserving native auto-drain and error rules.
-    // workerd src/node/internal/internal_http_client.ts #handleFetchResponse
-    // and #emitClose, v1.20260926.1.
-    const clientProto = http.ClientRequest.prototype;
-    const clientPatch = Symbol.for("nimbus.native-http.client-lifetime");
-    if (!clientProto[clientPatch]) {
-      const inFlight = new WeakSet();
-      const end = clientProto.end, emit = clientProto.emit;
-      const release = request => {
-        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
-      };
-      Object.defineProperty(clientProto, clientPatch, { value: true });
-      clientProto.end = function () {
-        const started = !this.destroyed && !inFlight.has(this);
-        // A request is something a second run would send again
-        // (runtime/stop-replay.ts): counted before it leaves.
-        // `__nimbusReplay` is the shims' own; this source also runs without them.
-        // A read is recorded by the session when the run's network goes through
-        // it (fetch carries it there); anything else is counted.
-        if (started && typeof __nimbusReplay !== "undefined" && __nimbusReplay
-          && (!__nimbusReplay.outbound || !/^(GET|HEAD)$/i.test(String(this.method || "GET")))) {
-          __nimbusReplay.effect("http " + String(this.method || "GET") + " " + String(this.host || "") + String(this.path || ""));
+    __nimbusInstallFetchHttpClient(http, https, url, buffer.Buffer, {
+      queued() {
+        globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
+      },
+      started(request) {
+        if (typeof __nimbusReplay !== "undefined" && __nimbusReplay
+          && (!__nimbusReplay.outbound || !/^(GET|HEAD)$/i.test(request.method))) {
+          __nimbusReplay.effect("http " + request.method + " " + request.host + request.path);
         }
-        if (started) {
-          inFlight.add(this);
-          globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
-        }
-        try { return Reflect.apply(end, this, arguments); }
-        catch (error) { if (started) release(this); throw error; }
-      };
-      clientProto.emit = function (event) {
-        if (event === "close" && this.destroyed) release(this);
-        return Reflect.apply(emit, this, arguments);
-      };
-    }
+      },
+      finished() {
+        globalThis.__nimbusPendingOps--;
+        globalThis.__nimbusHandleReleased?.();
+      },
+    });
     const patchKey = Symbol.for("nimbus.native-http.patch");
     if (!http.Server.prototype[patchKey]) {
       const proto = http.Server.prototype;
@@ -15550,7 +15890,7 @@ Object.defineProperty(builtins, "http", {
           return Reflect.apply(writeHead, this, arguments);
         };
       }
-      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit;
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit, address = proto.address;
       // An HTTP exchange keeps its process alive until it completes, as its
       // connection does in Node, whether or not the server is still listening
       // (a bound port is counted on its own): from 'request' until the response
@@ -15578,6 +15918,22 @@ Object.defineProperty(builtins, "http", {
       // when an isolate is reused, without revealing its current value.
       let activeContext = context;
       const owners = new WeakMap();
+      const normalizeAddress = (host) => {
+        if (net.isIP(host) !== 6) return host;
+        const zone = host.indexOf("%");
+        const scope = zone < 0 ? "" : host.slice(zone);
+        host = new URL("http://[" + (zone < 0 ? host : host.slice(0, zone)) + "]").hostname.slice(1, -1);
+        // inet_ntop retains the dotted-quad suffix for IPv4-mapped IPv6.
+        const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(host);
+        if (!mapped) return host === "::1" || host === "::" ? host : host + scope;
+        const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+        return "::ffff:" + [high >> 8, high & 255, low >> 8, low & 255].join(".");
+      };
+      proto.address = function () {
+        const bound = Reflect.apply(address, this, []);
+        const owner = owners.get(this);
+        return bound && owner ? { ...bound, address: owner.host, family: net.isIP(owner.host) === 6 ? "IPv6" : "IPv4" } : bound;
+      };
       Object.defineProperty(proto, patchKey, { value: next => { activeContext = next; } });
       proto.listen = function (...args) {
         const ctx = activeContext;
@@ -15585,11 +15941,11 @@ Object.defineProperty(builtins, "http", {
         if (this.listening || owners.get(this)?.pending) {
           throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
-        // A one-shot's first listen stops it here, before it binds or reserves
-        // anything, to run on as a resident that serves; that resident's run
-        // again passes here at its boundary (stop-replay.ts listen).
+        // Stop a one-shot before either lookup, reservation or bind can escape.
         __nimbusReplay?.listen();
-        const state = { ctx, pending: false, cancelled: false, port: null };
+        const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
+        const family = net.isIP(state.host);
+        if (family) state.host = normalizeAddress(state.host);
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const allocationSettled = () => {
@@ -15615,7 +15971,7 @@ Object.defineProperty(builtins, "http", {
           try {
             // Native listen validates the arguments and binds the native port.
             // An EADDRINUSE from workerd is synchronous; Node emits it instead.
-            Reflect.apply(listen, this, [{ ...options, port }, ...(callback ? [callback] : [])]);
+            Reflect.apply(listen, this, [{ ...options, port, host: state.host }, ...(callback ? [callback] : [])]);
             state.port = Number(this.address()?.port ?? port);
             ctx.ports.set(state.port, this);
             ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
@@ -15625,14 +15981,27 @@ Object.defineProperty(builtins, "http", {
             throw e;
           }
         };
-        if (requested === 0) {
+        if (requested === 0 || !family) {
           state.pending = true;
           pendingListeners.add(this);
           let allocation;
-          try { allocation = ctx.supervisor.allocatePort(); }
+          try {
+            allocation = family ? ctx.supervisor.allocatePort() : new Promise((resolve, reject) => {
+              builtins.dns.lookup(state.host, { all: true }, (error, addresses) => {
+                if (error) { reject(error); return; }
+                try {
+                  // lib/net.js lookupAndListen selects the first non-link-local result.
+                  const selected = addresses.find((ip) => ip.family !== 6 || !/^fe[89ab][0-9a-f]:/i.test(ip.address)) ?? addresses[0];
+                  state.host = normalizeAddress(selected.address);
+                  resolve();
+                } catch (error) { reject(error); }
+              });
+            }).then(() => state.cancelled ? null : requested === 0 ? ctx.supervisor.allocatePort() : options.port);
+          }
           catch (error) { allocationSettled(); throw error; }
           const task = Promise.resolve(allocation).then(port => {
-            state.port = port;
+            if (port === null) { allocationSettled(); return; }
+            if (requested === 0) state.port = port;
             start(port);
           }, error => { allocationSettled(); if (!state.cancelled) this.emit("error", error); });
           ctx.pending.push(task);

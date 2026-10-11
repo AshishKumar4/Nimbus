@@ -21,9 +21,9 @@
  * entrypoint), or on a host without one an object with the same two methods.
  * `fetch` carries HTTP (WebSocket upgrades included); `connect` carries the
  * plain TCP sockets programs open. A Fetcher's `connect()` carries plain TCP
- * only, so a program's TLS socket is refused under an egress
- * (`EGRESS_TLS_REFUSAL`); an egress that carries no TCP at all refuses in its
- * `connect`.
+ * only; an optional `connectTls` makes the TLS session at the egress and
+ * returns its plaintext streams. Without it, TLS is refused by name.
+ * An egress that carries no TCP at all refuses in its `connect`.
  */
 export interface WorkspaceEgressTls {
     connectTls(target: {

@@ -32,7 +32,10 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     resource = undefined;
     resolveClosed();
   };
-  const ready = Promise.resolve(__nimbusRawSocket()).then(async () => {
+  let admit;
+  const admitted = new Promise((resolve) => { admit = resolve; });
+  const ready = admitted.then(async () => {
+    await __nimbusRawSocket();
     const where = await target();
     if (stopped) return;
     resource = await __supervisor.netTls(previous ? 'upgrade' : 'open', '', where);
@@ -81,7 +84,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     readable: placeholderRead, writable: placeholderWrite, opened: Promise.resolve({}), closed: new Promise(() => {}),
     secureTransport: 'starttls', upgraded: false,
     close,
-    startTls() { carrier._handle = null; return transport; },
+    startTls() { carrier._handle = null; admit(); return transport; },
   };
   carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
     socket: initial, reader: placeholderRead.getReader({ mode: 'byob' }), writer: placeholderWrite.getWriter(),
