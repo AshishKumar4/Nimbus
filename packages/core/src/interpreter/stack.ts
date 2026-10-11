@@ -5,7 +5,7 @@
  * error is made. Native wrappers delimit these activations in V8's stack.
  */
 import {
-  SafeWeakMap, charCodeAt, errorInstance, globalObject, newSafeList, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf,
+  SafeWeakMap, charCodeAt, errorInstance, globalObject, newSafeList, objectHasOwn, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf,
 } from './intrinsics.js';
 import type { Env } from './runtime.js';
 
@@ -122,26 +122,28 @@ function place(source: string, offset: number): readonly [number, number] {
 }
 
 // V8's names do not invoke a receiver's constructor/name getters.
-function dataName(value: unknown, key: string): unknown {
+function dataName(value: unknown, key: string, isProxy: ((value: unknown) => boolean) | null): unknown {
   if (!object(value)) return undefined;
   for (let o: object | null = value; o !== null; o = objectGetPrototypeOf(o)) {
+    if (isProxy !== null && isProxy(o)) return undefined;
     const descriptor = reflectGetOwnPropertyDescriptor(o, key);
-    if (descriptor !== undefined) return descriptor.value;
+    if (descriptor !== undefined) return objectHasOwn(descriptor, 'value') ? descriptor.value : undefined;
   }
   return undefined;
 }
 
-function methodName(receiver: unknown, fn: unknown, name: string): string | null {
+function methodName(receiver: unknown, fn: unknown, name: string, isProxy: ((value: unknown) => boolean) | null): string | null {
   if (!object(receiver) || typeof fn !== 'function') return null;
-  if (name !== '' && dataName(receiver, name) === fn) return name;
+  if (name !== '' && dataName(receiver, name, isProxy) === fn) return name;
   let found: string | null = null;
   for (let o: object | null = receiver; o !== null; o = objectGetPrototypeOf(o)) {
+    if (isProxy !== null && isProxy(o)) return null;
     const keys = reflectOwnKeys(o);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
       if (typeof key !== 'string') continue;
       const descriptor = reflectGetOwnPropertyDescriptor(o, key);
-      if (descriptor !== undefined && descriptor.value === fn) {
+      if (descriptor !== undefined && objectHasOwn(descriptor, 'value') && descriptor.value === fn) {
         if (found !== null && found !== key) return null;
         found = key;
       }
@@ -166,14 +168,14 @@ function snapshot(position: number | undefined, above: unknown): readonly Interp
       const loc = place(info.unit.source, position === undefined ? env[at + AT] as number : position);
       const enclosing = place(info.unit.source, info.start);
       const receiver = env[at + RECEIVER];
-      const named = dataName(fn, 'name');
+      const named = dataName(fn, 'name', info.unit.isProxy);
       const name = typeof named === 'string' && named !== '' ? named : info.name;
       const constructor = env[at + CONSTRUCTOR] === true;
       const isMethod = !constructor && receiver !== undefined && receiver !== null && receiver !== globalObject
         && info.shape !== 'arrow' && info.shape !== 'asyncArrow' && (info.unit.isProxy === null || !info.unit.isProxy(receiver));
-      const method = isMethod ? methodName(receiver, fn, name) : null;
-      const ctor = isMethod ? (typeof receiver === 'function' ? receiver : dataName(receiver, 'constructor')) : undefined;
-      const typeName = dataName(ctor, 'name');
+      const method = isMethod ? methodName(receiver, fn, name, info.unit.isProxy) : null;
+      const ctor = isMethod ? (typeof receiver === 'function' ? receiver : dataName(receiver, 'constructor', info.unit.isProxy)) : undefined;
+      const typeName = dataName(ctor, 'name', info.unit.isProxy);
       frames[frames.length] = {
         unit: info.unit, name: name === '' ? null : name, method,
         type: isMethod ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,

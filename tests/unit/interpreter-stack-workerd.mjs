@@ -44,6 +44,8 @@ const SOURCE = [
   'async function asyncCaller() { await asyncLeaf(); }',
   'async function afterAwait() {',
   '  try { await asyncCaller(); } catch (e) { report("async", e.stack); }',
+  '  async function* asyncGenerator() { await Promise.resolve(); yield leaf(); }',
+  '  const iterator = asyncGenerator(); report("async-generator", (await iterator.next()).value);',
   '  const saved = Error.prepareStackTrace;',
   '  Error.prepareStackTrace = (_e, sites) => sites.filter((s) => /\\/(frames\\.mjs|bridge\\.cjs)$/.test(s.getFileName() ?? "")).map((s) => [s.getFunctionName(),s.getTypeName(),s.getMethodName(),s.getFileName(),s.getLineNumber(),s.getColumnNumber(),s.isConstructor(),s.isAsync(),s.isToplevel(),s.getThis() === undefined,s.getFunction() === undefined,String(s)]);',
   '  console.log("SITES " + JSON.stringify(middle()));',
@@ -53,6 +55,8 @@ const SOURCE = [
   'const alias = { other: function named() { return new Error("alias").stack; } };',
   'report("alias", alias.other());',
   'try { 1n + 2; } catch (e) { report("binary", e.stack); }',
+  'function parameter(value = new Error("parameter").stack) { return value; }',
+  'report("parameter", parameter());',
 ].join('\n') + '\n';
 const FATAL = 'export {};\nfunction crash() { throw new Error("fatal-frame"); }\ncrash();\n';
 const FILES = {
@@ -87,7 +91,7 @@ try {
     assert.equal(run.status, script.startsWith('fatal-') ? 1 : 0, `Node premise: ${script}: ${text}`);
     expected[script] = said(text, script.startsWith('fatal-'));
   }
-  assert.equal(expected['adopt.cjs'].length, 17, 'every frame and CallSite fixture ran under Node');
+  assert.equal(expected['adopt.cjs'].length, 19, 'every frame and CallSite fixture ran under Node');
   assert.ok(expected['fatal-runtime.cjs'].arrow, 'Node prints the module source and arrow for an unhandled rejection');
 } finally {
   rmSync(disk, { recursive: true, force: true });

@@ -164,7 +164,10 @@ function enter(
     const count = args.length;
     for (let i = 0; i < params.length; i++) env[params[i]] = i < count ? args[i] : undefined;
   } else if (fi.bindParams !== null) {
-    fi.bindParams(env, args);
+    const previous = fi.stack === null ? null : pushStack(env);
+    try { fi.bindParams(env, args); }
+    catch (error) { stampStack(error); throw error; }
+    finally { if (fi.stack !== null) popStack(previous); }
   }
   return env;
 }
