@@ -2486,12 +2486,26 @@ export class SqliteVFS {
     }
     /** A walk's answer, kept as lastResolution when it found something on the live tree. */
     walked(key, inode, name, cred, tree) {
-        if (inode !== undefined && tree === this.inodes) {
+        if (inode !== undefined && tree === this.inodes)
+            this.remember(cred, name, key, inode);
+        return { path: key, inode, name };
+    }
+    /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
+    remember(cred, name, key, inode) {
+        const last = this.lastResolution;
+        if (last === null) {
             this.lastResolution = {
                 epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name, key, inode, leafIsLink: inode.kind === 'symlink',
             };
+            return;
         }
-        return { path: key, inode, name };
+        last.epoch = this.resolutionEpoch;
+        last.tableEpoch = this.inodes.epoch;
+        last.cred = cred;
+        last.name = name;
+        last.key = key;
+        last.inode = inode;
+        last.leafIsLink = inode.kind === 'symlink';
     }
     /**
      * Walk a plain SQLite path once, checking ancestor search permission. A
@@ -2549,12 +2563,8 @@ export class SqliteVFS {
                     throw vfsKeyError('EACCES', prefix);
             }
         }
-        if (found !== undefined && tree === this.inodes) {
-            this.lastResolution = {
-                epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name: current,
-                key: this.keyOfName(current, root), inode: found, leafIsLink: found.kind === 'symlink',
-            };
-        }
+        if (found !== undefined && tree === this.inodes)
+            this.remember(cred, current, this.keyOfName(current, root), found);
         return { name: current, end: 'found' };
     }
     checkAccess(path, want, cred, options = {}) {

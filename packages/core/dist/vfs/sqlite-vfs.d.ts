@@ -1234,6 +1234,8 @@ export declare class SqliteVFS {
     private walkPath;
     /** A walk's answer, kept as lastResolution when it found something on the live tree. */
     private walked;
+    /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
+    private remember;
     /**
      * Walk a plain SQLite path once, checking ancestor search permission. A
      * link that needs following, or a name claimed by the namespace, returns
