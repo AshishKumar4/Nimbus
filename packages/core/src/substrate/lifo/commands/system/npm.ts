@@ -1085,12 +1085,6 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 	}
 }
 
-/**
- * Install a single npm package globally into the VFS.
- *
- * Called directly by `lifo install` to avoid the shell.execute()
- * round-trip which can silently swallow output and errors.
- */
 // ─── npx ───
 
 /** Where npx installs what it runs: a project of its own. */
@@ -1229,6 +1223,11 @@ export function createNpxCommand(
 	};
 }
 
+/**
+ * Install one package globally, through the install port (the host's, else
+ * the shell's own). Called directly by `lifo install` to avoid the
+ * shell.execute() round-trip, which can silently swallow output and errors.
+ */
 export async function npmInstallGlobal(
 	packageName: string,
 	ctx: CommandContext,
