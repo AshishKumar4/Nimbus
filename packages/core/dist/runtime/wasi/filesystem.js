@@ -1,3 +1,4 @@
+import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
 /**
  * Synthetic paths that name a socket rather than a file, and the one place
  * their spelling lives — the codec recognises them to hand them back, the host
@@ -24,20 +25,36 @@ export const WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
 const S_IFMT = 0o170000, S_IFREG = 0o100000;
 const socketPathPrefixes = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_ACCEPTED_PATH_PREFIX];
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
-const errno = {
-    EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EFAULT: 21,
-    EFBIG: 22, EINTR: 27, EINVAL: 28, EIO: 29, EISDIR: 31, ELOOP: 32,
-    EMFILE: 33, ENAMETOOLONG: 37, ENFILE: 41, ENOENT: 44, ENOMEM: 48,
-    ENOSPC: 51, ENOSYS: 52, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
-    EPERM: 63, EPIPE: 64, EROFS: 69, ESPIPE: 70, ESTALE: 72, EXDEV: 75,
-    ENOTCAPABLE: 76,
+/** Every code a VFS backend throws (vfs-error.ts), as its preview1 errno. */
+const VFS_ERRNO = {
+    E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EINVAL: 28, EIO: 29, EISDIR: 31,
+    ELOOP: 32, ENAMETOOLONG: 37, ENOENT: 44, ENOSPC: 51, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
+    ENXIO: 60, EPERM: 63, EROFS: 69, ESTALE: 72, EXDEV: 75,
 };
-export function filesystemErrno(error) {
+const errno = {
+    ...VFS_ERRNO,
+    // The codec's own refusals, and the session's for a process it no longer holds.
+    EFAULT: 21, EFBIG: 22, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
+    EPIPE: 64, ESPIPE: 70, ESRCH: 71, ENOTCAPABLE: 76,
+};
+/**
+ * A refused filesystem call as the guest's errno. The session's refusal of a
+ * process it no longer holds (process-table.ts noSuchProcess: it restarted,
+ * or ended the process, while the program ran) answers ESRCH and is also
+ * handed to `gone`, so the run can end naming it ({@link processGoneMessage}).
+ */
+export function refusalErrno(error, gone) {
+    if (error instanceof Error && 'code' in error && error.code === 'ESRCH')
+        gone?.(error.message);
     if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string')
         return errno[error.code] ?? errno.EIO;
     if (error instanceof RangeError)
         return errno.EFAULT;
     return errno.EIO;
+}
+/** How a run whose session no longer holds its process ends. */
+export function processGoneMessage(refusal) {
+    return `the session no longer holds this process (${refusal}): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH`;
 }
 export function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
@@ -54,6 +71,15 @@ const num = (value) => {
         fail('EINVAL');
     return n;
 };
+/**
+ * st_mode of a stat: its type's format bits, and its permission bits, or
+ * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
+ * keeps none, as a node process's fs.stat reports them.
+ */
+export function statMode(st) {
+    const permissions = st.mode !== undefined ? st.mode & 0o7777 : st.type === 'directory' ? 0o755 : 0o644;
+    return DIRENT_TYPES[direntTypeOfStat(st)].format | permissions;
+}
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export function installAuthorityFilesystem(imports, options) {
     const fds = options.fds;
@@ -62,13 +88,19 @@ export function installAuthorityFilesystem(imports, options) {
     // through its semantics rather than dropping the entry.
     const hostClose = imports.fd_close;
     const memory = () => new Uint8Array(options.memory().buffer);
+    // Guest memory at a guest pointer is viewed by the constructor, never by
+    // subarray: in a Worker, a WebAssembly.Memory grows past the 128 MiB an
+    // ArrayBuffer may have, and subarray refuses a begin past that ("Invalid
+    // array buffer length", V8's CalculateByteLength against the embedder's
+    // maximum), where the constructor takes any offset within the buffer.
+    const guestBytes = (ptr, length) => new Uint8Array(options.memory().buffer, ptr, length);
     const view = () => new DataView(options.memory().buffer);
     const u32 = (ptr, value) => view().setUint32(ptr, value, true);
     const u64 = (ptr, value) => view().setBigUint64(ptr, BigInt(value), true);
     const path = (ptr, length) => {
         if (ptr < 0 || length < 0 || ptr + length > memory().length)
             fail('EFAULT');
-        const p = decoder.decode(memory().subarray(ptr, ptr + length));
+        const p = decoder.decode(guestBytes(ptr, length));
         if (p.includes('\0'))
             fail('EINVAL');
         return p;
@@ -200,20 +232,32 @@ export function installAuthorityFilesystem(imports, options) {
         u64(ptr + base + 24, BigInt(Math.trunc(st.ctime)) * 1000000n);
         return 0;
     };
+    /** The extension's stat: preview1's filestat, then mode, uid, gid. */
+    const writeNimbusStat = (ptr, st) => {
+        if (options.abi === 'preview0')
+            fail('ENOSYS');
+        writeStat(ptr, st);
+        u32(ptr + 64, statMode(st));
+        u32(ptr + 68, st.uid ?? 0);
+        u32(ptr + 72, st.gid ?? 0);
+        u32(ptr + 76, 0);
+        return 0;
+    };
     const guard = (previous, body, owns) => (...args) => {
         if (!options.fs() || (owns && !owns(args)))
             return previous ? previous(...args) : 52;
+        const refused = (error) => refusalErrno(error, options.processGone);
         try {
             const result = body(fs(), ...args);
             if (result instanceof Promise) {
                 if (options.synchronous)
                     throw new Error('Filesystem synchronous contract returned a Promise');
-                return result.catch(filesystemErrno);
+                return result.catch(refused);
             }
             return result;
         }
         catch (error) {
-            return filesystemErrno(error);
+            return refused(error);
         }
     };
     const owns = (args) => {
@@ -268,7 +312,7 @@ export function installAuthorityFilesystem(imports, options) {
         if (e.kind === 'resident')
             fail('ENOTCAPABLE');
         for (const v of vectors.result) {
-            data.set(memory().subarray(v.ptr, v.ptr + v.length), used);
+            data.set(guestBytes(v.ptr, v.length), used);
             used += v.length;
         }
         return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
@@ -517,6 +561,29 @@ export function installAuthorityFilesystem(imports, options) {
         right(fd, 23);
         return after(stat(fs, fd), st => after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0));
     }, owns);
+    const ext = options.extension;
+    if (ext) {
+        ext.path_stat = guard(ext.path_stat, (fs, fd, flags, p, n, out) => { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT'))); });
+        ext.fd_stat = guard(ext.fd_stat, (fs, fd, out) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
+        ext.path_chmod = guard(ext.path_chmod, (fs, fd, flags, p, n, mode) => {
+            pathRight(fd, 20);
+            if (!(flags & 1))
+                fail('ENOTSUP');
+            return after(fs.chmod(at(fd, path(p, n)), mode & 0o7777), () => 0);
+        });
+        ext.path_access = guard(ext.path_access, (fs, fd, flags, p, n, mode) => {
+            pathRight(fd, 18);
+            // Linux's faccessat has no AT_SYMLINK_NOFOLLOW check of a link's own bits: it follows.
+            void flags;
+            return after(fs.access(at(fd, path(p, n)), mode & 7), () => 0);
+        });
+        // A read-only copy (a resident descriptor) has no descriptor on the
+        // authority to change it through.
+        ext.fd_chmod = guard(ext.fd_chmod, (fs, fd, mode) => {
+            right(fd, 21);
+            return after(fs.fchmod(handle(fd).handle.id, mode & 0o7777), () => 0);
+        }, owns);
+    }
     imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs, fd, lookup, p, n, a, m, flags) => {
         pathRight(fd, 20);
         const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);

@@ -122,6 +122,9 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // deepest realistic paths: a node_modules path runs ~200 bytes, so a full
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
+// Entries one subtree listing (fsListTree) carries before it is refused
+// (E2BIG): two list pages' worth, in one round trip and one revision.
+export const FS_LIST_TREE_MAX_ENTRIES = 2 * FS_LIST_PAGE_LIMIT;
 // Names a process's listing takes from mounted filesystems (an embedder's
 // Drive, container or device), per launch. SQLite is listed whole, because a
 // listing of it is one index scan; a mount is walked through its readdir, one
@@ -273,6 +276,20 @@ export const NIMBUS_AI_GATEWAY_PORT = 8790;
 export const CF_COMPAT_DATE = '2026-09-26';
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';
+/**
+ * The system Nimbus presents, as uname(2) reports it: the shell's `uname`
+ * and node's os (type, hostname, release, version, machine) read it. Linux,
+ * since third-party install scripts gate on `uname -s`; a Linux release
+ * string, which release parsers read a major version from; the machine
+ * honest: the code that runs is wasm, not x86_64.
+ */
+export const SYSTEM_IDENTITY = {
+    sysname: 'Linux',
+    nodename: DEFAULT_HOSTNAME,
+    release: '6.0.0-nimbus',
+    version: '#1 Nimbus',
+    machine: 'wasm',
+};
 export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';

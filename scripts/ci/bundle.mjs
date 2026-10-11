@@ -29,14 +29,14 @@
 //     (apps/docs/dist/docs), which build-assets.mjs --docs assembles with
 //     the rest.
 // Exit: 0, every bundle; 1, a red row; 2, not graded (no clean checkout here).
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { filesUnder } from '../lib/fs-walk.mjs';
+import { step } from './lib/step.mjs';
 
-const OUTPUT_CAP = 256 * 1024;
 const USAGE = 'usage: bun scripts/ci/bundle.mjs --out <file> --target <app>[:<env>] [--target …]';
 
 const argv = process.argv.slice(2);
@@ -62,26 +62,6 @@ function finish(head, rows, bundles, assets, status) {
   writeFileSync(out, `${JSON.stringify({ head, rows, bundles, assets })}\n`);
   for (const row of rows) console.error(`bundle: ${row.name} exit ${row.exitCode} in ${row.seconds.toFixed(1)} s`);
   process.exit(status);
-}
-
-/** Run a command, its output passed through and its tail kept. */
-function step(name, cwd, command, args) {
-  const began = Date.now();
-  return new Promise((resolve) => {
-    let output = '';
-    const keep = (chunk) => {
-      process.stderr.write(chunk);
-      output = (output + chunk.toString()).slice(-OUTPUT_CAP);
-    };
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout.on('data', keep);
-    child.stderr.on('data', keep);
-    child.on('error', (error) => keep(`\n${command} could not start: ${error.message}\n`));
-    child.on('close', (code, signal) => {
-      if (signal) keep(`\n${command} was killed by ${signal}\n`);
-      resolve({ name, exitCode: code ?? 128, seconds: (Date.now() - began) / 1000, output });
-    });
-  });
 }
 
 const top = git(['rev-parse', '--show-toplevel']);

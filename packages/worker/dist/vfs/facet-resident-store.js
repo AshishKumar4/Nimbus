@@ -179,7 +179,7 @@
  * over — measured past the DO CPU limit at pi scale. See
  * \`__residentSynchronizeFromSupervisor\`.
  */
-import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
+import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import { RESIDENT_CHUNK_BYTES } from './facet-resident-limits.js';
 /**
@@ -261,6 +261,7 @@ const __RESIDENT_BATCH_ROWS = ${RESIDENT_MATERIALISE_BATCH_ROWS};
 const __RESIDENT_BATCH_PATHS = ${RESIDENT_FILL_BATCH_PATHS};
 const __RESIDENT_BATCH_BYTES = ${RESIDENT_FILL_BATCH_BYTES};
 const __RESIDENT_LIST_PAGE = ${FS_LIST_PAGE_LIMIT};
+const __RESIDENT_TREE_ENTRIES = ${FS_LIST_TREE_MAX_ENTRIES};
 /**
  * Pages one enumeration may take before it gives up.
  *
@@ -342,22 +343,69 @@ function __residentNamespaceOverlayDelta(bytes) {
 const __residentReservations = new Map();
 let __residentReservedBytes = 0;
 
+/**
+ * Reservations waiting for room, in the order they were asked for. Room that
+ * comes is held for them in that order as it comes, and one ask covers what
+ * they all still need: when each ask was for its asker's own room, and a
+ * waiter that saw room free took it without holding it, a grant served one
+ * fill of a batch, and the batch's tail gave up with the ledger granting
+ * every byte asked (astro dev: a hundred of zod's locales at once).
+ */
+const __residentReserveQueue = [];
+let __residentReserveServing = false;
+
 /** Reserve room for a fill of \`path\` before its bytes arrive: true once it is held for it. */
-async function __residentReserve(path, bytes) {
+function __residentReserve(path, bytes) {
   __residentRelease(path);
-  if (__residentCap === null) return true;
-  for (let asks = 0; ; asks++) {
-    if (__residentDbBytes() + __residentReservedBytes + bytes <= __residentCap) {
-      __residentReservations.set(path, bytes);
-      __residentReservedBytes += bytes;
-      return true;
+  if (__residentCap === null) return Promise.resolve(true);
+  if (__residentReserveQueue.length === 0 && __residentHoldRoom(path, bytes)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    __residentReserveQueue.push({ path, bytes, resolve });
+    void __residentServeReserves();
+  });
+}
+
+/** Hold room for \`path\` if \`bytes\` fit now: true once it is held. */
+function __residentHoldRoom(path, bytes) {
+  if (__residentDbBytes() + __residentReservedBytes + bytes > __residentCap) return false;
+  // A second fill of the path in line holds the room the first held, not twice it.
+  __residentRelease(path);
+  __residentReservations.set(path, bytes);
+  __residentReservedBytes += bytes;
+  return true;
+}
+
+/**
+ * The waiting reservations' one asker. It holds room for those that fit, in
+ * order, then asks the ledger for what the rest need, until none waits. An
+ * ask that raises the cap not at all is the ledger's refusal (it admits a
+ * fill whole or not at all): the reservations still waiting are refused, and
+ * their fills are not fetched. Rounds whose room others took are bounded.
+ */
+async function __residentServeReserves() {
+  if (__residentReserveServing) return;
+  __residentReserveServing = true;
+  try {
+    for (let idle = 0; ; ) {
+      const waiting = __residentReserveQueue.length;
+      while (__residentReserveQueue.length > 0 && __residentHoldRoom(__residentReserveQueue[0].path, __residentReserveQueue[0].bytes)) {
+        __residentReserveQueue.shift().resolve(true);
+      }
+      if (__residentReserveQueue.length === 0) return;
+      idle = __residentReserveQueue.length < waiting ? 0 : idle + 1;
+      const cap = __residentCap;
+      if (idle <= 8) {
+        let need = 0;
+        for (const reservation of __residentReserveQueue) need += reservation.bytes;
+        await __residentAskGrant(need);
+      }
+      if (__residentCap === cap) {
+        for (const reservation of __residentReserveQueue.splice(0)) reservation.resolve(false);
+        return;
+      }
     }
-    // Each ask is for what is short now, and others may reserve while it is
-    // out; only an ask after which there is no more room than before ends it.
-    if (asks === 8) return false;
-    const cap = __residentCap;
-    await __residentAskGrant(bytes);
-    if (__residentCap === cap) return false;
+  } finally {
+    __residentReserveServing = false;
   }
 }
 
@@ -1066,11 +1114,13 @@ function __residentAdmit(result) {
   // The namespace moves with the cursor or not at all: a delta without stats,
   // or a poison, leaves it describing a revision the cursor has left, so it
   // stops answering until a listing restores it.
-  // An answer naming no path changes no name, with or without stats.
-  const namespaced = __nsOk && !!result && !result.poison
+  // An answer naming no path changes no name, with or without stats. One
+  // that arrives while the namespace is not answering keeps why it is not.
+  const followable = !!result && !result.poison
     && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
     && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || __nsDescribes(entry.stat)));
-  if (!namespaced) {
+  const namespaced = __nsOk && followable;
+  if (__nsOk && !followable) {
     __nsMarkReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor"
       : "a change reported without the stat every name needs");
   }
@@ -1134,8 +1184,10 @@ function __residentAdmit(result) {
         __residentForgetHeld(path);
       }
       // The same bytes under a newer revision (a chmod, a touch, a rewrite
-      // with identical content): kept, and dated at the report.
-      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey)) {
+      // with identical content): kept, and dated at the report, while the
+      // report says this credential may still read them. A chmod or chown
+      // that revoked the read drops them, and the session answers the read.
+      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey) && __nsReadable(entry.stat)) {
         t.fileSetRev(path, Number(entry.rev));
         kept++;
         continue;
@@ -1711,17 +1763,41 @@ function __nsChildren(k) {
   return __residentRequire().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
 }
 
+/**
+ * Whether the credential may \`want\` (r=4, w=2, x=1) what \`meta\` describes
+ * (a namespace row, or a listing's or a delta's stat): POSIX's owner, group,
+ * other rule over its mode, uid and gid, as the session's own check answers
+ * a read (SqliteVFS.checkAccess). Root reads and writes anything, and
+ * searches what anyone may.
+ */
+function __nsAllows(meta, want) {
+  const cred = __nsCred;
+  if (!cred) return true;
+  const mode = Number(meta?.mode) & 0o777;
+  if (Number(cred.uid) === 0) return (want & 1) === 0 || (mode & 0o111) !== 0;
+  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
+  const shift = Number(cred.uid) === Number(meta?.uid) ? 6
+    : (Number(cred.gid) === Number(meta?.gid) || groups.includes(Number(meta?.gid))) ? 3 : 0;
+  return ((mode >> shift) & want) === want;
+}
+
 /** Whether the credential may search directory \`row\` (POSIX x). */
 function __nsTraversable(row) {
-  const cred = __nsCred;
   if (!row || Number(row.kind) !== __NS_DIR) return false;
-  const mode = Number(row.mode) & 0o777;
-  if (!cred) return true;
-  if (Number(cred.uid) === 0) return (mode & 0o111) !== 0;
-  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
-  const shift = Number(cred.uid) === Number(row.uid) ? 6
-    : (Number(cred.gid) === Number(row.gid) || groups.includes(Number(row.gid))) ? 3 : 0;
-  return ((mode >> shift) & 1) === 1;
+  return __nsAllows(row, 1);
+}
+
+/**
+ * Whether the credential may read the file \`stat\` describes: what decides
+ * whether bytes the store already has are kept for it under a new revision,
+ * or a copy is held for it, rather than asked of the session. Equal content
+ * keys prove the bytes are the file's, not that this credential may read
+ * them, and a chmod or a chown changes no byte. A stat that does not state
+ * the mode and owner is no grant: the session is asked instead, and answers.
+ */
+function __nsReadable(stat) {
+  if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid))) return false;
+  return __nsAllows(stat, 4);
 }
 
 /**
@@ -1965,7 +2041,7 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor, moduleBytes)
   try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
   catch (e) { failure = (e && e.message) || String(e); }
   if (pass && pass.cursor) return { cursor: await __residentCatchUp(supervisor, pass.cursor), failure };
-  return { cursor: adopted, failure };
+  return { cursor: adopted, failure: failure || (pass && (pass.skipped || pass.incomplete)) || null };
 }
 
 /**
@@ -2196,8 +2272,6 @@ async function __residentLazyBarrier(supervisor) {
   return __residentBootLazy(supervisor);
 }
 
-/** Listing pages a tree walk is given before it lists one directory at a time instead. */
-const __RESIDENT_TREE_PAGES = 2;
 
 /**
  * The store as a WASI process's filesystem adapter reads it (core
@@ -2229,7 +2303,7 @@ function __residentNamespaceView(supervisor, device, cred) {
     },
     list: (k) => __nsListDirectory(supervisor, k),
     lookup: (keys, content) => __nsLookupKeys(supervisor, keys, content ? __RESIDENT_LOOKUP_CONTENT_BYTES : 0),
-    listTree: (k) => __nsListSubtree(supervisor, k, __RESIDENT_TREE_PAGES),
+    listTree: (k) => __nsListSubtree(supervisor, k),
     content(k) {
       const cell = __residentGet(k);
       if (cell === undefined || (cell && typeof cell === "object" && cell.error)) return undefined;
@@ -2368,59 +2442,37 @@ async function __nsListDirectory(supervisor, dir) {
 }
 
 /**
- * List everything beneath \`dir\` in at most \`maxPages\` listing pages: what a
- * walker of the tree (git status, a build) is about to look at, in a few
- * round trips instead of two per directory. The listing is in path order, so
- * a directory whose last descendant the pages passed is complete, and is
- * marked listed; a directory the pages stopped inside is not (its rows stay,
- * as rows). True when \`dir\` itself was listed whole.
+ * List everything beneath \`dir\` in one answer (fsListTree): what a walker
+ * of the tree (git status, a build, an interpreter's startup) is about to
+ * look at, in one round trip instead of two per directory, every entry
+ * current at one revision. A subtree larger than the listing's bound is
+ * refused there (E2BIG), and listed one directory at a time instead.
+ * True when \`dir\` was listed whole.
  */
-async function __nsListSubtree(supervisor, dir, maxPages) {
-  if (!supervisor || typeof supervisor.fsList !== "function") return false;
+async function __nsListSubtree(supervisor, dir) {
+  if (!supervisor || typeof supervisor.fsListTree !== "function") return false;
   const t = __residentRequire();
-  const prefix = dir === "" ? "" : dir + "/";
-  // Directories entered and not yet passed, innermost last.
-  const open = [dir];
-  const seen = [];
-  let after = dir === "" ? null : prefix;
-  let complete = false;
-  const close = (path) => {
-    // Every open directory that \`path\` is not under has been passed.
-    while (open.length > 1) {
-      const top = open[open.length - 1];
-      if (path.startsWith(top + "/")) break;
-      __nsListed.add(open.pop());
-    }
-  };
+  let tree;
+  try { tree = await supervisor.fsListTree("/" + dir, __RESIDENT_TREE_ENTRIES); }
+  catch { return false; }
+  if (!tree || !Array.isArray(tree.entries)) return false;
+  const listed = [dir];
   const written = new Set();
-  pages: for (let page = 0; page < maxPages; page++) {
-    let listed;
-    try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
-    catch { break; }
-    if (!listed || !Array.isArray(listed.entries)) break;
-    for (const entry of listed.entries) {
-      const k = String(entry.path).replace(/^\\/+/, "");
-      if (k === dir) continue;
-      if (prefix !== "" && !k.startsWith(prefix)) { complete = true; break pages; }
-      if (!entry.stat || !__nsDescribes(entry.stat)) break pages;
-      close(k);
-      if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) break pages;
-      written.add(k);
-      seen.push(k);
-      if (entry.kind === "directory" && !entry.unlisted) open.push(k);
-    }
-    if (listed.next === null || listed.next === undefined) { complete = true; break; }
-    after = listed.next;
+  for (const entry of tree.entries) {
+    const k = String(entry.path).replace(/^\\/+/, "");
+    if (!entry.stat || !__nsDescribes(entry.stat)) return false;
+    if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) return false;
+    written.add(k);
+    if (entry.kind === "directory" && !entry.unlisted) listed.push(k);
   }
-  if (!complete) return false;
-  // A name the listing no longer shows under a directory it passed whole goes.
-  for (const listed of [...open.slice(1), dir]) {
-    for (const child of __nsChildren(listed)) {
-      const k = (listed === "" ? "" : listed + "/") + child.name;
+  // A name the listing no longer shows under a directory it listed goes.
+  for (const directory of listed) {
+    for (const child of __nsChildren(directory)) {
+      const k = (directory === "" ? "" : directory + "/") + child.name;
       if (!written.has(k)) __nsDeleteTree(t, k, true);
     }
   }
-  while (open.length > 0) __nsListed.add(open.pop());
+  for (const directory of listed) __nsListed.add(directory);
   return true;
 }
 
@@ -2432,6 +2484,32 @@ async function __nsListSubtree(supervisor, dir, maxPages) {
 let __residentPlan = new Set();
 function __residentSetPlan(paths) {
   __residentPlan = new Set(Array.isArray(paths) ? paths.map((p) => String(p).replace(/^\\/+/, "")) : []);
+}
+
+/**
+ * Every package.json the launch's listing names, held from boot: the data
+ * plan's \`package-json\` rule (facets/data-plan.ts) for a launch the session
+ * plans without a listing (a one-shot). Package resolution reads manifests
+ * synchronously, for whatever names a program resolves, which no closure
+ * walk bounds: vite's config load resolves every import of the config to
+ * decide what to externalize, and took each manifest it was refused for a
+ * package that is not installed.
+ *
+ * The launch hands over the manifests the session read once per install
+ * (manager.ts _installedManifests), by path, each with its content key. A
+ * listed manifest whose content key is its copy's, and whose listed mode and
+ * owner let this credential read it, is held from the copy, so a copy is
+ * never older than the file nor readable where the file is not; any other
+ * is fetched with the plan.
+ * Null: no such rule (a resident's plan names its manifests itself).
+ */
+let __residentManifests = null;
+function __residentSetManifests(manifests) {
+  const files = manifests && typeof manifests === "object" && manifests.files && typeof manifests.files === "object" ? manifests.files : null;
+  __residentManifests = files === null ? null : new Map(Object.entries(files));
+}
+function __residentIsManifest(path) {
+  return (path === "package.json" || path.endsWith("/package.json")) && !("/" + path).includes("/.git/");
 }
 
 /**
@@ -2540,7 +2618,8 @@ async function __residentEnumerate(supervisor) {
       if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
         throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
       }
-      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey) });
+      // Its stat, for the bytes the store already has: who may read them (__nsReadable).
+      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey), stat: entry.stat ?? null });
     }
     if (listed.next === null || listed.next === undefined) {
       return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
@@ -2819,9 +2898,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     const keep = vouches(entry, row.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
     // The listing names the same bytes (a revision moved, the content did
-    // not, or another epoch): kept and dated at the listing. Equal keys are
-    // equal bytes, so this needs no comparable clock.
-    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey) {
+    // not, or another epoch): kept and dated at the listing, while its stat
+    // says this credential may read them (a chmod or chown moves the
+    // revision and no byte). Equal keys are equal bytes, so this needs no
+    // comparable clock.
+    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey && __nsReadable(entry.stat)) {
       t.fileSetRev(row.path, entry.rev);
       current.add(row.path);
       rekeyed++;
@@ -2867,10 +2948,21 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // would have carried: files under the push roots changed since the cursor
   // (all of them there, when the revisions are not comparable).
   const plan = __residentPlan;
+  const manifests = __residentManifests;
   const wanted = new Set(dropped);
   const fetch = [];
+  const copied = [];
   for (const file of listing.entries) {
     if (current.has(file.path)) continue;
+    if (manifests !== null && __residentIsManifest(file.path)) {
+      // A copy is the file's bytes (equal content keys) and is held only
+      // where the listing says this credential may read them; otherwise the
+      // session is asked, and answers.
+      const copy = manifests.get(file.path);
+      if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey && __nsReadable(file.stat)) copied.push({ file, text: String(copy[1]) });
+      else fetch.push(file);
+      continue;
+    }
     if (plan.has(file.path) || wanted.has(file.path)
       || (__residentPushable(file.path) && (!comparable || file.rev > held.rev))) fetch.push(file);
   }
@@ -2884,7 +2976,17 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   }
   __residentNamespaceReserveBytes += namespaceGrowth;
   let filled;
-  try { filled = await __residentFetchFiles(supervisor, fetch); }
+  try {
+    // A copy holds the bytes the listing names (equal content keys), dated at
+    // its revision; one the store has no room for is fetched like the rest.
+    let copiedBytes = 0;
+    for (const { text } of copied) copiedBytes += __residentCellCost(text);
+    if (copiedBytes > 0) await __residentEnsureRoom(copiedBytes);
+    for (const { file, text } of copied) {
+      if (!__residentPut(t, file.path, text, file.rev, file.ckey)) fetch.push(file);
+    }
+    filled = await __residentFetchFiles(supervisor, fetch);
+  }
   finally { __residentNamespaceReserveBytes -= namespaceGrowth; }
 
   // The cursor may only advance to a state the rows actually describe, and
@@ -2951,10 +3053,15 @@ async function __residentRefillFromNamespace(supervisor, dropped) {
  */
 async function __residentRequireNamespace(supervisor, bootFailure) {
   if (__nsReady()) return null;
-  try { await __residentSynchronizeFromSupervisor(supervisor); } catch {}
+  // What stopped the repair, else the boot: why the namespace still does not answer.
+  let failure = bootFailure;
+  try {
+    const repaired = await __residentSynchronizeFromSupervisor(supervisor);
+    failure = (repaired && (repaired.skipped || repaired.incomplete)) || failure;
+  } catch (e) { failure = (e && e.message) || String(e); }
   if (__nsReady()) return null;
   return "node: the process was not started: its view of the filesystem could not be listed ("
-    + __nsNotReadyCause() + (bootFailure ? "; " + bootFailure : "") + ")";
+    + (failure || __nsNotReadyCause()) + ")";
 }
 
 /**

@@ -1,5 +1,5 @@
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
-import type { Errno, WasiImports } from './types.js';
+import type { Errno, NimbusFsImports, WasiImports } from './types.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
     kind: 'authority';
@@ -63,7 +63,15 @@ export declare const WASI_LISTEN_PATH_PREFIX = "/dev/nimbus/listen/";
  * their own fd table, so one handed to them out of band is unusable.
  */
 export declare const WASI_ACCEPTED_PATH_PREFIX = "/dev/nimbus/socket/";
-export declare function filesystemErrno(error: unknown): Errno;
+/**
+ * A refused filesystem call as the guest's errno. The session's refusal of a
+ * process it no longer holds (process-table.ts noSuchProcess: it restarted,
+ * or ended the process, while the program ran) answers ESRCH and is also
+ * handed to `gone`, so the run can end naming it ({@link processGoneMessage}).
+ */
+export declare function refusalErrno(error: unknown, gone?: (refusal: string) => void): Errno;
+/** How a run whose session no longer holds its process ends. */
+export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
 export interface AuthorityFilesystemOptions {
     fs(): RuntimeFsBridge | null;
@@ -74,6 +82,12 @@ export interface AuthorityFilesystemOptions {
     synchronous: boolean;
     /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
     umask?(): number;
+    /**
+     * The session answered that it holds no such process: it restarted (or
+     * ended the process) while the guest ran. The call itself gets ESRCH; the
+     * runner names why when the run ends.
+     */
+    processGone?(refusal: string): void;
     /**
      * Largest regular file a read-only open answers from a resident copy. A
      * guest that reopens the same file for every module (CPython's zipimport,
@@ -99,7 +113,19 @@ export interface AuthorityFilesystemOptions {
         revision: number;
         bytes: Uint8Array;
     }>;
+    /**
+     * The Nimbus filesystem extension's table (NimbusFsImports), filled for
+     * the descriptors and paths this codec answers. A call on any other
+     * descriptor goes to what the table held.
+     */
+    extension?: Partial<NimbusFsImports>;
 }
+/**
+ * st_mode of a stat: its type's format bits, and its permission bits, or
+ * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
+ * keeps none, as a node process's fs.stat reports them.
+ */
+export declare function statMode(st: Pick<RuntimeVfsStat, 'mode' | 'type'>): number;
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export declare function installAuthorityFilesystem(imports: Partial<FilesystemImports>, options: AuthorityFilesystemOptions): asserts imports is FilesystemImports;
 //# sourceMappingURL=filesystem.d.ts.map

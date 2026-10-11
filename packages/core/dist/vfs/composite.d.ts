@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsWriteObserver } from './vfs.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
@@ -143,6 +143,8 @@ export interface MountInfo {
 }
 interface Mount {
     point: string;
+    /** `point` and a slash: what a path under it starts with. */
+    under: string;
     source: VfsSource;
     options: MountOptions;
     /**
@@ -154,10 +156,10 @@ interface Mount {
     /** Inode numbers for a backend that has none, by path, stable while mounted. */
     inos: Map<string, number>;
 }
-/** One observeWrites registration: its observer, and where it wants content read. */
+/** One observeWrites registration: its observer, and where it wants content read, per side. */
 interface WriteWatch {
     observer: VfsWriteObserver;
-    wants: (path: string, principal: Principal) => boolean;
+    wants: (path: string, principal: Principal) => VfsWriteWants;
 }
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
 interface WriteWatches {
@@ -186,12 +188,15 @@ interface Table {
     synthesized: Map<string, Set<string>>;
     /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
     guard?: MutationGuard;
+    /** Told of every mount and unmount (watchMounts). */
+    moved?: () => void;
 }
 /**
  * Why a mutation by `cred` at the namespace path `path` is refused (an
  * exclusive-mutation lease covers it), or null: CompositeVFS.guardMutations.
+ * `owner`: the lease the mutation presents (a view made by `presenting`).
  */
-export type MutationGuard = (cred: VfsCred, path: string) => {
+export type MutationGuard = (cred: VfsCred, path: string, owner?: string) => {
     code: VfsErrorCode;
     detail: string;
 } | null;
@@ -210,6 +215,12 @@ interface ViewShare {
     views: Views;
     viewed?: WeakMap<VFS, VFS>;
     check?: () => void;
+    /** The exclusive-mutation lease this view's mutations present to the guard. */
+    owner?: string;
+    /** The delegations this view's process holds: its backends' lookups recall none of them (VFS.as). */
+    holds?: () => ReadonlySet<string>;
+    /** Its reads read what has landed (VFS.as): they ask no holder. */
+    landed?: boolean;
 }
 export declare class CompositeVFS implements VFS {
     private readonly table;
@@ -220,6 +231,12 @@ export declare class CompositeVFS implements VFS {
     private readonly viewed;
     /** Asked right before each of this view's mutations reaches a backend (scoped). */
     private readonly check;
+    /** The exclusive-mutation lease this view's mutations present (scoped's `owner`). */
+    private readonly owner;
+    /** The delegations this view's process holds (scoped's `holds`): presented to every backend it reaches. */
+    private readonly holds;
+    /** Whether its reads read what has landed (as's `landed`): presented to every backend it reaches. */
+    private readonly landed;
     /**
      * Views per principal, held weakly: one per principal while someone holds
      * it, none once no one does (a table serving thousands of agents does not
@@ -280,11 +297,13 @@ export declare class CompositeVFS implements VFS {
      * it (a process's, a W7 stream's), its content held until the observer is
      * done. Any other backend's mutations are reported as they are made
      * through this namespace: each costs a stat of its path before, and,
-     * where `wants` says (by default, everywhere), a read of its content
-     * before and after.
+     * where `wants` says (by default, everywhere; per side when it answers
+     * `{ before, after }`), a read of its content before and after. What a
+     * writeFile or a compare-and-write leaves is the bytes it was given, so
+     * its after costs no read.
      */
     observeWrites(observer: VfsWriteObserver, options?: {
-        wants?: (path: string, principal: Principal) => boolean;
+        wants?: (path: string, principal: Principal) => VfsWriteWants;
     }): () => void;
     /**
      * Subscribe to `mount`'s backend when it reports its own writes (a source
@@ -326,6 +345,8 @@ export declare class CompositeVFS implements VFS {
      * is held in `held`, let go when the observers are done.
      */
     private capture;
+    /** Content the observers are told of, held in `held` until they are done. */
+    private keep;
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts(): readonly MountInfo[];
     /** The mount point `path` is on ('/' for the root), whether or not its source is present. */
@@ -339,9 +360,13 @@ export declare class CompositeVFS implements VFS {
      * its own paths is lexical. A mount absent for this principal (any mount
      * on the path, rule 1) answers a null source, with its absentReason.
      * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
+     * `creating`: the lookup of a write that makes its parents (writeFile's
+     * `parents`): directories missing on the way are allowed, a file among
+     * them is still ENOTDIR, and a link to where nothing is yet leads there.
      */
     route(path: string, options?: {
         follow?: boolean;
+        creating?: boolean;
     }): Promise<VfsRoute>;
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
@@ -350,10 +375,11 @@ export declare class CompositeVFS implements VFS {
      * The lookup is the mutations' own (onMutation's), so a writer that asks
      * before it writes lands where the operation would. Rejects as that
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
-     * the lookup stays on synchronous backends.
+     * the lookup stays on synchronous backends. `creating`: as route's.
      */
     mutationRoute(path: string, options?: {
         follow?: boolean;
+        creating?: boolean;
     }): Awaitable<{
         readonly path: string;
         readonly point: string;
@@ -425,17 +451,23 @@ export declare class CompositeVFS implements VFS {
      * (no credential) is not asked.
      */
     guardMutations(guard: MutationGuard): void;
+    /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
+    watchMounts(moved: () => void): void;
     /**
      * This view, for one holder: `check` is asked right before each mutation
      * reaches a backend, after every lookup and read the mutation waited on,
      * and refuses by throwing. A process's bridge passes its scope's liveness,
      * so a write whose lookup was still awaited when the process was released
-     * or killed (or its host lease disposed) does not land. Shares this view's
-     * table, principal and backend views; not cached, so the check is the
-     * holder's alone.
+     * or killed (or its host lease disposed) does not land. `owner`: the
+     * exclusive-mutation lease its mutations present to the guard (a wave's,
+     * routed onto a mount). Shares this view's table, principal and backend
+     * views; not cached, so the check is the holder's alone. A scoped view
+     * scoped again keeps the checks it had (they run first) and its lease,
+     * unless another is given. `holds`: the delegations its process holds,
+     * presented to the backends it reaches (their views are its own then).
      */
-    scoped(check: () => void): CompositeVFS;
-    as(cred: VfsCred, actor?: string): CompositeVFS;
+    scoped(check: () => void, owner?: string, holds?: () => ReadonlySet<string>): CompositeVFS;
+    as(cred: VfsCred, actor?: string, options?: VfsViewOptions): CompositeVFS;
     /** Who this view acts as. */
     get principal(): Principal;
     get sync(): SyncVFS;
@@ -468,6 +500,11 @@ export declare class CompositeVFS implements VFS {
     /**
      * readRange and the revision ops: `/` and a mount point are EISDIR;
      * anything else is the backend's, looked up before its capability is asked.
+     * `written`: a write's whole content (a compare-and-write's), what
+     * observers are told stands after. `creates`: a missing final component
+     * is the backend's to answer, as a compare-and-write expecting revision 0
+     * (nothing there: O_CREAT|O_EXCL) creates it, atomically only there. Its
+     * parents are the lookup's, as any path's.
      */
     private onCapability;
     private method;
@@ -529,7 +566,11 @@ export declare class CompositeVFS implements VFS {
     private readdirOf;
     private emptyIfMissing;
     private onFile;
-    /** `parents`: missing directories on the way are made first (makeTree), where the lookup lands. */
+    /**
+     * `parents`: missing directories on the way are made first (makeTree),
+     * where the lookup lands. `written`: the whole content it writes, what
+     * observers are told stands after (WriteSpec.written).
+     */
     private onMutation;
     /**
      * Refuses this view's mutation at each of `paths` (the names it was given
@@ -563,7 +604,9 @@ export declare class CompositeVFS implements VFS {
      * Copy an entry (a tree when it is a directory) between backends, links as
      * links. `toAt` is the namespace path `toRel` names: each write, link and
      * directory is guarded there (guardMutation) right before it is made,
-     * after the reads it waited on.
+     * after the reads it waited on. `made` is the copy's own root: a tree
+     * copied into itself (two mounts of one backend) meets it on the way and
+     * passes it by, as it was not there when the copy began.
      */
     private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */

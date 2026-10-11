@@ -20,6 +20,7 @@ import {
   facetSupervisor,
   launchResident,
   runScenarios,
+  until,
 } from './lib/resident-body.mjs';
 
 const FIXTURE = 'lean/fixtures/node-namespace.json';
@@ -128,20 +129,22 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-function authStep(authority, step) {
-  const { kfs, rawVfs } = authority;
+async function authStep(authority, step) {
+  const { peer, rawVfs } = authority;
   const p = at(step.path);
   switch (step.auth) {
-    case 'write': kfs.writeFile(p, step.bytes); return;
-    case 'mkdir': kfs.mkdir(p, { recursive: true, mode: 0o755 }); return;
-    case 'rm': kfs.unlink(p); return;
-    case 'rmrf': kfs.removeRecursive(p); return;
-    case 'rename': kfs.rename(p, at(step.to)); return;
+    case 'write': await peer.writeFile(p, step.bytes); return;
+    case 'mkdir': await peer.mkdir(p, { recursive: true, mode: 0o755 }); return;
+    case 'rm': await peer.unlink(p); return;
+    case 'rmrf': await peer.removeRecursive(p); return;
+    case 'rename': await peer.rename(p, at(step.to)); return;
     case 'trim': {
       // A cursor the delta channel cannot answer. The clock is durable and a
       // trimmed log is answered from the rows, so the poison that remains is
       // a new epoch: a restore to an earlier point in time.
       rawVfs.rotateIncarnation();
+      // A reader's lease is broken by it, and the reader told.
+      await until(() => !globalThis.__nimbusProcessFs?.readTrusted(), 'the reader heard its lease was broken');
       return;
     }
     default: throw new Error(`unknown authority step ${step.auth}`);
@@ -183,16 +186,16 @@ async function facetStep(probe, step) {
 
 await runScenarios(import.meta.path, Object.fromEntries(cases.map((c) => [c.name, async () => {
   const authority = createAuthority();
-  authority.kfs.mkdir(ROOT, { recursive: true, mode: 0o755 });
+  await authority.peer.mkdir(ROOT, { recursive: true, mode: 0o755 });
   for (const [path, entry] of Object.entries(c.initial).sort(([a], [b]) => (a < b ? -1 : 1))) {
-    if (entry.kind === 'dir') authority.kfs.mkdir(at(path), { recursive: true, mode: 0o755 });
-    else authority.kfs.writeFile(at(path), entry.bytes ?? '');
+    if (entry.kind === 'dir') await authority.peer.mkdir(at(path), { recursive: true, mode: 0o755 });
+    else await authority.peer.writeFile(at(path), entry.bytes ?? '');
   }
   const { supervisor } = facetSupervisor(authority);
   await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
   const probe = globalThis.__probe;
   for (const step of c.steps) {
-    if (step.auth) authStep(authority, step);
+    if (step.auth) await authStep(authority, step);
     else await facetStep(probe, step);
   }
 }])), { barrierFailures: false });

@@ -13,6 +13,7 @@
  */
 import { OXC_WASM_ASSET_PATH, OXC_WASM_SHA256 } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_ASSET_PATH, OXC_FACET_SHA256 } from '../oxc-facet-artifact.generated.js';
+import { AMARO_WASM_ASSET_PATH, AMARO_WASM_SHA256 } from '../amaro-wasm-artifact.generated.js';
 import { fetchStagedBytes, fetchStagedText, stagedAsset } from './staged-source.js';
 const OXC_WASM_ASSET = stagedAsset({
     label: 'Oxc wasm', path: OXC_WASM_ASSET_PATH, l2Key: `https://nimbus-cache.invalid${OXC_WASM_ASSET_PATH}`,
@@ -29,6 +30,14 @@ export function fetchOxcWasmBytes(env) {
     return fetchStagedBytes(env, OXC_WASM_ASSET);
 }
 /** The transform facet's runtime: a script that installs the globals its class reads. */
+const AMARO_WASM_ASSET = stagedAsset({
+    label: 'amaro wasm', path: AMARO_WASM_ASSET_PATH, l2Key: `https://nimbus-cache.invalid${AMARO_WASM_ASSET_PATH}`,
+    sha256: AMARO_WASM_SHA256, contentType: 'application/wasm',
+    requiredBy: 'the transform facet', stagedBy: 'scripts/bundle-amaro-wasm.mjs',
+});
+export function fetchAmaroWasmBytes(env) {
+    return fetchStagedBytes(env, AMARO_WASM_ASSET);
+}
 export function fetchOxcFacetRuntime(env) {
     return fetchStagedText(env, OXC_FACET_ASSET);
 }

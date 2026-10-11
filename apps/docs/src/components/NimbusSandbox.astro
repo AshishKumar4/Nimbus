@@ -250,14 +250,13 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 	// stylesheet import referenced a chunk the build never wrote, which
 	// rejected the whole boot after the socket was already open.
 	import '@xterm/xterm/css/xterm.css';
+	import { cacheSession, clearCachedSession, createSession, readCachedSession, SandboxUnavailableError } from '../lib/anonymous-session';
 
 	// A stable per-browser id keys the cached session in localStorage, so a
 	// returning or refreshing visitor reattaches to the sandbox they already
-	// booted instead of cold-booting a new one. The attach token lives 120 s
-	// (ANON_ATTACH_TOKEN_TTL_MS), so the cache expires just inside that.
+	// booted instead of cold-booting a new one.
 	const CLIENT_ID_KEY = 'nimbus:client-id';
 	const SESSION_KEY_PREFIX = 'nimbus:anon-session:';
-	const REUSE_WINDOW_MS = 110_000;
 	const TERMINAL_FONT_SIZE = 13;
 	const TERMINAL_FONT_FAMILY = "'JetBrains Mono', 'Fira Code', Menlo, monospace";
 
@@ -274,54 +273,6 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 		}
 	}
 	const SESSION_KEY = SESSION_KEY_PREFIX + clientId();
-
-	interface CachedSession {
-		wsUrl: string;
-		mintedAt: number;
-	}
-
-	class SandboxUnavailableError extends Error {
-		constructor(public status: number) {
-			super(`attach endpoint returned ${status}`);
-		}
-	}
-
-	function readCachedSession(): CachedSession | null {
-		try {
-			const raw = localStorage.getItem(SESSION_KEY);
-			if (!raw) return null;
-			const cached = JSON.parse(raw) as CachedSession;
-			if (typeof cached.wsUrl !== 'string' || typeof cached.mintedAt !== 'number') return null;
-			if (Date.now() - cached.mintedAt > REUSE_WINDOW_MS) return null;
-			return cached;
-		} catch {
-			return null;
-		}
-	}
-
-	function cacheSession(wsUrl: string) {
-		try {
-			localStorage.setItem(SESSION_KEY, JSON.stringify({ wsUrl, mintedAt: Date.now() }));
-		} catch {}
-	}
-
-	function clearCachedSession() {
-		try {
-			localStorage.removeItem(SESSION_KEY);
-		} catch {}
-	}
-
-	async function createSession(attachUrl: string): Promise<string> {
-		if (/^wss?:/i.test(attachUrl)) return attachUrl;
-		const res = await fetch(attachUrl, { method: 'POST' });
-		if (!res.ok) throw new SandboxUnavailableError(res.status);
-		const body = (await res.json()) as { wsUrl?: string };
-		if (!body.wsUrl) throw new Error('attach endpoint returned no wsUrl');
-		const resolved = new URL(body.wsUrl, attachUrl);
-		if (resolved.protocol === 'https:') resolved.protocol = 'wss:';
-		if (resolved.protocol === 'http:') resolved.protocol = 'ws:';
-		return resolved.href;
-	}
 
 	async function openSocket(wsUrl: string): Promise<WebSocket> {
 		const ws = new WebSocket(wsUrl);
@@ -381,23 +332,23 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 
 			// Reuse the visit's session when possible; fall back to a fresh
 			// one if the cached attach URL no longer connects.
-			const cached = readCachedSession();
+			const cached = readCachedSession(SESSION_KEY);
 			let ws: WebSocket;
 			let reused = cached !== null;
 			if (cached) {
 				try {
 					ws = await openSocket(cached.wsUrl);
 				} catch {
-					clearCachedSession();
+					clearCachedSession(SESSION_KEY);
 					reused = false;
-					const wsUrl = await createSession(attachUrl);
-					cacheSession(wsUrl);
-					ws = await openSocket(wsUrl);
+					const session = await createSession(attachUrl);
+					cacheSession(SESSION_KEY, session);
+					ws = await openSocket(session.wsUrl);
 				}
 			} else {
-				const wsUrl = await createSession(attachUrl);
-				cacheSession(wsUrl);
-				ws = await openSocket(wsUrl);
+				const session = await createSession(attachUrl);
+				cacheSession(SESSION_KEY, session);
+				ws = await openSocket(session.wsUrl);
 			}
 
 			const [{ Terminal }, { FitAddon }] = await termModules;

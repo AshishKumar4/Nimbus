@@ -88,7 +88,7 @@ try {
         prebundle(s) {
           if (left <= 0) return super.prebundle(s);
           left--;
-          host.ctx.facets.abort(host.counts.loaderIds.at(-1), new Error(RESET));
+          host.ctx.facets.abort(host.counts.facetNames.at(-1), new Error(RESET));
           return new Promise(() => {});
         }
       };

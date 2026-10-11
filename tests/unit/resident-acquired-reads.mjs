@@ -41,7 +41,17 @@ async function boot(overrides = {}, seed = () => {}) {
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
   authority.kfs.writeFile('home/user/app/g.txt', 'g1');
   let forward;
-  const handle = facetSupervisor(authority, typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides);
+  const given = typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides;
+  // Every call here is the session's: it grants no read lease (whose async
+  // stats are the process's own view; node-read-lease).
+  const asked = Object.hasOwn(given, 'fsAcquire') ? {} : {
+    fsAcquire: (epoch, cursor, options) => {
+      if (options?.lease !== true) return forward('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]);
+      const { lease: _lease, ...rest } = options;
+      return forward('fsAcquire', [epoch, cursor, rest]);
+    },
+  };
+  const handle = facetSupervisor(authority, { ...asked, ...given });
   forward = handle.forward;
   await launchResident({
     authority,
@@ -80,8 +90,8 @@ await runScenarios(import.meta.path, {
 
   async 'what an async read returned, the sync view shows after it'() {
     const { authority, probe } = await boot();
-    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
-    authority.kfs.writeFile('home/user/app/g.txt', 'g2');
+    await authority.peer.writeFile('home/user/app/f.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     assert.equal(await probe.fs.promises.readFile(F, 'utf8'), 'v2', 'the read is the authority\'s');
     assert.equal(probe.read(F), 'v2', 'and the sync view holds it');
     assert.notEqual(probe.read(G), 'g1', 'the barrier that came with it dropped the other stale row');
@@ -89,9 +99,9 @@ await runScenarios(import.meta.path, {
 
   async 'a refused read still applies its barrier'() {
     const { authority, probe } = await boot();
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.mkdir('home/user/app/private', { mode: 0o700 });
-    authority.kfs.writeFile('home/user/app/g.txt', 'g2');
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.mkdir('home/user/app/private', { mode: 0o700 });
+    await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     assert.equal(await probe.settle(probe.fs.promises.stat('/home/user/app/private/x')), 'ERR:EACCES', 'the refusal is the read\'s');
     assert.notEqual(probe.read(G), 'g1', 'and the barrier that came with it was applied');
     assert.equal(await probe.settle(probe.fs.promises.readFile('/home/user/app/missing.txt', 'utf8')), 'ERR:ENOENT');
@@ -106,7 +116,7 @@ await runScenarios(import.meta.path, {
       "supervisor op: 'fsAcquired' is not a read, so it cannot carry a read id",
     ]) {
       const { authority, probe, log } = await boot({ fsAcquired: async () => { throw new Error(refusal); } });
-      authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+      await authority.peer.writeFile('home/user/app/f.txt', 'v2');
       assert.equal(await probe.fs.promises.readFile(F, 'utf8'), 'v2', `readFile still reads (${refusal})`);
       assert.equal((await probe.fs.promises.stat(F)).size, 2, 'stat still stats');
       const later = await callsOf(log, () => probe.fs.promises.stat(F));
@@ -121,7 +131,7 @@ await runScenarios(import.meta.path, {
       fsAcquired: async (...args) => ({ ...(await forward('fsAcquired', args)), acquired: undefined }),
     });
     forward = f;
-    authority.kfs.writeFile('home/user/app/g.txt', 'g2');
+    await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     const stat = await callsOf(log, () => probe.fs.promises.stat(F));
     assert.equal(stat.made.fsAcquire, 1, 'the barrier is asked on its own');
     assert.notEqual(probe.read(G), 'g1', 'and applied');
@@ -146,7 +156,7 @@ await runScenarios(import.meta.path, {
     armed = true;
     const reading = probe.fs.promises.readFile(G, 'utf8');
     await served.promise;
-    authority.kfs.unlink('home/user/app/g.txt');
+    await authority.peer.unlink('home/user/app/g.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => globalThis.__nimbusVfsCursor.rev >= deleted, 'the barrier applied the deletion');
@@ -179,11 +189,11 @@ await runScenarios(import.meta.path, {
     const late = '/home/user/app/late.txt';
     const reading = probe.fs.promises.readFile(late, 'utf8');
     await acquired.promise;
-    authority.kfs.writeFile('home/user/app/g.txt', 'g2');
+    await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     const unrelated = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => globalThis.__nimbusVfsCursor.rev >= unrelated, 'the barrier applied the unrelated write');
-    authority.kfs.writeFile('home/user/app/late.txt', 'late');
+    await authority.peer.writeFile('home/user/app/late.txt', 'late');
     release.resolve();
     assert.equal(await reading, 'late');
     await resumed;

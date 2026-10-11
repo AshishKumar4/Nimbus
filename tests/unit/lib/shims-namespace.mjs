@@ -25,7 +25,9 @@
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
-import { declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { RUNTIME_NODE_LIB_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { generateNodeLibModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
+import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
@@ -115,21 +117,27 @@ export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
  * file the test's bundle holds is one of the launch's module cells, compiled
  * from the store's text with the wrapper a launch gives it
  * (core/_shared/commonjs-cell.ts), as the registry compiles its `{ cjs }`
- * module, once.
+ * module, once, and given its module's own Function as the guest gives it.
  */
-globalThis.__nimbusTestCompileCell = (text) => {
+globalThis.__nimbusTestCompileCell = (text, key) => {
+  /** @type {{ exports: unknown }} */
   const moduleObject = { exports: {} };
   new Function('module', 'exports', wrapCommonJsCell(text, declaresWrapperBinding(text) ? 'block' : 'function').text)(moduleObject, moduleObject.exports);
-  return moduleObject.exports;
+  const factory = /** @type {(moduleFunction: unknown) => unknown} */ (moduleObject.exports);
+  return factory(globalThis.__nimbusCodeOrigin(moduleImporterUrl(key)).Function);
 };
 const MODULE_CELLS = `
 const __nimbusTestCells = new Map();
 function __nimbusModuleCell(key) {
   if (!__nimbusTestCells.has(key)) {
     const text = __vfsBundle[key];
-    __nimbusTestCells.set(key, typeof text === "string" ? globalThis.__nimbusTestCompileCell(text) : null);
+    __nimbusTestCells.set(key, typeof text === "string" ? globalThis.__nimbusTestCompileCell(text, key) : null);
   }
   return __nimbusTestCells.get(key);
+}
+// Its cells are the store's text: none is an ES module a launch lowered.
+function __nimbusModuleCellIsEsModule() {
+  return false;
 }
 // No runtime code is staged in a standalone factory.
 function __nimbusRuntimeModule(path) {
@@ -139,8 +147,23 @@ function __nimbusRuntimeModule(path) {
 }
 `;
 
+// The launch map's runtime modules the shims require (manager.ts
+// runtimeModules), as the map's require gives them: Node's library.
+globalThis.__nimbusTestNodeLib = () => {
+  const moduleObject = { exports: {} };
+  new Function('module', 'exports', generateNodeLibModule())(moduleObject, moduleObject.exports);
+  return moduleObject.exports;
+};
+const RUNTIME_MODULES = `
+let __nimbusTestNodeLibrary;
+function __nimbusRegistryRequire(id) {
+  if (id !== "./${RUNTIME_NODE_LIB_MODULE}") throw new Error("a standalone shims factory's map has no " + id);
+  return (__nimbusTestNodeLibrary ??= globalThis.__nimbusTestNodeLib());
+}
+`;
+
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n${MODULE_CELLS}\n`;
+export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n${MODULE_CELLS}\n${RUNTIME_MODULES}\n`;
 
 /**
  * List a test authority (a SqliteVFS) as the session would for a launch, into

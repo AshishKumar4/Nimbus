@@ -13,11 +13,9 @@
  * (core _shared/workspace-network.ts, which an egress may own), the install
  * facet its own fetch, which its loader already routes there.
  *
- * Self-contained but for retrying, a function too: the install facet
- * carries both by source (its preamble, loaders/npm-install-preamble.ts), so
- * a tarball fetch there and a packument fetch in the supervisor (r2-cache.ts)
- * retry alike. The schedule is a literal here, not a module constant: the
- * preamble keeps the identifiers the Worker's bundler gives only functions.
+ * The install facet's build-time compilation carries this function and
+ * retrying together, so a tarball fetch there and a packument fetch in the
+ * supervisor (r2-cache.ts) use the same policy.
  */
 
 import { retrying } from '@nimbus-sh/platform/retry.js';

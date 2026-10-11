@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // The 64 MiB dynamic-worker code ceiling, refused with names instead of a number.
 //
 // The platform's own refusal — "Dynamic Worker code size (N bytes) exceeds the
@@ -153,7 +154,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
     { network: ISOLATE_NETWORK, omitSupervisor: true, wasmModules: { 'giant.wasm': new ArrayBuffer(DYNAMIC_WORKER_CODE_LIMIT_BYTES) } },
   );
   await assert.rejects(
-    pool.submit((value) => value, 'payload'),
+    pool.submit(facetTaskSource("(value) => value"), 'payload'),
     /'giant\.wasm'/,
     "the pool's assembled map is under the same ceiling check",
   );
@@ -180,8 +181,8 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   // not serve the other, as with bytes.
   const v1 = poolWith(describeHostWasm(new WebAssembly.Module(EMPTY_WASM), { id: 'esbuild@1', bytes: 1000 }));
   const v2 = poolWith(describeHostWasm(new WebAssembly.Module(EMPTY_WASM), { id: 'esbuild@2', bytes: 1000 }));
-  assert.equal(await v1.submit((value) => value, 'payload'), 'ran');
-  assert.equal(await v2.submit((value) => value, 'payload'), 'ran');
+  assert.equal(await v1.submit(facetTaskSource("(value) => value"), 'payload'), 'ran');
+  assert.equal(await v2.submit(facetTaskSource("(value) => value"), 'payload'), 'ran');
   assert.equal(loaded.length, 2);
   assert.notEqual(loaded[0].id, loaded[1].id, 'different host modules key different warm slots');
   const code = await loaded[0].code();
@@ -191,7 +192,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   const giant = poolWith(describeHostWasm(new WebAssembly.Module(EMPTY_WASM), {
     id: 'giant', bytes: DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   }));
-  await assert.rejects(giant.submit((value) => value, 'payload'), /'esbuild\.wasm'/);
+  await assert.rejects(giant.submit(facetTaskSource("(value) => value"), 'payload'), /'esbuild\.wasm'/);
   for (const pool of [v1, v2, giant]) pool.dispose();
 }
 

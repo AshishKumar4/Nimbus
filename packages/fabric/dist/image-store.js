@@ -5,19 +5,21 @@
  * A resident process's module map is sized by the user's disk, so it does not
  * ride inside the boot spec — the store writes it once and the session keeps
  * only a path (see process-fabric.ts, ResidentCodeSpec.vfsTextModules). This
- * module owns the write protocol: paced slicing so no one turn holds a
- * transaction the platform resets the object over, register-roots-before-
- * first-byte so the sweep can never observe an unrooted image, size-equality
- * as the completeness test, and a mark-sweep rooted off the live process
- * table.
+ * module owns the write protocol, for these images and every other
+ * content-addressed blob a session keeps (storeContentBlob): paced slicing so
+ * no one turn holds a transaction the platform resets the object over,
+ * register-roots-before-first-byte so the sweep can never observe an unrooted
+ * image, size-equality as the completeness test, and a mark-sweep rooted off
+ * the live process table.
  *
  * The filesystem itself stays the embedder's, reached through the
  * {@link ImageBlobStore} port — the store decides what is written where
  * and when; the port decides how bytes land on a disk and with what modes and
  * credentials.
  */
+import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
+import { FACET_IMAGE_DIR, facetImagePath } from './process-fabric.js';
 /**
  * Bytes of an image written in one storage transaction.
  *
@@ -44,9 +46,10 @@ export class ImageStore {
     residentImages = new Map();
     dirReady = false;
     /**
-     * @param blobs The disk the images land on, resolved per use — the embedder
-     *   may not have a filesystem yet when the store is constructed, and throws
-     *   from here when a write is asked for without one.
+     * @param blobs The disk the images of process `pid` land on, as written on
+     *   its behalf (the process reads them as their writer), resolved per use —
+     *   the embedder may not have a filesystem yet when the store is
+     *   constructed, and throws from here when a write is asked for without one.
      * @param isLive Whether a pid still names a running process. The root set
      *   is the process table, reached through this one predicate.
      */
@@ -71,12 +74,12 @@ export class ImageStore {
      * accepting terminal connections at all, while the same build without it
      * served them.
      */
-    ensureDir() {
+    ensureDir(pid) {
         if (this.dirReady)
             return;
         this.dirReady = true;
         try {
-            this.blobs().mkdirp(FACET_IMAGE_DIR);
+            this.blobs(pid).mkdirp(FACET_IMAGE_DIR);
         }
         catch { /* a session whose disk is not writable has no images to store */ }
     }
@@ -96,9 +99,12 @@ export class ImageStore {
      *
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
+     *
+     * Each image is written by {@link storeContentBlob}: rooted here before its
+     * first byte, so a sweep that runs while this launch is suspended sees it.
      */
     async materialize(pid, images, pacer) {
-        const fs = this.blobs();
+        const fs = this.blobs(pid);
         const paths = {};
         // The root set is this ARRAY, held by the sweep's map from before the
         // first byte and appended to as each image is named. Rooting an image
@@ -111,41 +117,12 @@ export class ImageStore {
         fs.mkdirp(FACET_IMAGE_DIR);
         let count = 0;
         for await (const [moduleName, source] of images) {
-            const bytes = typeof source === 'string' ? new TextEncoder().encode(source) : encodeParts(source);
-            const path = facetImagePath(await facetImageDigest(bytes));
+            const { path, bytes } = await storeContentBlob(fs, source, facetImagePath, { pacer, root: (named) => rooted.push(named) });
             paths[moduleName] = path;
-            rooted.push(path);
             count++;
-            const stored = path.replace(/^\/+/, '');
             console.log('[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
-                + path.slice(-12) + ' ' + bytes.byteLength + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
+                + path.slice(-12) + ' ' + bytes + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
                 + ' turns=' + pacer.chunks);
-            // An image at its full size is a COMPLETE one: a write only ever grows
-            // the file from offset zero, so a write cut short by a reset leaves a
-            // strictly shorter file and fails this test. Size is enough of a check
-            // because the reader verifies the digest before the loader sees it.
-            if (fs.sizeOf(stored) === bytes.byteLength) {
-                await pacer.spend(bytes.byteLength);
-                continue;
-            }
-            // Sliced because the platform resets the object over what ONE TURN has
-            // outstanding, not over what it eventually writes — pi's 22.9 MB map
-            // went in as a single write and took the session down with it ~25% of
-            // the time. Spending between slices is what puts the rest of the image
-            // on later turns; the slice bound is what keeps any one of them small.
-            let offset = 0;
-            do {
-                const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
-                // The first slice REPLACES the file, so an interrupted write's remains
-                // are truncated to a known length rather than left as a tail past this
-                // content.
-                if (offset === 0)
-                    fs.writeFile(stored, slice);
-                else
-                    fs.writeRange(stored, offset, slice);
-                offset += slice.byteLength;
-                await pacer.spend(slice.byteLength);
-            } while (offset < bytes.byteLength);
         }
         this.sweep(fs);
         console.log('[image-store] pid=' + pid + ' materialized ' + count + ' image(s) in ' + pacer.chunks + ' turn(s)');
@@ -191,34 +168,110 @@ export class ImageStore {
     }
 }
 /**
- * UTF-8 bytes of an image given as ordered parts, encoded into one buffer a
- * part at a time: joining the parts first would hold the whole image twice as
- * text.
+ * Store `source` at its content address in `fs` (`pathOf` its digest), unless
+ * a complete copy is already there; the one write protocol for every
+ * content-addressed blob a session keeps, whatever keeps it alive.
+ *
+ * The source is never encoded whole: it is digested a slice at a time, then,
+ * unless a complete blob is already stored at that digest, written a slice at
+ * a time, both passes encoding into one slice-sized buffer (encodeInto: no
+ * part's encoding is made on its own), each part released (emptied in place)
+ * as it is written. Encoded whole, an astro project's second launch held its
+ * pack's 33.6 MiB of strings and their 25 MiB of UTF-8 at once, and reset the
+ * session's isolate. What it holds at once is that buffer, whatever the
+ * blob's size.
+ *
+ * `root` is told the path before the first byte. A blob at its full size is
+ * a COMPLETE one: a write only ever grows the file from offset zero, so a
+ * write cut short by a reset leaves a strictly shorter file and fails this
+ * test. Size is enough of a check because every reader verifies the digest
+ * (process-fabric.ts readContentBlob).
+ *
+ * Sliced because the platform resets the object over what ONE TURN has
+ * outstanding, not over what it eventually writes — pi's 22.9 MB map went in
+ * as a single write and took the session down with it ~25% of the time.
+ * Spending each slice on `pacer` is what puts the rest on later turns; the
+ * slice bound is what keeps any one of them small.
  */
-function encodeParts(parts) {
-    let length = 0;
-    for (const part of parts) {
-        for (let i = 0; i < part.length; i++) {
-            const code = part.charCodeAt(i);
-            if (code < 0x80)
-                length += 1;
-            else if (code < 0x800)
-                length += 2;
-            else if (code >= 0xd800 && code <= 0xdbff && (part.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
-                length += 4;
-                i++;
-            }
-            else
-                length += 3;
-        }
+export async function storeContentBlob(fs, source, pathOf, { pacer, root } = {}) {
+    const parts = typeof source === 'string' ? [source] : source;
+    // A UTF-16 unit is at most three bytes of UTF-8, so a small blob's buffer is its own size.
+    const units = parts.reduce((sum, part) => sum + part.length, 0);
+    const slice = new Uint8Array(Math.max(1, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES, 3 * units)));
+    const hash = sha256Incremental();
+    const length = await encodeSlices(parts, slice, (bytes) => hash.update(bytes), false);
+    const digest = await hash.hex();
+    const path = pathOf(digest);
+    root?.(path);
+    const stored = path.replace(/^\/+/, '');
+    if (fs.sizeOf(stored) === length) {
+        parts.fill('');
+        await pacer?.spend(length);
+        return { digest, path, bytes: length };
     }
-    const bytes = new Uint8Array(length);
-    const encoder = new TextEncoder();
     let offset = 0;
-    for (const part of parts) {
-        const encoded = encoder.encode(part);
-        bytes.set(encoded, offset);
-        offset += encoded.byteLength;
+    const written = await encodeSlices(parts, slice, async (bytes) => {
+        // The first slice REPLACES the file, so an interrupted write's remains
+        // are truncated to a known length rather than left as a tail past this
+        // content.
+        if (offset === 0)
+            fs.writeFile(stored, bytes);
+        else
+            fs.writeRange(stored, offset, bytes);
+        offset += bytes.byteLength;
+        await pacer?.spend(bytes.byteLength);
+    }, true);
+    if (written !== length)
+        throw new Error(`Nimbus: a blob's parts encoded to ${written} bytes, digested as ${length}`);
+    return { digest, path, bytes: length };
+}
+/**
+ * `parts` as UTF-8, handed to `sink` a full `slice` at a time (and the rest
+ * last; an empty image as one empty slice), encoded into `slice` itself. A
+ * character that does not fit the slice's end is split across two slices,
+ * so every slice but the last is whole. With `release`, each part is
+ * emptied once its bytes are in the slice. Returns the bytes encoded.
+ */
+async function encodeSlices(parts, slice, sink, release) {
+    const encoder = new TextEncoder();
+    let filled = 0;
+    let total = 0;
+    const flush = async () => {
+        await sink(slice.subarray(0, filled));
+        total += filled;
+        filled = 0;
+    };
+    for (let i = 0; i < parts.length; i++) {
+        let rest = parts[i];
+        if (release)
+            parts[i] = '';
+        while (rest.length > 0) {
+            const { read, written } = encoder.encodeInto(rest, slice.subarray(filled));
+            filled += written;
+            rest = rest.slice(read);
+            if (rest.length === 0)
+                break;
+            if (read === 0) {
+                // The next character needs more bytes than the slice has left: its
+                // bytes fill the slice and start the next.
+                const units = (rest.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+                const bytes = encoder.encode(rest.slice(0, units));
+                rest = rest.slice(units);
+                const head = slice.length - filled;
+                slice.set(bytes.subarray(0, head), filled);
+                filled = slice.length;
+                await flush();
+                slice.set(bytes.subarray(head), 0);
+                filled = bytes.byteLength - head;
+            }
+            else if (filled === slice.length) {
+                await flush();
+            }
+        }
+        if (filled === slice.length)
+            await flush();
     }
-    return bytes;
+    if (filled > 0 || total === 0)
+        await flush();
+    return total;
 }

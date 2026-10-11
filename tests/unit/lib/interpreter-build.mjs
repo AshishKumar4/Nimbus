@@ -1,7 +1,8 @@
 // The runtime-code interpreter built from core src (packages/worker/scripts/
 // interpreter-bundle.mjs, as staged for a node launch's map), written as the
-// three CommonJS files a node process loads (the primordials first, as a
-// launch loads them at its start), and the routing the guest shims install:
+// CommonJS files a node process loads (the primordials first, as a launch
+// loads them at its start; the module helpers its runtime compiles, as
+// commonjs-cell.ts gives them), and the routing the guest shims install:
 // each Function constructor answers a code-generation refusal with the
 // interpreter. Tests run them under `node
 // --disallow-code-generation-from-strings`, which refuses string code
@@ -13,6 +14,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PRIMORDIALS_FILE, bundleInterpreter } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
+
+/** The module helpers' file, beside the interpreter: what a launch's runtime compiles for it. */
+export const MODULE_HELPERS_FILE = 'interpreter-module-helpers.js';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -28,6 +32,9 @@ export async function buildInterpreterFiles() {
   writeFileSync(primordialsFile, primordials);
   writeFileSync(interpreterFile, interpreter);
   writeFileSync(opsFile, ops);
+  // Imported here, not above: node loads this module too, and the helpers' module is TypeScript.
+  const { ESM_MODULE_HELPERS } = await import('../../../packages/core/src/runtime/esm-interop.ts');
+  writeFileSync(join(dir, MODULE_HELPERS_FILE), `module.exports = ${ESM_MODULE_HELPERS};\n`);
   return { dir, primordialsFile, interpreterFile, opsFile };
 }
 

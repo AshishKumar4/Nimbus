@@ -18,7 +18,7 @@
 // Chrome runs with web security on: the rules under test are the browser's.
 // NIMBUS_PROBE_SCREENSHOTS=<dir> saves the offer, desktop and 390 px.
 
-import { AUTH_TOKEN, deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
+import { deleteSession, fetchPort, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
 import {
   applyProbeCookies,
   exchangeAttachCookie,
@@ -144,8 +144,8 @@ try {
   // The session's DELETE below ends the app with everything else.
   await t.close();
   const page = await browser.newPage();
-  if (AUTH_TOKEN) await exchangeAttachCookie(page, sid);
-  else await applyProbeCookies(page);
+  await applyProbeCookies(page, BASE, sid);
+  await exchangeAttachCookie(page, sid);
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message || String(error)));
 
@@ -174,10 +174,8 @@ try {
   await screenshot(page, 'final-desktop-offer-reload-isolated');
 
   // ── a phone-width window keeps the offer and ↗ on screen, words whole ──
-  // The pane is ~80 px wide there: the offer collapses to one button with a
-  // one-word label, named in full by its aria-label and tooltip, and no word
-  // is broken to fit.
   await page.setViewport({ width: 390, height: 844 });
+  await page.click('#btnPhonePreview');
   const narrow = await page.evaluate(() => {
     const onScreen = (element) => {
       const rect = element.getBoundingClientRect();
@@ -198,8 +196,8 @@ try {
   });
   a.check('at 390 px the ↗ button is on screen', narrow.open, JSON.stringify(narrow));
   a.check(
-    'at 390 px the offer is one whole button reading "Isolate" on one line, named "Reload isolated" by label and tooltip',
-    narrow.action && narrow.oneLine && JSON.stringify(narrow.words) === '["Isolate"]'
+    'at 390 px the offer is one whole button, named "Reload isolated" by label and tooltip',
+    narrow.action && narrow.oneLine && narrow.words.includes('Reload isolated')
       && narrow.name?.startsWith('Reload isolated:') && narrow.tooltip === narrow.name,
     JSON.stringify(narrow),
   );
@@ -282,6 +280,7 @@ try {
   );
   await screenshot(page, 'final-desktop-isolated-app-in-pane');
   await page.setViewport({ width: 390, height: 844 });
+  await page.click('#btnPhonePreview');
   await screenshot(page, 'final-mobile-isolated-app-in-pane');
   await page.setViewport({ width: 1280, height: 800 });
 

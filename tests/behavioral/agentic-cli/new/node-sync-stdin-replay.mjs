@@ -111,7 +111,7 @@ try {
   const t0 = Date.now();
   t.cmd(`sleep 8 | node -e "function u(){require('fs').readFileSync(0)} console.log('print' + 'ed')"`);
   const printedAfter = await t.waitFor((b) => /\nprinted/.test(b), 60_000, 'printed');
-  await t.waitForNewPrompt(60_000);
+  await t.waitForPrompt(60_000);
   a.check(`an unused reader in a pipeline prints before its writer ends (${printedAfter} ms, writer 8000 ms)`, printedAfter < 5_000, `${Date.now() - t0} ms`);
 
   t.reset();
@@ -120,7 +120,7 @@ try {
   await sleep(1000);
   const c0 = Date.now();
   t.send('\x03');
-  await t.waitForNewPrompt(30_000);
+  await t.waitForPrompt(30_000);
   const interrupted = Date.now() - c0;
   const status = /S=(\d+)/.exec(stripAnsi((await t.run('echo "S=$?"', 30_000)).output))?.[1];
   a.check(`Ctrl-C while the read waits: status ${status} after ${interrupted} ms`, status === '130' && interrupted < 10_000, '');

@@ -15,7 +15,7 @@
  * captures what it declares. Function scopes are always materialized: they
  * are the frame of a call.
  */
-import type { AnonymousClassDeclaration, AnonymousFunctionDeclaration, AnyNode, ArrowFunctionExpression, BlockStatement, CatchClause, ClassDeclaration, ClassExpression, ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, MethodDefinition, ModuleDeclaration, Pattern, PrivateIdentifier, Program, PropertyDefinition, Statement, StaticBlock, SwitchStatement, VariableDeclaration } from 'acorn';
+import type { AnonymousClassDeclaration, AnonymousFunctionDeclaration, AnyNode, ArrowFunctionExpression, BlockStatement, CatchClause, ClassDeclaration, ClassExpression, ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, MethodDefinition, ModuleDeclaration, PrivateIdentifier, Program, PropertyDefinition, Statement, StaticBlock, SwitchStatement, VariableDeclaration } from 'acorn';
 import { type SafeList, type SafeWeakMap } from './intrinsics.js';
 import type { Owned } from './tree.js';
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
@@ -103,7 +103,6 @@ export interface Reference {
 }
 /** Whether a function body opens with a "use strict" directive. */
 export declare function hasUseStrict(body: readonly (Statement | ModuleDeclaration)[]): boolean;
-export declare function patternIdentifiers(pattern: Pattern, out?: SafeList<Identifier>): SafeList<Identifier>;
 /** The child nodes of `node`, in a new array. */
 export declare function childNodes(node: AnyNode): AnyNode[];
 /**

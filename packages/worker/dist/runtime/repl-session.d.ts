@@ -22,6 +22,11 @@ export interface ReplAdapter {
     /** Called once when the session starts. Returns the banner to print
      *  before the first prompt. */
     banner(): string;
+    /** Boot the runtime and its driver before the first prompt; startup failures reject. */
+    initialize?(): Promise<{
+        stdout: string;
+        stderr: string;
+    }>;
     /** Send a complete line of user input. Returns:
      *    - kind === 'output': normal eval result; resume reading at prompt.
      *    - kind === 'incomplete': need more input (multi-line block).
@@ -74,6 +79,7 @@ export declare class ReplSession {
     private closedPromise;
     private pendingInterrupt;
     private activePush;
+    private initializing;
     private ending;
     /** Exit code captured from adapter's last 'exit' return. */
     private exitCode;

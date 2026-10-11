@@ -42,6 +42,7 @@ export interface SessionSupervisorHost {
      */
     readonly supervisorDeliveries?: SupervisorDeliveries;
     readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
+    waveTurn?(): Promise<void>;
     _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**
@@ -54,8 +55,6 @@ export interface SessionSupervisorHost {
 export interface SessionSupervisorOps {
     readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
     readonly bridge: (pid?: number) => RuntimeFsBridge;
-    /** Drop a pid's bridge — a process exit ends its credential's validity. */
-    readonly forget: (pid: number) => void;
     readonly dispose: () => Promise<void>;
     /** Close a live pid's descriptors for a run that starts in place of another. */
     rewind(pid: number): Promise<void>;

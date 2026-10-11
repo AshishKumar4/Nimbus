@@ -14,6 +14,7 @@ import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
 import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString'
   | 'readFileUncached' | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
@@ -109,15 +110,18 @@ export async function handKernelArtifact(filesystem: ProcessFiles, view: Process
   const dir = await engineKey(view, filesystem.engine, at.slice(0, cut));
   if (dir === null || dir === '') return;
   const kernel = filesystem.engine.as(CRED_KERNEL);
-  let owner: VfsStat;
-  try { owner = kernel.stat(dir); } catch { return; }
-  if (owner.uid === 0 || owner.type !== 'directory') return;
-  hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid);
+  // Handing it again hands it as before: repeatable, so it waits for a delegation it meets.
+  await withRecall(() => {
+    let owner: VfsStat;
+    try { owner = kernel.stat(dir); } catch (error) { if (recallOf(error) !== null) throw error; return; }
+    if (owner.uid === 0 || owner.type !== 'directory') return;
+    hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid);
+  });
 }
 
 function hand(kernel: CredentialedVfs, key: string, uid: number, gid: number): void {
   let st: VfsStat;
-  try { st = kernel.lstat(key); } catch { return; }
+  try { st = kernel.lstat(key); } catch (error) { if (recallOf(error) !== null) throw error; return; }
   if (st.uid !== 0) return;
   if (st.type === 'file') {
     if (st.nlink === 1 && (st.mode & 0o004) !== 0) kernel.chown(key, uid, gid);

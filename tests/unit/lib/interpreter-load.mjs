@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 import { PRIMORDIALS_FILE } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
+import { MODULE_HELPERS_FILE } from './interpreter-build.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -19,5 +20,6 @@ export function loadPrimordials(interpreterFile) {
 export function loadInterpreter(interpreterFile, opsFile, dynamicImport) {
   const { LAUNCH_PRIMORDIALS } = loadPrimordials(interpreterFile);
   const { createInterpreter } = require(interpreterFile);
-  return createInterpreter(require(opsFile), { dynamicImport, primordials: LAUNCH_PRIMORDIALS });
+  const moduleHelpers = require(join(dirname(interpreterFile), MODULE_HELPERS_FILE));
+  return createInterpreter(require(opsFile), { dynamicImport, primordials: LAUNCH_PRIMORDIALS, moduleHelpers });
 }

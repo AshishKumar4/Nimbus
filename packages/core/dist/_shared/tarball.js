@@ -11,7 +11,7 @@
  * Installers use writeTarballStream. extractTarball retains a map for callers
  * such as gem install, which must open an archive nested inside another one.
  */
-import { streamPackageEntries, readableStreamToAsyncIterable, streamTarEntries, } from './tarball-stream.js';
+import { streamPackageEntries, readableStreamToAsyncIterable, streamTarEntries, tarBytes, } from './tarball-stream.js';
 const PACKAGE_MANIFEST = 'package.json';
 /**
  * Stream a gzipped npm archive into a package directory. Entry names are
@@ -66,7 +66,7 @@ export async function extractTarball(tarball) {
         source = readableStreamToAsyncIterable(rs);
     }
     else {
-        source = (async function* () { yield raw; })();
+        source = tarBytes(raw);
     }
     try {
         for await (const entry of streamTarEntries(source)) {

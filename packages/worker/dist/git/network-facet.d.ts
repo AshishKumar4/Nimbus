@@ -25,17 +25,37 @@
  * in the PR that introduced this file.
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
-/**
- * The clone's job marker, in its git directory from prepare until the clone
- * is whole: the proof an abort needs that the destination is the clone's,
- * and what tells every other git command the repository is not yet one.
- */
-export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
+import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
+/** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
+export type GraphFiltersStep = {
+    step: 'plan';
+} | {
+    step: 'piece';
+    layer: string;
+    pass: string;
+    from: number;
+    to: number;
+    budgetMs: number;
+} | {
+    step: 'assemble';
+    layer: string;
+    pass: string;
+    files: {
+        name: string;
+        bytes: number;
+    }[];
+} | {
+    step: 'discard';
+    layer: string;
+    pass: string;
+};
 export interface GitNetworkOpts {
     op: GitNetworkOp;
+    /** For graph-filters: commits a piece is asked for, and its wall-time budget (tuning). */
+    graphFilterPieceCommits?: number;
+    graphFilterPieceBudgetMs?: number;
     /** Invoking process identity used to bind every supervisor filesystem RPC. */
     pid: number;
     /** Absolute working tree directory (e.g. "/home/user/project") */
@@ -72,8 +92,18 @@ export interface GitNetworkOpts {
     timeout?: number;
     /** Clone-only: caller holds an exclusive mutation lease for dir. */
     exclusiveDestination?: boolean;
+    /**
+     * Clone-only, the DO's: the job's id (its record's, git/clone-job.ts, and
+     * the marker's the clone writes first), and what the clone tells the
+     * record when every object it fetches is in (its phase becomes
+     * 'checkout': a failure after leaves the repository, as git's does).
+     */
+    cloneJobId?: string;
+    onCloneCheckoutPhase?: () => Promise<void>;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
+    /** The repository (a clone's destination) is on a mounted filesystem (`dir` its namespace path), where a wave's files are bounded (pack/mount-writer.ts). */
+    onMount?: boolean;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
     /**
@@ -82,10 +112,18 @@ export interface GitNetworkOpts {
      * facets may still make is refused. Never sent to the dynamic worker.
      */
     rotateMutationOwner?: () => string;
+    /**
+     * The operation's stop (a Ctrl-C, a kill, a destroy): no further piece
+     * starts, the one in flight is let go, and a clone's facets lose their
+     * writes before it answers `cancelled`. Never sent to the dynamic worker.
+     */
+    signal?: AbortSignal;
     /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
     relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
     filter?: string;
+    /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse?: boolean;
     /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
     historyBlobsPerBatch?: number;
     /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
@@ -105,28 +143,7 @@ export interface GitNetworkOpts {
     /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
     batchConcurrency?: number;
 }
-export interface GitSupervisorRpcCounters {
-    stat: number;
-    lstat: number;
-    readdir: number;
-    readFile: number;
-    fsReadRange: number;
-    /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
-    fsWriteRange: number;
-    rename: number;
-    writeBatchStream: number;
-    readlink: number;
-    symlink: number;
-    legacySymlinkSubtree: number;
-    stdout: number;
-}
-export interface GitMetadataOverlayStats {
-    entries: number;
-    accountedBytes: number;
-    maxEntries: number;
-    maxAccountedBytes: number;
-}
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
@@ -143,7 +160,7 @@ export interface GitNetworkPhaseDiagnostic {
         total?: number;
     };
     w7Waves: number;
-    supervisorRpc: GitSupervisorRpcCounters;
+    supervisorRpc: SupervisorRpcCounters;
     /** The invocation's wave writer: what it published and how long it waited. */
     waves?: WaveStats;
 }
@@ -154,17 +171,24 @@ export interface GitNetworkResult {
     elapsed: number;
     filesWritten: number;
     bytesWritten: number;
-    supervisorRpc: GitSupervisorRpcCounters;
-    metadataOverlay: GitMetadataOverlayStats;
+    supervisorRpc: SupervisorRpcCounters;
+    metadataOverlay: MetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
-    /** The git server could not be reached, or refused: what it did (pack/remote-failure.ts), for git's message. */
-    remoteFailure?: RemoteFailure;
+    /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
+    gitFailure?: string;
     budget?: GitCloneBudgetDiagnostic;
-    cleanupError?: string;
+    /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
+    cleanup?: boolean;
+    /** It was stopped (GitNetworkOpts.signal): the stop's reason. */
+    cancelled?: {
+        reason: unknown;
+    };
     /** fetch-objects: objects the promisor pack holds. */
     fetchedObjects?: number;
+    /** For graph-filters: the step's answer. */
+    graphFilters?: unknown;
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;
@@ -174,6 +198,37 @@ export interface GitCloneBudgetDiagnostic {
     elapsedMs: number;
     limitMs: number;
 }
+/** How a clone's changed-path filters pass went. */
+export interface GraphFiltersOutcome {
+    /** The new layer's name, or null when the chain was left as it is. */
+    layer: string | null;
+    /**
+     * Why the chain was left as it is: there is no graph, it is not one
+     * unfiltered base layer, another writer holds its lock, or it changed
+     * under the pass.
+     */
+    skipped?: 'no-graph' | 'not-a-base' | 'locked' | 'moved';
+    commits: number;
+    pieces: number;
+    /** Trees read from the packs, and their bytes. */
+    trees: number;
+    treeBytes: number;
+    elapsed: number;
+}
+/**
+ * A full clone's commit-graph (git/pack/graph-filters.ts), after the clone
+ * has answered: one facet loaded for the whole pass and invoked once a step,
+ * as a clone invokes its phases (a facet loaded a step deepened each step's
+ * subrequests until "Subrequest depth limit exceeded", measured on vscode's
+ * fourteenth). Each piece holds a tree cache and the pack store's.
+ */
+export declare function runGraphFilters(ctx: DurableObjectState, env: any, opts: {
+    pid: number;
+    dir: string;
+    pieceBudgetMs?: number;
+    pieceCommits?: number;
+    onMount?: boolean;
+}, network: WorkspaceNetwork): Promise<GraphFiltersOutcome>;
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
@@ -183,11 +238,8 @@ export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: 
  * every batch and history piece, a fence's reload, fetch/pull/push).
  */ network: WorkspaceNetwork): Promise<GitNetworkResult>;
 /**
- * Generate the dynamic worker code for the git network facet.
- *
- * Exports `default { async fetch(request, workerEnv) { ... } }`.
- * Reads op args from the POST body, runs isomorphic-git with a buffered
- * fs adapter, and flushes writes through W7 v3.
+ * The git network facet's module: the pack layer's bundle (pack/facet.ts),
+ * whose network worker (pack/network-worker.ts) it exports.
  */
 export declare function assembleGitNetworkFacetSource(): string;
 //# sourceMappingURL=network-facet.d.ts.map

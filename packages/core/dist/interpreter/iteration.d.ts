@@ -8,10 +8,11 @@
  * read by index instead, which reads exactly what its iterator would.
  */
 import { type SafeList } from './intrinsics.js';
+import type { HostOperators } from './host-ops.js';
 /** A value as an error message names it, without running its code. */
 export declare function describe(value: unknown): string;
 /** GetMethod(value, @@iterator), or the TypeError for spreading or iterating what has none. */
-export declare function iteratorMethod(value: unknown): Function;
+export declare function iteratorMethod(ops: HostOperators, value: unknown): Function;
 /** Whether `method` iterates `value` as reading it by index would: an array, iterated by the original iterator. */
 export declare function arrayIteration(value: unknown, method: unknown): value is readonly unknown[];
 /** An iterator and its `next`, as GetIterator records them, for a protocol that may stop early and must close it. */
@@ -33,9 +34,9 @@ export declare class IteratorRecord {
 }
 /** GetIterator(value, sync) with its method already read. */
 export declare function iteratorFrom(value: unknown, method: Function): IteratorRecord;
-export declare function getIterator(value: unknown): IteratorRecord;
+export declare function getIterator(ops: HostOperators, value: unknown): IteratorRecord;
 /** Append to `out` what spreading `value` yields. */
-export declare function spreadInto(out: SafeList<unknown>, value: unknown): void;
+export declare function spreadInto(ops: HostOperators, out: SafeList<unknown>, value: unknown): void;
 /**
  * IteratorClose of an array's original iterator, which an array pattern read
  * by index stopped short of its end: the lookup of `return` (and its call,

@@ -108,13 +108,6 @@ export class VfsEventEmitter {
             }
         }
     }
-    /** Remove all listeners. */
-    removeAll() {
-        this._globalListeners = [];
-        this._pathListeners.clear();
-        this._pending = [];
-        this._flushScheduled = false;
-    }
     get stats() {
         return {
             totalEmitted: this._totalEmitted,

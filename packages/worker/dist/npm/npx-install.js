@@ -29,7 +29,7 @@
  */
 import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { packageRangeSeparator } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
 export const NPX_CACHE_DIR = '/tmp/.npx-cache';
@@ -96,13 +96,8 @@ function parseNpxArgs(rawArgs) {
     const first = invocation.command;
     const pkgSpec = invocation.packageOverride ?? first;
     const command = invocation.packageOverride ? first : null;
-    const { name: pkgName } = splitSpec(pkgSpec);
+    const { name: pkgName } = splitPackageSpec(pkgSpec);
     return { pkgSpec, pkgName, command, binArgs: invocation.args, yes: invocation.yes };
-}
-/** Split `name@version` (or scoped `@scope/name@version`) into parts. */
-function splitSpec(spec) {
-    const at = packageRangeSeparator(spec);
-    return at === -1 ? { name: spec, version: null } : { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
 /**
  * Find the absolute path of a binary inside a package's directory.
@@ -206,7 +201,7 @@ registry) {
     //    Use the package's `<pkgSpec>` directly; NpmInstaller parses the
     //    `<name>@<version>` form same as `npm install <pkgSpec>`.
     log(`  ${parsed.pkgSpec}...`);
-    const { name: instName, version: instVer } = splitSpec(parsed.pkgSpec);
+    const { name: instName, range: instVer } = splitPackageSpec(parsed.pkgSpec);
     const installSpec = instVer ? `${instName}@${instVer}` : instName;
     // Synthesize npx-cache package.json so NpmInstaller has a project
     // root. The deps map is the source of truth for the install set.

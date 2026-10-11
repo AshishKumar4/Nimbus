@@ -1,6 +1,6 @@
 import type { WordPart } from './types.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
-import type { ShellOptions } from './interpreter.js';
+import type { ShellOptions } from './state.js';
 export interface ExpandContext {
     env: Record<string, string>;
     /**

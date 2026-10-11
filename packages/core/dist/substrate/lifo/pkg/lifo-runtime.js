@@ -4,7 +4,8 @@ import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
 import { Buffer } from '../node-compat/buffer.js';
 import { ProcessExitError } from '../node-compat/index.js';
-import { createCjsLoader, isEsmSource } from '../node-compat/cjs-loader.js';
+import { createCjsLoader } from '../node-compat/cjs-loader.js';
+import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 // ─── CDN + WASM module registry ───
 const DEFAULT_CDN = 'https://esm.sh';
 /** In-memory cache for CDN imports (survives across command invocations). */
@@ -72,7 +73,7 @@ export function createLifoCommand(entryPath, vfs) {
         const source = (await vfs.readFileString(entryPath));
         const lifo = createLifoAPI(ctx);
         // ── ESM path: rewrite imports to CDN, load through a data URL ──
-        if (isEsmSource(source)) {
+        if (containsModuleSyntax(source)) {
             return executeEsmCommand(source, ctx, lifo);
         }
         // ── CJS path: the source read above, run by the shared loader ──

@@ -31,12 +31,8 @@
 // node takes the flag (a repro pins it against Node: COND=true), so the
 // relaunched CLI takes its dev path.
 //
-// Boundary (documented, not faked): the relaunched CLI exits 1. Its dev path
-// loads vite.config.ts, whose Tailwind plugin loads @tailwindcss/oxide, a
-// native binding with no build Workers can run (ContinuedMackerel's: a staged
-// oxide binding is next); the relaunched CLI's own output, which would say
-// so, does not reach the terminal yet (RealFlea's). Once dev serves, the
-// probe requires the dev page.
+// What a user needs: `react-router dev` serves the app through the port
+// route on its first run, as the other framework probes require.
 
 import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
@@ -81,9 +77,9 @@ try {
   a.check('the template extracts: a React Router project (package.json, app/root.tsx)',
     /EXTRACTED=\{"rr":true,"dev":true,"script":"react-router dev","root":true\}/.test(extractedOut), JSON.stringify(extractedOut.slice(-400)));
 
-  const install = await t.run('cd /home/user/remix-probe/mvp && npm install 2>&1; echo "___INSTALL=$?___"', 600_000);
+  const install = await t.run('cd /home/user/remix-probe/mvp && npm install 2>&1', 600_000);
   const installOut = stripAnsi(install.output);
-  a.check("the project's npm install completes", /___INSTALL=0___/.test(installOut), JSON.stringify(installOut.slice(-600)));
+  a.check("the project's npm install completes", install.exitCode === 0, JSON.stringify(installOut.slice(-600)));
 
   // readable-stream's constructor stealing: Node runs `Duplex.call(this)`
   // on an existing instance, and so must Nimbus.
@@ -122,21 +118,11 @@ try {
     command: './node_modules/.bin/react-router dev --host 0.0.0.0 --port 5173',
     accepts: (r) => r.status === 200 && /<html/i.test(r.body),
   });
-  if (dev.ok) {
-    a.check('react-router dev serves the app through the port route', true, dev.last);
+  a.check('react-router dev serves the app through the port route on its first run', dev.ok,
+    JSON.stringify({ last: dev.last, dev: stripAnsi(dev.output).slice(-2500) }));
+  if (dev.process) {
     dev.process.signal('SIGKILL');
     dev.process.ws.close();
-  } else {
-    // The documented boundary, as it stands: the CLI relaunches itself once
-    // with --conditions=development and the relaunched CLI exits 1. Its own
-    // output does not reach the terminal (a child's stdio under 'inherit',
-    // RealFlea's); run directly, its config load reaches @tailwindcss/oxide,
-    // which has no Workers-compatible build (ContinuedMackerel's).
-    const devOut = stripAnsi(dev.output);
-    a.check('boundary: react-router dev relaunches once with --conditions=development, and the relaunched CLI exits 1',
-      /\[restart\] Relaunching with --conditions=development/.test(devOut) && !/has already been restarted/.test(devOut)
-        && /\(react-router dev [^)]*\) exited with code 1/.test(devOut),
-      JSON.stringify({ last: dev.last, dev: devOut.slice(-2500) }));
   }
 } finally {
   await t.close();

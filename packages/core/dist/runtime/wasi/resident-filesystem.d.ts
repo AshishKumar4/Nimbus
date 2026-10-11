@@ -35,6 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -155,6 +156,23 @@ export interface ResidentFilesystemStats {
     /** File bytes pinned for descriptors now, and how many buffers hold them. */
     pinnedBytes: number;
     pins: number;
+    /** Its filesystem client's waves, grants and recalls, when it holds delegations. */
+    client?: ProcessFsStats;
 }
-export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem;
+/**
+ * What makes the process a delegation's holder (delegation-holder.ts): the
+ * session calls it takes and answers recalls with, and which keys are home
+ * directories (never held themselves).
+ */
+export interface ResidentDelegation {
+    readonly session: ProcessFsSession;
+    /** Mutations in a subtree before it is taken (the client's GRANT_AFTER). */
+    readonly grantAfter?: number;
+    /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
+    readonly grantInos?: number;
+    readonly isHomeRoot?: (key: string) => boolean;
+    /** The process's own store's write log (HolderOptions.journal). */
+    readonly journal?: ProcessFsJournal;
+}
+export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

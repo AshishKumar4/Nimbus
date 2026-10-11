@@ -10,6 +10,10 @@ export const REPLAY_PREFIX_MAX_BYTES = 1024 * 1024;
 /** The most clock readings, stdin reads and random bytes a replayable run may draw. */
 export const REPLAY_TAPE_MAX_READINGS = 65_536;
 export const REPLAY_TAPE_MAX_RANDOM_BYTES = 1024 * 1024;
+/** Filesystem changes a run that can be run again records, and the bytes they carry. */
+export const REPLAY_TAPE_MAX_WRITES = 4096;
+export const REPLAY_TAPE_MAX_WRITE_BYTES = 16 * 1024 * 1024;
+export const REPLAY_WRITE_ENTRY_MAX_CHARS = 8192;
 /** The most answers the session journals for one run; past it the run cannot be replayed. */
 export const REPLAY_JOURNAL_MAX_ENTRIES = 65_536;
 /** Joined reads keep their actual answers until the run ends, including lost-response resends. */

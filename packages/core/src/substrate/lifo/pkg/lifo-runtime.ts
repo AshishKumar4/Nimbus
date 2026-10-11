@@ -17,7 +17,8 @@ import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
 import { Buffer } from '../node-compat/buffer.js';
 import { ProcessExitError } from '../node-compat/index.js';
-import { createCjsLoader, isEsmSource } from '../node-compat/cjs-loader.js';
+import { createCjsLoader } from '../node-compat/cjs-loader.js';
+import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 import type { NodeContext } from '../node-compat/index.js';
 
 
@@ -135,7 +136,7 @@ export function createLifoCommand(
     const lifo = createLifoAPI(ctx);
 
     // ── ESM path: rewrite imports to CDN, load through a data URL ──
-    if (isEsmSource(source)) {
+    if (containsModuleSyntax(source)) {
       return executeEsmCommand(source, ctx, lifo);
     }
 

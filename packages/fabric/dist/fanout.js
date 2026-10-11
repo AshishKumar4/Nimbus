@@ -17,8 +17,9 @@
  * install and runtime operations do not appear successful after partial
  * dispatch.
  */
-import { networkRef, requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { djb2, serializeFunction } from './vendor/serialize.js';
+import { ISOLATE_NETWORK, networkRef, requireNetwork, workspaceNetwork, } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { djb2 } from './vendor/serialize.js';
+import { requireFacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom } from './budgets.js';
@@ -140,8 +141,8 @@ export class Fanout {
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as IsolatePool.submit. The function is serialized via
-     * the vendored serializeFunction (same as IsolatePool#prepare).
+     * as IsolatePool.submit. The precompiled task expression is forwarded
+     * unchanged on either route (same as IsolatePool#prepare).
      */
     async submitMany(tasks, fn) {
         if (tasks.length === 0)
@@ -180,6 +181,7 @@ export class Fanout {
         // One slot — one Dynamic Worker — per task; submitMany has claimed
         // that width on the ledger, and the pool's dispatches are held inside it.
         const pool = new IsolatePool(this.env, this.ctx, {
+            facetKind: 'fanout',
             concurrency: tasks.length,
             claim,
             timeoutMs: this.opts.timeoutMs,
@@ -216,7 +218,7 @@ export class Fanout {
         // Each peer DO receives the same fnSource string; warm peer
         // loader isolates (keyed on fnHash) reuse across calls with
         // identical fns.
-        const fnSource = serializeFunction(fn);
+        const fnSource = requireFacetTaskSource(fn);
         // Cap peer count at maxPeers (default MAX_PEER_FANOUT). Tasks beyond
         // it bucket into existing shards; each peer runs its bucket through
         // its own IsolatePool, as wide as its own headroom allows.
@@ -261,36 +263,30 @@ export class Fanout {
                         // A peer DO call is a Durable Object RPC, not a Dynamic Worker:
                         // it spends none of this coordinator's budget, and the peer
                         // spends its own.
-                        const rpcResp = await dispatch({
-                            op: 'fanoutExecute',
-                            args: [
-                                fnSource,
-                                peerArgs,
-                                {
-                                    tag: this.opts.tag,
-                                    timeoutMs: this.opts.timeoutMs,
-                                    preamble: this.opts.preamble,
-                                    wasmModules: this.opts.wasmModules,
-                                    extraBindings: this.opts.extraBindings,
-                                    omitSupervisor: this.opts.omitSupervisor,
-                                    // The workspace's egress: the peer's facets go out through it too.
-                                    network: networkRef(this.opts.network),
-                                    // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-                                    // the peer's IsolatePool can mint a SUPERVISOR
-                                    // binding that routes back HERE (the user's session DO),
-                                    // not to the peer DO itself. Without this, peer DOs'
-                                    // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
-                                    // ... write into the peer's own VFS — invisible to the
-                                    // user. See INSTALL-HONESTY-retro.md.
-                                    coordinatorDoId: this.coordDoId,
-                                    coordinatorRoute: hostRoute() ?? undefined,
-                                    // Credential source for peer-side writeBatchStream — the
-                                    // invoking process pid, so package writes are authorized
-                                    // as the user (not rejected as pid:0).
-                                    supervisorPid: this.opts.supervisorPid,
-                                },
-                            ],
-                        });
+                        const shardOpts = {
+                            tag: this.opts.tag,
+                            timeoutMs: this.opts.timeoutMs,
+                            preamble: this.opts.preamble,
+                            wasmModules: this.opts.wasmModules,
+                            extraBindings: this.opts.extraBindings,
+                            omitSupervisor: this.opts.omitSupervisor,
+                            // The workspace's egress: the peer's facets go out through it too.
+                            network: networkRef(this.opts.network),
+                            // INSTALL-HONESTY: forward the COORDINATOR's full doId so
+                            // the peer's IsolatePool can mint a SUPERVISOR
+                            // binding that routes back HERE (the user's session DO),
+                            // not to the peer DO itself. Without this, peer DOs'
+                            // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
+                            // ... write into the peer's own VFS — invisible to the
+                            // user. See INSTALL-HONESTY-retro.md.
+                            coordinatorDoId: this.coordDoId,
+                            coordinatorRoute: hostRoute() ?? undefined,
+                            // Credential source for peer-side writeBatchStream — the
+                            // invoking process pid, so package writes are authorized
+                            // as the user (not rejected as pid:0).
+                            supervisorPid: this.opts.supervisorPid,
+                        };
+                        const rpcResp = await dispatch({ op: 'fanoutExecute', args: [fnSource, peerArgs, shardOpts] });
                         try {
                             if (!isPeerResult(rpcResp))
                                 throw new BindingError(`Fanout peer '${siblingName}' returned no result array`);
@@ -351,6 +347,60 @@ export class Fanout {
             this.opts.onDispatchPhase?.(phase.length, Date.now() - phaseStartedAt);
         }
         return results;
+    }
+}
+/**
+ * The peer end of a sharded submitMany: THIS Durable Object runs one
+ * IsolatePool over the shard it was handed and returns the per-task results.
+ *
+ * The coordinator's calls to its peers are Durable Object RPCs and spend none
+ * of its Dynamic Worker budget; each peer spends its own. The shard runs one
+ * IsolatePool as wide as this object's headroom allows (at least one slot — a
+ * peer has nowhere further to send it), claimed on the ledger while it runs.
+ * A throw bubbles back to the coordinator's dispatch, whose submitMany
+ * surfaces the first one.
+ *
+ * The fnSource string is forwarded verbatim into a fresh IsolatePool, which
+ * serializes it into the loader's worker code: no eval here, the same trust
+ * posture as every other IsolatePool dispatch.
+ */
+export async function executeFanoutShard(env, ctx, fnSource, args, opts = {}) {
+    if (!Array.isArray(args)) {
+        throw new TypeError('_rpcFanoutExecute: args must be an array');
+    }
+    if (args.length === 0)
+        return { results: [] };
+    const concurrency = Math.max(1, Math.min(args.length, dynamicWorkerHeadroom(ctx)));
+    const claim = claimDynamicWorkers(ctx, concurrency);
+    const pool = new IsolatePool(env, ctx, {
+        // The coordinator's fan-out, run here: the same kind, so the same limits and deadline.
+        facetKind: 'fanout',
+        concurrency,
+        claim: claim ?? undefined,
+        timeoutMs: opts.timeoutMs,
+        tag: opts.tag ?? 'fanout-peer',
+        preamble: opts.preamble,
+        wasmModules: opts.wasmModules,
+        extraBindings: opts.extraBindings,
+        omitSupervisor: opts.omitSupervisor,
+        // INSTALL-HONESTY: SUPERVISOR.* routes back to the coordinator (the
+        // user's session DO), not this peer.
+        supervisorDoIdOverride: opts.coordinatorDoId,
+        supervisorRoute: opts.coordinatorRoute,
+        supervisorPid: opts.supervisorPid,
+        network: opts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(opts.network.egress, opts.network.id),
+    });
+    try {
+        // The coordinator already validated and serialized the function.
+        const results = await pool.mapSource(fnSource, args);
+        return { results };
+    }
+    finally {
+        try {
+            pool.dispose();
+        }
+        catch { /* best-effort */ }
+        claim?.release();
     }
 }
 /**

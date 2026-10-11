@@ -61,4 +61,21 @@ function respondWith(start) {
   assert.ok(elapsed < longest + 2000 && elapsed < STALL_MS, `gave up after the stall time, each attempt (${elapsed} ms; the schedule's longest is ${longest} ms)`);
 }
 
+{
+  // A transient edge status: the same request is sent again, body and all.
+  const bodies = [];
+  const statuses = [522, 200];
+  const fetch = async (_url, init) => {
+    bodies.push(new Uint8Array(init.body));
+    const status = statuses[bodies.length - 1];
+    return status === 200
+      ? new Response(new ReadableStream({ start: (controller) => { controller.enqueue(pkt('NAK\n')); controller.enqueue(encoder.encode('0000')); controller.close(); } }), { status })
+      : new Response('edge', { status });
+  };
+  const response = await requestPack({ url: 'https://example.invalid/r.git', fetch }, advertised, { wants, haves: ['2'.repeat(40)] });
+  for await (const _ of response.pack) { /* drain */ }
+  assert.equal(bodies.length, 2, 'retried once');
+  assert.deepEqual(bodies[1], bodies[0], 'the same request');
+}
+
 console.log('git-upload-pack-stall: ok');

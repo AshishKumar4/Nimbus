@@ -38,8 +38,6 @@ export declare class VfsEventEmitter {
     emit(type: VfsEventType, path: string, oldPath?: string): void;
     private _deliverToPathListeners;
     private _flush;
-    /** Remove all listeners. */
-    removeAll(): void;
     get stats(): {
         totalEmitted: number;
         totalBatches: number;

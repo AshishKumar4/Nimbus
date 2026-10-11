@@ -1,17 +1,7 @@
-import { DEFAULT_HOSTNAME } from '../../../../constants.js';
-/**
- * Nimbus presents a Linux system: the syscall surface, the filesystem layout
- * and the binaries that run on it are Linux's. Third-party install scripts
- * gate on `uname -s` (`case "$(uname -s)" in Linux|Darwin)`), so anything else
- * here makes every one of them refuse to install. The machine stays honest —
- * the code that runs is wasm, not x86_64.
- */
+import { SYSTEM_IDENTITY } from '../../../../constants.js';
+/** The system Nimbus presents (core constants.ts SYSTEM_IDENTITY), as GNU uname prints it. */
 const INFO = {
-    sysname: 'Linux',
-    nodename: DEFAULT_HOSTNAME,
-    release: '1.0.0',
-    version: '#1 Nimbus',
-    machine: 'wasm',
+    ...SYSTEM_IDENTITY,
     processor: 'unknown',
     platform: 'unknown',
     operatingSystem: 'GNU/Linux',

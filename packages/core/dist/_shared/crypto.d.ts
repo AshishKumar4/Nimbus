@@ -25,7 +25,7 @@ export declare function base64(bytes: Uint8Array): string;
 export declare function base64Decode(value: string): Uint8Array;
 /** base64url, unpadded (RFC 4648 §5, as JWTs and PKCE carry it). */
 export declare function base64Url(bytes: Uint8Array): string;
-/** The bytes unpadded base64url `value` encodes; throws on any other alphabet or a length no encoding has. */
+/** The bytes canonical unpadded base64url `value` encodes. */
 export declare function base64UrlDecode(value: string): Uint8Array;
 export declare function base64Utf8(value: string): string;
 //# sourceMappingURL=crypto.d.ts.map

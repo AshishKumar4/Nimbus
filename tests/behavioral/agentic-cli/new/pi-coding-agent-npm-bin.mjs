@@ -33,18 +33,18 @@ try {
   const version = await t.run('pi --version', 60_000);
   const versionOut = stripAnsi(version.output);
   a.check('pi --version exits as a short command',
-    /\b\d+\.\d+\.\d+\b/.test(versionOut) && !/\[bin started \(long-running\)/.test(versionOut),
+    /\b\d+\.\d+\.\d+\b/.test(versionOut) && !/\[facet started \(long-running\)/.test(versionOut),
     JSON.stringify(versionOut.slice(-800)));
 
   const help = await t.run('pi --help', 60_000);
   const helpOut = stripAnsi(help.output);
   a.check('pi --help exits as a short command',
-    /usage|options|commands|pi/i.test(helpOut) && !/\[bin started \(long-running\)/.test(helpOut),
+    /usage|options|commands|pi/i.test(helpOut) && !/\[facet started \(long-running\)/.test(helpOut),
     JSON.stringify(helpOut.slice(-1000)));
 
   const launch = await t.run('pi', 60_000);
   const launchOut = stripAnsi(launch.output);
-  const pidMatch = launchOut.match(/\[bin started \(long-running\): pid=(\d+) cmd="pi"\]/);
+  const pidMatch = launchOut.match(/\[facet started \(long-running\): pid=(\d+) cmd="pi"\]/);
   const pid = pidMatch ? Number(pidMatch[1]) : 0;
   a.check('bare pi starts as a long-running attached process',
     pid > 0,

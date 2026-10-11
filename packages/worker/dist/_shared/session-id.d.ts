@@ -21,14 +21,7 @@
  * values before touching a DO. Colon remains reserved for tenant/sub/session
  * DO-name composition.
  */
-/**
- * Validate a session ID before touching a DO.
- *
- * Browser-created sessions use the friendly generated shape. SDK-created
- * sandboxes can choose stable job IDs, so this also accepts the same compact
- * identifier class used by Nimbus JWT `sid`.
- */
-export declare function isValidSessionId(id: string | null | undefined): boolean;
+export { isNimbusIdComponent as isValidSessionId } from '@nimbus-sh/core/_shared/id-component.js';
 /**
  * Generate a fresh session ID. Uses crypto.getRandomValues for uniform
  * sampling — NOT Math.random (which on Workers is seeded at isolate start

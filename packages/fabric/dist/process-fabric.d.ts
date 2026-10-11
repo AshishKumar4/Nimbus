@@ -77,6 +77,7 @@ import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
@@ -101,6 +102,10 @@ export type StartContract = 'lifetime' | 'boot';
  * and read when the facet loads, so the bytes are transient rather than
  * resident in the coordinator's heap.
  */
+declare const ModuleSourceAssetSchema: z.ZodObject<{
+    path: z.ZodString;
+    sha256: z.ZodString;
+}, z.core.$strip>;
 export declare const ResidentCodeSpecSchema: z.ZodObject<{
     compatibilityDate: z.ZodString;
     compatibilityFlags: z.ZodArray<z.ZodString>;
@@ -110,6 +115,17 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     }, z.core.$strip>]>>;
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    vfsComposedModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    assetModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+        kind: z.ZodEnum<{
+            js: "js";
+            cjs: "cjs";
+        }>;
+        source: z.ZodObject<{
+            path: z.ZodString;
+            sha256: z.ZodString;
+        }, z.core.$strip>;
+    }, z.core.$strip>>>;
     vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
@@ -138,6 +154,17 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         }, z.core.$strip>]>>;
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        vfsComposedModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        assetModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+            kind: z.ZodEnum<{
+                js: "js";
+                cjs: "cjs";
+            }>;
+            source: z.ZodObject<{
+                path: z.ZodString;
+                sha256: z.ZodString;
+            }, z.core.$strip>;
+        }, z.core.$strip>>>;
         vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
@@ -216,21 +243,38 @@ export interface ResidentDiskReader {
  * re-minted). An absent env stays absent
  * so the worker config can tell "embedder takes the env" from the default.
  */
-export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader): Promise<Record<string, unknown>>;
+export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<Record<string, unknown>>;
 /**
  * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
  * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
- * units, the unit the decoded text is sliced in, so decoding copies nothing:
- * each module is a slice of the one string read.
+ * units, each module's length as a string (decodeCommonJsPackBytes reads the
+ * bytes they end at).
  *
  * Encoded as its parts, in order, never joined: the image store encodes them
  * straight into the image's bytes, and a joined copy would be a second full
  * copy of the program's code on the coordinator.
  */
 export declare function encodeCommonJsPack(modules: Record<string, string>): string[];
-export declare function decodeCommonJsPack(pack: string): Record<string, {
+/**
+ * A pack's modules decoded from its UTF-8 bytes, each from its own: decoded
+ * whole, one non-Latin-1 character makes the pack's string two-byte
+ * throughout, and every module a slice holding it alive (an astro project's
+ * 24.2 M characters: 48 MiB, where its modules apart are 33.6). The index
+ * counts UTF-16 units, so each module's bytes end where its units do: a
+ * four-byte sequence is two units, any other lead byte one.
+ */
+export declare function decodeCommonJsPackBytes(pack: Uint8Array): Record<string, {
     cjs: string;
 }>;
+/**
+ * Read a content-addressed blob (image-store.ts storeContentBlob) and verify
+ * it against `digest`, the one it is named by. Content addressing is only a
+ * guarantee if the bytes are checked against the name they arrived under: a
+ * blob that was truncated, or replaced by something the generator never
+ * wrote, would otherwise be loaded as the program and fail somewhere inside
+ * it with no way back to the cause.
+ */
+export declare function readContentBlob(disk: ResidentDiskReader, path: string, digest: string): Promise<Uint8Array>;
 /**
  * The identity a resident process's SUPERVISOR binding is minted for. Always
  * the COORDINATOR's — a process hosted somewhere else still reads and writes
@@ -257,8 +301,8 @@ export interface ProcessHostParams {
     /**
      * Set only by the coordinator's durable-application path: an explicit facet
      * name (`app-slot-<n>`) allocated from DO storage, plus the release split
-     * that keeps its SQLite across aborts. Absent, the host allocates an
-     * ephemeral `proc-slot-<n>` name from its in-memory free list and deletes
+     * that keeps its SQLite across aborts. Absent, the host takes the next
+     * ephemeral `proc-slot-<n>` name from its in-memory slot book and deletes
      * the store on release.
      */
     facet?: {
@@ -272,6 +316,27 @@ export interface ProcessHostParams {
      * the storage limit.
      */
     storageBytes?: number;
+    /**
+     * The process logs its changes in its facet's store (process-fs-journal.ts):
+     * the session is told the facet's name when it opens (`opened`), and
+     * `drain` is handed the store's journal when the process is released,
+     * before the store goes. A drain that throws keeps the store and its name.
+     * Its class holds `held()` open while its isolate lives, so a death after
+     * its boot (out of memory, CPU) is the process's `lost`.
+     */
+    journal?: {
+        opened(facet: string): void;
+        drain(journal: ProcessFsJournalSource): Promise<void>;
+    };
+}
+/**
+ * The platform reset the Durable Object a running process was hosted on, and
+ * the process ended with it. Only a host that is not the coordinator can
+ * report this (process-host.ts `peer`); the platform's own words, which may
+ * name a cause that did not happen ("its code was updated"), are the cause.
+ */
+export declare class ProcessHostLost extends Error {
+    constructor(cause: unknown);
 }
 /**
  * One resident process, as its coordinator sees it. Identical in meaning on
@@ -283,12 +348,13 @@ export interface HostedProcess {
      * The runner's startProcess payload. The runner is started as part of
      * opening the host, so this is a handle on that one boot — awaiting it twice
      * is safe and never re-starts anything. A `lifetime` runner settles it at
-     * exit; a host that dies before then rejects it.
+     * exit; a host that dies before then rejects it with {@link ProcessHostLost}.
      */
     readonly started: Promise<unknown>;
     /**
-     * Rejects if the HOST dies under a process that is already up — the one
-     * failure a substrate can suffer that the process itself never reports.
+     * Rejects, with {@link ProcessHostLost}, if the HOST dies under a process
+     * that is already up — the one failure a substrate can suffer that the
+     * process itself never reports.
      *
      * It is not symmetric, and pretending otherwise is what leaks a process. A
      * facet dies only with the Durable Object that owns it, which takes the
@@ -403,6 +469,14 @@ export interface OneShotCodeSpec {
     }>;
 }
 /**
+ * A one-shot's program: its module map, or a stage the composed assembler
+ * (stagedBootAssembler) turns into one in a stateless isolate, on that
+ * loader's miss, so a map as large as opencode's is never built in the host.
+ */
+export type OneShotCode = OneShotCodeSpec | {
+    stage: unknown;
+};
+/**
  * Everything a host needs to run one program to completion.
  *
  * Separate from {@link ProcessHostParams} because the two differ in whether
@@ -429,7 +503,7 @@ export interface OneShotParams {
      * of the caller's frame, which would otherwise hold a second full copy of the
      * program for as long as the program runs.
      */
-    code(): Promise<OneShotCodeSpec>;
+    code(): Promise<OneShotCode>;
     /** The invocation. Its body carries argv/env/cwd; its signal bounds the run. */
     request: Request;
     /**
@@ -471,6 +545,14 @@ export interface ProcessHost {
      */
     runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
     open(params: ProcessHostParams): Promise<HostedProcess>;
+    /**
+     * The actor hosting `workerKey` found, in a new incarnation, that it no
+     * longer holds the process (a peer's own alarm, `hostLost` op), and proved
+     * it hosted it with the capability minted for that open. The process is
+     * lost ({@link ProcessHostLost}). False when this host has no such open.
+     * A facet's host is the coordinator itself, so it never hears this.
+     */
+    hostLost?(workerKey: string, capability: string): boolean;
 }
 /**
  * How a caller supplies the substrate a process manager will run programs on.
@@ -486,7 +568,16 @@ export interface ProcessHost {
  * own selector (`processHostFor`) satisfies this type as it stands — the
  * workerd substrate is named, not wrapped.
  */
-export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork) => ProcessHost;
+export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork, supervise?: Supervise) => ProcessHost;
+/**
+ * The host's own SUPERVISOR for a one-shot, minted with its binding's props:
+ * a capability the program is handed in the call that runs it, answered
+ * inside the host (the worker's ProcessSupervisor). Calls on it are not
+ * requests to the host, so they never become the host's front request, whose
+ * subrequest depth every later call of the host inherits. A host that
+ * supplies none hands each one-shot its binding (bindingSupervisor).
+ */
+export type Supervise = (props: SupervisorBindingProps) => object;
 /**
  * Resource handle for one resident process — the whole surface the kernel
  * above this module sees: `booted()` for the boot payload, `done` for death,
@@ -495,7 +586,8 @@ export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: (
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
  * held-open startProcess settling (resolve on exit, reject on host death);
- * for a `boot` runner it is the kill that releases the host.
+ * for a `boot` runner it is the kill that releases the host. A host that
+ * dies under either rejects it with {@link ProcessHostLost}.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other
@@ -553,6 +645,13 @@ export interface ResidentProcessSpawn {
     /** See {@link ProcessHostParams.storageBytes}. */
     storageBytes?: number;
     /**
+     * A Nimbus runtime's process (node, python, ruby, opencode), whose class
+     * logs its changes in its facet's store and holds `held()` open while its
+     * isolate lives (ProcessHostParams.journal). Never an application's own
+     * class, whose store is its own.
+     */
+    journaled?: boolean;
+    /**
      * Called before any concrete host capability can expose this writer.
      * A spawn must not proceed unless the supervisor accepts the authority.
      */
@@ -562,7 +661,15 @@ export interface ResidentProcessSpawn {
 }
 export declare class ProcessFabric {
     private readonly host;
-    constructor(host: ProcessHost);
+    private readonly options;
+    /**
+     * `journalFor`: the write-log hooks of a resident process's facet
+     * (ProcessHostParams.journal), when its coordinator keeps them: every
+     * resident it starts logs its changes in its facet's store.
+     */
+    constructor(host: ProcessHost, options?: {
+        journalFor?: (pid: number) => ProcessHostParams['journal'];
+    });
     /**
      * Boot a resident process on this deployment's substrate and return its
      * handle. Resolves once the process is up and its runner has been started;
@@ -574,4 +681,5 @@ export declare class ProcessFabric {
      */
     startResidentProcess(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle>;
 }
+export {};
 //# sourceMappingURL=process-fabric.d.ts.map

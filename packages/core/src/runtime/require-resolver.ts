@@ -29,6 +29,8 @@
 
 import {
   METADATA_CANDIDATE_WORK,
+  heldCellText,
+  packageJsonVisible,
   resolveRequireEx,
   type PkgJsonSink,
   type RequireFs,
@@ -42,9 +44,11 @@ import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { requireWrapperCalls } from './require-wrappers.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
@@ -124,6 +128,7 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
 
+
 // Only the speculative ESM resolution boundary catches traversal failures.
 // Keep scheduling errors distinct there, then return the original cause.
 class WalkControlFailure extends Error {}
@@ -150,6 +155,19 @@ export interface PrefetchResult {
   entryPaths?: ReadonlySet<string>;
   /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
   deferred?: DeferredImport[];
+  /**
+   * What each staged module loads statically, each by the file it resolved
+   * to: what evaluating it evaluates. The planner reads ancestry from it
+   * (which modules an \`import()\` of a target evaluates); an \`import()\` a
+   * module only defers is not an edge, since importing the module does not
+   * evaluate the target.
+   */
+  edges?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * The optional learned roots that landed (RequiredModuleRoot.optional),
+   * each with every cell it staged: one unit, kept or evicted whole.
+   */
+  units?: ReadonlyArray<{ root: string; members: readonly string[] }>;
 }
 
 /** An `import()` a module defers, and how many its module defers (phase 2's order). */
@@ -159,6 +177,8 @@ export interface DeferredImport {
   alternatives: number;
   /** The file, when the walk resolved it already (a tool config and what it names). */
   path?: string;
+  /** Loaded by a require wrapper's call (requireWrapperCalls): resolved as require() resolves it, not import(). */
+  require?: true;
 }
 
 /**
@@ -215,6 +235,14 @@ export interface RequiredModuleRoot {
    * loads by name, follow it.
    */
   config?: boolean;
+  /**
+   * A module an earlier run executed that the required closure could not
+   * hold with the rest (buildPrefetchBundle walks the learned roots again so
+   * when they take it past the bound): phase 2's first tier, its closure
+   * staged whole within the bound or not at all, evictable, never the
+   * launch's failure.
+   */
+  optional?: boolean;
 }
 
 /**
@@ -269,6 +297,47 @@ export async function prefetchForRequire(
   let additionalBytes = 0;
   let additionalFiles = 0;
   const encoder = new TextEncoder();
+  // The phase-2 unit staged whole or not at all (an optional learned root):
+  // what it staged, and whether the bound cut its closure.
+  let unit: { staged: Array<[string, number]>; cut: boolean } | null = null;
+  /** The optional learned roots that landed, each with its closure (PrefetchResult.units). */
+  const units: Array<{ root: string; members: string[] }> = [];
+  /**
+   * A landed root's whole static closure among the optional cells: what it
+   * staged, and what it reached that another root had staged before it (the
+   * static edges say, a visited path's edges having been recorded when it
+   * was walked), with the manifests its packages were resolved through. A
+   * shared dependency is then in every group that needs it, and pruning one
+   * group leaves it to the others. The required closure is not a member: it
+   * is never pruned.
+   */
+  function unitClosure(root: string, staged: readonly string[]): string[] {
+    const members = new Set(staged);
+    const optional = (path: string) => speculative.has(path) && bundle[path] !== undefined;
+    // Walked by its own seen-set: a cell the unit staged is a member already,
+    // and the walk still goes through it to what it reaches (B → C → S, C
+    // staged by B, S by an earlier root).
+    const seen = new Set<string>();
+    const queue = optional(root) ? [root] : [];
+    for (const path of queue) { seen.add(path); members.add(path); }
+    while (queue.length > 0) {
+      const at = queue.pop()!;
+      for (const to of edges.get(at) ?? []) {
+        if (seen.has(to) || !optional(to)) continue;
+        seen.add(to);
+        members.add(to);
+        queue.push(to);
+      }
+    }
+    for (const path of [...members]) {
+      for (let dir = path.slice(0, path.lastIndexOf('/')); dir !== ''; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
+        const manifest = dir + '/package.json';
+        if (optional(manifest)) members.add(manifest);
+        if (PACKAGE_ROOT.test(dir) || !dir.includes('/')) break;
+      }
+    }
+    return [...members];
+  }
 
   function fits(path: string, bytes: number): boolean {
     if (!policy || policy.held[path] !== undefined) return true;
@@ -285,8 +354,9 @@ export async function prefetchForRequire(
     if (bundle[path] !== undefined) return bundle[path];
     if (progress) await progress(METADATA_CANDIDATE_WORK + path.length);
     const held = policy?.held[path];
+    const heldText = held === undefined ? undefined : heldCellText(held);
     const authorize = vfs.assertReadable;
-    const reuseHeld = typeof held === 'string' && authorize !== undefined;
+    const reuseHeld = heldText !== undefined && authorize !== undefined;
     if (reuseHeld) {
       try { await authorize.call(vfs, path); }
       catch { declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' }; return null; }
@@ -298,16 +368,17 @@ export async function prefetchForRequire(
       if (!fits(path, size)) return null;
       if (counted && bytesSeen + size > maxBundleBytes) {
         if (!lazy) closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
+        if (unit) unit.cut = true;
         return null;
       }
     }
     let content: string;
-    try { content = reuseHeld ? held : await vfs.readFileString(path); }
+    try { content = reuseHeld ? heldText : await vfs.readFileString(path); }
     catch {
       if (policy) declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
-    if (held !== undefined && content !== held) {
+    if (heldText !== undefined && content !== heldText) {
       declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
@@ -320,6 +391,7 @@ export async function prefetchForRequire(
     if (counted) bytesSeen += size;
     bundle[path] = content;
     if (lazy) speculative.add(path);
+    if (unit) unit.staged.push([path, counted ? size : 0]);
     if (progress) await progress(content.length);
     return content;
   }
@@ -330,11 +402,11 @@ export async function prefetchForRequire(
   // that defers hundreds (Shiki's grammar table, one `import()` per language)
   // loads the few its input names. Walking a table first spent the bound on
   // grammars the program never loads, and cut the deferral it does.
-  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string }>>();
-  function defer({ specifier, fromDir, alternatives, path }: DeferredImport): void {
+  const deferredDynamic = new Map<number, Array<Omit<DeferredImport, 'alternatives'>>>();
+  function defer({ specifier, fromDir, alternatives, path, require }: DeferredImport): void {
     let queue = deferredDynamic.get(alternatives);
     if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
-    queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
+    queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(require ? { require } : {}) });
   }
   function nextDeferred(): DeferredImport | undefined {
     let fewest = Infinity;
@@ -375,6 +447,7 @@ export async function prefetchForRequire(
   }
   /** Tool configs found for the launch; phase 2 stages them first. */
   const configRoots = new Set<string>();
+  const optionalRoots = new Set<string>();
   let lazy = false;
 
   // `entry`: the entry file itself, whose own `import()` is a deferral of its
@@ -427,14 +500,7 @@ export async function prefetchForRequire(
         const dirPkgJson = dir + '/package.json';
         if (visited.has(dirPkgJson)) break; // already shipped, stop walking
         if (progress) await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
-        // A package.json the user may not look up is no package scope, as
-        // Node's lookup reads it: a device mount shows nothing above the
-        // directory its user consented to.
-        const held = await (async () => vfs.exists(dirPkgJson))().catch((error: unknown) => {
-          if (error && typeof error === 'object' && 'code' in error && error.code === 'EACCES') return false;
-          throw error;
-        });
-        if (held && !(await vfs.isDirectory(dirPkgJson))) {
+        if ((await packageJsonVisible(vfs, dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
           visited.add(dirPkgJson);
           await stageCell(dirPkgJson, 'metadata');
         }
@@ -448,11 +514,19 @@ export async function prefetchForRequire(
     // walk everything else as CJS/ESM.
     if (!vfsPath.endsWith('.json')) {
       const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
-      (await parseAndResolve(content, fromDir, entry));
+      (await parseAndResolve(content, fromDir, entry, vfsPath));
     }
   }
 
-  async function parseAndResolve(code: string, fromDir: string, entry = false): Promise<void> {
+  const edges = new Map<string, string[]>();
+  function edge(from: string | undefined, to: string): void {
+    if (from === undefined || from === to) return;
+    let children = edges.get(from);
+    if (children === undefined) edges.set(from, children = []);
+    if (!children.includes(to)) children.push(to);
+  }
+
+  async function parseAndResolve(code: string, fromDir: string, entry = false, fromFile?: string): Promise<void> {
     if (declined || closureExceeded) return;
     if (progress) await progress(code.length);
     // esbuild-ast-rewrite (P3 decision: Option D): strip `//` and
@@ -509,7 +583,10 @@ export async function prefetchForRequire(
         if (isFacetProvided(specifier)) continue;
         if (closureExceeded || declined) break;
         const staged = await resolveStaticDependency(specifier, fromDir);
-        if (staged) (await addFile(staged.resolved));
+        if (staged) {
+          edge(fromFile, staged.resolved);
+          await addFile(staged.resolved);
+        }
         followUp(specifier, staged);
       }
     }
@@ -523,9 +600,28 @@ export async function prefetchForRequire(
       if (!entry) { deferrals.add(specifier); continue; }
       const resolved = (await resolveDynamicImport(specifier, fromDir));
       if (closureExceeded) break;
-      if (resolved) (await addFile(resolved));
+      if (resolved) await addFile(resolved);
     }
     for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
+    // What a require wrapper's calls name (@vitejs/plugin-vue's
+    // `tryRequire("vue/compiler-sfc", root)`), resolved as require() resolves
+    // them: loads the module makes synchronously when the wrapper runs. In
+    // the launch's required closure they are optional, as the wrapper's try
+    // says, so phase 2's. A module staged on its own (a dependency closure,
+    // or phase 2's) carries them, whole or not at all: it runs as the map's
+    // own, and no import() prefetch fetches for it (node-shims.ts
+    // __nimbusImportStager), so a load the map lacks fails its synchronous
+    // read ("Failed to resolve vue/compiler-sfc", a learned plugin-vue).
+    const loads = (await requireWrapperCalls(code)).filter((specifier) => !isFacetProvided(specifier));
+    if (policy || lazy) {
+      for (const specifier of loads) {
+        if (closureExceeded || declined) break;
+        const staged = await resolveStaticDependency(specifier, fromDir);
+        if (staged) await addFile(staged.resolved);
+      }
+    } else {
+      for (const specifier of loads) defer({ specifier, fromDir, alternatives: loads.length, require: true });
+    }
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
@@ -602,11 +698,14 @@ export async function prefetchForRequire(
         continue;
       }
       const path = stripLeadingSlashes(root.path);
-      if (root.config && root.text === undefined) {
-        configRoots.add(path);
+      if ((root.config || root.optional) && root.text === undefined) {
+        if (root.config) configRoots.add(path);
+        if (root.optional) optionalRoots.add(path);
         defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
         continue;
       }
+      // Its text is staged as runtime code (manager.ts _stagedRuntimeCode); only a required root walks it.
+      if (root.optional) continue;
       if (root.text === undefined) await addFile(path);
       else await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
       if (closureExceeded || declined) break;
@@ -630,13 +729,37 @@ export async function prefetchForRequire(
     // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
     for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
-      const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+      const resolved = next.path ?? (next.require
+        ? (await resolveStaticDependency(next.specifier, next.fromDir))?.resolved ?? null
+        : await resolveDynamicImport(next.specifier, next.fromDir));
       if (!resolved) continue;
-      await addFile(resolved);
+      // An optional learned root is staged whole or not at all: a module in
+      // the map without what it imports fails where the module's late load
+      // would have worked.
+      // What it cut is taken back with its traversal: the paths it visited
+      // and the deferrals it queued, so a root after it that shares a
+      // dependency walks that dependency again rather than skipping it.
+      unit = optionalRoots.has(resolved) ? { staged: [], cut: false } : null;
+      const visitedBefore = visited.size;
+      const queuedBefore = new Map([...deferredDynamic].map(([alternatives, queue]) => [alternatives, queue.length]));
+      try { await addFile(resolved); } finally {
+        if (unit?.cut) {
+          for (const [path, size] of unit.staged) { delete bundle[path]; speculative.delete(path); bytesSeen -= size; }
+          let at = 0;
+          const walked: string[] = [];
+          for (const path of visited) if (at++ >= visitedBefore) walked.push(path);
+          for (const path of walked) visited.delete(path);
+          for (const [alternatives, queue] of deferredDynamic) queue.length = queuedBefore.get(alternatives) ?? 0;
+        } else if (unit !== null) {
+          const members = unitClosure(resolved, unit.staged.map(([path]) => path));
+          if (members.length > 0) units.push({ root: resolved, members });
+        }
+        unit = null;
+      }
       if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
-    return { bundle, speculative, entryPaths };
+    return { bundle, speculative, entryPaths, edges, ...(units.length > 0 ? { units } : {}) };
   }
   try { return await walk(); }
   catch (error) {
@@ -713,10 +836,14 @@ export async function resolveDeferredImport(
   const paced = progress && (async (work: number) => {
     try { await progress(work); } catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
   });
-  const esm = walkEsmResolver(vfs, paced, async (path) => {
+  const read = async (path: string) => {
     try { return await vfs.readFileString(stripLeadingSlashes(path)); } catch { return null; }
-  }, conditions);
-  try { return await resolveImportWith(esm, deferral.specifier, deferral.fromDir); }
+  };
+  const esm = walkEsmResolver(vfs, paced, read, conditions);
+  try {
+    if (deferral.require) return (await resolveRequireEx(vfs, deferral.specifier, deferral.fromDir, read, paced, conditions))?.resolved ?? null;
+    return await resolveImportWith(esm, deferral.specifier, deferral.fromDir);
+  }
   catch (error) {
     if (error instanceof WalkControlFailure) throw error.cause;
     throw error;
@@ -724,6 +851,8 @@ export async function resolveDeferredImport(
 }
 
 /** An npm package name: `name` or `@scope/name` (lowercase, URL-safe). */
+/** A package's root directory under node_modules (`node_modules/name`, `node_modules/@scope/name`). */
+const PACKAGE_ROOT = /(?:^|\/)node_modules\/(?:@[^/]+\/)?[^/]+$/;
 const PACKAGE_NAME = /^(?:@[a-z0-9][\w.~-]*\/)?[a-z0-9][\w.~-]*$/;
 
 /**
@@ -748,6 +877,7 @@ export function configPackageNames(source: string): string[] {
   });
   return [...names];
 }
+
 
 /**
  * Phase 2's tier for a package's "import" branch beside the "require" branch

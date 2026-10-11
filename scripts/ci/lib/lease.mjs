@@ -20,11 +20,11 @@
 // after each graded run (release.mjs, promote.mjs), are what catch that.
 import { spawnSync } from 'node:child_process';
 import { readlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { FlockError, holdFlock } from '../../lib/flock.mjs';
+import { NIMBUS_STATE } from './state-dir.mjs';
 
-export const LEASES = join(homedir(), '.local', 'state', 'nimbus', 'leases');
+export const LEASES = join(NIMBUS_STATE, 'leases');
 
 /** The descriptor a writer is handed a lease on. */
 const INHERITED_FD = 3;

@@ -13,7 +13,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const { host, rawVfs, kfs } = createAuthority();
@@ -22,8 +22,8 @@ kfs.mkdir(root, { recursive: true });
 kfs.writeFile(root + '/value.mjs', 'export const value = "recovered after transient transform failure";');
 const program = 'console.log(require("./value.mjs").value);';
 kfs.writeFile(root + '/entry.cjs', program);
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-const native = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+const native = new EsbuildService(undefined, oxcTransforms);
 let attempts = 0;
 let fault = 'outcome';
 const evalProgram = 'import("node:path").then(path => console.log(path.default.basename("/tmp/eval-entry")));';
@@ -46,11 +46,14 @@ const service = new EsbuildService(undefined, {
   },
 });
 let stdout = '', loaderPublications = 0;
-adoptCtxExports({ SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-  if (name === 'stdout') { stdout += new TextDecoder().decode(args[0]); return; }
-  if (name === 'stderr' || name === 'reportExit') return;
-  return host.supervisorOp({ op: name, args, pid: props?.pid });
-}) });
+adoptCtxExports({ SupervisorRPC: ({ props }) => {
+  const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
+  return supervisorDouble(async (name, args) => {
+    if (name === 'stdout') { stdout += new TextDecoder().decode(args[0]); return; }
+    if (name === 'stderr' || name === 'reportExit') return;
+    return send(name, args);
+  });
+} });
 const directory = mkdtempSync(join(tmpdir(), 'transient-transform-'));
 const env = {
   LOADER: {
@@ -58,7 +61,7 @@ const env = {
       loaderPublications++;
       const file = writeModuleSet(join(directory, String(loaderPublications)), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      return { getEntrypoint: () => ({ fetch: async request => (await loaded).default.fetch(request, { SUPERVISOR: config.env?.SUPERVISOR }), [Symbol.dispose]() {} }), [Symbol.dispose]() {} };
+      return { getEntrypoint: () => ({ run: async (request, supervisor) => (await loaded).default.fetch(request, { SUPERVISOR: supervisor }), [Symbol.dispose]() {} }), [Symbol.dispose]() {} };
     },
     get() { throw new Error('unexpected keyed loader publication'); },
   },

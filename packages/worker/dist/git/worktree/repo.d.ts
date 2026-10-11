@@ -13,6 +13,7 @@
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
+import { type SparseMatcher } from '../pack/sparse.js';
 import { DirCache, type IndexEdit } from './dircache.js';
 import { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
@@ -34,6 +35,12 @@ export interface RepoGit {
         dir?: string;
         gitdir?: string;
         path: string;
+    }): Promise<unknown>;
+    setConfig(args: {
+        fs: unknown;
+        gitdir: string;
+        path: string;
+        value: unknown;
     }): Promise<unknown>;
     resolveRef(args: {
         fs: unknown;
@@ -62,7 +69,11 @@ export interface ObjectWriter {
     write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
     flush(): Promise<void>;
 }
-/** git_config_bool's spellings. */
+/**
+ * git_config_bool's spellings, of a value as cf-git reads it: a key with no
+ * `=` is 'true' there (git's true), and an explicit empty value is ''
+ * (git's false).
+ */
 export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {
     readonly vfs: ProjectFs;
@@ -104,9 +115,61 @@ export declare class WorktreeRepo {
     objectWriter(): Promise<ObjectWriter>;
     private waveSink;
     config(path: string): Promise<unknown>;
+    /**
+     * cf-git's filesystem with the config file `file` offered as
+     * `<gitdir>/config` of the answered gitdir: cf-git reads and writes only
+     * that name.
+     */
+    private configFile;
+    /** `path` in the config file `file`, as cf-git reads it. */
+    private configIn;
+    /**
+     * init_worktree_config: extensions.worktreeConfig set, core.bare (when
+     * true) and core.worktree moved from config to config.worktree, unless
+     * the extension is set already.
+     */
+    initWorktreeConfig(): Promise<void>;
+    /** repo_config_set_worktree_gently: `path` in config.worktree (the extension being set). */
+    setWorktreeSetting(path: string, value: string): Promise<void>;
+    /**
+     * A setting as git reads it for this worktree: config.worktree's when
+     * extensions.worktreeConfig is set (where clone --sparse and
+     * sparse-checkout write theirs), over the repository's config.
+     */
+    worktreeSetting(path: string): Promise<unknown>;
+    /** core.sparseCheckout: whether the worktree is a sparse checkout. */
+    isSparse(): Promise<boolean>;
+    /**
+     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout,
+     * in cone mode (core.sparseCheckoutCone), its cone read from
+     * info/sparse-checkout and its paths compared as core.ignoreCase says. A
+     * sparse checkout that is not cone mode is refused: its patterns are not
+     * read here.
+     */
+    sparseMatcher(): Promise<SparseMatcher | null>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
+    /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
     readIndex(): Promise<DirCache>;
+    /**
+     * clear_skip_worktree_from_present_files, as git does on every index read:
+     * in a sparse checkout (but with sparse.expectFilesOutsideOfPatterns), a
+     * skip-worktree entry whose path the worktree holds (anything there) is
+     * skip-worktree no longer, so what is there is compared, staged and
+     * protected as a tracked file is. A directory found missing is remembered,
+     * and nothing below it looked at (path_found).
+     */
+    private clearPresentSkips;
+    /**
+     * path_found's remembered directory for a `path` the worktree lacks: the
+     * top-most of its directories the worktree lacks, with its slash, or
+     * `path/` when it has them all. The directories `path` shares with the one
+     * missing before (`known`) are there and not looked at again. A directory
+     * is there as lstat("dir/") finds it: a link to one is.
+     */
+    private missingDirectory;
+    /** Whether the worktree's `path` is a directory, a link to one followed. */
+    private isDirectory;
     /** HEAD's tree, the empty tree while HEAD names no commit. */
     headTree(): Promise<string>;
     /** A pattern file's list, or none when it cannot be read. */

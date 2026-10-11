@@ -1,6 +1,6 @@
 import { LEGACY_PUBLIC_DO_SEGMENT, parseSessionRoute, } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
-import { z } from 'zod/v4';
+import { SessionRequestSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
@@ -10,15 +10,8 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
+import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
-const RemoteRpcBodySchema = z.object({
-    profile: z.string().optional(),
-    tenant: z.string().optional(),
-    subject: z.string().optional(),
-    root: z.string().optional(),
-    op: z.string().optional(),
-    args: z.array(z.unknown()).optional(),
-}).passthrough();
 export async function handleNimbusRemoteApi(request, env, sdk) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
@@ -51,7 +44,7 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
     }
     else {
         try {
-            body = RemoteRpcBodySchema.parse(WireDecoder.parse(await request.json()));
+            body = SessionRequestSchema.parse(WireDecoder.parse(await request.json()));
         }
         catch (e) {
             return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
@@ -213,6 +206,8 @@ async function dispatchRemoteRpc(ctx) {
         case 'readFile':
             fileOptions(args[1]);
             return ctx.stub._rpcReadFile(stringArg(args[0], 'path'));
+        case 'detachExec':
+            return ctx.stub._rpcDetachExec(stringArg(args[0], 'detachId'));
         case 'readFileBytes':
             fileOptions(args[1]);
             return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
@@ -225,6 +220,9 @@ async function dispatchRemoteRpc(ctx) {
         case 'lstat':
             fileOptions(args[1]);
             return ctx.stub._rpcLstat(stringArg(args[0], 'path'));
+        case 'readlink':
+            fileOptions(args[1]);
+            return ctx.stub._rpcReadlink(stringArg(args[0], 'path'));
         case 'rename':
             fileOptions(args[2]);
             return ctx.stub._rpcRename(stringArg(args[0], 'from'), stringArg(args[1], 'to'));
@@ -354,6 +352,16 @@ function execOptions(ctx, value) {
     if (options.cred !== undefined) {
         throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
     }
+    if (options.detach !== undefined)
+        throw apiError('detach must be sent by invocation id over the remote API', 'E_ARG_SHAPE', 400);
+    if (options.detachId !== undefined) {
+        try {
+            parseExecId(options.detachId);
+        }
+        catch (error) {
+            throw apiError(errorMessage(error), 'E_ARG_SHAPE', 400);
+        }
+    }
     if (options.execId !== undefined) {
         try {
             parseExecId(options.execId);
@@ -399,31 +407,14 @@ function configuredPreinstall(profile, requested) {
     return Array.isArray(requested) ? requested.map((s) => String(s)) : [];
 }
 function assertRuntimeForLanguage(ctx, language, install) {
-    if (language === 'python' || language === 'ruby') {
-        assertRuntimeAllowed(ctx, language, install === 'ifMissing' ? 'onDemand' : 'use');
-    }
-    else if (language === 'shell') {
-        assertRuntimeAllowed(ctx, 'shell', 'use');
-    }
-    else if (language === 'javascript' || language === 'typescript') {
-        assertRuntimeAllowed(ctx, 'node', 'use');
-    }
+    const requirement = codeRuntimeRequirement(language, install);
+    if (requirement)
+        assertRuntimeAllowed(ctx, requirement.spec, requirement.action);
 }
 function assertRuntimeAllowed(ctx, spec, action) {
-    const policy = ctx.profile.runtimes;
-    const name = runtimeName(spec);
-    if (policy?.allow && !policy.allow.includes(name)) {
-        throw apiError(`Nimbus runtime '${name}' is not allowed by sandbox profile '${ctx.profileName}'`, 'E_RUNTIME_NOT_ALLOWED', 403);
-    }
-    if (action !== 'onDemand' || policy?.onDemand !== false)
-        return;
-    const preinstalled = new Set((policy.preinstall ?? []).map(runtimeName));
-    if (!preinstalled.has(name)) {
-        throw apiError(`Nimbus runtime '${name}' is not preinstalled and on-demand runtime installs are disabled by sandbox profile '${ctx.profileName}'`, 'E_RUNTIME_ON_DEMAND_DISABLED', 403);
-    }
-}
-function runtimeName(spec) {
-    return String(spec).split('@')[0];
+    const failure = runtimePolicyError(ctx.profile.runtimes, spec, action, ctx.profileName);
+    if (failure)
+        throw apiError(failure.message, failure.code, 403);
 }
 function objectArg(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -465,6 +456,10 @@ function isApiError(value) {
 function remoteError(value) {
     if (isApiError(value))
         return value;
+    // The session holds what it cannot let go of (a destroy that stopped its
+    // work and still found a lease): the request conflicts with its state.
+    if (value instanceof Error && Reflect.get(value, 'code') === 'EBUSY')
+        return apiError(errorMessage(value), 'EBUSY', 409);
     return apiError(errorMessage(value), 'E_NIMBUS_REMOTE_RPC', 500);
 }
 function errorMessage(value) {

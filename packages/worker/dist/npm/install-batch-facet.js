@@ -14,24 +14,9 @@
  * supervisor's weighted credit pool and transaction builder remain the
  * authoritative hard bounds.
  *
- * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
- * writeBatch flush) stays in this function because cloudflare-parallel
- * serializes it via fn.toString() and cannot import sibling modules across
- * the isolate boundary.
- *
- * Stability invariants (cloudflare-parallel):
- *   - No `this` references.
- *   - No closure capture other than args + preamble names.
- *   - Preamble symbols (streamPackageEntries, streamTarEntries,
- *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
- *     @ts-ignore; __nimbusWaveWriter declared below.
- *   - The install preamble's functions (retryingRegistryFetch,
- *     strongestSriEntry, sriDigestOf, sriDigestsEqual) are imported, never
- *     declared as globals: the preamble embeds each by its own source, and
- *     an import makes this function name it by the same identifier, whatever
- *     the Worker's bundler calls it. A global of that name would make the
- *     bundler rename the module's function away from it (`retryingRegistryFetch2`),
- *     and the facet would call a name its preamble never defines.
+ * The task and imported retry/integrity helpers are compiled together at
+ * build time. Tar streaming and the wave writer are guest preamble bindings;
+ * supervisor authority arrives in env, and all request data in batch.
  */
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 // The registry's retry policy and tarball integrity: in the facet, the
@@ -39,7 +24,7 @@ import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core
 import { retryingRegistryFetch } from './registry-retry.js';
 // ── Facet function ──────────────────────────────────────────────────────
 //
-// Runs inside a IsolatePool isolate. Serialised via fn.toString();
+// Runs inside an IsolatePool isolate as a build-time compiled expression;
 // the helpers it references at top-level scope (streamPackageEntries,
 // streamTarEntries, readableStreamToAsyncIterable, MAX_FILE_BYTES) are NOT
 // in the facet's lexical scope — the pool injects them via the preamble.
@@ -107,7 +92,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // and how many registry requests were issued alongside those waits.
     let r2WaitMsMax = 0;
     let speculativeFetches = 0;
-    // cache-obs-2: per-tier event accumulator. Filled in the L2/L3
+    // cache-obs-2: per-tier event accumulator. Filled in the L1/L2/L3
     // (supervisor RPC return.events) and L4 (post-network-fetch)
     // branches. Returned in result.cacheStatEvents at the end of the
     // batch. installer.ts folds these into the DO-side cache-stats
@@ -157,10 +142,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     const tarballBytesByUrl = new Map();
     // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
     //
-    // Kept inline because cloudflare-parallel serializes this whole function
-    // via fn.toString(); it cannot import a sibling module across the isolate
-    // boundary. Its retry policy and integrity check come from the preamble
-    // (loaders/npm-install-preamble.ts), shared with the supervisor.
+    // Each package shares this shard's concurrency and write-wave state.
+    // Retry and integrity imports are captured by the task's compiler.
     const installOne = async (spec, ownerId) => {
         const t0 = Date.now();
         const warnings = [];
@@ -264,7 +247,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                             for (const e of r2Result.events) {
                                 if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
                                     continue;
-                                if (e.tier !== 'L2' && e.tier !== 'L3')
+                                if (e.tier !== 'L1' && e.tier !== 'L2' && e.tier !== 'L3')
                                     continue;
                                 if (e.cacheKind !== 'tarball')
                                     continue;
@@ -297,8 +280,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             let bytesStream;
             let integrityPromise = Promise.resolve();
             if (r2HitBytes && r2HitBytes.length > 0) {
-                // Cache HIT. The cross-tenant store is content-addressed and
-                // re-hashes on every read, so bytes that come back are already
+                // Cache HIT. External reads are re-hashed at the content-addressed
+                // boundary; its local store owns verified bytes. These are already
                 // proven to be spec.integrity's tarball — there is exactly one
                 // verification point and it is not here. Bytes shared by another
                 // placement were verified by their owner; not an R2 outcome.

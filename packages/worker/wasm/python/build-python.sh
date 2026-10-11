@@ -9,10 +9,14 @@
 # dead. _ssl, _hashlib, _lzma, _bz2 and _sqlite3 are absent for the same reason
 # — nobody cross-built the dependencies. They are all portable C.
 #
-#   ./build-python.sh                 # everything
-#   ./build-python.sh deps            # just the C dependencies
-#   ./build-python.sh wasi assets     # re-link the interpreter and repack
-#   ./build-python.sh ext sci assets  # rebuild the compiled packages and relink
+# Built through build-in-bwrap.sh, which runs this script with this directory
+# at /src/python and wasi-sdk 25.0 at /wasi-sdk; it refuses any other layout.
+#
+#   ./build-in-bwrap.sh <work>                  # everything but verify
+#   ./build-in-bwrap.sh <work> deps             # just the C dependencies
+#   ./build-in-bwrap.sh <work> wasi assets      # re-link the interpreter and repack
+#   ./build-in-bwrap.sh <work> ext sci assets   # rebuild the compiled packages and relink
+#   ./build-python.sh verify                    # from the tree: check the artifacts
 #
 # Outputs, next to this script:
 #   python.wasm       the interpreter, stripped, built as a WASI reactor
@@ -31,8 +35,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-: "${WASI_SDK:?set WASI_SDK to the wasi-sdk root (bin/clang, share/wasi-sysroot)}"
-BUILD="${BUILD:-$HERE/build}"
+# The recipe's toolchain (see require_recipe, which every compiling stage runs
+# first); fetch and verify use none.
+WASI_SDK="${WASI_SDK:-/wasi-sdk}"
+BUILD="$HERE/build"
 SYSROOT="$WASI_SDK/share/wasi-sysroot"
 SRC="$BUILD/src"
 WORK="$BUILD/work"
@@ -76,6 +82,41 @@ MARKUPSAFE_SHA=722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698
 NUMPY_SHA=483a201202b73495f00dbc83796c6ae63137a9bdade074f7648b3e32613412dd
 
 PYSRC="$WORK/Python-$PYTHON_VERSION"
+
+# Every stamp the build leaves is fixed, so two builds of one tree are the same
+# bytes. The values are the published 3.13.14 build's own: its OpenSSL "built
+# on" and its CPython buildinfo (__DATE__ __TIME__) came from two moments of
+# one run, and keeping both makes a rebuild that build, byte for byte. Each is
+# handed to its stage as SOURCE_DATE_EPOCH; the zips' entries carry the second.
+# The stdlib zip's stage runs without it: py_compile reads it as an order for
+# hash-based .pyc files, and these are timestamp-based (their source mtimes are
+# the tarball's).
+OPENSSL_SOURCE_DATE_EPOCH=1786128611   # Fri Aug  7 18:50:11 2026 UTC
+CPYTHON_SOURCE_DATE_EPOCH=1786112021   # Aug  7 2026 14:13:41 (UTC)
+export TZ=UTC
+# Never inherited: each stage that stamps sets its own.
+unset SOURCE_DATE_EPOCH
+# One collation for every sort, the script's and its tools'.
+export LC_ALL=C
+
+# The layout every path in the output comes from (OpenSSL's directories, each
+# .pyc's source, __FILE__): this tree at /src/python and wasi-sdk 25.0 at
+# /wasi-sdk, as build-in-bwrap.sh lays them out. A stage that compiles refuses
+# any other, naming both, rather than ship a machine's paths or another
+# toolchain's code.
+RECIPE_HERE=/src/python
+RECIPE_WASI_SDK=/wasi-sdk
+RECIPE_WASI_SDK_VERSION=$'25.0\nwasi-libc: 574b88da4815\nllvm: ab4b5a2db582'
+require_recipe() {
+	[ "$HERE" = "$RECIPE_HERE" ] || {
+		echo "ERROR: this tree is at $HERE; the recipe's is $RECIPE_HERE (run build-in-bwrap.sh)" >&2; exit 1; }
+	[ "$WASI_SDK" = "$RECIPE_WASI_SDK" ] || {
+		echo "ERROR: WASI_SDK is $WASI_SDK; the recipe's is $RECIPE_WASI_SDK (run build-in-bwrap.sh)" >&2; exit 1; }
+	local version
+	version="$(head -3 "$WASI_SDK/VERSION" 2>/dev/null || true)"
+	[ "$version" = "$RECIPE_WASI_SDK_VERSION" ] || {
+		echo "ERROR: $WASI_SDK/VERSION reads '${version//$'\n'/ | }'; the recipe's is '${RECIPE_WASI_SDK_VERSION//$'\n'/ | }'" >&2; exit 1; }
+}
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
@@ -191,7 +232,7 @@ stage_deps() {
 	    no-asm no-shared no-dso no-engine no-tests no-apps no-docs no-afalgeng \
 	    no-ui-console no-legacy no-module no-autoload-config no-quic no-thread-pool \
 	    --with-rand-seed=getrandom --prefix="$DEPS" --openssldir="$DEPS/ssl" >/dev/null
-	  make -j"$(nproc)" build_libs >/dev/null
+	  SOURCE_DATE_EPOCH=$OPENSSL_SOURCE_DATE_EPOCH make -j"$(nproc)" build_libs >/dev/null
 	  make install_dev >/dev/null )
 }
 
@@ -229,6 +270,13 @@ stage_wasi() {
 	  # autoconf accepts a list; ours refines CPython's rather than forking it.
 	  export CONFIG_SITE="$PYSRC/Tools/wasm/config.site-wasm32-wasi $HERE/config.site-nimbus-wasi"
 	  export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig" PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+	  # What write_pc's .pc files say, given directly: PKG_CHECK_MODULES takes
+	  # these over pkg-config, whose output spacing is the host tool's and
+	  # ends up in _sysconfigdata.
+	  export ZLIB_CFLAGS="-I$DEPS/include" ZLIB_LIBS="-L$DEPS/lib -lz" \
+	    BZIP2_CFLAGS="-I$DEPS/include" BZIP2_LIBS="-L$DEPS/lib -lbz2" \
+	    LIBLZMA_CFLAGS="-I$DEPS/include" LIBLZMA_LIBS="-L$DEPS/lib -llzma" \
+	    LIBSQLITE3_CFLAGS="-I$DEPS/include" LIBSQLITE3_LIBS="-L$DEPS/lib -lsqlite3"
 	  export CC="$CC --sysroot=$SYSROOT" CPP="$WASI_SDK/bin/clang-cpp --sysroot=$SYSROOT"
 	  export AR RANLIB
 	  # -D_GNU_SOURCE ahead of the forced includes: pyconfig.h sets it too, but
@@ -249,7 +297,7 @@ stage_wasi() {
 	    --with-build-python="$PYSRC/build-host/python" \
 	    --with-openssl="$DEPS" --with-ensurepip=no \
 	    --disable-test-modules --disable-ipv6 >/dev/null
-	  make -j"$(nproc)" >/dev/null )
+	  SOURCE_DATE_EPOCH=$CPYTHON_SOURCE_DATE_EPOCH make -j"$(nproc)" >/dev/null )
 	stage_reactor
 }
 
@@ -510,7 +558,9 @@ stage_sci() {
 	# link deliberately left out of each module; they are added here, once.
 	local objs archives
 	objs=$(cut -d' ' -f2 "$EXT/sci.modules" | tr '\n' ' ')
-	archives=$(find "$NUMPY_SRC/builddir" -name '*.a' | tr '\n' ' ')
+	# Sorted: find walks in directory order, which is the filesystem's, and the
+	# link order decides where every function and datum lands.
+	archives=$(find "$NUMPY_SRC/builddir" -name '*.a' | sort | tr '\n' ' ')
 	# -lc-printscan-long-double: wasi-libc's default printf aborts on a long
 	# double rather than formatting one, and numpy formats one while importing.
 	# The abort is a bare wasm trap; the reason only reaches stderr because
@@ -521,17 +571,55 @@ stage_sci() {
 	  -lc-printscan-long-double -lc++ -lc++abi
 }
 
+# The one way an artifact zip is written: `dest` holds the files of `src` (a
+# zip, or a directory's files) sorted by name, each dated
+# CPYTHON_SOURCE_DATE_EPOCH and deflated at level 9 as wasm_assets.py does.
+# wasm_assets.py writes the stdlib's in the order it walks and dates each entry
+# by its .pyc file's build-time mtime; a directory walk has the filesystem's order.
+# <<- strips EVERY leading tab, so the body's own indentation is spaces: written
+# with tabs it arrives flush-left and Python refuses to parse it.
+write_zip() {
+	"$PYSRC/build-host/python" - "$1" "$2" "$CPYTHON_SOURCE_DATE_EPOCH" <<-'PYEOF'
+	import os
+	import pathlib
+	import sys
+	import time
+	import zipfile
+
+	src, dest, stamp = sys.argv[1], sys.argv[2], time.gmtime(int(sys.argv[3]))[:6]
+	if os.path.isdir(src):
+	    root = pathlib.Path(src)
+	    files = sorted(p for p in root.rglob('*') if p.is_file())
+	    entries = [(p.relative_to(root).as_posix(), zipfile.ZIP_DEFLATED, (p.stat().st_mode & 0xFFFF) << 16, p.read_bytes) for p in files]
+	else:
+	    source = zipfile.ZipFile(src)
+	    entries = [(i.filename, i.compress_type, i.external_attr, lambda i=i: source.read(i)) for i in source.infolist()]
+	with zipfile.ZipFile(dest, 'w') as archive:
+	    for name, compress_type, external_attr, read in sorted(entries, key=lambda e: e[0]):
+	        entry = zipfile.ZipInfo(name, stamp)
+	        entry.compress_type = compress_type
+	        entry.external_attr = external_attr
+	        archive.writestr(entry, read(), compresslevel=9)
+	PYEOF
+}
+
 stage_assets() {
 	log "assets"
 	# wasm_assets.py reads sysconfig from whichever interpreter runs it, and the
 	# one that can run is the host build — so point it at the cross data.
 	( cd "$PYSRC/build-wasi"
+	  # The one module the build writes rather than unpacks: its .pyc records
+	  # its source's mtime, so the source is dated like every other stamp, and
+	  # the .pyc the build already compiled from it (newer, so writepy would
+	  # keep it) is dropped.
+	  touch -d "@$CPYTHON_SOURCE_DATE_EPOCH" "$(cat pybuilddir.txt)"/_sysconfigdata__wasi_wasm32-wasi.py
+	  rm -f "$(cat pybuilddir.txt)"/__pycache__/_sysconfigdata__wasi_wasm32-wasi.*.pyc
 	  _PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata__wasi_wasm32-wasi \
 	  PYTHONPATH="$(cat pybuilddir.txt)" \
 	  "$PYSRC/build-host/python" "$PYSRC/Tools/wasm/wasm_assets.py" \
 	    --buildroot . --prefix /usr/local )
 	"$STRIP" "$PYSRC/build-wasi/python.reactor.wasm" -o "$HERE/python.wasm"
-	cp "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
+	write_zip "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
 	cp "$PYSRC/Lib/ensurepip/_bundled"/pip-*.whl "$HERE/"
 
 	# The sci variant's Python half. Its compiled half is inside python-sci.wasm,
@@ -540,19 +628,7 @@ stage_assets() {
 	"$STRIP" "$PYSRC/build-wasi/python.sci.wasm" -o "$HERE/python-sci.wasm"
 	find "$NUMPY_SITE" -name '*.so' -delete
 	find "$NUMPY_SITE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-	# <<- strips EVERY leading tab, so the body's own indentation is spaces:
-	# written with tabs it arrived flush-left and Python refused to parse it.
-	( cd "$NUMPY_SITE" && "$BUILD/buildenv/bin/python" - "$HERE/sci-packages.zip" <<-'PYEOF'
-	import pathlib
-	import sys
-	import zipfile
-
-	with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-	    for path in sorted(pathlib.Path('.').rglob('*')):
-	        if path.is_file():
-	            archive.write(path, path.as_posix())
-	PYEOF
-	)
+	write_zip "$NUMPY_SITE" "$HERE/sci-packages.zip"
 	log "built"
 	ls -l "$HERE/python.wasm" "$HERE/python-sci.wasm" "$HERE/python$PYTHON_XY.zip" \
 	  "$HERE/sci-packages.zip" "$HERE"/pip-*.whl
@@ -636,6 +712,11 @@ if [ ${#stages[@]} -eq 0 ]; then
 	# stage_wasi links the base variant itself, so `reactor` is not listed here.
 	stages=(fetch deps nimbus hostpy wasi extenv ext sci assets verify)
 fi
+# Checked once, before any stage runs: fetch and verify are the two that
+# compile nothing.
+for stage in "${stages[@]}"; do
+	case "$stage" in fetch|verify) ;; *) require_recipe; break ;; esac
+done
 for stage in "${stages[@]}"; do
 	"stage_$stage"
 done

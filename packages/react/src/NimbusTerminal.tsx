@@ -15,22 +15,22 @@
  * format; that's the shell's job.
  */
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
+import { sessionAttachUrl } from '@nimbus-sh/sdk/session';
+import { useNimbusSession } from './useNimbusSession.js';
 import {
   type NimbusTerminalProps,
   type NimbusTerminalRef,
-  NimbusTerminalError,
 } from './types.js';
 
 /**
  * The URL the iframe attaches through: the session's shell, or `/new` for a
- * fresh session, under the endpoint's own path, carrying the token for the
+ * fresh session, at the endpoint's origin root, carrying the token for the
  * attach exchange.
  */
 export function nimbusAttachUrl(endpoint: string, token: string, sessionId: string | undefined): string {
-  const path = sessionId ? `/s/${encodeURIComponent(sessionId)}/` : '/new';
-  return `${endpoint.replace(/\/+$/, '')}${path}?nimbus_token=${encodeURIComponent(token)}`;
+  return sessionAttachUrl(endpoint, sessionId, token);
 }
 
 /**
@@ -62,37 +62,20 @@ export const NimbusTerminal = forwardRef<NimbusTerminalRef, NimbusTerminalProps>
     const [renderKey, setRenderKey] = useState(0);
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-    const attachUrl = useMemo(() => nimbusAttachUrl(endpoint, token, sessionId), [endpoint, token, sessionId]);
+    const { attachUrl } = useNimbusSession({
+      endpoint, token, tenant, sub, sessionId, onReady, onError,
+      iframeRef, reloadKey: renderKey,
+    });
 
     useImperativeHandle(
       ref,
       () => ({
         reload: () => setRenderKey((k) => k + 1),
-        getUrl: () => attachUrl,
+        getUrl: () => attachUrl ?? '',
         getElement: () => iframeRef.current,
       }),
       [attachUrl],
     );
-
-    // postMessage event listener for ready / error.
-    useEffect(() => {
-      if (!onReady && !onError) return;
-      const expectedOrigin = new URL(endpoint).origin;
-      function onMessage(ev: MessageEvent) {
-        if (ev.origin !== expectedOrigin) return;
-        const data = ev.data;
-        if (data === null || typeof data !== 'object') return;
-        if (data.type === 'nimbus:ready' && onReady) {
-          onReady();
-        } else if (data.type === 'nimbus:error' && onError) {
-          const code = typeof data.code === 'string' ? data.code : 'E_UNKNOWN';
-          const message = typeof data.message === 'string' ? data.message : 'Unknown terminal error';
-          onError(new NimbusTerminalError(message, code as NimbusTerminalError['code']));
-        }
-      }
-      window.addEventListener('message', onMessage);
-      return () => window.removeEventListener('message', onMessage);
-    }, [endpoint, onReady, onError]);
 
     // Validate tenant claim consistency early (developer-experience win).
     // Token sub claim is opaque from React's perspective — we only check
@@ -107,7 +90,7 @@ export const NimbusTerminal = forwardRef<NimbusTerminalRef, NimbusTerminalProps>
       <iframe
         ref={iframeRef}
         key={renderKey}
-        src={attachUrl}
+        src={attachUrl ?? undefined}
         title={title ?? 'Nimbus terminal'}
         sandbox={sandbox ?? NIMBUS_TERMINAL_SANDBOX}
         className={className}

@@ -6,11 +6,11 @@ description: One isolate per process, joined through loopback ports and previews
 Run a server in one process and reach it from another over loopback.
 
 ```bash
-$ cat > server.js <<'EOF'
+$ cat > server.cjs <<'EOF'
 require('http').createServer((req, res) => res.end('ok from another isolate'))
   .listen(3000, () => console.log('listening on 3000'));
 EOF
-$ node server.js
+$ node server.cjs
 listening on 3000
 $ curl http://127.0.0.1:3000/
 ok from another isolate
@@ -43,7 +43,7 @@ an unrelated server on the same port never inherits it. `nimbus app list`,
 `nimbus app url <name>`, `nimbus app rotate <name>`, and `nimbus app remove
 <name>` manage it from the shell; the SDK has the same verbs as `box.apps`.
 A crashed server stays down unless it was started with
-`nimbus start --restart on-failure node server.js`.
+`nimbus start --restart on-failure node server.cjs`.
 
 Outbound access is open. `fetch`, Node HTTP clients, npm, pip, gem, and git
 use it. WASI binaries get TCP through `/dev/tcp/<host>/<port>`. Inbound access

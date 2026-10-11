@@ -35,8 +35,8 @@ const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles probe.c without errors', compileOK,
   compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('/home/user/r ; echo RUN_EXIT=$?', 60_000);
-const runOK = /PROGRAM_OK/.test(stripAnsi(rr.output)) && /RUN_EXIT=0/.test(stripAnsi(rr.output));
+const rr = await t.run('/home/user/r', 60_000);
+const runOK = /PROGRAM_OK/.test(stripAnsi(rr.output)) && rr.exitCode === 0;
 a.check('program exits 0 with PROGRAM_OK on stdout', runOK,
   JSON.stringify(stripAnsi(rr.output).slice(-200)));
 

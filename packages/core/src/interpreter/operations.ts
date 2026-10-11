@@ -3,13 +3,13 @@
  * on the program's values (calls, constructions, property definitions,
  * destructuring's checks), beside the operators of host-ops.ts.
  */
-import type { NativeFunction } from './host-ops.js';
+import type { HostOperators, NativeFunction } from './host-ops.js';
 import {
   ObjectConstructor, type SafeList, SafeWeakMap, TypeError, accessorDescriptor, contains, copyList, createDataProperty,
   dataDescriptor, defineOrThrow, isEnumerableOwn, listOf, objectFreeze, reflectApply, reflectConstruct, reflectDeleteProperty,
   reflectGet, reflectHas, reflectOwnKeys, stringOf, symbolUnscopables, toObject,
 } from './intrinsics.js';
-import { Completion, type Signal, isObject, operators } from './runtime.js';
+import { Completion, type Signal, isObject } from './runtime.js';
 
 const constructors = new SafeWeakMap<Function, boolean>();
 export function isConstructorValue(value: unknown): value is Function {
@@ -28,9 +28,9 @@ export function isConstructorValue(value: unknown): value is Function {
   return known;
 }
 
-export function toPropertyKey(value: unknown): PropertyKey {
+export function toPropertyKey(ops: HostOperators, value: unknown): PropertyKey {
   if (typeof value === 'string' || typeof value === 'symbol') return value;
-  if (isObject(value)) return operators().propertyKey(value);
+  if (isObject(value)) return ops.propertyKey(value);
   return stringOf(value);
 }
 
@@ -105,8 +105,8 @@ export function withHas(target: unknown, name: string): target is object {
 }
 
 /** A key read and then written converts once, as the reference does. */
-export function keyOnce(key: unknown): unknown {
-  return typeof key === 'string' || typeof key === 'number' || typeof key === 'symbol' ? key : toPropertyKey(key);
+export function keyOnce(ops: HostOperators, key: unknown): unknown {
+  return typeof key === 'string' || typeof key === 'number' || typeof key === 'symbol' ? key : toPropertyKey(ops, key);
 }
 
 /** A body's result as a completion signal: the completion, or undefined for a value. */

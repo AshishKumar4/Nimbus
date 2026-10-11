@@ -2,7 +2,12 @@ import type { SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.j
 
 type Projection = (value: unknown) => unknown;
 export interface ReplayPolicy {
-  kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control';
+  /**
+   * `mutation`: carries the process's filesystem changes. The guest counts
+   * each change as the program makes it (stop-replay.ts mutation), not its
+   * transport; the session counts the transport as an effect.
+   */
+  kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control' | 'mutation';
   /** Exact, operation-local rules; never strip a property by its name globally. */
   answer?: Projection;
   args?: (args: readonly unknown[]) => readonly unknown[];
@@ -17,7 +22,7 @@ const acquire = (value: unknown): unknown => {
   const v = omit(value, ['epoch', 'rev']) as { paths?: unknown[] } | null;
   return v && Array.isArray(v.paths) ? { ...v, paths: v.paths.map((p) => omit(p, ['rev'])) } : v;
 };
-const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor']);
+const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor', 'begin']);
 const delivered = (value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
   const v = value as { args?: unknown; answer?: unknown };
@@ -31,6 +36,7 @@ const read = { kind: 'observation' } as const;
 const effect = { kind: 'effect' } as const;
 const output = { kind: 'output' } as const;
 const control = { kind: 'control' } as const;
+const mutation = { kind: 'mutation' } as const;
 
 /**
  * The complete session-boundary policy. New operations fail closed both at
@@ -48,10 +54,18 @@ export const REPLAY_OPERATION_POLICY = {
   chmod: effect, access: read, chown: effect, setUmask: read,
   readdir: read, exists: read, mkdir: effect, rmdir: effect, rename: effect,
   unlink: effect, readlink: read, fsLinkLeadsTo: read, symlink: effect,
-  fsAcquire: { kind: 'observation', answer: acquire, args: (a) => [a[2]] },
+  // Epoch/cursor and push/scope strategy belong to the replica's cache,
+  // not the program. Match acquisitions by their position in this run;
+  // the complete observable namespace/stat/content answer still diverges
+  // if those different cache requests produce different inputs.
+  fsAcquire: { kind: 'observation', answer: acquire, args: () => [] },
   fsAcquired: { kind: 'observation', answer: withAcquire, args: (a) => [acquireArgs(a[0]), a[1], a[2]] },
   fsRevision: read,
   fsList: { kind: 'observation', answer: (value) => {
+    const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
+    return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
+  } },
+  fsListTree: { kind: 'observation', answer: (value) => {
     const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
     return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
   } },
@@ -60,10 +74,12 @@ export const REPLAY_OPERATION_POLICY = {
   wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
   fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
   fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
-  fsWriteRange: effect, fsAppend: effect, fsAppendAck: effect,
-  fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
+  fsWriteRange: effect,
+  fsTruncate: effect, writeBatch: effect, writeBatchStream: mutation,
   // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
-  openWaveWriter: effect,
+  openWaveWriter: mutation,
+  // Ends a write-wave epoch the session holds open for the process.
+  retireWaveWriter: mutation,
   putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
   registerPort: effect, allocatePort: effect, unregisterPort: effect,
   reportExit: output, routeLoopback: effect, transform: read,
@@ -82,10 +98,14 @@ export const REPLAY_OPERATION_POLICY = {
   fsSetStatus: effect, fsReaddirHandle: read, fsFtruncate: effect,
   fsFchmod: effect, fsFchown: effect, fsFutimes: effect, fsSync: read,
   fsRealpath: read, fsRemove: effect, fsCopyFile: effect, fsCopyTree: effect,
-  fsAcquireExclusiveMutation: effect, fsReleaseExclusiveMutation: effect,
+  fsAcquireExclusiveMutation: mutation, fsReleaseExclusiveMutation: mutation,
+  // A recall is the session asking; the answer to one changes what it holds.
+  fsAwaitRecall: { kind: 'input' }, fsRecalled: mutation,
+  // Waits for the session's publication of what the process wrote, and implements that boundary itself.
+  fsPublished: control,
   innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
   hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
-  routeHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,
+  routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,
   hmrNextEvent: effect, replayBoundary: control, netTls: effect, outbound: control,
 } satisfies Record<SupervisorOpName, ReplayPolicy>;
 

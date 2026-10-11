@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // Every place facets are made states their network (Kinu ask 20; the egress
 // review's last P2), so a facet working for a workspace cannot leave its
 // egress by omission:
@@ -71,7 +72,7 @@ const { Fanout } = await import(`${fabric}/fanout.${ext}`);
 
   const facet = localFacetHost(workspaceNetwork(egress)).open({ tag: 'egress-probe' });
   try {
-    const through = await facet.submit(probe, 'https://facet.invalid/through-the-egress', { timeoutMs: 30_000 });
+    const through = await facet.submit(facetTaskSource("async function probeNetwork(url) {\n    let socket;\n    try { new WebSocket('wss://facet.invalid/'); socket = 'opened'; } catch (error) { socket = error.message; }\n    try { return { body: await (await fetch(url)).text(), socket }; } catch (error) { return { error: `${error.name}: ${error.message} (${error.cause?.message})`, socket }; }\n  }"), 'https://facet.invalid/through-the-egress', { timeoutMs: 30_000 });
     assert.deepEqual(through, {
       body: 'egress answered /through-the-egress',
       socket: "Nimbus: WebSocket is not available to facet 'egress-probe' when the workspace's network goes through an egress",
@@ -86,7 +87,7 @@ const { Fanout } = await import(`${fabric}/fanout.${ext}`);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const own = localFacetHost(ISOLATE_NETWORK).open({ tag: 'own-probe' });
   try {
-    const direct = await own.submit(async function direct(url) { return (await fetch(url)).text(); }, `http://127.0.0.1:${server.address().port}/direct`, { timeoutMs: 30_000 });
+    const direct = await own.submit(facetTaskSource("async function direct(url) { return (await fetch(url)).text(); }"), `http://127.0.0.1:${server.address().port}/direct`, { timeoutMs: 30_000 });
     assert.equal(direct, 'own network /direct', "(2) with ISOLATE_NETWORK the facet's fetch is its own");
     assert.deepEqual(egress.seen, ['GET /through-the-egress'], '(2) and the egress saw nothing of it');
   } finally {

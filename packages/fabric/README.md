@@ -328,10 +328,11 @@ open for the process's life, as an attached terminal does. Use `'boot'` when
 it should return once the process is up and leave the facet resident, as a
 server does.
 
-**Facet names come from a free list.** A Durable Object allows 65,536 facets
-over its lifetime, and IDs are never reclaimed, so the limit counts facets
-ever created. Reusing a name costs no new ID. `facetIdBudget(ctx)` reports
-`{ consumed, budget }`.
+**Each process takes a fresh facet name.** `proc-slot-<n>`, numbered per
+incarnation; a released name is not reused, because getting one a released
+process held, with the next process's class, failed on Cloudflare. An
+ephemeral process's facet is deleted with it: Cloudflare bounds facets kept,
+not names used (PLATFORM.md).
 
 **Large boot members travel as VFS paths.** A structured-clone RPC value caps
 at 32 MiB. Use `vfsWasmModules` and `vfsTextModules`; the host reads the
@@ -452,7 +453,7 @@ or left to you.
 | Invariant | Evidence |
 |---|---|
 | Facet memory independent, ~208–256 MiB each; facet CPU SHARED across siblings | 9,956 ms burn stalled a sibling 9,966 ms; awaited I/O costs siblings 0 ms |
-| 65,536 facets per DO LIFETIME; IDs append-only, never reclaimed; reusing a NAME costs no new ID | the slot book exists for this; `facetIdBudget` counts consumption durably and a failure at the wall names the budget |
+| Facets kept are bounded, names used are not: 70,000 names deleted after use, none failed; 32,240 kept, the object failed and its storage would not start (2026-10-07). Local workerd: 65,535 names per DO LIFETIME (facet index) | an ephemeral process's facet is deleted with it; a failed start names its facet and process |
 | Dynamic-worker module map hard ceiling 67,108,864 bytes, shared across every member | 62 MiB lands, 64 MiB refused; boot cost roughly linear in map bytes and not the bottleneck (40 MiB → 1.42 s across 6,553 modules); every assembly seam refuses an over-ceiling map listing the largest members by size, because the platform's refusal names none |
 | Request-time `WebAssembly.compile`/`instantiate` CSP-blocked; wasm rides the loader modules map as `{ wasm: ArrayBuffer }`, compiled at module load | RPC of a compiled `Module` refused by structured clone; inlined bytes OOMed the supervisor |
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |

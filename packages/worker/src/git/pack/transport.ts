@@ -3,10 +3,10 @@
  * git layer crosses one: what counts as lost, how many times a request that
  * crossed it is tried, and how far apart.
  *
- * - An HTTP request to the git server: upload-pack.ts's for a clone, and
- *   cf-git's (retryingGitHttp) for fetch, pull and push. Retried when it
- *   failed before an answer, answered with a transient edge status, or sent
- *   no headers within STALL_MS; only an idempotent one (a GET, an
+ * - An HTTP request to the git server: upload-pack.ts's for a clone, a
+ *   fetch and a pull, and cf-git's (retryingGitHttp) for a push. Retried
+ *   when it failed before an answer, answered with a transient edge status,
+ *   or sent no headers within STALL_MS; only an idempotent one (a GET, an
  *   upload-pack POST: it changes nothing on the server).
  * - A clone piece (network-facet.ts invokeClonePhase): its request failed
  *   in transit (an UploadPackError), or it hung. Objects are addressed by
@@ -25,6 +25,8 @@
  */
 
 import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
+import type { HttpClient } from '../../../vendor/git-http.generated.js';
+
 
 export const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */
@@ -51,49 +53,26 @@ export function retryDelay(attempt: number, schedule: readonly number[] = RETRY_
   return new Promise((resolve) => setTimeout(resolve, retryDelayMs(schedule, attempt)));
 }
 
-/** cf-git's HTTP client surface (isomorphic-git's GitHttp). */
-export interface GitHttpRequest {
-  url: unknown;
-  method?: string;
-  body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
-  [key: string]: unknown;
-}
-
-export interface GitHttpResponse {
-  statusCode: number;
-  body?: { cancel?: () => unknown } | null;
-  [key: string]: unknown;
-}
-
-export interface GitHttp {
-  request(req: GitHttpRequest): Promise<GitHttpResponse>;
-}
-
 /**
- * cf-git's HTTP client under this policy: an idempotent request (a GET, an
- * upload-pack POST, whose body is kept to be sent again) that fails before
- * its answer, or is answered with a transient status, is tried again.
+ * cf-git's HTTP client under this policy (a push's: its fetch speaks
+ * upload-pack.ts): a GET that fails before its answer, or is answered with a
+ * transient status, is tried again; a receive-pack POST is not.
  * `schedule` is for tests.
  */
-export function retryingGitHttp(base: GitHttp, schedule: readonly number[] = RETRY_BACKOFF_MS): GitHttp {
+export function retryingGitHttp(base: HttpClient, schedule: readonly number[] = RETRY_BACKOFF_MS): HttpClient {
   return {
-    async request(req) {
-      const method = req.method ?? 'GET';
-      const idempotent = method === 'GET' || String(req.url).includes('git-upload-pack');
-      let request = req;
-      if (idempotent && method !== 'GET' && req.body) {
-        const chunks: Uint8Array[] = [];
-        for await (const chunk of req.body) chunks.push(chunk);
-        request = { ...req, body: chunks };
-      }
-      if (!idempotent) return await base.request(request);
+    async request(request) {
+      if ((request.method ?? 'GET') !== 'GET') return await base.request(request);
       return await retrying(() => base.request(request), {
         retries: RETRY_ATTEMPTS - 1,
         schedule,
         retryReason: (outcome) => !outcome.ok ? 'failed in transit'
           : TRANSIENT_HTTP_STATUSES.has(outcome.value.statusCode) ? 'HTTP ' + outcome.value.statusCode
           : null,
-        discard: (response) => response.body?.cancel?.(),
+        // Its web client's body is the response's stream where streams iterate (workerd): cancelled, not left open.
+        discard: (response) => {
+          if (response.body instanceof ReadableStream) void response.body.cancel();
+        },
       });
     },
   };

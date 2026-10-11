@@ -41,6 +41,8 @@ function statOf(stat, epoch) {
 export class SqliteFiles {
     engine;
     view;
+    /** VFS.storesWrites: a regular file holds what it was written. */
+    storesWrites = true;
     sync = this;
     /** The database's change feed, in this principal's view (names it could list). */
     changes;
@@ -70,8 +72,12 @@ export class SqliteFiles {
     get credentialed() {
         return this.view;
     }
-    as(cred, actor) {
-        return new SqliteFiles(this.engine, this.engine.as(cred, actor === undefined ? undefined : { actor }));
+    as(cred, actor, options) {
+        return new SqliteFiles(this.engine, this.engine.as(cred, {
+            ...(actor === undefined ? {} : { actor }),
+            ...(options?.holds === undefined ? {} : { holds: options.holds }),
+            ...(options?.landed === true ? { landed: true } : {}),
+        }));
     }
     /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
     observeWrites(observer) {
@@ -95,8 +101,10 @@ export class SqliteFiles {
         if (path.replace(/\/+/g, '') === '') {
             return { dev: this.engine.deviceId, ino: ROOT_INODE, type: 'directory', size: 0, mtimeMs: 0, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0, revision: `${this.view.epoch}:0` };
         }
+        // A name that is not there is an answer: no error is made for it.
         try {
-            return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);
+            const stat = this.view.statIfPresent(path, options?.follow !== false);
+            return stat === null ? null : statOf(stat, this.view.epoch);
         }
         catch (error) {
             const converted = toVfsError(error, options?.follow === false ? 'lstat' : 'stat', path);

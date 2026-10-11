@@ -1,6 +1,6 @@
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { Command } from '../types.js';
-import { type PackageType } from '../../node-compat/cjs-loader.js';
+import { type PackageType } from '../../../../runtime/module-format.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';

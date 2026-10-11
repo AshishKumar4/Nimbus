@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 
 import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
@@ -35,14 +36,14 @@ const pool = new IsolatePool(
   { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 0, tag: 'clone-retry-test' },
 );
 
-assert.equal(await pool.submit((value) => value, 'payload'), 'recovered');
+assert.equal(await pool.submit(facetTaskSource("(value) => value"), 'payload'), 'recovered');
 assert.equal(executeCalls, 2);
 assert.equal(loaderIds.length, 2);
 assert.notEqual(loaderIds[0], loaderIds[1]);
 assert.match(loaderIds[0], /:slot-0:g0$/);
 assert.match(loaderIds[1], /:slot-0:g1$/);
 
-assert.equal(await pool.submit((value) => value, 'next-payload'), 'recovered');
+assert.equal(await pool.submit(facetTaskSource("(value) => value"), 'next-payload'), 'recovered');
 assert.equal(loaderIds[2], loaderIds[1]);
 
 console.log('loader-clone-retry: ok');

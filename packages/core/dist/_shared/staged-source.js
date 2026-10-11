@@ -1,0 +1,156 @@
+/**
+ * staged-source.ts — the one supervisor-side read of a build artifact a bundle
+ * script staged under public/_assets/ instead of inlining it in the Worker
+ * bundle (wasm modules, facet source texts).
+ *
+ * The staging script pins each artifact by sha-256 in a `.generated.ts`. This
+ * module reads it through L2 (caches.default) under a key that changes with
+ * the bytes, with ASSETS as the source of truth, and hands out nothing that
+ * fails the pinned digest: a stale or partial asset never reaches workerd's
+ * loader or a facet. L2 is written only with verified bytes read from ASSETS.
+ *
+ * Artifacts differ only in what they name in errors, their L2 key, and what a
+ * bad L2 entry means to their caller (`poisonedCache`); `stagedAsset` builds
+ * each from those.
+ */
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { sha256Hex } from './crypto.js';
+import { ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
+const immutableSources = new WeakMap();
+/** A runtime library is shared by digest, never copied into a process-owned image. */
+export function immutableModuleSource(env, asset) {
+    if (!env.ASSETS)
+        throw new Error(asset.missingBinding);
+    const sources = immutableSources.get(env.ASSETS) ?? new Map();
+    immutableSources.set(env.ASSETS, sources);
+    const key = asset.path + ':' + asset.sha256;
+    let pending = sources.get(key);
+    if (!pending) {
+        pending = fetchStagedBytes(env, asset).then((bytes) => new ImmutableModuleSource(bytes, { path: asset.path, sha256: asset.sha256 }));
+        sources.set(key, pending);
+        pending.catch(() => { if (sources.get(key) === pending)
+            sources.delete(key); });
+    }
+    return pending;
+}
+export async function readImmutableModuleSource(env, source) {
+    const asset = stagedRuntimeSource({
+        label: 'immutable runtime source', entry: source.path, buildId: source.sha256.slice(0, 16),
+        sha256: source.sha256, stagedBy: 'the runtime asset build', requiredBy: 'the module loader',
+    });
+    return (await immutableModuleSource(env, asset)).text;
+}
+/** Fetch a staged artifact's bytes and verify them against its pinned digest. */
+export async function fetchStagedBytes(env, asset) {
+    if (!env.ASSETS)
+        throw new Error(asset.missingBinding);
+    // The colo cache, where the runtime has one: workerd does, a test harness may not.
+    const cache = typeof caches === 'undefined' ? undefined : caches.default;
+    if (cache) {
+        let cached = null;
+        try {
+            const hit = await cache.match(new Request(asset.l2Key));
+            if (hit && hit.ok)
+                cached = await hit.arrayBuffer();
+        }
+        catch { /* fall through to ASSETS */ }
+        if (cached !== null) {
+            const digest = await sha256Hex(cached);
+            if (digest === asset.sha256)
+                return cached;
+            if (asset.poisonedCache === 'reject')
+                throw new Error(asset.integrityFailed(digest, 'L2 cache'));
+            try {
+                await cache.delete(new Request(asset.l2Key));
+            }
+            catch { /* the ASSETS read below still decides */ }
+        }
+    }
+    // ASSETS routes by pathname only; `.invalid` (RFC 2606) marks the host as
+    // internal to the binding.
+    const res = await env.ASSETS.fetch(new Request(`https://nimbus-internal.invalid${asset.path}`));
+    let bytes;
+    try {
+        if (!res.ok)
+            throw new Error(asset.fetchFailed(res));
+        bytes = await res.arrayBuffer();
+    }
+    finally {
+        disposeRpcResource(res);
+    }
+    const digest = await sha256Hex(bytes);
+    if (digest !== asset.sha256)
+        throw new Error(asset.integrityFailed(digest, 'ASSETS'));
+    // Best-effort: ASSETS stays the source of truth. The cache copies the body
+    // at put time, so the caller's buffer is unaffected.
+    try {
+        if (cache) {
+            const headers = { 'Cache-Control': 'public, max-age=31536000, immutable' };
+            if (asset.contentType)
+                headers['Content-Type'] = asset.contentType;
+            await cache.put(new Request(asset.l2Key), new Response(new Uint8Array(bytes), { headers }));
+        }
+    }
+    catch { /* silent */ }
+    return bytes;
+}
+/** {@link fetchStagedBytes}, decoded as UTF-8. */
+export async function fetchStagedText(env, asset) {
+    return new TextDecoder().decode(await fetchStagedBytes(env, asset));
+}
+/**
+ * One load per isolate: every caller shares the first call's promise, and a
+ * rejected one is dropped so the next call loads again instead of pinning the
+ * error.
+ */
+export function memoizeUntilRejected(load) {
+    let memo = null;
+    return (arg) => {
+        if (!memo) {
+            const loading = load(arg);
+            memo = loading;
+            loading.catch(() => { if (memo === loading)
+                memo = null; });
+        }
+        return memo;
+    };
+}
+/**
+ * The `StagedAsset` of an artifact `stagedBy` staged and pinned, which
+ * `requiredBy` reads: one wording for every artifact's failures, naming the
+ * artifact, its path and the script that restages it. A bad L2 entry is
+ * refused unless the artifact says to replace it (`poisonedCache`).
+ */
+export function stagedAsset(asset) {
+    const { label, path, sha256, stagedBy } = asset;
+    return {
+        path,
+        l2Key: asset.l2Key,
+        sha256,
+        contentType: asset.contentType,
+        poisonedCache: asset.poisonedCache ?? 'reject',
+        missingBinding: `Nimbus: ${asset.requiredBy} requires an env.ASSETS binding (serves ${path}) — ` +
+            'add the assets binding from the embed config (see packages/worker README)',
+        fetchFailed: (res) => `${label} asset fetch failed: ${res.status} ${res.statusText} for ${path} — ` +
+            `deploy is missing the staged asset (run ${stagedBy})`,
+        integrityFailed: (digest, from) => `${label} integrity check failed: expected ${sha256}, got ${digest} (${from}) for ${path} — ` +
+            `the staged asset is corrupt or out of sync; rerun ${stagedBy} and redeploy`,
+    };
+}
+/**
+ * The `StagedAsset` of a facet source text staged under
+ * public/_assets/runtime/ by `stagedBy` and needed by `requiredBy`: keyed in
+ * L2 by build id, and a bad L2 entry is replaced from ASSETS, since every
+ * later fetch in the colo for the build would otherwise fail on it.
+ */
+export function stagedRuntimeSource(source) {
+    return stagedAsset({
+        label: source.label,
+        path: source.entry,
+        sha256: source.sha256,
+        l2Key: `https://nimbus-cache.invalid${source.entry}?build=${source.buildId}`,
+        requiredBy: source.requiredBy,
+        stagedBy: source.stagedBy,
+        poisonedCache: 'refetch',
+    });
+}

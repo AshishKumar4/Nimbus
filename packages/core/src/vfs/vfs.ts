@@ -83,12 +83,6 @@ export interface VfsHandle {
   close(): Awaitable<void>;
 }
 
-export interface VfsEvent {
-  type: 'create' | 'modify' | 'delete' | 'rename';
-  path: string;
-  oldPath?: string;
-}
-
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
  * a principal finer than its uid: two agents (or a node and its origin) that
@@ -114,7 +108,7 @@ export interface VfsContentRef {
 /** A mutation that landed (VFS.observeWrites): reported once, after it committed. */
 export interface VfsWriteEvent {
   /** 'create' when nothing stood at `path`, 'delete' when nothing does now, 'rename' with `oldPath`. */
-  readonly type: VfsEvent['type'];
+  readonly type: 'create' | 'modify' | 'delete' | 'rename';
   readonly path: string;
   /** A rename's source. */
   readonly oldPath?: string;
@@ -129,6 +123,9 @@ export interface VfsWriteEvent {
 /** Told of each landed mutation; a promise it returns holds the event's content until it settles. */
 export type VfsWriteObserver = (event: VfsWriteEvent) => void | Promise<void>;
 
+/** Which of a write's sides an observer wants read (CompositeVFS.observeWrites): both, neither, or each. */
+export type VfsWriteWants = boolean | { readonly before: boolean; readonly after: boolean };
+
 export interface VfsMountDescription {
   /** df's "Filesystem" column. */
   source: string;
@@ -140,6 +137,12 @@ export interface VfsUsage {
   size: number;
   used: number;
   available: number;
+}
+
+/** How a principal's view of a backend reads (VFS.as). */
+export interface VfsViewOptions {
+  holds?: () => ReadonlySet<string>;
+  landed?: boolean;
 }
 
 export interface VFS {
@@ -180,8 +183,14 @@ export interface VFS {
   /** Exactly that version, or a refusal; never the current file in its place. */
   readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Awaitable<Uint8Array>;
   open?(path: string, flags: VfsOpenFlags): Awaitable<VfsHandle>;
-  /** This backend as another principal (`actor` names it finer than its uid). Absent: the backend has one identity. */
-  as?(cred: VfsCred, actor?: string): VFS;
+  /**
+   * This backend as another principal (`actor` names it finer than its uid).
+   * `options.holds`: the delegations the principal's process holds, asked at
+   * each call (its own lookups recall none of them). `options.landed`: its
+   * reads read what has landed, asking no holder for what it has not sent
+   * (its writes still recall). Absent: the backend has one identity.
+   */
+  as?(cred: VfsCred, actor?: string, options?: VfsViewOptions): VFS;
   /**
    * Every mutation that lands on this backend, whoever made it, with what
    * it replaced (VfsWriteEvent); the returned function stops the reports.
@@ -195,7 +204,13 @@ export interface VFS {
    * backend without it is never cached.
    */
   readonly changes?: VfsChanges;
-  watch?(path: string, listener: (event: VfsEvent) => void): () => void;
+  /**
+   * Whether a write of a whole regular file leaves exactly the bytes it was
+   * given as its content: true for a backend that stores what it is written
+   * (SQLite, memory). One that does not say so (a device that discards or
+   * streams, a /proc) has its content read back where an observer asks.
+   */
+  readonly storesWrites?: boolean;
   describe?(): VfsMountDescription;
   usage?(): Awaitable<VfsUsage | null>;
 }

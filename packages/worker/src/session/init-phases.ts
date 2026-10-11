@@ -106,6 +106,7 @@ export function classifyWsUpgrade(self: {
 export function joinExistingSession(
   self: {
     ctx: any;
+    shell: { announcePrompt(): void };
     terminal: { attach(ws: WebSocket, onFlush?: (data: string) => void): void; write(s: string): void };
     _b4Phase: SessionState | null;
     _b4WarmJoinCount: number;
@@ -134,6 +135,7 @@ export function joinExistingSession(
   } catch (e: any) {
     try { console.warn("[B'.3] scrollback replay failed:", e?.message || e); } catch {}
   }
+  self.shell.announcePrompt();
 
   // Phase O is SKIPPED on warm rejoin (just like warm path of
   // initSession). The original cold-start banner is in the replay.

@@ -76,9 +76,10 @@ assert.equal(stdinEnded,true);
 assert.equal(guest.process.stdin.listenerCount('data'),listeners);
 assert.equal(guest.output().stdout,'before\nchild-71 €\nafter\nchild-74 €\n');
 
-// The process's normal exit drain must retain a referenced inherited child
-// even when user code does not attach an exit/close listener.
+// A referenced inherited child holds the process, as a live handle its event
+// loop counts, until it closes, even when user code attaches no listener.
 guest.cp.spawn('node',['unawaited.js'],{stdio:['ignore','inherit','ignore']});
-await bounded(Promise.all(pending));
+assert.ok(globalThis.__nimbusPendingOps > 0,'the child is a live handle from its spawn');
+await bounded((async () => { while (globalThis.__nimbusPendingOps > 0) await sleep(1); })());
 assert.equal(guest.output().stdout,'before\nchild-71 €\nafter\nchild-74 €\nchild-75 €\n');
 console.log('cp-stdio-inherit: inherited output ordering, pipe/ignore separation, live input and cleanup');

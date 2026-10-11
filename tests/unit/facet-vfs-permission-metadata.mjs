@@ -32,7 +32,7 @@ kernel.chown('home/user/project/secret.txt', 0, 0);
 let runnerSource = '';
 let runnerModules = {};
 const entrypoint = {
-  async fetch() {
+  async run() {
     return Response.json({ pid: 1, exitCode: 0, stdout: '', stderr: '', durationMs: 0 });
   },
   [Symbol.dispose]() {},

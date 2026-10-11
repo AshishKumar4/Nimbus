@@ -23,23 +23,18 @@ export interface ExecChunk {
   data: Uint8Array;
 }
 
-export interface ExecExit {
-  command: string;
-  exitCode: number;
-  success: boolean;
-  duration: number;
-  timestamp: number;
-}
+export const ExecExitSchema = z.object({
+  command: z.string(), exitCode: z.number(), success: z.boolean(), duration: z.number(), timestamp: z.number(),
+});
+export type ExecExit = z.infer<typeof ExecExitSchema>;
 
 export interface ExecStream {
   output: ReadableStream<ExecChunk>;
   exit: Promise<ExecExit>;
 }
 
-export interface ExecOutput extends ExecExit {
-  stdout: string;
-  stderr: string;
-}
+export const ExecOutputSchema = ExecExitSchema.extend({ stdout: z.string(), stderr: z.string() });
+export type ExecOutput = z.infer<typeof ExecOutputSchema>;
 
 /** Output a writer may run ahead of its reader before its writes wait. */
 export const EXEC_STREAM_HIGH_WATER_BYTES = 64 * 1024;
@@ -74,7 +69,7 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   let pendingStream: ExecStreamName = 'stdout';
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
-    clearTimeout(flushTimer);
+    if (flushTimer !== null) clearTimeout(flushTimer);
     flushTimer = null;
     if (settled || pendingBytes === 0) return;
     let data = pending[0];
@@ -92,7 +87,8 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   };
   const settle = () => {
     settled = true;
-    clearTimeout(flushTimer);
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    flushTimer = null;
     pending = [];
     pendingBytes = 0;
     openRoom();
@@ -123,6 +119,9 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
       pending.push(data);
       pendingBytes += data.byteLength;
       if (pendingBytes >= COALESCE_BYTES) flush();
+      // This is an intentional transport batching window, not a deferred
+      // bookkeeping decision. A microtask fence between awaited writes
+      // turned seq's two million numbers into two million network frames.
       else flushTimer ??= setTimeout(flush, 0);
       if ((controller.desiredSize ?? 0) > 0) return;
       room ??= new Promise<void>((resolve) => { release = resolve; });
@@ -167,13 +166,6 @@ const FRAME_EXIT = 3;
 const FRAME_ERROR = 4;
 const HEADER_BYTES = 5;
 
-const ExitFrameSchema = z.object({
-  command: z.string(),
-  exitCode: z.number(),
-  success: z.boolean(),
-  duration: z.number(),
-  timestamp: z.number(),
-});
 const ErrorFrameSchema = z.object({ message: z.string() });
 
 function frame(kind: number, payload: Uint8Array): Uint8Array {
@@ -281,7 +273,7 @@ export function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream {
               let parsed: ExecExit | { message: string };
               try {
                 const json = JSON.parse(new TextDecoder().decode(payload));
-                parsed = header.kind === FRAME_EXIT ? ExitFrameSchema.parse(json) : ErrorFrameSchema.parse(json);
+                parsed = header.kind === FRAME_EXIT ? ExecExitSchema.parse(json) : ErrorFrameSchema.parse(json);
               } catch (error) {
                 fail(controller, new Error(`exec stream: malformed ${header.kind === FRAME_EXIT ? 'exit' : 'error'} frame: ${error instanceof Error ? error.message : String(error)}`));
                 await reader.cancel().catch(() => {});

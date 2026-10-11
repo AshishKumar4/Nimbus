@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // @tier slow — long; CI median 38 s wall, 18 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // A facet of the local facet host is a realm of its own (Kinu ask 17,
 // local-facet-host.ts:183).
@@ -162,7 +163,7 @@ async function assertEnded(what, before) {
  */
 async function settled() {
   const warm = host.open({ tag: 'warm' });
-  await warm.submit(function warm() { return 1; }, null);
+  await warm.submit(facetTaskSource("function warm() { return 1; }"), null);
   warm.dispose();
   await sleep(1000);
   return { processes: family(), threads: threadCount(), threadIds: [...threadTicks().keys()] };
@@ -196,7 +197,7 @@ case 'realm': {
       'globalThis.__seen = () => [Array.isArray({}), typeof globalThis.Array, ({}).polluted];',
     ].join('\n'),
   });
-  const seen = await within(facet.submit(function seen() { return globalThis.__seen(); }, null), 20_000, 'the rebinding facet');
+  const seen = await within(facet.submit(facetTaskSource("function seen() { return globalThis.__seen(); }"), null), 20_000, 'the rebinding facet');
   assert.deepEqual(seen, [true, 'function', 'yes'], '(1) the facet sees its own rebinding');
   assertHostUntouched('(1)');
   // Left open on purpose: an idle facet must not keep this process alive (4).
@@ -208,15 +209,15 @@ case 'realm': {
   const spin = function spin() { for (;;) { /* never yields */ } };
   const timed = host.open({ tag: 'spin-timeout' });
   const started = Date.now();
-  await assert.rejects(within(timed.submit(spin, null, { timeoutMs: 300 }), 10_000, 'the timed call'), /timed out after 300 ms/);
+  await assert.rejects(within(timed.submit(facetTaskSource("function spin() { for (;;) { /* never yields */ } }"), null, { timeoutMs: 300 }), 10_000, 'the timed call'), /timed out after 300 ms/);
   assert.ok(Date.now() - started < 5_000, '(2) the timeout ended it');
-  await assert.rejects(timed.submit(function ok() { return 1; }, null), /disposed|ended/, '(2) and the facet with it');
+  await assert.rejects(timed.submit(facetTaskSource("function ok() { return 1; }"), null), /disposed|ended/, '(2) and the facet with it');
   await assertEnded('(2) a timed-out JavaScript loop', before);
 
   const controller = new AbortController();
   const aborted = host.open({ tag: 'spin-abort' });
   setTimeout(() => controller.abort(new Error('killed')), 300);
-  await assert.rejects(within(aborted.submit(spin, null, { signal: controller.signal }), 10_000, 'the aborted call'), /killed/);
+  await assert.rejects(within(aborted.submit(facetTaskSource("function spin() { for (;;) { /* never yields */ } }"), null, { signal: controller.signal }), 10_000, 'the aborted call'), /killed/);
   await assertEnded('(2) an aborted JavaScript loop', before);
 
   // A loop inside WebAssembly, which calls nothing: (module (func (export "spin") (loop (br 0)))).
@@ -225,7 +226,7 @@ case 'realm': {
   const wasm = host.open({ tag: 'spin-wasm', wasmModules: { 'spin.wasm': looping } });
   setTimeout(() => wasmController.abort(new Error('killed')), 300);
   const spinWasm = function spinWasm() { new WebAssembly.Instance(globalThis.__NIMBUS_WASM['spin.wasm'], {}).exports.spin(); };
-  await assert.rejects(within(wasm.submit(spinWasm, null, { signal: wasmController.signal }), 10_000, 'the aborted wasm call'), /killed/);
+  await assert.rejects(within(wasm.submit(facetTaskSource("function spinWasm() { new WebAssembly.Instance(globalThis.__NIMBUS_WASM['spin.wasm'], {}).exports.spin(); }"), null, { signal: wasmController.signal }), 10_000, 'the aborted wasm call'), /killed/);
   await assertEnded('(2) an aborted WebAssembly loop', before);
   // (4): the case's process exits by itself.
   break;
@@ -306,8 +307,8 @@ case 'calls': {
   for (const when of ['sync', 'microtask', 'after start']) {
     const controller = new AbortController();
     const facet = host.open({ tag: `abort-${when}` });
-    if (when === 'after start') await facet.submit(function ready() { return 1; }, null);
-    const pending = facet.submit(spin, null, { signal: controller.signal });
+    if (when === 'after start') await facet.submit(facetTaskSource("function ready() { return 1; }"), null);
+    const pending = facet.submit(facetTaskSource("function spin() { for (;;) { /* never yields */ } }"), null, { signal: controller.signal });
     if (when === 'sync') controller.abort(new Error('killed'));
     else queueMicrotask(() => controller.abort(new Error('killed')));
     await assert.rejects(within(pending, 10_000, `an abort ${when}`), /killed/, `(6) an abort ${when} ends the call`);
@@ -318,7 +319,7 @@ case 'calls': {
     const facet = host.open({ tag: 'abort-compile' });
     const big = (await import('node:fs')).readFileSync(new URL('../../packages/worker/wasm/python/python.wasm', import.meta.url));
     const image = big.buffer.slice(big.byteOffset, big.byteOffset + big.byteLength);
-    const pending = facet.submit(spin, null, { signal: controller.signal, wasmModules: { 'python.wasm': image } });
+    const pending = facet.submit(facetTaskSource("function spin() { for (;;) { /* never yields */ } }"), null, { signal: controller.signal, wasmModules: { 'python.wasm': image } });
     setTimeout(() => controller.abort(new Error('killed')), 1);
     await assert.rejects(within(pending, 10_000, 'an abort while compiling'), /killed/, '(6) an abort while the modules compile ends the call');
   }
@@ -330,8 +331,8 @@ case 'calls': {
     const invalid = new Uint8Array([0, 97, 115, 109, 9, 9, 9, 9]).buffer;
     const facet = host.open({ tag: 'modules' });
     const both = function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); };
-    await assert.rejects(facet.submit(both, null, { wasmModules: { a: valid, b: invalid } }), /./, '(6) an invalid module fails the call');
-    assert.deepEqual(await facet.submit(both, null, { wasmModules: { a: valid, b: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer } }),
+    await assert.rejects(facet.submit(facetTaskSource("function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); }"), null, { wasmModules: { a: valid, b: invalid } }), /./, '(6) an invalid module fails the call');
+    assert.deepEqual(await facet.submit(facetTaskSource("function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); }"), null, { wasmModules: { a: valid, b: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer } }),
       ['a', 'b'], '(6) the retry has every module, the one that compiled before included');
     facet.dispose();
   }
@@ -344,8 +345,8 @@ case 'calls': {
       new Uint8Array(buffer).set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
       return kind === 'words' ? new Uint16Array(buffer, 2, 2) : new DataView(buffer, 4, 3);
     };
-    const words = await facet.submit(view, 'words');
-    const bytes = await facet.submit(view, 'data');
+    const words = await facet.submit(facetTaskSource("function view(kind) {\n      const buffer = new ArrayBuffer(16);\n      new Uint8Array(buffer).set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);\n      return kind === 'words' ? new Uint16Array(buffer, 2, 2) : new DataView(buffer, 4, 3);\n    }"), 'words');
+    const bytes = await facet.submit(facetTaskSource("function view(kind) {\n      const buffer = new ArrayBuffer(16);\n      new Uint8Array(buffer).set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);\n      return kind === 'words' ? new Uint16Array(buffer, 2, 2) : new DataView(buffer, 4, 3);\n    }"), 'data');
     assert.ok(words instanceof Uint16Array, `(6) a Uint16Array stays one: ${words?.constructor?.name}`);
     assert.deepEqual([words.length, words.buffer.byteLength, words[0]], [2, 4, 0x0403]);
     assert.ok(bytes instanceof DataView, `(6) a DataView stays one: ${bytes?.constructor?.name}`);

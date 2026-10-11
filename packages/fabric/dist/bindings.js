@@ -25,10 +25,12 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { supervisorEntrypoint, supervisorEntrypointName, stagedBootAssembler } from './composition.js';
+import { stagedBootAssembler } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
+import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS } from './facet-limits.js';
+import { bindingSupervisor } from './supervisor-props.js';
 /**
  * `ctx.exports` — workerd's loopback bag, which the installed
  * @cloudflare/workers-types does not put on `ExecutionContext`. Probed rather
@@ -242,31 +244,31 @@ function mimeTypeForPath(path) {
 const _NIMBUS_LOADED_CODES = new Map();
 const _LOADED_CODES_MAX = 32;
 let _loadedCodesEvictions = 0;
-const HostRouteSchema = z.object({
-    supervisorEntrypoint: z.string().min(1),
-    hostNamespace: z.string().min(1),
-    hostDispatchMethod: z.string().min(1),
+const FacetLimitsSchema = z.object({ cpuMs: z.number().int().nonnegative(), subRequests: z.number().int().nonnegative() });
+const FacetPolicySchema = z.object({
+    kind: z.custom(value => typeof value === 'string' && Object.hasOwn(FACET_LIMITS, value)),
+    limits: FacetLimitsSchema,
 });
+const EntrypointOptionsSchema = z.object({
+    props: z.record(z.string(), z.unknown()).optional(),
+    limits: FacetLimitsSchema.partial().optional(),
+}).passthrough();
 const NimbusLoadedEntrypointPropsSchema = z.object({
     key: z.string().min(1),
     name: z.string().nullable().optional(),
     depth: z.number().int().nonnegative().optional(),
-    supervisor: z.object({
-        doId: z.string().min(1),
-        pid: z.number().int().nonnegative(),
-        writerId: z.string().uuid(),
-        route: HostRouteSchema.optional(),
-        /** The host instance's delivery incarnation (ResidentSupervisorProps). */
-        hostIncarnation: z.string().uuid().optional(),
-    }).optional(),
+    policy: FacetPolicySchema.optional(),
+    options: EntrypointOptionsSchema.optional(),
     /**
-     * Staged-artifact spec, for a ONE-SHOT run. The module map — ~23 MB for
-     * Nimbus's largest stage — is assembled HERE, in this stateless
-     * entrypoint's isolate, on the Worker-Loader cache-miss path, so a
-     * one-shot run never materializes the artifact sources anywhere else.
-     * Validated by the registered assembler.
+     * Staged-artifact spec, for a ONE-SHOT run (runOneShot). The module map —
+     * ~23 MB for Nimbus's largest stage — is assembled HERE, in this stateless
+     * entrypoint's isolate, on the Worker-Loader cache-miss path, so a one-shot
+     * run never materializes the artifact sources anywhere else. Validated by
+     * the registered assembler.
      */
     stage: z.unknown().optional(),
+    /** The staged run's SUPERVISOR binding props, minted into its program here. */
+    supervisor: z.custom((value) => typeof value === 'object' && value !== null).optional(),
 }).passthrough();
 async function materializeNestedRpcRequest(request) {
     const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
@@ -330,13 +332,35 @@ function _genStubId() {
  * in the CURRENT request context. Uses LOADER.get(id, cb) so repeated
  * calls reuse the same dynamic worker rather than spawning new ones.
  */
-function _resolveStubInCurrentContext(outerLoader, key) {
+function _resolveStubInCurrentContext(outerLoader, key, policy) {
     if (key === undefined)
         return null;
     const code = _loadedCodesGet(key);
     if (!code)
         return null;
-    return outerLoader.get(key, async () => code);
+    const carried = policy ?? guestFacetPolicy(code);
+    return outerLoader.get(facetLoaderKey(carried.kind, key, carried.limits), async () => applyFacetLimits(carried.kind, code, carried.limits));
+}
+/**
+ * The policy a loaded entrypoint runs under: the one its props carry, else
+ * the one its stored code carries, else its route's kind (a staged boot is
+ * a process; a handle on someone else's worker is a worker).
+ */
+function entrypointPolicy(props) {
+    if (props.policy !== undefined)
+        return props.policy;
+    const stored = _loadedCodesGet(props.key);
+    if (stored !== undefined)
+        return guestFacetPolicy(stored);
+    const kind = props.stage !== undefined ? 'process' : 'worker';
+    return { kind, limits: facetLimits(kind) };
+}
+function startOptions(policy, options) {
+    const lower = effectiveFacetLimits(policy.kind, options?.limits);
+    return { ...options, limits: {
+            cpuMs: Math.min(policy.limits.cpuMs, lower.cpuMs),
+            subRequests: Math.min(policy.limits.subRequests, lower.subRequests),
+        } };
 }
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export class NimbusLoaderRPC extends WorkerEntrypoint {
@@ -371,7 +395,8 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
         // Validate by loading once in THIS context (fails fast on bad code).
         // The stub is discarded; downstream calls re-load fresh in their
         // own context.
-        outerLoader.load(code);
+        const policy = guestFacetPolicy(code);
+        outerLoader.load(applyFacetLimits(policy.kind, code, policy.limits));
         const key = _genStubId();
         _loadedCodesPut(key, code);
         const ctxExports = shimCtxExports(this.ctx);
@@ -379,7 +404,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
             throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
         }
         return ctxExports.NimbusLoadedWorker({
-            props: { key, depth: this.ctx.props?.depth || 0 },
+            props: { key, policy, depth: this.ctx.props?.depth || 0 },
         });
     }
     /**
@@ -402,7 +427,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
             throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
         }
         return ctxExports.NimbusLoadedWorker({
-            props: { key, depth: this.ctx.props?.depth || 0 },
+            props: { key, policy: guestFacetPolicy(_loadedCodesGet(key)), depth: this.ctx.props?.depth || 0 },
         });
     }
 }
@@ -415,14 +440,14 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
      * SINGLE outer request context (the cross-request-I/O limitation is
      * real — stubs created in one outer request can't be used by another).
      */
-    getEntrypoint(name) {
+    getEntrypoint(name, options) {
         const props = this.ctx.props || {};
         const ctxExports = shimCtxExports(this.ctx);
         if (!ctxExports.NimbusLoadedEntrypoint) {
             throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
         }
         return ctxExports.NimbusLoadedEntrypoint({
-            props: { key: props.key, name: name || null, depth: props.depth },
+            props: { key: props.key, name: name || null, depth: props.depth, policy: props.policy, options },
         });
     }
     /**
@@ -434,15 +459,17 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
      * request context (which is the build-time context), not through
      * this method.
      */
-    getDurableObjectClass(name) {
+    getDurableObjectClass(name, options) {
         const props = this.ctx.props || {};
         const outerLoader = this.env?.LOADER;
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
-        const outer = _resolveStubInCurrentContext(outerLoader, props.key);
+        const outer = _resolveStubInCurrentContext(outerLoader, props.key, props.policy);
         if (!outer)
             throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
-        return outer.getDurableObjectClass(name);
+        const code = _loadedCodesGet(props.key);
+        const policy = props.policy ?? guestFacetPolicy(code);
+        return outer.getDurableObjectClass(name, startOptions(policy, options));
     }
 }
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
@@ -450,38 +477,27 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     _props() {
         return NimbusLoadedEntrypointPropsSchema.parse(this.ctx.props || {});
     }
-    async _supervisorBinding(props) {
-        if (!props.supervisor)
-            return undefined;
-        // The route names the entrypoint too: this stateless hop may run in an
-        // isolate whose composition is not the host's.
-        const name = props.supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName();
-        const factory = supervisorEntrypoint(ctxExportsOf(this.ctx), name ?? undefined);
-        if (!factory) {
-            throw new Error(`Nimbus: ctx.exports.${name ?? '<supervisor entrypoint>'} unavailable`);
-        }
-        return await factory({ props: props.supervisor });
-    }
     async _resolveEntrypoint() {
         const props = this._props();
         const outerLoader = this.env?.LOADER;
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
+        const policy = entrypointPolicy(props);
         let outerStub;
         if (props.stage !== undefined) {
             // Staged artifact: assemble the full module map lazily, ONLY on a
-            // loader miss, in THIS stateless isolate. The facet's SUPERVISOR
-            // binding is created in this request context — the caller holds the
-            // one-shot fetch open for the whole run, which keeps that context
-            // alive.
-            const stage = props.stage;
-            outerStub = outerLoader.get(props.key, async () => {
+            // loader miss, in THIS stateless isolate. Its SUPERVISOR is a binding
+            // minted here, in this request's context, which its host holds open
+            // for the whole run: a stub of the host's carried through this hop
+            // into the program reset the host mid-run.
+            const { stage, supervisor } = props;
+            outerStub = outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
                 const assembled = await stagedBootAssembler()(this.env, stage);
-                assertModuleMapWithinCodeLimit(assembled.modules ?? {});
-                const supervisorBinding = await this._supervisorBinding(props);
-                if (!supervisorBinding)
-                    return assembled;
-                return { ...assembled, env: { SUPERVISOR: supervisorBinding } };
+                assertModuleMapWithinCodeLimit(assembled.modules);
+                if (!supervisor)
+                    return applyFacetLimits(policy.kind, assembled, policy.limits);
+                const SUPERVISOR = bindingSupervisor(supervisor, ctxExportsOf(this.ctx));
+                return applyFacetLimits(policy.kind, { ...assembled, env: { ...assembled.env, SUPERVISOR } }, policy.limits);
             });
         }
         else {
@@ -490,15 +506,15 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
             // loader's own cache. The cache-miss callback fails loud: a spec-free
             // stub is a handle on a worker someone else loaded — re-loading it from
             // code would boot an empty isolate, a silent wrong answer.
-            outerStub = _resolveStubInCurrentContext(outerLoader, props.key)
-                ?? outerLoader.get(props.key, async () => {
+            outerStub = _resolveStubInCurrentContext(outerLoader, props.key, policy)
+                ?? outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
                     throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
                 });
         }
         const outer = await outerStub;
         if (!outer)
             throw new Error('Nimbus: loaded worker code missing');
-        return await (props.name ? outer.getEntrypoint(props.name) : outer.getEntrypoint());
+        return await outer.getEntrypoint(props.name ?? undefined, startOptions(policy, props.options));
     }
     /**
      * Relay the inner entrypoint's Response to the caller with a LIVE body.
@@ -577,7 +593,9 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     async fetch(request) {
         const ep = await this._resolveEntrypoint();
         try {
-            const response = await ep.fetch(await materializeNestedRpcRequest(request));
+            // Cancelled with the request it forwards (a staged run its host ended).
+            const forwarded = new Request(await materializeNestedRpcRequest(request), { signal: request.signal });
+            const response = await ep.fetch(forwarded);
             return this._relayNestedRpcResponse(ep, response);
         }
         catch (e) {

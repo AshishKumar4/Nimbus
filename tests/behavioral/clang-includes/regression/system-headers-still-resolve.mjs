@@ -36,11 +36,11 @@ a.check('compile + link with stdio/stdlib/string succeeds', !/error:/i.test(out1
 a.check('no "not found" for system headers', !/file not found/i.test(out1),
   JSON.stringify(out1.slice(-400)));
 
-const rr = await t.run('./s ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./s', 30_000);
 const out2 = stripAnsi(rr.output);
 a.check('./s prints expected concat', /OK stdio\+stdlib\+string len=19/.test(out2),
   JSON.stringify(out2.slice(-300)));
-a.check('./s exits 0', /RUN_EXIT=0/.test(out2), JSON.stringify(out2.slice(-200)));
+a.check('./s exits 0', rr.exitCode === 0, JSON.stringify(out2.slice(-200)));
 
 await t.close();
 const sum = a.summary();

@@ -6,10 +6,9 @@
  * repeated allocation (which shows up in flame graphs of hot paths
  * like sqlite-vfs writeFile and the WebSocket terminal frame decoder).
  *
- * Use these everywhere instead of `new TextEncoder()` / `new TextDecoder()`
- * in the supervisor isolate. Facet-isolate code-strings (e.g. inside
- * generateGitNetworkFacetCode) cannot import this module and must keep
- * their inline allocations — those copies are justified.
+ * Use these everywhere instead of `new TextEncoder()` / `new TextDecoder()`,
+ * facet bundles included. Facet code that is a string, not a bundle, cannot
+ * import this module and keeps its inline allocations.
  */
 import { SinkWriter } from './byte-stream.js';
 /** Shared UTF-8 encoder. Stateless; safe to share across all callers. */

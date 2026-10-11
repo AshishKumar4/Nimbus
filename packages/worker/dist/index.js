@@ -48,8 +48,6 @@ export { isPreviewHostRequest } from './_shared/preview-host.js';
 // The embeddable form of Nimbus: a durable filesystem and a shell over it,
 // constructed from a host's own SQLite. See ./workspace/nimbus-workspace.ts.
 export { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
-export { base64Utf8, base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, sha256Base64Url, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
-export { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, nimbusAgentAuthCookiePath, nimbusAgentRouteContext, NIMBUS_AGENT_AUTH_COOKIE, NIMBUS_AGENT_AUTH_COOKIE_PURPOSE, NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CF_OAUTH_TOKEN_URL, NIMBUS_CF_OAUTH_USERINFO_URL, NIMBUS_CLOUDFLARE_API, readNimbusAgentCookieSecret, readNimbusCookie, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './session/agent-oauth.js';
 // The worker's composition root: the fabric mints `env.SUPERVISOR` bindings
 // against the SupervisorRPC export below, and assembles 'staged' boot specs
 // through the opencode assembler. One call, module scope, before any request.

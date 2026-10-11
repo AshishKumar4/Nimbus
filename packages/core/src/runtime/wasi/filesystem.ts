@@ -1,6 +1,8 @@
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
-import type { SyscallResult, Errno, WasiImports } from './types.js';
+import type { SyscallResult, Errno, NimbusFsImports, WasiImports } from './types.js';
+import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
 import type { PinnedContent } from './resident-filesystem.js';
+import type { VfsErrorCode } from '../../vfs/vfs-error.js';
 
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
@@ -94,18 +96,34 @@ const S_IFMT = 0o170000, S_IFREG = 0o100000;
 const socketPathPrefixes: readonly string[] = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_ACCEPTED_PATH_PREFIX];
 type Fs = RuntimeFsBridge | RuntimeSynchronousFs;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
-const errno: Record<string, Errno> = {
-  EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EFAULT: 21,
-  EFBIG: 22, EINTR: 27, EINVAL: 28, EIO: 29, EISDIR: 31, ELOOP: 32,
-  EMFILE: 33, ENAMETOOLONG: 37, ENFILE: 41, ENOENT: 44, ENOMEM: 48,
-  ENOSPC: 51, ENOSYS: 52, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
-  EPERM: 63, EPIPE: 64, EROFS: 69, ESPIPE: 70, ESTALE: 72, EXDEV: 75,
-  ENOTCAPABLE: 76,
+/** Every code a VFS backend throws (vfs-error.ts), as its preview1 errno. */
+const VFS_ERRNO: Readonly<Record<VfsErrorCode, Errno>> = {
+  E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EINVAL: 28, EIO: 29, EISDIR: 31,
+  ELOOP: 32, ENAMETOOLONG: 37, ENOENT: 44, ENOSPC: 51, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
+  ENXIO: 60, EPERM: 63, EROFS: 69, ESTALE: 72, EXDEV: 75,
 };
-export function filesystemErrno(error: unknown): Errno {
+const errno: Readonly<Record<string, Errno>> = {
+  ...VFS_ERRNO,
+  // The codec's own refusals, and the session's for a process it no longer holds.
+  EFAULT: 21, EFBIG: 22, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
+  EPIPE: 64, ESPIPE: 70, ESRCH: 71, ENOTCAPABLE: 76,
+};
+/**
+ * A refused filesystem call as the guest's errno. The session's refusal of a
+ * process it no longer holds (process-table.ts noSuchProcess: it restarted,
+ * or ended the process, while the program ran) answers ESRCH and is also
+ * handed to `gone`, so the run can end naming it ({@link processGoneMessage}).
+ */
+export function refusalErrno(error: unknown, gone?: (refusal: string) => void): Errno {
+  if (error instanceof Error && 'code' in error && error.code === 'ESRCH') gone?.(error.message);
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return errno[error.code] ?? errno.EIO;
   if (error instanceof RangeError) return errno.EFAULT;
   return errno.EIO;
+}
+
+/** How a run whose session no longer holds its process ends. */
+export function processGoneMessage(refusal: string): string {
+  return `the session no longer holds this process (${refusal}): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH`;
 }
 export function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R> {
   return value instanceof Promise ? value.then(next) : next(value);
@@ -132,6 +150,12 @@ export interface AuthorityFilesystemOptions {
   /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
   umask?(): number;
   /**
+   * The session answered that it holds no such process: it restarted (or
+   * ended the process) while the guest ran. The call itself gets ESRCH; the
+   * runner names why when the run ends.
+   */
+  processGone?(refusal: string): void;
+  /**
    * Largest regular file a read-only open answers from a resident copy. A
    * guest that reopens the same file for every module (CPython's zipimport,
    * a shell's scripts) then pays one stat per open and one read per revision,
@@ -153,6 +177,22 @@ export interface AuthorityFilesystemOptions {
    * instance and clears them itself (a bash process reused for another fork).
    */
   resident?: Map<string, { revision: number; bytes: Uint8Array }>;
+  /**
+   * The Nimbus filesystem extension's table (NimbusFsImports), filled for
+   * the descriptors and paths this codec answers. A call on any other
+   * descriptor goes to what the table held.
+   */
+  extension?: Partial<NimbusFsImports>;
+}
+
+/**
+ * st_mode of a stat: its type's format bits, and its permission bits, or
+ * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
+ * keeps none, as a node process's fs.stat reports them.
+ */
+export function statMode(st: Pick<RuntimeVfsStat, 'mode' | 'type'>): number {
+  const permissions = st.mode !== undefined ? st.mode & 0o7777 : st.type === 'directory' ? 0o755 : 0o644;
+  return DIRENT_TYPES[direntTypeOfStat(st)].format | permissions;
 }
 
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
@@ -163,12 +203,18 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // through its semantics rather than dropping the entry.
   const hostClose = imports.fd_close;
   const memory = () => new Uint8Array(options.memory().buffer);
+  // Guest memory at a guest pointer is viewed by the constructor, never by
+  // subarray: in a Worker, a WebAssembly.Memory grows past the 128 MiB an
+  // ArrayBuffer may have, and subarray refuses a begin past that ("Invalid
+  // array buffer length", V8's CalculateByteLength against the embedder's
+  // maximum), where the constructor takes any offset within the buffer.
+  const guestBytes = (ptr: number, length: number) => new Uint8Array(options.memory().buffer, ptr, length);
   const view = () => new DataView(options.memory().buffer);
   const u32 = (ptr: number, value: number) => view().setUint32(ptr, value, true);
   const u64 = (ptr: number, value: bigint | number) => view().setBigUint64(ptr, BigInt(value), true);
   const path = (ptr: number, length: number): string => {
     if (ptr < 0 || length < 0 || ptr + length > memory().length) fail('EFAULT');
-    const p = decoder.decode(memory().subarray(ptr, ptr + length));
+    const p = decoder.decode(guestBytes(ptr, length));
     if (p.includes('\0')) fail('EINVAL');
     return p;
   };
@@ -273,20 +319,28 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     u64(ptr + base + 24, BigInt(Math.trunc(st.ctime)) * 1000000n);
     return 0;
   };
+  /** The extension's stat: preview1's filestat, then mode, uid, gid. */
+  const writeNimbusStat = (ptr: number, st: RuntimeVfsStat): Errno => {
+    if (options.abi === 'preview0') fail('ENOSYS');
+    writeStat(ptr, st);
+    u32(ptr + 64, statMode(st)); u32(ptr + 68, st.uid ?? 0); u32(ptr + 72, st.gid ?? 0); u32(ptr + 76, 0);
+    return 0;
+  };
   const guard = <A extends (number | bigint)[]>(
     previous: ((...args: A) => SyscallResult) | undefined,
     body: (fs: RuntimeFsBridge | RuntimeSynchronousFs, ...args: A) => SyscallResult,
     owns?: (args: A) => boolean,
   ): ((...args: A) => SyscallResult) => (...args) => {
     if (!options.fs() || (owns && !owns(args))) return previous ? previous(...args) : 52;
+    const refused = (error: unknown): Errno => refusalErrno(error, options.processGone);
     try {
       const result = body(fs(), ...args);
       if (result instanceof Promise) {
         if (options.synchronous) throw new Error('Filesystem synchronous contract returned a Promise');
-        return result.catch(filesystemErrno);
+        return result.catch(refused);
       }
       return result;
-    } catch (error) { return filesystemErrno(error); }
+    } catch (error) { return refused(error); }
   };
   const owns = (args: readonly (number | bigint)[]) => {
     const e = fds.get(Number(args[0])); return e?.kind === 'authority' || e?.kind === 'resident' || e?.kind === 'preopen';
@@ -323,7 +377,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   const write = (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, ptr: number, count: number, offset: number | null, written: number): SyscallResult => {
     const e = right(fd, 6), vectors = iovs(ptr, count), data = new Uint8Array(vectors.total); let used = 0;
     if (e.kind === 'resident') fail('ENOTCAPABLE');
-    for (const v of vectors.result) { data.set(memory().subarray(v.ptr, v.ptr + v.length), used); used += v.length; }
+    for (const v of vectors.result) { data.set(guestBytes(v.ptr, v.length), used); used += v.length; }
     return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
   };
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {
@@ -508,6 +562,29 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   };
   imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23); return after(stat(fs, fd), st =>
     after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
+  const ext = options.extension;
+  if (ext) {
+    ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
+      { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT'))); });
+    ext.fd_stat = guard(ext.fd_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
+    ext.path_chmod = guard(ext.path_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
+      pathRight(fd, 20);
+      if (!(flags & 1)) fail('ENOTSUP');
+      return after(fs.chmod(at(fd, path(p, n)), mode & 0o7777), () => 0);
+    });
+    ext.path_access = guard(ext.path_access, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
+      pathRight(fd, 18);
+      // Linux's faccessat has no AT_SYMLINK_NOFOLLOW check of a link's own bits: it follows.
+      void flags;
+      return after(fs.access(at(fd, path(p, n)), mode & 7), () => 0);
+    });
+    // A read-only copy (a resident descriptor) has no descriptor on the
+    // authority to change it through.
+    ext.fd_chmod = guard(ext.fd_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, mode: number) => {
+      right(fd, 21);
+      return after(fs.fchmod(handle(fd).handle.id, mode & 0o7777), () => 0);
+    }, owns);
+  }
   imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, a: bigint, m: bigint, flags: number) => { pathRight(fd, 20); 
     const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
     return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));

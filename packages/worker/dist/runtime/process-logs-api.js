@@ -207,7 +207,7 @@ export function wireProcessLogSocketBroadcast(processes, ctx) {
  */
 export function handleProcessesListRequest(processes) {
     const listed = [];
-    for (const p of processes.getAll()) {
+    for (const p of processes.publishedAll()) {
         const snap = processes.logSnapshot(p.pid);
         listed.push({
             pid: p.pid,
@@ -220,6 +220,7 @@ export function handleProcessesListRequest(processes) {
             logBytes: snap?.bytes ?? 0,
             startTime: p.startTime,
             ...execIdField(p),
+            ...(p.restartedFrom === undefined ? {} : { restartedFrom: p.restartedFrom }),
         });
     }
     // Reaped processes with lingering log buffers (exited >60s ago, not

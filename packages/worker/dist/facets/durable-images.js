@@ -6,11 +6,13 @@
  * them, and that is the kernel-space VFS under `.nimbus/images/<sha256>`,
  * content-addressed so a re-drive with the same recipe reads the same bytes.
  *
- * The store is deliberately separate from the process boot-image sweep in
- * `image-store.ts`: that sweep is rooted at live pids and would collect an
- * application's image the moment its process ends — the precise condition a
- * durable spawn exists to survive. Durable images are kept for the
- * application's life and released only by explicit removal.
+ * Its blobs are written and read by the same content-addressed protocol as
+ * process boot images (image-store.ts storeContentBlob, process-fabric.ts
+ * readContentBlob), but they live outside that store's sweep: the sweep is
+ * rooted at live pids and would collect an application's image the moment its
+ * process ends — the precise condition a durable spawn exists to survive.
+ * Durable images are kept for the application's life and released only by
+ * explicit removal.
  *
  * Two blobs per launch: `runner` is the main module's source text,
  * `application` is a JSON payload of `{ modules, env, vfsWasmModules }` plus,
@@ -20,7 +22,8 @@
  * embedder-owned spawn is given them by its own bookkeeping instead.
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { storeContentBlob } from '@nimbus-sh/fabric/image-store.js';
+import { readContentBlob } from '@nimbus-sh/fabric/process-fabric.js';
 /** The directory every durable application's image blobs live under. */
 export const DURABLE_IMAGE_DIR = '.nimbus/images';
 const imagePath = (digest) => `${DURABLE_IMAGE_DIR}/${digest}`;
@@ -43,15 +46,14 @@ export function purgeDurableWorkerImages(vfs, owned, retained) {
 }
 /**
  * Persist a launch's image blobs, minting their digests, for a self-owned
- * durable spawn. Reads and writes as CRED_KERNEL: the directory is session
- * kernel data, not user content, and a durable application's images must not
- * be writable — or deletable — by the user process they belong to.
+ * durable spawn, through the session's image disk (written as CRED_KERNEL):
+ * the directory is session kernel data, not user content, and a durable
+ * application's images must not be writable — or deletable — by the user
+ * process they belong to.
  */
-export async function persistDurableWorkerImage(vfs, workerCode, payload) {
-    const kernel = vfs.as(CRED_KERNEL);
-    kernel.mkdir(DURABLE_IMAGE_DIR, { recursive: true });
-    const runner = await sha256Hex(workerCode);
-    kernel.writeFile(imagePath(runner), workerCode);
+export async function persistDurableWorkerImage(blobs, workerCode, payload) {
+    blobs.mkdirp(DURABLE_IMAGE_DIR);
+    const runner = await storeContentBlob(blobs, workerCode, imagePath);
     // Optional members are omitted rather than written null so an unchanged
     // launch keeps the digest it had before the member existed.
     const applicationPayload = JSON.stringify({
@@ -62,28 +64,24 @@ export async function persistDurableWorkerImage(vfs, workerCode, payload) {
         ...(payload.mainModule !== undefined ? { mainModule: payload.mainModule } : {}),
         ...(payload.startArgs !== undefined ? { startArgs: payload.startArgs } : {}),
     });
-    const application = await sha256Hex(applicationPayload);
-    kernel.writeFile(imagePath(application), applicationPayload);
-    return { runner, application };
+    const application = await storeContentBlob(blobs, applicationPayload, imagePath);
+    return { runner: runner.digest, application: application.digest };
 }
 /**
  * The default resolver a self-owned durable spawn answers through: read the
- * two blobs the spawn persisted, restore the env, and hand back the launch a
- * re-drive can boot. Returns null only when an image row has gone missing —
- * which a re-drive treats as 'the application is gone', exactly as an
- * embedder-owned launch whose embedder answers null.
+ * two blobs the spawn persisted, each verified against its digest, restore the
+ * env, and hand back the launch a re-drive can boot. Returns null only when an
+ * image row has gone missing — which a re-drive treats as 'the application is
+ * gone', exactly as an embedder-owned launch whose embedder answers null.
  */
 export async function resolveDurableWorkerImage(vfs, recipe) {
     const kernel = vfs.as(CRED_KERNEL);
-    let runnerBytes;
-    let applicationBytes;
-    try {
-        runnerBytes = kernel.readFile(imagePath(recipe.image.runner));
-        applicationBytes = kernel.readFile(imagePath(recipe.image.application));
-    }
-    catch {
+    const { runner: runnerDigest, application: applicationDigest } = recipe.image;
+    if (!kernel.exists(imagePath(runnerDigest)) || !kernel.exists(imagePath(applicationDigest)))
         return null;
-    }
+    const disk = { readFile: (path) => kernel.readFile(path) };
+    const runnerBytes = await readContentBlob(disk, imagePath(runnerDigest), runnerDigest);
+    const applicationBytes = await readContentBlob(disk, imagePath(applicationDigest), applicationDigest);
     const runner = new TextDecoder().decode(runnerBytes);
     const { modules = {}, env = null, vfsWasmModules = undefined, vfsTextModules, mainModule, startArgs, } = JSON.parse(new TextDecoder().decode(applicationBytes));
     // The recipe's own record of the main module wins when the blob predates

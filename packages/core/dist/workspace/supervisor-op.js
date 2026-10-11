@@ -1,4 +1,6 @@
 import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
+import { withRecall } from '../vfs/recall.js';
+import { SUPERVISOR_OPS, supervisorOpLeaves } from './supervisor-ops.js';
 import { z } from 'zod';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -88,7 +90,7 @@ function credFor(deps, pid, cred) {
     if (!Number.isInteger(pid) || pid <= 0) {
         throw new Error('supervisor op: filesystem operation requires a valid process pid');
     }
-    return deps.processes ? deps.processes.cred(pid) : CRED_SESSION_USER;
+    return deps.processes ? deps.processes.liveCred(pid) : CRED_SESSION_USER;
 }
 /**
  * The canonical supervisor op set — every operation the supervisor RPC
@@ -108,28 +110,10 @@ function credFor(deps, pid, cred) {
  *
  * An op absent here is not served, on any host. The one other name an
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
- * wrapper around one of these, which the handler unwraps.
+ * wrapper around one of these, which the handler unwraps. The names, and
+ * how a resend of each is met, are SUPERVISOR_OP_TABLE (supervisor-ops.ts).
  */
-export const SUPERVISOR_OPS = [
-    'readFile', 'readFileBytes', 'writeFile', 'writeFileStat', 'stat', 'lstat',
-    'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
-    'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink', 'fsLinkLeadsTo',
-    'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
-    'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
-    'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
-    'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream', 'openWaveWriter',
-    'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort', 'allocatePort',
-    'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
-    'reportRuntimeCode',
-    'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
-    'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked',
-    'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
-    'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
-    'replayBoundary', 'netTls', 'outbound', 'stdinFileRead', 'stdinPrepared',
-    'getCachedTarball', 'putCachedTarball', 'getPackument',
-    'cacheResult',
-];
+export { SUPERVISOR_OPS };
 /**
  * An asynchronous read that meets bytes still being imported (N17) waits for
  * them and reads again; a synchronous caller would have had EIO.
@@ -157,14 +141,13 @@ export const SUPERVISOR_OP_ROUTES = {
     fsAcquire: { method: '_rpcFsAcquire', args: [0, 1, 2, 'pid'] },
     fsAcquired: { method: '_rpcFsAcquired', args: [0, 1, 2, 'pid'] },
     fsList: { method: '_rpcFsList', args: [0, 1, 'pid'] },
+    fsListTree: { method: '_rpcFsListTree', args: [0, 1, 'pid'] },
     fsStorageGrant: { method: '_rpcFsStorageGrant', args: [0, 1, 2, 'pid'] },
     wsOpen: { method: '_rpcWsOpen', args: [0, 1, 2, 3, 'pid'] },
     wsPoll: { method: '_rpcWsPoll', args: [0, 1, 'pid'] },
     wsSend: { method: '_rpcWsSend', args: [0, 1, 2, 'pid'] },
     wsClose: { method: '_rpcWsClose', args: [0, 1, 2, 'pid'] },
     fsReadBatch: { method: '_rpcFsReadBatch', args: [0, 'pid'] },
-    fsAppend: { method: '_rpcFsAppend', args: [0, 'writerId', 1, 2, 3, 'pid'] },
-    fsAppendAck: { method: '_rpcFsAppendAck', args: ['writerId', 0, 1, 'pid'] },
     writeBatch: { method: '_rpcWriteBatch', args: [0, 'pid'] },
     putRegistryEntries: { method: '_rpcPutRegistryEntries', args: [0] },
     prefetch: { method: '_rpcPrefetch', args: [0, 1] },
@@ -178,7 +161,7 @@ export const SUPERVISOR_OP_ROUTES = {
     cpSpawn: { method: '_rpcCpSpawn', args: [0] },
     cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0, 1] },
     cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
-    cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid', 'writerId'] },
+    cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid', 'writerId', 3] },
     stdinFileRead: { method: '_rpcStdinFileRead', args: [0, 1, 2, 'pid'] },
     stdinPrepared: { method: '_rpcStdinPrepared', args: ['pid', 'run'] },
     getCachedTarball: { method: '_rpcGetCachedTarball', args: [0, 'pid', 'run'] },
@@ -199,6 +182,7 @@ export const SUPERVISOR_OP_ROUTES = {
     awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
     cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
+    hostLost: { method: '_rpcHostLost', args: [0, 1] },
     hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
     hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
     // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
@@ -241,7 +225,7 @@ const NATIVE_OPS = {
     // A process's descriptors are O_SYNC here: each write is answered with what
     // the store did (SqliteVFS holds none of its appends), so a refusal is that
     // write's, and a delivered write's receipt records its outcome.
-    fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }),
+    fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
     fsRead: (e, t) => {
         const length = numberArg(e, 2);
         return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
@@ -262,8 +246,20 @@ const NATIVE_OPS = {
     fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
     fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
     fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
-    fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({ includeMissingAncestors: z.boolean().optional() }).optional().parse(e.args?.[1])),
+    fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
+        includeMissingAncestors: z.boolean().optional(),
+        delegate: z.object({
+            reads: z.boolean(),
+            inos: z.number().int().nonnegative().optional(),
+            bytes: z.number().int().nonnegative().optional(),
+        }).optional(),
+    }).optional().parse(e.args?.[1])),
     fsReleaseExclusiveMutation: (e, t) => fsFor(e, t).releaseExclusiveMutation(stringArg(e, 0)),
+    // A delegation's holder: its next recall (a long poll), and its answer to one.
+    fsAwaitRecall: (e, t) => fsFor(e, t).awaitRecall(stringArg(e, 0), z.number().int().nonnegative().optional().parse(e.args?.[1])),
+    fsRecalled: (e, t) => fsFor(e, t).recalled(stringArg(e, 0), z.enum(['share', 'revoke']).parse(e.args?.[1])),
+    // Its held writes published, before an effect of its goes out past the session's gate.
+    fsPublished: (e, t) => fsFor(e, t).published(z.object({ escape: z.boolean().optional() }).optional().parse(e.args?.[0])),
     readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
     stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
     lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
@@ -294,9 +290,12 @@ const NATIVE_OPS = {
             return { revision };
         }
     },
-    mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
-    rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
-    unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
+    mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), {
+        ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1]),
+        ...leaseOf(e),
+    }),
+    rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0]), leaseOf(e)),
+    unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0]), leaseOf(e)),
     rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
     symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
     access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
@@ -317,37 +316,76 @@ const NATIVE_OPS = {
         let admit;
         let mountReach;
         if (fence !== undefined) {
+            if (t.deliveries !== undefined && e.pid !== undefined)
+                t.bridge(e.pid, e.cred);
             if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
                 throw Object.assign(new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'), { code: 'ESTALE' });
             }
-            t.bridge(e.pid, e.cred);
             const admission = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt);
             admit = admission.check;
             mountReach = admission.reach;
         }
-        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach });
+        const sequence = fence === undefined || e.pid === undefined ? undefined : processWaveSequence(e.pid, fence);
+        const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence, turn: t.turn }));
+        // A fenced wave is its epoch's until it settles: retiring the epoch waits for it.
+        return fence === undefined || t.deliveries === undefined || e.pid === undefined ? applying : t.deliveries.applyingWave(e.pid, fence.writer, applying);
     },
     // A write-wave epoch for the live process that asks, on this instance:
     // the only writer identity a fenced writeBatchStream is admitted under.
     // Repeating it is harmless: an unused epoch admits nothing and expires.
-    openWaveWriter: (e, t) => {
+    // A writer gave a wave of an epoch up: the epoch admits nothing more. Repeating it is harmless.
+    retireWaveWriter: (e, t) => {
         if (t.deliveries === undefined)
-            throw new Error("supervisor op: 'openWaveWriter' is not served by this host");
+            return;
+        if (e.pid === undefined)
+            throw new Error('supervisor op: retireWaveWriter names no process');
+        t.bridge(e.pid, e.cred);
+        return t.deliveries.retireWaveWriter(e.pid, stringArg(e, 0));
+    },
+    openWaveWriter: (e, t) => {
+        // A host that delivers in process fences nothing: no epoch (null), and waves go unfenced.
+        if (t.deliveries === undefined)
+            return { writer: null };
         if (e.pid === undefined)
             throw new Error('supervisor op: openWaveWriter names no process');
         t.bridge(e.pid, e.cred);
         return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
     },
-    stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
-    stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
+    stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, bytesArg(e, 0)),
+    stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, bytesArg(e, 0)),
 };
+/**
+ * A sequenced wave's numbering, under the key its process's writer is kept
+ * by: `${pid}:${writer}`. A sequenced writer is its process's epoch: its
+ * cursor answers a re-sent op, never applies it twice, and a drain of the
+ * process's log after it is gone (journalDrainSession) numbers against the
+ * same cursor its own waves moved.
+ */
+export function processWaveSequence(pid, fence) {
+    return fence.seq === undefined ? undefined : { writer: `${pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid };
+}
+/**
+ * The session a gone process's write log (process-fs-journal.ts) is drained
+ * into, in the session itself: `fs` is its credential's bridge, and with no
+ * transport between there is no fence; each wave is numbered under the
+ * writer the process gave it.
+ */
+export function journalDrainSession(fs, pid) {
+    return {
+        openWriter: async () => crypto.randomUUID(),
+        writeBatchStream: (stream, fence) => {
+            const sequence = fence === undefined ? undefined : processWaveSequence(pid, fence);
+            return fs.writeStream(stream, sequence === undefined ? {} : { sequence });
+        },
+    };
+}
 export const SUPERVISOR_NATIVE_OPS = new Set(Object.keys(NATIVE_OPS));
 /** The same two tables, keyed by the raw op string an envelope carries. */
 const NATIVE_BY_OP = NATIVE_OPS;
 const ROUTE_BY_OP = SUPERVISOR_OP_ROUTES;
 /**
  * Exported so the session's `supervisorBridge` — used by RPC bodies the
- * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
+ * envelope delegates back to (fsOpen, writeBatch, …) — is the
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(deps) {
@@ -366,7 +404,6 @@ export function createSupervisorBridgeStore(deps) {
             }
             return lease.fs;
         },
-        forget: (pid) => authority.releaseProcess(pid),
         rewind: async (pid) => { await authority.rewindProcess?.(pid); },
         dispose: async () => {
             await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));
@@ -384,6 +421,7 @@ export function createSupervisorOpHandler(deps) {
         readLease: deps.readLease ?? ((_bytes, read) => read()),
         hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
         deliveries: deps.deliveries,
+        turn: deps.turn,
     };
     const extend = deps.extend ?? {};
     const perform = (op, envelope) => {
@@ -410,15 +448,25 @@ export function createSupervisorOpHandler(deps) {
         const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
         return Reflect.apply(method, host, args);
     };
-    const serve = (op, envelope) => deps.observe
-        ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
+    // A process's call that meets another holder's delegation waits for its
+    // recall and runs again (withRecall): this dispatch is asynchronous, so no
+    // process call is refused for one.
+    const answer = (op, envelope) => deps.observe
+        ? deps.observe(envelope, () => withRecall(() => perform(op, envelope))) : withRecall(() => perform(op, envelope));
+    // What a process makes visible outside the session leaves at its output
+    // gate, as the rest of its output does: in the order it made it, once what
+    // it wrote is published (supervisorOpLeaves).
+    const serve = (op, envelope) => {
+        const pid = envelope.pid;
+        return deps.processes !== undefined && pid !== undefined && supervisorOpLeaves(op)
+            ? deps.processes.releaseOutput(pid, () => answer(op, envelope))
+            : answer(op, envelope);
+    };
     /**
-     * A mutation delivered exactly once (supervisor-delivery.ts), checked in
-     * the order that makes a repeat safe: the delivery was minted for THIS
-     * instance — a restarted one refuses its predecessor's, permanently, since
-     * it holds none of its receipts or descriptors — then the process is live
-     * and is who it says, before any receipt answers for it, and only then the
-     * receipt, or the mutation.
+     * A mutation delivered exactly once (supervisor-delivery.ts). Refuse a
+     * missing process before its stale binding. A live process's delivery must
+     * still name THIS instance before any receipt answers: a restarted one
+     * holds none of its predecessor's receipts or descriptors.
      */
     const deliver = (envelope, span) => {
         const deliveries = deps.deliveries;
@@ -435,15 +483,13 @@ export function createSupervisorOpHandler(deps) {
             'nimbus.operation_id': delivery.data.id,
             'nimbus.host_incarnation': delivery.data.hostIncarnation,
         });
-        if (delivery.data.hostIncarnation !== deliveries.incarnation) {
-            throw Object.assign(new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`), { code: 'ESTALE' });
-        }
         const pid = envelope.pid;
         if (pid === undefined)
             throw new Error(`supervisor op: a delivered ${op} names no process`);
-        // The process's own bridge, which is what refuses a pid that does not
-        // exist or has been released (ESTALE), and a cred riding a pid.
         tools.bridge(pid, envelope.cred);
+        if (delivery.data.hostIncarnation !== deliveries.incarnation) {
+            throw Object.assign(new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`), { code: 'ESTALE' });
+        }
         span.set({ 'nimbus.pid': pid });
         const { receipt, answer } = deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })));
         span.set({ 'nimbus.receipt': receipt });

@@ -28,6 +28,7 @@ assert.deepEqual(result, {
   ok: false,
   committedGroupSequence: 0,
   committedPathCount: 0,
+  committedOps: 0,
   inodes: 0,
   chunks: 0,
   // The committed prefix's receipts: none, since nothing committed.
@@ -35,7 +36,7 @@ assert.deepEqual(result, {
   error: {
     code: 'ERR_WRITE_BATCH_STREAM',
     phase: 'decode',
-    message: 'w7-frame: bad magic, expected NW7\\x03, got 42 41 44 21',
+    message: 'w7-frame: bad magic, expected NW7\\x04, got 42 41 44 21',
   },
 });
 

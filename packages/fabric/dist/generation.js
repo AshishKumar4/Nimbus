@@ -44,12 +44,36 @@ function stateOf(ctx) {
 export function generation(ctx) {
     return states.get(ctx)?.value ?? 0;
 }
-/** Increment + persist the generation counter once per fresh isolate. */
+/**
+ * This incarnation minted pids into `stride` (PID_GEN_STRIDE wide): the
+ * persisted counter is raised to it, so the next incarnation's generation,
+ * and its pid range, lies past every pid minted here.
+ */
+export function raiseGeneration(ctx, stride) {
+    const state = stateOf(ctx);
+    if (stride <= (state.raised ?? state.value))
+        return Promise.resolve();
+    state.raised = stride;
+    return Promise.resolve(ctx.storage.put(GENERATION_KEY, stride)).catch((e) => {
+        console.warn('[nimbus/W9] generation raise failed:', errorText(e));
+    });
+}
+/** What the next incarnation must start past: this one's generation, or the stride its pids reached (raiseGeneration). */
+export function generationFloor(ctx) {
+    const state = states.get(ctx);
+    return Math.max(state?.value ?? 0, state?.raised ?? 0);
+}
+/**
+ * Increment + persist the generation counter once per incarnation: past the
+ * persisted one, and past every pid this context minted before (its
+ * generationFloor, after releaseGeneration).
+ */
 export async function adoptGeneration(ctx) {
     const state = stateOf(ctx);
     if (state.adopted)
         return;
     state.adopted = true;
+    const floor = generationFloor(ctx);
     try {
         const prev = (await ctx.storage.get(GENERATION_KEY));
         // Adopt the persisted truth first, and adopt the bump only after the
@@ -65,7 +89,7 @@ export async function adoptGeneration(ctx) {
         // keeps a pid from generation N from escaping before N is durable, which
         // is why marking this put `allowUnconfirmed` is not a free speedup — see
         // scratchpad/coldstart-s1.md.
-        state.value = typeof prev === 'number' ? prev : 0;
+        state.value = Math.max(typeof prev === 'number' ? prev : 0, floor);
         const next = state.value + 1;
         await ctx.storage.put(GENERATION_KEY, next);
         state.value = next;
@@ -73,6 +97,10 @@ export async function adoptGeneration(ctx) {
     catch (e) {
         console.warn('[nimbus/W9] generation bump failed:', errorText(e));
     }
+}
+/** This context takes a new incarnation: the next adoptGeneration reserves a generation past all of this one's. */
+export function releaseGeneration(ctx) {
+    stateOf(ctx).adopted = false;
 }
 /**
  * Take on a generation without persisting it, and clear the adopted guard so

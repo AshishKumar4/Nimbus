@@ -1,112 +1,54 @@
-// monaco-polish/regression/existing-monaco-probes-preserved — after the
-// monaco-polish wave, in a real Chrome:
-//   - Editor public contract: ensureLoaded, openFile, save, openPalette,
-//     tryHandleFsResult, drainFsQueue
-//   - FileTree public contract: ensureLoaded, tryHandleFsResult,
-//     markDirty, setSelected, drainFsQueue
-//   - Ctrl+P opens the command palette
-//
-// The served-HTML shapes it once also sampled have one owner each: the
-// Monaco options are editor/monaco/new/monaco-vscode-features'; the
-// Ctrl+P / Ctrl+S handlers are ctrl-p-opens-file's and ctrl-s-saves-file's;
-// the FileTree module and the editor-mode tree CSS are
-// file-tree/panel/new/file-tree-renders'; the left-stack layout is
-// file-tree/panel/regression/editor-with-term-layout-still-works'; the fs-*
-// protocol is driven live by editor/monaco/new/fs-protocol-read-write.
-//
-// The Editor and FileTree public-method contract is asserted as OBSERVABLE
-// behavior: the factories produce live runtime objects exposing the
-// required methods as functions, and Ctrl+P actually opens the command
-// palette via Editor.openPalette. An exact-closing-brace source regex was
-// brittle here — the real returns carry a superset of methods
-// (Editor also exposes invalidateFileListCache / openDefaultWelcome /
-// refreshMarkdownPreview; FileTree also exposes subscribeOnce /
-// applyWatchEvent / getWatchStats), so the brace regex missed them even
-// though the asserted methods are all present and wired. The live check
-// is the source of truth for the public contract.
-
-import { mintSession, BASE, makeAsserter, deleteSession } from '../../_driver.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, requestHeaders } from '../../_driver.mjs';
 import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
+import { Nimbus } from '../../../../packages/sdk/src/index.ts';
 
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/regression/existing-monaco-probes-preserved');
-console.log(`monaco-polish/regression/existing-monaco-probes-preserved — ${process.env.BASE}`);
-
 const sid = await mintSession();
-
-// Editor + FileTree public contract — asserted live, not by source regex.
-const EDITOR_METHODS = ['ensureLoaded', 'openFile', 'save', 'openPalette', 'tryHandleFsResult', 'drainFsQueue'];
-const FILETREE_METHODS = ['ensureLoaded', 'tryHandleFsResult', 'markDirty', 'setSelected', 'drainFsQueue'];
-
+const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
+const path = '/home/user/preserved-editor.txt';
+const content = 'persisted through the editor transport\n';
 const browser = await launchBrowser();
 try {
+  await box.files.write(path, 'original');
   const { page, pageErrors } = await openPage(browser, sid);
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  // Editor is the default mode; both factories run during boot.
-  await page.waitForFunction(
-    () => typeof Editor === 'object' && Editor && typeof FileTree === 'object' && FileTree,
-    { timeout: 30_000 },
-  );
-
-  // Editor / FileTree are top-level `const` in a classic <script>, i.e.
-  // lexical bindings — not properties of globalThis. Reference the bare
-  // identifiers so the live runtime objects resolve.
-  const contract = await page.evaluate((editorMethods, fileTreeMethods) => {
-    const shape = (obj, methods) => Object.fromEntries(
-      methods.map((m) => [m, typeof obj?.[m]]),
-    );
-    return {
-      editor: shape(Editor, editorMethods),
-      fileTree: shape(FileTree, fileTreeMethods),
-    };
-  }, EDITOR_METHODS, FILETREE_METHODS);
-
-  for (const m of EDITOR_METHODS) {
-    a.check(`Editor.${m} is a function`,
-      contract.editor[m] === 'function',
-      `Editor.${m} is ${contract.editor[m]} (return-shape changed)`);
-  }
-  for (const m of FILETREE_METHODS) {
-    a.check(`FileTree.${m} is a function`,
-      contract.fileTree[m] === 'function',
-      `FileTree.${m} is ${contract.fileTree[m]} (return-shape changed)`);
-  }
-
-  // Observable wiring: the Ctrl+P keystroke opens the command palette via
-  // the document keydown handler → Editor.openPalette() →
-  // #paletteOverlay.active. We dispatch the exact DOM keydown the user's
-  // Ctrl+P produces (real page.keyboard input is intercepted by Monaco's
-  // own CtrlCmd|KeyP command when its textarea holds focus, so it never
-  // bubbles to the document handler — dispatching the keydown drives the
-  // same handler the user's keystroke reaches when focus is outside the
-  // editor, which is the path this assertion covers).
-  const overlayBefore = await page.evaluate(
-    () => document.getElementById('paletteOverlay')?.classList.contains('active') === true);
-  a.check('command palette closed before Ctrl+P', overlayBefore === false,
-    `paletteOverlay already active before Ctrl+P`);
-
-  await page.evaluate(() => {
-    document.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'p', ctrlKey: true, bubbles: true, cancelable: true,
-    }));
-  });
-  await page.waitForFunction(
-    () => document.getElementById('paletteOverlay')?.classList.contains('active') === true,
-    { timeout: 10_000 },
-  ).catch(() => {});
-  const overlayAfter = await page.evaluate(
-    () => document.getElementById('paletteOverlay')?.classList.contains('active') === true);
-  a.check('Ctrl+P opens the command palette (Editor.openPalette wired)',
-    overlayAfter === true,
-    `paletteOverlay did not activate after Ctrl+P keydown`);
-
-  a.check('no page errors during editor boot + palette open',
-    pageErrors.length === 0,
-    JSON.stringify(pageErrors.slice(0, 2)));
+  await page.waitForFunction(() => window.__nimbusMonacoEditor && document.getElementById('editorTab').textContent.includes('welcome.md'), { timeout: 60_000 });
+  await page.waitForSelector(`.tree-node[data-path="${path}"]`, { visible: true, timeout: 30_000 });
+  a.check('the editor and tree load real session data', true);
+  await page.locator(`.tree-node[data-path="${path}"]`).click();
+  await page.waitForFunction(() => window.__nimbusMonacoEditor.getValue() === 'original', { timeout: 30_000 });
+  a.check('selecting a file opens it and updates the selected tree row', await page.$eval(`.tree-node[data-path="${path}"]`, (element) => element.classList.contains('selected')));
+  await page.evaluate((content) => { window.__nimbusMonacoEditor.setValue(content); window.__nimbusMonacoEditor.focus(); }, content);
+  await page.waitForFunction(() => document.getElementById('editorTab').classList.contains('dirty')
+    && document.querySelector('.tree-node[data-path="/home/user/preserved-editor.txt"]').classList.contains('dirty'), { timeout: 10_000 });
+  a.check('editing marks both the tab and tree row dirty', true);
+  await page.keyboard.down('Control');
+  await page.keyboard.press('s');
+  await page.keyboard.up('Control');
+  await page.click('#btnTreeRefresh');
+  await page.waitForFunction(() => !document.getElementById('editorTab').classList.contains('dirty')
+    && document.querySelector('.tree-node[data-path="/home/user/preserved-editor.txt"]'), { timeout: 30_000 });
+  a.check('save and concurrent tree refresh resolve through the shared connection', await box.files.read(path) === content);
+  await page.click('#btnEditor');
+  await page.click('#editorPanel .monaco-editor');
+  a.check('the command palette starts closed', await page.$eval('#paletteOverlay', (element) => !element.classList.contains('active')));
+  await page.keyboard.down('Control');
+  await page.keyboard.press('p');
+  await page.keyboard.up('Control');
+  await page.waitForSelector('#paletteOverlay.active #paletteInput', { visible: true, timeout: 15_000 });
+  await page.type('#paletteInput', 'welcome.md');
+  await page.waitForSelector('.palette-item', { visible: true, timeout: 15_000 });
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.getElementById('editorTab').textContent.includes('welcome.md')
+    && window.__nimbusMonacoEditor.getValue().includes('Welcome to Nimbus'), { timeout: 30_000 });
+  a.check('Ctrl+P lists files and opening a result reads its content', true);
+  await page.locator(`.tree-node[data-path="${path}"]`).click();
+  await page.waitForFunction((content) => window.__nimbusMonacoEditor.getValue() === content, { timeout: 30_000 }, content);
+  a.check('reopening the edited file reads the saved buffer', true);
+  a.check('no page errors during editor, tree and palette workflows', pageErrors.length === 0, JSON.stringify(pageErrors));
 } finally {
   await browser.close();
   await deleteSession(sid);
 }
-
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+const result = a.summary();
+process.exit(result.fail ? 1 : 0);

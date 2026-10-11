@@ -35,12 +35,12 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-/** Write-back ops the harness holds until a flush: the request does not reach the authority before then. */
-const WRITE_BACKS = new Set(['writeFile', 'writeRange', 'truncate', 'unlink', 'remove', 'fsAppend']);
+/** Write-back ops the harness holds until a flush: the request does not reach the authority before then (a process's waves carry them all). */
+const WRITE_BACKS = new Set(['writeBatchStream']);
 
 await runScenarios(import.meta.path, Object.fromEntries(fixture.cases.map((testCase, index) => [`node-overlay #${index}`, async () => {
   const authority = createAuthority();
-  authority.kfs.mkdir(APP, { recursive: true, mode: 0o755 });
+  await authority.peer.mkdir(APP, { recursive: true, mode: 0o755 });
   const held = [];
   let forwardOp = null;
   const overrides = {};
@@ -68,8 +68,8 @@ await runScenarios(import.meta.path, Object.fromEntries(fixture.cases.map((testC
   };
   for (const [s, step] of testCase.steps.entries()) {
     const where = `step ${s} ${JSON.stringify(step)}`;
-    if (step.auth === 'write') authority.kfs.writeFile(at(step.path), step.bytes);
-    else if (step.auth === 'rm') authority.kfs.unlink(at(step.path));
+    if (step.auth === 'write') await authority.peer.writeFile(at(step.path), step.bytes);
+    else if (step.auth === 'rm') await authority.peer.unlink(at(step.path));
     else if (step.facet === 'write') probe.fs.writeFileSync('/' + at(step.path), step.bytes);
     else if (step.facet === 'rm') probe.fs.unlinkSync('/' + at(step.path));
     else if (step.facet === 'flush') await flush();

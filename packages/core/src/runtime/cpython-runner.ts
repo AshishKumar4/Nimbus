@@ -42,6 +42,8 @@
  */
 
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { CPYTHON_RUN_TASK } from './compiled-bodies.generated.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -64,6 +66,9 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { exists } from '../vfs/vfs.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import type { NimbusFilesystemAuthority } from './os-contracts.js';
+import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -197,33 +202,6 @@ export interface CPythonFacetResult {
   error?: string;
 }
 
-/**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
- */
-async function cpythonRunFacetFn(
-  args: Record<string, unknown>,
-  facetEnv: { SUPERVISOR?: unknown } | undefined,
-): Promise<CPythonFacetResult> {
-  const run = Reflect.get(globalThis, '__cpythonRun') as
-    ((a: unknown) => Promise<CPythonFacetResult>) | undefined;
-  if (typeof run !== 'function') {
-    return {
-      stdout: '', stderr: '', exitCode: 127,
-      error: 'cpython preamble missing: __cpythonRun not in scope',
-    };
-  }
-  const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
-    ((s: unknown) => void) | undefined;
-  const supervisor = facetEnv && facetEnv.SUPERVISOR;
-  // Published where the boot re-adopts it after the mount: adopting only here
-  // would be undone by __wasiInitFS, which clears it on purpose.
-  if (supervisor) Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-  adopt?.(supervisor);
-  return run(args);
-}
-
 
 /**
  * Start a program that outlives the invocation, and report where it went.
@@ -242,10 +220,14 @@ export type CPythonResidentStart = (spawn: {
   command: string;
   /** The launching command's process: the resident carries its exec id. */
   invokerPid: number;
+  signal: AbortSignal;
+  write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }) => Promise<CPythonFacetResult>;
 
 export function makeCPythonRunnerFactory(deps: {
   facets: FacetHost;
+  filesystem: NimbusFilesystemAuthority;
+  processes: SessionProcessSupervisor;
   /** The workspace's network: `pip` reaches PyPI through its egress. */
   network: WorkspaceNetwork;
   /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
@@ -387,7 +369,8 @@ export function makeCPythonRunnerFactory(deps: {
       if (!userEnv.SSL_CERT_FILE && cacertVfs) userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
 
       const facetArgs = {
-        userCode: `${prelude}\n${userCode}`,
+        bootstrapCode: prelude,
+        userCode,
         pyArgv,
         userEnv,
         progName,
@@ -419,7 +402,7 @@ export function makeCPythonRunnerFactory(deps: {
         const command = [binName, ...argv].map((part) =>
           (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
         const spawnResult = await deps.startResident(
-          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid });
+          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
         if (spawnResult.stdout) ctx.stdout.write(spawnResult.stdout);
         if (spawnResult.stderr) ctx.stderr.write(spawnResult.stderr);
         return spawnResult.exitCode;
@@ -428,7 +411,12 @@ export function makeCPythonRunnerFactory(deps: {
       // Opened per invocation, not cached: the supervisor capability is bound
       // to this process's pid when the facet opens, so one held across calls
       // would hand every later caller the first caller's write credential.
-      const facet = deps.facets.open({
+      const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin' });
+      facetArgs.supervisorPid = stdio.pid;
+      let exitCode = 1;
+      let facet: import('./facet-host.js').Facet | null = null;
+      try {
+      facet = deps.facets.open({
         // The variant is in the tag because a host's constructor-time wasm
         // fingerprint is name:length:first-byte:last-byte, not a content hash.
         // Two variants differ by megabytes so they would not collide today, but
@@ -439,34 +427,30 @@ export function makeCPythonRunnerFactory(deps: {
         // Never absent. Without the capability the facet reads its seed and can
         // never write anything back — the program appears to run and its output
         // never reaches the session.
-        syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
+        syscalls: stdio.syscalls,
         preamble: buildCPythonPreamble(),
         wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
       });
 
-      let result: CPythonFacetResult;
-      try {
-        result = await facet.submit(cpythonRunFacetFn, facetArgs, {
-          timeoutMs: 120_000,
-          // A kill or Ctrl-C ends the facet too, where the host can.
-          signal: ctx.signal,
+        const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
+          signal: stdio.signal,
         });
+        exitCode = result.error ? result.exitCode || 1 : result.exitCode;
+        if (result.error) await ctx.stderr.write(`${binName}: ${result.error}\n`);
+        return exitCode;
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
-        if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
+        if (stdio.signal.aborted) {
+          // What it may have lost is said however it ended (unsettledEnd).
+          ctx.stderr.write(unsettledNoteOf(e));
+          return exitCode = exitCodeForAbortSignal(stdio.signal);
+        }
         ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
         return 1;
       } finally {
-        facet.dispose();
+        facet?.dispose();
+        stdio.finish(exitCode);
       }
-
-      if (result.stdout) ctx.stdout.write(result.stdout);
-      if (result.stderr) ctx.stderr.write(result.stderr);
-      if (result.error) {
-        ctx.stderr.write(`${binName}: ${result.error}\n`);
-        return result.exitCode || 1;
-      }
-      return result.exitCode;
     };
   };
 }

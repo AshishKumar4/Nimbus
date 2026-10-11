@@ -8,7 +8,8 @@
  * rule, from the namespace and the module closure, without reading file
  * contents except a few package.json files:
  *
- *   package-json   every package.json
+ *   package-json   every package.json (a one-shot, which plans no listing,
+ *                  holds them from copies: manager.ts _installedManifests)
  *   project        the working tree, minus dependency, VCS and build-cache dirs
  *   convention     config and lockfile names in the working dir and above it
  *   package-data   non-code files under 256 KiB in every package the closure uses
@@ -64,6 +65,10 @@ function parentOf(k) {
 }
 function baseOf(k) {
     return k.slice(k.lastIndexOf('/') + 1);
+}
+/** The `package-json` rule: a package.json anywhere but in a git directory. */
+export function isManifestKey(k) {
+    return baseOf(k) === 'package.json' && !k.split('/').includes('.git');
 }
 /** The package directory a path sits in: up to the name after its last node_modules. */
 export function packageRootOf(k) {
@@ -438,7 +443,7 @@ export async function planFacetData(source, input) {
             if (exact.get(k) === true)
                 seenFiles.add(k);
             const name = baseOf(k);
-            if (name === 'package.json' && !segs.includes('.git')) {
+            if (isManifestKey(k)) {
                 take(entry, 'package-json');
                 continue;
             }

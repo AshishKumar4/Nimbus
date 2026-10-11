@@ -147,6 +147,7 @@ const bundle = await importWorkerBundle({
   'packages/fabric/src/composition.ts': ['adoptCtxExports', 'composeFabric'],
   // The facet's id hashes its code, and this graph's copy of that code is its own.
   'packages/worker/src/facets/oxc-transform.ts': ['OXC_FACET_WORKER_ID'],
+  'packages/fabric/src/facet-limits.ts': ['facetLoaderKey'],
 });
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
 bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
@@ -204,7 +205,7 @@ bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
   const terminalWrites = [];
   const host = {
     ctx: sessionCtx,
-    env: { LOADER: { ...sessionWorld.loader, get: (id, config) => (id === bundle.OXC_FACET_WORKER_ID ? sessionProbe.env.LOADER.get(id) : sessionWorld.loader.get(id, config)) }, ASSETS },
+    env: { LOADER: { ...sessionWorld.loader, get: (id, config) => (id === bundle.facetLoaderKey('transform', bundle.OXC_FACET_WORKER_ID) ? sessionProbe.env.LOADER.get(id) : sessionWorld.loader.get(id, config)) }, ASSETS },
     processes: sessionProcesses,
     portRegistry: new PortRegistry(),
     sqliteFs: null,
@@ -238,7 +239,7 @@ bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
   embedderProcesses.setPidBase(PID_GEN_STRIDE);
   const composed = bundle.composeFacetManager({
     ctx: embedderCtx,
-    env: { LOADER: { ...embedderWorld.loader, get: (id, config) => (id === bundle.OXC_FACET_WORKER_ID ? embedderProbe.env.LOADER.get(id) : embedderWorld.loader.get(id, config)) }, ASSETS },
+    env: { LOADER: { ...embedderWorld.loader, get: (id, config) => (id === bundle.facetLoaderKey('transform', bundle.OXC_FACET_WORKER_ID) ? embedderProbe.env.LOADER.get(id) : embedderWorld.loader.get(id, config)) }, ASSETS },
     processes: embedderProcesses,
     portRegistry: new PortRegistry(),
     vfs,
@@ -269,7 +270,7 @@ bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
   assert.deepEqual(out1, [{ code: 'T(export const a = 1;)', map: '', warnings: [] }]);
   assert.deepEqual(sessionProbe.reached, embedderProbe.reached, 'both reached the same loader id, facet and payload');
   assert.deepEqual(sessionProbe.reached.map((r) => r[0]), ['loader.get', 'facets.get', 'transformMany']);
-  assert.equal(sessionProbe.reached[0][1], bundle.OXC_FACET_WORKER_ID);
+  assert.equal(sessionProbe.reached[0][1], bundle.facetLoaderKey('transform', bundle.OXC_FACET_WORKER_ID), 'the transform facet\'s code is cached under the transform policy');
   assert.equal(sessionProbe.reached[1][1], bundle.OXC_FACET_WORKER_ID);
 
   // (d) and both carry the image-store fallback the factory owns.

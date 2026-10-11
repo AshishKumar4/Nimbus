@@ -54,6 +54,9 @@ export interface TimerContext {
  */
 export const TIMER_REASONS_KEY = 'w1_next_alarm_reasons';
 
+/** How many times {@link Timers.arm} asks before it gives up and throws. */
+const TIMER_ARM_ATTEMPTS = 3;
+
 /**
  * The host instance carrying the per-instance timer chain. The field lives on
  * the embedder's DO instance so one chain serializes every timer-map
@@ -80,8 +83,13 @@ export interface TimerHost {
  * handler awaits external IO takes the normal chain path and keeps its own
  * turn-gated persistence. Requires the `nodejs_compat` (or `nodejs_als`)
  * compatibility flag on workerd.
+ *
+ * The collection closes when the dispatcher folds it. Work a handler started
+ * and did not await (a re-driven launch, waitUntil'd) keeps the context after
+ * the dispatch is done; its later arms take the chain, which runs after the
+ * dispatch's own write, instead of a collection nothing will read again.
  */
-const dispatchArms = new AsyncLocalStorage<Array<{ reason: string; whenMs: number }>>();
+const dispatchArms = new AsyncLocalStorage<{ arms: Array<{ reason: string; whenMs: number }>; open: boolean }>();
 
 /**
  * What one timer handler may return: nothing, or a deadline this reason
@@ -156,10 +164,10 @@ export class Timers {
     // semantics, and the dispatch's own write and re-arm carry it. The
     // setAlarm gate matches the chain path's, so both paths refuse alike
     // on a runtime without alarms.
-    const arms = dispatchArms.getStore();
-    if (arms) {
+    const collection = dispatchArms.getStore();
+    if (collection?.open) {
       if (typeof ctx?.storage?.setAlarm !== 'function') return Promise.resolve(false);
-      arms.push({ reason, whenMs });
+      collection.arms.push({ reason, whenMs });
       return Promise.resolve(true);
     }
     const epoch = host._timerEpoch ?? 0;
@@ -185,9 +193,12 @@ export class Timers {
           written = ctx.storage.put(TIMER_REASONS_KEY, map);
         }
         // Issued in the turn the epoch was checked in: a reset after this
-        // point wipes and disarms after these, never before.
-        setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
-        await written;
+        // point wipes and disarms after these, never before. Awaited after
+        // that: an alarm write that failed is a timer not armed, and the
+        // caller is told so.
+        const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
+        // Joined: either failing is the one failure, and neither is left unhandled.
+        await Promise.all([written, armed]);
         return true;
       } catch (e) {
         console.warn('[nimbus/W1] timers.schedule threw:', errorText(e));
@@ -197,6 +208,19 @@ export class Timers {
     const chained = (host._timerChain ?? Promise.resolve()).then(run, run);
     host._timerChain = chained;
     return chained;
+  }
+
+  /**
+   * {@link schedule}, for a caller that cannot go on unarmed: a refused arm
+   * is retried, up to TIMER_ARM_ATTEMPTS in all, and one still refused
+   * throws, naming the reason. A false from schedule is a timer that will not
+   * fire, so a caller that ignored it would wait forever.
+   */
+  async arm(reason: string, whenMs: number): Promise<void> {
+    for (let attempt = 0; attempt < TIMER_ARM_ATTEMPTS; attempt++) {
+      if (await this.schedule(reason, whenMs)) return;
+    }
+    throw new Error(`Nimbus: the '${reason}' timer could not be armed (${TIMER_ARM_ATTEMPTS} attempts)`);
   }
 
   /**
@@ -266,7 +290,7 @@ async function dispatchBody(
   // Collect schedule requests made inside handler context (see
   // dispatchArms) and fold them into the map below, so an in-dispatch arm
   // neither deadlocks on the chain nor races the write.
-  const arms: Array<{ reason: string; whenMs: number }> = [];
+  const collection = { arms: [] as Array<{ reason: string; whenMs: number }>, open: true };
   try {
     const now = Date.now();
     const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY)) as
@@ -276,7 +300,7 @@ async function dispatchBody(
     const map: Record<string, number> = { ...(existing || {}) };
     const hadMap = Object.keys(map).length > 0;
     if (!hadMap) {
-      dispatchArms.run(arms, () => onLegacyAlarm?.());
+      dispatchArms.run(collection, () => onLegacyAlarm?.());
     } else {
       // Snapshot fireable reasons BEFORE running any of them, so a
       // handler that schedules itself for the next cycle doesn't get
@@ -292,7 +316,7 @@ async function dispatchBody(
         // Unknown reasons silently dropped (forward-compat).
         if (!handler) continue;
         try {
-          const result = await dispatchArms.run(arms, () => handler(now, alarmInfo));
+          const result = await dispatchArms.run(collection, () => handler(now, alarmInfo));
           if (result && typeof result.rearmAt === 'number') {
             map[reason] = result.rearmAt;
           }
@@ -305,7 +329,8 @@ async function dispatchBody(
     // writing it back — or arming for it — would revive what was ended.
     if (!current()) return;
     // Fold the in-dispatch arms, earliest-deadline-first per reason.
-    for (const arm of arms) {
+    collection.open = false;
+    for (const arm of collection.arms) {
       if (!(arm.reason in map) || arm.whenMs < map[arm.reason]) {
         map[arm.reason] = arm.whenMs;
       }
@@ -315,10 +340,11 @@ async function dispatchBody(
     const setAlarmFn = ctx?.storage?.setAlarm;
     if (Object.keys(map).length > 0) {
       const written = ctx.storage.put(TIMER_REASONS_KEY, map);
-      if (typeof setAlarmFn === 'function') {
-        setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
-      }
-      await written;
+      const armed = typeof setAlarmFn === 'function'
+        ? setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)))
+        : undefined;
+      // Joined: a failed write or re-arm surfaces here, in the one warning below.
+      await Promise.all([written, armed]);
     } else if (hadMap) {
       try { await ctx.storage.delete(TIMER_REASONS_KEY); } catch {}
       // No remaining reasons → no setAlarm call → DO becomes
@@ -326,5 +352,7 @@ async function dispatchBody(
     }
   } catch (e) {
     console.warn('[nimbus/W1] timers.dispatch threw:', errorText(e));
+  } finally {
+    collection.open = false;
   }
 }

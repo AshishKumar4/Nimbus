@@ -6,8 +6,7 @@ import {
   TAR_STREAM_PREAMBLE,
   W7_FRAME_PREAMBLE,
 } from '../../packages/worker/src/loaders/generated-workers.ts';
-import { serializeFunction } from '../../packages/fabric/src/vendor/serialize.ts';
-import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
+import { NPM_INSTALL_BATCH_TASK } from '../../packages/worker/src/loaders/compiled-bodies.generated.ts';
 import { parseJavaScriptModule } from '../../packages/core/src/runtime/javascript-ast.ts';
 import { buildCPythonPreamble } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { buildRubyPreamble } from '../../packages/core/src/runtime/ruby-runner.ts';
@@ -15,13 +14,13 @@ import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/
 
 const facetWorkers = [
   {
-    name: 'git network facet + W7 frame preamble',
+    name: 'git network facet (the pack bundle and its worker)',
     source: assembleGitNetworkFacetSource(),
   },
   {
     name: 'npm install-batch facet + tar stream and W7 frame preambles',
     source: assembleLoaderWorkerModuleSource({
-      fnSource: serializeFunction(installPackagesInFacet),
+      fnSource: NPM_INSTALL_BATCH_TASK.source,
       preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
       hasBindings: true,
     }),
@@ -48,9 +47,11 @@ for (const facet of facetWorkers) {
 }
 
 assert.throws(
-  () => parseJavaScriptModule(facetWorkers[0].source + '\nconst CHUNK_SIZE = 1;'),
-  /Identifier 'CHUNK_SIZE' has already been declared/,
-  'the parse guard must detect a facet declaration that collides with its preamble',
+  () => parseJavaScriptModule(facetWorkers[1].source + '\nconst streamTarEntries = 1;'),
+  /Identifier 'streamTarEntries' has already been declared/,
+  'the parse guard must detect a facet declaration that collides with a preamble\'s export',
 );
+// A preamble's private names are its own: W7's CHUNK_SIZE is no name of the facet's.
+assert.doesNotThrow(() => parseJavaScriptModule(facetWorkers[1].source + '\nconst CHUNK_SIZE = 1;'));
 
 console.log(`facet worker parse guard: ok (${facetWorkers.length} assemblies)`);

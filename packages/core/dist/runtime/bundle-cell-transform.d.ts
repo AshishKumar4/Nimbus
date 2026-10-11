@@ -19,13 +19,13 @@
  * Nothing that decides a cell's output may live outside that closure.
  */
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
+import { type ModuleScope, type PackageType } from './module-format.js';
+import type { NodeTypeScript } from './typescript-strip.js';
 /**
- * Bundled ESM this large is lowered in the session (esbuild-service.ts
- * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
- * grows with the module and is never given back (Oxc's wasm reaches 105 MB
- * for workerd's 4.7 MB worker.mjs). The session reads it a statement at a
- * time (async-module-lowering.ts readEsmRecords), in bounded memory, its
- * imports live as everywhere else.
+ * An ES module this large is lowered in the session (async-module-lowering.ts
+ * lowerEsModule, which reads it a statement at a time, in bounded memory)
+ * rather than shipped to the transform facet, which lowers a smaller one the
+ * same way.
  */
 export declare const BUNDLED_ESM_REWRITE_MIN_BYTES: number;
 /**
@@ -61,16 +61,19 @@ export declare function isBundleModuleCandidate(path: string): boolean;
  * gone. So a declaration file is left exactly as it was staged.
  */
 export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
-/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
-export declare function isTypescriptDeclarationFile(path: string): boolean;
-/** Whether a JavaScript file is an ES module: module syntax, and for an extensionless file, a parse. */
-export declare function looksLikeEsm(path: string, src: string): boolean;
+/**
+ * Whether Node runs a staged JavaScript file as an ES module
+ * (module-format.ts isEsModuleFile: its extension, its package scope's
+ * `packageType`, then its syntax), and for an extensionless file whether it
+ * parses as one: a bin script, not data such as a LICENSE.
+ */
+export declare function looksLikeEsm(path: string, src: string, packageType: PackageType): boolean;
 /**
  * Whether the staged cell at `path` goes through the pipeline at all: an ES
  * module or TypeScript source to lower, or CommonJS (`.cjs` included) whose
  * dynamic `import()` calls are the process's.
  */
-export declare function needsBundleCellTransform(path: string, src: string): boolean;
+export declare function needsBundleCellTransform(path: string, src: string, packageType: PackageType): boolean;
 /**
  * Parseable CommonJS standing in for a module esbuild could not transform: it
  * throws the esbuild reason when required, so the failure surfaces at the
@@ -101,7 +104,11 @@ export type BundleCell = {
 export interface BundleCellResult {
     /** The cell's code: CommonJS, the TypeScript emit, or the diagnostic shim. */
     readonly code: string;
+    /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
+    readonly map: string;
     readonly lowered: boolean;
+    /** An ES module lowered for the runtime (lowered too): Node's ES module semantics, whatever its map. */
+    readonly esModule: boolean;
     /**
      * esbuild's verdict was a rejection, and `code` is the shim that reports it.
      * Never stored: a host can report a crash as a rejection, and a stored shim
@@ -110,13 +117,14 @@ export interface BundleCellResult {
     readonly failed: boolean;
 }
 /**
- * Run the session's steps of the pipeline on `source`, staged at `path`.
+ * Run the session's steps of the pipeline on `source`, staged at `path`, for
+ * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
  *
  * This is computation in the caller's isolate proportional to the source —
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export declare function prepareBundleCell(path: string, source: string): BundleCell;
+export declare function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope, stripTypes?: NodeTypeScript | null): BundleCell;
 /**
  * The cell's result from the host's (or the session's) outcome. A transient
  * error is no verdict on the source — the host could not run the transform
@@ -133,7 +141,9 @@ export declare function entryScriptRequest(code: string, parentUrl: string): Esb
 /** A result as a store keeps it: only transforms that succeeded are kept. */
 export interface StoredBundleCell {
     readonly code: string;
+    readonly map: string;
     readonly lowered: boolean;
+    readonly esModule: boolean;
 }
 /**
  * Transform results kept across launches, by content: the worker's
@@ -143,9 +153,12 @@ export interface StoredBundleCell {
 export interface BundleCellResultStore {
     /**
      * The content address of `source` staged at `at` as a `kind`: a module
-     * cell at its bundle path, or an entry script at its URL.
+     * cell at its bundle path, under its package scope's `packageType` (which
+     * decides whether it is an ES module) for a runtime whose ES modules run
+     * in `scope` and whose TypeScript is taken as `stripTypes` says, or an
+     * entry script at its URL.
      */
-    key(kind: 'cell' | 'entry', at: string, source: string): Promise<string>;
+    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope, stripTypes?: NodeTypeScript | null): Promise<string>;
     /** The results held for `keys`; a key the store does not hold is absent. */
     getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
     /**
@@ -198,15 +211,20 @@ export interface BundleCellTransformStats {
  * Only a paced launch stores what it transforms: its writes land on as many
  * turns as they take, where an unpaced one would put every write in one turn.
  * A transient host failure throws (settleBundleCell) before anything of its
- * slice is placed.
+ * slice is placed. Each cell is lowered for the launch's runtime's module
+ * `scope`.
  */
 export declare function transformBundleCells(cells: ReadonlyArray<{
     readonly path: string;
     readonly source: string;
-}>, { host, store, pacer }: {
+    readonly packageType: PackageType;
+}>, { host, store, pacer, scope, stripTypes }: {
     host: BundleCellHost;
     store?: BundleCellResultStore | null;
     pacer?: BundleCellPacer;
+    scope: ModuleScope;
+    /** How Node takes its TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+    stripTypes?: NodeTypeScript | null;
 }, place: (path: string, result: BundleCellResult) => void): Promise<BundleCellTransformStats>;
 /**
  * The entry script as the facet compiles it (entryScriptRequest), read from

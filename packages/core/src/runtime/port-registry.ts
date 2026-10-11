@@ -29,9 +29,11 @@
  */
 
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
+import type { ProcessOutput } from './output-gate.js';
 
 export interface PortEntry {
   port: number;
@@ -103,22 +105,36 @@ const DECODABLE_CONTENT_CODINGS = new Map<string, 'gzip' | 'deflate'>([
  * answer's length describes the GET it stands for, not the body it has none
  * of, so it is not held to it.
  */
-function relayRpcBody(response: Response, method: string): Response {
+function relayRpcBody(response: Response, method: string, gated: TransformStream<Uint8Array, Uint8Array> | null): Response {
   if (response.body === null) return response;
   const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
   // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
   const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-  const pipe = Number.isSafeInteger(length) ? new FixedLengthStream(length) : new TransformStream();
-  return new Response(response.body.pipeThrough(pipe), {
+  const body = Number.isSafeInteger(length)
+    ? (gated === null ? response.body : response.body.pipeThrough(gated)).pipeThrough(new FixedLengthStream(length))
+    : response.body.pipeThrough(gated ?? new TransformStream());
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
   });
 }
 
-function decodeContentCoding(response: Response, port: number, method: string): Response {
+/**
+ * A process's answer body, each piece and its end let out as the rest of
+ * its output is (ProcessOutput.releaseOutput): what it wrote while answering
+ * is published before the piece after it, or its end, is seen.
+ */
+function releasedBody(output: ProcessOutput, pid: number): TransformStream<Uint8Array, Uint8Array> {
+  return new TransformStream({
+    transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
+    flush: () => output.releaseOutput(pid, () => {}),
+  });
+}
+
+function decodeContentCoding(response: Response, port: number, method: string, gated: TransformStream<Uint8Array, Uint8Array> | null): Response {
   const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
-  if (!coding || coding === 'identity' || response.body === null) return relayRpcBody(response, method);
+  if (!coding || coding === 'identity' || response.body === null) return relayRpcBody(response, method, gated);
 
   const format = DECODABLE_CONTENT_CODINGS.get(coding);
   if (!format) {
@@ -136,7 +152,8 @@ function decodeContentCoding(response: Response, port: number, method: string): 
   headers.delete('Content-Encoding');
   // The decoded body has a different length; the Response re-derives it.
   headers.delete('Content-Length');
-  return new Response(response.body.pipeThrough(new DecompressionStream(format)), {
+  const body = gated === null ? response.body : response.body.pipeThrough(gated);
+  return new Response(body.pipeThrough(new DecompressionStream(format)), {
     status: response.status,
     statusText: response.statusText,
     headers,
@@ -160,9 +177,13 @@ export const DELIVERED_ACQUIRE_HEADER = 'X-Nimbus-Vfs-Acquired';
 export class PortRegistry {
   private ports = new Map<number, PortEntry>();
   private facetStubsByPid = new Map<number, RouteableFacetTarget>();
+  /** Why a port's process ended, when it was told (unregisterByPid); until the port is registered again. */
+  private endings = new Map<number, string>();
   /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
   private acquireDeliveredPids = new Set<number>();
   private portWaitersByPid = new Map<number, Set<() => void>>();
+  /** Where a process's answers leave (setOutput). */
+  private output: ProcessOutput | null = null;
 
   /**
    * @param deliveredAcquire What the owner of the filesystem attaches to a
@@ -175,6 +196,16 @@ export class PortRegistry {
   constructor(
     private readonly deliveredAcquire: ((pid: number) => Promise<unknown>) | null = null,
   ) {}
+
+  /**
+   * Let each process's answers out through `output` (its status and headers,
+   * each piece of its body, and the body's end), as the rest of what it makes
+   * visible: once what it wrote before is published. A socket an upgrade
+   * hands it is one nothing there sees, which `output` is told. One slot.
+   */
+  setOutput(output: ProcessOutput | null): void {
+    this.output = output;
+  }
 
   /**
    * Remember the available facet capabilities for a running process.
@@ -199,6 +230,7 @@ export class PortRegistry {
    */
   register(port: number, pid: number): void {
     const target = this.facetStubsByPid.get(pid) ?? null;
+    this.endings.delete(port);
     this.ports.set(port, {
       port,
       pid,
@@ -231,18 +263,27 @@ export class PortRegistry {
     return this.ports.delete(port);
   }
 
-  /** Unregister all ports owned by a specific PID. */
-  unregisterByPid(pid: number): number {
+  /**
+   * Unregister all ports owned by a specific PID. `ending` says why its
+   * process ended, for a request to one of those ports to be told (ended).
+   */
+  unregisterByPid(pid: number, ending?: string): number {
     let count = 0;
     for (const [port, entry] of this.ports) {
       if (entry.pid === pid) {
         this.ports.delete(port);
+        if (ending !== undefined) this.endings.set(port, ending);
         count++;
       }
     }
     this.facetStubsByPid.delete(pid);
     this.acquireDeliveredPids.delete(pid);
     return count;
+  }
+
+  /** Why the process that last served `port` ended, when it was told and nothing has registered the port since. */
+  ended(port: number): string | undefined {
+    return this.endings.get(port);
   }
 
   /** Look up a port entry. */
@@ -434,14 +475,20 @@ export class PortRegistry {
       // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
       // which every hop preserves. A target with no such entrypoint serves
       // HTTP only, and says so rather than dropping the socket.
-      const isWebSocket = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
-      const handler = isWebSocket
+      const handler = isWebSocketUpgradeRequest(request.headers)
         ? entry.facetStub.handleWebSocketRequest
         : entry.facetStub.handleHttpRequest;
       if (!handler) {
         return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
       }
       const response: Response = await handler(forwarded);
+      const output = this.output;
+      // What it wrote before answering is published before anyone sees the
+      // answer; a socket the answer hands over carries what nothing sees.
+      if (output !== null) {
+        if (response instanceof Response && response.webSocket) output.escapeOutput(entry.pid);
+        await output.releaseOutput(entry.pid, () => {});
+      }
 
       if (!(response instanceof Response)) {
         // Defensive: if a facet ever returns something else (JSON
@@ -470,7 +517,7 @@ export class PortRegistry {
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
       // forwards whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
-      return decodeContentCoding(response, port, request.method);
+      return decodeContentCoding(response, port, request.method, output === null || response.body === null ? null : releasedBody(output, entry.pid));
     } catch (error: unknown) {
       // Server-side triage — users see only the 502 body, operators
       // see the full error + stack in Worker logs.

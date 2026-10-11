@@ -41,6 +41,8 @@
  */
 import type { FacetManager } from '../facets/manager.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
+import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 /**
  * Argv long-running detection. Signals we honour:
@@ -58,6 +60,7 @@ export interface RunFreshResult {
     longRunning: boolean;
 }
 export interface RunFreshOpts {
+    output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
     argv?: string[];
     env?: Record<string, string>;
     cwd?: string;
@@ -79,12 +82,9 @@ export interface RunFreshOpts {
      *  notice + /api/processes listing. */
     command?: string;
     /**
-     * G4 (runtime-pkg wave): caller has already allocated a
-     * process supervisor PID for this invocation; runFresh / facetMgr.exec
-     * should reuse it instead of spawning a duplicate. Used by the
-     * .bin handler in src/session/init.ts to keep `ps` showing ONE
-     * row per bin invocation instead of two (the wrapper + the inner
-     * node script).
+     * The caller has already allocated the process supervisor PID for this
+     * invocation (a child_process broker's child, a launch wrapper's process);
+     * runFresh / facetMgr.exec reuse it instead of spawning another.
      */
     skipSpawn?: boolean;
     callerPid?: number;
@@ -92,6 +92,8 @@ export interface RunFreshOpts {
     invokerPid?: number;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /** RuntimeRunOpts.server. */
+    server?: ServerIdentity;
     /** Its launcher writes and ends its stdin (RuntimeRunOpts.stdinWriter). */
     stdinWriter?: boolean;
     bundleProfile?: FacetBundleProfile;
@@ -100,6 +102,12 @@ export interface RunFreshOpts {
     signal?: AbortSignal;
     /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
     launchesServer?: boolean;
+    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    esModule?: boolean;
+    /** RuntimeRunOpts.esModuleMap. */
+    esModuleMap?: string;
+    /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /** A node program's command line (RuntimeRunOpts.node). */
     node?: NodeLaunch;
 }

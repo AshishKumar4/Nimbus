@@ -14,7 +14,7 @@ import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs
 
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __require;',
+  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
 );
 const requireFromFacet = (declareNamespace({ metadata: {}, manifest: {
   'home/user': ['app'],
@@ -46,7 +46,8 @@ assert.equal(mod.path, '/home/user/app');
 assert.deepEqual(mod.exports, {});
 assert.equal(mod.filename, null);
 assert.equal(mod.loaded, false);
-assert.deepEqual(mod.paths, []);
+assert.equal(mod.paths, undefined, 'its paths are set when it loads (Module.prototype.load), as in Node');
+assert.deepEqual(Object.keys(mod), ['id', 'path', 'exports', 'filename', 'loaded', 'children']);
 assert.equal(mod.parent, parent);
 assert.deepEqual(parent.children, [mod], 'a child registers with its parent');
 assert.equal(new Module().path, '.', "dirname('') is '.'");

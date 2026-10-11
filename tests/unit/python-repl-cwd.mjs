@@ -21,6 +21,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plugin } from 'bun';
 import { CPYTHON_PREAMBLE_TAIL } from '../../packages/core/src/runtime/cpython-preamble.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 
 plugin({
   name: 'cloudflare-shims',
@@ -31,7 +33,9 @@ plugin({
     }));
   },
 });
-const { pythonReplStep, pythonReplStepRequestFn } = await import('../../packages/worker/src/runtime/python-repl.ts');
+const { pythonReplStep } = await import('../../packages/worker/src/runtime/python-repl.ts');
+const { PYTHON_REPL_TASK } = await import('../../packages/worker/src/loaders/compiled-bodies.generated.ts');
+const pythonReplStepRequestFn = new Function(`return (${PYTHON_REPL_TASK.source});`)();
 
 if (spawnSync('python3', ['--version'], { encoding: 'utf8' }).status !== 0) {
   console.log('python-repl-cwd: SKIPPED (no host python3)');
@@ -42,20 +46,28 @@ if (spawnSync('python3', ['--version'], { encoding: 'utf8' }).status !== 0) {
 // Each run replays the interpreter's earlier lines, then the new one, and
 // keeps only what the new one printed.
 const ran = [];
+const credential = { uid: 1400, gid: 1500, groups: [1500, 1600], umask: 0o027 };
 const MARK = '__NIMBUS_TEST_MARK__';
 globalThis.__standInRun = (code) => {
   ran.push(code);
   const script = [...globalThis.__session, `import sys; sys.stdout.write("${MARK}"); sys.stderr.write("${MARK}")`, code].join('\n');
   const out = spawnSync('python3', ['-c', script], { encoding: 'utf8', cwd: '/' });
   globalThis.__session.push(code);
-  globalThis.__nimbusPyStdout.push(out.stdout.split(MARK).pop());
-  globalThis.__nimbusPyStderr.push(out.stderr.split(MARK).pop());
+  globalThis.__testWrite('stdout', new TextEncoder().encode(out.stdout.split(MARK).pop()));
+  globalThis.__testWrite('stderr', new TextEncoder().encode(out.stderr.split(MARK).pop()));
   return out.status;
 };
 const stand = `async function __nimbusPyBoot(args) {
+  globalThis.__bootCredential = args.cred;
   globalThis.__session = [];
+  __nimbusPyOutput = globalThis.__wasiSupervisorOutput({
+    stdout: bytes => { const data = __nimbusPyOutputControl ? __nimbusPyOutputControl.feed(bytes) : bytes; globalThis.__visible.stdout += new TextDecoder().decode(data); },
+    stderr: bytes => { globalThis.__visible.stderr += new TextDecoder().decode(bytes); },
+  });
+  globalThis.__testWrite = (stream, bytes) => __nimbusPyOutput[stream+'Bytes'](bytes);
   return { run: async (code) => globalThis.__standInRun(code), flush: async () => {} };
 }`;
+Object.assign(globalThis,{ __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader });
 new Function('globalThis', `${CPYTHON_PREAMBLE_TAIL}\n${stand}`)(globalThis);
 globalThis.__wasiAdoptSupervisor = () => {};
 
@@ -65,16 +77,18 @@ try {
   mkdirSync(join(dir, 'sub'));
   const line = async (cwd, userCode) => {
     ran.length = 0;
-    const body = pythonReplStep({ home: dir, start: { cwd, binName: 'python3' } }, '/py', userCode);
+    globalThis.__visible = {stdout:'',stderr:''};
+    const body = pythonReplStep({ home: dir, cred: credential, start: { cwd, binName: 'python3' } }, '/py', userCode);
     const response = await pythonReplStepRequestFn(
       new Request('https://facet.internal/python-repl-step', { method: 'POST', body: JSON.stringify(body) }),
       { SUPERVISOR: {} },
     );
-    return response.json();
+    return { ...await response.json(), ...globalThis.__visible };
   };
 
   // The first line: the prompt enters the shell's cwd, then runs the line there.
   const first = await line(dir, 'import os\nprint(open("hello.txt").read(), end="")\nprint(os.getcwd())');
+  assert.deepEqual(globalThis.__bootCredential, credential, 'the invoking credential did not reach the preamble boot');
   assert.deepEqual([first.exitCode, first.stdout, first.stderr], [0, `from the cwd\n${dir}\n`, ''], 'the prompt reads a file in its cwd');
   assert.equal(ran.length, 2, 'it entered the cwd, then ran the line');
 

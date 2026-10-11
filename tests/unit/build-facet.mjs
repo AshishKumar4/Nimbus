@@ -115,12 +115,12 @@ try {
     assert.ok(memories.at(-1).buffer.byteLength > 64 * MiB, `${memories.at(-1).buffer.byteLength / MiB} MiB`);
     assert.equal(counts.aborted.length, 0, 'its facet is not aborted while a call on it is in flight');
     const next = new EsbuildService(memoryFs('worker-routes', small.files), { buildHost: host }).build([`/home/user/worker-routes/${small.entry}`], small.options);
-    for (let i = 0; i < 200 && counts.loaderIds.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
-    const [first, fresh] = counts.loaderIds;
+    for (let i = 0; i < 200 && counts.facetNames.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const [first, fresh] = counts.facetNames;
     assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers.sort(), [first, fresh].sort(), 'both generations are in flight, each under its own id');
     assert.equal(loaderLedgerStats(ctx).headroom, DO_DYNAMIC_WORKER_LIMIT - 2);
     await next;
-    assert.equal(counts.loaderIds.length, 2, 'the next build starts a fresh isolate');
+    assert.equal(counts.facetNames.length, 2, 'the next build starts a fresh isolate');
     await slow;
     assert.deepEqual(counts.aborted, [first], 'the retired facet is aborted once its last call is answered');
     assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'and the ledger holds nothing');
@@ -171,7 +171,7 @@ try {
       slice: sliceOf(files), bundlerVersion: 'test', define,
     });
     const pool = await new PrebundlePool(env, ctx).acquire();
-    const before = counts.loaderIds.length;
+    const before = counts.facetNames.length;
     assert.equal(before, 1, 'acquire loads the facet');
     const results = await Promise.all(CASES.map((c) => pool.prebundle(specOf(c))));
     assert.equal(counts.mostPrebundling, PRE_BUNDLE_CONCURRENCY, 'pre-bundles run one at a time');
@@ -195,7 +195,7 @@ try {
     assert.deepEqual([crashed.ok, crashed.errorText], [false, "Nimbus's bundler ran out of stack: a module nests too deeply for it (Maximum call stack size exceeded.)"]);
     const after = await pool.prebundle(specOf(CASES.find((c) => c.specifier === 'cjs-lib')));
     assert.equal(after.ok, true);
-    assert.equal(counts.loaderIds.length, 2, 'the next pre-bundle loads a fresh isolate');
+    assert.equal(counts.facetNames.length, 2, 'the next pre-bundle loads a fresh isolate');
     console.log(`  ok  ${CASES.length} pre-bundles through PrebundlePool: one facet load, one at a time, native rolldown's output; a dying binding fails only its own`);
   }
 
@@ -304,8 +304,8 @@ try {
       assert.ok(warned.splice(0).every((line) => /^\[build-facet\] rolldown's binding died building \/home\/user\/(deep\/a|fine\/b)\.js \(Maximum call stack size exceeded\.\); /.test(line)));
       const later = await within(build(fine, '/home/user/fine/b.js'), 'the next build', object);
       assert.match(later.code, /const y = 2|var y = 2/, 'the next build runs');
-      const [died, fresh] = counts.loaderIds.map((id) => Number(/:g(\d+)$/.exec(id)[1]));
-      assert.equal(counts.loaderIds.length, 2);
+      const [died, fresh] = counts.facetNames.map((id) => Number(/:g(\d+)$/.exec(id)[1]));
+      assert.equal(counts.facetNames.length, 2);
       assert.equal(fresh, died + 1, 'on a fresh isolate');
       assert.ok(counts.aborted.length > 0 && counts.aborted.every((name) => name.endsWith(`:g${died}`)), 'the dead facet is aborted');
     }
@@ -325,7 +325,7 @@ try {
         const sibling = build(fine, '/home/user/fine/b.js');
         const first = await within(build(deep, '/home/user/deep/a.js'), 'the deep build', object);
         assert.match(first.code, /var x = t \+ t/);
-        ctx.facets.abort(counts.loaderIds[0], new Error('aborted under its call'));
+        ctx.facets.abort(counts.facetNames[0], new Error('aborted under its call'));
         assert.match((await within(sibling, 'the aborted sibling', object)).code, /var y = 2/, 'the aborted sibling is built by esbuild');
       } finally {
         console.warn = warn;

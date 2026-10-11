@@ -396,4 +396,70 @@ console.log('require-resolver: createRequire ok');
     ['home/user/app/node_modules/fw/g/a.js', 'home/user/app/node_modules/fw/g/b.js'], "the code's own table first");
   assert.equal(r.bundle['home/user/app/node_modules/clsx/clsx.mjs'], undefined, 'the import branch takes only the room left');
 }
+// A function that passes its first parameter to a require loads what its
+// callers name. @vitejs/plugin-vue resolves the project's compiler so,
+// tryRequire("vue/compiler-sfc", root) through a require createRequire made,
+// and a Vue project's first `vite` and `vite build` failed on what that loads
+// ("Failed to resolve vue/compiler-sfc": vue/compiler-sfc/index.js, then its
+// ./register-ts.js, never staged). Each call is phase 2's, resolved as
+// require() resolves it: an optional load, so past the bound it is left out
+// and the launch goes on.
+{
+  const pluginVue = [
+    'import { createRequire } from "node:module";',
+    'function tryResolveCompiler(root) {',
+    '  const vueMeta = tryRequire("vue/package.json", root);',
+    '  if (vueMeta && vueMeta.version.split(".")[0] >= 3) return tryRequire("vue/compiler-sfc", root);',
+    '}',
+    'const _require = createRequire(import.meta.url);',
+    'function tryRequire(id, from) {',
+    '  try {',
+    '    return from ? _require(_require.resolve(id, { paths: [from] })) : _require(id);',
+    '  } catch (e) {}',
+    '}',
+    'function label(id) { return "[" + id + "]"; }',
+    'function second(options, id) { return require(id); }',
+    'export const notModules = [label("not-a-module"), second("not-a-module-either", "x")];',
+    'export default function vue() { return { configResolved(config) { tryResolveCompiler(config.root); } }; }',
+  ].join('\n');
+  const nm = 'home/user/app/node_modules/';
+  const files = {
+    'home/user/app/vite.config.js': "import vue from '@vitejs/plugin-vue'; export default { plugins: [vue()] };",
+    [nm + '@vitejs/plugin-vue/package.json']: JSON.stringify({ name: '@vitejs/plugin-vue', exports: { '.': './dist/index.mjs' } }),
+    [nm + '@vitejs/plugin-vue/dist/index.mjs']: pluginVue,
+    [nm + 'vue/package.json']: JSON.stringify({
+      name: 'vue', version: '3.5.0', main: 'index.js',
+      exports: { '.': { import: './index.mjs', require: './index.js' }, './compiler-sfc': { import: './compiler-sfc/index.mjs', require: './compiler-sfc/index.js' }, './package.json': './package.json' },
+    }),
+    [nm + 'vue/index.js']: "module.exports = require('./dist/vue.cjs.js');",
+    [nm + 'vue/compiler-sfc/index.js']: "module.exports = require('@vue/compiler-sfc');\nrequire('./register-ts.js');\n",
+    [nm + 'vue/compiler-sfc/index.mjs']: "export * from '@vue/compiler-sfc';\nimport './register-ts.js';\n",
+    [nm + 'vue/compiler-sfc/register-ts.js']: "if (typeof require !== 'undefined') { try { require('@vue/compiler-sfc').registerTS(() => require('typescript')); } catch (e) {} }\n",
+    [nm + '@vue/compiler-sfc/package.json']: JSON.stringify({ name: '@vue/compiler-sfc', main: 'dist/compiler-sfc.cjs.js' }),
+    [nm + '@vue/compiler-sfc/dist/compiler-sfc.cjs.js']: 'exports.parse = () => {}; exports.registerTS = () => {};',
+    [nm + 'not-a-module/package.json']: JSON.stringify({ name: 'not-a-module', main: 'index.js' }),
+    [nm + 'not-a-module/index.js']: 'module.exports = 1;',
+    [nm + 'not-a-module-either/package.json']: JSON.stringify({ name: 'not-a-module-either', main: 'index.js' }),
+    [nm + 'not-a-module-either/index.js']: 'module.exports = 2;',
+  };
+  const vfs = new FakeVfs(files);
+  const entry = nm + 'vite/bin/vite.js';
+  vfs.files.set(entry, '// the bin'); vfs.dirs.add(nm + 'vite'); vfs.dirs.add(nm + 'vite/bin');
+  const roots = [{ path: '/home/user/app/vite.config.js', config: true }];
+  const r = await prefetchForRequire(vfs, '// the bin', '/home/user/app', '/' + entry, undefined, undefined, undefined, roots);
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  for (const path of ['vue/package.json', 'vue/compiler-sfc/index.js', 'vue/compiler-sfc/register-ts.js', '@vue/compiler-sfc/dist/compiler-sfc.cjs.js']) {
+    assert.equal(r.bundle[nm + path], files[nm + path], `what tryRequire("vue/compiler-sfc", root) loads: ${path}`);
+    assert.ok(r.speculative.has(nm + path), `as an optional load: ${path}`);
+  }
+  assert.equal(r.bundle[nm + 'vue/compiler-sfc/index.mjs'], undefined, "require()'s branch, not import()'s");
+  for (const name of ['not-a-module', 'not-a-module-either']) {
+    assert.equal(r.bundle[nm + name + '/index.js'], undefined, `a call of a function whose first parameter reaches no require names no module: ${name}`);
+  }
+  const required = ['home/user/app/vite.config.js', nm + '@vitejs/plugin-vue/dist/index.mjs', entry]
+    .reduce((n, path) => n + vfs.files.get(path).length, 0);
+  const tight = await prefetchForRequire(vfs, '// the bin', '/home/user/app', '/' + entry, required + 100, undefined, undefined, roots);
+  assert.ok(!('kind' in tight), `a load past the bound is no refusal: ${JSON.stringify(tight)}`);
+  assert.equal(tight.bundle[nm + '@vue/compiler-sfc/dist/compiler-sfc.cjs.js'], undefined, 'past the bound, it is left out');
+}
 console.log('require-resolver: speculative dynamic imports ok');

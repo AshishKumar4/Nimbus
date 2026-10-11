@@ -1,5 +1,6 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
+import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
@@ -18,7 +19,7 @@ const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
  * ordinary output and never leaves.
  */
 const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
-const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
+const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional(), control: z.record(z.string(), z.string()).optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
@@ -69,6 +70,7 @@ function buildReplDriver(source) {
 }
 class PythonReplAdapter {
     pool = null;
+    closed = false;
     /** Which interpreter variant the cached pool holds; see ensurePool. */
     poolUsesSci = false;
     deps;
@@ -83,7 +85,19 @@ class PythonReplAdapter {
         return ('Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
             'Type "exit()" or press Ctrl-D to exit.\r\n');
     }
+    async initialize() {
+        const result = await this.push('');
+        if (result.kind === 'output')
+            return result;
+        if (result.kind === 'error')
+            throw new Error(result.stderr.trim());
+        if (result.kind === 'exit')
+            throw new Error(result.stderr?.trim() || `Python REPL startup exited ${result.exitCode}`);
+        throw new Error('Python REPL startup did not finish its driver');
+    }
     push(source) {
+        if (this.closed)
+            return Promise.reject(new Error('Python REPL is closed'));
         const controller = new AbortController();
         const done = this.evaluate(source, controller.signal);
         const active = { controller, done };
@@ -115,17 +129,15 @@ class PythonReplAdapter {
             const message = e instanceof Error ? e.message : String(e);
             return { kind: 'error', stderr: `[python-repl] dispatch failed: ${message}\n` };
         }
-        if (result.stdout.includes(INCOMPLETE_MARKER))
+        if (result.control?.incomplete !== undefined)
             return { kind: 'incomplete' };
-        const exitAt = result.stdout.indexOf(EXIT_MARKER);
-        if (exitAt >= 0) {
-            const rest = result.stdout.slice(exitAt + EXIT_MARKER.length);
-            const code = Number.parseInt(rest.slice(0, rest.indexOf(':')), 10);
+        if (result.control?.exit !== undefined) {
+            const code = Number.parseInt(result.control.exit, 10);
             return {
                 kind: 'exit',
                 exitCode: Number.isFinite(code) ? code : 0,
                 // Whatever the line printed before exiting is still the user's output.
-                stdout: result.stdout.slice(0, exitAt),
+                stdout: result.stdout,
                 stderr: result.stderr,
             };
         }
@@ -142,7 +154,7 @@ class PythonReplAdapter {
         }
         return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
     }
-    close() { return this.interrupt(); }
+    close() { this.closed = true; return this.stop(); }
     resetPool() {
         const pool = this.pool;
         this.pool = null;
@@ -150,6 +162,11 @@ class PythonReplAdapter {
         pool?.dispose();
     }
     async interrupt() {
+        await this.stop();
+        if (!this.closed)
+            await this.initialize();
+    }
+    async stop() {
         const active = this.active;
         active?.controller.abort();
         try {
@@ -183,7 +200,7 @@ class PythonReplAdapter {
         if (!(await vfs.exists(stdlibPath))) {
             throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
         }
-        this.wasmBytes = toArrayBuffer(await vfs.readFile(wasmPath));
+        this.wasmBytes = await vfs.readArrayBufferUncached(wasmPath);
         this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
         const host = getFacetManagerLoaderHost(facetMgr);
         // A prompt where `open(path, "w")` silently does nothing is worse than one
@@ -205,22 +222,22 @@ class PythonReplAdapter {
         };
         const pid = this.deps.pid;
         this.pool = typeof pid === 'number' && pid > 0
-            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid })
+            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, network: host.network, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) })
             // The install-time warm-up has no invoking process. It boots the
             // interpreter and never touches a file, so it asks for no supervisor
             // rather than binding one it cannot authenticate to.
-            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true });
+            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true, network: host.network });
     }
     active = null;
     async submit(userCode, signal) {
         const pool = this.pool;
         if (!pool)
             throw new Error('Python REPL is not initialized');
-        const response = await pool.submitRequest(pythonReplStepRequestFn, new Request('https://facet.internal/python-repl-step', {
+        const response = await pool.submitRequest(PYTHON_REPL_TASK, new Request('https://facet.internal/python-repl-step', {
             method: 'POST',
             body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
             signal,
-        }), { timeoutMs: 60_000 });
+        }));
         if (!response.ok) {
             const failure = PythonFacetFailure.parse(await response.json());
             throw new Error(failure.__nimbusFacetError);
@@ -236,46 +253,15 @@ class PythonReplAdapter {
 export function pythonReplStep(deps, pythonHome, userCode) {
     return {
         userCode,
+        cred: deps.cred,
+        supervisorPid: deps.pid || 0,
+        outputControls: [{ key: 'incomplete', prefix: INCOMPLETE_MARKER }, { key: 'exit', prefix: EXIT_MARKER, suffix: ':' }],
         pythonHome,
         pyArgv: ['python'],
         userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },
         progName: 'python',
         ...(deps.start ? { enter: enterWorkingDirectory(deps.start.binName, deps.start.cwd) } : {}),
     };
-}
-/**
- * Facet-side, request-shaped: serialized with fn.toString() into the
- * pool's fetch entrypoint, so it captures nothing and names no import —
- * __cpythonReplRun is put on globalThis by the preamble, and unlike
- * __cpythonRun it keeps its interpreter between calls. The request body
- * is the step payload the adapter JSON-encodes; the response is the
- * step result. Request transport because it is the pool's only
- * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
- * interpreter at its suspension point.
- */
-export async function pythonReplStepRequestFn(request, facetEnv) {
-    const args = await request.json();
-    if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
-        throw new Error('Python REPL request must contain userCode');
-    }
-    const run = Reflect.get(globalThis, '__cpythonReplRun');
-    if (typeof run !== 'function') {
-        return Response.json({
-            stdout: '', stderr: '', exitCode: 127,
-            error: 'cpython preamble missing: __cpythonReplRun not in scope',
-        });
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where the boot re-adopts it after the mount, because
-    // __wasiInitFS clears the adoption on purpose. Omitting this here — while
-    // cpython-runner's entry had it — is what made the prompt start with no
-    // filesystem it could read.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-    if (typeof adopt === 'function')
-        Reflect.apply(adopt, undefined, [supervisor ?? null]);
-    return Response.json(await run(args));
 }
 export async function runPythonRepl(deps) {
     const adapter = new PythonReplAdapter(deps);

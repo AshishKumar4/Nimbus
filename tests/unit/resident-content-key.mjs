@@ -68,8 +68,8 @@ await runScenarios(import.meta.path, {
     const { authority, probe, fetched, log } = await boot();
     const before = fetched.length;
     const readsBefore = reads(log);
-    authority.kfs.chmod('home/user/app/a.txt', 0o600);
-    authority.kfs.writeFile('home/user/app/c.txt', 'c-bytes');
+    await authority.peer.chmod('home/user/app/a.txt', 0o600);
+    await authority.peer.writeFile('home/user/app/c.txt', 'c-bytes');
     assert.equal(await probe.resume(`${APP}/a.txt`, `${APP}/c.txt`), `${SAME}|c-bytes`);
     assert.equal(fetched.length, before, 'no batch read');
     assert.equal(reads(log), readsBefore, 'no live read');
@@ -77,7 +77,7 @@ await runScenarios(import.meta.path, {
 
   async 'a change of bytes is still a change'() {
     const { authority, probe } = await boot();
-    authority.kfs.writeFile('home/user/app/a.txt', 'different');
+    await authority.peer.writeFile('home/user/app/a.txt', 'different');
     assert.equal(await probe.resume(`${APP}/a.txt`, `${APP}/b.txt`), `different|${SAME}`);
   },
 });

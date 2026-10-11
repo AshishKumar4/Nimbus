@@ -1,15 +1,17 @@
 import {
   fetchNimbusCloudflareAccounts,
   fetchNimbusCloudflareUserInfo,
-  pkceChallenge,
-  randomBase64Url,
   readNimbusCookie,
-  requestNimbusCloudflareOAuthToken,
+  beginNimbusCloudflareOAuth,
+  exchangeNimbusCloudflareOAuthCode,
+  createNimbusOAuthStateCookie,
+  loadNimbusOAuthStateCookie,
+  type NimbusOAuthTransaction,
   sealJson,
   serializeNimbusCookie,
   sha256Base64Url,
   unsealJson,
-} from '@nimbus-sh/sdk/worker';
+} from '@nimbus-sh/sdk/oauth';
 import { renderOAuthFailure } from './demo-http.js';
 import { readDemoAuthConfig, sanitizeReturnTo } from './demo-oauth-config.js';
 import { upsertDemoUser } from './demo-sessions.js';
@@ -20,8 +22,6 @@ const DEMO_AUTH_COOKIE = '__Host-nimbus_demo_auth';
 const DEMO_STATE_COOKIE = '__Host-nimbus_demo_state';
 const DEMO_AUTH_COOKIE_PURPOSE = 'nimbus-demo-auth';
 const DEMO_STATE_COOKIE_PURPOSE = 'nimbus-demo-oauth-state';
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const CF_OAUTH_AUTH_URL = 'https://dash.cloudflare.com/oauth2/auth';
 
 export interface DemoAuth {
   v: 1;
@@ -36,14 +36,8 @@ export interface DemoAuth {
   cfAccountId: string | null;
 }
 
-interface DemoOAuthState {
-  v: 1;
-  nonce: string;
-  codeVerifier: string;
-  redirectUri: string;
+interface DemoOAuthState extends NimbusOAuthTransaction {
   returnTo: string;
-  createdAt: number;
-  expiresAt: number;
 }
 
 export async function startDemoLogin(request: Request, env: any): Promise<Response> {
@@ -57,38 +51,15 @@ export async function startDemoLogin(request: Request, env: any): Promise<Respon
 
   const url = new URL(request.url);
   const returnTo = sanitizeReturnTo(url.searchParams.get('return_to')) || '/new';
-  const nonce = randomBase64Url(24);
-  const codeVerifier = randomBase64Url(48);
-  const codeChallenge = await pkceChallenge(codeVerifier);
-  const now = Date.now();
-  const state: DemoOAuthState = {
-    v: 1,
-    nonce,
-    codeVerifier,
-    redirectUri: config.redirectUri,
-    returnTo,
-    createdAt: now,
-    expiresAt: now + OAUTH_STATE_TTL_MS,
-  };
-
-  const authUrl = new URL(CF_OAUTH_AUTH_URL);
-  authUrl.searchParams.set('client_id', config.clientId);
-  authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('redirect_uri', config.redirectUri);
-  authUrl.searchParams.set('state', nonce);
-  authUrl.searchParams.set('code_challenge', codeChallenge);
-  authUrl.searchParams.set('code_challenge_method', 'S256');
-  if (config.scopes.length > 0) authUrl.searchParams.set('scope', config.scopes.join(' '));
+  const { transaction, authUrl } = await beginNimbusCloudflareOAuth(config);
+  const state: DemoOAuthState = { ...transaction, returnTo };
 
   const headers = new Headers({
     Location: authUrl.toString(),
     'Cache-Control': 'no-store',
   });
-  headers.append('Set-Cookie', serializeNimbusCookie(DEMO_STATE_COOKIE, await sealJson(state, config.cookieSecret, {
-    purpose: DEMO_STATE_COOKIE_PURPOSE,
-  }), {
-    path: '/',
-    maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
+  headers.append('Set-Cookie', await createNimbusOAuthStateCookie(state, {
+    name: DEMO_STATE_COOKIE, purpose: DEMO_STATE_COOKIE_PURPOSE, secret: config.cookieSecret,
   }));
   return new Response(null, { status: 302, headers });
 }
@@ -115,9 +86,8 @@ export async function completeDemoLogin(request: Request, env: any): Promise<Res
   }
 
   try {
-    const token = await exchangeCode(config, code, stored.codeVerifier, stored.redirectUri);
-    const accessToken = String(token?.access_token || '');
-    if (!accessToken) throw new Error('Cloudflare did not return an access token');
+    const token = await exchangeNimbusCloudflareOAuthCode(config, stored, code);
+    const accessToken = token.accessToken;
     const userInfo = await fetchNimbusCloudflareUserInfo(accessToken);
     const accounts = await fetchNimbusCloudflareAccounts(accessToken).catch(() => []);
     const stableSubject = stableUserSubject(userInfo);
@@ -130,9 +100,9 @@ export async function completeDemoLogin(request: Request, env: any): Promise<Res
       loginAt: now,
       expiresAt: now + config.authCookieTtlMs,
       cfAccessToken: accessToken,
-      cfRefreshToken: token.refresh_token ? String(token.refresh_token) : undefined,
-      cfTokenType: token.token_type ? String(token.token_type) : 'Bearer',
-      cfTokenExpiresAt: token.expires_in ? now + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
+      cfRefreshToken: token.refreshToken,
+      cfTokenType: token.tokenType,
+      cfTokenExpiresAt: token.expiresAt,
       cfAccountId: accounts[0]?.id ?? null,
     };
     await upsertDemoUser(env, {
@@ -190,30 +160,11 @@ export async function shouldHandleDemoOAuthCallback(request: Request, env: any):
 }
 
 async function loadDemoState(request: Request, cookieSecret: string): Promise<DemoOAuthState | null> {
-  const value = readNimbusCookie(request, DEMO_STATE_COOKIE);
-  if (!value) return null;
-  const state = await unsealJson<DemoOAuthState>(value, cookieSecret, {
-    purpose: DEMO_STATE_COOKIE_PURPOSE,
-  }).catch(() => null);
+  const state = await loadNimbusOAuthStateCookie<DemoOAuthState>(request, {
+    name: DEMO_STATE_COOKIE, purpose: DEMO_STATE_COOKIE_PURPOSE, secret: cookieSecret,
+  });
   if (!state || state.v !== 1 || !state.nonce || !state.codeVerifier || !state.redirectUri) return null;
   return state;
-}
-
-async function exchangeCode(
-  config: ReturnType<typeof readDemoAuthConfig>,
-  code: string,
-  codeVerifier: string,
-  redirectUri: string,
-): Promise<any> {
-  return requestNimbusCloudflareOAuthToken({
-    oauthClientId: config.clientId,
-    oauthClientSecret: config.clientSecret,
-  }, {
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: redirectUri,
-    code_verifier: codeVerifier,
-  });
 }
 
 function stableUserSubject(userInfo: any): string {

@@ -11,7 +11,7 @@ const a = makeAsserter('file-tree/panel/regression/editor-with-term-layout-still
 console.log(`file-tree/panel/regression/editor-with-term-layout-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
+const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
 const html = await r.text();
 
 // .main.editor shows editor + terminal + preview (3 of the 4 panes;

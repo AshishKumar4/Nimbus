@@ -300,33 +300,15 @@ export const git = {
     assert.deepEqual(await bridge.readFile('/existing-repo/.git/sentinel'), existingBytes);
   }
 
-  // ── Abort: only the clone whose marker names its job ──
+  // ── Prepare writes its job's marker first: what a cleanup (git/clone-job.ts) proves ownership by ──
   {
-    const headBefore = await bridge.readFile('/repo/.git/HEAD');
-    const unowned = { dir: '/repo', jobId: 'abort-job', optionsHash: 'b'.repeat(64) };
-    for (let i = 0; i < 2; i++) {
-      const abort = await phase('clone-abort', unowned);
-      assert.equal(abort.success, true, abort.error);
-      assert.equal(abort.refused, 'not-owner');
-    }
-    assert.deepEqual(await bridge.readFile('/repo/.git/HEAD'), headBefore, 'an unowned abort changed git metadata');
-    assert.equal(vfs.readFileString('repo/src/file-259.txt'), 'file-259', 'an unowned abort removed the worktree');
-    const foreign = new TextEncoder().encode(JSON.stringify({ version: 1, jobId: 'different-job', optionsHash: 'e'.repeat(64) }));
-    await bridge.writeFile('/repo/.git/nimbus-clone-job', foreign);
-    const mismatched = await phase('clone-abort', unowned);
-    assert.equal(mismatched.refused, 'not-owner');
-    assert.deepEqual(await bridge.readFile('/repo/.git/nimbus-clone-job'), foreign, 'abort changed another job\'s marker');
-    await bridge.unlink('/repo/.git/nimbus-clone-job');
-
     const owned = { dir: '/owned-abort', jobId: 'owned-job', optionsHash: 'c'.repeat(64) };
     const prepared = await phase('clone-prepare', owned);
     assert.equal(prepared.success, true, prepared.error);
     assert.deepEqual(JSON.parse(vfs.readFileString('owned-abort/.git/nimbus-clone-job')), { version: 1, jobId: 'owned-job', optionsHash: 'c'.repeat(64) });
     assert.ok(vfs.exists('owned-abort/.git/objects/pack'), 'prepare stored its pack');
     const abort = await phase('clone-abort', owned);
-    assert.equal(abort.success, true, abort.error);
-    assert.equal(abort.refused, undefined);
-    assert.equal(vfs.exists('owned-abort/.git'), false, 'an owned abort left git metadata');
+    assert.equal(abort.success, false, 'the facet has no clone-abort phase: cleanup is the DO\'s');
   }
 
   // ── A phase past its deadline writes nothing ──

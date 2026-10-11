@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 
-import { BYTE_LRU_ENTRY_OVERHEAD, ByteLru } from '../../packages/worker/src/git/pack/byte-lru.ts';
+import { BYTE_LRU_ENTRY_OVERHEAD, ByteLru } from '../../packages/core/src/_shared/lru-map.ts';
 
 const cache = new ByteLru(160_000);
 for (let i = 0; i < 10_000; i++) cache.set(i, new Uint8Array(1));

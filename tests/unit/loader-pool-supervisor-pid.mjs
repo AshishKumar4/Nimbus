@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 //
 // Regression: npm install dispatches its write facets through IsolatePool,
 // which mints the SUPERVISOR binding the facet uses for writeBatchStream. S2a's
@@ -14,6 +15,7 @@ import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { supervisorBindingProps } from '../../packages/fabric/src/supervisor-props.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const boundProps = [];
@@ -49,6 +51,17 @@ new IsolatePool(env, ctx, { network: ISOLATE_NETWORK, supervisorDoIdOverride: 'c
 assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKind: 'infrastructure' }],
   'supervisorPid composes with supervisorDoIdOverride');
 
+boundProps.length = 0;
+const program = supervisorBindingProps(ctx,42,{writerId:'program-run-a',network:ISOLATE_NETWORK});
+const programPool = new IsolatePool(env,ctx,{network:ISOLATE_NETWORK,processSupervisor:program});
+assert.deepEqual(boundProps,[program],'a runtime program gets a checked process capability, never the infrastructure exception');
+assert.ok(programPool.supervisorKey.includes('program-run-a'),'the loader identity contains the run');
+const successor = new IsolatePool(env,ctx,{network:ISOLATE_NETWORK,processSupervisor:supervisorBindingProps(ctx,42,{writerId:'program-run-b',network:ISOLATE_NETWORK})});
+assert.notEqual(programPool.supervisorKey,successor.supervisorKey,'same pid, fresh run: no reused capability');
+assert.throws(()=>new IsolatePool(env,ctx,{network:ISOLATE_NETWORK,processSupervisor:{...program,bindingKind:'infrastructure',writerId:undefined}}),/cannot hand a process/);
+successor.dispose();
+programPool.dispose();
+
 // ── Hibernation-wake regression (the sv-create "process pid 1000001 does
 // not exist" failure): a warm loader slot minted in generation 1 must not be
 // returned in generation 2 still credentialed to the dead pid. The cache key
@@ -73,12 +86,12 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 1000001,
   });
-  await poolG1.map((v) => v, ['a']);
+  await poolG1.map(facetTaskSource("(v) => v"), ['a']);
   const poolG2 = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
-  await poolG2.map((v) => v, ['a']);
+  await poolG2.map(facetTaskSource("(v) => v"), ['a']);
 
   assert.equal(loaderIds.length, 2, 'each pool dispatch calls loader.get once');
   assert.notEqual(loaderIds[0], loaderIds[1],
@@ -99,12 +112,12 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
-  await poolG2b.map((v) => v, ['a']);
+  await poolG2b.map(facetTaskSource("(v) => v"), ['a']);
   const warmPool = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
     network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
-  await warmPool.map((v) => v, ['a']);
+  await warmPool.map(facetTaskSource("(v) => v"), ['a']);
   assert.equal(loaderIds.length, 2);
   assert.equal(loaderIds[0], loaderIds[1],
     'identical supervisorPid must reuse the loader id (warm slot preserved)');
@@ -133,7 +146,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   boundProps.length = 0;
   for (const ctx of [before, after]) {
     const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { network: ISOLATE_NETWORK, tag: 'x', concurrency: 1, supervisorPid: 5 });
-    await pool.map((v) => v, ['a']);
+    await pool.map(facetTaskSource("(v) => v"), ['a']);
     await pool.dispose();
   }
   assert.deepEqual(boundProps, incarnations.map((hostIncarnation) => ({ doId: 'loader-pid-test', pid: 5, route, hostIncarnation, bindingKind: 'infrastructure' })),
@@ -152,7 +165,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   boundProps.length = 0;
   for (const ctx of [before, after]) {
     const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { network: ISOLATE_NETWORK, tag: 'esbuild-bundle', concurrency: 1 });
-    await pool.map((v) => v, ['a']);
+    await pool.map(facetTaskSource("(v) => v"), ['a']);
     await pool.dispose();
   }
   assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }, { doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }],

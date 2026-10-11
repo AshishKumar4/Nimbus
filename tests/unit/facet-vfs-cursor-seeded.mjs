@@ -60,7 +60,7 @@ const bodies = [
     source: generateOpencodeRunnerCode({
       argv: [], env: {}, cred: CRED, cwd: '/home/user', stdin: '',
       sources: SOURCES, mode: 'oneshot', ...serializedSnapshot,
-    }),
+    }).code,
   },
 ];
 

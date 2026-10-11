@@ -12,7 +12,8 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import { type ConfigOverrides } from './config-params.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { type CleanupBridge } from './clone-job.js';
 import { DirCache } from './worktree/dircache.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
@@ -29,14 +30,14 @@ type Ctx = {
     env: Record<string, string>;
     /** The command's view of the namespace, as its credential. */
     vfs: ProcessView;
+    /** The command's stop: a Ctrl-C, a kill, a destroy (its reason SESSION_DESTROYED). */
+    signal: AbortSignal;
 };
 export interface ParsedGitGlobals {
     sub: string | undefined;
     subArgs: string[];
     /** The directory the subcommand runs in, after every `-C`. */
     dir: string;
-    /** `-c <name>=<value>` (config-params.ts). */
-    config: ConfigOverrides;
 }
 /**
  * The options git accepts BEFORE the subcommand. `-C <path>` runs the
@@ -57,8 +58,10 @@ export interface ParsedCloneArgs {
     quiet: boolean;
     /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
     filter: string | undefined;
+    /** `--sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse: boolean;
 }
-export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--sparse] [--branch <name> | -b <name>] [--bg] <url> [dir]";
 /**
  * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
  * takes them: a depth from the remote's tips, or (relative) from the
@@ -100,6 +103,17 @@ export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet<string>): Set<number>;
 export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
-network?: WorkspaceNetwork): Promise<number>;
+network?: WorkspaceNetwork, 
+/** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
+filesystem?: {
+    openHost(cred: VfsCred): {
+        fs: {
+            synchronous?: CleanupBridge;
+        };
+        dispose(): Promise<void>;
+    };
+}, 
+/** The session's process table: a background clone runs as a process of its own. */
+processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>): Promise<number>;
 export {};
 //# sourceMappingURL=commands.d.ts.map

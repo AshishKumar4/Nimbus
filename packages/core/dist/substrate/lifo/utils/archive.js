@@ -2,6 +2,7 @@ import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
+import { streamTarRecords, tarBytes } from '../../../_shared/tarball-stream.js';
 // ─── Gzip (CompressionStream/DecompressionStream) ───
 /** `data` through one gzip transform stream, read to its end. */
 async function pumpGzip(data, stream) {
@@ -40,17 +41,6 @@ function tarChecksum(header) {
         sum += i >= 148 && i < 156 ? 0x20 : header[i];
     }
     return sum;
-}
-function tarReadString(buf, offset, len) {
-    let end = offset;
-    const max = offset + len;
-    while (end < max && buf[end] !== 0)
-        end++;
-    return decode(buf.subarray(offset, end));
-}
-function tarReadOctal(buf, offset, len) {
-    const str = tarReadString(buf, offset, len).trim();
-    return str ? parseInt(str, 8) : 0;
 }
 export function createTar(entries) {
     const blocks = [];
@@ -92,41 +82,25 @@ export function createTar(entries) {
     blocks.push(new Uint8Array(1024));
     return concatBytes(...blocks);
 }
-export function parseTar(data) {
+/**
+ * The entries of a tar archive, as the shell extracts them
+ * (tarball-stream.ts streamTarRecords): a directory, or anything else with
+ * its bytes as a file. Paths are canonical and inside the archive's root; an
+ * entry that escapes it is left out, and one that claims more bytes than
+ * the archive holds is never read (its buffer would be the claim's size).
+ */
+export async function parseTar(data) {
     const entries = [];
-    let offset = 0;
-    while (offset + 512 <= data.length) {
-        const header = data.subarray(offset, offset + 512);
-        // Check for zero block (end of archive)
-        let allZero = true;
-        for (let i = 0; i < 512; i++) {
-            if (header[i] !== 0) {
-                allZero = false;
-                break;
-            }
-        }
-        if (allZero)
-            break;
-        let path = tarReadString(header, 0, 100);
-        const mode = tarReadOctal(header, 100, 8);
-        const size = tarReadOctal(header, 124, 12);
-        const mtime = tarReadOctal(header, 136, 12) * 1000;
-        const typeFlag = header[156];
-        const isDir = typeFlag === 53 || path.endsWith('/'); // '5' or trailing /
-        if (path.endsWith('/'))
-            path = path.slice(0, -1);
-        offset += 512;
-        let entryData = new Uint8Array(0);
-        if (size > 0) {
-            entryData = data.slice(offset, offset + size);
-            offset += Math.ceil(size / 512) * 512;
-        }
+    const read = (header) => header.name !== '' && header.size <= data.length;
+    for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), read)) {
+        if (bytes === null)
+            continue;
         entries.push({
-            path,
-            data: entryData,
-            type: isDir ? 'directory' : 'file',
-            mode: mode || (isDir ? 0o755 : 0o644),
-            mtime,
+            path: header.name,
+            data: bytes,
+            type: header.directory ? 'directory' : 'file',
+            mode: header.mode || (header.directory ? 0o755 : 0o644),
+            mtime: header.mtime * 1000,
         });
     }
     return entries;

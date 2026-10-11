@@ -53,6 +53,8 @@ const UNCHECKED = new Set(['primordials.ts', 'host-ops.ts']);
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
   join(CORE, 'src/_shared/runtime-function-source.ts'),
+  join(CORE, 'src/runtime/binding-pattern.ts'),
+  join(CORE, 'src/runtime/esm-interop.ts'),
 ];
 /** Globals that are not writable or configurable, so nothing can replace them. */
 const FIXED_GLOBALS = new Set(['undefined', 'NaN', 'Infinity']);

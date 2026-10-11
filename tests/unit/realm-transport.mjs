@@ -191,7 +191,6 @@ case 'group': {
     const end = await within(realm.ended, 3_000, `ending the realm whose process ${payload === 'stay' ? 'stays in its group' : 'left its group'}`);
     assert.equal(end.terminated, true);
     if (payload === 'stay') {
-      await sleep(200);
       assert.equal(alive(child), false, 'the process it started ended with it');
     } else {
       // Beyond the group, only an OS sandbox reaches it; the realm's end does not wait for it.

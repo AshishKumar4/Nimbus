@@ -26,7 +26,7 @@
 //     before the keep-alive existed (the launch journal re-drives it when
 //     the user returns). Bounded by the resident alone, every abandoned
 //     session with a watcher ran forever in the isolate all sessions share;
-//   - an attached socket, or a request, keeps it; a client's return
+//   - runtime client traffic keeps it; idle attached sockets expire too; a client's return
 //     re-arms a lapsed cycle without a new spawn.
 
 import assert from 'node:assert/strict';
@@ -245,16 +245,15 @@ function expire(storage, reason) {
   assert.equal(host.processes.residentRunning, 1, 'the resident is still running');
   assert.ok(!('resident-keepalive' in (storage.map.get(TIMER_REASONS_KEY) ?? {})), 'past the grace the cycle stops');
   assert.equal(host._w1KeepaliveArmed, false, 'and the flag clears so a client can re-arm it');
-  // An attached socket is presence, however long ago the last request was.
+  // Neither an embedder's unrelated socket nor an idle socket of this
+  // runtime is a reason to renew forever without client traffic.
   sockets = [{}];
   ensureResidentKeepalive(host, ctx);
   await host._timerChain;
   expire(storage, 'resident-keepalive');
   await dispatchAlarm(host, ctx);
-  assert.ok('resident-keepalive' in storage.map.get(TIMER_REASONS_KEY), 'an attached socket keeps the cycle');
+  assert.equal(host._w1KeepaliveArmed, false, 'an idle attached socket does not keep the cycle');
   sockets = [];
-  expire(storage, 'resident-keepalive');
-  await dispatchAlarm(host, ctx);
   assert.equal(host._w1KeepaliveArmed, false, 'socket gone, grace long past: stopped again');
   // The client comes back over HTTP: that alone re-arms, no spawn needed.
   noteClientActivity(host, ctx);
@@ -266,7 +265,7 @@ function expire(storage, reason) {
   noteClientActivity(quiet, { storage: makeStorage(), getWebSockets: () => [] });
   await quiet._timerChain;
   assert.equal(quiet._w1KeepaliveArmed, false, 'no resident, no keep-alive, whatever the client does');
-  console.log('  [7] an abandoned session stops after the grace; a socket or a request keeps it');
+  console.log('  [7] idle sockets cannot renew the cycle; runtime client traffic re-arms it');
 }
 
 console.log('session-resident-keepalive OK: arms on a resident, re-arms while it runs and a client is present, retires when either ends');

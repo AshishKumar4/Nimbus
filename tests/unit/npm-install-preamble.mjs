@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as esbuild from 'esbuild';
 import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isolate-pool.ts';
-import { serializeFunction } from '../../packages/fabric/src/vendor/serialize.ts';
+import { requireFacetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import { parseJavaScriptModule } from '../../packages/core/src/runtime/javascript-ast.ts';
 import { bindingScope, namesBinding, scoped } from '../../packages/core/src/runtime/javascript-scope.ts';
 import { NPM_INSTALL_PREAMBLE } from '../../packages/worker/src/loaders/npm-install-preamble.ts';
@@ -188,19 +188,19 @@ for (const label of ['multi', 'unknown', 'legacy shasum', 'malformed digest', 'e
       contents: [
         "export { NPM_INSTALL_PREAMBLE } from './packages/worker/src/loaders/npm-install-preamble.ts';",
         "export { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from './packages/worker/src/loaders/generated-workers.ts';",
-        "export { installPackagesInFacet } from './packages/worker/src/npm/install-batch-facet.ts';",
+        "export { NPM_INSTALL_BATCH_TASK } from './packages/worker/src/loaders/compiled-bodies.generated.ts';",
       ].join('\n'),
       resolveDir: root,
       loader: 'ts',
     },
-    bundle: true, format: 'esm', platform: 'neutral', mainFields: ['module', 'main'], write: false, logLevel: 'silent',
+    bundle: true, minify: true, format: 'esm', platform: 'neutral', mainFields: ['module', 'main'], write: false, logLevel: 'silent',
   });
   const dir = mkdtempSync(join(tmpdir(), 'install-facet-bundle-'));
   try {
     writeFileSync(join(dir, 'bundle.mjs'), bundled.outputFiles[0].text);
     const worker = await import(join(dir, 'bundle.mjs'));
     const source = assembleLoaderWorkerModuleSource({
-      fnSource: serializeFunction(worker.installPackagesInFacet),
+      fnSource: requireFacetTaskSource(worker.NPM_INSTALL_BATCH_TASK),
       preamble: [worker.TAR_STREAM_PREAMBLE, worker.W7_FRAME_PREAMBLE, worker.WAVE_WRITER_PREAMBLE, worker.NPM_INSTALL_PREAMBLE].join('\n'),
       hasBindings: true,
     });

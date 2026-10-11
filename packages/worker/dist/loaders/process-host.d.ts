@@ -5,7 +5,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ProcessHostMode } from '@nimbus-sh/fabric/process-host.js';
-import type { ProcessHost, ResidentDiskReader } from '@nimbus-sh/fabric/process-fabric.js';
+import type { ProcessHost, ResidentDiskReader, Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 /**
  * The var that picks the substrate, and the only place its name appears.
  * Unset means `facet`; an unrecognized value is refused rather than defaulted,
@@ -16,5 +16,5 @@ export declare function processHostMode(env: unknown): ProcessHostMode;
 /** The substrate for this deployment, resolved once. */
 export declare function processHostFor(ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, 
 /** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
-network?: () => WorkspaceNetwork): ProcessHost;
+network?: () => WorkspaceNetwork, supervise?: Supervise): ProcessHost;
 //# sourceMappingURL=process-host.d.ts.map

@@ -17,14 +17,12 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
+import { parseRuntimeCatalog } from '@nimbus-sh/worker/runtime/catalog';
 
 const nodeRequire = createRequire(import.meta.url);
-const DEFAULT_RUNTIME_VERSIONS: Record<string, string> = {
-  clang: 'binji-2020',
-  python: '0.29.4',
-  ruby: '3.3.4',
-};
+const DEFAULT_BUCKET = 'nimbus-runtime-cache-public';
 
 /**
  * Sync runtime blobs to an R2 bucket via the bundled worker helper.
@@ -36,11 +34,16 @@ const DEFAULT_RUNTIME_VERSIONS: Record<string, string> = {
  * ```
  */
 export async function syncRuntimes(args: string[], options: { scriptPath?: string } = {}): Promise<number> {
-  const parsed = parseFlags(args);
-  const bucket = parsed.bucket ?? 'nimbus-runtime-cache-public';
-  const runtimes = parsed.runtimes.length > 0
-    ? parsed.runtimes
-    : ['clang', 'python', 'ruby'];
+  let parsed;
+  try {
+    parsed = parseArgs({ args, allowPositionals: true, tokens: true, options: {
+      bucket: { type: 'string' }, runtimes: { type: 'string', multiple: true },
+    } });
+  } catch (error) {
+    process.stderr.write(`nimbus runtime sync: ${error instanceof Error ? error.message : error}\n`);
+    return 64;
+  }
+  const bucket = parsed.values.bucket ?? DEFAULT_BUCKET;
 
   if (!process.env.CLOUDFLARE_ACCOUNT_ID) {
     process.stderr.write('nimbus runtime sync: CLOUDFLARE_ACCOUNT_ID env var required\n');
@@ -54,16 +57,33 @@ export async function syncRuntimes(args: string[], options: { scriptPath?: strin
     return 70;
   }
 
+  const { SPECS } = await import(new URL('./runtime-specs.mjs', pathToFileURL(scriptPath)).href) as {
+    SPECS: Record<string, { cliDefaultSync?: boolean; ingest_only?: boolean }>;
+  };
+  const publishers = Object.entries(SPECS).filter(([, spec]) => !spec.ingest_only);
+  const requested = parsed.tokens.flatMap((token) => {
+    if (token.kind === 'positional') return [token.value];
+    return token.kind === 'option' && token.name === 'runtimes'
+      ? token.value.split(',').map((name) => name.trim()).filter(Boolean) : [];
+  });
+  const runtimes = requested.length ? requested
+    : publishers.filter(([, spec]) => spec.cliDefaultSync).map(([key]) => key.split('/')[0]);
+  const selected = [];
+  for (const rt of runtimes) {
+    const [name, explicitVersion] = rt.split('@');
+    const versions = publishers.filter(([key]) => key.startsWith(`${name}/`));
+    const version = explicitVersion || (versions.length === 1 ? versions[0][0].slice(name.length + 1) : undefined);
+    if (!version || !SPECS[`${name}/${version}`] || SPECS[`${name}/${version}`].ingest_only) {
+      process.stderr.write(`nimbus runtime sync: unknown or ambiguous runtime "${rt}" (use a publisher-supported name@version)\n`);
+      return 64;
+    }
+    selected.push({ rt, name, version });
+  }
+
   process.stderr.write(`nimbus: syncing runtimes [${runtimes.join(', ')}] → r2://${bucket}\n`);
 
   let catalogSha256: string | null = null;
-  for (const rt of runtimes) {
-    const [name, explicitVersion] = rt.split('@');
-    const version = explicitVersion || DEFAULT_RUNTIME_VERSIONS[name];
-    if (!version) {
-      process.stderr.write(`nimbus runtime sync: unknown runtime "${rt}" (use name@version)\n`);
-      return 64;
-    }
+  for (const { rt, name, version } of selected) {
     const { code, catalogSha256: published } = await runOne(scriptPath, [name, version, '--bucket', bucket]);
     if (code !== 0) {
       process.stderr.write(`nimbus runtime sync: ${rt} failed (exit ${code})\n`);
@@ -85,17 +105,28 @@ export async function syncRuntimes(args: string[], options: { scriptPath?: strin
   return 0;
 }
 
-/** `nimbus runtime list` — print the catalog the SDK ships against. */
-export async function listRuntimes(_args: string[]): Promise<number> {
-  // v0.1: print the static known-list. v0.2 will fetch the live
-  // catalog.json from R2.
-  const catalog = [
-    { name: 'clang', version: 'binji-2020', size_mb: 9, license: 'Apache-2.0-LLVM' },
-    { name: 'python', version: 'pyodide-0.29.4', size_mb: 10, license: 'MPL-2.0' },
-    { name: 'ruby', version: 'ruby.wasm-2.9.4', size_mb: 25, license: 'BSD-2-Clause' },
-  ];
-  process.stdout.write(JSON.stringify(catalog, null, 2) + '\n');
-  return 0;
+/** `nimbus runtime list` — print the selected bucket's actual defaults. */
+export async function listRuntimes(args: string[]): Promise<number> {
+  let parsed;
+  try {
+    parsed = parseArgs({ args, options: { bucket: { type: 'string' } } }).values;
+  } catch (error) {
+    process.stderr.write(`nimbus runtime list: ${error instanceof Error ? error.message : error}\n`);
+    return 64;
+  }
+  try {
+    const catalog = parseRuntimeCatalog(JSON.parse(await readCatalog(parsed.bucket ?? DEFAULT_BUCKET)));
+    const rows = Object.entries(catalog.runtimes).map(([name, entry]) => {
+      const version = entry.versions[entry.default];
+      if (!version) throw new Error(`Catalog runtime ${name} has no default version ${entry.default}`);
+      return { name, version: entry.default, size_mb: version.size_bytes / 1024 / 1024, license: version.license };
+    });
+    process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
+    return 0;
+  } catch (error) {
+    process.stderr.write(`nimbus runtime list: ${error instanceof Error ? error.message : error}\n`);
+    return 70;
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -142,22 +173,16 @@ function runOne(scriptPath: string, args: string[]): Promise<{ code: number; cat
   });
 }
 
-function parseFlags(args: string[]): { bucket?: string; runtimes: string[] } {
-  const out: { bucket?: string; runtimes: string[] } = { runtimes: [] };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--bucket') {
-      out.bucket = args[i + 1] ?? '';
-      i++;
-      continue;
-    }
-    if (a === '--runtimes') {
-      out.runtimes.push(...(args[i + 1] ?? '').split(',').map((s) => s.trim()).filter(Boolean));
-      i++;
-      continue;
-    }
-    if (a.startsWith('--')) continue;
-    out.runtimes.push(a);
-  }
-  return out;
+function readCatalog(bucket: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('npx', ['wrangler', 'r2', 'object', 'get', `${bucket}/catalog/v1.json`, '--pipe', '--remote'], {
+      stdio: ['ignore', 'pipe', 'pipe'], env: process.env, shell: process.platform === 'win32',
+    });
+    let output = '';
+    let errors = '';
+    child.stdout.on('data', (chunk) => { output += String(chunk); });
+    child.stderr.on('data', (chunk) => { errors += String(chunk); });
+    child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve(output) : reject(new Error(errors.trim() || `Wrangler exited ${code}`)));
+  });
 }

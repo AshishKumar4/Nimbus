@@ -14,6 +14,6 @@
 import { type StagedSourceEnv } from './staged-source.js';
 /** The Oxc wasm's bytes, for the transform facet's module map. */
 export declare function fetchOxcWasmBytes(env: StagedSourceEnv): Promise<ArrayBuffer>;
-/** The transform facet's runtime: a script that installs the globals its class reads. */
+export declare function fetchAmaroWasmBytes(env: StagedSourceEnv): Promise<ArrayBuffer>;
 export declare function fetchOxcFacetRuntime(env: StagedSourceEnv): Promise<string>;
 //# sourceMappingURL=oxc-wasm-bytes.d.ts.map

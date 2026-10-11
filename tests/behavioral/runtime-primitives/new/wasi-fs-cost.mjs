@@ -16,7 +16,7 @@ const step = async (label, cmd, timeout = 900_000) => {
   const wallMs = Date.now() - started;
   results[label] = { wallMs, out: out.slice(-300) };
   console.log(JSON.stringify({ label, wallMs, out: out.slice(-300) }));
-  return out;
+  return { ...r, output: out };
 };
 const hello = '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <math.h>\nint main(void) { printf("%f\\n", sqrt(2.0)); return 0; }\n';
 const nodeReads = "const fs=require('fs');const t=performance.now();let n=0;for(const f of fs.readdirSync('.'))if(fs.statSync(f).isFile())n+=fs.readFileSync(f).length;console.log('bytes',n,'ms',(performance.now()-t).toFixed(1));";
@@ -30,17 +30,17 @@ try {
   // cost is the difference between N stats and none, over N.
   await step('python write p.txt', `python3 -c "open('p.txt','w').write('x')"`);
   for (const n of [0, 2000, 20000]) {
-    const out = await step(`python stat x${n}`, `python3 -c "import os\nfor _ in range(${n}): os.stat('p.txt')\nprint('done', ${n})"`, 1_800_000);
+    const { output: out } = await step(`python stat x${n}`, `python3 -c "import os\nfor _ in range(${n}): os.stat('p.txt')\nprint('done', ${n})"`, 1_800_000);
     a.check(`python ran ${n} stats`, out.includes(`done ${n}`), out.slice(-200));
   }
   const perCall = (n) => ((results[`python stat x${n}`].wallMs - results['python stat x0'].wallMs) * 1000) / n;
   console.log(JSON.stringify({ pythonStatPerCallUs: { x2000: Math.round(perCall(2000)), x20000: Math.round(perCall(20000)) } }));
   await step('write hello.c', `cat > hello.c <<'EOF'\n${hello}EOF`);
   for (let i = 1; i <= 3; i++) {
-    const out = await step(`clang hello.c #${i}`, 'clang hello.c -o hello.wasm -lm; echo RC=$?');
-    a.check(`clang hello.c #${i} compiled`, /RC=0/.test(out), out.slice(-200));
+    const result = await step(`clang hello.c #${i}`, 'clang hello.c -o hello.wasm -lm');
+    a.check(`clang hello.c #${i} compiled`, result.exitCode === 0, result.output.slice(-200));
   }
-  const ran = await step('run hello', './hello.wasm');
+  const { output: ran } = await step('run hello', './hello.wasm');
   a.check('the compiled program ran', /1\.414214/.test(ran), ran.slice(-200));
   for (let i = 1; i <= 3; i++) await step(`node -e #${i}`, "node -e 'console.log(1)'");
   await step('write node reads', `cat > reads.js <<'EOF'\n${nodeReads}\nEOF`);

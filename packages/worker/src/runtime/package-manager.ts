@@ -20,6 +20,7 @@ import {
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
+import type { SessionRuntimeInstallResult } from '@nimbus-sh/core/runtime/session-protocol.js';
 
 import {
   runNimbusInstall,
@@ -31,13 +32,6 @@ import type { MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtime
 
 export { runtimeCatalogSource };
 export type { RuntimeWarmHook };
-
-export interface RuntimeInstallSummary {
-  spec: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
 
 export interface RuntimeCommandHint {
   command: string;
@@ -57,7 +51,7 @@ export async function installRuntimeProgrammatic(deps: {
   vfs: CredentialedVfs;
   getHome(): string;
   warmRuntime?: RuntimeWarmHook;
-}, spec: string, opts: { force?: boolean } = {}): Promise<RuntimeInstallSummary> {
+}, spec: string, opts: { force?: boolean } = {}): Promise<SessionRuntimeInstallResult> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   let programmaticCred = CRED_KERNEL;
@@ -94,8 +88,8 @@ export async function ensureRuntimesProgrammatic(deps: {
   vfs: CredentialedVfs;
   getHome(): string;
   warmRuntime?: RuntimeWarmHook;
-}, specs: string[], opts: { force?: boolean } = {}): Promise<RuntimeInstallSummary[]> {
-  const results: RuntimeInstallSummary[] = [];
+}, specs: string[], opts: { force?: boolean } = {}): Promise<SessionRuntimeInstallResult[]> {
+  const results: SessionRuntimeInstallResult[] = [];
   for (const spec of specs) {
     results.push(await installRuntimeProgrammatic(deps, spec, opts));
   }

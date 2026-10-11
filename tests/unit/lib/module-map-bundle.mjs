@@ -10,6 +10,10 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { residentLoaderConfig } from '../../../packages/fabric/src/process-fabric.ts';
+import { readImmutableModuleSource } from '../../../packages/core/src/_shared/staged-source.ts';
+import { stagedAssets } from './staged-assets.mjs';
+import { createRequire as nativeCreateRequire, isBuiltin } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { adaptHttpImports } from './node-http-platform.mjs';
@@ -46,7 +50,7 @@ export function moduleMapBundle(modules, entry = modules['worker.js'] ? 'worker.
   return bundle;
 }
 
-/** The entry's CommonJsCellRow table: `[key, moduleName, head, tail, hashbang, adopt]`. */
+/** The entry's CommonJsCellRow table: `[key, moduleName, head, tail, hashbang, adopt, esModule]`. */
 export function moduleMapCodeCells(modules, entry = modules['worker.js'] ? 'worker.js' : 'runner.js') {
   const table = modules[entry].match(/^const __NIMBUS_CODE_CELLS = (.*);$/m);
   if (!table) throw new Error(`${entry} declares no __NIMBUS_CODE_CELLS`);
@@ -56,6 +60,15 @@ export function moduleMapCodeCells(modules, entry = modules['worker.js'] ? 'work
 /** Every module source in the set: what a test searches for a program's text. */
 export function moduleMapText(modules) {
   return Object.values(modules).map((m) => (typeof m === 'string' ? m : cjsText(m))).filter((m) => m !== undefined).join('\n');
+}
+
+/** Reconstruct a captured boot using only its images and pinned shared assets. */
+export async function storedBootModules(world, fs) {
+  const boot = world.bootSpecs.at(-1);
+  if (boot?.kind !== 'code') throw new Error('expected a code boot');
+  const config = await residentLoaderConfig(boot.code, { readFile: (path) => fs.readFileUncached(path) },
+    (source) => readImmutableModuleSource({ ASSETS: stagedAssets }, source));
+  return config.modules;
 }
 
 /**
@@ -68,7 +81,9 @@ export function moduleMapText(modules) {
  * types a module by its `{ cjs }` member, not its name.
  */
 const registry = new Map();
+const builtinRequire = nativeCreateRequire(import.meta.url);
 const createRequire = (base) => (specifier) => {
+  if (isBuiltin(specifier)) return builtinRequire(specifier);
   const file = fileURLToPath(new URL(specifier, base));
   if (!registry.has(file)) {
     const moduleObject = { exports: {} };
@@ -116,6 +131,7 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
 export function generatedModuleSet(generated, entry) {
   const set = { [entry]: generated.code, ...generated.modules };
   for (const [name, text] of Object.entries(generated.codeModules)) set[name] = { cjs: text };
+  for (const [name, source] of Object.entries(generated.immutableModules)) set[name] = { cjs: source.text };
   return set;
 }
 

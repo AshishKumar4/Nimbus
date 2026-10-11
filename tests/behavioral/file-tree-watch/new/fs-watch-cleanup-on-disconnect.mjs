@@ -23,7 +23,7 @@ const sid = await mintSession();
 
 // First subscriber — open, subscribe, then close.
 {
-  const w = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
+  const w = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders(sid));
   let opened = false;
   let subbed = false;
   w.on('open', () => { opened = true; });
@@ -44,7 +44,7 @@ const sid = await mintSession();
 
 // Second subscriber — separate WS — should receive its own events
 // cleanly.
-const w2 = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders());
+const w2 = new WebSocket(`${WS_BASE}/s/${sid}/ws?kind=fs-watch`, wsHeaders(sid));
 const received2 = [];
 let opened2 = false;
 let subResult2 = null;

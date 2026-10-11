@@ -17,6 +17,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -52,6 +53,8 @@ const supervisor = {
   // The barrier's delta, as every session serves it.
   fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
+// Its process's waves reach these calls (lib/wave-supervisor.mjs).
+waveSupervisor(supervisor);
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -427,7 +430,7 @@ for (const [k, v] of Object.entries({
   EXTENSIONLESS_FORMAT_WASM: 1, F_OK: 0, X_OK: 1,
 })) assert.equal(C[k], v, `fs.constants.${k}`);
 // node:constants is the union of os/fs/crypto constants and reads the SAME table.
-const nodeConstants = sandbox.builtins['node:constants'];
+const nodeConstants = sandbox.process.getBuiltinModule('node:constants');
 assert.equal(nodeConstants.O_CREAT, C.O_CREAT);
 assert.equal(nodeConstants.O_NOFOLLOW, C.O_NOFOLLOW);
 assert.equal(sandbox.process.binding('fs').constants.O_CREAT, C.O_CREAT);

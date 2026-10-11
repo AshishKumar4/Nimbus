@@ -19,6 +19,7 @@ export class ByteQueue {
     get isWaiting() {
         return this.waiting.length > 0;
     }
+    get buffered() { return this.buffer.length > 0; }
     /** Queue `bytes`, handing them to a waiting reader first. */
     deliver(bytes) {
         if (bytes.length === 0)

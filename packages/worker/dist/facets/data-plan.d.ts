@@ -50,6 +50,8 @@ export interface DataPlan {
 }
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export declare const PACKAGE_DATA_MAX_BYTES: number;
+/** The `package-json` rule: a package.json anywhere but in a git directory. */
+export declare function isManifestKey(k: string): boolean;
 /** The package directory a path sits in: up to the name after its last node_modules. */
 export declare function packageRootOf(k: string): string | null;
 /**

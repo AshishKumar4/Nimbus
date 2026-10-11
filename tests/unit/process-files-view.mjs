@@ -132,6 +132,37 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   files.vfs.unmount('/mnt/own');
 }
 
+// A whole image read is one whole-file read: no ranges to mix, and a backend
+// with no ranged read costs the same single read as SQLite.
+{
+  const image = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 13) & 0xff);
+  await vfs.writeFile('/home/user/image.wasm', image);
+  const seen = await vfs.readArrayBufferUncached('/home/user/image.wasm');
+  assert.deepEqual(new Uint8Array(seen), image, 'a quiet image reads whole');
+
+  // A backend with no ranged read costs one whole-file read, like SQLite.
+  const held = new Map([['/big.wasm', image]]);
+  let wholeReads = 0;
+  const flat = {
+    stat: (p) => (held.has(p) ? { type: 'file', size: held.get(p).byteLength, mtimeMs: 1, revision: 7, mode: 0o100644, uid: 1000, gid: 1000, ino: 99, nlink: 1, dev: 5 } : null),
+    readFile: (p) => { wholeReads++; return held.get(p) ?? null; },
+    writeFile: (p, bytes) => { held.set(p, bytes); },
+    readdir: () => [...held.keys()].map((k) => ({ name: k.slice(1), type: 'file' })),
+  };
+  flat.sync = flat;
+  files.vfs.mount('/mnt/flat', flat);
+  const flatView = files.view({ pid: 61, cred: USER });
+  const flatBytes = await flatView.readArrayBufferUncached('/mnt/flat/big.wasm');
+  assert.deepEqual(new Uint8Array(flatBytes), image, 'a non-ranged backend still reads whole');
+  assert.equal(wholeReads, 1, `one whole-file read on any backend (got ${wholeReads})`);
+  files.vfs.unmount('/mnt/flat');
+
+  // The returned buffer is the caller's: mutating it disturbs no later read.
+  const mutable = new Uint8Array(await vfs.readArrayBufferUncached('/home/user/image.wasm'));
+  mutable.fill(0);
+  assert.deepEqual(await vfs.readFile('/home/user/image.wasm'), image, 'a mutated return disturbs no later read');
+}
+
 // writeFileFrom publishes a file whole once its bytes have arrived, on SQLite
 // and on a mount alike; refused before a byte is read where writeFile would
 // be refused, and nothing is published from a source that ends short.

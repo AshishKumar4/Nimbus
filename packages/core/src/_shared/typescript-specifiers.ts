@@ -53,6 +53,16 @@ export function typescriptLoader(path: string): 'ts' | 'tsx' | null {
   return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
 }
 
+/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
+export function isTypescriptDeclarationFile(path: string): boolean {
+  return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf('/') + 1));
+}
+
+/** What Node 22.22.3's loaders strip the types of: `.ts`, `.mts`, `.cts`, but a declaration file. */
+export function stripsTypeScript(path: string): boolean {
+  return typescriptLoader(path) === 'ts' && !isTypescriptDeclarationFile(path);
+}
+
 /** Files that are already a TypeScript source, or can never name one. */
 const NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
 

@@ -1,7 +1,7 @@
 {
   "name": "@nimbus-sh/probe",
   "version": "0.1.0",
-  "description": "Authenticated probe target for the behavioral suite — a minimal JWT-enforced Nimbus embedder.",
+  "description": "Authenticated probe target for the behavioral suite \u2014 a minimal JWT-enforced Nimbus embedder.",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@nimbus-sh/core": "workspace:^",
     "@nimbus-sh/sdk": "workspace:^",
     "@nimbus-sh/worker": "workspace:^"
   },

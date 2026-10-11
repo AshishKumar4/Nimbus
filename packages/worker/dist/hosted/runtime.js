@@ -18,7 +18,7 @@ import { HostedSession } from './session.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
-const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor']);
+const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor', 'hosting-watch']);
 const InputFrame = z.discriminatedUnion('type', [
     z.object({ type: z.literal('input'), data: z.string() }),
     z.object({ type: z.literal('resize'), cols: z.number().int().positive(), rows: z.number().int().positive() }),
@@ -28,8 +28,6 @@ class RuntimeOwner {
     terminal;
     _cpRegistry;
     _storedShellsAdopted;
-    _hostedProcesses = new Map();
-    _hostedProcessWaiters = new Map();
     _cirrusHmrWsClients = new Map();
     closing = null;
     _w9PersistWired = false;
@@ -45,7 +43,6 @@ class RuntimeOwner {
     esbuildService = null;
     bundlePool = null;
     npmInstaller = null;
-    fetchProxyEntrypoint = null;
     viteDevServer = null;
     cirrusReal = null;
     nimbusWrangler = null;
@@ -58,6 +55,7 @@ class RuntimeOwner {
     scheduling = new Set();
     fileLeases = new Map();
     services;
+    _peerHost = null;
     /** The workspace's namespace and process bindings. */
     getFilesystemAuthority() { return this.options.workspace.filesystem; }
     /** This instance's receipts for its processes' mutations delivered exactly once (see NimbusSession). */
@@ -72,10 +70,12 @@ class RuntimeOwner {
         }
         adoptCtxExports(exports);
         ensureSessionStateSchema(options.ctx);
+        // A process's answers leave as the rest of its output does: once what it wrote is published.
+        options.ports.setOutput(options.workspace.processes);
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
             persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
-        });
+        }, (send) => void this.processes.releaseOutput(this.shellProcessPid, send));
         this._cpRegistry = options.workspace.registry;
         this.services = services.bindRuntimeServices(this, {
             ctx: options.ctx,
@@ -86,6 +86,7 @@ class RuntimeOwner {
             filesystem: () => options.workspace.filesystem,
             network: () => options.workspace.network,
             armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
+            supervisorOp: (envelope) => this.supervisorOp(envelope),
         });
         options.workspace.shell.bindTerminal(this.terminal);
         installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));
@@ -128,14 +129,13 @@ class RuntimeOwner {
         return this.readyPromise;
     }
     ensureSqliteFs() { return this.sqliteFs; }
-    routeLoopback(port, request) { return routeRuntimeLoopback(this.portRegistry, port, request); }
+    routeLoopback(port, request) {
+        return routeRuntimeLoopback(this.portRegistry, port, request, (dark) => this.ensureFacetManager().manager.ensureDurableAppOnPort(dark));
+    }
     ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
     ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
-    ensureFetchProxy(log) { return this.services.ensureFetchProxy(log); }
-    buildFetchFn(log) { return this.services.buildFetchFn(log); }
     ensureNpmInstaller(onProgress) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
     ensureGlobalPrefixDirs(prefix) { return this.services.ensureGlobalPrefixDirs(prefix); }
-    _envFlagDefaultOn(name) { return this.services._envFlagDefaultOn(name); }
     _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
     _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
     _setCpRegistry(registry) {
@@ -143,6 +143,19 @@ class RuntimeOwner {
             throw new Error('Nimbus runtime cannot replace the workspace registry');
     }
     _notifySession(line) { this.terminal.write(`${line}\r\n`); }
+    /**
+     * What this object serves a sibling coordinator hosting a process on it. Its
+     * hosting watch goes through the embedder's lifecycle: the embedder owns
+     * this object's alarm, and its `onScheduled('hosting-watch')` hands it back.
+     */
+    get peerHost() {
+        return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env, (at) => this.scheduleHostingWatch(at));
+    }
+    scheduleHostingWatch(at) {
+        const pending = this.schedule('hosting-watch', at);
+        this.options.lifecycle.waitUntil(pending);
+        return pending;
+    }
     _scheduleLaunchTurn(notBefore = Date.now()) {
         const pending = this.schedule('resident-launch', Math.max(Date.now(), notBefore));
         this.options.lifecycle.waitUntil(pending);
@@ -204,7 +217,6 @@ class RuntimeOwner {
         return manager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope));
     }
     supervisorBridge(pid) { return this.supervisorOps().bridge(pid); }
-    supervisorForgetBridge(pid) { this.supervisorOps().forget(pid); }
     supervisorRewindBridge(pid) { return this.supervisorOps().rewind(pid); }
     scheduleLogs() {
         if (this._w1SessionDestroyed)
@@ -229,13 +241,19 @@ class RuntimeOwner {
             await this.ensureFacetManager().pumpLaunches();
         }
         else if (task === 'resident-keepalive') {
-            const next = residentKeepaliveFired(this, this.ctx, Date.now());
+            const next = residentKeepaliveFired(this, Date.now());
             if (next !== null && !(await this.scheduleKeepalive(next)))
                 this._w1KeepaliveArmed = false;
         }
         else if (task === 'log-flush') {
             this.flushScheduled = false;
             this.processes.flushLogs();
+        }
+        else if (task === 'hosting-watch') {
+            // A failure to look again throws to the embedder's alarm, which retries it.
+            const next = await this.peerHost.watchFired();
+            if (next !== null)
+                await this.scheduleHostingWatch(next);
         }
         else {
             const next = logJanitorFired(this);

@@ -19,36 +19,10 @@
  * (scripts/bundle-facet-workers.mjs), so it reaches nothing outside itself
  * but `host`.
  */
+/** What the runtime embedding the module supplies. */
+import { invalidArgType, nodeError } from './node-error.js';
 export function createHttp2Module(host) {
-    const nodeError = (Base, code, message, props = {}) => Object.assign(new Base(message), { code }, props);
     const notSupported = (op) => nodeError(Error, 'ERR_HTTP2_NOT_SUPPORTED', `http2.${op}: not implemented in Nimbus. Use fetch() or HTTP/1.1.`);
-    // Node's ERR_INVALID_ARG_TYPE (lib/internal/errors.js), for the three
-    // expectations these functions state.
-    const describe = (value) => {
-        if (value === null)
-            return 'null';
-        if (value === undefined)
-            return 'undefined';
-        switch (typeof value) {
-            case 'bigint': return `type bigint (${value}n)`;
-            case 'number':
-                if (Object.is(value, -0))
-                    return 'type number (-0)';
-                return `type number (${value})`;
-            case 'boolean': return `type boolean (${value})`;
-            case 'symbol': return `type symbol (${String(value)})`;
-            case 'function': return `function ${value.name}`;
-            case 'string': {
-                const shown = value.length > 28 ? `${value.slice(0, 25)}...` : value;
-                return shown.includes("'") ? `type string (${JSON.stringify(shown)})` : `type string ('${shown}')`;
-            }
-            default: {
-                const ctor = Reflect.get(Object(value), 'constructor');
-                return typeof ctor === 'function' && ctor.name ? `an instance of ${ctor.name}` : String(value);
-            }
-        }
-    };
-    const invalidArgType = (name, expected, value) => nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" argument must be ${expected}. Received ${describe(value)}`);
     const invalidSetting = (Base, name, actual, min, max) => nodeError(Base, 'ERR_HTTP2_INVALID_SETTING_VALUE', `Invalid value for setting "${name}": ${String(actual)}`, min === undefined ? { actual } : { actual, min, max });
     const MAX_INT = 2 ** 32 - 1;
     const MAX_ADDITIONAL_SETTINGS = 10;
@@ -71,7 +45,7 @@ export function createHttp2Module(host) {
         if (settings === undefined)
             return;
         if (!isObjectArg(settings.customSettings))
-            throw invalidArgType('customSettings', 'an instance of Number', settings.customSettings);
+            throw invalidArgType('customSettings', 'Number', settings.customSettings);
         if (settings.customSettings) {
             const entries = Object.entries(settings.customSettings);
             if (entries.length > MAX_ADDITIONAL_SETTINGS) {
@@ -114,7 +88,7 @@ export function createHttp2Module(host) {
      */
     function getPackedSettings(settings) {
         if (!isObjectArg(settings))
-            throw invalidArgType('settings', 'of type object', settings);
+            throw invalidArgType('settings', 'object', settings);
         validate(settings);
         const given = { ...settings };
         // Node's settings buffer, by its slots: a custom identifier below 7 names
@@ -196,7 +170,7 @@ export function createHttp2Module(host) {
     /** A SETTINGS frame payload read back into a settings object (Node reads elements, as Buffer's readUInt*BE do). */
     function getUnpackedSettings(buf, options = {}) {
         if (!ArrayBuffer.isView(buf) || Reflect.get(buf, 'length') === undefined) {
-            throw invalidArgType('buf', 'an instance of Buffer or TypedArray', buf);
+            throw invalidArgType('buf', ['Buffer', 'TypedArray'], buf);
         }
         if (buf.length % 6 !== 0) {
             throw nodeError(RangeError, 'ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH', 'Packed settings length must be a multiple of six');

@@ -31,9 +31,10 @@ await t.waitForPrompt(60_000);
 
 // 1. The clone, bounded.
 const started = Date.now();
-const clone = stripAnsi((await t.run(`git clone --depth 1 ${REPO} repo; echo CLONE_RC=$?`, CLONE_BOUND_MS + 60_000)).output);
+const cloned = await t.run(`git clone --depth 1 ${REPO} repo`, CLONE_BOUND_MS + 60_000);
+const clone = stripAnsi(cloned.output);
 const cloneMs = Date.now() - started;
-a.check('git clone --depth 1 exits 0', /CLONE_RC=0/.test(clone), JSON.stringify(clone.slice(-500)));
+a.check('git clone --depth 1 exits 0', cloned.exitCode === 0, JSON.stringify(clone.slice(-500)));
 a.check(`the clone finishes within ${CLONE_BOUND_MS / 1000} s`, cloneMs < CLONE_BOUND_MS, `${cloneMs} ms`);
 
 // 2. It holds the commit GitHub serves (the branch moves: either side of the clone).
@@ -67,9 +68,10 @@ for (const path of SAMPLES) {
 // 5. git status is clean, bounded, and the session survives it.
 {
   const statusStarted = Date.now();
-  const out = stripAnsi((await t.run('git status; echo STATUS_RC=$?', STATUS_BOUND_MS + 30_000)).output);
+  const result = await t.run('git status', STATUS_BOUND_MS + 30_000);
+  const out = stripAnsi(result.output);
   const statusMs = Date.now() - statusStarted;
-  a.check('git status: nothing to commit, working tree clean', /nothing to commit, working tree clean/.test(out) && /STATUS_RC=0/.test(out),
+  a.check('git status: nothing to commit, working tree clean', /nothing to commit, working tree clean/.test(out) && result.exitCode === 0,
     JSON.stringify(out.slice(-400)));
   a.check(`git status finishes within ${STATUS_BOUND_MS / 1000} s`, statusMs < STATUS_BOUND_MS, `${statusMs} ms`);
   const alive = stripAnsi((await t.run('echo STILL_HERE', 30_000)).output);

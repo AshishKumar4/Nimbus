@@ -12,7 +12,7 @@ const a = makeAsserter('file-tree-watch/regression/ctrl-p-palette-still-works');
 console.log(`file-tree-watch/regression/ctrl-p-palette-still-works — ${BASE}`);
 
 const sid = await mintSession();
-const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
+const w = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 let opened = false;
 let result = null;
 w.on('open', () => { opened = true; });

@@ -1,35 +1,26 @@
 import { type NodeContext } from './index.js';
 import { type RequireFunction } from './module.js';
-export type PackageType = 'module' | 'commonjs' | null;
 /** Node's error for a module `require` cannot find: its message and its code. */
 export declare function moduleNotFound(name: string): Error;
 /** Strip a shebang line (`#!/usr/bin/env node`), leaving a blank line so line numbers hold. */
 export declare function stripShebang(src: string): string;
 /**
- * Whether `source` is an ES module by its syntax, as Node's detection reads
- * it: a top-level import or export declaration (not `import(`, not one
- * inside a string), or an `import.meta`.
- */
-export declare function isEsmSource(source: string): boolean;
-/** A package.json's "type", when it declares one. */
-export declare function declaredPackageType(packageJson: string): PackageType;
-/** Whether a module runs as an ES module: .mjs always, .cjs never, a .js by its package's type, else by its syntax. */
-export declare function treatAsEsm(source: string, filename: string, declared: () => PackageType): boolean;
-/**
  * `source` as the module wrapper's function text: a CommonJS body as written
- * but for its import() calls, or an ES module lowered (ESM when `esm`).
+ * but for its import() calls (rewriteDynamicImports), or an ES module lowered
+ * (ESM when `esm`) from its one reading (readEsmModule). Either one's
+ * import() loads through this loader, from the workspace, as the module at
+ * `parentUrl`.
  *
  * The loader's values reach the body under names drawn, with the emitter's
  * own, from one generatedNames over the source, so none is a name the
- * source holds: import.meta, import() (which loads through this loader, from
- * the workspace, in either body), and the require and module the lowering's
- * lines use. A lowered module is one block, so its own bindings (`const
- * __dirname`, `import process from`, `const require = createRequire(...)`)
- * shadow the wrapper's parameters as module scope does.
+ * source holds: import.meta, import(), and the require and module the
+ * lowering's lines use. A lowered module is one block, so its own bindings
+ * (`const __dirname`, `import process from`, `const require =
+ * createRequire(...)`) shadow the wrapper's parameters as module scope does.
  *
  * Throws a SyntaxError for an ES module that does not parse.
  */
-export declare function moduleWrapper(source: string, esm: boolean, async?: boolean): string;
+export declare function moduleWrapper(source: string, esm: boolean, parentUrl: string, async?: boolean): string;
 /** What one module's wrapper receives as console and process. */
 export interface ModuleScope {
     readonly console: unknown;

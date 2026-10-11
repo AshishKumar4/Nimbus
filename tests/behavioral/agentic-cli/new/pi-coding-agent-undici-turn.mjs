@@ -91,7 +91,7 @@ try {
   await t.run(heredocCommand('/home/user/mock-provider.js', mockProvider), 30_000);
   const boot = stripAnsi((await t.run('node /home/user/mock-provider.js', 90_000)).output);
   a.check('in-session model server is listening',
-    /LISTENING 7411|bin started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
+    /LISTENING 7411|facet started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
   await sleep(3000);
 
   await t.run('mkdir -p /home/user/.pi/agent', 30_000);
@@ -99,7 +99,7 @@ try {
 
   const launch = stripAnsi((await t.run(
     'cd /home/user && pi --model nimbusmock/mock-1 -p "say ok"', 120_000)).output);
-  const pid = Number((launch.match(/bin started \(long-running\): pid=(\d+)/) || [])[1] || 0);
+  const pid = Number((launch.match(/facet started \(long-running\): pid=(\d+)/) || [])[1] || 0);
   a.check('pi starts', pid > 0 || /NIMBUSOK/.test(launch), JSON.stringify(launch.slice(-900)));
 
   let turn = launch;

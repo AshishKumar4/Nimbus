@@ -20,8 +20,8 @@ try{
   await t.connect();await t.waitForPrompt(60000);
   await t.run(`mkdir -p ${APP}/app`,10000);
   for(const [name,text]of Object.entries(FILES))await t.run(heredocCommand(APP+'/'+name,text),10000);
-  const installed=await t.run(`cd ${APP} && npm install 2>&1; echo "___EXIT=$?___"`,400000);
-  const ok=/___EXIT=0___/.test(installed.output);
+  const installed=await t.run(`cd ${APP} && npm install 2>&1`,400000);
+  const ok=installed.exitCode===0;
   a.check('the Vinext 1.0 app installs',ok,tail(installed.output));
   if(!ok)throw new Error('install failed');
   const result=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/vinext dev --port ${PORT}`,port:PORT,accepts:r=>r.status===200&&r.body.includes(MARKER)});

@@ -62,32 +62,37 @@ function isLexerError(error: unknown): boolean {
 }
 
 /**
- * Route the cell's import() calls to the process's loader and, with
- * `moduleMetadata`, bind its import.meta to the module's own. `routeImports`
- * false binds metadata alone: a transform that lowers module syntax binds
- * import.meta before lowering (CommonJS output would make it {}) and routes
- * import() after, once the cell's import bindings are member reads that
- * cannot capture the loader's name.
+ * Route the cell's import() calls to the process's loader, `loader(parentUrl,
+ * ...arguments)`, and, with `moduleMetadata`, bind its import.meta to the
+ * module's own. `routeImports` false binds metadata alone: a transform that
+ * lowers module syntax binds import.meta before lowering (CommonJS output
+ * would make it {}) and routes import() after, once the cell's import
+ * bindings are member reads that cannot capture the loader's name.
  */
-export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false, routeImports = true): string {
+export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false, routeImports = true, loader = DYNAMIC_IMPORT_HELPER): string {
   const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
   const imports = routeImports && mayHaveDynamicImport(code);
   if (!imports && !metadata) return code;
   let lexed: string | null;
   try {
-    lexed = rewriteFromLexer(code, parentUrl, metadata, imports);
+    lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl), metadata, imports);
   } catch (error) {
     // A lexing or a probe that cannot finish settles nothing; the grammar decides.
     if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
     lexed = null;
   }
-  return lexed ?? rewriteWithGrammar(code, parentUrl, metadata, imports);
+  return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl), metadata, imports);
+}
+
+/** The text an import() call's `import(` becomes. */
+function loaderCall(loader: string, parentUrl: string): string {
+  return loader + '(' + JSON.stringify(parentUrl) + ', ';
 }
 
 interface CallSite { ss: number; se: number; d: number; lexed: boolean }
 
 /** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
-function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, imports: boolean): string | null {
+function rewriteFromLexer(code: string, call: string, metadata: boolean, imports: boolean): string | null {
   // The lexer reads a hashbang line as code. Blank it: lengths, and so
   // every position, stay the cell's.
   const hashbang = code.startsWith('#!') ? lineEnd(code, 0) : 0;
@@ -112,7 +117,6 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
   }
   calls.sort((a, b) => a.ss - b.ss);
 
-  const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
   const edits: SourceEdit[] = [];
   let validatedEnd = -1;
   for (const site of calls) {
@@ -128,8 +132,9 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
     edits.push({ start: site.ss, end: site.d + 1, text: call });
   }
   if (!edits.length && !metas.length) return code;
-  if (!metas.length) return applyEdits(code, edits, metas, null, 0);
-  return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+  if (!metas.length) return applyEdits(code, edits, metas, null, 0, '');
+  const { insertion, separator } = afterDirectives(code);
+  return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
 }
 
 /** Marks the lexer reports only where it reads the marked spot as code. */
@@ -313,23 +318,27 @@ function escapedCaptureNames(code: string): Set<string> {
 }
 
 /** Keep the user's directive prologue, and a hashbang, in front of the metadata capture. */
-function afterDirectives(code: string): number {
+function afterDirectives(code: string): { insertion: number; separator: string } {
   const tokens = tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true });
   let token = tokens.getToken();
   let insertion = token.start;
+  // What ends the last directive where it has no `;`.
+  let separator = '';
   while (token.type === tokTypes.string) {
     const expression = parseExpressionAt(code, token.start, { ecmaVersion: 'latest', sourceType: 'script' });
     if (expression.type !== 'Literal' || typeof Reflect.get(expression, 'value') !== 'string') break;
     do { token = tokens.getToken(); } while (token.start < expression.end);
     if (token.type === tokTypes.semi) {
       insertion = token.end;
+      separator = '';
       token = tokens.getToken();
       continue;
     }
     if (token.type !== tokTypes.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
     insertion = expression.end;
+    separator = ';';
   }
-  return insertion;
+  return { insertion, separator };
 }
 
 /** What the grammar's reading collects, as its parser recognizes it. */
@@ -386,9 +395,9 @@ class MetadataCollector extends ImportCollector {
  * The grammar's reading of the cell. A cell it cannot parse in either goal is
  * returned as written, for its compile to report.
  */
-function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, imports: boolean): string {
+function rewriteWithGrammar(code: string, call: string, metadata: boolean, imports: boolean): string {
   const collected: Collected = {
-    call: DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ',
+    call,
     edits: [],
     metas: [],
     names: metadata ? new Set<string>() : null,
@@ -409,21 +418,25 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, 
     if (!imports) collected.edits.length = 0;
     if (!collected.edits.length && !collected.metas.length) return code;
     let insertion = program.body[0]?.start ?? code.length;
+    // After a directive, which a `;` ends where it has none.
+    let separator = '';
     for (const statement of program.body) {
       if (typeof Reflect.get(statement, 'directive') !== 'string') break;
       insertion = statement.end;
+      separator = code[statement.end - 1] === ';' ? '' : ';';
     }
-    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
+    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
   }
   return code;
 }
 
-function applyEdits(code: string, edits: SourceEdit[], metas: Span[], names: Set<string> | null, insertion: number): string {
+function applyEdits(code: string, edits: SourceEdit[], metas: Span[], names: Set<string> | null, insertion: number, separator: string): string {
   if (metas.length) {
     let binding = METADATA_BINDING;
     while (code.includes(binding) || names?.has(binding)) binding += '_';
     for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-    edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
+    // On the line it is inserted in, so every line keeps its number: a directive of its own.
+    edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
   }
   return applySourceEdits(code, edits);
 }

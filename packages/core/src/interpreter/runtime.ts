@@ -107,11 +107,7 @@ export class FunctionInfo implements FactoryFunctionInfo {
   ) {}
 }
 
-// ── The host module and the function runtime ──
-
-let host: HostOperators;
-let strictFactories: FunctionFactories<FunctionInfo, Env, ClassRecord>;
-let sloppyFactories: FunctionFactories<FunctionInfo, Env, ClassRecord>;
+// ── The function runtime ──
 
 /**
  * A frame of `size` slots, `tdz` of them in their TDZ: every slot an own
@@ -122,10 +118,6 @@ export function frameTemplate(size: number, tdz: readonly number[]): Env {
   const frame = newList(size);
   for (let i = 0; i < tdz.length; i++) frame[tdz[i]] = TDZ;
   return frame;
-}
-
-export function operators(): HostOperators {
-  return host;
 }
 
 function enter(
@@ -266,35 +258,47 @@ const runtime: FunctionRuntime<FunctionInfo, Env, ClassRecord> = {
  */
 const pendingFrames = new SafeWeakMap<object, Env>();
 
-export function installHost(hostOps: HostOps): void {
-  const bound = hostOps.bind(runtime);
-  host = bound.ops;
-  strictFactories = bound.strict;
-  sloppyFactories = bound.sloppy;
-}
+/**
+ * One interpreter's function runtime, bound once by createInterpreter: its
+ * host's operators, and the strict and sloppy factories that make its
+ * interpreted functions. Compiled code reaches it through its unit
+ * (compile.ts UnitContext), so interpreters never share one.
+ */
+export class InterpreterRuntime {
+  readonly ops: HostOperators;
+  private readonly strict: FunctionFactories<FunctionInfo, Env, ClassRecord>;
+  private readonly sloppy: FunctionFactories<FunctionInfo, Env, ClassRecord>;
 
-/** A function object of `fi`'s shape over `scope`. */
-export function makeFunction(fi: FunctionInfo, scope: Env, home: object | undefined, name: string = fi.name): NativeFunction {
-  const factories = fi.strict ? strictFactories : sloppyFactories;
-  let fn: NativeFunction;
-  switch (fi.shape) {
-    case 'plain': fn = factories.plain(fi, scope); break;
-    case 'method': fn = factories.method(fi, scope, home); break;
-    case 'arrow': fn = factories.arrow(fi, scope); break;
-    case 'generator': fn = factories.generator(fi, scope, home); break;
-    case 'async': fn = factories.async(fi, scope, home); break;
-    case 'asyncArrow': fn = factories.asyncArrow(fi, scope); break;
-    case 'asyncGenerator': fn = factories.asyncGenerator(fi, scope, home); break;
-    case 'classBase': case 'classDerived': throw new Error('interpreter: classes are made by makeClass');
+  constructor(hostOps: HostOps) {
+    const bound = hostOps.bind(runtime);
+    this.ops = bound.ops;
+    this.strict = bound.strict;
+    this.sloppy = bound.sloppy;
   }
-  return finishFunction(fn, fi, name);
-}
 
-/** A class constructor of `fi` over `scope`, extending `parent` when derived. */
-export function makeClass(fi: FunctionInfo, scope: Env, parent: unknown, name: string, record: ClassRecord): NativeFunction {
-  const ctor = fi.shape === 'classDerived' ? strictFactories.classDerived(fi, scope, parent, record) : strictFactories.classBase(fi, scope, record);
-  registerClass(ctor, record);
-  return finishFunction(ctor, fi, name);
+  /** A function object of `fi`'s shape over `scope`. */
+  makeFunction(fi: FunctionInfo, scope: Env, home: object | undefined, name: string = fi.name): NativeFunction {
+    const factories = fi.strict ? this.strict : this.sloppy;
+    let fn: NativeFunction;
+    switch (fi.shape) {
+      case 'plain': fn = factories.plain(fi, scope); break;
+      case 'method': fn = factories.method(fi, scope, home); break;
+      case 'arrow': fn = factories.arrow(fi, scope); break;
+      case 'generator': fn = factories.generator(fi, scope, home); break;
+      case 'async': fn = factories.async(fi, scope, home); break;
+      case 'asyncArrow': fn = factories.asyncArrow(fi, scope); break;
+      case 'asyncGenerator': fn = factories.asyncGenerator(fi, scope, home); break;
+      case 'classBase': case 'classDerived': throw new Error('interpreter: classes are made by makeClass');
+    }
+    return finishFunction(fn, fi, name);
+  }
+
+  /** A class constructor of `fi` over `scope`, extending `parent` when derived. */
+  makeClass(fi: FunctionInfo, scope: Env, parent: unknown, name: string, record: ClassRecord): NativeFunction {
+    const ctor = fi.shape === 'classDerived' ? this.strict.classDerived(fi, scope, parent, record) : this.strict.classBase(fi, scope, record);
+    registerClass(ctor, record);
+    return finishFunction(ctor, fi, name);
+  }
 }
 
 function finishFunction(fn: NativeFunction, fi: FunctionInfo, name: string): NativeFunction {

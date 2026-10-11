@@ -1,48 +1,7 @@
 ---
-/**
- * CapabilityExplorer — filterable, searchable view of the README
- * "What works today" capability table. Rows mirror README.md verbatim
- * (source of truth, live-probed); statuses are exactly ✅ / Alpha / ⛔.
- * Rendered statically so it works without JavaScript; JS adds filtering.
- */
-type Status = 'works' | 'alpha' | 'no';
-interface Row {
-	cap: string;
-	status: Status;
-	area: string;
-}
+import rows from '../data/capabilities.json';
 
-const rows: Row[] = [
-	{ area: 'Shell', status: 'works', cap: 'Real shell, 60+ Unix commands, persistent 10 GB filesystem' },
-	{ area: 'Runtimes', status: 'works', cap: 'node, bun via Cloudflare workerd nodejs_compat (V8 + Node-API shim, not the upstream binaries)' },
-	{ area: 'Runtimes', status: 'works', cap: 'python / python3 — Pyodide-based CPython 3.13 (script + -c + -m + stdlib)' },
-	{ area: 'Runtimes', status: 'works', cap: 'ruby / ruby3 — ruby.wasm-based Ruby 3.3 (script + -e + -r + stdlib)' },
-	{ area: 'Runtimes', status: 'works', cap: 'clang — LLVM 8 → wasm32-wasi-nimbus, modern wasi-libc sysroot default, multi-TU + user headers + fopen' },
-	{ area: 'Runtimes', status: 'works', cap: 'Interactive REPLs — python, ruby, node, bun' },
-	{ area: 'Packages', status: 'works', cap: 'npm install against the live registry, with cross-session L2 cache' },
-	{ area: 'Packages', status: 'works', cap: 'npm alias dependencies such as alias: "npm:<pkg>@<version>"' },
-	{ area: 'Git', status: 'works', cap: 'git clone over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation' },
-	{ area: 'Network', status: 'works', cap: 'In-session loopback networking — curl http://127.0.0.1:<port> reaches servers in other isolates; node server.js auto-promotes to a routeable resident process' },
-	{ area: 'Network', status: 'works', cap: 'Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike' },
-	{ area: 'Shell', status: 'works', cap: 'Unix permissions groundwork — durable st_mode, real chmod (octal + symbolic), exec-bit enforcement: ./binary runs only if executable (Permission denied, exit 126 otherwise), generic #! shebang dispatch' },
-	{ area: 'Processes', status: 'alpha', cap: 'Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate)' },
-	{ area: 'Dev servers', status: 'works', cap: 'Vite SPA dev server — full HMR to the preview iframe' },
-	{ area: 'Dev servers', status: 'works', cap: 'wrangler dev for single-file Workers; Workers + Static Assets' },
-	{ area: 'SDK', status: 'works', cap: 'Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools' },
-	{ area: 'Processes', status: 'works', cap: 'JS agent CLI primitives — env/home, npm/npx, child_process.spawn/exec/execFile, piped stdio, streams, logs' },
-	{ area: 'Processes', status: 'alpha', cap: 'Foreground attached npm-bin TTY tabs — stdin, resize, ANSI output, clean exit; Pi official installer and npm path probed' },
-	{ area: 'Packages', status: 'alpha', cap: 'Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, python -m flask run, python -m http.server preview' },
-	{ area: 'Packages', status: 'alpha', cap: 'Ruby package workflows — gem, bundle, pure gems, Rack/WEBrick preview' },
-	{ area: 'Agent', status: 'works', cap: 'Session Agent — editor-workspace chat with Cloudflare OAuth / Workers AI and sandbox tools' },
-	{ area: 'Packages', status: 'works', cap: 'npx <pkg> — first-class shebang + auto-install fallback' },
-	{ area: 'Packages', status: 'works', cap: 'node_modules/.bin/* resolves and executes' },
-	{ area: 'Shell', status: 'works', cap: 'Binary file round-trip via fs.writeFileSync / readFileSync' },
-	{ area: 'Shell', status: 'works', cap: 'Session recovery — WebSocket drop → reconnect preserves cwd, env, files' },
-	{ area: 'Runtimes', status: 'works', cap: "WASI preview1 — 45 of 46 spec functions; outbound TCP via path_open('/dev/tcp/<host>/<port>') (JSPI); full poll_oneoff (fd / clock / socket subscriptions)" },
-	{ area: 'Runtimes', status: 'no', cap: 'wasi-threads (thread_spawn) — refused at link time' },
-];
-
-const chip: Record<Status, { label: string; kind: string }> = {
+const chip: Record<string, { label: string; kind: string }> = {
 	works: { label: 'works', kind: 'works' },
 	alpha: { label: 'alpha', kind: 'alpha' },
 	no: { label: 'not supported', kind: 'no' },
@@ -67,9 +26,9 @@ const chip: Record<Status, { label: string; kind: string }> = {
 	<ul class="capx-list">
 		{
 			rows.map((r) => (
-				<li data-status={r.status} data-text={`${r.area} ${r.cap}`.toLowerCase()}>
+				<li data-status={r.status} data-text={`${r.area} ${r.description}`.toLowerCase()}>
 					<span class="capx-area">{r.area}</span>
-					<span class="capx-cap">{r.cap}</span>
+					<span class="capx-cap">{r.description}</span>
 					<span class="nimbus-chip" data-kind={chip[r.status].kind}>
 						{chip[r.status].label}
 					</span>
@@ -79,8 +38,7 @@ const chip: Record<Status, { label: string; kind: string }> = {
 	</ul>
 	<p class="capx-empty" data-role="empty" hidden>No capabilities match that filter.</p>
 	<p class="capx-note">
-		Mirrors the <a href="https://github.com/AshishKumar4/Nimbus#what-works-today">README capability table</a>
-		— the live-probed source of truth, covered by the behavioral suite in
+		Shares its capability catalog with the <a href="https://github.com/AshishKumar4/Nimbus#what-works-today">README capability table</a>, covered by the behavioral suite in
 		<code>tests/behavioral/</code>.
 	</p>
 </div>

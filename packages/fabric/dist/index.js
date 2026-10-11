@@ -26,6 +26,7 @@ export * from './budgets.js';
 export * from './isolate-pool.js';
 export * from './process-fabric.js';
 export * from './process-host.js';
+export * from './peer-host.js';
 export * from './workerd-facet-host.js';
 export * from './ws-hibernation-config.js';
 export * from './vendor/errors.js';

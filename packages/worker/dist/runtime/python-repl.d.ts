@@ -1,4 +1,3 @@
-import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 /**
  * python-repl.ts — the interactive `python` prompt.
@@ -24,7 +23,7 @@ import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
-import { type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface PythonReplDeps {
     facetMgr: FacetManager;
     /** Owns the installed interpreter blobs the prompt is booted from. */
@@ -56,6 +55,8 @@ export interface PythonReplDeps {
      * never touches a file.
      */
     pid?: number;
+    /** The invoking process's credential; absent only for the install-time warm-up. */
+    cred?: Readonly<VfsCred>;
     /**
      * Where the prompt starts: the shell's working directory, entered once
      * per interpreter, and the command that started it, which a refusal to
@@ -71,9 +72,20 @@ export interface PythonReplDeps {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start'>, pythonHome: string, userCode: string): {
+export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid' | 'cred'>, pythonHome: string, userCode: string): {
     enter?: string | undefined;
     userCode: string;
+    cred: Readonly<VfsCred> | undefined;
+    supervisorPid: number;
+    outputControls: ({
+        key: string;
+        prefix: string;
+        suffix?: undefined;
+    } | {
+        key: string;
+        prefix: string;
+        suffix: string;
+    })[];
     pythonHome: string;
     pyArgv: string[];
     userEnv: {
@@ -82,17 +94,6 @@ export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'star
     };
     progName: string;
 };
-/**
- * Facet-side, request-shaped: serialized with fn.toString() into the
- * pool's fetch entrypoint, so it captures nothing and names no import —
- * __cpythonReplRun is put on globalThis by the preamble, and unlike
- * __cpythonRun it keeps its interpreter between calls. The request body
- * is the step payload the adapter JSON-encodes; the response is the
- * step result. Request transport because it is the pool's only
- * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
- * interpreter at its suspension point.
- */
-export declare function pythonReplStepRequestFn(request: Request, facetEnv: FacetBindings): Promise<Response>;
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
 /**
  * Pay the interpreter's boot before the user asks for a prompt. Pushing empty

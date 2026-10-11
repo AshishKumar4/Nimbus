@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalDisposition, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
@@ -69,6 +69,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
     setUmask: (mask) => self.processes.setUmask(pid, mask),
     runAs: runAsProcess,
     accountWork: (worker: number) => self.processes.beginWork(worker),
+    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => self.processes.holdWork(worker, stop),
   });
   // `kill` is the shell's builtin; the session's own processes (resident
   // servers, the vite shim), numbered in this table's pid space, are reached
@@ -125,7 +126,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
@@ -141,7 +142,7 @@ workspace.runtimes.registerRunner(
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
     const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
+    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -158,7 +159,7 @@ workspace.runtimes.registerRunner(
 // pass through to the existing handler unchanged.
 workspace.runtimes.registerRunner(
   'cpython-runner',
-  (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: any): Promise<number> {
+  (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
     const argv: string[] = ctx.args || [];
     // No args at all → REPL session. Hand off to runPythonRepl
     // which builds its own IsolatePool (separate from the
@@ -179,6 +180,7 @@ workspace.runtimes.registerRunner(
         // The supervisor derives the write credential from this; without
         // it the prompt cannot write to the session filesystem.
         pid: ctx.pid,
+        cred: requireVfsCred(ctx.cred, 'Python REPL'),
         start: { cwd: ctx.cwd || shell.getCwd(), binName },
       });
     }
@@ -189,6 +191,8 @@ workspace.runtimes.registerRunner(
     const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
+      filesystem: workspace.filesystem,
+      processes: self.processes,
       startResident: cpythonResidentStart(facetMgr),
       network: workspace.network,
     })(manifest, installRoot, binName, binKind)(ctx);
@@ -227,6 +231,7 @@ workspace.runtimes.registerRunner(
     const runner = await makeRubyRunnerFactory({
       facets: facetHostForManager(facetMgr),
       filesystem: workspace.filesystem,
+      processes: self.processes,
       registry,
       startResident: rubyResidentStart(facetMgr),
       getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
@@ -256,6 +261,7 @@ workspace.runtimes.registerRunner(
         manifest,
         cred: ctx.cred,
         pid: ctx.pid,
+        processes: self.processes,
         filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
         env: ctx.env,
         cwd: ctx.cwd || '/home/user',
@@ -264,7 +270,7 @@ workspace.runtimes.registerRunner(
     }
     const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
+    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -356,7 +362,7 @@ workspace.runtimes.registerRunner(
 //     before script path)
 //   - primitive #1 shebang strip
 //   - .ts/.tsx/.jsx esbuild auto-transform
-//   - G4 binSpawn ctx propagation (when the .bin handler set
+//   - G4 binSpawn ctx propagation (when a broker or launch wrapper set
 //     ctx.__nimbusBinSpawn, runFresh reuses the caller's PID
 //     instead of double-spawning)
 //   - --watch/--inspect/--inspect-brk routing via runFresh →
@@ -438,6 +444,8 @@ const bunSpec: RuntimeSpec = {
   run: (code, opts) => runBunScript(facetMgr, code, opts),
   supportsBinSpawn: true,
   routesServers: true,
+  // Bun binds require, __filename and __dirname in an ES module.
+  moduleScope: 'bun',
   repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).
@@ -870,8 +878,11 @@ const shellEntrypointExecutor = {
       options?.cwd || '/home/user',
       { parentPid },
     );
-    // The command that runs the script (`sh x.sh`) awaits its shell.
+    // The command that runs the script (`sh x.sh`) awaits its shell, which is
+    // this session's work behind the child's pid: a kill stops it.
     const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
+    const stop = new AbortController();
+    const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason));
     let exitCode = 1;
     try {
       const identity = commandIdentityFor(childProcess.pid);
@@ -896,12 +907,14 @@ const shellEntrypointExecutor = {
           setUmask: identity.setUmask,
         },
         runAs: runAsProcess,
+        signal: stop.signal,
       });
       exitCode = result.exitCode;
       return result;
     } finally {
       endAwait();
       self.processes.exit(childProcess.pid, exitCode);
+      stopped();
     }
   },
 } satisfies ShellEntrypointExecutor;
@@ -940,11 +953,12 @@ const shellExecuteTracked = async (
 
   // Wrap the caller-supplied streams so every chunk is both displayed
   // AND captured in the ring buffer keyed by this PID.
-  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => {
+  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void | Promise<void>; writeBytes?(d: Uint8Array): void | Promise<void> }) => {
     const toTarget = textSink((text) => target.write(text));
-    return (d: Uint8Array) => {
-      try { self.processes.appendOutputBytes(pid, stream, d); } catch {}
-      try { toTarget(d); } catch {}
+    return async (d: Uint8Array) => {
+      await self.processes.appendOutputBytes(pid, stream, d);
+      if (target.writeBytes) await target.writeBytes(d);
+      else toTarget(d);
     };
   };
 
@@ -956,6 +970,11 @@ const shellExecuteTracked = async (
   // nothing but await a program is told as such.
   const scriptShell = workspace.shellFor(pid, { cwd: cmdCtx.cwd || '/home/user', env: cmdCtx.env });
   const endAwait = self.processes.beginAwait(cmdCtx.pid, pid);
+  // The script is this session's work behind the pid until its shell has
+  // closed what it opened: a kill stops it, and only then is what it bound
+  // released.
+  const stop = new AbortController();
+  const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
   let exitCode = 1;
   try {
     const result = await scriptShell.execute(cmd, {
@@ -991,6 +1010,7 @@ const shellExecuteTracked = async (
           : {}),
       },
       runAs: runAsProcess,
+      signal: stop.signal,
     });
     exitCode = result.exitCode;
   } catch (e: any) {
@@ -1003,6 +1023,7 @@ const shellExecuteTracked = async (
   } finally {
     endAwait();
     try { await scriptShell.closeDescriptors(); } catch {}
+    stopped();
     // When a long-running script handed off to a live server (the registry
     // command adopted this pid and returned 0), the process stays running;
     // emitting an immediate exit would print a false `[shell exited]` and
@@ -1033,11 +1054,14 @@ const shellExecuteTracked = async (
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
   filesystem: workspace.filesystem,
-  getCwd: () => (shell as any)?.cwd || '/home/user',
-  processes: self.processes,
+  getCwd: () => shell?.getCwd() || '/home/user',
   getFacetManager: () => {
     self.ensureFacetManager();
     return facetMgr!;
+  },
+  learnedServer: (server) => {
+    self.ensureFacetManager();
+    return facetMgr!.learnedServers.has(server);
   },
   terminal: terminal,
   notifyTerminalEvent: (event) => notifyTerminalEvent(terminal, event),
@@ -1192,26 +1216,12 @@ registry.register('npm', async (ctx: any) => {
     return 0;
   }
 
-  // npm init / npm init -y
-  if (sub === 'init') {
-    const cwd = cwdKey;
-    const pkgPath = cwd + '/package.json';
-    if (await ctx.vfs.exists(`/${pkgPath}`) && !args.includes('-y') && !args.includes('--yes')) {
-      ctx.stderr.write('package.json already exists. Use -y to overwrite.\n');
-      return 1;
-    }
-    const name = cwd.split('/').pop() || 'project';
-    const pkg = {
-      name, version: '1.0.0', description: '', main: 'index.js',
-      type: 'module',
-      scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
-      keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
-    };
+  // npm init, npm create, npm innit: core npm's (npm-init.ts), npm's own
+  // package.json or the initializer it names, run by npx.
+  if (sub === 'init' || sub === 'create' || sub === 'innit') {
     // Releases before 0.13.2 wrote package.json as root.
-    await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${pkgPath}`);
-    await ctx.vfs.writeFile(`/${pkgPath}`, JSON.stringify(pkg, null, 2) + '\n');
-    ctx.stdout.write('Wrote to ' + pkgPath + '\n');
-    return 0;
+    await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${cwdKey}/package.json`);
+    return coreNpmCmd(ctx);
   }
 
   // npm uninstall <pkg>
@@ -1261,93 +1271,6 @@ registry.register('npm', async (ctx: any) => {
     return failed ? 1 : 0;
   }
 
-
-  // ── npm create <pkg> / npm init <pkg> → npx create-<pkg> ─────────
-  //
-  // Per the npm spec, `npm create X args...` and `npm init X args...`
-  // (when X is supplied) are sugar for invoking the `create-X`
-  // initializer package via npx. Specifically:
-  //
-  //   npm create foo args...           → npx create-foo args...
-  //   npm create foo@1.2 args...       → npx create-foo@1.2 args...
-  //   npm create @scope/foo args...    → npx @scope/create-foo args...
-  //   npm create @scope args...        → npx @scope/create args...
-  //
-  // `npm init` (no args) is a different beast — it scaffolds a
-  // package.json interactively. The `sub === 'init'` branch above
-  // handles the no-arg case; here we only intercept the
-  // initializer-package case (1+ args after `init`).
-  //
-  // Without this routing, `npm create vite@latest mvp -- --template
-  // react-ts` hits the base npm dispatch which only knows
-  // {init, install/i/add, uninstall/remove/rm/un, list/ls,
-  // run/run-script, start, test, info/view/show, search, version}
-  // — and emits "npm: unknown command 'create'". Every modern
-  // framework's `create-*` flow (create-vite, create-next-app
-  // routed via "npm create", create-cloudflare, create-astro, etc.)
-  // depends on this.
-  //
-  // This is a primitive: one fix, every framework wins.
-  if (sub === 'create' || (sub === 'init' && args.length >= 2 && !args[1].startsWith('-'))) {
-    const arg1 = args[1];
-    if (!arg1) {
-      ctx.stderr.write('npm create: missing package name\n');
-      ctx.stderr.write('Usage: npm create <pkg> [args...]\n');
-      return 1;
-    }
-    // Parse pkg + version. Scope-aware:
-    //   @scope        → @scope/create
-    //   @scope/foo    → @scope/create-foo
-    //   foo           → create-foo
-    //   foo@1.2.3     → create-foo@1.2.3
-    //   foo@latest    → create-foo@latest
-    function rewriteToCreatePkg(spec: string): string {
-      // Strip an optional version range and re-append after the rewrite.
-      const atIdx = spec.lastIndexOf('@');
-      const hasVersion = atIdx > 0; // a leading @ is the scope; not a version
-      const bare = hasVersion ? spec.slice(0, atIdx) : spec;
-      const version = hasVersion ? spec.slice(atIdx) : '';
-      let pkg: string;
-      if (bare.startsWith('@')) {
-        const slash = bare.indexOf('/');
-        if (slash < 0) {
-          // @scope → @scope/create
-          pkg = bare + '/create';
-        } else {
-          // @scope/foo → @scope/create-foo
-          const scope = bare.slice(0, slash);
-          const name = bare.slice(slash + 1);
-          pkg = scope + '/create-' + name;
-        }
-      } else {
-        pkg = 'create-' + bare;
-      }
-      return pkg + version;
-    }
-    const createPkg = rewriteToCreatePkg(arg1);
-    const passThrough = args.slice(2);
-    // `npm create` accepts an optional `--` separator to push the
-    // remaining args to the create script; npx doesn't need a
-    // separator (positional args after the package name go to the
-    // package). We strip a single literal `--` token if present so
-    // `npm create vite@latest mvp -- --template react-ts` becomes
-    // `npx --yes create-vite@latest mvp --template react-ts`.
-    const stripped = passThrough.filter((a, i, arr) => !(a === '--' && i < arr.length - 1) && !(a === '--' && arr.indexOf('--') === i));
-    // Inform the user what we're routing to — matches npm's own
-    // visible "npx" line so the create flow is honest.
-    ctx.stdout.write(`> npx --yes ${createPkg}${stripped.length ? ' ' + stripped.join(' ') : ''}\n`);
-    // Dispatch through the npx registry entry. `--yes` skips the
-    // "Ok to proceed? (y)" prompt.
-    const npxHandler = await registry.resolve('npx');
-    if (!npxHandler) {
-      ctx.stderr.write('npm create: npx command unavailable\n');
-      return 1;
-    }
-    return await npxHandler({
-      ...ctx,
-      args: ['--yes', createPkg, ...stripped],
-    });
-  }
 
   // Fall through to core npm for other subcommands
   return coreNpmCmd(ctx);
@@ -1410,7 +1333,7 @@ registry.register('npx', async (ctx: any) => {
 registry.register('ps', async (ctx: any) => {
   // Pids are generation-strided (see PID_GEN_STRIDE) so they can be 7+
   // digits; size the column to the widest pid in this listing.
-  const procs = self.processes.getAll();
+  const procs = self.processes.publishedAll();
   const pidWidth = Math.max(3, ...procs.map((p: any) => String(p.pid).length));
   ctx.stdout.write(`  ${'PID'.padStart(pidWidth)}  STATUS              COMMAND\n`);
   for (const proc of procs) {
@@ -1435,7 +1358,7 @@ registry.register('ps', async (ctx: any) => {
   if (self.viteDevServer?.isRunning) {
     ctx.stdout.write(`  \x1b[33m${'---'.padStart(pidWidth)}\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (${self.viteBasePath}/)\n`);
   }
-  if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
+  if (procs.length === 0 && !self.viteDevServer?.isRunning) {
     ctx.stdout.write('  (no processes)\n');
   }
   return 0;
@@ -1533,8 +1456,9 @@ registry.register('logs', async (ctx: any) => {
     return 0;
   }
 
-  // Follow mode: subscribe to live appends, poll for exit.
-  const entry = self.processes.get(pid);
+  // Follow mode: subscribe to live appends, poll for exit. Ended as its
+  // observers are told it: an end still held behind its output is followed.
+  const entry = self.processes.published(pid);
   const alreadyExited =
     !entry || entry.state !== 'running' || self.processes.getExit(pid);
   if (alreadyExited) {
@@ -1592,7 +1516,7 @@ registry.register('logs', async (ctx: any) => {
 });
 
 registry.register('jobs', async (ctx: any) => {
-  const running = self.processes.getRunning();
+  const running = self.processes.publishedAll().filter((p) => p.state === 'running');
   if (running.length === 0 && !self.viteDevServer?.isRunning) {
     ctx.stdout.write('No background jobs.\n');
     return 0;

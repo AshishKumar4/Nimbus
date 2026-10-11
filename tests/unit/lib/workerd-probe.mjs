@@ -109,33 +109,41 @@ async function putObjects(puts, persist, work, wrangler) {
 }
 
 /**
- * End a wrangler dev process and its whole group: wrangler spawns workerd
- * and an esbuild service beneath it, and they outlive it. One left behind
- * holds the stderr this process reads, so this process never exits
- * (measured: an esbuild service, reparented to init, 3 of 48 copies of a
- * test at eight at once, each after its first wrangler lost its bind).
- * @param {import('node:child_process').ChildProcess} child
- */
-async function endGroup(child) {
-  if (child.exitCode === null && child.signalCode === null) {
-    try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
-    await new Promise((done) => { child.once('close', done); setTimeout(done, 5000); });
-  }
-  try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-}
-
-/**
  * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
- * its config vars (`wrangler dev --var`). `wrangler` is the binary to run
- * (this lib's own test passes a stand-in).
- * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number }>}
+ * its config vars (`wrangler dev --var`). `wrangler` may be a test stand-in.
+ * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number, inspectorBase: string | null }>}
  */
-export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, wrangler = WRANGLER } = {}) {
+export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false, minify = false, wrangler = WRANGLER } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
+  const owned = new Set();
+  const stopped = new WeakMap();
+  const stopChild = (process) => {
+    if (stopped.has(process)) return stopped.get(process);
+    const task = (async () => {
+      const closed = new Promise((done) => {
+        let timer;
+        const finish = () => { clearTimeout(timer); process.off('close', finish); done(); };
+        process.once('close', finish);
+        timer = setTimeout(finish, 5000);
+        if (process.exitCode !== null && process.stdout?.destroyed && process.stderr?.destroyed) finish();
+      });
+      // An exited leader can leave workerd holding its pipes and group alive.
+      // Only groups created here are signalled, including a failed attempt.
+      try { globalThis.process.kill(-process.pid, process.exitCode === null ? 'SIGTERM' : 'SIGKILL'); } catch { /* gone */ }
+      await closed;
+      try { globalThis.process.kill(-process.pid, 'SIGKILL'); } catch { /* gone */ }
+      process.stdout?.destroy();
+      process.stderr?.destroy();
+      process.unref();
+      owned.delete(process);
+    })();
+    stopped.set(process, task);
+    return task;
+  };
   const stop = async () => {
-    if (child) await endGroup(child);
+    await Promise.all([...owned].map(stopChild));
     rmSync(work, { recursive: true, force: true });
   };
   try {
@@ -153,12 +161,15 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     const deadline = Date.now() + bootTimeoutMs;
     let log = '';
     let base = null;
+    let inspectorBase = null;
     // The free port can be taken by another test's server before wrangler
     // binds it. That server would answer a probe of the port, and wrangler
     // exits on the bind: so the address is the one wrangler says it is ready
     // on, and a lost bind is retried on another port.
     for (let attempt = 1; base === null; attempt++) {
       const port = await freePort();
+      const inspectorPort = inspector ? await freePort() : null;
+      inspectorBase = inspectorPort===null?null:`http://127.0.0.1:${inspectorPort}`;
       console.log('workerd-probe: starting wrangler dev');
       log = '';
       child = spawn(wrangler, [
@@ -166,7 +177,10 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
         '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,
         ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
+        ...(minify ? ['--minify'] : []),
+        ...(inspectorPort===null?[]:['--inspector-port',String(inspectorPort)]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
+      owned.add(child);
       // wrangler dev rebuilds and reloads the worker when a file it bundles
       // changes, which resets every session it serves: a test running then
       // fails on a socket closed with 1006 and nothing else to say why
@@ -184,10 +198,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       child.stderr.on('data', watchReload);
       for (;;) {
         if (child.exitCode !== null) {
-          if (attempt < 3 && /Address already in use/.test(log)) {
-            await endGroup(child);
-            break;
-          }
+          if (attempt < 3 && /Address already in use/.test(log)) { await stopChild(child); break; }
           throw new Error(`wrangler dev exited ${child.exitCode}:\n${log.slice(-2000)}`);
         }
         const ready = /Ready on (http:\/\/127\.0\.0\.1:\d+)/.exec(log);
@@ -205,7 +216,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     }
     const token = await mintProbeToken(secret, 3_600_000);
     // pid: the wrangler dev process group, whose members serve the probe.
-    return { base, token, stop, log: () => log, pid: child.pid };
+    return { base, token, stop, log: () => log, pid: child.pid, inspectorBase };
   } catch (error) {
     await stop();
     throw error;
@@ -213,34 +224,26 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
 }
 
 /**
- * A terminal session on a local probe with `nimbus install <runtime>` done,
- * running commands through the real shell. `run(command)` returns the
+ * A command runner on an existing terminal. `run(command)` returns the
  * command's own output (the echo and prompts stripped) and its exit status.
  *
- * A command is done when its completion marker has printed its status and
- * the prompt is back, not at the first output that ends like a prompt.
+ * The driver reads completion and status from trusted shell control frames.
  * `timeoutMs` bounds the wait. Work a loaded machine can stretch past any
  * bound passes `{ progress, stalledMs }` too: `progress()` fingerprints what
  * the command is doing (the session's Dynamic Worker ledger, say), and the
  * wait then fails once neither it nor the terminal's output has changed for
  * `stalledMs`, or at `timeoutMs` however it moves.
  */
-export async function localTerminal(probe, { install = ['bash'] } = {}) {
-  process.env.BASE = probe.base;
-  process.env.NIMBUS_PROBE_TOKEN = probe.token;
-  const { mintSession, deleteSession, Terminal, requestHeaders } = await import('../../behavioral/_driver.mjs');
-  const sid = await mintSession();
-  const terminal = new Terminal(sid);
-  await terminal.connect();
-  await terminal.waitForPrompt(60_000);
-  const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+export function terminalCommandRunner(terminal) {
+  // The driver the terminal came from, already loaded with the probe's BASE.
+  const driver = import('../../behavioral/_driver.mjs');
+  const strip = async (text) => (await driver).stripAnsi(text).replace(/\r/g, '');
   /** Its answer, or `undefined` if it has none within `ms` (a session too busy to answer has not moved). */
   const within = (promise, ms) => {
     let timer;
     return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
   };
   const wait = async (line, done, timeoutMs, progress, stalledMs) => {
-    if (!progress) return terminal.waitFor(done, timeoutMs, line.slice(0, 80));
     const started = Date.now();
     const look = async () => JSON.stringify([await within(progress().catch((error) => `progress: ${error.message}`), 30_000), terminal.buf.length]);
     let seen = await look();
@@ -255,36 +258,45 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
       if (now !== seen) { seen = now; moved = Date.now(); }
       const still = Date.now() - moved;
       if (still >= stalledMs || Date.now() - started >= timeoutMs) {
+        const tail = (await strip(terminal.buf)).slice(-400);
         throw new Error(`${line}: ${still >= stalledMs ? `nothing moved for ${still} ms` : `not done after ${timeoutMs} ms, still moving`}; `
-          + `progress ${seen.slice(0, 1500)}; tail: ${JSON.stringify(strip(terminal.buf).slice(-400))}`);
+          + `progress ${seen.slice(0, 1500)}; tail: ${JSON.stringify(tail)}`);
       }
     }
   };
-  let serial = 0;
   /**
    * @param {string} command
    * @param {number} [timeoutMs]
    * @param {{ progress?: () => Promise<unknown>, stalledMs?: number }} [options]
    */
   const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
-    const mark = `__NIMBUS_DONE_${++serial}__`;
-    const line = `${command}; echo "${mark}$?"`;
-    // The echoed line carries the marker too, followed by `$?`, never by
-    // digits. The prompt after the marker's line is the shell's; it need not
-    // end the buffer, where a background job's banner may follow it.
-    const done = new RegExp(`${mark}\\d+\\s*\\n[\\s\\S]*?[$#>](\\s|$)`);
-    terminal.reset();
-    terminal.cmd(line);
-    await wait(line, (b) => done.test(b), timeoutMs, progress, stalledMs);
-    const text = strip(terminal.buf);
-    const end = text.lastIndexOf(mark);
-    if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
-    const status = Number(/^\d+/.exec(text.slice(end + mark.length))?.[0]);
-    // What the command printed: after the echoed command line, before the marker.
-    const echoed = text.lastIndexOf(`echo "${mark}$?"`);
-    const start = text.indexOf('\n', echoed) + 1;
-    return { stdout: text.slice(start, end), status };
+    const cursor = terminal.stream.length;
+    const pending = terminal.run(command, timeoutMs);
+    const submission = terminal.submission;
+    const [result] = await Promise.all([pending, ...(progress
+      ? [wait(command, () => submission.end !== null, timeoutMs, progress, stalledMs)] : [])]);
+    let start = cursor;
+    let stdout = '';
+    for (const event of terminal.protocol) {
+      if (event.submissionId !== submission.id) continue;
+      if (event.event === 'start') start = event.at;
+      if (event.event === 'finish') stdout += terminal.stream.slice(start, event.at);
+    }
+    return { stdout: await strip(stdout), status: result.exitCode };
   };
+  return run;
+}
+
+/** A session on a local probe, with the requested runtimes installed. */
+export async function localTerminal(probe, { install = ['bash'] } = {}) {
+  process.env.BASE = probe.base;
+  process.env.NIMBUS_PROBE_TOKEN = probe.token;
+  const { mintSession, deleteSession, Terminal, requestHeaders } = await import('../../behavioral/_driver.mjs');
+  const sid = await mintSession();
+  const terminal = new Terminal(sid);
+  await terminal.connect();
+  await terminal.waitForPrompt(60_000);
+  const run = terminalCommandRunner(terminal);
   for (const name of install) {
     const r = await run(`nimbus install ${name}`, 240_000);
     if (r.status !== 0) throw new Error(`nimbus install ${name} failed (${r.status}):\n${r.stdout.slice(-800)}`);

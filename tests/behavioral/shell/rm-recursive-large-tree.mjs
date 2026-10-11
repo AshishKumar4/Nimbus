@@ -25,14 +25,13 @@ const PACKAGE = '@earendil-works/pi-coding-agent';
 const token = Math.random().toString(36).slice(2, 10);
 
 /**
- * Wait for `marker`, reporting a dropped socket as the dropped socket it is.
- * Returns null when the terminal died, so the probe can assert on that rather
+ * Run a command, reporting a dropped socket as the dropped socket it is.
+ * Returns failure details when the terminal dies, so the probe can assert on that rather
  * than crash out of the run and skip its own cleanup.
  */
-async function expect(t, marker, timeoutMs, label) {
+async function step(t, command, timeoutMs) {
   try {
-    await t.waitFor((b) => b.includes(marker), timeoutMs, label);
-    return stripAnsi(t.buf);
+    return (await t.run(command, timeoutMs)).output;
   } catch (error) {
     return { failure: String(error?.message ?? error), closed: t.closed, detail: t.closeDetail };
   }
@@ -49,12 +48,12 @@ try {
 
   const install = await t.run(
     `mkdir -p ${PROJECT} && cd ${PROJECT} && echo keep-me > sibling.txt`
-    + ` && npm install --ignore-scripts ${PACKAGE}; echo INSTALLED_${token}`,
+    + ` && npm install --ignore-scripts ${PACKAGE}`,
     600_000,
   );
   const installOut = stripAnsi(install.output);
   a.check('the tree under test installed',
-    installOut.includes(`INSTALLED_${token}`) && !/npm install failed|command not found/i.test(installOut),
+    install.exitCode === 0 && !/npm install failed|command not found/i.test(installOut),
     JSON.stringify(installOut.slice(-1200)));
 
   const counted = await t.run(`find ${TREE} -type f | wc -l`, 300_000);
@@ -65,11 +64,7 @@ try {
     treeFiles >= 5_000,
     `counted ${treeFiles}; output ${JSON.stringify(stripAnsi(counted.output).slice(-400))}`);
 
-  // The removal itself. Not `t.run` — a dropped socket must be reported as a
-  // dropped socket, not as a timeout waiting for a prompt.
-  t.reset();
-  t.cmd(`rm -rf ${TREE}; echo REMOVED_${token}`);
-  const removal = await expect(t, `REMOVED_${token}`, 600_000, 'rm -rf to finish');
+  const removal = await step(t, `rm -rf ${TREE}`, 600_000);
   a.check(`rm -rf of ${treeFiles} files completes with the terminal alive`,
     typeof removal === 'string',
     typeof removal === 'string' ? 'ok' : JSON.stringify(removal));
@@ -80,24 +75,18 @@ try {
     !t.closed,
     `closeDetail=${t.closeDetail ?? 'none'}`);
 
-  t.reset();
-  t.cmd(`echo ALIVE_${token}`);
-  const alive = await expect(t, `ALIVE_${token}`, 60_000, 'a frame after the removal');
+  const alive = await step(t, `echo ALIVE_${token}`, 60_000);
   a.check('the shell still answers on the same socket after the removal',
     typeof alive === 'string',
     typeof alive === 'string' ? 'ok' : JSON.stringify(alive));
 
-  t.reset();
-  t.cmd(`ls ${TREE} 2>&1; echo LISTED_${token}`);
-  const listed = await expect(t, `LISTED_${token}`, 60_000, 'the post-removal listing');
+  const listed = await step(t, `ls ${TREE} 2>&1`, 60_000);
   a.check('the tree is actually gone',
     typeof listed === 'string' && /ENOENT|No such file|cannot access/i.test(listed),
     typeof listed === 'string' ? JSON.stringify(listed.slice(-400)) : JSON.stringify(listed));
 
   // The removal took the subtree and nothing beside it.
-  t.reset();
-  t.cmd(`cat ${PROJECT}/sibling.txt 2>&1; echo SIBLING_${token}`);
-  const sibling = await expect(t, `SIBLING_${token}`, 60_000, 'the surviving sibling');
+  const sibling = await step(t, `cat ${PROJECT}/sibling.txt 2>&1`, 60_000);
   a.check("a file beside the removed tree survives it",
     typeof sibling === 'string' && /keep-me/.test(sibling),
     typeof sibling === 'string' ? JSON.stringify(sibling.slice(-400)) : JSON.stringify(sibling));

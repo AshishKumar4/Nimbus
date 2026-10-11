@@ -1,0 +1,69 @@
+{
+  "artifact": "rolldown",
+  "version": "1.2.13",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.13.tar.gz",
+    "sha256": "f22d36d1dc3fc068274149b5e699058657a3f7da1802aee42e7e667f3a31cf04"
+  },
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1",
+    "mode": "wrapper",
+    "rustflags": [
+      "--cfg",
+      "tokio_unstable",
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "napi-wasm/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfile": {
+      "origin": "upstream's Cargo.lock (rolldown-1.2.13), pruned to this build by cargo 1.99.0 (5f94df478 2026-08-27)",
+      "sha256": "6e26b60640c6d436b64b2561f975ca0abddb078a65d796e3a8e19847b1852610",
+      "packages": 329,
+      "upstreamPackages": 406
+    }
+  },
+  "seams": [],
+  "npm": {
+    "owner": "rolldown",
+    "requiredAs": [
+      "@rolldown/binding-wasm32-wasi"
+    ]
+  },
+  "wasm": {
+    "memoryMinPages": 86,
+    "sharedMemory": false,
+    "pumped": true,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "clock_time_get",
+      "fd_close",
+      "fd_fdstat_get",
+      "fd_filestat_get",
+      "fd_prestat_get",
+      "fd_prestat_dir_name",
+      "fd_read",
+      "fd_readdir",
+      "fd_write",
+      "path_create_directory",
+      "path_filestat_get",
+      "path_open",
+      "path_readlink",
+      "path_remove_directory",
+      "path_unlink_file",
+      "poll_oneoff",
+      "proc_exit",
+      "sched_yield"
+    ]
+  },
+  "outputs": {
+    "rolldown.wasm": {
+      "bytes": 13740474,
+      "sha256": "7d3047dab778ea7233dcedf9c15b01e2ac0ea5ac5845a9bd1e3c747c126feb22"
+    }
+  }
+}

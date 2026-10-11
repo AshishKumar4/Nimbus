@@ -23,8 +23,8 @@
  *   - subcommands: optional map of `<verb> → handler` for
  *     bun-style `bun install`, `bun run` (node has none today)
  *   - transform(): optional code rewriter (bun prepends BUN_SHIM_PREAMBLE)
- *   - supportsBinSpawn: true for node and bun (a .bin handler, the
- *     child_process broker or a background job propagates a callerPid);
+ *   - supportsBinSpawn: true for node and bun (the child_process broker
+ *     or a background job propagates a callerPid);
  *     other runtimes use a plain spawn flow.
  *
  * Anti-requirements observed
@@ -42,6 +42,8 @@ import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { type ModuleScope } from './module-format.js';
+import { type ServerIdentity } from './server-launch.js';
 import { type NodeLaunch } from './node-cli.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -54,9 +56,24 @@ export interface RuntimeRunResult {
     stderr: string;
 }
 /**
+ * A program run as an npm bin (worker shell/npm-bin-entrypoints.ts): how its
+ * process is shown, and hints to start it as a resident.
+ */
+export interface BinLaunch {
+    command: string;
+    attachedTty: boolean;
+    /** A server by the hints (worker facets/server-hints.ts): resident without its code's analysis. */
+    serves: boolean;
+    server: ServerIdentity;
+}
+/**
  * Options the handler passes to the runner. Mirrors RunFreshOpts.
  */
 export interface RuntimeRunOpts {
+    /** Host-local byte sink. Runners stream here instead of a text capture result. */
+    output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
+    /** Existing fd-0 channel (a broker child or attached terminal), inherited without read-ahead. */
+    stdinPid?: number;
     argv: string[];
     env: Record<string, string> | undefined;
     cwd: string | undefined;
@@ -72,6 +89,8 @@ export interface RuntimeRunOpts {
     captureOutput?: boolean;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /** The bin it runs, learned a server when it runs on as one (worker facets/server-hints.ts). */
+    server?: ServerIdentity;
     /**
      * A resident whose stdin its launcher writes and ends without waiting for
      * the boot: a synchronous read of stdin while it boots waits for that
@@ -96,6 +115,16 @@ export interface RuntimeRunOpts {
      * code; with `print`, the program's code returns the value to print.
      */
     node?: NodeLaunch;
+    /**
+     * The program is an ES module the handler lowered (module-format.ts): its
+     * own require is its static imports, and what escapes its evaluation is
+     * explained as Node's loader explains it.
+     */
+    esModule?: boolean;
+    /** Its lowering's EsModuleMap (async-module-lowering.ts), as JSON: where its frames read the source's places. */
+    esModuleMap?: string;
+    /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /**
      * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
      * `node x.js < in.txt`); absent when stdin is the terminal. A runner
@@ -183,6 +212,11 @@ export interface RuntimeSpec {
      * it), and the program's conditions and execArgv go to the run.
      */
     nodeCommandLine?: boolean;
+    /**
+     * Whose scope the runtime runs an ES module in (module-format.ts
+     * ModuleScope), the entry's and every module it loads: absent, Node's.
+     */
+    moduleScope?: ModuleScope;
     /**
      * The runner routes a program that starts a server to a resident process
      * (node-runner.ts runFresh), so the handler reports whether it does

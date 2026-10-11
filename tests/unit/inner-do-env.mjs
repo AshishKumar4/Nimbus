@@ -43,10 +43,11 @@ class RpcStub {
 const other = { kept: true };
 const env = { P: remote, GREETING: 'hi', OTHER: other };
 const main = { P: class {}, notAClass: 1 };
-// As the generated module runs them: from their source, so nothing outside them is reachable.
-const fromSource = (fn) => (0, eval)(`(${fn.toString()})`);
-const { NimbusDurableObjectClasses } = fromSource(innerDoAdapter)(
-  fromSource(innerDoIdFromName), ['P', 'ABSENT'], main, { env, RpcStub, WorkerEntrypoint },
+// Execute the actual build-time expression the generated module carries.
+const { INNER_DO_ADAPTER_SOURCE } = await import('../../packages/fabric/src/compiled-bodies.generated.ts');
+const compiled = (0, eval)(INNER_DO_ADAPTER_SOURCE);
+const { NimbusDurableObjectClasses } = compiled.innerDoAdapter(
+  compiled.innerDoIdFromName, ['P', 'ABSENT'], main, { env, RpcStub, WorkerEntrypoint },
 );
 
 // The env: P is a local namespace; the rest as it was.
@@ -55,11 +56,13 @@ assert.equal(env.GREETING, 'hi');
 assert.equal(env.OTHER, other);
 assert.equal('ABSENT' in env, false, 'a name the env has no binding for is left alone');
 assert.deepEqual(Object.keys(env.P), [], 'a namespace has no own enumerable properties');
+assert.equal(env.P.constructor.name, 'DurableObjectNamespace', 'the compiled guest keeps the public platform type name');
 
 // Ids and stubs answer at once.
 const id = env.P.idFromName('x');
 assert.equal(id.toString(), innerDoIdFromName('x'));
 assert.equal(id.name, 'x');
+assert.equal(id.constructor.name, 'DurableObjectId');
 assert.ok(env.P.idFromString(id.toString()).equals(id));
 assert.match(env.P.newUniqueId().toString(), /^uniq:[0-9a-f]{32}$/);
 const stub = env.P.get(id);

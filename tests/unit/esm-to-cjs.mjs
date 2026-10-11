@@ -18,8 +18,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as esbuild from 'esbuild';
-import { emitCommonJs, readEsmRecords } from '../../packages/core/src/runtime/async-module-lowering.ts';
-import { rewriteBundledEsmToCjs } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { emitCommonJs, lowerEsModule, readEsmRecords } from '../../packages/core/src/runtime/async-module-lowering.ts';
 
 /** Modules the cases import, as CommonJS: one marked __esModule, two plain. */
 function dependencies() {
@@ -94,8 +93,9 @@ for (const [label, source] of Object.entries(CASES)) {
   }
 }
 
-// The bounded bundle rewrite reads the declarations a bundle prints and
-// emits through the same emitter.
+// The lowering of a module (lowerEsModule: a cell's body, its require and
+// module the wrapper's) reads the declarations a bundle prints and emits
+// through the same emitter.
 {
   const bundle = [
     "import d, { n } from 'esm';",
@@ -105,14 +105,8 @@ for (const [label, source] of Object.entries(CASES)) {
     'export default value;',
   ].join('\n');
   const expected = shape(await run(esbuild.transformSync(bundle, { format: 'cjs', loader: 'js' }).code));
-  for (const factory of [false, true]) {
-    const rewritten = rewriteBundledEsmToCjs(bundle, 'file:///bundle.js', factory);
-    assert.ok(rewritten, 'the bundle takes the bounded path');
-    const code = factory
-      ? `return (function () { ${rewritten.code} }).call(undefined, undefined, require, module);`
-      : rewritten.code;
-    assert.deepEqual(shape(await run(code)), expected, `bundle rewrite (module factory: ${factory})`);
-  }
+  const code = `return (function () { ${lowerEsModule(bundle, 'node', 'file:///bundle.mjs').code} }).call(undefined, undefined, require, module);`;
+  assert.deepEqual(shape(await run(code)), expected, 'the lowering');
 }
 
 // A getter installed before the body reads what the body assigns after an
@@ -130,6 +124,40 @@ for (const [label, source] of Object.entries(CASES)) {
   for (const body of ['sync', 'async']) {
     const exports = await run(emitCommonJs(source, readEsmRecords(source), { body }));
     assert.deepEqual(exports.seen, ['P2', 'mine'], `${body} body`);
+  }
+}
+
+// No semicolons, against real Node: a statement that starts with a call of
+// an import ends the one before it (a lowered call must not continue it),
+// the body of an if among them; `this` in the call stays undefined.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'esm-to-cjs-asi-'));
+  try {
+    const dep = 'export const log = []\nexport function note(x) { log.push([x, this === undefined]); return Promise.resolve(x) }\n'
+      + 'export function tag(strings, n) { log.push(strings[0] + n); return () => "tagged" }\n';
+    const source = 'import { note, tag, log } from "./dep.mjs"\nconst first = [1]\nnote("a").then(() => {})\nnote("b")\nlet t = 0\ntag`n${t}`\n'
+      + 'const pair = [2]\nimport { log as again } from "./dep.mjs"\n[3].forEach((n) => note(n))\n'
+      + 'if (first.length) note("c")\nif (!first.length) note("never")\nfor (const x of first) note(x)\nconst f = () =>\n  note("arrow")\nf()\nexport const seen = log.slice()\n';
+    writeFileSync(join(dir, 'dep.mjs'), dep);
+    writeFileSync(join(dir, 'main.mjs'), source);
+    const nodeRun = spawnSync('node', ['--input-type=module', '-e', `process.stdout.write(JSON.stringify((await import(${JSON.stringify(join(dir, 'main.mjs'))})).seen))`], { encoding: 'utf8' });
+    assert.equal(nodeRun.status, 0, nodeRun.stderr);
+    const depModule = { exports: {} };
+    new Function('module', 'exports', 'require', emitCommonJs(dep, readEsmRecords(dep), { body: 'sync' }))(depModule, depModule.exports, () => ({}));
+    for (const [body, code] of [
+      ['sync', emitCommonJs(source, readEsmRecords(source), { body: 'sync' })],
+      ['module', `return (function () { ${lowerEsModule(source, 'node', 'file:///m.mjs').code} }).call(undefined, undefined, require, module);`],
+    ]) {
+      depModule.exports.log.length = 0;
+      const module = { exports: {} };
+      new Function('module', 'exports', 'require', code)(module, module.exports, (name) => {
+        assert.equal(name, './dep.mjs');
+        return depModule.exports;
+      });
+      assert.deepEqual(module.exports.seen, JSON.parse(nodeRun.stdout), `statements without semicolons (${body}) run as Node's`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -167,15 +195,13 @@ for (const [label, source] of Object.entries(CASES)) {
     assert.equal(nodeRun.status, 0, nodeRun.stderr);
     const node = JSON.parse(nodeRun.stdout);
     const dep = Object.defineProperty({ ...node.dep }, '__esModule', { value: true });
-    const bundled = [];
     for (const [label, source] of Object.entries(MODULES)) {
-      const lowerings = { sync: () => emitCommonJs(source, readEsmRecords(source), { body: 'sync' }), async: () => emitCommonJs(source, readEsmRecords(source), { body: 'async' }) };
+      const lowerings = {
+        sync: () => emitCommonJs(source, readEsmRecords(source), { body: 'sync' }),
+        async: () => emitCommonJs(source, readEsmRecords(source), { body: 'async' }),
+        module: () => `return (function () { ${lowerEsModule(source, 'node', 'file:///m.mjs').code} }).call(undefined, undefined, require, module);`,
+      };
       if (source.includes('await')) delete lowerings.sync;
-      const rewritten = rewriteBundledEsmToCjs(source, 'file:///m.mjs');
-      if (rewritten) {
-        lowerings.bundle = () => rewritten.code;
-        bundled.push(label);
-      }
       for (const [body, lower] of Object.entries(lowerings)) {
         const require = (name) => { assert.equal(name, './dep.mjs'); return dep; };
         const module = { exports: {}, require };
@@ -184,9 +210,6 @@ for (const [label, source] of Object.entries(CASES)) {
         assert.deepEqual(plain(module.exports), node[label], `${label} (${body}) exports what Node's module does`);
       }
     }
-    // Every module the bounded rewrite can run synchronously takes it: one
-    // without top-level await.
-    assert.deepEqual(bundled, Object.keys(MODULES).filter((label) => !MODULES[label].includes('await')), 'the bounded rewrite takes every synchronous module');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -287,4 +310,4 @@ for (const [label, source] of Object.entries(CASES)) {
 }
 
 await esbuild.stop?.();
-console.log(`esm-to-cjs: ${Object.keys(CASES).length} modules lower as esbuild's CommonJS does, in both bodies and the bundle rewrite`);
+console.log(`esm-to-cjs: ${Object.keys(CASES).length} modules lower as esbuild's CommonJS does, in both bodies and the module lowering`);

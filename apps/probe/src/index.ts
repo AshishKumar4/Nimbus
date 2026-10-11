@@ -11,19 +11,9 @@
  * The class re-exports let wrangler and `enable_ctx_exports` discover
  * the DO/RPC classes from the main module — see apps/hosted-demo.
  */
-import {
-  NimbusSession as SdkNimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-  createNimbusHandler,
-} from '@nimbus-sh/sdk/worker';
+import { createNimbusHandler } from '@nimbus-sh/sdk/worker';
+import { NimbusSession as SdkNimbusSession } from '@nimbus-sh/sdk/entrypoints';
+export * from '@nimbus-sh/sdk/entrypoints';
 import { Nimbus } from '@nimbus-sh/sdk';
 import {
   verifyRequestToken,
@@ -34,6 +24,8 @@ import {
 } from '@nimbus-sh/worker/auth';
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
@@ -153,30 +145,77 @@ export class TestEgress extends WorkerEntrypoint {
   }
 }
 
-/**
- * The SDK's session, its workspace under the test egress when the probe runs
- * with NIMBUS_TEST_EGRESS=1, as an embedder that names each session to its
- * egress would write it.
- */
+export class TestTlsEgress extends TestEgress {
+  override async connect(socket: Socket): Promise<void> {
+    const { localAddress } = await socket.opened as { localAddress?: string };
+    if (localAddress === 'tcp-refused.invalid:7') throw new Error('egress refused this TCP destination');
+    if (localAddress === `${EGRESS_TEST_HOST}:7`) {
+      const reader = socket.readable.getReader();
+      const first = await reader.read();
+      reader.releaseLock();
+      const writer = socket.writable.getWriter();
+      if (!first.done) await writer.write(first.value);
+      await writer.close();
+      return;
+    }
+    if (localAddress !== `${EGRESS_TEST_HOST}:443`) return super.connect(socket);
+    await readRequestLine(socket.readable);
+    const writer = socket.writable.getWriter();
+    await writer.write(new TextEncoder().encode('plain-egress-ready\n'));
+    await socket.closed.catch(() => {});
+    writer.releaseLock();
+  }
+
+  async connectTls(target: { hostname: string; port: number }): Promise<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }> {
+    if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
+    if (target.hostname !== EGRESS_TEST_HOST || target.port !== 443) throw new Error('unexpected TLS destination');
+    let reply: ReadableByteStreamController;
+    let input = '';
+    return {
+      readable: new ReadableStream<Uint8Array>({ type: 'bytes', start(controller) { reply = controller; } }),
+      writable: new WritableStream<Uint8Array>({
+        write(chunk) {
+          input += new TextDecoder().decode(chunk);
+          if (!input.includes('\r\n\r\n')) return;
+          reply.enqueue(new TextEncoder().encode('via-egress-tls ' + target.hostname + ':' + target.port + ' ' + input.split('\r\n', 1)[0] + '\n'));
+          reply.close();
+        },
+      }),
+    };
+  }
+}
+
+/** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
+  /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
+  #dataMounted = false;
+
+  /**
+   * The session's filesystem, with the embedder-mount surface the probes
+   * exercise: a MemoryVFS at /mnt/data, as an embedder mounts its own
+   * filesystem (CompositeVFS.mount). Its limits are the probe's, not a
+   * mount's: it is not durable (an isolate reset empties it) and it lives
+   * in the session DO's heap, so only small repositories and files go there.
+   */
+  override getFilesystemAuthority() {
+    const files = super.getFilesystemAuthority();
+    if (!this.#dataMounted) {
+      files.vfs.mount('/mnt/data', new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid }));
+      this.#dataMounted = true;
+    }
+    return files;
+  }
+
   protected override workspaceEgress() {
     if ((this.env as { NIMBUS_TEST_EGRESS?: string }).NIMBUS_TEST_EGRESS !== '1') return super.workspaceEgress();
+    if ((this.env as { NIMBUS_TEST_EGRESS_TLS?: string }).NIMBUS_TEST_EGRESS_TLS === '1') {
+      return (this.ctx as unknown as { exports: { TestTlsEgress(options: { props: object }): Fetcher } })
+        .exports.TestTlsEgress({ props: { session: this.ctx.id.toString() } });
+    }
     return (this.ctx as unknown as { exports: { TestEgress(options: { props: object }): Fetcher } })
       .exports.TestEgress({ props: { session: this.ctx.id.toString() } });
   }
 }
-
-export {
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-};
 
 const nimbus = createNimbusHandler({
   auth: { mode: 'enforce' },
@@ -184,14 +223,25 @@ const nimbus = createNimbusHandler({
 });
 
 const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/spawn-worker$/;
+type ProbeEnv = Parameters<typeof nimbus.fetch>[1] & { CF_VERSION_METADATA?: { id: string } };
 
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
-    if (request.method === 'POST') {
-      const match = EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname);
-      if (match) return spawnEmbedderWorker(request, env, match[1]);
-    }
-    return nimbus.fetch(request, env, ctx);
+  async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
+    const response = match ? await spawnEmbedderWorker(request, env, match[1]) : await nimbus.fetch(request, env, ctx);
+    const versionId = env.CF_VERSION_METADATA?.id;
+    // Stamp the three readiness replies, including 101; leave encoded asset
+    // and port responses intact instead of rebuilding their body metadata.
+    const readiness = (request.method === 'POST' && path === '/new')
+      || (request.method === 'GET' && /^\/s\/[^/]+\/ws$/.test(path))
+      || (request.method === 'DELETE' && /^\/s\/[^/]+\/$/.test(path));
+    if (!versionId || !readiness) return response;
+    const headers = new Headers(response.headers);
+    headers.set('x-nimbus-probe-version', versionId);
+    return new Response(response.body, {
+      status: response.status, statusText: response.statusText, headers, webSocket: response.webSocket,
+    });
   },
 };
 

@@ -7,7 +7,9 @@
  *
  *   facet — the process is a named child actor of the user's own session DO.
  *   peer  — the process is a named child actor of a SIBLING session DO, and
- *           the coordinator reaches it over one held-open RPC.
+ *           the coordinator reaches it over one held-open RPC, which
+ *           `PeerProcessHost` here calls and `PeerHost` (peer-host.ts)
+ *           serves.
  *
  * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
@@ -68,10 +70,13 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
+import { ProcessHostLost, } from './process-fabric.js';
+import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, headerPairs, isolateToken, } from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
-import { supervisorBindingProps } from './supervisor-props.js';
+import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
  * decided — the embedder owns the config var that picks it, and refuses an
@@ -82,16 +87,17 @@ import { supervisorBindingProps } from './supervisor-props.js';
  */
 export function createProcessHost(mode, ctx, env, disk, 
 /** The workspace's network: every process's binding carries it, and with it its egress. */
-network) {
+network, supervise = bindingSupervisor) {
     return mode === 'peer'
-        ? new PeerProcessHost(ctx, env, network)
-        : new FacetProcessHost(ctx, env, disk, network);
+        ? new PeerProcessHost(ctx, env, network, supervise)
+        : new FacetProcessHost(ctx, env, disk, network, supervise);
 }
 // ── facet: the process is a child of the user's own session DO ──────────────
 class FacetProcessHost {
     ctx;
     disk;
     network;
+    supervise;
     /**
      * The process shares its session's Durable Object, so the session's own
      * store is reachable by copy-on-write — and its storage budget is the same
@@ -105,21 +111,36 @@ class FacetProcessHost {
     };
     env;
     coordDoId;
-    constructor(ctx, env, disk, network) {
+    constructor(ctx, env, disk, network, supervise) {
         this.ctx = ctx;
         this.disk = disk;
         this.network = network;
+        this.supervise = supervise;
         this.env = (env ?? {});
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+        return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
     }
     async open(params) {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
+        // The platform can kill or reset the process's own facet (its memory or
+        // CPU limit, measured with astro dev on 2026-10-08) with the session left
+        // standing; the next call to the facet is what shows it. Its boot is left
+        // as the facet answers it: a run's own start and stop (a boot waiting on
+        // stdin is replayed) are not the host's to judge.
+        const loss = new HostLoss(facet.lost);
         return {
             ...facet,
+            lost: loss.signal,
+            handleHttpRequest: (request) => loss.route(() => facet.handleHttpRequest(request)),
+            handleWebSocketRequest: (request) => loss.route(() => facet.handleWebSocketRequest(request)),
+            release: () => {
+                loss.release();
+                return facet.release();
+            },
             describe: () => `facet '${name}' (pid ${params.pid})`
                 + ` of session ${this.coordDoId.slice(-12)}`
                 + `; ${describeImageDelivery(this.imageDelivery)}`,
@@ -141,29 +162,6 @@ function describeImageDelivery(delivery) {
  * process already running. Measured: 1 shared pair in 24 fresh peers.
  */
 const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
-/**
- * This workerd process's identity. Module scope, so two Durable Objects
- * reporting the same token are in the same process — which is exactly the CPU
- * sharing a peer exists to avoid, and the only way to detect it.
- */
-let _isolateToken = null;
-export function isolateToken() {
-    if (!_isolateToken)
-        _isolateToken = crypto.randomUUID();
-    return _isolateToken;
-}
-/**
- * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
- * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
- * as headers on the peer fetch instead.
- *
- * The key alone is guessable from a pid, so it is not enough on its own; the
- * capability is minted per `open()` and known only to the coordinator that
- * opened the process and the peer that hosts it. The receiving session strips
- * both before the request reaches the process.
- */
-export const HOSTED_WEBSOCKET_KEY_HEADER = 'x-nimbus-hosted-websocket';
-export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-capability';
 /**
  * Peer stubs forward one supervisorOp entrypoint: every method the host-
  * process surface needs is an envelope op, not a private _rpc* method.
@@ -228,6 +226,7 @@ function processPeerStub(value, peerName) {
 class PeerProcessHost {
     ctx;
     network;
+    supervise;
     /**
      * A peer buys independent CPU and its own storage budget, and pays for both
      * with the image path: nothing crosses a Durable Object boundary by
@@ -243,9 +242,12 @@ class PeerProcessHost {
     coordDoId;
     /** pid → the isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
-    constructor(ctx, env, network) {
+    /** workerKey → how to end an open process whose host reports its reset (hostLost). */
+    opens = new Map();
+    constructor(ctx, env, network, supervise) {
         this.ctx = ctx;
         this.network = network;
+        this.supervise = supervise;
         if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
             throw new BindingError('ProcessFabric: a peer host requires environment bindings');
         }
@@ -262,7 +264,8 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+        return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
     }
     async open(params) {
         if (params.facet) {
@@ -297,14 +300,17 @@ class PeerProcessHost {
             startArgs: params.startArgs,
         });
         hostLeg.catch(() => { });
+        // The held leg failing is one way the peer's loss shows (a coordinator's
+        // own release settles it cleanly); the peer's next incarnation reporting
+        // it (hostLost) from its own alarm is another.
+        const loss = new HostLoss(hostLeg);
+        this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
         // The peer starts the runner as part of hosting it; this reads back that
         // one boot payload without re-running anything, so `started` means exactly
         // what it means on a facet. Racing the host leg is what turns a peer that
         // died before the boot landed into a rejection rather than a hang — the
         // peer that would have answered is the thing that is gone.
-        const booted = placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload);
-        booted.catch(() => { });
-        const started = Promise.race([booted, hostLeg.then(() => booted)]);
+        const started = loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload));
         started.catch(() => { });
         // Do not return a handle for a process that was never opened. Opening a
         // facet of one's own DO either throws or does not, before any handle
@@ -317,6 +323,7 @@ class PeerProcessHost {
         }
         catch (error) {
             this.tokensInUse.delete(params.pid);
+            this.opens.delete(params.workerKey);
             // Awaited, not fired off: a spawn that rejects must mean nothing was
             // left running, which is what a throw from `processes().spawn` means on
             // the other substrate.
@@ -331,17 +338,19 @@ class PeerProcessHost {
         let released = false;
         return {
             started,
-            // The held leg IS the process's residency here. It settles cleanly when
-            // the coordinator releases; anything else is the host going away under a
-            // process that was up, and the fabric ends the process on it.
-            lost: hostLeg.then(() => new Promise(() => { })),
-            handleHttpRequest: (request) => routeThroughPeer(placement.stub, params.workerKey, request),
-            handleWebSocketRequest: (request) => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request),
+            // The held leg IS the process's residency here, and it settles cleanly
+            // when the coordinator releases. The host going away under a process
+            // that was up rejects this, and the fabric ends the process on it.
+            lost: loss.signal,
+            handleHttpRequest: (request) => loss.route(() => routeThroughPeer(placement.stub, params.workerKey, request)),
+            handleWebSocketRequest: (request) => loss.route(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
             release: async () => {
                 if (released)
                     return;
                 released = true;
+                loss.release();
                 this.tokensInUse.delete(params.pid);
+                this.opens.delete(params.workerKey);
                 try {
                     await this._cancel(params.workerKey, placement.peerName);
                 }
@@ -352,6 +361,13 @@ class PeerProcessHost {
             describe: () => `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
                 + `; ${describeImageDelivery(this.imageDelivery)}`,
         };
+    }
+    hostLost(workerKey, capability) {
+        const open = this.opens.get(workerKey);
+        if (open === undefined || open.capability !== capability)
+            return false;
+        open.lose(new Error('the host restarted without it'));
+        return true;
     }
     /**
      * Probe successive sibling names until one reports an isolate token distinct
@@ -437,6 +453,54 @@ class PeerProcessHost {
         return cancelled;
     }
 }
+/**
+ * One open process's host loss: the platform reset or killed the actor it
+ * runs in (its facet, or a peer), and the process is over. Fired once, by
+ * whichever shows it first: `held` (a leg the host holds for the process's
+ * life) failing, or a call to the host failing with a reset's own words
+ * (isHostReset). From then on every leg answers with the one
+ * ProcessHostLost: `signal` rejects with it, and a route fails at once.
+ *
+ * Measured on Cloudflare: a peer reset under a CPU-bound process left the
+ * held leg open, and only the next call failed, after about 10 s, with
+ * "Durable Object reset because its code was updated." (2026-10-07); a facet
+ * killed by its memory limit answered the next call, after about 60 s, with
+ * "Durable Object's isolate exceeded its memory limit and was reset."
+ * (2026-10-08). A call in flight when the loss shows fails then, not when
+ * the platform's own answer arrives.
+ */
+class HostLoss {
+    gone = null;
+    /** Nimbus released the process itself (a kill, a stop): what fails after that is no loss. */
+    released = false;
+    reject = () => { };
+    signal = new Promise((_, reject) => { this.reject = reject; });
+    constructor(held) {
+        this.signal.catch(() => { });
+        held?.then(() => undefined, (error) => { if (!this.released)
+            this.lose(error); });
+    }
+    lose(error) {
+        if (this.gone === null) {
+            this.gone = new ProcessHostLost(error);
+            this.reject(this.gone);
+        }
+        return this.gone;
+    }
+    /** The host is being released on purpose: the facet or peer ending now is that, not a loss. */
+    release() {
+        this.released = true;
+    }
+    /** A call to the host, which fails by the loss's name once the host is gone. */
+    route(leg) {
+        if (this.gone !== null)
+            return Promise.reject(this.gone);
+        const call = leg().catch((error) => {
+            throw this.gone ?? (!this.released && isHostReset(error) ? this.lose(error) : error);
+        });
+        return Promise.race([call, this.signal]);
+    }
+}
 async function routeThroughPeer(stub, workerKey, request) {
     const result = await stub._rpcRouteHostedHttp(workerKey, {
         method: request.method,
@@ -463,29 +527,4 @@ function routeWebSocketThroughPeer(stub, workerKey, capability, request) {
     headers.set(HOSTED_WEBSOCKET_KEY_HEADER, workerKey);
     headers.set(HOSTED_WEBSOCKET_CAPABILITY_HEADER, capability);
     return stub.fetch(new Request(request.url, { method: request.method, headers }));
-}
-/**
- * Headers as pairs, with every `Set-Cookie` kept separate.
- *
- * Iterating a `Headers` combines same-named fields into one comma-joined
- * value, and for `Set-Cookie` that is not reversible — `append` cannot split
- * `a=1; Path=/, b=2; Path=/` back into two cookies, and a browser reading the
- * merged form sets one malformed cookie instead of two. Every other field
- * combines by comma legally, so only this one needs the separate accessor.
- * A user's server setting two cookies must not depend on which substrate its
- * process happened to run on.
- */
-export function headerPairs(headers) {
-    const pairs = [];
-    headers.forEach((value, key) => {
-        if (key.toLowerCase() !== 'set-cookie')
-            pairs.push([key, value]);
-    });
-    const getSetCookie = headers.getSetCookie;
-    const cookies = typeof getSetCookie === 'function'
-        ? getSetCookie.call(headers)
-        : (headers.get('set-cookie') ? [headers.get('set-cookie')] : []);
-    for (const cookie of cookies)
-        pairs.push(['set-cookie', cookie]);
-    return pairs;
 }

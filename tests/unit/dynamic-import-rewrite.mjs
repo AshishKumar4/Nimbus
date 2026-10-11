@@ -101,6 +101,14 @@ return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
   assert.match(rewritten, /__nimbusMetadataModule\.__nimbusImportMeta\.url/);
 }
 
+// The metadata binding goes on the line it is inserted in: every line keeps its number.
+{
+  const source = '"use strict"\nconst a = import.meta.url;\nthrow a;\n';
+  const rewritten = rewriteDynamicImports(source, parent, true);
+  assert.equal(rewritten.split('\n').length, source.split('\n').length);
+  assert.equal(rewritten.split('\n')[2], 'throw a;');
+}
+
 // A script the parse refuses is returned as written, for the compile to report.
 assert.equal(rewriteDynamicImports('import(', parent), 'import(');
 // Code with no import() is returned as is, unparsed.

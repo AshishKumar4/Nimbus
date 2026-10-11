@@ -56,13 +56,13 @@ try {
   for (const [name, content] of Object.entries(files)) {
     await terminal.run(heredocCommand(`${root}/${name}`, content), 10_000);
   }
-  const installed = await terminal.run(`cd ${root} && npm install react@18.3.1 react-dom@18.3.1 2>&1; echo "___EXIT=$?___"`, 300_000);
-  a.check('react and react-dom install', /___EXIT=0___/.test(installed.output), installed.output.slice(-400));
+  const installed = await terminal.run(`cd ${root} && npm install react@18.3.1 react-dom@18.3.1 2>&1`, 300_000);
+  a.check('react and react-dom install', installed.exitCode === 0, installed.output.slice(-400));
   const started = await terminal.run(`cd ${root} && NIMBUS_REAL_VITE=1 vite --host 0.0.0.0 --port ${port}`, 180_000);
   console.log(started.output.slice(-600));
 
   const get = async (path) => {
-    const response = await fetch(url + path, { headers: requestHeaders(), signal: AbortSignal.timeout(60_000) });
+    const response = await fetch(url + path, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(60_000) });
     return { status: response.status, body: await response.text() };
   };
 
@@ -103,7 +103,7 @@ try {
 
   const messages = [];
   let error = '';
-  socket = new WebSocket(url.replace(/^http/, 'ws') + '__nimbus_hmr', ['vite-hmr'], wsHeaders());
+  socket = new WebSocket(url.replace(/^http/, 'ws') + '__nimbus_hmr', ['vite-hmr'], wsHeaders(sid));
   socket.on('message', (data) => {
     try { messages.push(JSON.parse(String(data))); } catch { /* not a Vite payload */ }
   });

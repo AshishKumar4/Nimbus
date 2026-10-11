@@ -40,7 +40,7 @@ import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, still
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
   hoistPlacements,
-  type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
+  type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
@@ -64,7 +64,6 @@ import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
-  installPackagesInFacet,
   type InstallBatchSpec,
   type InstallBatchResult,
 } from './install-batch-facet.js';
@@ -79,12 +78,12 @@ import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
-  resolveOnePackumentInFacet,
   type ResolveOneSpec,
   type ResolveOneResult,
 } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
+import { NPM_INSTALL_BATCH_TASK, NPM_RESOLVE_ONE_TASK } from '../loaders/compiled-bodies.generated.js';
 import {
   buildSliceForSpecifierWithCap,
   type PrebundleSpec,
@@ -97,7 +96,7 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { parseRegistryRequest, splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
 import {
   scanProjectImports,
   transformParser,
@@ -121,6 +120,7 @@ import {
 // ── Types ───────────────────────────────────────────────────────────────
 
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 export interface InstallProgress {
   phase: InstallPhase;
@@ -192,14 +192,6 @@ export class NpmInstaller {
   private ctx: DurableObjectState | undefined;
   private env: any;
   private onProgress: ((msg: string) => void) | undefined;
-  /**
-   * Injectable fetch function. Required because DO fetch() hangs in
-   * wrangler local dev. The caller (NimbusSession) provides a function
-   * that routes fetches through a facet worker. Used only by the resolve
-   * path (packument JSON) — tarball fetches happen inside the facet pool
-   * when the feature flag is on, using the facet's own global fetch.
-   */
-  private fetchFn: FetchFn | undefined;
   /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
   private readonly network: WorkspaceNetwork;
   /**
@@ -218,7 +210,6 @@ export class NpmInstaller {
       ctx?: DurableObjectState;
       env?: any;
       onProgress?: (msg: string) => void;
-      fetchFn?: FetchFn;
       /** The workspace's network (`workspace.network`). */
       network: WorkspaceNetwork;
     },
@@ -231,7 +222,6 @@ export class NpmInstaller {
     this.ctx = opts?.ctx;
     this.env = opts?.env;
     this.onProgress = opts?.onProgress;
-    this.fetchFn = opts?.fetchFn;
     this.network = opts?.network ?? ISOLATE_NETWORK;
   }
 
@@ -394,7 +384,7 @@ export class NpmInstaller {
       // wide-layer submitMany.
       phaseStart = Date.now();
       setInstallPhase('resolve');
-      log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
+      log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout)...`);
       const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry });
       resolved = tree.resolved;
       nested = tree.nested;
@@ -526,7 +516,8 @@ export class NpmInstaller {
     const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
       ? Object.values(parseNpmBinManifest(await project.readFileString(npmBinManifestPath(nmDir)))?.bins ?? {})
       : [];
-    await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
+    // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
+    await withRecall(() => this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins));
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
@@ -577,7 +568,7 @@ export class NpmInstaller {
       // through this invocation's `log`, which turns to the console once the
       // command has returned, so a late line never lands on the redrawn
       // prompt or in another install's output.
-      void this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log)
+      void withRecall(() => this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log))
         .catch((e: unknown) => log(`pre-bundle skipped: ${errorText(e)}`));
       phases['bundle'] = Date.now() - phaseStart;
     }
@@ -860,7 +851,7 @@ export class NpmInstaller {
       try {
         results = await fanoutPool.submitMany<ResolveOneSpec, ResolveOneResult>(
           tasks,
-          resolveOnePackumentInFacet,
+          NPM_RESOLVE_ONE_TASK,
         );
         layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms/${layerRoute.taken?.topology}`);
       } catch (e) {
@@ -1186,7 +1177,7 @@ export class NpmInstaller {
       try {
         shardResults = await fanoutPool.submitMany<InstallBatchSpec, InstallBatchResult>(
           tasks,
-          installPackagesInFacet,
+          NPM_INSTALL_BATCH_TASK,
         );
       } catch (e) {
         const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${batchRoute.taken?.topology})`;
@@ -1317,7 +1308,8 @@ export class NpmInstaller {
     }
     const staging = this.store.as(principal.cred);
     const stage = `${tmp}/${STAGE_PREFIX}${principal.pid}-${Date.now().toString(36)}`;
-    staging.mkdir(stage, { recursive: true });
+    // The engine's own calls here wait for a delegation they meet (withRecall): each is repeatable.
+    await withRecall(() => staging.mkdir(stage, { recursive: true }));
     this.placing.add(stage);
     try {
       const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, principal.pid);
@@ -1337,7 +1329,7 @@ export class NpmInstaller {
       const swept = new Set<string>();
       for (const placement of tops) {
         const from = `${stage}/node_modules/${placement}`;
-        if (!staging.exists(from)) continue;
+        if (!await withRecall(() => staging.exists(from))) continue;
         const dst = `/${nmDir}/${placement}`;
         const parent = dst.slice(0, dst.lastIndexOf('/'));
         try {
@@ -2680,10 +2672,15 @@ export class NpmInstaller {
 const STAGE_PREFIX = '.npm-stage-';
 const COPY_PREFIX = '.nimbus-copy-';
 
-/** `src`'s tree on the engine written into `dst` through `to`; with `packageJsonLast`, its own package.json goes last. */
+/**
+ * `src`'s tree on the engine written into `dst` through `to`; with
+ * `packageJsonLast`, its own package.json goes last. Each read of the engine
+ * waits for a delegation it meets (withRecall); the writes go through the
+ * view, which waits itself.
+ */
 async function copyTreeInto(from: CredentialedVfs, src: string, to: ProcessView, dst: string, packageJsonLast: boolean): Promise<void> {
   await to.mkdir(dst, { recursive: true });
-  const entries = from.readdir(src);
+  const entries = await withRecall(() => from.readdir(src));
   if (packageJsonLast) entries.sort((a, b) => Number(a.name === 'package.json') - Number(b.name === 'package.json'));
   for (const entry of entries) {
     const source = `${src}/${entry.name}`;
@@ -2692,9 +2689,10 @@ async function copyTreeInto(from: CredentialedVfs, src: string, to: ProcessView,
       await copyTreeInto(from, source, to, target, false);
     } else if (entry.type === 'symlink') {
       if ((await to.stat(target, { follow: false })) !== null) await to.unlink(target);
-      await to.symlink(from.readlink(source), target);
+      await to.symlink(await withRecall(() => from.readlink(source)), target);
     } else {
-      await to.writeFile(target, from.readFile(source), { mode: from.stat(source).mode & 0o7777 });
+      const [bytes, mode] = await withRecall(() => [from.readFile(source), from.stat(source).mode & 0o7777] as const);
+      await to.writeFile(target, bytes, { mode });
     }
   }
 }
@@ -2728,23 +2726,10 @@ async function nodeModulesNames(view: ProcessView, dir: string): Promise<string[
   return names;
 }
 
+/** A command-line `name[@range]` (an `npm:` alias's range kept whole), with no range `latest`. */
 function parseExplicitPackageSpec(spec: string): { name: string; range: string } {
-  const aliasMarker = spec.indexOf('@npm:');
-  if (aliasMarker > 0) {
-    return {
-      name: spec.slice(0, aliasMarker),
-      range: 'npm:' + spec.slice(aliasMarker + '@npm:'.length),
-    };
-  }
-
-  const rangeAt = packageRangeSeparator(spec);
-  if (rangeAt >= 0) {
-    return {
-      name: spec.slice(0, rangeAt),
-      range: spec.slice(rangeAt + 1) || 'latest',
-    };
-  }
-  return { name: spec, range: 'latest' };
+  const { name, range } = splitPackageSpec(spec);
+  return { name, range: range || 'latest' };
 }
 
 function safeJsonParse<T>(json: string, fallback: T): T {

@@ -3,11 +3,11 @@
  * on the program's values (calls, constructions, property definitions,
  * destructuring's checks), beside the operators of host-ops.ts.
  */
-import type { NativeFunction } from './host-ops.js';
+import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type SafeList } from './intrinsics.js';
 import { type Signal } from './runtime.js';
 export declare function isConstructorValue(value: unknown): value is Function;
-export declare function toPropertyKey(value: unknown): PropertyKey;
+export declare function toPropertyKey(ops: HostOperators, value: unknown): PropertyKey;
 /** An array literal's array: `elements`, with no element at each index of `holes` (an elision). */
 export declare function arrayWithHoles(elements: SafeList<unknown>, holes: SafeList<number>): unknown[];
 export declare function requireObjectCoercible(value: unknown): void;
@@ -25,7 +25,7 @@ export declare function nullBase(base: null | undefined, key: unknown): TypeErro
 /** Whether `name` resolves on a `with` object (HasBinding of an object environment). */
 export declare function withHas(target: unknown, name: string): target is object;
 /** A key read and then written converts once, as the reference does. */
-export declare function keyOnce(key: unknown): unknown;
+export declare function keyOnce(ops: HostOperators, key: unknown): unknown;
 /** A body's result as a completion signal: the completion, or undefined for a value. */
 export declare function signalOf(value: unknown): Signal;
 //# sourceMappingURL=operations.d.ts.map

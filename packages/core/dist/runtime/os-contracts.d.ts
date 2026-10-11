@@ -186,10 +186,6 @@ export interface NimbusFilesystemAuthority {
      * from the first as the run before's were. The pid stays live.
      */
     rewindProcess?(pid: number): Promise<void>;
-    activateAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriters(pid: number): Promise<void>;
-    revokeAppendWritersThrough(maxPid: number): Promise<void>;
     /**
      * The mounts `cred` sees, in mount order. Synchronous so `/proc/mounts`
      * can read it; only usage is async. A wrapper exposing its own mounts
@@ -211,6 +207,12 @@ export interface NimbusFilesystemAuthority {
      * alone.
      */
     nameLaunch?(binding: NimbusFilesystemBinding, names: () => Iterable<string>): void;
+    /**
+     * Process `pid`'s writes answer at their commit, its effects waiting for
+     * their publication instead (ProcessFiles.continueAtCommit): only for a process
+     * whose every way out does. Absent, every write waits for its publication.
+     */
+    continueAtCommit?(pid: number): void;
 }
 /**
  * N17: a launch that reads synchronously waits for the paths it names (its
@@ -225,7 +227,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -257,6 +259,7 @@ export interface RuntimeFsBridge {
     }): Awaitable<RuntimeVfsStat | null>;
     readFile(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
+        cached?: boolean;
     }): Awaitable<Uint8Array | null>;
     /**
      * Whole-file write. Returns the revision the write produced, so a caller
@@ -307,7 +310,8 @@ export interface RuntimeFsBridge {
     chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeFileHandle>;
+    /** `options.mutationOwner`: the lease an open for writing presents. */
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
     close(handleId: number): Awaitable<void>;
@@ -317,9 +321,9 @@ export interface RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
-    }): Awaitable<void>;
-    unlink(path: RuntimeFsPath): Awaitable<void>;
-    rmdir(path: RuntimeFsPath): Awaitable<void>;
+    } & RuntimeMutationOwner): Awaitable<void>;
+    unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
+    rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     readlink(path: RuntimeFsPath): Awaitable<string | null>;
     /**
@@ -386,8 +390,6 @@ export interface RuntimeFsBridge {
     fchmod(handleId: number, mode: number): Awaitable<void>;
     fchown(handleId: number, uid: number, gid: number): Awaitable<void>;
     futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
-    appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): Awaitable<void>;
     /** `signal`: cancels it before its commit (a released process publishes nothing). */
     writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: {
         signal?: AbortSignal;
@@ -401,14 +403,65 @@ export interface RuntimeFsBridge {
      * since re-sent: SupervisorDeliveries.admitWave).
      */
     writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
-    acquireExclusiveMutation(path: RuntimeFsPath, options?: {
-        includeMissingAncestors?: boolean;
-    }): Awaitable<{
-        root: string;
-        owner: string;
-    }>;
+    /**
+     * An exclusive-mutation lease on the subtree at `path`. With `delegate`,
+     * a delegation: the process decides the subtree's operations itself and
+     * sends them later under the lease, and another caller's access recalls
+     * them (awaitRecall, recalled) rather than being refused; its answer says
+     * how long the process has to answer a recall (recallTimeoutMs).
+     */
+    acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): Awaitable<ExclusiveMutationGrant>;
     releaseExclusiveMutation(owner: string): Awaitable<void>;
+    /** The next recall of the process's delegation `owner`; null when none is asked within `waitMs` (ask again), or once it has ended. */
+    awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;
+    /** The process has sent what it decided under `owner`, and done what recall `kind` asked. */
+    recalled(owner: string, kind: RecallKind): Awaitable<void>;
+    /**
+     * Settled once every write of the process's that a reader's recall holds
+     * is published (its writes answer at their commit while its output is
+     * gated: ProcessFiles.continueAtCommit): what its runtime waits for before an
+     * effect leaves by a way the session's gate does not see. `escape`: one
+     * no boundary sees opens now (a raw socket), and the process's writes wait
+     * for their publication from now on.
+     */
+    published(options?: {
+        escape?: boolean;
+    }): Awaitable<void>;
 }
+/** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
+export interface ExclusiveMutationRequest {
+    readonly includeMissingAncestors?: boolean;
+    /**
+     * Delegate the subtree to the process. `reads`: another caller's reads
+     * recall it too, not only its writes. `inos`: inode numbers to reserve for
+     * what it makes (it numbers them itself); `bytes`: storage to reserve for
+     * what it writes.
+     */
+    readonly delegate?: {
+        readonly reads: boolean;
+        readonly inos?: number;
+        readonly bytes?: number;
+    };
+}
+/**
+ * A lease granted: its root and owner, and for a delegation, how long a
+ * recall waits for the holder, the inode numbers reserved for it [first,
+ * end), and the storage bytes reserved for it.
+ */
+export interface ExclusiveMutationGrant {
+    readonly root: string;
+    readonly owner: string;
+    readonly recallTimeoutMs?: number;
+    readonly inos?: {
+        readonly first: number;
+        readonly end: number;
+    };
+    readonly bytes?: number;
+    /** The umask the session applies to what the holder creates (its process's): the holder decides creates with it. */
+    readonly umask?: number;
+}
+/** What a recall asks of a delegation's holder: keep sending each operation ('share'), or give the subtree up ('revoke'). */
+export type RecallKind = 'share' | 'revoke';
 /**
  * One path in an {@link RuntimeFsBridge.acquire} delta, with the revision it
  * was last mutated at. The revision is what makes the delta usable by the
@@ -463,6 +516,12 @@ export interface VfsInvalidatedPath {
 export interface VfsAcquireOptions {
     namespace?: boolean;
     /**
+     * The process's read lease, confirmed, or one taken at the revision this
+     * answer reports (VfsAcquireResult.readLease): until it is recalled, its
+     * barriers need not ask.
+     */
+    lease?: boolean;
+    /**
      * Carry the content of changed regular files under `roots` (caller path
      * space), skipping any path with a segment named in `exclude`. What a
      * process wrote after another launched is then readable synchronously by
@@ -481,6 +540,15 @@ export interface VfsAcquireResult {
     poison: boolean;
     /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
     namespace?: boolean;
+    /**
+     * The read lease asked for ({@link VfsAcquireOptions.lease}): its owner,
+     * and how long the process may trust it from the moment it asked.
+     * Absent when it was not asked, or its recall is pending.
+     */
+    readLease?: {
+        owner: string;
+        trustMs: number;
+    };
 }
 /**
  * One path in a {@link RuntimeFsBridge.list} page.
@@ -532,6 +600,17 @@ export interface VfsListPage {
     rev: number;
     entries: VfsListEntry[];
     next: string | null;
+}
+/**
+ * Everything beneath a directory, as {@link VfsListPage} lists it, in one
+ * page read in one turn (fsListTree): every entry is current at `rev`, and
+ * the subtree is listed whole. A subtree with more entries than asked for is
+ * refused (E2BIG), never cut short.
+ */
+export interface VfsListTree {
+    epoch: string;
+    rev: number;
+    entries: VfsListEntry[];
 }
 export interface RuntimeProcessBridge {
     spawn(command: string, args: string[], options?: {
@@ -669,8 +748,11 @@ export interface PackageStagedBindingEntry {
     from: string;
     /** Stable artifact id the node runtime resolves to a staged asset path. */
     artifact: string;
-    /** The one upstream version the staged binding is built from. */
-    version: string;
+    /**
+     * The upstream versions staged builds of the binding exist for, oldest
+     * first: each build loads only under its owner at its version.
+     */
+    versions: readonly string[];
     /** One-line reason shown to the user. */
     reason: string;
 }

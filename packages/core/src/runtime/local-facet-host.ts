@@ -36,16 +36,16 @@
 
 import type {
   Facet,
-  FacetFn,
   FacetHost,
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
+import { requireFacetTaskSource, type FacetTaskSource } from './facet-task.js';
 import { requireNetwork, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeFsBridge } from './os-contracts.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm, type Realm, type RealmOutcome } from './realm.js';
-import { FILESYSTEM_RPC_METHODS, vfsSupervisor, type FilesystemSupervisor } from './vfs-supervisor.js';
+import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
 import type { WasiParking } from './wasi/types.js';
 
 // ── The facet's protocol (facet-guest.ts is the other side) ──────────────────
@@ -181,7 +181,9 @@ function facetIsolation(): 'thread' | 'process' {
  * {@link FacetHost.memoryBudgetBytes} instead (pipe-rules.ts).
  *
  * {@link FacetSubmitOptions.timeoutMs} and `signal` are honoured: either ends
- * the facet, as a substrate with isolates of its own does. A facet waiting for
+ * the facet, as a substrate with isolates of its own does. A call given no
+ * deadline has none: a process's run ends when it exits or is killed, and
+ * off Cloudflare no CPU limit ends a runaway one either. A facet waiting for
  * no call holds no part of this process: it does not keep it alive.
  *
  * `network` is the workspace's (`workspace.network`, or
@@ -215,16 +217,31 @@ class RealmFacet implements Facet {
   private disposed = false;
   /** Why the realm ended, once it has. */
   private over: Error | null = null;
-  private readonly supervisor: FilesystemSupervisor | null;
+  private readonly supervisor: object | null;
+  private readonly supervisorMethods: readonly string[];
   private readonly synchronous: RuntimeFsBridge['synchronous'];
   private readonly isolation = facetIsolation();
 
   constructor(private readonly spec: FacetSpec, private readonly network: WorkspaceNetwork) {
     this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
+    this.supervisorMethods = SUPERVISOR_METHODS;
+    const processes = spec.syscalls?.processes;
+    if (this.supervisor && processes && spec.syscalls) {
+      const pid = spec.syscalls.pid;
+      Object.assign(this.supervisor, {
+        stdout: (bytes: Uint8Array) => processes.appendOutputBytes(pid, 'stdout', bytes),
+        stderr: (bytes: Uint8Array) => processes.appendOutputBytes(pid, 'stderr', bytes),
+        cpReadStdin: async (_child: number, waitMs: number, _acquire?: unknown, maxBytes?: number) => {
+          const packet = await processes.readInput(pid, waitMs, maxBytes);
+          return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
+        },
+      });
+      this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+    }
     this.synchronous = spec.syscalls?.vfs.synchronous;
   }
 
-  submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
+  submit<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
     const run = this.queue.then(() => this.call(fn, args, options));
     // The chain must survive a rejected call, or one failure poisons the facet.
     this.queue = run.catch(() => undefined);
@@ -241,7 +258,7 @@ class RealmFacet implements Facet {
       tag: this.spec.tag,
       parking: engineParks(),
       preamble: this.spec.preamble,
-      supervisor: this.supervisor ? { methods: SUPERVISOR_METHODS, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+      supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
       egress: this.network.egress !== undefined,
     };
     let post: (event: unknown) => boolean = () => false;
@@ -278,7 +295,7 @@ class RealmFacet implements Facet {
   private serve(call: unknown): unknown {
     if (!isSupervisorCall(call)) throw new TypeError('Nimbus: a facet called nothing its host answers');
     const target = call.view === 'synchronous' ? this.synchronous : this.supervisor;
-    const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : SUPERVISOR_METHODS;
+    const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : this.supervisorMethods;
     const method = target && names.includes(call.method) ? Reflect.get(target, call.method) : undefined;
     if (typeof method !== 'function') throw new TypeError(`Nimbus: a facet's ${call.view} has no method ${JSON.stringify(call.method)}`);
     return Reflect.apply(method, target, call.args);
@@ -312,7 +329,7 @@ class RealmFacet implements Facet {
     return module;
   }
 
-  private async call<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
+  private async call<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
     if (this.disposed) throw ended(this.spec.tag, 'is disposed');
     const signal = options?.signal;
     signal?.throwIfAborted();
@@ -334,8 +351,9 @@ class RealmFacet implements Facet {
     signal?.addEventListener('abort', onAbort, { once: true });
     // An abort that came between the check above and the listener.
     if (signal?.aborted) onAbort();
-    const timer = options?.timeoutMs === undefined ? undefined
-      : setTimeout(() => stop(ended(this.spec.tag, `timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
+    const timeoutMs = options?.timeoutMs;
+    const timer = timeoutMs === undefined ? undefined
+      : setTimeout(() => stop(ended(this.spec.tag, `timed out after ${timeoutMs} ms`)), timeoutMs);
     let realm: Realm | null = null;
     const id = ++this.ids;
     try {
@@ -344,7 +362,7 @@ class RealmFacet implements Facet {
       const { images, sent } = await Promise.race([this.modules(options?.wasmModules), stopping]);
       // Stopped in the turn the modules were ready: not posted.
       if (state.stopped) throw state.stopped;
-      const submit: FacetSubmit = { type: 'submit', id, source: fn.toString(), args, modules: sent };
+      const submit: FacetSubmit = { type: 'submit', id, source: requireFacetTaskSource(fn), args, modules: sent };
       const answered = new Promise<FacetDone | Error>((resolve) => this.waiting.set(id, resolve));
       if (!realm.post(submit)) throw ended(this.spec.tag, 'was submitted arguments that cannot cross to its realm');
       // The call holds this process while it runs.
@@ -358,6 +376,10 @@ class RealmFacet implements Facet {
       this.waiting.delete(id);
       if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
+      // Sending termination is not completion: the guest can still be
+      // executing (or unreaped) when SIGKILL/Worker.terminate returns. Keep
+      // the aborting call pending until its realm has actually ended.
+      if (state.stopped && this.realm) await this.realm.then((ending) => ending.ended, () => undefined);
       realm?.hold(false);
     }
   }

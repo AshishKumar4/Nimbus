@@ -5,6 +5,7 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
+import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
@@ -13,20 +14,24 @@ import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SessionFilesystem } from './session-filesystem.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type PortVisibility } from './port-capability.js';
-import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
+import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, SpawnedWorker } from '../facets/manager.js';
+import { type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
-    env?: Record<string, string>;
     getEnv(): Record<string, string>;
 }
 type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
-    kill(pid: number): boolean;
+    kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
+    closeLaunches(): Promise<void>;
     hasResidentProcess(pid: number): boolean;
     removeDurableApp(owner: string): Promise<boolean>;
     residentIdentity(pid: number): Promise<ResidentIdentity | null>;
@@ -44,6 +49,8 @@ interface ProgrammaticCirrusServer {
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
+    /** The destroy running (rpcDestroy), until it is answered. */
+    destroying?: Promise<SessionDestroyResult> | null;
     _w1SessionDestroyed: boolean;
     /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
     _w1JanitorAt: number | null;
@@ -56,7 +63,11 @@ export interface ProgrammaticHost extends TimerHost {
     readonly runtimeWorkspace: NimbusWorkspace | null;
     shell: ProgrammaticShell | null;
     shellProcessPid: number | null;
-    sqliteFs: SqliteVFS | null;
+    readonly sqliteFs: SqliteVFS | null;
+    /** The session's filesystem resource, where the host owns one (NimbusSession): a destroy closes it. */
+    filesystem?: SessionFilesystem | null;
+    /** The namespace every file the caller names is read and changed through. */
+    getFilesystemAuthority(): ProcessFiles;
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
     facetManagerComposed: ComposedFacetManager | null;
@@ -84,10 +95,6 @@ export interface ProgrammaticHost extends TimerHost {
     } | null;
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
-    fetchProxyEntrypoint?: unknown;
-    _supervisorOps?: {
-        forget(pid: number): void;
-    } | null;
     sessionBasePath?: string;
     sessionBasePathHydrated?: boolean;
     /** The origin the session was last reached at — what a path-form URL is built on. */
@@ -101,100 +108,17 @@ export interface ProgrammaticHost extends TimerHost {
     ensureSqliteFs(): void;
     ensureFacetManager(): ComposedFacetManager;
 }
-export interface ProgrammaticReadyOptions {
-    preinstall?: string[];
-}
-export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
-    cwd?: string;
-    env?: Record<string, string>;
-    timeoutMs?: number;
-    stdin?: string;
-    /**
-     * Identity the command runs as. Omitted, the spawn inherits the session
-     * user, which is what every programmatic exec has always run as.
-     */
-    cred?: VfsCred;
-    /**
-     * Run in a NAMED shell whose cwd and environment persist between calls, the
-     * way an interactive terminal does; it is the workspace's shell of that name.
-     * Omitted, the call runs in a shell of its own and nothing is remembered.
-     */
-    shellId?: string;
-    /** @internal Initial cwd for a shellId with no durable state yet. */
-    shellRoot?: string;
-    /**
-     * A name for this call, which every process it starts carries, and every
-     * process those spawn: `listProcesses` and `listPorts` report it, and a
-     * resident keeps it across a reset. 1 to 160 characters from
-     * `A-Z a-z 0-9 . _ : -`, starting with a letter or digit (`parseExecId`).
-     * Not unique: two calls may share one.
-     */
-    execId?: string;
-    /**
-     * What to do when the started process exits on its own with a non-zero
-     * code: 'never' (the default) leaves it stopped; 'on-failure' restarts it
-     * under the restart budget with backoff. A platform reset re-drives it
-     * either way. Carried to the launch as `$NIMBUS_RESTART`.
-     */
-    restart?: ResidentRestartPolicy;
-}
-export interface ProgrammaticDestroyOptions {
-    reason?: string;
-}
-export interface ProgrammaticDestroyResult {
-    ok: true;
-    killed: number;
-    destroyedAt: number;
-    reason: string | null;
-}
-/** The buffered exec result: the exec stream read to its end. */
-export type ProgrammaticExecResult = ExecOutput;
-/**
- * A started background process. There is no exit code or output here — the
- * process is still running when this returns. Read both back through
- * `processLogs(pid)`, which carries the exit record once it lands.
- */
-export interface ProgrammaticStartResult {
-    command: string;
-    pid: number;
-    process: SerializedProcess;
-    ports: SerializedPort[];
-    startedAt: number;
-}
-export interface SerializedProcess {
-    pid: number;
-    command: string;
-    argv: string[];
-    cwd: string;
-    state: string;
-    exitCode: number | null;
-    startTime: number;
-    endTime: number | null;
-    longRunning: boolean;
-    attachedTty: boolean;
-    /** The exec that started the process (`ProgrammaticExecOptions.execId`); absent when none named one. */
-    execId?: string;
-}
-export interface SerializedPort {
-    port: number;
-    pid: number;
-    registeredAt: number;
-    capability: string;
-    /** The exec id of the process listening (`SerializedProcess.execId`). */
-    execId?: string;
-}
-export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?: ProgrammaticReadyOptions): Promise<{
-    ok: true;
-    preinstalled: string[];
-}>;
+/** Leave ownership of one invocation, not its process or its output. A scoped session can leave only its own shell. */
+export declare function rpcDetachExec(self: ProgrammaticHost, detachId: string, shellId?: string): SessionResult<'detachExec'>;
+export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
 /** Buffered exec: the exec stream collected into strings by the caller of this function. */
-export declare function rpcExec(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticExecResult>;
+export declare function rpcExec(self: ProgrammaticHost, command: string, options?: SessionExecOptions): Promise<ExecOutput>;
 /**
  * Run a command and hand back its output as it is written. Resolves once the
  * command has started (after any earlier call on the same named shell);
  * validation and readiness failures reject here, not on the stream.
  */
-export declare function rpcExecStream(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ExecStream>;
+export declare function rpcExecStream(self: ProgrammaticHost, command: string, options?: SessionExecOptions): Promise<ExecStream>;
 /**
  * Start a command in the background and return its handle immediately.
  *
@@ -203,22 +127,22 @@ export declare function rpcExecStream(self: ProgrammaticHost, command: string, o
  * Status, incremental output, and termination are read back through the
  * process surface (`listProcesses`, `processLogs`, `killProcess`).
  */
-export declare function rpcStartProcess(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticStartResult>;
-export declare function rpcRunCode(self: ProgrammaticHost, code: string, options?: ProgrammaticExecOptions & {
-    language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
-    install?: 'never' | 'ifMissing';
-}): Promise<ProgrammaticExecResult>;
-export declare function rpcInstallRuntime(self: ProgrammaticHost, spec: string, options?: {
-    force?: boolean;
-}): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary>;
-export declare function rpcEnsureRuntimes(self: ProgrammaticHost, specs: string[], options?: {
-    force?: boolean;
-}): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
-export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<{
-    installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
-    available: import("@nimbus-sh/core/runtime/runtime-package.js").RuntimeAvailability[];
+export declare function rpcStartProcess(self: ProgrammaticHost, command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
+export declare function rpcRunCode(self: ProgrammaticHost, code: string, options?: SessionRunCodeOptions): Promise<ExecOutput>;
+export declare function rpcInstallRuntime(self: ProgrammaticHost, spec: string, options?: SessionRuntimeInstallOptions): Promise<{
+    spec: string;
+    exitCode: number;
+    stdout: string;
+    stderr: string;
 }>;
-export declare function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]>;
+export declare function rpcEnsureRuntimes(self: ProgrammaticHost, specs: string[], options?: SessionRuntimeInstallOptions): Promise<{
+    spec: string;
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+}[]>;
+export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionResult<'listRuntimes'>>;
+export declare function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]>;
 export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{
     ok: boolean;
     pid: number;
@@ -231,10 +155,7 @@ export declare function rpcEndProcessInput(self: ProgrammaticHost, pid: number):
     ok: boolean;
     pid: number;
 }>;
-export declare function rpcResizeProcess(self: ProgrammaticHost, pid: number, size: {
-    columns: number;
-    rows: number;
-}): Promise<{
+export declare function rpcResizeProcess(self: ProgrammaticHost, pid: number, size: SessionTerminalSize): Promise<{
     ok: boolean;
     pid: number;
 }>;
@@ -244,39 +165,23 @@ export declare function rpcSignalProcess(self: ProgrammaticHost, pid: number, si
 }>;
 export declare function rpcProcessLogs(self: ProgrammaticHost, pid: number, options?: ProcessLogReadOptions): Promise<{
     pid: number;
-    chunks: import("@nimbus-sh/core/runtime/process-logs.js").SequencedLogChunk[];
+    chunks: {
+        seq: number;
+        ts: number;
+        stream: "stdout" | "stderr";
+        data: string;
+        binary?: boolean | undefined;
+    }[];
     text: string;
     cursor: number;
     truncated: boolean;
-    exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
+    exit: {
+        code: number;
+        at: number;
+        reason?: string | undefined;
+    } | null;
 }>;
-export declare function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]>;
-/** What `apps.expose` / `apps.rotateLink` answer: the application's address, as the caller can reach it. */
-export interface ExposedAppResult {
-    owner: string;
-    name: string | null;
-    port: number;
-    pid: number | null;
-    capability: string | null;
-    visibility: PortVisibility;
-    /** Built from the deployment's preview suffix or the session's last-seen origin; null when neither is known. */
-    url: string | null;
-    /** The exec id of `pid` (`SerializedProcess.execId`). */
-    execId?: string;
-}
-export interface ListedApp extends ResidentAppSummary {
-    url: string | null;
-}
-/** An app target as every app verb takes it: a port, a pid, or a name/owner. */
-export type AppTarget = number | string | {
-    port: number;
-} | {
-    pid: number;
-} | {
-    name: string;
-} | {
-    owner: string;
-};
+export declare function rpcListPorts(self: ProgrammaticHost): Promise<SessionPort[]>;
 /**
  * Browser-facing URL for an application, built inside the session: the
  * host form when the deployment carries a preview suffix (name first, port
@@ -299,10 +204,7 @@ export declare function appUrl(self: ProgrammaticHost, app: {
  * not, this compatibility path writes the row port-only, as before. One implementation:
  * `applyExposure` below.
  */
-export declare function rpcExposePort(self: ProgrammaticHost, port: number, options?: {
-    visibility?: 'scoped' | 'public';
-    name?: string;
-}): Promise<{
+export declare function rpcExposePort(self: ProgrammaticHost, port: number, options?: SessionExposeOptions): Promise<{
     execId?: string;
     port: number;
     listening: boolean;
@@ -320,27 +222,24 @@ export declare function rpcExposePort(self: ProgrammaticHost, port: number, opti
  * capability minted when public and bound in the directory, the name
  * stored on the reservation. Returns the address the caller can reach.
  */
-export declare function rpcExposeApp(self: ProgrammaticHost, target: AppTarget, options?: {
-    visibility?: 'scoped' | 'public';
-    name?: string;
-}): Promise<ExposedAppResult>;
+export declare function rpcExposeApp(self: ProgrammaticHost, target: SessionAppTarget, options?: SessionExposeOptions): Promise<SessionExposedApp>;
 /**
  * Mint a new capability for the application and rebind the directory:
  * every URL built on the old one stops resolving. The registry adopts the
  * new value at once if the port is live, so the new URL answers without
  * waiting for a restore.
  */
-export declare function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): Promise<ExposedAppResult>;
+export declare function rpcRotateLink(self: ProgrammaticHost, target: SessionAppTarget): Promise<SessionExposedApp>;
 /** Every stamped identity, with the URL each is reachable at. */
-export declare function rpcListApps(self: ProgrammaticHost): Promise<ListedApp[]>;
+export declare function rpcListApps(self: ProgrammaticHost): Promise<SessionApp[]>;
 /**
  * End an application: kill its live pids, release the reservation, purge
  * its journal rows, free the durable slot and its storage, unbind the
  * directory — `removeDurableApp`, addressed by any target.
  */
-export declare function rpcRemoveApp(self: ProgrammaticHost, target: AppTarget): Promise<{
-    owner: string;
+export declare function rpcRemoveApp(self: ProgrammaticHost, target: SessionAppTarget): Promise<{
     removed: boolean;
+    owner: string;
     port: number | null;
 }>;
 /**
@@ -351,15 +250,10 @@ export declare function rpcRemoveApp(self: ProgrammaticHost, target: AppTarget):
  * re-adopts, and the one a reset re-adopts again. Answers the port, the
  * capability, and the record's visibility.
  */
-export declare function rpcEnsureDurableApp(self: ProgrammaticHost, input: {
-    owner: string;
-    preferredPort?: number;
-    visibility?: 'scoped' | 'public';
-    name?: string;
-}): Promise<{
+export declare function rpcEnsureDurableApp(self: ProgrammaticHost, input: SessionDurableAppOptions): Promise<{
     port: number;
     capability: string | null;
-    visibility: 'scoped' | 'public';
+    visibility: PortVisibility;
 }>;
 export declare function rpcUnexposePort(self: ProgrammaticHost, port: number): Promise<{
     port: number;
@@ -397,6 +291,22 @@ export declare function rpcSpawnWorker(self: ProgrammaticHost, workerCode: strin
 export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, options?: {
     recursive?: boolean;
 }, cred?: VfsCred): Promise<void>;
-export declare function rpcDestroy(self: ProgrammaticHost, options?: ProgrammaticDestroyOptions): Promise<ProgrammaticDestroyResult>;
+/** One destroy at a time: one asked for while another runs is answered by it. */
+export declare function rpcDestroy(self: ProgrammaticHost, options?: SessionDestroyOptions): Promise<SessionDestroyResult>;
+/**
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations). It mints no pid before
+ * reserveSessionProcesses gives it its range.
+ */
+export declare function sessionProcesses(ctx: GenerationContext): SessionProcessSupervisor;
+/**
+ * Give `processes` (made by sessionProcesses) this incarnation's pid range:
+ * its generation durably reserved first (adoptGeneration: persisted past
+ * every one before it, and past every pid this context minted), then its
+ * pids start past that. The one way a live supervisor gets its range: at
+ * boot and at a destroy's recreate.
+ */
+export declare function reserveSessionProcesses(ctx: GenerationContext, processes: SessionProcessSupervisor): Promise<SessionProcessSupervisor>;
 export {};
 //# sourceMappingURL=programmatic.d.ts.map

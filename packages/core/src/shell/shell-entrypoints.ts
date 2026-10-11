@@ -5,7 +5,7 @@ import { resolveVfsPath } from '../vfs/path.js';
 import { textSink } from '../_shared/bytes.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';
 
-type Output = { write(s: string): void | Promise<void> };
+type Output = { write(text: string): void | Promise<void>; writeBytes?(bytes: Uint8Array): void | Promise<void> };
 
 type ShellCommandContext = {
   args?: string[];
@@ -115,8 +115,8 @@ function makeShellEntrypoint(
       scriptMode: true,
       stdin: inheritedStdin.stdin,
       terminalStdin: ctx.terminalStdin,
-      onStdout: textSink((data) => ctx.stdout.write(data)),
-      onStderr: textSink((data) => ctx.stderr.write(data)),
+      onStdout: ctx.stdout.writeBytes ? (bytes) => ctx.stdout.writeBytes!(bytes) : textSink((data) => ctx.stdout.write(data)),
+      onStderr: ctx.stderr.writeBytes ? (bytes) => ctx.stderr.writeBytes!(bytes) : textSink((data) => ctx.stderr.write(data)),
       runExitTrap: true,
       terminalFds: {
         stdin: ctx.isFdTerminal?.(0) ?? false,

@@ -44,20 +44,19 @@ import type { LanguageModel } from 'ai';
 import { z } from 'zod/v4';
 import { NIMBUS_AI_GATEWAY_PORT } from '@nimbus-sh/core/constants.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { routeRuntimeLoopback } from './loopback.js';
+import { routeRuntimeLoopback, type EnsurePortServer } from './loopback.js';
 import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '@nimbus-sh/core/_shared/ai-egress.js';
 import {
+  normalizeNimbusOAuthToken, NIMBUS_CLOUDFLARE_API, fetchNimbusCloudflareAccounts,
+  fetchNimbusCloudflareUserInfo, readNimbusCookie, requestNimbusCloudflareOAuthToken,
+  type NimbusCloudflareAccount,
+} from '@nimbus-sh/core/_shared/oauth.js';
+import {
   NIMBUS_AGENT_AUTH_COOKIE,
-  NIMBUS_CLOUDFLARE_API,
   envString,
-  fetchNimbusCloudflareAccounts,
-  fetchNimbusCloudflareUserInfo,
   loadNimbusAgentOAuthFromRequest,
   readNimbusAgentCookieSecret,
   readNimbusAgentOAuthConfig,
-  readNimbusCookie,
-  requestNimbusCloudflareOAuthToken,
-  type NimbusCloudflareAccount,
 } from './agent-oauth.js';
 
 export interface SessionAiHost {
@@ -72,13 +71,13 @@ export interface SessionAiHost {
 }
 
 export function routeSessionLoopback(
-  host: SessionAiHost & { portRegistry: PortRegistry },
+  host: SessionAiHost & { portRegistry: PortRegistry; ensureDurableAppOnPort?: EnsurePortServer },
   port: number,
   request: Request,
 ): Promise<Response | null> {
   // A credential-backed gateway is private, not a shareable port entry.
   if (port === NIMBUS_AI_GATEWAY_PORT) return handleSessionAiRequest(host, request);
-  return routeRuntimeLoopback(host.portRegistry, port, request);
+  return routeRuntimeLoopback(host.portRegistry, port, request, host.ensureDurableAppOnPort);
 }
 
 /** DO storage key holding this session's Cloudflare credential of record. */
@@ -686,17 +685,15 @@ async function ensureFreshCredential(
   }
   try {
     const config = readNimbusAgentOAuthConfig(self.env, '');
-    const token = await requestNimbusCloudflareOAuthToken(config, {
+    const token = normalizeNimbusOAuthToken(await requestNimbusCloudflareOAuthToken(config, {
       grant_type: 'refresh_token',
       refresh_token: stored.refreshToken,
-    });
+    }));
     const next: StoredCredential = {
-      accessToken: token.access_token,
-      refreshToken: token.refresh_token || stored.refreshToken,
+      accessToken: token.accessToken,
+      refreshToken: token.refreshToken || stored.refreshToken,
       accountId: stored.accountId,
-      expiresAt: token.expires_in
-        ? Date.now() + Math.max(0, token.expires_in - 30) * 1000
-        : stored.expiresAt,
+      expiresAt: token.expiresAt ?? stored.expiresAt,
     };
     await writeStoredCredential(self, next);
     return next;

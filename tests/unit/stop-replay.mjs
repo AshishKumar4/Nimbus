@@ -26,7 +26,7 @@ const enc = (text) => new TextEncoder().encode(text);
 const dec = (bytes) => new TextDecoder().decode(bytes);
 const b64 = (text) => Buffer.from(text).toString('base64');
 const NONCE = 'c0ffee00-1111-4222-8333-444455556666';
-const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
+const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], writes: [] };
 
 // ── The output gate: what the session showed is the prefix ─────────────────
 {
@@ -500,4 +500,76 @@ assert.match(guest(`
   console.log(JSON.stringify({ why: sr.block('end', 'read') }));
 `).why, /printed more than 1048576 bytes first/);
 
-console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it');
+// ── A promotable one-shot stops at its first listen, to run on as a resident ──
+const WRITE = "{ type: 'call', call: { call: 'writeFile', path: 'home/user/out.txt', data: enc('one'), mode: 0o644 } }";
+const listened = guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
+  sr.arm(false, 'is not reading stdin');
+  sr.mutation(${WRITE});
+  sr.write('stdout', enc('starting\\n'));
+  aborts(() => sr.listen());
+  console.log(JSON.stringify({ stopped }));
+`);
+assert.equal(listened.stopped.kind, 'listen', 'its first listen stops it');
+assert.equal(listened.stopped.tape.writes.length, 1);
+assert.match(listened.stopped.tape.writes[0], /^writeFile home\/user\/out\.txt [0-9a-f]{16}$/, 'each change it made is recorded: its call, its path and a digest');
+assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify(listened.stopped)), NONCE, 1), null, 'a listen stop is a record the session believes');
+// Something outside itself before its listen: it cannot run on as a server, and says so where it listens.
+assert.match(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
+  sr.arm(false);
+  sr.effect('cpSpawn node');
+  let thrown = null;
+  try { sr.listen(); } catch (e) { thrown = e.message; }
+  console.log(JSON.stringify({ thrown, stopped }));
+`).thrown, /listens as a server, so Nimbus runs it again as one, but it cannot: before it listened it did something outside itself first \(cpSpawn node\)/);
+// Refused once, refused every time: a caught refusal is no way to bind in the one-shot.
+assert.deepEqual(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
+  sr.arm(false);
+  sr.effect('cpSpawn node');
+  const thrown = [];
+  for (let i = 0; i < 2; i++) { try { sr.listen(); thrown.push(null); } catch (e) { thrown.push(/cannot: before it listened/.test(e.message)); } }
+  console.log(JSON.stringify({ thrown, stopped }));
+`), { thrown: [true, true], stopped: null });
+// A process that is not promotable (a resident) listens as it is.
+assert.deepEqual(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE });
+  sr.arm(false);
+  sr.listen();
+  console.log(JSON.stringify({ stopped }));
+`), { stopped: null });
+// Its run again: the same changes, then the listen is its boundary, past which it serves.
+const listenReplay = (changes) => guest(`
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: ${JSON.stringify(b64('starting\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.arm(false);
+  let echoed = null, early = null, after = null;
+  aborts(() => {
+    ${changes}
+    echoed = sr.write('stdout', enc('starting\\n'));
+    early = sr.booted();
+    sr.listen();
+    const chunk = sr.write('stdout', enc('serving\\n'));
+    after = chunk && chunk.at;
+  });
+  console.log(JSON.stringify({ stopped, echoed, early, after }));
+`);
+const retraced = listenReplay(`sr.mutation(${WRITE});`);
+assert.equal(retraced.stopped, null, 'the same changes, in order: it passes its listen');
+assert.equal(retraced.echoed, null, 'what the run before printed is checked, not shown again');
+assert.equal(retraced.early, '', 'it may finish booting before it reaches its listen');
+assert.equal(retraced.after, 9, 'past its listen its output is its own');
+const rewritten = listenReplay(`sr.mutation({ type: 'call', call: { call: 'writeFile', path: 'home/user/out.txt', data: enc('two'), mode: 0o644 } });`);
+assert.equal(rewritten.stopped.kind, 'diverged');
+assert.match(rewritten.stopped.why, /changed the filesystem otherwise than the run before it: writeFile home\/user\/out\.txt/);
+// Run again, it ends without reaching its listen: said at its end.
+assert.match(guest(`
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.arm(false);
+  console.log(JSON.stringify({ ended: sr.finish() }));
+`).ended, /ended before it listened, where the run before it listened/);
+const skipped = listenReplay('');
+assert.equal(skipped.stopped.kind, 'diverged');
+assert.match(skipped.stopped.why, /by its listen it had changed the filesystem 0 times, where the run before it had 1/);
+
+console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it; a promotable run stops at its first listen and its run again retraces its changes');

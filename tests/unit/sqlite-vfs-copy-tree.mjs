@@ -205,4 +205,50 @@ function seed(vfs, root, dirs, files) {
   assert.equal(n('dst'), rows, 'and the copy completed');
 }
 
+// ── A delegation granted over the destination between slices: the copy
+//    waits for it to be given up (its holder's decided write stored), then
+//    goes on; cp -r into a folder a process is writing is ordinary ──
+{
+  const opened = open();
+  opened.vfs.mkdir('src');
+  for (let d = 0; d < 520; d++) {
+    const dir = `src/d${d}`;
+    opened.vfs.mkdir(dir);
+    for (const half of [0, 50]) {
+      opened.vfs.writeBatch({
+        inodes: Array.from({ length: 50 }, (_, i) => ({ path: `${dir}/f${half + i}`, parentPath: dir, isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1 })),
+        chunks: Array.from({ length: 50 }, (_, i) => ({ path: `${dir}/f${half + i}`, chunkId: 0, data: new Uint8Array([half + i]) })),
+      });
+    }
+  }
+  const { raw, vfs } = opened;
+  const recalls = [];
+  let granted = false;
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    if (!granted && vfs.exists('dst')) {
+      granted = true;
+      let owned;
+      const lease = raw.acquireExclusiveMutation('dst', {
+        delegation: {
+          reads: true,
+          async recall(kind) {
+            recalls.push(kind);
+            owned.writeFile('dst/held.txt', 'decided while the copy ran');
+          },
+        },
+      });
+      owned = raw.as(CRED_KERNEL, { mutationOwner: lease.owner });
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+  let copied;
+  try { copied = await vfs.copyTreeAsync('src', 'dst'); } finally { globalThis.setTimeout = realSetTimeout; }
+  assert.ok(granted, 'the copy ran in one slice: no delegation was granted during it');
+  assert.equal(copied, 1 + 520 * 101);
+  assert.deepEqual(recalls, ['revoke']);
+  assert.equal(new TextDecoder().decode(vfs.readFile('dst/held.txt')), 'decided while the copy ran');
+  assert.deepEqual(vfs.readFile('dst/d519/f99'), new Uint8Array([99]));
+}
+
 console.log('sqlite-vfs-copy-tree: all assertions passed');

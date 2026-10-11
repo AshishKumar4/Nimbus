@@ -12,8 +12,8 @@
  *
  * SOURCE OF TRUTH: the backend implementation is
  * runtime/opentui-wasm-backend.ts (OpenTUIWasmBackend, Stage B, audited). The
- * string below is its facet-runnable mirror (type annotations stripped, private
- * fields kept). Keep the two in sync by hand; the bundle-wiring test
+ * string below is compiled from that module and its dependencies at build time,
+ * with type annotations stripped and private fields kept. The bundle-wiring test
  * (tests/unit/opentui-bundle-wiring.mjs) evaluates THIS string and drives a full
  * 279-symbol render through it, so any behavioral drift from the TS class fails
  * loudly.

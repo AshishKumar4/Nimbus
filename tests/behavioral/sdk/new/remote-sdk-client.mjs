@@ -52,12 +52,9 @@ const fetchImpl = async (url, init) => {
       },
     });
   }
-  // `_rpcWriteFile` returns the byte count the VFS wrote (rpc.ts:301), so
-  // the live wire carries a numeric `result`. This mock previously
-  // answered the void shape below, which is why remote writes passed here
-  // while every real one threw a ZodError after the write had landed.
+  // `_rpcWriteFile` returns the committed filesystem revision.
   if (body.op === 'writeFile') {
-    return Response.json({ ok: true, result: 2 });
+    return Response.json({ ok: true, result: 42 });
   }
   // Genuinely void ops (mkdir/deleteFile) return Promise<void> on the DO;
   // the real remote API wraps that as { ok: true } with NO result key
@@ -108,7 +105,7 @@ a.check('ready is the first remote operation',
   calls[0].body.op === 'ready');
 a.check('writeFile encodes bytes',
   calls.find((c) => c.body.op === 'writeFile')?.body.args[1]?.__nimbusWireType === 'bytes');
-a.check('writeFile accepts the byte count the DO returns and exposes void',
+a.check('writeFile accepts the revision the DO returns and exposes void',
   written === undefined);
 a.check('readFileBytes decodes bytes',
   bytes instanceof Uint8Array && bytes.length === 2 && bytes[0] === 0 && bytes[1] === 255);

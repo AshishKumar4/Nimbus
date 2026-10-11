@@ -21,7 +21,7 @@
  *      via `globalThis.__nimbusInitSqlite()` to keep its proven boot shape.
  *
  *   2. Defines `__sqliteMod` = { DatabaseSync, ... } registered as
- *      builtins.sqlite + builtins["node:sqlite"].
+ *      builtins.sqlite, which only node:sqlite names (node-shims.ts __nimbusBuiltinId).
  *
  * Persistence model: a file-backed DatabaseSync loads its bytes
  * synchronously from `__vfsBundle` (the facet's startup snapshot of the

@@ -217,4 +217,41 @@ async function mustComplete(promise, label) {
   assert.equal(ctx.kv.get(TIMER_REASONS_KEY), undefined);
 }
 
+// ── 7. Work a handler started and did not await arms after the dispatch ───
+//
+// A cold-start alarm re-drives an interrupted resident launch without
+// awaiting it (fenced-work.ts recoverInterrupted: the launch asks for its next
+// turn through this same alarm). That launch keeps the handler's async
+// context; when it arms after the dispatch has folded its collection, the arm
+// must take the chain and land, not join a collection nothing reads again: a
+// launch past one turn's budget (TURN_CHUNK_MAX_BYTES) re-driven so waited
+// forever for a turn (workspace-egress-reset-recovery-workerd, a resident's
+// image over the budget).
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('resident-launch', now - 10);
+
+  let releaseLaunch;
+  const launchGate = new Promise((resolve) => { releaseLaunch = resolve; });
+  let launchArm;
+  await mustComplete(
+    timers(host, ctx).dispatch({
+      'resident-launch': () => {
+        launchArm = (async () => {
+          await launchGate;
+          return timers(host, ctx).schedule('resident-launch', now + 1);
+        })();
+      },
+    }),
+    'dispatch that starts a detached launch',
+  );
+  releaseLaunch();
+  assert.equal(await mustComplete(launchArm, 'a detached arm after the dispatch'), true);
+  assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now + 1 });
+  assert.equal(ctx.alarms.at(-1), now + 1);
+}
+
 console.log('fabric-timers-arm-during-dispatch: all assertions passed');

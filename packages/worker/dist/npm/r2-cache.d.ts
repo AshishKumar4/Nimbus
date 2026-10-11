@@ -8,7 +8,7 @@
  * of a package benefits subsequent tenants on the platform.
  *
  * Caching layers (top-down):
- *   L1 — per-DO SQLite (warmest, in-memory; ~1 ms per file)
+ *   L1 — per-DO SQLite metadata and bounded, verified local tarball bytes
  *   L2 — caches.default (per-colo; ~50-500 µs hit / ~5-30 ms cold)
  *   L3 — R2 (global; ~30-100 ms regional)
  *   L4 — registry.npmjs.org origin (~100-300 ms cross-region)
@@ -31,8 +31,8 @@
  *   install name be picked independently of the registry package, so
  *   evil's bytes would land on react's key and pass evil's own integrity
  *   check. Keyed by the resolved integrity digest instead, a writer can
- *   only ever address its own bytes, and every read re-hashes what the
- *   store returned before handing it back. The store's contract is
+ *   only ever address its own bytes, and every external read re-hashes what
+ *   the store returned before handing it back. The store's contract is
  *   therefore absolute: an object at key K hashes to K, or it is not
  *   served. Shared storage is treated as untrusted.
  *
@@ -239,6 +239,7 @@ export declare class R2CacheClient {
     private readonly tarballBucket;
     private readonly packumentBucket;
     private readonly readOnly;
+    private readonly localTarballs;
     private _l2HitsPackument;
     private _l3GetsPackument;
     private _l2HitsTarball;
@@ -260,7 +261,9 @@ export declare class R2CacheClient {
      * Get the tarball stored at `integrity`'s content address, or null if
      * absent / unverifiable / oversize-bypassed.
      *
-     * The returned bytes are ALWAYS re-hashed against the address first.
+     * External bytes are ALWAYS re-hashed against the address first. A bounded
+     * local store keeps private copies of those verified immutable bytes; warm
+     * installs need neither an external cache read nor a redundant hash.
      * The bucket is shared by every tenant, so it is treated as untrusted
      * storage: whatever it hands back is only served on if it hashes to
      * the key it was asked for. A caller can therefore consume the bytes
@@ -272,12 +275,24 @@ export declare class R2CacheClient {
      * through to L3.
      */
     getTarball(integrity: string): Promise<Uint8Array | null>;
+    /** Read the external tiers directly, for the L2/L3 diagnostic benchmark. */
+    getSharedTarball(integrity: string): Promise<Uint8Array | null>;
+    private keepVerifiedTarball;
+    private readSharedTarball;
     /**
-     * Store a tarball at `integrity`'s content address. Bytes are stored
-     * as-is (gzipped tar). No-op if the bucket binding is missing, if the
-     * integrity string is not a verifiable SRI, or if the bytes do not
-     * hash to the address — a caller cannot place bytes under someone
-     * else's key, which keeps the store's contract absolute.
+     * The colo copy of verified tarball bytes, kept as long as the cache layer
+     * will: a content address never changes what it names. Best-effort: a
+     * failed put is silent.
+     */
+    private fillTarballL2;
+    /**
+     * Store a tarball at `integrity`'s content address, in R2 and in this
+     * colo's L2. Bytes are stored as-is (gzipped tar). No-op if the bucket
+     * binding is missing, if the integrity string is not a verifiable SRI,
+     * or if the bytes do not hash to the address — a caller cannot place
+     * bytes under someone else's key, which keeps the store's contract
+     * absolute. Filling R2 alone sent the next session in the colo to R2
+     * for bytes this one had just fetched from the registry.
      *
      * Returns true on success, false otherwise (the cache is best-effort;
      * failure must not break the install).
@@ -295,12 +310,19 @@ export declare class R2CacheClient {
      * On hit, we read both the packument JSON and the absolute
      * `expiresAt` timestamp from the L2 entry's headers — the absolute
      * timestamp matters because L2 may serve a cached response near
-     * the end of its 5-min TTL, and the caller's `expired` check still
-     * needs to fire correctly. On miss, we fall through to R2 and
-     * write back to L2 with a 5-min `Cache-Control: max-age=300`
-     * (matching the existing R2 customMetadata.expiresAt semantic).
+     * the end of its TTL, and the caller's `expired` check still needs
+     * to fire correctly. On miss, we fall through to R2 and write back
+     * to L2 until the R2 entry's customMetadata.expiresAt
+     * (fillPackumentL2).
      */
     getPackument(name: string, registry?: string): Promise<CachedPackument | null>;
+    /**
+     * The colo copy of a packument, kept until `expiresAt`: the cache layer
+     * drops it at its max-age, and the absolute time rides in a header so a
+     * read can re-check the boundary even if the cache layer extends the
+     * entry. Best-effort: a failed put is silent.
+     */
+    private fillPackumentL2;
     /**
      * Resolve a packument through the whole stack: cache read, and on a
      * miss (or an expired entry) the registry fetch plus the cache fill.
@@ -333,8 +355,9 @@ export declare class R2CacheClient {
      */
     network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
     /**
-     * Write a packument JSON to R2 with a TTL stamp in customMetadata.
-     * No-op if the bucket binding is missing.
+     * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
+     * the packument TTL from now) in customMetadata. No-op if the bucket
+     * binding is missing.
      *
      * Only `readThroughPackument` (and the debug bench seeder) call this:
      * it is a storage primitive, never an RPC. See readThroughPackument
@@ -343,7 +366,7 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string, registry?: string): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string, expiresAt?: number): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */

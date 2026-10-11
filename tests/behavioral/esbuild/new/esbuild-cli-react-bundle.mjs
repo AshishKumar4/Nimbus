@@ -36,12 +36,12 @@ try {
 
   await t.run(`mkdir -p /home/user/app/src && printf '%s\\n' '${PACKAGE_JSON}' > /home/user/app/package.json`, 15_000);
   await t.run(`printf '%s\\n' "${MAIN_JSX}" > /home/user/app/src/main.jsx`, 15_000);
-  const install = await t.run('cd /home/user/app && npm install; echo NPM_EXIT=$?', 300_000);
-  a.check('npm install react react-dom', /NPM_EXIT=0/.test(install.output), JSON.stringify(install.output.slice(-400)));
+  const install = await t.run('cd /home/user/app && npm install', 300_000);
+  a.check('npm install react react-dom', install.exitCode === 0, JSON.stringify(install.output.slice(-400)));
 
-  const build = await t.run('cd /home/user/app && esbuild src/main.jsx --bundle --outfile=dist/bundle.js; echo BUILD_EXIT=$?', 180_000);
+  const build = await t.run('cd /home/user/app && esbuild src/main.jsx --bundle --outfile=dist/bundle.js', 180_000);
   const buildOut = stripAnsi(build.output);
-  a.check('the React bundle builds', /BUILD_EXIT=0/.test(buildOut), JSON.stringify(buildOut.slice(-600)));
+  a.check('the React bundle builds', build.exitCode === 0, JSON.stringify(buildOut.slice(-600)));
   a.check('esbuild reports the output relative to the cwd', /dist\/bundle\.js/.test(buildOut), JSON.stringify(buildOut.slice(-600)));
 
   // A file the shell user just created is the reference for who that user is.
@@ -51,8 +51,8 @@ try {
   a.check('the bundle lands in <cwd>/dist', file !== null, JSON.stringify(owner));
   a.check('the bundle belongs to the user who built it', file !== null && user !== undefined && file[1] === user, JSON.stringify(owner));
   a.check('the bundle carries React and the app', file !== null && Number(file[2]) > 500_000, JSON.stringify(owner));
-  const root = stripAnsi((await t.run('ls /dist; echo LS_EXIT=$?', 15_000)).output);
-  a.check('nothing is written at /dist', /LS_EXIT=[1-9]/.test(root), JSON.stringify(root));
+  const root = await t.run('ls /dist', 15_000);
+  a.check('nothing is written at /dist', root.exitCode > 0, JSON.stringify(root.output));
 
   const grep = stripAnsi((await t.run('grep -c ESBUILD_PROBE_APP /home/user/app/dist/bundle.js', 15_000)).output);
   a.check('the app component is in the bundle', /^1\s*$/m.test(grep), JSON.stringify(grep));
@@ -61,9 +61,9 @@ try {
   const bytes = Number(/^\s*(\d+)\s*$/m.exec(stdout)?.[1] ?? 0);
   a.check('without --outfile the bundle goes to stdout', bytes > 100_000, JSON.stringify(stdout.slice(-300)));
 
-  const python = await t.run('nimbus install python; echo PY_INSTALL_EXIT=$?', 300_000);
+  const python = await t.run('nimbus install python', 300_000);
   const pythonOut = stripAnsi(python.output);
-  a.check('nimbus install python completes after the bundle', /PY_INSTALL_EXIT=0/.test(pythonOut), JSON.stringify(pythonOut.slice(-600)));
+  a.check('nimbus install python completes after the bundle', python.exitCode === 0, JSON.stringify(pythonOut.slice(-600)));
   a.check('the terminal stayed connected', !t.closed, t.closeDetail ?? '');
   a.check('the session was not reset', !RESET_NOTICE.test(buildOut + stdout + pythonOut), JSON.stringify(pythonOut.slice(-300)));
 

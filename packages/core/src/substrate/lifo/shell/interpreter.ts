@@ -29,6 +29,7 @@ import type {
 } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
+import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import {
@@ -37,8 +38,8 @@ import {
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { JobTable } from './jobs.js';
-import { arrayFor, assignArray, assignVariable, cloneArrays, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
+import { arrayFor, assignArray, assignVariable, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
+import { forkShellState, type ShellState } from './state.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
@@ -100,19 +101,6 @@ function redirectionDiagnostic(error: RedirectionOpenError): string {
   return `sh: ${error.target}: ${reason}\n`;
 }
 
-export interface ShellOptions {
-  errexit: boolean;
-  nounset: boolean;
-  pipefail: boolean;
-}
-
-export interface TrapTable {
-  get(signal: string): string | undefined;
-  set(signal: string, action: string): void;
-  delete(signal: string): void;
-  entries(): IterableIterator<[string, string]>;
-}
-
 export interface BuiltinExecutionContext {
   interactive?: boolean;
   vfs: ProcessView;
@@ -133,7 +121,7 @@ export interface BuiltinExecutionContext {
   /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
   unsetFunction(name: string): boolean;
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
-  shell: InterpreterConfig;
+  shell: ShellState;
   getLastExitCode(): number;
 }
 
@@ -145,8 +133,8 @@ export type BuiltinFn = (
   args: string[],
   stdout: CommandOutputStream,
   stderr: CommandOutputStream,
-  stdin?: CommandInputStream,
-  context?: BuiltinExecutionContext,
+  stdin: CommandInputStream | undefined,
+  context: BuiltinExecutionContext,
 ) => Promise<number>;
 
 type FdState = {
@@ -225,6 +213,10 @@ type ExecutionIo = {
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
 
+function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
+  return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
+}
+
 /** A shell's function definitions, by name. */
 export type FunctionTable = ReadonlyMap<string, CompoundCommandNode>;
 
@@ -286,29 +278,16 @@ type PositionalFrame = {
 };
 
 
-export interface InterpreterConfig {
-  env: Record<string, string>;
-  /**
-   * Indexed arrays; `env` holds the scalars. A name lives in exactly one of
-   * them, so `$arr` and `${arr[0]}` cannot disagree, and only `unset` moves a
-   * name from one to the other.
-   */
-  arrays: Map<string, (string | undefined)[]>;
-  getCwd: () => string;
-  setCwd: (cwd: string) => void;
+/** A shell's state, and what every shell of the interactive one shares. */
+export interface InterpreterConfig extends ShellState {
   vfs: ProcessView;
   filesystem: NimbusFilesystemAuthority;
   registry: CommandRegistry;
   builtins: Map<string, BuiltinFn>;
-  jobTable: JobTable;
   processRegistry: ProcessRegistry;
   writeToTerminal: (text: string) => void;
-  aliases?: Map<string, string>;
   /** Returns the current abort signal for foreground commands */
   getAbortSignal?: () => AbortSignal;
-  options: ShellOptions;
-  traps: TrapTable;
-  readonlyNames: ReadonlySet<string>;
 }
 
 /**
@@ -349,31 +328,14 @@ export class Interpreter {
   }
 
   /**
-   * A child shell, as fork(2) makes one: its own copy of every piece of shell
-   * state (variables and arrays, cwd, options, traps, readonly names,
-   * aliases, functions, $?, the open descriptors), so nothing it changes
-   * reaches this shell. Shared: the process registry and filesystem,
-   * command registry and terminal; `$$` stays this shell's. Traps reset to
-   * the default, except ignored ones, and the child runs its own EXIT trap
-   * when it finishes (`finishChild`).
+   * A child shell, as fork(2) makes one: its own copy of the shell's state
+   * (forkShellState) and of its functions, $? and open descriptors, so
+   * nothing it changes reaches this shell. Shared: the process registry and
+   * filesystem, command registry and terminal; `$$` stays this shell's. The
+   * child runs its own EXIT trap when it finishes (`finishChild`).
    */
   fork(): Interpreter {
-    const parent = this.config;
-    let cwd = parent.getCwd();
-    const env: Record<string, string> = { ...parent.env };
-    const config: InterpreterConfig = {
-      ...parent,
-      env,
-      jobTable: parent.jobTable.fork(),
-      arrays: cloneArrays(parent.arrays),
-      getCwd: () => cwd,
-      setCwd: (next: string) => { cwd = next; env.PWD = next; },
-      options: { ...parent.options },
-      traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
-      readonlyNames: new Set(parent.readonlyNames),
-      aliases: parent.aliases ? new Map(parent.aliases) : undefined,
-    };
-    const child = new Interpreter(config);
+    const child = new Interpreter({ ...this.config, ...forkShellState(this.config) });
     child.lastExitCode = this.lastExitCode;
     child.functions = new Map(this.functions);
     child.persistentOutputFds = new Map(this.persistentOutputFds);
@@ -494,7 +456,7 @@ export class Interpreter {
       // controlling terminal for `/dev/tty`, but only the foreground job
       // owns the terminal's modes: a background REPL (`node &`) never takes
       // the Ctrl-C meant for the foreground.
-      if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+      if (terminalStdinFd(io)) {
         backgroundIo.stdin = this.createEmptyReader();
         backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
       }
@@ -1431,6 +1393,7 @@ export class Interpreter {
   ): ExecutionIo {
     const io: ExecutionIo = {};
     if (stdin) io.stdin = stdin;
+    else if (terminalStdin && !scriptMode) io.stdin = terminalStdin;
     if (terminalStdin) io.terminalStdin = terminalStdin;
     if (terminalFds) io.terminalFds = terminalFds;
     if (scriptMode) io.scriptMode = true;
@@ -1560,7 +1523,7 @@ export class Interpreter {
     setMembership(
       terminalInputFds,
       0,
-      io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)),
+      terminalStdinFd(io, stdin),
     );
     if (io.terminalStdin) {
       for (const fd of terminalInputFds) {
@@ -1802,12 +1765,17 @@ export class Interpreter {
     const targetPath = resolve(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
+      // Each call is made again once a delegation it meets is recalled
+      // (withRecall): a redirection into a subtree a process holds waits for
+      // it, as any caller that can wait does. What it changes ahead of a
+      // reader's recall is published by the time the command ends (`held`).
       const bridge = vfs.process;
-      const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+      const held = new Set<Promise<void>>();
+      const handle = await withRecall(() => bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' }), undefined, held);
       const push = async (bytes: Uint8Array) => {
         let offset = 0;
         while (offset < bytes.length) {
-          const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+          const written = await withRecall(() => bridge.write(handle.id, null, bytes.subarray(offset)), undefined, held);
           if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
           offset += written;
         }
@@ -1817,8 +1785,14 @@ export class Interpreter {
         stream,
         // What the VFS still holds for the file is written as the command
         // whose redirection opened it ends (flushFds), and a failure is its.
-        flush: async () => { await bridge.fsync(handle.id); },
-        close: async () => { await bridge.close(handle.id); },
+        flush: async () => {
+          await withRecall(() => bridge.fsync(handle.id), undefined, held);
+          await Promise.all(held);
+        },
+        close: async () => {
+          await bridge.close(handle.id);
+          await Promise.all(held);
+        },
         refs: 1,
       });
       return { stream, terminal: false };
@@ -1850,8 +1824,8 @@ export class Interpreter {
       }
       await vfs.access(targetPath, 0o4);
       const bridge = vfs.process;
-      const handle = await bridge.open(targetPath, { read: true });
-      const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)), true);
+      const handle = await withRecall(() => bridge.open(targetPath, { read: true }));
+      const stream = this.createFileReader(vfs, targetPath, (offset, length) => withRecall(() => bridge.read(handle.id, offset, length)), true);
       fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
       return { stream, terminal: false };
     } catch (error) {

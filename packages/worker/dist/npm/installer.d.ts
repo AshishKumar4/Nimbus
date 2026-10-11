@@ -28,7 +28,6 @@ import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
-import { type FetchFn } from './resolver.js';
 import { type NpmLogEmitter } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
@@ -64,14 +63,6 @@ export declare class NpmInstaller {
     private ctx;
     private env;
     private onProgress;
-    /**
-     * Injectable fetch function. Required because DO fetch() hangs in
-     * wrangler local dev. The caller (NimbusSession) provides a function
-     * that routes fetches through a facet worker. Used only by the resolve
-     * path (packument JSON) — tarball fetches happen inside the facet pool
-     * when the feature flag is on, using the facet's own global fetch.
-     */
-    private fetchFn;
     /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
     private readonly network;
     /**
@@ -86,7 +77,6 @@ export declare class NpmInstaller {
         ctx?: DurableObjectState;
         env?: any;
         onProgress?: (msg: string) => void;
-        fetchFn?: FetchFn;
         /** The workspace's network (`workspace.network`). */
         network: WorkspaceNetwork;
     });

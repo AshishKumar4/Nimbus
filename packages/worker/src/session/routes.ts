@@ -25,6 +25,7 @@
  */
 
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
+import { FANOUT_BENCH_TASK, SERIAL_BENCH_TASK } from '../loaders/compiled-bodies.generated.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
@@ -57,12 +58,8 @@ import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { dynamicWorkerHeadroom, facetIdBudget, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
-import {
-  HOSTED_WEBSOCKET_CAPABILITY_HEADER,
-  HOSTED_WEBSOCKET_KEY_HEADER,
-} from '@nimbus-sh/fabric/process-host.js';
-import { routeHostedWebSocket } from './rpc.js';
+import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
+import { isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
 import {
   isCirrusHmrPath,
   persistPortCapability,
@@ -90,6 +87,8 @@ import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platf
 import { z } from 'zod/v4';
 
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 type RoutesHost = any;
 
@@ -424,27 +423,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
 
 async function routeFetch(self: RoutesHost, request: Request): Promise<Response> {
     const url = new URL(request.url);
-    // The peer end of the fetch-semantic WebSocket hop, before anything else:
-    // this request is a sibling coordinator's, not a browser's, and it names
-    // the hosted process rather than a route on this session. Both headers are
-    // stripped so the process never sees the transport that carried it.
-    const hostedWebSocket = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
-    if (hostedWebSocket) {
-      if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
-        return new Response('Expected WebSocket', { status: 426 });
-      }
-      const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-      if (!capability) return new Response('Not found', { status: 404 });
-      const headers = new Headers(request.headers);
-      headers.delete(HOSTED_WEBSOCKET_KEY_HEADER);
-      headers.delete(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-      return routeHostedWebSocket(
-        self,
-        hostedWebSocket,
-        capability,
-        new Request(request.url, { method: request.method, headers }),
-      );
-    }
+    // The peer end of the fetch-semantic WebSocket hop, before anything else.
+    if (isHostedWebSocket(request)) return self.peerHost.routeWebSocket(request);
     // Capture session basePath from the routing header (if forwarded by the
     // Worker's session-router). Threaded through to ViteDevServer so the
     // served app's module URLs, HMR paths, <base href>, and router basename
@@ -751,6 +731,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
 
         // ── v2 / W5 additions (preserved) ─────────────────────────
         lastFailures,
+        // Subtrees processes hold, and the recalls asked of them (runtime/delegations.ts).
+        delegations: self.filesystem?.authority.delegations.stats() ?? null,
         vfsDetail: {
           lruBytes: cacheStats.hotBytes ?? 0,
           lruMaxEntries: cacheStats.maxEntries ?? LRU_MAX_ENTRIES,
@@ -780,7 +762,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // Per-DO Dynamic Worker accounting: distinct workers in flight now,
         // fan-out claims, remaining headroom against the platform limit,
         // and the peak.
-        loader: loaderLedgerStats(self.ctx),
+        loader: loaderLedgerStats(self.ctx, self.env.NIMBUS_DIAG_TURN === '1'),
         rpc: {
           lastFrame: getLastRpcFrame(),
         },
@@ -788,10 +770,6 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           lastDispatch: getLastFacetId(),
           // Null until the first terminal attaches: the manager is built by initSession.
           prefetchCache: self.facetManager?.prefetchCacheDiag() ?? null,
-          // Facet IDs consumed over this DO's LIFETIME against the 65,536 the
-          // platform will ever grant it. Append-only and never reclaimed;
-          // crossing the wall is unrecoverable for the object.
-          idBudget: await facetIdBudget(self.ctx),
         },
 
         // ── v3 / C' observability foundation ──────────────────────
@@ -976,11 +954,12 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         }
       }
       // Where a session's write time goes, phase by phase, without RPC: the
-      // clock only moves across I/O, so each phase ends on a timer turn.
+      // clock only moves across I/O, so each phase ends after a real 1 ms
+      // clock deadline. An afterTurn continuation is not a clock tick.
       if (url.pathname === '/api/_test/sql-bench' && request.method === 'POST') {
         const body = await parseJsonBody(request, SqlBenchBodySchema);
         const tick = async (): Promise<number> => {
-          await new Promise((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => setTimeout(resolve, 1));
           return Date.now();
         };
         const sql = self.ctx.storage.sql;
@@ -1232,18 +1211,16 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
     // CORS) governs them, so no preflight is emitted; cross-origin
     // requests are rejected by the browser before reaching the Worker.
     if (url.pathname === '/api/write-file' && request.method === 'POST') {
-      self.ensureSqliteFs();
       try {
-        const vfs = self.sqliteFs!.as(CRED_KERNEL);
+        const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
         const body = await parseJsonBody(request, WriteFileBodySchema);
         const path = body.path.replace(/^\/+/, '');
-        // Ensure parent dirs
-        const parts = path.split('/');
-        for (let i = 1; i < parts.length; i++) {
-          const dir = parts.slice(0, i).join('/');
-          if (dir && !vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
-        }
-        vfs.writeFile(path, body.content);
+        // A delegation it meets is recalled first; the whole write is repeatable.
+        await withRecall(() => {
+          const parent = parentVfsPath(path);
+          if (parent) fs.mkdir(`/${parent}`, { recursive: true });
+          fs.writeFile(`/${path}`, body.content);
+        });
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
@@ -1251,11 +1228,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
     }
 
     if (url.pathname === '/api/mkdir' && request.method === 'POST') {
-      self.ensureSqliteFs();
       try {
         const body = await parseJsonBody(request, MkdirBodySchema);
         const path = body.path.replace(/^\/+/, '');
-        self.sqliteFs!.as(CRED_KERNEL).mkdir(path, { recursive: true });
+        await withRecall(() => self.getFilesystemAuthority().namespaceFs(CRED_KERNEL).mkdir(`/${path}`, { recursive: true }));
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
@@ -1424,13 +1400,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       }
       // Polished placeholder — auto-reloads when vite starts.
       // Checks the VFS for the starter app so we can offer a context-aware hint.
-      const hasSeed = (() => {
-        try {
-          const vfs = self.sqliteFs!.as(CRED_KERNEL);
-          return vfs.exists(SEED_PROJECT_DIR) &&
-                 vfs.exists(SEED_PROJECT_DIR + '/package.json');
-        } catch { return false; }
-      })();
+      const hasSeed = await withRecall(() => {
+        const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+        return fs.exists(`/${SEED_PROJECT_DIR}`) && fs.exists(`/${SEED_PROJECT_DIR}/package.json`);
+      }).catch(() => false);
       const hint = hasSeed
         ? `cd ${SEED_PROJECT_NAME} &amp;&amp; npm install &amp;&amp; npm run dev`
         : 'vite';
@@ -1464,15 +1437,12 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // nimbus-wrangler starts. The placeholder references BOTH command
         // names so users coming from either `wrangler dev` or
         // `nimbus-wrangler dev` see a familiar hint.
-        const hasWranglerConfig = (() => {
-          try {
-            self.ensureSqliteFs();
-            const vfs = self.sqliteFs!.as(CRED_KERNEL);
-            return vfs.exists('home/user/wrangler.jsonc') ||
-                   vfs.exists('home/user/wrangler.json') ||
-                   vfs.exists('home/user/wrangler.toml');
-          } catch { return false; }
-        })();
+        const hasWranglerConfig = await withRecall(() => {
+          const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+          return fs.exists('/home/user/wrangler.jsonc') ||
+                 fs.exists('/home/user/wrangler.json') ||
+                 fs.exists('/home/user/wrangler.toml');
+        }).catch(() => false);
         const hint = hasWranglerConfig
           ? 'npm run dev'
           : 'wrangler dev';
@@ -1706,8 +1676,9 @@ async function handleCacheTestEndpoint(
     for (let i = 0; i < digest.length; i++) bin += String.fromCharCode(digest[i]);
     const integrity = `sha512-${btoa(bin)}`;
     const address = parseTarballAddress(integrity)!;
-    await purgeL2(tarballL2Url(address));
+    // putTarball fills L2 as well: purge after it, so the bench starts from L3 cold.
     const ok = await r2.putTarball(integrity, bytes);
+    await purgeL2(tarballL2Url(address));
     return Response.json({ seeded: ok, integrity, sizeBytes: bytes.length });
   }
 
@@ -1722,7 +1693,7 @@ async function handleCacheTestEndpoint(
     let nullCount = 0;
     for (let i = 0; i < n; i++) {
       const t0 = performance.now();
-      const got = await r2.getTarball(integrity);
+      const got = await r2.getSharedTarball(integrity);
       const t1 = performance.now();
       latencies.push(t1 - t0);
       if (!got) nullCount++;
@@ -1829,17 +1800,7 @@ async function handleFanoutTestEndpoint(
     const results = await pool.submitMany<
       { id: number; sleepMs: number },
       { id: number; startMs: number; endMs: number; loaderEnvKeys: string[] }
-    >(tasks, async (item: { id: number; sleepMs: number }, env: any) => {
-      const startMs = Date.now();
-      // Identify which env we're running in. SUPERVISOR is the
-      // RPC stub auto-injected by IsolatePool; its presence
-      // tells us we're inside a loader isolate (not the supervisor).
-      const loaderEnvKeys = Object.keys(env || {}).sort();
-      // Sleep entirely inside the isolate — no external network.
-      await new Promise((r) => setTimeout(r, item.sleepMs));
-      const endMs = Date.now();
-      return { id: item.id, startMs, endMs, loaderEnvKeys };
-    });
+    >(tasks, FANOUT_BENCH_TASK);
     const t1 = performance.now();
 
     // Aggregate per-peer ledger from the response shape. Each task's
@@ -1890,10 +1851,7 @@ async function handleFanoutTestEndpoint(
     try {
       for (let i = 0; i < n; i++) {
         await pool.submit(
-          async (item: { id: number; sleepMs: number }) => {
-            await new Promise((r) => setTimeout(r, item.sleepMs));
-            return item.id;
-          },
+          SERIAL_BENCH_TASK,
           { id: i, sleepMs },
         );
       }

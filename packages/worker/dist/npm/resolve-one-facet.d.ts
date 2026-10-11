@@ -12,7 +12,7 @@
  * sibling DOs). The isolate is short-lived; task body has its own ~128 MiB
  * envelope. Parallelism = layer width.
  *
- * Stability invariants (cloudflare-parallel serialises via fn.toString)
+ * Guest environment (the build compiles this task with its dependencies)
  * ───────────────────────────────────────────────────────────────────
  *   - No `this` references.
  *   - No closure capture other than args + preamble names.
@@ -25,6 +25,7 @@
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null
+ *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
  * ─────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ export interface ResolveOneResult {
     };
 }
 /**
- * Per-package fanout task body. Serialised via fn.toString() and
+ * Per-package fanout task body. Compiled at build time and
  * dispatched by Fanout.submitMany — see installer.ts
  * resolveTreeViaFanout.
  *

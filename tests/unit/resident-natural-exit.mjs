@@ -60,6 +60,79 @@ function commanderFiles() {
 const SERVER = 'const server = require("http").createServer((req, res) => res.end("hi"));';
 
 await runScenarios(import.meta.filename, {
+  async bootExceptionIsNotSuccess() {
+    const authority = createAuthority();
+    const events = [];
+    const { supervisor, log } = facetSupervisor(authority, {
+      stderr: async bytes => { log.stderr += new TextDecoder().decode(bytes); events.push('stderr'); },
+      reportExit: async (code, reason) => { log.exit = { code, reason }; events.push('exit'); },
+    });
+    const launched = launchResident({ authority, program: 'throw new RangeError("RESIDENT_BOOT_FAILURE");', env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
+    await launched.catch(() => {});
+    await until(() => log.exit !== null, 'resident boot failure exit', 5_000);
+    assert.match(log.stderr, /RangeError: RESIDENT_BOOT_FAILURE/);
+    assert.equal(log.exit.code, 1);
+    assert.ok(events.indexOf('stderr') >= 0 && events.indexOf('stderr') < events.indexOf('exit'), 'error bytes precede the nonzero exit');
+  },
+
+  // react-router dev's relaunched CLI: its startup goes on in a global
+  // immediate the platform runs after the boot's settle budget, then fails
+  // and says so. An immediate that was not a handle ended it at boot, exit 0
+  // and silent.
+  async startupPastBootFailsLoudly() {
+    globalThis.setImmediate = (callback, ...args) => rawSetTimeout(callback, 1_500, ...args);
+    const { log } = await launch(`(async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  throw new RangeError("CONFIG_LOAD_FAILED");
+})().then(() => process.exit(0), (error) => { console.error(String(error)); process.exit(1); });`);
+    assert.equal(log.exit, null, 'still starting when its boot answered: an immediate is pending');
+    await until(() => log.exit !== null, 'the exit after the immediate', 5_000);
+    assert.equal(log.stderr, 'RangeError: CONFIG_LOAD_FAILED\n');
+    assert.equal(log.exit.code, 1);
+  },
+
+  async startupPastBootServes() {
+    globalThis.setImmediate = (callback, ...args) => rawSetTimeout(callback, 1_500, ...args);
+    const { log, proc } = await launch(`setImmediate(() => { ${SERVER} server.listen(5173); });`);
+    assert.equal(log.exit, null, 'still starting when its boot answered: an immediate is pending');
+    await until(() => log.ports.has(5173), 'the listener after the immediate', 5_000);
+    const response = await proc.fetch(new Request('http://facet/', { headers: { 'X-Nimbus-Port': '5173' } }));
+    assert.equal(await response.text(), 'hi');
+    assert.equal(log.exit, null);
+  },
+
+  // A resident whose boot starts a child and waits for its exit (react-router
+  // dev relaunching itself, nodemon): its boot answers while the child runs,
+  // and it ends with the child's status once the child does. The boot used
+  // to drain the child's close with the program's writes, and the child's
+  // own launch could not be built until that boot answered.
+  async childAwaitedPastBoot() {
+    let endChild;
+    const childEnded = new Promise((resolve) => { endChild = resolve; });
+    let ended = false;
+    void childEnded.then(() => { ended = true; });
+    const poll = (waitMs, answer) => Promise.race([childEnded.then(answer), sleep(Math.min(waitMs, 200)).then(() => null)]);
+    const launched = launch(`const child = require('child_process').spawn('node', ['srv.js'], { stdio: ['ignore', 'pipe', 'pipe'] });
+child.on('exit', (code) => process.exit(code ?? 0));`, {
+      supervisorOverrides: {
+        cpSpawn: async () => ({ childPid: 77 }),
+        cpStdinEnd: async () => {},
+        cpWait: async (pid, waitMs) => (await poll(waitMs, () => ({ done: true, exitCode: 3, signal: null })))
+          ?? { done: false, exitCode: null, signal: null, started: true },
+        cpReadOutput: async (pid, fd, sinceSeq, waitMs) => (await poll(waitMs, () => ({ chunks: [], closed: true, maxSeq: 0 })))
+          ?? { chunks: [], closed: ended, maxSeq: 0 },
+        cpDrainOutput: async () => ({ stdout: new Uint8Array(0), stderr: new Uint8Array(0), stdoutClosed: true, stderrClosed: true }),
+      },
+    });
+    const booted = await Promise.race([launched.then(() => true), sleep(8_000).then(() => false)]);
+    assert.equal(booted, true, 'its boot answered while its child runs');
+    const { log } = await launched;
+    assert.equal(log.exit, null, 'it runs while its child does');
+    endChild();
+    await until(() => log.exit !== null, "the exit after its child's", 5_000);
+    assert.equal(log.exit.code, 3);
+  },
+
   async finishedProgramExits() {
     const { log } = await launch('console.log("done");');
     assert.deepEqual(log.exit, { code: 0, reason: '' }, 'reported before its boot answered');
@@ -217,6 +290,7 @@ await runScenarios(import.meta.filename, {
       '  ["timer", () => setTimeout(() => {}, Symbol("delay"))],',
       '  ["interval", () => setInterval(() => {}, Symbol("delay"))],',
       '  ["tls", () => require("tls").connect({ host: "127.0.0.1", port: -1 })],',
+      '  ["tlsLookup", () => require("tls").connect({ host: "localhost", port: 443, lookup: 0 })],',
       '  ["http", () => require("http").request({ host: "127.0.0.1", port: 1, method: "BAD METHOD" })],',
       ']) {',
       '  try { make(); console.log(name + ":created"); } catch (error) { console.log(name + ":" + error.name); }',

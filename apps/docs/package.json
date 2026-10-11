@@ -6,7 +6,7 @@
   "description": "Nimbus documentation site (Astro + Starlight), served at /docs from the hosted-demo Worker's assets binding.",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "node ../../scripts/render-capabilities.mjs --check && astro build",
     "preview": "astro preview",
     "astro": "astro"
   },

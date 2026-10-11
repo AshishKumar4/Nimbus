@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
-const source = generateOpencodeRunnerCode({
+const { code: source } = generateOpencodeRunnerCode({
   argv: ['serve'],
   env: {},
   cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },

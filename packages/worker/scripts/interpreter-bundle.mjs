@@ -27,7 +27,7 @@
  */
 
 import { parse } from 'acorn';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -36,6 +36,18 @@ import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 /** How the interpreter requires its primordials: the module beside it. */
 export const PRIMORDIALS_FILE = 'interpreter-primordials.js';
+
+/** Evaluate the registry template whose helpers already came from the shared build-time compiler. */
+export async function bundleRegistry({ start }) {
+  const entry = join(resolvePackageDir('@nimbus-sh/core', { start }), 'src/_shared/commonjs-cell.ts');
+  const output = await build({
+    stdin: { contents: `export { COMMONJS_CELL_RUNTIME_SOURCE } from ${JSON.stringify(entry)};`, resolveDir: start },
+    bundle: true, format: 'esm', platform: 'node', target: 'esnext', write: false,
+  });
+  const text = output.outputFiles[0].text;
+  const module = await import(`data:text/javascript;base64,${Buffer.from(text).toString('base64')}`);
+  return (await transform(module.COMMONJS_CELL_RUNTIME_SOURCE, { minifyWhitespace: true, target: 'esnext', charset: 'utf8' })).code;
+}
 
 /**
  * The interpreter's ES module bundle as a CommonJS module: its import of the
