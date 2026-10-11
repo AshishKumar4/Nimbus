@@ -4508,9 +4508,15 @@ export class SqliteVFS {
     return next;
   }
 
-  /** Whether a holder's exclusive mutation is active: a lease taken for work, not a commit held for its publication. */
-  hasExclusiveMutation(): boolean {
-    for (const lease of this.exclusiveMutationLeases.values()) if (lease.held === undefined) return true;
+  /**
+   * Whether a holder's exclusive mutation is active: a lease taken for work,
+   * not a commit held for its publication. `delegations: false` leaves out
+   * the subtrees delegated to processes, which go when their holders end.
+   */
+  hasExclusiveMutation({ delegations = true }: { delegations?: boolean } = {}): boolean {
+    for (const lease of this.exclusiveMutationLeases.values()) {
+      if (lease.held === undefined && (delegations || lease.delegation === null)) return true;
+    }
     return false;
   }
 

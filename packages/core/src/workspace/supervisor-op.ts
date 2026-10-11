@@ -566,8 +566,6 @@ export interface SupervisorOpBridgeStore {
    * across an await would otherwise read as each other.
    */
   readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
-  /** Drop a pid's bridge — a process exit ends its credential's validity. */
-  readonly forget: (pid: number) => Promise<void>;
   /** Close a live pid's descriptors for a run that starts in place of another (NimbusFilesystemAuthority.rewindProcess). */
   readonly rewind?: (pid: number) => Promise<void>;
   readonly dispose: () => Promise<void>;
@@ -592,7 +590,6 @@ export function createSupervisorBridgeStore(
       if (!lease) { lease = authority.openHost(identity); hostLeases.set(key, lease); }
       return lease.fs;
     },
-    forget: (pid) => authority.releaseProcess(pid),
     rewind: async (pid) => { await authority.rewindProcess?.(pid); },
     dispose: async () => {
       await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));

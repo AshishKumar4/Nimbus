@@ -132,7 +132,9 @@ function startShellJob(self, command, options, job, named) {
     if (job.background)
         self.processes.openInput(pid);
     const controller = new AbortController();
-    self.processes.setTerminator(pid, () => {
+    // The job is this session's work behind the pid: a kill stops it, and the
+    // pid's release waits for its shell to close what it opened.
+    const stopped = self.processes.holdWork(pid, () => {
         try {
             controller.abort();
         }
@@ -175,7 +177,7 @@ function startShellJob(self, command, options, job, named) {
                 }
                 : {}),
         },
-    }).finally(() => shell.closeDescriptors());
+    }).finally(() => shell.closeDescriptors()).finally(stopped);
     return { pid, entry, run, abort: () => { try {
             controller.abort();
         }
@@ -959,8 +961,10 @@ export async function rpcDestroy(self, options = {}) {
     self.ensureSqliteFs();
     const guardedVfs = self.sqliteFs;
     const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
-    // A holder's exclusive mutation refuses the destroy before anything is stopped.
-    if (guardedVfs.hasExclusiveMutation())
+    // A holder's exclusive mutation refuses the destroy before anything is
+    // stopped, unless the holder is one of the processes it stops: a subtree
+    // delegated to a process goes when that process ends.
+    if (guardedVfs.hasExclusiveMutation({ delegations: false }))
         throw busy();
     const reason = typeof options.reason === 'string' && options.reason.trim()
         ? options.reason.trim().slice(0, 200)
@@ -1018,6 +1022,10 @@ export async function rpcDestroy(self, options = {}) {
             catch { }
         }
     }
+    // What they held goes once the work stopping on them has closed what it
+    // opened (SessionProcessSupervisor.released, bounded for work that ignores
+    // its stop): their delegations among it.
+    await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
     // Its processes stopped, every wave still being read is cut, which ends
     // the commits it held open: each is then published once its reader
     // answers, or its trust runs out. The check and the take after the last
