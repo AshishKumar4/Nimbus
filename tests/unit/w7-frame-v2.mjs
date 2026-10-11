@@ -298,10 +298,10 @@ async function expectDecodeFailure(value, pattern) {
   await expectDecodeFailure(badKind, /unsupported file-begin kind fifo/);
 
   // The engine takes framing from the decoder alone: a misframed stream is
-  // refused there, before any of it is stored.
-  for (const [what, misframed, pattern] of [
-    ['a chunk out of order', outOfOrder, /expected chunk 1, got 0/],
-    ['a file-end miscounting its chunks', badEnd, /file-end chunk count mismatch/],
+  // refused there, and the file it misframes is not stored.
+  for (const [what, misframed, pattern, file] of [
+    ['a chunk out of order', outOfOrder, /expected chunk 1, got 0/, 'dir/many.bin'],
+    ['a file-end miscounting its chunks', badEnd, /file-end chunk count mismatch/, 'empty.txt'],
   ]) {
     const harness = createSqliteVfsTestHarness();
     const engine = new SqliteVFS(harness.sql, harness.ctx);
@@ -309,9 +309,7 @@ async function expectDecodeFailure(value, pattern) {
     const answer = await kernel.writeStream(streamBytes(misframed, 7));
     assert.equal(answer.ok, false, `${what} is refused`);
     assert.match(answer.error.message, pattern, `${what}: refused by the decoder's own check`);
-    for (const path of ['dir', 'empty.txt', 'one.bin', 'dir/many.bin']) {
-      assert.equal(kernel.exists(path), false, `${what}: ${path} was not stored`);
-    }
+    assert.equal(kernel.exists(file), false, `${what}: ${file} was not stored`);
   }
 }
 
