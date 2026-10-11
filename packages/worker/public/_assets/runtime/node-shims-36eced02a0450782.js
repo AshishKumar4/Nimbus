@@ -378,17 +378,20 @@ if (typeof __real_net !== "undefined") {
       // Already connecting: the native connect refuses it, opening nothing.
       if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
       __nativeConnectChecks((Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args))[0]);
-      if (globalThis.__nimbusEgress === true && !__egressSocketHolds.has(this)) {
+      if (globalThis.__nimbusEgress === true) {
         const socket = this;
-        const hold = __nimbusHoldSocket();
-        __egressSocketHolds.set(socket, hold);
-        const ref = socket.ref, unref = socket.unref;
-        socket.ref = function () { hold(true); Reflect.apply(ref, this, arguments); return this; };
-        socket.unref = function () { hold(false); Reflect.apply(unref, this, arguments); return this; };
-        socket.once('close', () => {
-          hold(false); __egressSocketHolds.delete(socket);
-          socket.ref = ref; socket.unref = unref;
-        });
+        let state = __egressSocketHolds.get(socket);
+        if (!state) {
+          state = { hold: null };
+          __egressSocketHolds.set(socket, state);
+          const ref = socket.ref, unref = socket.unref;
+          socket.ref = function () { state.hold?.(true); Reflect.apply(ref, this, arguments); return this; };
+          socket.unref = function () { state.hold?.(false); Reflect.apply(unref, this, arguments); return this; };
+        }
+        if (!state.hold) {
+          const hold = state.hold = __nimbusHoldSocket();
+          socket.once('close', () => { hold(false); if (state.hold === hold) state.hold = null; });
+        }
       }
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
