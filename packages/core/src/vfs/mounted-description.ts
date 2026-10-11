@@ -106,12 +106,12 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
   let pending: { offset: number | null; bytes: Uint8Array }[] = [];
   let held = 0;
   const whole = (): Awaitable<Uint8Array> => then(files.stat(name), (there) => (there === null ? new Uint8Array(0) : files.readFile(name)));
-  // `file` with the pending writes applied in order (an append at the end
-  // as it then is): what a flush writes, and what this process reads.
-  const applyPending = (base: Uint8Array): Uint8Array => {
+  // `file` with `writes` applied in order (an append at the end as it then
+  // is): what a flush writes, and what this process reads.
+  const apply = (writes: readonly { offset: number | null; bytes: Uint8Array }[], base: Uint8Array): Uint8Array => {
     // A copy: a backend may hand out its own buffer, which must not change before the flush.
     let file = base.slice();
-    for (const write of pending) {
+    for (const write of writes) {
       const at = write.offset ?? file.byteLength;
       if (at + write.bytes.byteLength > file.byteLength) {
         const grown = new Uint8Array(at + write.bytes.byteLength);
@@ -122,14 +122,13 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
     }
     return file;
   };
+  // A flush that fails loses what it held (lastClose says so): taken before it reads.
   const flush = (): Awaitable<void> => {
     if (pending.length === 0) return;
-    return then(whole(), (file) => {
-      const next = applyPending(file);
-      pending = [];
-      held = 0;
-      return files.writeFile(name, next);
-    });
+    const writes = pending;
+    pending = [];
+    held = 0;
+    return then(whole(), (file) => files.writeFile(name, apply(writes, file)));
   };
   const hold = (offset: number | null, bytes: Uint8Array): Awaitable<number> => {
     if (held + bytes.byteLength > options.bufferedWriteBytes) throw refuse('EFBIG', 'write');
@@ -180,7 +179,12 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
     },
     write,
     // At the end as it is then: a held append goes at the end as it stands at the flush.
-    append: (bytes) => then(inPlace ? then(files.stat(name), (there) => write(there?.size ?? 0, bytes)) : hold(null, bytes), () => then(statNow(), (now) => now.size)),
+    append: (bytes) => (inPlace
+      ? then(files.stat(name), (there) => {
+        const at = there?.size ?? 0;
+        return then(write(at, bytes), () => at + bytes.byteLength);
+      })
+      : then(hold(null, bytes), () => then(statNow(), (now) => now.size))),
     truncate: op(files.truncate, 'ftruncate'),
     readdir: () => then(files.readdir(name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type }))),
     chmod: op(files.chmod, 'fchmod'),
@@ -189,7 +193,7 @@ function mountedDescription(options: MountedDescriptionOptions, stat: VfsStat): 
     flush,
     close: flush,
     pendingBytes: () => held,
-    applyPending,
+    applyPending: (base) => apply(pending, base),
   };
 }
 
