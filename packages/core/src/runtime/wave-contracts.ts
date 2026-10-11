@@ -270,7 +270,7 @@ export interface WaveDescriptions {
   /** The description `id` names on this filesystem, or undefined (never opened, closed, or a mount's). */
   node(id: string): VfsOpenDescription | undefined;
   /** The description of a file on a mount `id` names (describe), or undefined. */
-  mounted(id: string): Description | undefined;
+  mounted(id: string): (Description & Required<Pick<Description, 'append'>>) | undefined;
   /**
    * Keep `file`, pinned by a wave's open of a name on a mount
    * (WaveRouter.open), as description `id`, each write in its mount before

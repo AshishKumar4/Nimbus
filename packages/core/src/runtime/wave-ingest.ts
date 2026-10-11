@@ -55,7 +55,7 @@ interface RoutedFile {
   /** A writeFile's or appendFile's umask (W7Call umask). */
   umask?: number;
   /** A write or append through the binding's description of a file on a mount: made on it, wherever its name leads now. */
-  described?: Description;
+  described?: NonNullable<ReturnType<WaveDescriptions['mounted']>>;
 }
 
 type Placement = { resolved: string; epoch: number };
