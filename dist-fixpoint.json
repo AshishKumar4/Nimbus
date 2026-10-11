@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "8b5c553bd526b099aa59304391f111687dd20c48ed4d4a4b4f74e1b1d61e05de",
+  "fingerprint": "d9bbf98e289646e718713b0924c58c1228e9526c0d07ff60131e2c86c355259f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -683,8 +683,8 @@
     "packages/core/dist/runtime/wave-router.d.ts.map": "bd541e89ed4eef9776f7fc97c5e4aa3a0589d563abeeeb274c6839fc494eee39",
     "packages/core/dist/runtime/wave-router.js": "76389addb66331059425a8d1f1ca65b62093c5b9ea6e9f26f3bbf77ebcd19796",
     "packages/core/dist/runtime/websocket-arguments.d.ts": "fce0512c8a8b4f7084711009d4aec1ece84dc148797a330f82e2b114cf114a66",
-    "packages/core/dist/runtime/websocket-arguments.d.ts.map": "b6e91f3dee9e19c8c3a198f19f60d7af6cc00edd4a28c3980050d4f6dd000e19",
-    "packages/core/dist/runtime/websocket-arguments.js": "6ca244919bdeeb579f25118b1c4ac3116c8ce073a209dcd3550a492095d2c701",
+    "packages/core/dist/runtime/websocket-arguments.d.ts.map": "2bbca1ab51d57a6d8a9129b2b77cad27b22d76af73ee2f238116ca17d873e552",
+    "packages/core/dist/runtime/websocket-arguments.js": "3a520048867ae95d3e8485495baa7c9bfe3614ce243050d2efac5b08cce02168",
     "packages/core/dist/shell/elevation-commands.d.ts": "5faafb1c8ebbb0e38b4c0a7a543d3ab1dff581d597b82b38f75654278be80e72",
     "packages/core/dist/shell/elevation-commands.d.ts.map": "b1400f5502e461b1b403edf60af8db677cfe2e8aeded4a73dde631baab690d1a",
     "packages/core/dist/shell/elevation-commands.js": "fcf1e7ea8e29e7974ec0a177fb7ff0c52ae45efeb361d877549fd6d9e03e0d9d",
@@ -1446,7 +1446,7 @@
     "packages/core/src/runtime/wasm-memory.ts": "419a1c9dfbb10eaf906487ffa820453190efb6a983f801bebc73dc0ee9269f88",
     "packages/core/src/runtime/wasm-runner.ts": "17ec6410483f3113f5961fa137560f742dae319921c19216ad549209d4e41242",
     "packages/core/src/runtime/wave-router.ts": "ce91ed5bfca072a033271f4081df1ab94b0f0df08f2cddf561193cd7e2dd3ef7",
-    "packages/core/src/runtime/websocket-arguments.ts": "5f637ae8f8b8040259a3ff7e71d3a00d70ada2517c9ae4cf188744362b3045f5",
+    "packages/core/src/runtime/websocket-arguments.ts": "cecd99eeeeddc10d543db7fc24e98565bbe8a529ede4c0c545315fc8b0203431",
     "packages/core/src/shell/elevation-commands.ts": "9e14a3560a23ee540f4fe258d4bac2a3e6495229e0d62912c5b8227ee76f928e",
     "packages/core/src/shell/exec-dispatch.ts": "e939ea137c65ec8fc4b430d50607fd7f7816497856f44dbfcbeb29f8b9738b71",
     "packages/core/src/shell/features.ts": "3608743c6c60b6691fdad542b917cc54a32b0f70d35f69e7478a3052f5648756",

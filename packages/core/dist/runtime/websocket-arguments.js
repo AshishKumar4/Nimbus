@@ -40,8 +40,11 @@ const protocols = (value) => {
 };
 export function webSocketConstructor(input, options) {
     const init = object(options) && !(Symbol.iterator in options) ? options : { protocols: options };
-    const offered = protocols(init.protocols === undefined ? [] : init.protocols);
-    const headers = new Headers(init.headers == null ? undefined : init.headers);
+    const protocolValue = init.protocols;
+    const offered = protocols(protocolValue === undefined ? [] : protocolValue);
+    void init.dispatcher;
+    const headerValue = init.headers;
+    const headers = new Headers(headerValue == null ? undefined : headerValue);
     const text = toUSVString(input);
     const url = (() => {
         try {
