@@ -19,6 +19,7 @@ export interface TimerStorage {
     put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<boolean>;
     setAlarm?(scheduledTime: number): Promise<void>;
+    getAlarm?(): Promise<number | null>;
 }
 /** The hosting actor's context, as the timer coordination reads it. */
 export interface TimerContext {
@@ -50,13 +51,20 @@ export declare const TIMER_REASONS_KEY = "w1_next_alarm_reasons";
 /**
  * The host instance carrying the per-instance timer chain. The field lives on
  * the embedder's DO instance so one chain serializes every timer-map
- * read-modify-write for that instance (see {@link Timers.schedule}).
+ * read-modify-write for that instance (see {@link Timers.schedule}). Only
+ * those read-modify-writes are ever on it, never a handler: an arm waits on
+ * storage, not on whatever a dispatch's handlers are waiting for.
  * `_timerEpoch` counts {@link Timers.reset}s: a schedule or dispatch writes
  * only while the epoch it was requested in is still current.
+ * `_timerFiring` is the reasons a running dispatch fired and has not seen
+ * armed again since, each at the deadline it fired at, and
+ * `_timerFiringSince` when that dispatch began.
  */
 export interface TimerHost {
     _timerChain?: Promise<unknown>;
     _timerEpoch?: number;
+    _timerFiring?: Map<string, number>;
+    _timerFiringSince?: number;
 }
 /**
  * What one timer handler may return: nothing, or a deadline this reason
@@ -139,12 +147,16 @@ export declare class Timers {
      * For each pending reason whose deadline has passed, run its handler.
      * Handlers are awaited in place: the alarm invocation is the fresh turn a
      * re-entering subsystem asked for, and it has to stay the one paying for the
-     * work it just released.
+     * work it just released. They run off the chain: what they wait for may
+     * itself wait on an arm, from inside a handler or from anywhere else.
      *
      * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
-     * earliest remaining deadline. If no reasons remain, deletes the map key and
-     * does NOT call setAlarm — the DO becomes hibernation-eligible after the 10s
-     * idle window.
+     * earliest remaining deadline, the map read again for it: what was armed
+     * while the handlers ran is kept, and a fired reason goes unless it was
+     * armed again meanwhile. Until then the map keeps every fired reason, so an
+     * alarm retried after a reset mid-handler fires them again.
+     * If no reasons remain, deletes the map key and does NOT call setAlarm —
+     * the DO becomes hibernation-eligible after the 10s idle window.
      *
      * Forward/back-compat: unknown reasons silently dropped. `onLegacyAlarm`
      * covers an alarm that fires with no map at all — a deploy from before the
@@ -153,5 +165,14 @@ export declare class Timers {
      * next schedule call).
      */
     dispatch(handlers: TimerHandlers, onLegacyAlarm?: () => void, alarmInfo?: TimerAlarmInfo): Promise<void>;
+    /** The platform alarm, the reasons it carries, and the dispatch running: what it fired and for how long. */
+    state(now?: number): Promise<{
+        alarmAt: number | null;
+        reasons: Record<string, number> | null;
+        dispatching: {
+            reasons: string[];
+            ms: number;
+        } | null;
+    }>;
 }
 //# sourceMappingURL=timers.d.ts.map
