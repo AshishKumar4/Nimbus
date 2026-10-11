@@ -8,6 +8,7 @@ interface NodeSourceTexts {
     interpreterPrimordials: string;
     interpreter: string;
     interpreterOps: string;
+    parser: string;
     nodeLib: string;
     nodeDns: string;
 }

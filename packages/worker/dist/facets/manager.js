@@ -1401,7 +1401,6 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
 
-    let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
     // (it waits for a change, or for a debugger); nothing else does.
@@ -1439,10 +1438,13 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
       if (attachedTty) {
-        // An attached entry owns the terminal until it returns, so its own
-        // completion is awaited by the exit lifecycle below, never here.
+        // An attached program ends as Node's does, at process.exit or with
+        // no live handle left, not when its entry's evaluation completes: a
+        // CLI whose top level starts its interface and returns runs on (pi's
+        // bin). What the evaluation rejects with is uncaught, as Node's
+        // loader rejects.
         if (__entryResult && typeof __entryResult.then === "function") {
-          __attachedCompletion = __entryResult;
+          __entryResult.then(undefined, (__error) => { __nimbusUncaughtException(__error, true); });
         }
         await __nimbusRunEventLoop(
           __nimbusPendingStartupWork, __nimbusProcessExitPromise, ${RESIDENT_BOOT_SETTLE_MS}, 8,
@@ -1514,19 +1516,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     } else {
       const __residentExitLifecycle = (async () => {
         let finalCode = 0;
-        if (attachedTty && __attachedCompletion) {
-          const __exitMarker = {};
-          const __result = await Promise.race([
-            __attachedCompletion.then(() => null),
-            __nimbusProcessExitPromise.then((code) => {
-              finalCode = Number(code ?? 0);
-              return __exitMarker;
-            }),
-          ]);
-          if (__result !== __exitMarker) {
-            finalCode = Number(__nimbusProcessExitCode ?? 0);
-          }
-        } else if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
+        if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.

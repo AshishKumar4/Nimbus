@@ -1,7 +1,7 @@
 import * as pins from '../node-shims-artifact.generated.js';
 import { immutableModuleSource, memoizeUntilRejected, stagedRuntimeSource } from './staged-source.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
-import { COMMONJS_CELL_IMPORTS, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_DNS_MODULE, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_DNS_MODULE, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 export function nodeFacetSource(sources, name) {
     return sources.immutable[name] ?? sources[name];
 }
@@ -13,6 +13,7 @@ export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode 
         [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, 'interpreterPrimordials'],
         [RUNTIME_INTERPRETER_MODULE, 'interpreter'],
         [RUNTIME_INTERPRETER_OPS_MODULE, 'interpreterOps'],
+        [RUNTIME_PARSER_MODULE, 'parser'],
         [RUNTIME_NODE_LIB_MODULE, 'nodeLib'],
         [RUNTIME_NODE_DNS_MODULE, 'nodeDns'],
     ]) {
@@ -45,14 +46,14 @@ function asset(name) {
 /** One shared copy per isolate; the loader reads the same verified sources by their pins. */
 export const fetchNodeFacetSources = memoizeUntilRejected(async (env) => {
     const load = (name) => immutableModuleSource(env, asset(name));
-    const [shims, ledger, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, nodeLib, nodeDns] = await Promise.all([
+    const [shims, ledger, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, parser, nodeLib, nodeDns] = await Promise.all([
         load('NODE_SHIMS'), load('VFS_WRITE_LEDGER'), load('RESIDENT_STORE'), load('NODE_REGISTRY'),
-        load('JS_INTERPRETER_PRIMORDIALS'), load('JS_INTERPRETER'), load('JS_INTERPRETER_OPS'), load('NODE_LIB'), load('NODE_DNS'),
+        load('JS_INTERPRETER_PRIMORDIALS'), load('JS_INTERPRETER'), load('JS_INTERPRETER_OPS'), load('JS_PARSER'), load('NODE_LIB'), load('NODE_DNS'),
     ]);
     return {
         shims: shims.text, ledger: ledger.text, residentStore: residentStore.text, registry: registry.text,
         interpreterPrimordials: interpreterPrimordials.text, interpreter: interpreter.text,
-        interpreterOps: interpreterOps.text, nodeLib: nodeLib.text, nodeDns: nodeDns.text,
-        immutable: { shims, ledger, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, nodeLib, nodeDns },
+        interpreterOps: interpreterOps.text, parser: parser.text, nodeLib: nodeLib.text, nodeDns: nodeDns.text,
+        immutable: { shims, ledger, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, parser, nodeLib, nodeDns },
     };
 });

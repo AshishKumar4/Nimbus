@@ -334,6 +334,12 @@ export function runtimeCodeCharge(entry) {
 export const RUNTIME_INTERPRETER_MODULE = 'nimbus/interpreter.js';
 export const RUNTIME_INTERPRETER_OPS_MODULE = 'nimbus/interpreter-ops.js';
 export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primordials.js';
+/**
+ * The parser beside them (core interpreter/parser.ts), which the interpreter
+ * requires as ./parser.js: what a fatal report, Node's format detection and
+ * an assertion's source read without loading the interpreter.
+ */
+export const RUNTIME_PARSER_MODULE = 'nimbus/parser.js';
 /** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
 export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 export const RUNTIME_NODE_DNS_MODULE = 'nimbus/node-dns.js';
@@ -799,11 +805,11 @@ function __nimbusFrameModuleText(module) {
   }
 }
 // Where V8 would report a throw at offset \`offset\` of a module's text, or the
-// syntax error that stops its compile (offset -1): the interpreter's parser
-// (core interpreter fatalLocation), loaded only for a report.
+// syntax error that stops its compile (offset -1): the launch's parser
+// (core interpreter/parser.ts fatalLocation), loaded only for a report.
 function __nimbusFatalLocation(text, goal, offset) {
   try {
-    return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").fatalLocation(text, goal, offset);
+    return __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, goal, offset);
   } catch {
     return null;
   }

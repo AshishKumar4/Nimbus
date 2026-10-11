@@ -104,6 +104,12 @@ export declare function runtimeCodeCharge(entry: RuntimeCodeEntry): number;
 export declare const RUNTIME_INTERPRETER_MODULE = "nimbus/interpreter.js";
 export declare const RUNTIME_INTERPRETER_OPS_MODULE = "nimbus/interpreter-ops.js";
 export declare const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = "nimbus/interpreter-primordials.js";
+/**
+ * The parser beside them (core interpreter/parser.ts), which the interpreter
+ * requires as ./parser.js: what a fatal report, Node's format detection and
+ * an assertion's source read without loading the interpreter.
+ */
+export declare const RUNTIME_PARSER_MODULE = "nimbus/parser.js";
 /** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
 export declare const RUNTIME_NODE_LIB_MODULE = "nimbus/node-lib.js";
 export declare const RUNTIME_NODE_DNS_MODULE = "nimbus/node-dns.js";

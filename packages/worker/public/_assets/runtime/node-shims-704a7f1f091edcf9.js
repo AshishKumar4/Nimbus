@@ -10143,7 +10143,7 @@ function __nimbusNodeLib() {
     signals: __osMod.constants.signals,
     insideNodeModules: __nimbusInsideNodeModules,
     errorSourcePositions: __nimbusErrorSourcePositions,
-    tokenizer: (code, options) => __nimbusRegistryRequire("./nimbus/interpreter.js").tokenizer(code, options),
+    tokenizer: (code, options) => __nimbusRegistryRequire("./nimbus/parser.js").tokenizer(code, options),
     sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
     colorDepth: () => __nimbusColorDepth(),
     customPromisifyArgs: __nimbusCustomPromisifyArgs,
@@ -18928,7 +18928,7 @@ function __nimbusEsmPending(id) {
 }
 // A module of the graph that does not compile: the error's arrow is its.
 function __nimbusEsmCompileError(error, id) {
-  const { fatalLocation } = __nimbusRegistryRequire("./nimbus/interpreter.js");
+  const { fatalLocation } = __nimbusRegistryRequire("./nimbus/parser.js");
   for (const at of __nimbusEsmPending(id)) {
     const name = __nimbusEsmName(at);
     const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + name, "utf8");
@@ -19628,7 +19628,7 @@ function __nimbusEnrichCommonJsError(e, source, filename) {
   let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
   if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
     const text = source();
-    moduleSyntax = text !== null && __nimbusRegistryRequire("./nimbus/interpreter.js").fatalLocation(text, "module", -1) === null;
+    moduleSyntax = text !== null && __nimbusRegistryRequire("./nimbus/parser.js").fatalLocation(text, "module", -1) === null;
   }
   if (!moduleSyntax) return;
   const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \"type\": \"module\" in the nearest package.json file or use the .mjs extension.");
