@@ -62,6 +62,8 @@ export interface EsmStage {
   readonly table: EsmModuleRow[];
   /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
   readonly missing: EsmMissing[];
+  /** How long staging took, in milliseconds: the launch's debug line. */
+  readonly ms: number;
 }
 
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
@@ -91,6 +93,18 @@ function isNodeBuiltin(specifier: string): boolean {
 export interface EsmStageFs {
   readonly files: BridgeRequireFs;
   realpath(path: string): Promise<string>;
+  /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
+  held?(key: string): string | undefined;
+}
+
+/** `make()`'s promise, once per key of `cache`. */
+function once<T>(cache: Map<string, Promise<T>>, key: string, make: () => Promise<T>): Promise<T> {
+  let found = cache.get(key);
+  if (found === undefined) {
+    found = make();
+    cache.set(key, found);
+  }
+  return found;
 }
 
 /** A refusal's error, as the process rebuilds it. */
@@ -122,6 +136,7 @@ export async function stageEsModules(
     gate: boolean;
   },
 ): Promise<EsmStage> {
+  const started = Date.now();
   const table: EsmModuleRow[] = [];
   const members: Record<string, string> = {
     [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
@@ -150,21 +165,38 @@ export async function stageEsModules(
     }
     return id;
   };
-  const readText = async (path: string): Promise<string | null> => {
-    try { return await fs.files.readFileString(stripLeadingSlashes(path)); } catch { return null; }
+  // Each filesystem question once per staging, the launch's own cells
+  // first: a graph's modules share their directories, packages and
+  // manifests, and asks them thousands of times.
+  const kinds = new Map<string, Promise<'file' | 'directory' | null>>();
+  const reals = new Map<string, Promise<string>>();
+  const texts = new Map<string, Promise<string | null>>();
+  const requires = new Map<string, Promise<string | null>>();
+  const readText = (path: string): Promise<string | null> => {
+    const key = stripLeadingSlashes(path);
+    return once(texts, key, async () => {
+      const held = fs.held?.(key);
+      if (held !== undefined) return held;
+      try { return await fs.files.readFileString(key); } catch { return null; }
+    });
   };
-  const requireResolve = async (specifier: string, fromPath: string): Promise<string | null> => {
+  const requireResolve = (specifier: string, fromPath: string): Promise<string | null> => {
     const fromDir = stripLeadingSlashes(fromPath.slice(0, fromPath.lastIndexOf('/')));
-    const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
-    return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+    return once(requires, `${fromDir}\n${specifier}`, async () => {
+      const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
+      return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+    });
   };
   const resolver = createEsmResolver({
-    async kind(path) {
+    kind(path) {
       const key = stripLeadingSlashes(path);
-      if (!(await fs.files.exists(key))) return null;
-      return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+      return once(kinds, key, async () => {
+        if (fs.held?.(key) !== undefined) return 'file';
+        if (!(await fs.files.exists(key))) return null;
+        return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+      });
     },
-    realpath: (path) => fs.realpath(path),
+    realpath: (path) => once(reals, path, () => fs.realpath(path)),
     readText,
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,
@@ -241,5 +273,5 @@ export async function stageEsModules(
     }));
     id++;
   }
-  return { modules, members, table, missing };
+  return { modules, members, table, missing, ms: Date.now() - started };
 }
