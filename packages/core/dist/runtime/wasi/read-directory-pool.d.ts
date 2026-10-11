@@ -21,6 +21,7 @@ interface Options {
 export interface ReadDirectoryPool {
     open(path: RuntimeFsPath, key: string, prefetch: () => Promise<readonly RuntimeFsPath[]>): Promise<RuntimeFileHandle | null>;
     owns(id: number): boolean;
+    closed(id: number): boolean;
     local(id: number): {
         key: string;
         entry: ResidentEntry;

@@ -48,12 +48,10 @@ export function readDirectoryPool({ call, store, client, before }) {
     };
     const exchange = async (open, wantLease) => {
         await before();
-        const cursor = store.cursor();
-        if (!cursor)
-            return [];
+        const cursor = store.cursor() ?? { epoch: null, rev: 0 };
         // Captured ONCE outside the retried RPC. A cached once-delivery answer
         // can never obtain a new deadline from the retry's later arrival.
-        const ask = wantLease ? client.readLeaseAsk() : null;
+        const ask = wantLease && cursor.epoch !== null ? client.readLeaseAsk() : null;
         const stamp = generation;
         const cancelAt = cancelled;
         const sentRetire = [...retiring];
@@ -115,6 +113,10 @@ export function readDirectoryPool({ call, store, client, before }) {
                     throw failure('ESTALE', 'directory pool ended');
                 if (began !== cancelled)
                     throw failure('EAGAIN', 'directory open was cancelled while queued');
+                if (!store.ready() || !store.cursor()) {
+                    await drain();
+                    return null;
+                }
                 const hit = unused.get(key);
                 const current = hit ? local(hit) : null;
                 if (hit && current && hit.openedRevision !== null && current.entry.revision === hit.openedRevision)
@@ -146,6 +148,7 @@ export function readDirectoryPool({ call, store, client, before }) {
             });
         },
         owns: (id) => owned.has(id),
+        closed: (id) => retiring.has(id),
         local: (id) => { const entry = owned.get(id); return entry ? local(entry) : null; },
         close(id) {
             if (!owned.delete(id))

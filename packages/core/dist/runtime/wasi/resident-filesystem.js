@@ -62,6 +62,7 @@ const MUTATIONS = new Set([
 ]);
 /** Those that name their file by descriptor; every other one names a path, and may name a held file. */
 const DESCRIPTOR_MUTATIONS = new Set(['write', 'close', 'ftruncate', 'fchmod', 'fchown', 'futimes']);
+const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'seek', 'setStatus', 'readdirHandle', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync']);
 function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
 }
@@ -117,6 +118,15 @@ export function residentFilesystem(session, resident, delegation) {
             // Whatever the session is asked, it has what this process decided first.
             // A refusal it met is the next sync's to report, not this call's.
             return (...args) => {
+                if (typeof name === 'string' && DESCRIPTOR_CALLS.has(name) && typeof args[0] === 'number' && directoryPool?.closed(args[0])) {
+                    throw fsError('EBADF', name, String(args[0]));
+                }
+                for (const arg of args) {
+                    if (arg && typeof arg === 'object' && 'directory' in arg && 'path' in arg
+                        && typeof arg.directory === 'number' && typeof arg.path === 'string' && directoryPool?.closed(arg.directory)) {
+                        throw fsError('EBADF', String(name), String(arg.directory));
+                    }
+                }
                 if (holder !== null && typeof name === 'string' && NAME_OR_ACCESS_CHANGES.has(name))
                     holder.changing();
                 return holder !== null && holder.pending()

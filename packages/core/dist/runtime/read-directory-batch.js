@@ -64,7 +64,10 @@ export async function readDirectoryBatch(fs, input) {
         let channel = budget.channels.get(request.channel);
         if (!channel) {
             // A late request from a rewound run cannot close reused descriptor numbers.
-            if (request.sequence !== 1 || request.retire.length || request.claim.length)
+            // A close-only, id-free recovery can also establish a channel when
+            // its first request never arrived. A late first request is then
+            // superseded, and cannot allocate after that recovery acknowledged.
+            if (request.retire.length || request.claim.length || (request.sequence !== 1 && request.open.length > 0))
                 throw refusal('ESTALE', 'unknown directory prefetch channel');
             if (budget.channels.size >= DIRECTORY_PREFETCH_LIMIT)
                 throw refusal('ENOSPC', 'too many directory prefetch channels');
