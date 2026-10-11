@@ -10,6 +10,8 @@ import type { ResolvedPackage } from './resolver.js';
 export interface RegistryCacheEntry {
     name: string;
     version: string;
+    /** The registry package (an alias's target); '' for rows written before it was kept. */
+    registryName?: string;
     tarballUrl: string;
     integrity: string;
     depsJson: string;
@@ -46,12 +48,12 @@ export interface RegistryCacheEntry {
      * resolve. Defaults to '{}' for pre-migration rows.
      */
     optionalDepsJson?: string;
+    /** JSON-encoded `peerDependenciesMeta` (which peers are optional); '{}' for rows written before it was kept, whose peers are the required ones. */
+    peerMetaJson?: string;
     fetchedAt: number;
 }
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
 export declare function registryRecord(pkg: ResolvedPackage, fetchedAt: number): RegistryCacheEntry;
-/** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
-export declare function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, 'dependencies' | 'peerDependencies' | 'optionalDependencies'>;
 /** The package a record describes, as a cold resolve of its version answers it. */
 export declare function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage;
 //# sourceMappingURL=registry-record.d.ts.map

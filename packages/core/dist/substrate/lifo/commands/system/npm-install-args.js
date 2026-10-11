@@ -42,7 +42,8 @@ export function parseNpmInstallInvocation(args) {
         production: parsed.flags.production === true || omittedDependencyTypes(args).has('dev'),
         saveDev: parsed.flags['save-dev'] === true,
         saveOptional: parsed.flags['save-optional'] === true,
-        allowPeerConflicts: parsed.flags.force === true || parsed.flags['legacy-peer-deps'] === true,
+        force: parsed.flags.force === true,
+        legacyPeerDeps: parsed.flags['legacy-peer-deps'] === true,
     };
 }
 /**

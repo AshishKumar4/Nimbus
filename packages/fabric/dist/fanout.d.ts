@@ -19,6 +19,7 @@
  */
 import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
+import { type Settled } from './isolate-pool.js';
 import { type HostRoute } from './composition.js';
 import type { WorkerLoader } from './vendor/types.js';
 /** The bindings a fan-out needs off the coordinator DO's env. The host
@@ -203,7 +204,9 @@ export declare class Fanout {
      * Peer shards: tasks hash onto min(tasks, maxPeers ?? MAX_PEER_FANOUT)
      * peers and each peer runs its bucket through its own IsolatePool, as
      * wide as that peer's headroom allows. A single submitMany call returns
-     * when ALL tasks complete (or any throws).
+     * when ALL tasks complete; after one fails no more are dispatched, and it
+     * rejects with that failure once everything dispatched has settled, so no
+     * task it started is still running when it returns.
      *
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
@@ -212,6 +215,9 @@ export declare class Fanout {
      * unchanged on either route (same as IsolatePool#prepare).
      */
     submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskSource<A, R>): Promise<R[]>;
+    /** `submitMany`, where every task is dispatched whatever the others do: each task's outcome, once all have settled. */
+    submitManySettled<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskSource<A, R>): Promise<Array<Settled<R>>>;
+    private dispatch;
     /** The topology a task count would take against the headroom right now. */
     topologyFor(taskCount: number): FanoutTopology | 'empty';
     /**

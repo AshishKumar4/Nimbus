@@ -79,7 +79,7 @@ export interface ResolveOneSpec {
     registry: string;
 }
 export interface ResolveOneResult {
-    /** Resolved package (its edges are the plan's next layer), or null with `error`. */
+    /** Resolved package; with a `w6-reject` error, the package refused; null with an `unresolved` one. */
     pkg: ResolvedPackage | null;
     /**
      * Cache writes the task is asking the supervisor to flush. Includes

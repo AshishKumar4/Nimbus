@@ -227,7 +227,7 @@ async function installedPackage(vfs: VFS, dir: string, name: string): Promise<(T
 	return { ...read.manifest, name, version, registryName: typeof registryName === 'string' ? registryName : name };
 }
 
-async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: Readonly<Record<string, unknown>>): Promise<void> {
+async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson | Readonly<Record<string, unknown>>): Promise<void> {
 	const pkgPath = join(cwd, 'package.json');
 	(await vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n'));
 }

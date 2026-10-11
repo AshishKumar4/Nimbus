@@ -102,8 +102,10 @@ export declare class NpmInstaller {
         /** `--save-dev` / `--save-optional`: where what is named is saved. */
         saveDev?: boolean;
         saveOptional?: boolean;
-        /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning. */
-        allowPeerConflicts?: boolean;
+        /** `--force`: a peer conflict the project owns is a warning. */
+        force?: boolean;
+        /** `--legacy-peer-deps`: peers are neither installed nor checked. */
+        legacyPeerDeps?: boolean;
         /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
         global?: boolean;
         /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
@@ -237,11 +239,12 @@ export declare class NpmInstaller {
      */
     private removePlacements;
     /**
-     * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
-     * records, checked against package.json first. The ABI policy the resolver
-     * applies still holds: platform-native optional shards are skipped, a
-     * required one is refused, and a swapped package resolves its swap target
-     * at the locked version.
+     * npm ci: the tree package-lock.json (or npm-shrinkwrap.json) records,
+     * checked against package.json first, each placement as it is locked.
+     * The ABI policy the resolver applies still holds: what cannot run here
+     * is left out where the plan finds it optional and refused where it is
+     * required, and a swapped package resolves its swap target at the locked
+     * version.
      */
     private treeFromPackageLock;
     /**

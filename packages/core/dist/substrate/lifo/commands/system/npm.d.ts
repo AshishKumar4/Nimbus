@@ -2,18 +2,19 @@ import type { Command, CommandContext } from '../types.js';
 import { type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
-import { type ProjectManifest } from '../../../../_shared/npm-tree.js';
 import { type NpmLogEmitter } from './npm-log.js';
 /** The registry an install reads from when its env names none. */
 export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
 export declare const NPM_VERSION = "10.0.0";
-interface PackageJson extends ProjectManifest {
+interface PackageJson {
     name?: string;
     version?: string;
     description?: string;
     main?: string;
     bin?: string | Record<string, string>;
     scripts?: Record<string, string>;
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
     license?: string;
     author?: string | {
         name: string;
@@ -40,8 +41,10 @@ export interface NpmInstallPort {
         saveDev?: boolean;
         /** `--save-optional`: what is named is saved to optionalDependencies. */
         saveOptional?: boolean;
-        /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
-        allowPeerConflicts?: boolean;
+        /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+        force?: boolean;
+        /** `--legacy-peer-deps`: peers are not installed, nor checked. */
+        legacyPeerDeps?: boolean;
         /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
         signal?: AbortSignal;
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */

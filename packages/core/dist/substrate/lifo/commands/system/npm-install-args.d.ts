@@ -23,8 +23,10 @@ export interface NpmInstallInvocation {
     saveDev: boolean;
     /** `-O` / `--save-optional`: record the spec under optionalDependencies. */
     saveOptional: boolean;
-    /** `--force` / `--legacy-peer-deps`: a peer conflict with the project's own dependency is a warning, not ERESOLVE. */
-    allowPeerConflicts: boolean;
+    /** `-f` / `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+    force: boolean;
+    /** `--legacy-peer-deps`: peers are neither installed nor checked, as npm 6 did. */
+    legacyPeerDeps: boolean;
 }
 export declare function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation;
 //# sourceMappingURL=npm-install-args.d.ts.map

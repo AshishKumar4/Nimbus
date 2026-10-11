@@ -24,7 +24,8 @@ export function createNpmInstallPort(self) {
                 onProgress: spec.onProgress,
                 saveDev: spec.saveDev,
                 saveOptional: spec.saveOptional,
-                allowPeerConflicts: spec.allowPeerConflicts,
+                force: spec.force,
+                legacyPeerDeps: spec.legacyPeerDeps,
                 global: globalPrefix !== undefined,
                 signal: spec.signal,
                 // On-PATH bin shims, under the install's hold: even for a partial

@@ -128,7 +128,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             suggest: platformReject.suggest,
             ctx: 'transitive',
         });
-        return out(null, bytes, source, {
+        // The package, refused: its manifest still shapes the tree (npm places
+        // it, and checks its platform when it reifies).
+        return out(pkg, bytes, source, {
             type: 'w6-reject',
             from: platformReject.from,
             reason: platformReject.reason,
@@ -210,7 +212,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (cached) {
         // Platform constraints + optionalDependencies round-trip so the ABI
         // policy makes the same decisions on warm-cache hits.
-        const pkgFromCache = { ...resolvedFromRecord(cached), name: request.installName };
+        const pkgFromCache = { ...resolvedFromRecord(cached), name: request.installName, registryName: request.registryName };
         if (request.alias)
             cacheWrites.push(registryRecord(pkgFromCache, Date.now()));
         adviseStagedBindingVersion(pkgFromCache);
@@ -369,22 +371,27 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const bin = typeof binField === 'string'
             ? { [String(packageName).split('/').pop()]: binField }
             : binField;
-        // Required peers only: npm never installs an optional one
-        // (peerDependenciesMeta) the project does not list itself.
+        // Every peer, and which are optional (peerDependenciesMeta): an
+        // optional one is never installed for the package, and constrains the
+        // copy the tree has.
         let peerDependencies;
+        let peerDependenciesMeta;
         const peers = v.peerDependencies;
         if (peers && typeof peers === 'object') {
             const meta = v.peerDependenciesMeta;
-            const required = {};
+            const all = {};
+            const optional = {};
             for (const [n, r] of Object.entries(peers)) {
                 if (typeof r !== 'string')
                     continue;
+                all[n] = r;
                 if (meta && meta[n] && meta[n].optional === true)
-                    continue;
-                required[n] = r;
+                    optional[n] = { optional: true };
             }
-            if (Object.keys(required).length > 0)
-                peerDependencies = required;
+            if (Object.keys(all).length > 0)
+                peerDependencies = all;
+            if (Object.keys(optional).length > 0)
+                peerDependenciesMeta = optional;
         }
         const optionalDependencies = v.optionalDependencies && typeof v.optionalDependencies === 'object'
             ? Object.fromEntries(Object.entries(v.optionalDependencies).filter(([, r]) => typeof r === 'string'))
@@ -392,10 +399,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const resolvedOut = {
             name: packageName,
             version: v.version,
+            registryName: request.registryName,
             tarballUrl: v.dist?.tarball || '',
             integrity: v.dist?.integrity || v.dist?.shasum || '',
             dependencies: v.dependencies || {},
             peerDependencies,
+            ...(peerDependenciesMeta ? { peerDependenciesMeta } : {}),
             optionalDependencies,
             os: Array.isArray(v.os) ? v.os : undefined,
             cpu: Array.isArray(v.cpu) ? v.cpu : undefined,
@@ -417,7 +426,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const pkg = versionToResolved(vData);
     adviseStagedBindingVersion(pkg);
     const native = outNativeExecutable(pkg, bytes, packumentSource);
-    if (native?.pkg === null)
+    if (native?.error)
         return native;
     // 5. Stage cache writes: the registry package's, under its name; an
     //    alias's version also under the alias, which is what its lockfile
