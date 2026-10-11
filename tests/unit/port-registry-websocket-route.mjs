@@ -142,7 +142,7 @@ const UPGRADE = { upgrade: 'websocket', connection: 'Upgrade' };
 
 console.log('port registry websocket route: ok');
 
-for (const ending of ['client', 'target', 'error', 'process']) {
+for (const ending of ['client', 'target', 'error', 'reserved-close', 'process']) {
   const reg = new PortRegistry(), events = [];
   reg.setClientSocketActivity(() => events.push(reg.clientSocketCount));
   const pair = new WebSocketPair(), target = pair[0], app = pair[1];
@@ -170,10 +170,23 @@ for (const ending of ['client', 'target', 'error', 'process']) {
   if (ending === 'client') client.close(4001, 'tab closed');
   else if (ending === 'target') app.close(4002, 'server closed');
   else if (ending === 'error') target.dispatchEvent(new Event('error'));
+  else if (ending === 'reserved-close') { const event = new Event('close'); Object.assign(event, { code: 1006, reason: '' }); target.dispatchEvent(event); }
   else reg.unregisterByPid(81);
   const result = await closed;
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(reg.clientSocketCount, 0, 'every close/error/process-end releases its client interest');
   assert.deepEqual(events, [1, 0], 'client interest ends exactly once');
-  assert.equal(result.code, ending === 'client' ? 4001 : ending === 'target' ? 4002 : ending === 'error' ? 1011 : 1001);
+  assert.equal(result.code, ending === 'client' ? 4001 : ending === 'target' ? 4002 : ending === 'error' || ending === 'reserved-close' ? 1011 : 1001);
+}
+
+{
+  const reg = new PortRegistry(); reg.setClientSocketActivity(() => {});
+  const pair = new WebSocketPair(), target = pair[0], app = pair[1];
+  target.accept = () => { throw new Error('accept failed'); };
+  reg.bindFacetStub(82, { async handleHttpRequest() { return new Response('page'); }, async handleWebSocketRequest() { return new Response(null, { status: 101, webSocket: target }); } });
+  reg.register(5082, 82);
+  const response = await reg.routeRequest(5082, new Request('https://x/ws', { headers: UPGRADE }), '/ws');
+  assert.equal(response.status, 502);
+  assert.equal(reg.clientSocketCount, 0, 'failed acceptance cannot leak resident interest');
+  assert.equal(app.readyState, 3, 'failed acceptance closes the acquired socket');
 }
