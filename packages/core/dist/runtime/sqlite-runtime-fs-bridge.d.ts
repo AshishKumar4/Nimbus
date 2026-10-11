@@ -123,6 +123,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         recursive?: boolean;
         mode?: number;
     } & RuntimeMutationOwner): void;
+    /**
+     * Whether anything may be at `located`: a mounted name (its mount
+     * answers), `/` (which has no row), a row, or a link the legacy registry
+     * holds. A walk that met the name absent has looked at all of them.
+     */
+    private mayExist;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void;
