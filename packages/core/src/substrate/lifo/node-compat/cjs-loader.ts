@@ -19,11 +19,11 @@ import { createModuleMap, ProcessExitError, type NodeContext } from './index.js'
 import { createModuleShim, type RequireFunction } from './module.js';
 import { Buffer } from './buffer.js';
 import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
-import { isEsModuleFile } from '../../../runtime/module-format.js';
+import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
 import { fileURLToPath, pathToFileURL } from './url.js';
 import { resolve, dirname } from '../utils/path.js';
 import { invalidArgType } from '../../../_shared/node-error.js';
-import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, requireNodeModulePaths, type CommonJsResolution, type RequireResolverOptions, type RequireResolveOptions } from '../../../runtime/require-resolution.js';
+import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, requireNodeModulePaths, type RequireResolverOptions, type RequireResolveOptions } from '../../../runtime/require-resolution.js';
 
 /** Lifo's product package registry folders; intentionally not Node's globals. */
 const LIFO_REQUIRE_POLICY = {
@@ -128,7 +128,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	const builtins = new Map<string, unknown>();
 	let native: NativeModuleLoader | undefined;
 	const cache: Record<string, unknown> = Object.create(null);
-	const classified = new Map<string, CommonJsResolution>();
+	const classified = new Map<string, PackageType>();
 	const resolver = createRequireResolver({
 		kind(path) {
 			const fs = filesystem();
@@ -213,7 +213,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		if (!found) return null;
 		if (found.builtin) return name.startsWith('#') ? 'node:' + found.builtin : name;
 		if (!found.path) return null;
-		classified.set(found.path, found);
+		classified.set(found.path, found.packageType);
 		return found.path;
 	}
 
@@ -245,7 +245,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 
 		const clean = stripShebang(source);
 		const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => classified.has(filename)
-			? classified.get(filename)!.packageType : resolver.packageScopeSync(dirname(filename))?.type ?? null);
+			? classified.get(filename)! : resolver.packageScopeSync(dirname(filename))?.type ?? null);
 		if (esm) {
 			if (!native) throw new Error('Native ES modules require a lifo native module loader');
 			return native.requireModule(filename, parentFilename);
