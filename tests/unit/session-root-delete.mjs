@@ -35,6 +35,7 @@ import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
 import { issueNimbusToken } from '../../packages/worker/src/auth/token.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SessionFilesystem } from '../../packages/worker/src/session/session-filesystem.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -68,8 +69,10 @@ function sessionState() {
     processes: new SessionProcessSupervisor(),
     portRegistry: new PortRegistry(),
     runtimeFsBridges: new Map(),
-    sqliteFs: null,
-    ensureSqliteFs() { this.sqliteFs ??= new SqliteVFS(harness.sql, harness.ctx); },
+    // The session's filesystem, opened on first use and closed whole by a destroy (NimbusSession).
+    filesystem: null,
+    get sqliteFs() { return this.filesystem?.engine ?? null; },
+    ensureSqliteFs() { this.filesystem ??= new SessionFilesystem(new SqliteVFS(harness.sql, harness.ctx), this); },
     terminal: null,
     facetManager: null,
   };

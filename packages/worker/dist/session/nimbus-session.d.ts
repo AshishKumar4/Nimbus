@@ -24,7 +24,7 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -43,6 +43,7 @@ import { type SessionAiHost } from './ai.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
+import { SessionFilesystem } from './session-filesystem.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
@@ -79,7 +80,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     get runtimeManager(): RuntimeManager;
     routeLoopback(port: number, request: Request): Promise<Response | null>;
     ensureRuntimeReady(): Promise<void>;
-    sqliteFs: SqliteVFS | null;
+    /** The session's filesystem (SessionFilesystem): opened on first use, closed whole by a destroy. */
+    filesystem: SessionFilesystem | null;
+    get sqliteFs(): SqliteVFS | null;
     kernel: Kernel | null;
     shell: Shell | null;
     shellProcessPid: number | null;
@@ -310,15 +313,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      */
     _rpcConsumeAttachBootstrap(jti: string): Promise<boolean>;
     /**
-     * The one supervisor-op handler this session's bindings, loopback stubs and
-     * `_rpc*` delegates all dispatch through — native filesystem ops against
-     * the shared bridge store, session overrides for the accounting-carrying
-     * reads and the output stream, and the canonical route table for the rest.
-     * Lazy: sqliteFs exists only after ensureSqliteFs().
-     */
-    private _supervisorOps;
-    private processFiles;
-    /**
      * This instance's receipts for its processes' mutations delivered exactly
      * once. Opened in the constructor, before anything is spawned, so every
      * SUPERVISOR binding minted from this ctx names this instance.
@@ -337,7 +331,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     egressForWorkspace(): WorkspaceEgress | undefined;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority(): ProcessFiles;
-    private supervisorOps;
     /** The pid-keyed filesystem bridge behind the supervisor ops. */
     supervisorBridge(pid?: number): RuntimeFsBridge;
     supervisorRewindBridge(pid: number): Promise<void>;
@@ -726,6 +719,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     } | null;
     _diagSampleMemory(): void;
     ensureSqliteFs(): SqliteVFS;
+    /** The session's filesystem, opened on first use (SessionFilesystem). */
+    private openFilesystem;
     /** The recovery of clones an earlier generation ran, discovered as this one began (git/clone-job.ts). */
     private cloneRecovery;
     /** Track when we last persisted to avoid redundant writes. */

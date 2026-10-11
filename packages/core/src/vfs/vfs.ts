@@ -136,6 +136,12 @@ export interface VfsUsage {
   available: number;
 }
 
+/** How a principal's view of a backend reads (VFS.as). */
+export interface VfsViewOptions {
+  holds?: () => ReadonlySet<string>;
+  landed?: boolean;
+}
+
 export interface VFS {
   /** Null when nothing is there. `follow: false` is lstat. */
   stat(path: string, options?: { follow?: boolean }): Awaitable<VfsStat | null>;
@@ -177,10 +183,11 @@ export interface VFS {
   /**
    * This backend as another principal (`actor` names it finer than its uid).
    * `options.holds`: the delegations the principal's process holds, asked at
-   * each call (its own lookups recall none of them). Absent: the backend has
-   * one identity.
+   * each call (its own lookups recall none of them). `options.landed`: its
+   * reads read what has landed, asking no holder for what it has not sent
+   * (its writes still recall). Absent: the backend has one identity.
    */
-  as?(cred: VfsCred, actor?: string, options?: { holds?: () => ReadonlySet<string> }): VFS;
+  as?(cred: VfsCred, actor?: string, options?: VfsViewOptions): VFS;
   /**
    * Every mutation that lands on this backend, whoever made it, with what
    * it replaced (VfsWriteEvent); the returned function stops the reports.
