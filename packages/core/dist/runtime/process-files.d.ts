@@ -269,7 +269,15 @@ export declare class ProcessView implements VFS {
     touch(path: string): Promise<void>;
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
     readFileUncached(path: string): Promise<Uint8Array>;
-    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
+     *
+     * One whole-file read through the normal credentialed namespace view, with
+     * the LRU bypassed: the image is read once for a facet's module map, never
+     * re-read from this isolate. One read is also one coherent image on every
+     * backend — no ranges to version against each other, no capability to
+     * probe. A caller mutating the returned buffer cannot disturb the store:
+     * the uncached path hands back its own buffer.
+     */
     readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`

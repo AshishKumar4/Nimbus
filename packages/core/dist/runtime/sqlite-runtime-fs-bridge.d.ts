@@ -78,6 +78,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): RuntimeVfsStat | null;
     readFile(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
+        cached?: boolean;
     }): Uint8Array | null;
     /**
      * A mounted file as this process sees it while it holds buffered writes to
