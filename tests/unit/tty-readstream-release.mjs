@@ -32,9 +32,10 @@ const supervisor = {
   },
 };
 const feed = (text) => inbox.push(new TextEncoder().encode(text));
-const shim = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+const makeShim = () => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   'const __pendingIO = [];' + generateShimsCode() + '\nreturn { tty: builtins.tty, stdin: __processMod.stdin };')(
   {}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], { NIMBUS_CP_CHILD_PID: '41' }, '/home/user/main.js', '/home/user');
+const shim = makeShim();
 const held = () => globalThis.__nimbusInputHandles || 0;
 
 {
@@ -113,25 +114,28 @@ const held = () => globalThis.__nimbusInputHandles || 0;
 }
 
 {
-  // process.stdin is paused: a reader that reads into its buffer and is never
-  // read takes what comes, past its high-water mark, and is backpressured.
-  const input = new shim.tty.ReadStream(0);
+  // A program reading its stdin, and a tty reader that reads into its buffer
+  // and is never read, which takes the first of what comes (it asked first),
+  // past its high-water mark: backpressured.
+  const fresh = makeShim();
+  const input = new fresh.tty.ReadStream(0);
   input.on('readable', () => {});
+  await tick(20);
+  const own = [];
+  const ownListener = (chunk) => own.push(String(chunk));
+  fresh.stdin.on('data', ownListener);
   await tick(20);
   feed('x'.repeat(64 * 1024));
   await tick(40);
   assert.equal(input.readableLength, 64 * 1024, 'the reader took it');
-  const own = [];
-  const ownListener = (chunk) => own.push(String(chunk));
-  shim.stdin.on('data', ownListener);
   input.destroy();
   await tick(20);
   feed('b');
   await tick(40);
   assert.deepEqual(own, ['b'], 'a reader destroyed while backpressured leaves the program reading');
-  assert.equal(shim.stdin.readableFlowing, true);
-  shim.stdin.removeListener('data', ownListener);
-  shim.stdin.pause();
+  assert.equal(fresh.stdin.readableFlowing, true);
+  fresh.stdin.removeListener('data', ownListener);
+  fresh.stdin.pause();
   await tick(20);
   assert.equal(held(), 0);
 }
