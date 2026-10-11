@@ -123,7 +123,7 @@ import {
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
+import { type ExecDiagSink, type ExecTelemetryRecord, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { LearnedServers } from './server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
@@ -2048,6 +2048,15 @@ function esmStageSize(esm: EsmStage): Record<string, number> {
   return {
     ms: esm.ms, modules: esm.modules.size, rows: esm.table.length, missing: esm.missing.length, text, columns, members,
     table: JSON.stringify({ table: esm.table, missing: esm.missing }).length,
+  };
+}
+
+/** A launch's per-module costs, for its exec telemetry record. */
+function execBreakdown(state: { transforms?: BundleCellTransformStats; esmSize?: Record<string, number> }): Pick<ExecTelemetryRecord, 'transforms' | 'esm'> {
+  const t = state.transforms;
+  return {
+    ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
+    ...(state.esmSize ? { esm: state.esmSize } : {}),
   };
 }
 
@@ -7327,6 +7336,7 @@ export class FacetManager {
               fsRpcReads: result.diag?.fsRpcReads ?? 0,
               esmAdoptions: result.diag?.esmAdoptions ?? 0,
               cacheHit: vfsState.cacheHit ?? false,
+              ...execBreakdown(vfsState),
               turns: pacer.chunks,
               exitCode: result.exitCode,
               at: Date.now(),
@@ -9200,6 +9210,7 @@ export class FacetManager {
           fsRpcReads: 0,
           esmAdoptions: 0,
           cacheHit,
+          ...execBreakdown(vfsState),
           turns: pacer.chunks,
           exitCode: 0,
           at: Date.now(),
