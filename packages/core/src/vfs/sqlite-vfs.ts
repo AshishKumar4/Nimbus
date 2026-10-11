@@ -8901,7 +8901,6 @@ export class SqliteVFS {
         }
         return { befores, results, after: this._revision };
       },
-      isDescribed: (id) => this.isDescribed(described, id),
       reopened: (path, id) => this.reopened(described, path, id, cred),
       openSequence: (sequence) => this.openSequence(sequence),
       advanceSequence: (writer, seq) => this.transactionSync(() => this.advanceSequence(writer, seq)),
@@ -8960,7 +8959,7 @@ export class SqliteVFS {
       else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
       else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
       else if (call.call === 'open') return this.openToWrite(call, cred, described);
-      // Closing a description already gone (a mount's open keeps none) closes nothing.
+      // A close is the binding's, of any description it keeps, a mount's included; one already gone closes nothing.
       else if (call.call === 'close') this.closeDescribed(described, call.description);
       else this.symlink(call.target, call.path, cred, call.ino);
     }
@@ -9411,13 +9410,6 @@ export class SqliteVFS {
     const rights = Number(kept.rights);
     const handle = by.descriptions.adopt(id, Number(kept.ino), { read: (rights & 4) !== 0, write: (rights & 2) !== 0 }, path, cred);
     return handle === null ? null : by.descriptions.node(id);
-  }
-
-  /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
-  private isDescribed(by: DescribedBy, id: string): boolean {
-    if (by.descriptions === undefined) return false;
-    if (by.descriptions.node(id) !== undefined) return true;
-    return by.pid !== null && [...this.sql.exec('SELECT 1 FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id)].length > 0;
   }
 
   /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */

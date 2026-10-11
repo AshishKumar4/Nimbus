@@ -6,10 +6,12 @@
  * entries carry the uid/gid given at construction), and its own revision per
  * entry so a cache over it can tell a change.
  */
-import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
+import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsOpenFile, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 
 type Entry = {
+  /** Its number, its own for its life (a rename keeps it). */
+  ino: number;
   data: Uint8Array;
   target: string;
   mode: number;
@@ -46,6 +48,7 @@ export class MemoryVFS implements VFS {
   readonly storesWrites = true;
   private readonly root: Entry;
   private clock = 0;
+  private inos = 0;
   readonly sync: SyncVFS = this as unknown as SyncVFS;
 
   constructor(private readonly owner: { uid: number; gid: number } = { uid: 0, gid: 0 }) {
@@ -54,7 +57,7 @@ export class MemoryVFS implements VFS {
 
   private entry(type: VfsFileType, mode: number): Entry {
     const fields = {
-      data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
+      ino: ++this.inos, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
     };
     return type === 'directory' ? { type, ...fields, children: new Map<string, Entry>() } : { type, ...fields, children: null };
   }
@@ -94,6 +97,7 @@ export class MemoryVFS implements VFS {
 
   private stats(entry: Entry): VfsStat {
     return {
+      ino: entry.ino,
       type: entry.type,
       size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
       mtimeMs: entry.mtimeMs,
@@ -144,7 +148,26 @@ export class MemoryVFS implements VFS {
   writeRange(path: string, offset: number, bytes: Uint8Array): void {
     const call = { syscall: 'open', path };
     if (this.find(path, call) === null) this.writeFile(path, EMPTY);
-    const entry = this.file(path, call);
+    this.writeAt(this.file(path, call), offset, bytes);
+  }
+
+  truncate(path: string, size: number): void {
+    this.truncateTo(this.file(path, { syscall: 'open', path }), size);
+  }
+
+  /** The entry itself: renamed or unlinked, it is still what its holder reads and writes. */
+  openFile(path: string): VfsOpenFile {
+    const entry = this.file(path, { syscall: 'open', path });
+    return {
+      stat: () => this.stats(entry),
+      read: (offset, length) => entry.data.slice(offset, offset + length),
+      write: (offset, bytes) => this.writeAt(entry, offset, bytes),
+      truncate: (size) => this.truncateTo(entry, size),
+      close: () => {},
+    };
+  }
+
+  private writeAt(entry: Entry, offset: number, bytes: Uint8Array): void {
     const next = new Uint8Array(Math.max(entry.data.length, offset + bytes.length));
     next.set(entry.data);
     next.set(bytes, offset);
@@ -152,8 +175,7 @@ export class MemoryVFS implements VFS {
     this.touch(entry);
   }
 
-  truncate(path: string, size: number): void {
-    const entry = this.file(path, { syscall: 'open', path });
+  private truncateTo(entry: Entry, size: number): void {
     const next = new Uint8Array(size);
     next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
     entry.data = next;

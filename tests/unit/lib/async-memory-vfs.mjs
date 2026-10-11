@@ -23,7 +23,9 @@ export function asyncOnly(vfs, { deep = false, beforeCall, hide = [], methods = 
       if (!deep && !beforeCall) return value.bind(target);
       return (...args) => Promise.resolve().then(async () => {
         await beforeCall?.(String(key), args);
-        return value.apply(target, args);
+        const result = value.apply(target, args);
+        // A file it holds open (VFS.openFile) answers as it does.
+        return key === 'openFile' ? asyncOnly(result, options) : result;
       });
     },
     has: (target, key) => key !== 'sync' && !(typeof key === 'string' && hide.includes(key)) && key in target,

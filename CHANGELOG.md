@@ -16,8 +16,12 @@ published independently in the `@nimbus-sh` npm scope.
   opened it); a directory opened with write rights opens (the asynchronous face
   refused it); `O_TRUNC` is the mount's truncate; an `O_APPEND` descriptor
   starts at offset 0, on SQLite too, and each append leaves it at the end;
-  a mounted `fstat` carries the mount's revision, not the SQLite clock; a
-  negative offset reads from 0 and a seek to no integer is `EINVAL`;
+  a mounted `fstat` carries the mount's revision, not the SQLite clock; an
+  explicit negative offset of a read or write, and a seek to no integer, is
+  `EINVAL` (a negative offset read from 0); `O_CREAT|O_DIRECTORY` is `EINVAL`
+  before any lookup, `O_CREAT` of a directory `EISDIR` (`O_EXCL`: `EEXIST`),
+  `O_DIRECTORY|O_NOFOLLOW` of a link `ENOTDIR`, and `O_TRUNC` asks write
+  access whatever access the descriptor has, on SQLite and on a mount alike;
   `ftruncate` of a descriptor not open for writing is `EINVAL` (it was `EBADF`
   on SQLite, and truncated on a synchronous mount); a mount whose `writeRange`
   refuses with `ENOTSUP` holds the writes until fsync or close, as one without
@@ -28,13 +32,29 @@ published independently in the `@nimbus-sh` npm scope.
   synchronous face no longer refuses an open with `EACCES` by the mode a
   backend of one identity reports, and both faces now refuse what a
   credentialed backend's modes deny. A description holds the file its open
-  found (`CompositeVFS.pin`): an unmount, a mount or a link changed at its
-  name later moves neither its I/O nor its held writes, and a write through it
-  is reported to `observeWrites` only while its mount is still at its point.
+  found (`CompositeVFS.pin`, a `PinnedName` and its `hold`, a `HeldFile`): an
+  unmount, a mount or a link changed at its name later moves neither its I/O
+  nor its held writes, and a write through it is reported to `observeWrites`
+  only while the namespace shows that file at that name. A backend may keep
+  open files (the new optional `VFS.openFile`, which `MemoryVFS` and
+  `SqliteFiles` implement): a description of one is that file across a rename
+  or an unlink; one of a backend that keeps none is held by its name, and
+  refuses with `ESTALE` once the name holds another file or none.
+  `MemoryVFS` numbers its files (`ino`). Held writes are keyed by the file
+  (its device and number), not its mount and path, and are written before any
+  later change the process makes (a truncate, an `O_TRUNC` open, a write
+  through another descriptor), so nothing brings back what it cut; a flush
+  the process did not ask for that fails is reported by that descriptor's
+  next `fsync` or `close`. Not atomic on a mount that awaits: an `O_APPEND`
+  write (the end is read, then written at) and `O_CREAT|O_EXCL` (a stat, then
+  a create).
   A wave's `open` of a file on a mount keeps it as the process's description
   (`WaveDescriptions.describe`, `WaveRouter.open`): that description's
   writes, appends and truncates act on that file, not on whatever its name
-  leads to later. `O_CREAT|O_EXCL` of a name that is a link, followed or not,
+  leads to later, are refused (`EBADF`) once it is closed rather than made by
+  its name, and stop with its process; the open's receipt carries its
+  descriptor, and a re-sent open answers it again. `WaveScope.isDescribed` is
+  removed. `O_CREAT|O_EXCL` of a name that is a link, followed or not,
   is `EEXIST` on SQLite too (it created the link's target, or answered
   `ELOOP` first). Held writes are read back by every read of their file, by
   path or descriptor, awaited ones included. The synchronous face refuses a
