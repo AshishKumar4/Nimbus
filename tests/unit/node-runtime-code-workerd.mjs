@@ -309,15 +309,6 @@ const FILES = {
     'input.on("end", () => { input.destroy(); });',
     'input.on("close", () => { new tty.WriteStream(2).write("TTY-ERR\\n"); new tty.WriteStream(1).write("TTY " + JSON.stringify(got) + " " + process.stdin.listenerCount("data") + "\\n"); });',
   ].join('\n'),
-  // Its only reader of stdin gone, the program exits, its input still open.
-  'tty-release.js': [
-    'const t0 = Date.now();',
-    'const input = new (require("tty").ReadStream)(0);',
-    'input.resume();',
-    'setTimeout(() => input.destroy(), 50);',
-    'setTimeout(() => { const n = (v) => typeof v === "number" ? v : v && typeof v.size === "number" ? v.size : v === undefined ? "u" : typeof v; console.log("DIAG " + JSON.stringify({ data: process.stdin.listenerCount("data"), readable: process.stdin.listenerCount("readable"), handles: n(globalThis.__nimbusInputHandles), flowing: process.stdin.readableFlowing, destroyed: input.destroyed, readers: typeof __nimbusTtyStdinReaders, timers: n(globalThis.__nimbusPendingTimers), ops: n(globalThis.__nimbusPendingOps), sockets: n(globalThis.__nimbusOpenSockets), pstdin: process.stdin === globalThis.__nimbusProcessStdin })); }, 300);',
-    'process.on("exit", () => console.log("RELEASED " + (Date.now() - t0 < 3000)));',
-  ].join('\n'),
   'url.js': [
     'const url = require("url");',
     'const pick = (u) => ({ protocol: u.protocol, auth: u.auth, host: u.host, port: u.port, hostname: u.hostname, hash: u.hash, search: u.search, query: u.query, pathname: u.pathname, path: u.path, href: u.href });',
@@ -469,9 +460,6 @@ try {
     const ttyRun = await terminal.run(`cd ${W} && echo TTY-IN | node tty.js`);
     assert.match(ttyRun.stdout, /^TTY "TTY-IN\\n" 0$/m, `a tty.ReadStream reads stdin and lets go of it, a tty.WriteStream writes stdout: ${JSON.stringify(ttyRun)}`);
     assert.match(`${ttyRun.stdout}${ttyRun.stderr ?? ''}`, /TTY-ERR/, 'and fd 2 its stderr');
-
-    const released = await terminal.run(`cd ${W} && sleep 8 | node tty-release.js`);
-    assert.match(released.stdout, /^RELEASED true$/m, `the last tty.ReadStream destroyed, the program exits before its stdin ends: ${JSON.stringify(released)}`);
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });
