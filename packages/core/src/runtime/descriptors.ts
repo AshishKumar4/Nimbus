@@ -162,6 +162,16 @@ export function closeDescriptions(scope: DescriptorScope): unknown[] {
   return lost;
 }
 
+/** `file`, opened for a scope released meanwhile: closed, unheard (nothing was written through it). */
+export function abandon(file: { close(): Awaitable<void> }): void {
+  try {
+    const closed = file.close();
+    if (isPromise(closed)) closed.catch(() => {});
+  } catch {
+    // Nothing was written through it.
+  }
+}
+
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
 export function reportLost(lost: readonly unknown[]): void {
   if (lost.length === 1) throw lost[0];

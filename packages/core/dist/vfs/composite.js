@@ -1152,8 +1152,13 @@ export class CompositeVFS {
         }
     };
     mutationRoute(path, options) {
-        const trace = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
-        const run = () => reported({ syscall: 'route', path }, () => {
+        if (options?.report !== true)
+            return this.mutationRouteOf(path, options, undefined);
+        const trace = { links: [], at: normalizePath(path) };
+        return lookupReport(trace, () => this.mutationRouteOf(path, options, trace));
+    }
+    mutationRouteOf(path, options, trace) {
+        return reported({ syscall: 'route', path }, () => {
             if (trace !== undefined) {
                 trace.links.length = 0;
                 trace.at = normalizePath(path);
@@ -1166,7 +1171,6 @@ export class CompositeVFS {
                 return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
             });
         });
-        return trace === undefined ? run() : lookupReport(trace, run);
     }
     /**
      * Whether `path` is a directory above a live mount point (not the root):

@@ -64,7 +64,7 @@ import {
   type RuntimeMutationOwner,
 } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeld, type DescriptorScope } from './descriptors.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeld, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
@@ -1048,7 +1048,12 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         pin: (file, follow) => files.pin(file, { follow, sync: false }),
         sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
       });
-      this.live();
+      try {
+        this.live();
+      } catch (error) {
+        abandon(node);
+        throw error;
+      }
       return this.descriptors.issue(node, opened);
     });
   }

@@ -497,6 +497,7 @@ export declare class CompositeVFS implements VFS {
         report?: false;
     }): Awaitable<VfsMutationRoute>;
     mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport>;
+    private mutationRouteOf;
     /**
      * Whether `path` is a directory above a live mount point (not the root):
      * one the namespace keeps a directory for its mounts, so removing it is
