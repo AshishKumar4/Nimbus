@@ -11,7 +11,7 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const ROOT = '/home/user/frames';
 const SOURCE = [
-  'import { bridge, nativeFault } from "./bridge.cjs";',
+  'import { bridge, nativeFault, nativeStack } from "./bridge.cjs";',
   'export {};',
   'const frames = (stack) => stack.split("\\n").filter((line) => line.startsWith("    at ") && /\\/(frames\\.mjs|bridge\\.cjs):/.test(line));',
   'const report = (name, stack) => console.log("FRAMES " + JSON.stringify([name, frames(stack)]));',
@@ -31,6 +31,7 @@ const SOURCE = [
   'report("object", object.method());',
   'function outer() { return bridge(() => leaf()); }',
   'report("interleaved", outer());',
+  'report("host-created", bridge(() => nativeStack()));',
   'try { bridge(() => nativeFault()); } catch (e) { report("host-error", e.stack); }',
   'function capture() { const holder = {}; Error.captureStackTrace(holder); return holder.stack; }',
   'report("capture", capture());',
@@ -56,7 +57,7 @@ const SOURCE = [
 const FATAL = 'export {};\nfunction crash() { throw new Error("fatal-frame"); }\ncrash();\n';
 const FILES = {
   'package.json': '{"private":true}',
-  'bridge.cjs': 'exports.bridge = function bridge(callback) { return callback(); };\nexports.nativeFault = function nativeFault() { throw new Error("host"); };\n',
+  'bridge.cjs': 'exports.bridge = function bridge(callback) { return callback(); };\nexports.nativeFault = function nativeFault() { throw new Error("host"); };\nexports.nativeStack = function nativeStack() { return new Error("native-created").stack; };\n',
   'frames.mjs': SOURCE,
   'fatal.mjs': FATAL,
   'adopt.cjs': 'require("./frames.mjs");\n',
@@ -86,7 +87,7 @@ try {
     assert.equal(run.status, script.startsWith('fatal-') ? 1 : 0, `Node premise: ${script}: ${text}`);
     expected[script] = said(text, script.startsWith('fatal-'));
   }
-  assert.equal(expected['adopt.cjs'].length, 16, 'every frame and CallSite fixture ran under Node');
+  assert.equal(expected['adopt.cjs'].length, 17, 'every frame and CallSite fixture ran under Node');
   assert.ok(expected['fatal-runtime.cjs'].arrow, 'Node prints the module source and arrow for an unhandled rejection');
 } finally {
   rmSync(disk, { recursive: true, force: true });

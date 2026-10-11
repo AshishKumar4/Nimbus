@@ -819,7 +819,19 @@ function __nimbusProgramSites(error, original) {
   }
   let next = 0, internal = false;
   const physical = stamp.sites.length === 0 ? original : stamp.sites;
-  for (const site of physical) {
+  // An error read immediately inside a native callback has not crossed a
+  // call's return/catch yet. The original native prefix and the private
+  // capture then overlap: keep the creation columns, without duplicating
+  // the callback that is still executing while its stack is prepared.
+  const same = (a, b) => a.getFileName() === b.getFileName() && a.getFunctionName() === b.getFunctionName() && a.getLineNumber() === b.getLineNumber();
+  let overlap = 0;
+  for (let count = 1; count <= output.length && count <= physical.length; count++) {
+    let matches = true;
+    for (let i = 0; i < count; i++) if (!same(output[output.length - count + i], __NimbusCallSite.of(physical[i]))) { matches = false; break; }
+    if (matches) overlap = count;
+  }
+  for (let i = overlap; i < physical.length; i++) {
+    const site = physical[i];
     if (__nimbusInterpreterSite(site)) {
       internal = true;
       if (site.getFileName() === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_OPS_MODULE)} && next < stamp.frames.length && stamp.frames[next].async === site.isAsync()) {
@@ -900,7 +912,11 @@ function __nimbusUseStackFormatter(format) {
   let __userPrepare;
   const __apply = Reflect.apply;
   const __prepare = function prepareStackTrace(error, sites) {
-    if (__nimbusInterpreter !== null && __nimbusInterpreter.stackFrames(error) === null && sites.some(__nimbusInterpreterSite)) __nimbusInterpreter.captureStack(error);
+    if (__nimbusInterpreter !== null && __nimbusInterpreter.stackFrames(error) === null && sites.some(__nimbusInterpreterSite)) {
+      __nimbusInterpreter.captureStack(error);
+      const stamp = __nimbusInterpretedStacks.get(error);
+      if (stamp !== undefined) stamp.sites = __nimbusStackSites({}, Infinity, __prepare);
+    }
     sites = __nimbusProgramSites(error, sites);
     // As Node's prepareStackTraceCallback calls it: a method of Error.
     if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites]);

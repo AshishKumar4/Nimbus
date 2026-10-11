@@ -5,7 +5,7 @@
  * error is made. Native wrappers delimit these activations in V8's stack.
  */
 import {
-  Error, SafeWeakMap, charCodeAt, globalObject, newSafeList, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf,
+  SafeWeakMap, charCodeAt, errorInstance, globalObject, newSafeList, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf,
 } from './intrinsics.js';
 import type { Env } from './runtime.js';
 
@@ -79,9 +79,10 @@ export function callPosition(position: number): void {
 
 /** The native async wrapper has returned its promise to the call expression. */
 export function callResult<T>(value: T): T {
-  if (pendingAsync !== null && object(value)) promises.set(value, pendingAsync);
+  if (!object(value)) { pendingAsync = null; return value; }
+  if (pendingAsync !== null) promises.set(value, pendingAsync);
   pendingAsync = null;
-  if (value instanceof Error) stampStack(value);
+  if (errorInstance(value)) stampStack(value);
   return value;
 }
 
