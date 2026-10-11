@@ -2,7 +2,7 @@ import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error
 import { normalizeVfsPath } from './path.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
-import { S_IFMT, isCharacterDevice } from './vfs.js';
+import { S_IFMT, isCharacterDevice, isPromise, then } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -102,17 +102,10 @@ function relativeTo(point, path) {
         return path;
     return path.length === point.length ? '/' : path.slice(point.length);
 }
-function isPromise(value) {
-    return typeof value?.then === 'function';
-}
 function syncValue(value) {
     if (isPromise(value))
         throw new Error('synchronous filesystem operation returned a promise');
     return value;
-}
-/** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
-function then(value, next) {
-    return isPromise(value) ? value.then(next) : next(value);
 }
 /** An rm -r report (VfsRemoval). */
 function isRemoval(value) {
@@ -1069,16 +1062,6 @@ export class CompositeVFS {
     // that backend's. Inside a mount whose backend resolves its own paths
     // (MountOptions.resolvesPaths) nothing is looked up: the backend is handed
     // the rest of the path whole.
-    /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
-    writesInPlace(path) {
-        const route = this.locate(normalizePath(path));
-        try {
-            return typeof this.ops(route, true).writeRange === 'function';
-        }
-        catch {
-            return false;
-        }
-    }
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     locate(path) {
         for (let at = path;; at = parentOf(at)) {

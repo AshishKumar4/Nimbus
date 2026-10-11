@@ -15,8 +15,9 @@ import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVf
 
 type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
 
-/** An open file description: what a process's descriptors (dups included) share. */
-export type Description = { [K in keyof VfsOpenDescription]: Answering<VfsOpenDescription[K]> } & {
+/** An open file description: what a process's descriptors (dups included) share. Its name is known at once. */
+export type Description = { [K in Exclude<keyof VfsOpenDescription, 'path'>]: Answering<VfsOpenDescription[K]> } & {
+  path(): string;
   /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
   readonly awaits?: true;
   /** A mounted file's: its stat is the mount's, which never moves the SQLite clock. */

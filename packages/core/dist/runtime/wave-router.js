@@ -28,7 +28,9 @@
  * and the rename removes its slot; a crash in that window leaves it, at
  * most one per link record in flight (a known leak, by that name pattern).
  */
-import { VfsError } from '../vfs/vfs-error.js';
+import { VFS_DESCRIPTION, VfsError } from '../vfs/vfs-error.js';
+import { openOnMount } from '../vfs/mounted-description.js';
+import { openFlags } from './descriptors.js';
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export const LINK_SLOT_SUFFIX = '.nimbus-wave';
 export function namespaceWaveRouter(namespace, credential) {
@@ -76,7 +78,7 @@ export function namespaceWaveRouter(namespace, credential) {
             const ns = view(cred, guard, owner);
             // Removing its own slot after a failure is the record's own: not admitted again, under the same lease.
             const cleanup = view(cred, undefined, owner);
-            return applyRecord(ns, cleanup, record, pinsOf(ns, record));
+            return applyRecord(ns, cleanup, record, pinsOf(ns, record), credential(cred));
         },
     };
 }
@@ -138,7 +140,7 @@ function pinOf(ns, dir) {
  * that takes credentials applies it as it applies any (a default ACL
  * instead, where one is set); one that takes none stores what it is given.
  */
-async function applyRecord(ns, cleanup, record, pinned) {
+async function applyRecord(ns, cleanup, record, pinned, cred) {
     switch (record.type) {
         case 'directory':
             await pinned();
@@ -212,23 +214,12 @@ async function applyRecord(ns, cleanup, record, pinned) {
             else if (call.call === 'lchown' || call.call === 'lutimes')
                 throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
             else if (call.call === 'open') {
-                // open(2) to write, as the session's own open decides it on a mount.
-                const name = await ns.stat(call.path, { follow: false });
-                if (name !== null && call.create === true && call.exclusive === true)
-                    throw new VfsError('EEXIST', 'file already exists', call.path);
-                if (call.nofollow === true && name?.type === 'symlink')
-                    throw new VfsError('ELOOP', 'too many levels of symbolic links', call.path);
-                const there = call.nofollow === true ? name : await ns.stat(call.path);
-                if (there === null && call.create !== true)
-                    throw new VfsError('ENOENT', 'no such file or directory', call.path);
-                if (there?.type === 'directory')
-                    throw new VfsError('EISDIR', 'is a directory', call.path);
-                await pinned();
-                if (there === null)
-                    await ns.writeFile(call.path, new Uint8Array(0), { mode: call.mode });
-                else if (call.truncate === true)
-                    await ns.truncate(call.path, 0);
-                return statOf(await ns.stat(call.path));
+                // open(2) to write, as the namespace's open decides it for every caller.
+                return statOf(await openOnMount({
+                    files: ns, name: call.path, cred, mode: call.mode,
+                    flags: openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true }),
+                    refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
+                }, false, pinned));
             }
             // A description's close: a mount keeps no description (its open made none).
             else if (call.call === 'close')

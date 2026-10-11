@@ -14,6 +14,13 @@
  * that (ENOTSUP) and decides.
  */
 import { isVfsError, syscallError } from './vfs-error.js';
+export function isPromise(value) {
+    return typeof value?.then === 'function';
+}
+/** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
+export function then(value, next) {
+    return isPromise(value) ? value.then(next) : next(value);
+}
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /**

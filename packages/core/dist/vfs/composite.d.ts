@@ -472,8 +472,6 @@ export declare class CompositeVFS implements VFS {
     get principal(): Principal;
     get sync(): SyncVFS;
     private resynthesize;
-    /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
-    writesInPlace(path: string): boolean;
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
     private backend;

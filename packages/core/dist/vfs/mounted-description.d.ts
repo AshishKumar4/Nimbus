@@ -1,0 +1,54 @@
+/**
+ * A file on a mount, opened: open(2) as the namespace decides it for every
+ * caller (a process's synchronous and asynchronous faces, a wave's open),
+ * and the description its descriptors share. Its operations go through
+ * `files`, the namespace as the caller sees it: its synchronous face
+ * (CompositeVFS.sync), which refuses an asynchronous mount at the first
+ * lookup, before anything has changed; or the namespace itself.
+ */
+import { type Description, type DescriptorScope } from '../runtime/descriptors.js';
+import type { RuntimeFileHandle, VfsCred } from '../runtime/os-contracts.js';
+import { type Awaitable, type VFS, type VfsStat } from './vfs.js';
+/** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
+export declare const BUFFERED_WRITE_BYTES: number;
+/** How the caller names a refusal: `code`, for its call `syscall` (open, write, ftruncate, …). */
+export type Refuse = (code: string, syscall: string) => Error;
+export interface MountedOpen {
+    files: VFS;
+    /** The name opened, in the namespace. */
+    name: string;
+    flags: RuntimeFileHandle['flags'];
+    cred: VfsCred;
+    refuse: Refuse;
+    /** The mode a file this open makes is made with. */
+    mode?: number;
+}
+/**
+ * open(2) of `name`, one rule for every caller, Linux's where Linux and
+ * POSIX differ: O_CREAT|O_EXCL is EEXIST on the name itself, a link
+ * included; O_NOFOLLOW of a link is ELOOP; an absent name without O_CREAT is
+ * ENOENT, and with O_DIRECTORY EINVAL; O_DIRECTORY of anything else is
+ * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); the access
+ * asked is checked against the file's mode (EACCES); and only then is the
+ * file made (whatever its mode, as creat(2) makes it) or truncated. Answers
+ * the file's stat. `describes`: whether the open keeps a description, whose
+ * write rights a directory may carry (a WASI guest asks a capability set);
+ * an open that keeps none (a wave's) is an open to write, which a directory
+ * refuses. `settled` runs right before the answer, or the change.
+ */
+export declare function openOnMount(open: MountedOpen, describes: boolean, settled?: () => Awaitable<void>): Awaitable<VfsStat>;
+export interface MountedDescriptionOptions extends MountedOpen {
+    /** The descriptors' scope: whose pending writes this process reads (processView). */
+    scope: DescriptorScope;
+    /** Where the opened name leads, every link resolved: the file the description holds, wherever its name is repointed. */
+    realpath(name: string): Awaitable<string>;
+    /** `files` answers only by awaiting (the namespace itself, for an asynchronous mount). */
+    awaits: boolean;
+    /** O_SYNC: each write in the mount before it returns. */
+    sync: boolean;
+    /** What a description holds unwritten before a write is EFBIG. */
+    bufferedWriteBytes: number;
+}
+/** open(2) of a mounted file, and the description its descriptors share. */
+export declare function openMounted(options: MountedDescriptionOptions): Awaitable<Description>;
+//# sourceMappingURL=mounted-description.d.ts.map

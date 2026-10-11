@@ -16,6 +16,9 @@
 import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
+export declare function isPromise<T>(value: Awaitable<T>): value is Promise<T>;
+/** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
+export declare function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;
 export type VfsFileType = 'file' | 'directory' | 'symlink';
