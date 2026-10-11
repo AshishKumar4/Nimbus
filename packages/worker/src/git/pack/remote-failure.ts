@@ -27,13 +27,21 @@ const MESSAGE_BYTES = 64 * 1024;
  * authority may carry.
  */
 export function anonymizeUrl(url: string): string {
-  const scheme = url.indexOf('://');
-  if (scheme < 0) return url;
-  const start = scheme + 3;
-  const slash = url.indexOf('/', start);
-  const end = slash < 0 ? url.length : slash;
-  const at = url.lastIndexOf('@', end - 1);
-  return at < start ? url : url.slice(0, start) + url.slice(at + 1);
+  const parts = originalUrlParts(url);
+  if (!parts) return url;
+  return parts.scheme + parts.authority.slice(parts.authority.lastIndexOf('@') + 1) + parts.rest;
+}
+
+/** Git's URL grammar by original spans: never fold host case, remove default ports or rewrite escapes. */
+function originalUrlParts(url: string): { scheme: string; authority: string; rest: string } | null {
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url)?.[0];
+  if (!scheme) return null;
+  let end = url.length;
+  for (const delimiter of ['/', '?', '#']) {
+    const found = url.indexOf(delimiter, scheme.length);
+    if (found >= 0) end = Math.min(end, found);
+  }
+  return { scheme, authority: url.slice(scheme.length, end), rest: url.slice(end) };
 }
 
 /** The credentials a request offered: the user name (git's prompt names it), and whether a password (or token) came with it. */
@@ -77,12 +85,10 @@ function percentEncode(text: string): string {
  * name (if known) and the host of `url`.
  */
 function credentialDescription(url: string, username: string): string {
-  const scheme = url.indexOf('://');
-  if (scheme < 0) return url;
-  const start = scheme + 3;
-  const slash = url.indexOf('/', start);
-  const host = anonymizeUrl(url.slice(0, slash < 0 ? url.length : slash)).slice(start);
-  return url.slice(0, start) + (username ? percentEncode(username) + '@' : '') + host;
+  const parts = originalUrlParts(url);
+  if (!parts) return anonymizeUrl(url);
+  const host = parts.authority.slice(parts.authority.lastIndexOf('@') + 1);
+  return parts.scheme + (username ? percentEncode(username) + '@' : '') + host;
 }
 
 /**
@@ -101,35 +107,31 @@ function redactSecrets(text: string, secrets: readonly string[]): string {
   return out;
 }
 
-/** Mask component data, never the delimiters that give the destination its structure. */
+/** Match raw characters or their UTF-8 percent encoding, without changing other bytes. */
+function secretPattern(secret: string): RegExp {
+  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hex = (byte: number): string => byte.toString(16).padStart(2, '0').replace(/[a-f]/g, (letter) => `[${letter}${letter.toUpperCase()}]`);
+  const encoder = new TextEncoder();
+  return new RegExp([...secret].map((character) => `(?:${escape(character)}|${[...encoder.encode(character)].map((byte) => '%' + hex(byte)).join('')})`).join(''), 'g');
+}
+
+/** Mask original data spans; path slashes, query separators and authority syntax never enter a match. */
 function redactDestination(url: string, secrets: readonly string[], credentialPrompt = false): string {
-  if (!URL.canParse(url)) return '<invalid remote URL>';
-  const parsed = new URL(url);
-  parsed.password = '';
-  if (!credentialPrompt) parsed.username = '';
-  else {
-    const username = unescapeUserinfo(parsed.username);
-    const safe = redactSecrets(username, secrets);
-    if (safe !== username) parsed.username = encodeURIComponent(safe);
-  }
-  parsed.pathname = parsed.pathname.split('/').map((token) => {
-    const data = unescapeUserinfo(token);
-    const safe = redactSecrets(data, secrets);
-    return safe === data ? token : encodeURIComponent(safe);
-  }).join('/');
-  const query = new URLSearchParams();
-  let queryChanged = false;
-  for (const [name, data] of parsed.searchParams) {
-    const safe = redactSecrets(data, secrets);
-    queryChanged ||= safe !== data;
-    query.append(name, safe);
-  }
-  if (queryChanged) parsed.search = query.toString();
-  const fragment = unescapeUserinfo(parsed.hash.slice(1));
-  const safeFragment = redactSecrets(fragment, secrets);
-  if (safeFragment !== fragment) parsed.hash = encodeURIComponent(safeFragment);
-  const result = parsed.href;
-  return credentialPrompt && result.endsWith('/') ? result.slice(0, -1) : result;
+  const parts = originalUrlParts(url);
+  if (!parts) return '<invalid remote URL>';
+  const patterns = secrets.filter((secret) => secret.length > 0).map(secretPattern);
+  const mask = (data: string): string => patterns.reduce((text, pattern) => text.replace(pattern, '<redacted>'), data);
+  const at = parts.authority.lastIndexOf('@');
+  const host = parts.authority.slice(at + 1);
+  const username = at < 0 ? '' : parts.authority.slice(0, at).split(':', 1)[0];
+  const authority = credentialPrompt && at >= 0 ? mask(username) + '@' + host : host;
+  const hash = parts.rest.indexOf('#');
+  const withoutHash = hash < 0 ? parts.rest : parts.rest.slice(0, hash);
+  const query = withoutHash.indexOf('?');
+  const path = query < 0 ? withoutHash : withoutHash.slice(0, query);
+  const queryData = query < 0 ? '' : '?' + withoutHash.slice(query + 1).split(/([&=])/).map((token, index) => index % 2 ? token : mask(token)).join('');
+  const fragment = hash < 0 ? '' : '#' + mask(parts.rest.slice(hash + 1));
+  return parts.scheme + authority + path.split('/').map(mask).join('/') + queryData + fragment;
 }
 
 /**
