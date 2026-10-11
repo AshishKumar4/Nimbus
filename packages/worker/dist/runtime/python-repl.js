@@ -1,7 +1,6 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
-import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
@@ -201,7 +200,7 @@ class PythonReplAdapter {
         if (!(await vfs.exists(stdlibPath))) {
             throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
         }
-        this.wasmBytes = toArrayBuffer(await vfs.readFile(wasmPath));
+        this.wasmBytes = await vfs.readArrayBufferUncached(wasmPath);
         this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
         const host = getFacetManagerLoaderHost(facetMgr);
         // A prompt where `open(path, "w")` silently does nothing is worse than one

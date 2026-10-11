@@ -253,12 +253,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  readFile(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): Uint8Array | null {
+  readFile(path: RuntimeFsPath, options: { followSymlinks?: boolean; cached?: boolean } = {}): Uint8Array | null {
     return called({ syscall: 'open', path }, () => {
       const located = this.locate(path, options.followSymlinks !== false);
       if (located === null || located.absent) return null;
       try {
-        if (!located.mount) return this.vfs.readFile(located.path);
+        // cached === false reads straight from SQL, neither consulting nor
+        // populating the LRU: a whole runtime image is read once for a
+        // facet's module map, never re-read from this isolate. Mount
+        // backends have no LRU, so their readFile is already uncached.
+        if (!located.mount) {
+          return options.cached === false
+            ? this.vfs.readFileUncached(located.path)
+            : this.vfs.readFile(located.path);
+        }
         return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
       } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
