@@ -76,6 +76,29 @@ try {
     assert.ok(reported.some(args=>args.some(x=>String(x).includes(error.message))));
     assert.ok(frames.some(frame=>frame.data?.includes(error.message)),'failed input is visible to the client');
   } finally {console.error=oldError;}
+
+  const oldTerminal = new WebSocketTerminal(socket);
+  const replacementFrames = [];
+  const replacement = new WebSocketTerminal({ readyState: 1, send(value) { replacementFrames.push(JSON.parse(value)); }, close() {} });
+  const late = Promise.withResolvers();
+  oldTerminal.onData(() => late.promise);
+  host.terminal = oldTerminal;
+  const pending = sessionWs.terminalInput(host, JSON.stringify({ type: 'input', data: 'held' }));
+  oldTerminal.close();
+  host.terminal = replacement;
+  try {
+    const ended = await Promise.race([pending.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 1000))]);
+    assert.equal(ended, true, 'terminal close ends an input request even when its callback ignores disposal');
+    late.reject(new Error('late terminal failure'));
+    await Promise.resolve(); await Promise.resolve();
+    replacement.flushNow();
+    assert.deepEqual(replacementFrames, [], 'late completion cannot report into a recreated terminal');
+  } finally {
+    late.resolve();
+    await pending;
+    replacement.close();
+    host.terminal = terminal;
+  }
   console.log('session-terminal-input-lifetime: self-request completion, Ctrl-C, concurrent REPL input and rejection');
 } finally {
   release?.resolve('finish');
