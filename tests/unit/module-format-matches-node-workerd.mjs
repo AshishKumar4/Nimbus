@@ -1,4 +1,5 @@
-#!/usr/bin/env bun
+// @serial
+// @tier slow — drives a local workerd session through every program.
 // Which module system a source runs under is Node's answer (doc/api/packages.md
 // "Determining module system"; syntax detection is on by default from
 // v22.7.0): a file with no package "type" is an ES module when it holds
@@ -20,27 +21,16 @@
 // and Node's loader completes the message where it leaves the module's job
 // (an entry, an import(), a require() of it): "in ES module scope", the
 // package.json that made a .js a module, or top-level await's ambiguity.
-// The runtime said "require_is_not_defined_in_ES_module_scope is not
-// defined", a name it made up. The frames are the guest registry's, which
-// es-module-scope-errors-workerd runs: here a module is loaded by Bun.
 //
-// One fixture tree, on disk for real node and in the session's filesystem for
-// `node` through the runtime handler (the shell's command) and a one-shot
-// launch (module-map walk, ESM→CJS transform, the facet): each run prints
-// one JSON line, which must be node's.
+// One fixture tree, on disk for real node and in a local workerd session's
+// filesystem for the shell's `node` (lib/node-differential.mjs): each run's
+// stdout, stderr and exit code must be node's. An ES module is the
+// registry's own (core runtime/native-esm.ts), which only V8 evaluates as
+// Node does: Bun, an in-process harness, reads one that mentions `exports`
+// as CommonJS.
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-
-import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
 import { SEED_FILES, SEED_PROJECT_DIR } from '../../packages/core/src/vfs/seed-project.ts';
-import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createAuthority } from './lib/resident-body.mjs';
-import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
+import { matchNodeInWorkerd, shellWord } from './lib/node-differential.mjs';
 
 const ROOT = '/home/user/fmt';
 const line = (...parts) => `console.log(JSON.stringify([${parts.join(', ')}]));\n`;
@@ -129,13 +119,14 @@ const RUNS = [
   ['meta.js'],
   ['tla.js'],
   ['redeclare.js'],
-  // destructured.js too: Bun loads an ES module of a .js that never imports
-  // as its own hybrid, with a `require`.
-  // declarators.js, escaped.js, pattern.js, class.js and awaits.js run in
-  // native-esm-matches-node-workerd: Bun binds CommonJS's names in every
-  // module, and refuses one that declares them.
+  ['destructured.js'],
+  ['declarators.js'],
+  ['escaped.js'],
+  ['pattern.js'],
+  ['class.js'],
   ['not-bindings.js'],
-  ['template-await.js', { fails: true }],
+  ['awaits.js'],
+  ['template-await.js'],
   ['typeofs.mjs'],
   ['arrow.js'],
   ['awaitcall.js'],
@@ -158,102 +149,20 @@ const RUNS = [
   ['seed.mjs'],
   ['tla-scope.mjs'],
   ['scope-errors.cjs'],
-  ['require-in-esm.mjs', { fails: true }],
-  ['typed/module-exports.js', { fails: true }],
-  ['chain.mjs', { fails: true }],
-  ['--input-type=module', '-e', "require('node:path');\n", { fails: true }],
-  ['import-in.cjs', { fails: true }],
-  ['commonjs/import.js', { fails: true }],
+  ['require-in-esm.mjs'],
+  ['typed/module-exports.js'],
+  ['chain.mjs'],
+  ['--input-type=module', '-e', "require('node:path');\n"],
+  ['import-in.cjs'],
+  ['commonjs/import.js'],
 ];
-const argsOf = (run) => run.filter((arg) => typeof arg === 'string');
-const stdinOf = (run) => run.find((arg) => typeof arg === 'object')?.stdin;
-const failsWith = (run) => run.find((arg) => typeof arg === 'object')?.fails === true;
-// What an uncaught error prints: `<Name>: <message>` and any further lines of the message.
-const uncaught = (text) => /^[A-Z]\w*Error(?::[^\n]*)?(?:\n(?!    at )[^\n]+)*/m.exec(text)?.[0] ?? null;
-
-// ── real node ────────────────────────────────────────────────────────────
-const disk = realpathSync(mkdtempSync(join(tmpdir(), 'module-format-')));
-const expected = [];
-try {
-  for (const [rel, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(disk, rel)), { recursive: true });
-    writeFileSync(join(disk, rel), text);
-  }
-  for (const run of RUNS) {
-    const node = spawnSync('node', argsOf(run), { cwd: disk, input: stdinOf(run) ?? '', encoding: 'utf8' });
-    // What node says of the tree, said of the session's.
-    const here = (text) => text.replaceAll(disk, ROOT);
-    if (failsWith(run)) {
-      assert.notEqual(node.status, 0, `premise: node ${argsOf(run).join(' ')} fails`);
-      const error = uncaught(here(node.stderr));
-      assert.ok(error, `premise: node ${argsOf(run).join(' ')} prints an error: ${node.stderr}`);
-      expected.push(error);
-      continue;
-    }
-    assert.equal(node.status, 0, `node ${argsOf(run).join(' ')}: ${node.stderr}`);
-    expected.push(JSON.parse(here(node.stdout.trim().split('\n').at(-1))));
-  }
-} finally {
-  rmSync(disk, { recursive: true, force: true });
-}
-
-// ── node in the session ──────────────────────────────────────────────────
-const { host, rawVfs, kfs } = createAuthority();
-let out = '';
-adoptSessionSupervisor(host, (text) => { out += text; });
-const manager = oneShotManager('module-format-matches-node', { host, rawVfs, loader: runnerLoader('module-format') });
-const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
-const esbuild = new EsbuildService(undefined, oxcTransforms);
-manager.setEsbuildService(esbuild);
-for (const [rel, text] of Object.entries(files)) {
-  const path = `${ROOT.slice(1)}/${rel}`;
-  kfs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
-  kfs.writeFile(path, text);
-}
-const handler = buildRuntimeHandler({
-  name: 'node',
-  version: 'v22.22.3',
-  helpText: 'help',
-  supportsBinSpawn: true,
-  // As the shell's node spec (hosted/commands.ts): node's own command line.
-  nodeCommandLine: true,
-  run: (code, opts) => manager.exec(code, { ...opts, captureOutput: true }),
-}, { getEsbuild: () => esbuild, registry: { resolve: () => undefined } });
-
-const real = { console: globalThis.console, process: globalThis.process, Buffer: globalThis.Buffer };
-for (let i = 0; i < RUNS.length; i++) {
-  const run = RUNS[i];
-  out = '';
-  let stdout = '';
-  let stderr = '';
-  let exitCode;
-  try {
-    const stdin = stdinOf(run);
-    exitCode = await handler({
-      vfs: kfs,
-      args: argsOf(run),
-      cwd: ROOT,
-      env: { HOME: '/home/user', PATH: '/usr/local/bin:/usr/bin:/bin' },
-      cred: CRED_SESSION_USER,
-      stdout: { write: (text) => { stdout += text; } },
-      stderr: { write: (text) => { stderr += text; } },
-      ...(stdin !== undefined ? { stdin: { readAll: async () => stdin } } : {}),
-    });
-  } finally { Object.assign(globalThis, real); }
-  const label = `node ${argsOf(run).join(' ').slice(0, 60)}`;
-  if (failsWith(run)) {
-    assert.notEqual(exitCode, 0, `${label} fails, as in node: ${stdout}${out}`);
-    // A SyntaxError's text is the engine's: JSC's here, where Bun compiles
-    // the cells; es-module-scope-errors-workerd compares V8's.
-    const thrown = uncaught(stderr + out + stdout);
-    if (expected[i].startsWith('SyntaxError')) assert.match(thrown ?? '', /^SyntaxError\b/, `${label} throws what node throws: ${stderr}${out}`);
-    else assert.equal(thrown, expected[i], `${label} throws what node throws: ${stderr}${out}`);
-    continue;
-  }
-  const printed = (out + stdout).trim().split('\n').at(-1) ?? '';
-  assert.ok(printed.startsWith('['), `${label} printed no report (exit ${exitCode}): ${stderr}${out}`);
-  assert.equal(exitCode, 0, `${label}: ${stderr}${out}`);
-  assert.deepEqual(JSON.parse(printed), expected[i], `${label} runs as node runs it`);
-}
-
-console.log(`module-format-matches-node: ${RUNS.length} sources run under the module system node gives them`);
+// Each run as a command line, its stdin from a file of the tree.
+const stdins = {};
+const commands = RUNS.map((run, i) => {
+  const args = run.filter((arg) => typeof arg === 'string').map(shellWord).join(' ');
+  const stdin = run.find((arg) => typeof arg === 'object')?.stdin;
+  if (stdin === undefined) return `node ${args}`;
+  stdins[`stdin-${i}.txt`] = stdin;
+  return `node ${args} < stdin-${i}.txt`;
+});
+await matchNodeInWorkerd('module-format-matches-node-workerd', ROOT, { ...files, ...stdins }, commands);

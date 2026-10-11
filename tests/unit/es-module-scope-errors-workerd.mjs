@@ -6,8 +6,8 @@
 // "require is not defined", completed by Node's loader where the error
 // leaves the module's job ("in ES module scope", the package.json that made
 // a .js a module, top-level await's ambiguity), and the module's own line as
-// its stack's first frame. module-format-matches-node covers the rest of the
-// scope, in-process. A SyntaxError's text, V8's, is compared here too.
+// its stack's first frame. module-format-matches-node-workerd covers the
+// rest of the scope. A SyntaxError's text, V8's, is compared here too.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';

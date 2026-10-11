@@ -10,7 +10,7 @@
 // `.hello` was undefined, printed with exit 0
 // (require-resolution/multiline-import on staging, 2026-09-27). Those cells
 // assigned `module.exports` beside their imports, which Node refuses in an
-// ES module (ReferenceError, module-format-matches-node); these export.
+// ES module (ReferenceError, module-format-matches-node-workerd); these export.
 //
 // Drives a one-shot `node consume.js` through the real launch path: the
 // module-map walk, the ESM→CJS transform, the facet's metadata rewrite and

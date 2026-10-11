@@ -12691,9 +12691,8 @@ async function __nimbusEsmImport(id) {
     }
     // The body that threw: one its evaluation began and did not complete
     // (marked already where a later body's check stopped). It keeps what it
-    // threw, for a require() of it, and the error is explained as Node's
-    // loader explains it, from that module. A body suspended in its
-    // top-level await is the thrower only where no other is.
+    // threw, for a require() of it. A body suspended in its top-level await
+    // is the thrower only where no other is.
     let thrower = null;
     for (const record of __nimbusEsmRecords) {
       if (record === undefined || (batch !== null && record.batch !== batch)) continue;
@@ -12709,8 +12708,10 @@ async function __nimbusEsmImport(id) {
       thrower.state = __ESM_FAILED;
       thrower.batch?.running.delete(thrower);
       thrower.error = { value: error };
-      __nimbusExplainCommonJSGlobalLike(error, __nimbusEsmUrl("/" + __nimbusEsm.table[thrower.id][1]), __nimbusEsmSuspends(thrower));
     }
+    // Node's ModuleJob explains what escapes its evaluation by the job's own
+    // module, the one imported: its URL and its top-level await.
+    if (row[0] === "module") __nimbusExplainCommonJSGlobalLike(error, __nimbusEsmUrl("/" + row[1]), __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw __nimbusEsmLinkError(error, id);
   }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Bun binds `require`, `__filename` and `__dirname` in an ES module
 // (bun.sh/docs/runtime/modules), where Node binds none of CommonJS's names
-// (module-format-matches-node). The module scope is the runtime's
+// (module-format-matches-node-workerd). The module scope is the runtime's
 // (module-format.ts ModuleScope): `bun` lowers an ES module, the entry's
 // and each one it loads, keeping CommonJS's names. With Node's scope applied
 // to Bun too, each of these threw "require is not defined".
