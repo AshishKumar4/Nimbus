@@ -9,7 +9,6 @@ import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
-import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
   supervisorDeliveredOp,
@@ -440,8 +439,6 @@ const NATIVE_OPS = {
   // Boot-spec members only: a 34 MiB image read through the LRU would evict the session's hot set.
   fsReadRangeUncached: (e, t) => readRange(e, t, { cached: false }),
   fsRevision: (e, t) => fsFor(e, t).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
-  // The registry is keyed by storage key: a confined process's /tmp/x is its own.
-  hasLegacySymlinkUnder: (e, t) => getSymlinkRegistry(t.vfs).hasAtOrBelow(t.vfs.as(t.cred(e.pid, e.cred)).storageKey(stringArg(e, 0))),
   writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1)),
   // writeFile, answering with the path's own stat as the write left it: a
   // process keeps that stat for its sync view, and asked for it in a second

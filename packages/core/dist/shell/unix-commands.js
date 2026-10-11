@@ -2239,12 +2239,11 @@ function mkEcho() {
  *
  * Pre-fix: the lazy `ls` implementation formatted `mode` with first-char
  * `d` or `-`; it had no symlink concept,
- * and our SymlinkRegistry entries are not in the VFS dir listing at all,
+ * and symlinks were not in the VFS dir listing at all,
  * so `ls -l` after `ln -s t.txt l.txt` showed ONLY `t.txt`.
  *
  * Post-fix:
- *   - `ls` lists every entry the filesystem reports for the directory; a
- *     host authority includes its legacy SymlinkRegistry entries there.
+ *   - `ls` lists every entry the filesystem reports for the directory.
  *   - `ls -l` shows `lrwxrwxrwx  1 user user  N <mtime> <name> -> <target>`
  *     for symlinks (`N` = target string length, matches GNU coreutils).
  *   - Non-symlink rows go through the same formatter so columns line up.
@@ -3530,7 +3529,7 @@ function mkFalse() { return () => 1; }
 /**
  * SHELL-FOLLOWUPS-4 (2026-05-11): real symlink readlink.
  * Pre-fix: ln -s did file-copy; readlink returned exit 1 with no
- * output (no symlink table existed). Now backed by SymlinkRegistry:
+ * output (no symlink table existed). Now backed by native symlinks:
  *   - GNU readlink prints target (relative or absolute as stored)
  *   - exit 1 silently for non-symlinks (matches GNU readlink default)
  *   - exit 1 + stderr for missing files

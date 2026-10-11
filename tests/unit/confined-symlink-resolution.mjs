@@ -16,8 +16,8 @@
 //
 // Covered: the direct view (SqliteVFS.as), the runtime bridge that node and
 // WASI processes go through, WASI's rooted lookups, open descriptions, mkdir,
-// symlink, batch and stream writes, the legacy symlink registry, and the
-// unconfined callers whose resolution must not change.
+// symlink, batch and stream writes, and the unconfined callers whose
+// resolution must not change.
 
 import assert from 'node:assert/strict';
 
@@ -288,24 +288,6 @@ assert.deepEqual(rows(`${PRIVATE_ROOT}/root/`), [], 'a row was placed under a li
 a.writeBatch({ inodes: [batchFile('/tmp/batched', '/tmp')], chunks: [{ path: '/tmp/batched', chunkId: 0, data: enc.encode('b') }] });
 assert.equal(a.readFileString('/tmp/batched'), 'b');
 sharedIntact();
-
-// ── The legacy symlink registry is read in A's view too ───────────────────
-// Its keys are storage keys. An entry in the shared tmp is not A's, and one
-// in A's own root is A's, under its own name.
-root.writeFile('.nimbus-symlinks.json', JSON.stringify({
-  'tmp/legacy-shared': '/home/user/notes.txt',
-  [`${PRIVATE_ROOT}/legacy-mine`]: 'renamed.txt',
-}));
-assert.equal(aFs.readlink('/tmp/legacy-shared'), null);
-assert.equal(aFs.readFile('/tmp/legacy-shared'), null);
-assert.ok(!aFs.readdir('/tmp').some((entry) => entry.name === 'legacy-shared'));
-assert.throws(() => aFs.unlink('/tmp/legacy-shared'), { code: 'ENOENT' });
-assert.throws(() => aFs.rename('/tmp/legacy-shared', '/tmp/taken'), { code: 'ENOENT' });
-assert.equal(plainFs.readlink('/tmp/legacy-shared'), '/home/user/notes.txt', 'the shared entry survived');
-assert.equal(aFs.readlink('/tmp/legacy-mine'), 'renamed.txt');
-assert.equal(dec.decode(aFs.readFile('/tmp/legacy-mine')), 'mine');
-assert.ok(aFs.readdir('/tmp').some((entry) => entry.name === 'legacy-mine'));
-root.unlink('.nimbus-symlinks.json');
 
 // ── The listing reads each link's own target ──────────────────────────────
 // It re-resolved the listed name, and a row no lookup reaches (one an older

@@ -181,9 +181,6 @@ async function prepareDestination(supervisor, stats, opts) {
             (cloneRoot !== exclusiveRoot && !cloneRoot.startsWith(exclusiveRoot + '/')))) {
         throw new Error('git clone exclusive mutation root does not cover its destination');
     }
-    const hasLegacySymlink = await counted(stats, 'legacySymlinkSubtree', () => supervisor.hasLegacySymlinkUnder(exclusiveRoot));
-    if (hasLegacySymlink === true)
-        throw notEmpty();
     let rootMetadata = null;
     if (existing) {
         if (!(existing.type === 'directory' || existing.type === 'dir'))
