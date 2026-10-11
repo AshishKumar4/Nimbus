@@ -145,7 +145,18 @@ function enter(fi, scope, fn, thisArg, args, newTarget, home) {
             env[params[i]] = i < count ? args[i] : undefined;
     }
     else if (fi.bindParams !== null) {
-        fi.bindParams(env, args);
+        const previous = fi.stack === null ? null : pushStack(env);
+        try {
+            fi.bindParams(env, args);
+        }
+        catch (error) {
+            stampStack(error);
+            throw error;
+        }
+        finally {
+            if (fi.stack !== null)
+                popStack(previous);
+        }
     }
     return env;
 }
