@@ -32,8 +32,11 @@ const protocols = (value: unknown): string[] => {
 
 export function webSocketConstructor(input: unknown, options: unknown): { url: URL; headers: Headers } {
   const init = object(options) && !(Symbol.iterator in options) ? options : { protocols: options };
-  const offered = protocols(init.protocols === undefined ? [] : init.protocols);
-  const headers = new Headers(init.headers == null ? undefined : init.headers as HeadersInit);
+  const protocolValue = init.protocols;
+  const offered = protocols(protocolValue === undefined ? [] : protocolValue);
+  void init.dispatcher;
+  const headerValue = init.headers;
+  const headers = new Headers(headerValue == null ? undefined : headerValue as HeadersInit);
   const text = toUSVString(input as string);
   const url = (() => {
     try { return new URL(text); }

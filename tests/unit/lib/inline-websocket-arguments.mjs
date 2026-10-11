@@ -12,6 +12,17 @@ export async function inlineWebSocketArguments(base) {
     try { const socket = new NativeWebSocket(...args); socket.close(); events.push([name, 'accepted']); }
     catch (error) { events.push([name, error.name]); }
   }
+  const getters = [];
+  const initialized = new NativeWebSocket(base, {
+    get protocols() { getters.push('protocols'); return ['chat']; },
+    get dispatcher() { getters.push('dispatcher'); return undefined; },
+    get headers() { getters.push('headers'); return { 'x-review': 'getters' }; },
+  });
+  await new Promise((resolve, reject) => {
+    initialized.onerror = (event) => reject(new Error(event.message ?? event.error?.message));
+    initialized.onopen = () => { events.push(['init getters', getters]); initialized.close(3000); };
+    initialized.onclose = resolve;
+  });
   for (const [options, code, reason] of [
     ['chat', 3000.1, null], [new Set(['chat']), 3001.8, true],
     [7, { valueOf() { return 3000; } }, { toString() { return 'reason'; } }],
