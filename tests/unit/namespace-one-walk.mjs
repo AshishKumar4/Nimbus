@@ -67,7 +67,8 @@ const counted = async (run) => {
   const { lookups: made, answer } = await counted(() => lone.stat(`${DIR}/missing`));
   assert.equal(answer, null, 'a missing name answers null');
   assert.equal(thrown, 0, 'and no error was made to say so');
-  assert.ok(made <= DEPTH, `and it made ${made} lookups`);
+  // The walk's last step and the stat each ask for the leaf: an absence is not kept.
+  assert.ok(made <= DEPTH + 1, `and it made ${made} lookups`);
   assert.equal(view.statIfPresent(`${DIR.slice(1)}/missing/deeper`), null, 'nor under a missing directory');
   assert.equal(typeof statIfPresent, 'function');
   console.log('  a missing name is an answer, not an error');
