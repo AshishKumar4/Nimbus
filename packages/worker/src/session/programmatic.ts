@@ -154,7 +154,33 @@ async function withShellState<T>(
   const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
     ? options.shellRoot
     : getHome(self);
-  return workspace.withNamedShell(options.shellId, { start: { cwd: root }, persist: !background }, run);
+  return workspace.withNamedShell(options.shellId, { start: { cwd: root }, persist: !background, detach: options.detach }, run);
+}
+
+interface DetachableExec { readonly shellId?: string; readonly controller: AbortController }
+const detachableExecs = new WeakMap<ProgrammaticHost, Map<string, DetachableExec>>();
+
+/** Register before readiness/queueing; even a call waiting for its shell can detach. */
+function openExec(self: ProgrammaticHost, options: SessionExecOptions): { options: SessionExecOptions; close(): void } {
+  if (options.detachId === undefined) return { options, close() {} };
+  const id = parseExecId(options.detachId);
+  let calls = detachableExecs.get(self);
+  if (!calls) detachableExecs.set(self, calls = new Map());
+  if (calls.has(id)) throw new Error(`detachId '${id}' already names a running call`);
+  const call = { shellId: options.shellId, controller: new AbortController() };
+  calls.set(id, call);
+  return {
+    options: { ...options, detach: options.detach ? AbortSignal.any([options.detach, call.controller.signal]) : call.controller.signal },
+    close() { if (calls.get(id) === call) calls.delete(id); if (calls.size === 0) detachableExecs.delete(self); },
+  };
+}
+
+/** Leave ownership of one invocation, not its process or its output. A scoped session can leave only its own shell. */
+export function rpcDetachExec(self: ProgrammaticHost, detachId: string, shellId?: string): SessionResult<'detachExec'> {
+  const call = detachableExecs.get(self)?.get(parseExecId(detachId));
+  if (!call || (shellId !== undefined && call.shellId !== shellId)) return { detached: false };
+  call.controller.abort();
+  return { detached: true };
 }
 
 /**
@@ -355,18 +381,26 @@ export async function rpcExecStream(
 ): Promise<ExecStream> {
   assertAbsoluteExecCwd(options);
   assertExecId(options);
-  await ensureProgrammaticReady(self, options);
+  const invocation = openExec(self, options);
+  options = invocation.options;
+  try {
+    await ensureProgrammaticReady(self, options);
+  } catch (error) {
+    invocation.close();
+    throw error;
+  }
   let writer: ExecStreamWriter | null = null;
   return new Promise<ExecStream>((resolve, reject) => {
     // The exit lands after a named shell's state is saved, so a caller that
     // has read `exit` sees its `cd` on the next call.
-    withShellState(self, options, false, (named) => streamOnShell(self, command, options, named, (started) => {
+    const running = withShellState(self, options, false, (named) => streamOnShell(self, command, options, named, (started) => {
       writer = started;
       resolve(started.stream);
     })).then(
-      (exit) => writer!.end(exit),
-      (error: unknown) => (writer ? writer.fail(error) : reject(error)),
+      (exit) => { invocation.close(); writer!.end(exit); },
+      (error: unknown) => { invocation.close(); return writer ? writer.fail(error) : reject(error); },
     );
+    self.ctx.waitUntil(running);
   });
 }
 

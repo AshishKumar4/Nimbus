@@ -7,7 +7,7 @@ import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
 export function createSqliteDescriptorScope() {
-    return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
+    return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
 }
 /**
  * A description's last close: a buffered mount handle's flush. A flush that

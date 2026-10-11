@@ -642,6 +642,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeOps.frame_set
 #print axioms Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
 #print axioms Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
+#print axioms Nimbus.Vfs.CompositeOps.create_if_absent_reaches_backend
 #print axioms Nimbus.Vfs.CompositeOps.copy_stays_in_target
 #print axioms Nimbus.Vfs.CompositeOps.mount_point_mode
 

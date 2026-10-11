@@ -33,7 +33,8 @@ import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, typ
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { hashSource } from './vendor/serialize.js';
+import { requireFacetTaskSource, type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import {
   beginLoaderFetch,
@@ -65,19 +66,6 @@ function infrastructureSupervisorProps(ctx: DurableObjectState, pid: number, opt
   return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
     ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure' as const, ...egress };
 }
-
-/**
- * A function dispatched into a facet isolate, with the bindings that facet was
- * minted with as its second argument.
- *
- * Declared through a method so the bindings parameter compares BIVARIANTLY: a
- * task body annotates the exact surface it calls (`env.SUPERVISOR` is the
- * embedder's RPC class, which the fabric cannot name), and accepting that
- * narrowing is the whole point of handing the bindings over.
- */
-export type FacetTaskFn<A, R> = {
-  task(args: A, env: FacetBindings): R | Promise<R>;
-}['task'];
 
 /** The one binding a pool needs off whichever env its host hands it. */
 export interface IsolatePoolEnv {
@@ -296,21 +284,8 @@ interface ResolvedResilience {
   retries: number;
 }
 
-/**
- * esbuild runtime helpers re-declared at the top of every generated facet
- * module. esbuild emits `__name(fn, "fn")` wrappers around every named
- * function or arrow-with-binding-name; `fn.toString()` yields a body that
- * references `__name` by bare identifier. The supervisor bundle declares
- * `__name` at its own top level, but the binding does NOT cross isolate
- * boundaries — the facet's worker.js must re-declare it.
- *
- * The shim is bytes-stable so it doesn't perturb the loader-cache key;
- * if esbuild ever emits a new helper we'll see a "<name> is not defined"
- * error in the facet, add it here, and every slot rebuilds.
- */
-const ESBUILD_RUNTIME_SHIM = [
-  'const __defProp = Object.defineProperty;',
-  'const __name = (target, value) => __defProp(target, "name", { value, configurable: true });',
+/** Result ownership shared by guest tasks that call the supervisor. */
+const FACET_RPC_PREAMBLE = [
   'const __nimbusDisposeRpcResult = (value) => {',
   '  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;',
   '  const dispose = value[Symbol.dispose];',
@@ -356,15 +331,7 @@ export function assembleLoaderWorkerModuleSource(
 
   lines.push(
     '',
-    '// ── esbuild runtime shim ──────────────────────────────────',
-    '// When Nimbus is bundled by wrangler/esbuild, our facet function',
-    '// is transformed into `__name(async function …, "…")` at emit',
-    '// time. `fn.toString()` then yields the wrapped function body,',
-    '// but `__name` and its helpers are module-local in the SUPERVISOR',
-    '// bundle and do NOT cross into the facet isolate. Redeclare them',
-    '// here so facet bodies survive the toString() round-trip.',
-    ESBUILD_RUNTIME_SHIM,
-    '// ── End esbuild runtime shim ──────────────────────────────',
+    FACET_RPC_PREAMBLE,
     '',
   );
   if (options.preamble) {
@@ -730,8 +697,7 @@ export class IsolatePool {
     // standard ESM import binding receives the resulting
     // WebAssembly.Module. We expose them on `globalThis.__NIMBUS_WASM`
     // so the user fn can read them at request time without having to
-    // re-import (the user fn is serialized via fn.toString and doesn't
-    // carry import statements).
+    // re-import (task expressions bind only the guest's supplied modules).
     //
     // Per-call entries (passed via IsolateCallOptions.wasmModules
     // — used by the wasm-runner shell command) are appended to the same
@@ -1029,8 +995,8 @@ export class IsolatePool {
     throw named;
   }
 
-  #prepare(fn: Function): { fnSource: string; fnHash: string } {
-    const fnSource = serializeFunction(fn);
+  #prepare<A, R>(fn: FacetTaskSource<A, R>): { fnSource: string; fnHash: string } {
+    const fnSource = requireFacetTaskSource(fn);
     const fnHash = hashSource(fnSource);
     return { fnSource, fnHash };
   }
@@ -1040,7 +1006,7 @@ export class IsolatePool {
    * throws TimeoutError / RetryExhaustedError / ExecutionError.
    */
   async submit<T, R>(
-    fn: FacetTaskFn<T, R>,
+    fn: FacetTaskSource<T, R>,
     arg: T,
     opts?: IsolateCallOptions,
   ): Promise<Awaited<R>> {
@@ -1080,7 +1046,7 @@ export class IsolatePool {
    * decodes its own payload.
    */
   async submitRequest(
-    fn: (request: Request, env: FacetBindings) => Response | Promise<Response>,
+    fn: FacetTaskSource<Request, Response>,
     request: Request,
     opts?: IsolateCallOptions,
   ): Promise<Response> {
@@ -1118,7 +1084,7 @@ export class IsolatePool {
    * Results are returned in input order. Failure handling per `onError`.
    */
   async map<T, R>(
-    fn: FacetTaskFn<T, R>,
+    fn: FacetTaskSource<T, R>,
     items: T[],
     opts?: IsolateMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
@@ -1129,21 +1095,8 @@ export class IsolatePool {
   }
 
   /**
-   * Same shape as `map`, but accepts a pre-serialized function source
-   * string instead of a live function reference. Used by
-   * `Fanout`'s peer-DO leg, where the function was already
-   * serialized on the coordinator side and forwarded over RPC.
-   *
-   * The fnSource MUST be the output of `serializeFunction(fn)`
-   * (typically forwarded directly from a coordinator RPC). Bytes-
-   * stable invariants:
-   *   - `fnHash = hashSource(fnSource)` must be deterministic so
-   *     warm slots are correctly keyed.
-   *   - `fnSource` must NOT reference `this` — same rule as
-   *     `serializeFunction`.
-   *
-   * No fn-validation runs here (it already ran on the coordinator);
-   * the peer trusts the caller to forward a valid serialization.
+   * The peer-DO transport of `map`: the coordinator forwards the task's
+   * already compiled expression. Its exact bytes key the same warm slots.
    */
   async mapSource<T, R>(
     fnSource: string,

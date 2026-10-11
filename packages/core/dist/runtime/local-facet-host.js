@@ -33,6 +33,7 @@
  * through the egress (realm-egress.ts, as the inline `node` does); a
  * WebSocket, which cannot cross, is refused by name.
  */
+import { requireFacetTaskSource } from './facet-task.js';
 import { requireNetwork } from '../_shared/workspace-network.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm } from './realm.js';
@@ -300,7 +301,7 @@ class RealmFacet {
             // Stopped in the turn the modules were ready: not posted.
             if (state.stopped)
                 throw state.stopped;
-            const submit = { type: 'submit', id, source: fn.toString(), args, modules: sent };
+            const submit = { type: 'submit', id, source: requireFacetTaskSource(fn), args, modules: sent };
             const answered = new Promise((resolve) => this.waiting.set(id, resolve));
             if (!realm.post(submit))
                 throw ended(this.spec.tag, 'was submitted arguments that cannot cross to its realm');

@@ -1,4 +1,3 @@
-import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 /**
  * python-repl.ts — the interactive `python` prompt.
@@ -95,17 +94,6 @@ export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'star
     };
     progName: string;
 };
-/**
- * Facet-side, request-shaped: serialized with fn.toString() into the
- * pool's fetch entrypoint, so it captures nothing and names no import —
- * __cpythonReplRun is put on globalThis by the preamble, and unlike
- * __cpythonRun it keeps its interpreter between calls. The request body
- * is the step payload the adapter JSON-encodes; the response is the
- * step result. Request transport because it is the pool's only
- * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
- * interpreter at its suspension point.
- */
-export declare function pythonReplStepRequestFn(request: Request, facetEnv: FacetBindings): Promise<Response>;
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
 /**
  * Pay the interpreter's boot before the user asks for a prompt. Pushing empty

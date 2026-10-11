@@ -156,7 +156,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
           case 'readRange': return view.readRange(step.path, step.offset, step.length);
           case 'copy': return view.copy(step.path, step.to, { recursive: step.recursive });
           case 'statMode': return view.stat(step.path);
-          case 'writeFileIfRevision': return view.writeFileIfRevision(step.path, enc.encode('cas'), 0);
+          case 'writeFileIfRevision': return view.writeFileIfRevision(step.path, enc.encode('cas'), step.expected);
           case 'readFileAtRevision': return view.readFileAtRevision(step.path, 0);
           default: throw new Error(`unknown op ${step.op}`);
         }

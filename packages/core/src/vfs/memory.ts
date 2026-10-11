@@ -42,6 +42,8 @@ function segments(path: string): string[] {
 }
 
 export class MemoryVFS implements VFS {
+  /** VFS.storesWrites: a regular file holds what it was written. */
+  readonly storesWrites = true;
   private readonly root: Entry;
   private clock = 0;
   readonly sync: SyncVFS = this as unknown as SyncVFS;

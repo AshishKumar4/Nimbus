@@ -4,7 +4,8 @@
  * resolver facet (the build bundles this module into its preamble, worker
  * scripts/bundle-facet-workers.mjs), and the shell's fallback npm.
  */
-import npa, { type Result as NpaResult } from 'npm-package-arg';
+import type { Result as NpaResult } from 'npm-package-arg';
+import { npa } from './npm-libs.js';
 
 /** What a spec asks the registry for: the name it installs under, the package and range it fetches, and whether it is an `npm:` alias. */
 export interface RegistryRequest {

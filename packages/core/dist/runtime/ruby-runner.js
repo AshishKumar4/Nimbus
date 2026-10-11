@@ -43,6 +43,7 @@
  *     ruby-init-loadpath, rb-eval-string-protect, cabi_realloc,
  *     canonical_abi_drop_rb-abi-value, memory.
  */
+import { RUBY_CALL_TASK } from './compiled-bodies.generated.js';
 import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -567,32 +568,8 @@ async function dispatchRubyFacet(facets, syscalls, args, image, pid, signal) {
         syscalls,
         preamble: buildRubyPreamble(),
     });
-    const facetFn = async function rubyFacetCall(inArgs, facetEnv) {
-        const fn = Reflect.get(globalThis, '__rubyRun');
-        if (typeof fn !== 'function') {
-            return { exitCode: 127, stdout: '', stderr: '',
-                error: 'ruby-runner preamble missing: __rubyRun not in scope' };
-        }
-        const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-        const supervisor = facetEnv && facetEnv.SUPERVISOR;
-        // Published where __rubyRun re-adopts it after the mount; adopting only
-        // here would be undone by __wasiInitFS.
-        if (supervisor)
-            Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
-        adopt?.(supervisor);
-        return fn({
-            userCode: inArgs.userCode,
-            rbArgv: inArgs.rbArgv,
-            userEnv: inArgs.userEnv,
-            progName: inArgs.progName,
-            binName: inArgs.binName,
-            cwd: inArgs.cwd,
-            cred: inArgs.cred,
-            supervisorPid: inArgs.supervisorPid,
-        });
-    };
     try {
-        const rawResult = await facet.submit(facetFn, { ...toRubyCallArgs(args), supervisorPid: pid }, {
+        const rawResult = await facet.submit(RUBY_CALL_TASK, { ...toRubyCallArgs(args), supervisorPid: pid }, {
             wasmModules: {
                 'ruby+stdlib.wasm': image,
             },

@@ -58,8 +58,8 @@ export interface InnerDoRuntime {
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
  * and answers the class check the main module exports. `main` is the main
- * module's namespace. Self-contained (serialized with toString): it reaches
- * nothing outside itself but its arguments.
+ * module's namespace. Compiled with its dependencies into an adapter expression
+ * at build time; the inner runtime capabilities arrive as arguments.
  */
 export declare function innerDoAdapter(idFromName: (name: string) => string, names: readonly string[], main: object, runtime: InnerDoRuntime): {
     NimbusDurableObjectClasses: unknown;

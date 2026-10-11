@@ -47,38 +47,10 @@ export interface RubyReplDeps {
     /** The command that started the prompt: what its own refusals name. */
     binName: string;
 }
-/** What one prompt step hands the facet: the driver and where the prompt starts. */
-interface RubyReplStep {
-    userCode: string;
-    home: string;
-    cwd: string;
-    binName: string;
-    supervisorPid: number;
-}
-interface RubyReplFacetResult {
-    stdout: string;
-    stderr: string;
-    exitCode: number;
-    error?: string;
-    control?: Record<string, string>;
-}
-/**
- * Facet-side function. Self-contained — serialized via fn.toString();
- * no closure captures, no class refs, no bare 'this' word.
- *
- * Calls globalThis.__rubyRun (installed by RUBY_RUNNER_PREAMBLE_TAIL)
- * with the user code wrapped by the driver above, in the caller's working
- * directory, over the caller's filesystem (the pool's SUPERVISOR), as the
- * one-shot runner's entry does.
- */
-export declare function rubyReplStepFacetFn(args: RubyReplStep, facetEnv: {
-    SUPERVISOR?: unknown;
-}): Promise<RubyReplFacetResult>;
 /**
  * Top-level wrapper: builds a Ruby REPL adapter, drives a ReplSession
  * to completion, returns the exit code. Called from the ruby factory's
  * wrapper in init.ts when `ruby` is invoked with no args.
  */
 export declare function runRubyRepl(deps: RubyReplDeps): Promise<number>;
-export {};
 //# sourceMappingURL=ruby-repl.d.ts.map

@@ -1,10 +1,4 @@
-/**
- * npm-spec.ts — a package spec as npm reads it, with npm's own
- * npm-package-arg, for every npm here: the worker's installer and npx, the
- * resolver facet (the build bundles this module into its preamble, worker
- * scripts/bundle-facet-workers.mjs), and the shell's fallback npm.
- */
-import npa from 'npm-package-arg';
+import { npa } from './npm-libs.js';
 /**
  * The package a command-line spec names and the range it asks for, as npa
  * splits `name[@range]` (`@scope/name@range`, `name@npm:other@range`); the

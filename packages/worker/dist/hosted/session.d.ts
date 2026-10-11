@@ -73,6 +73,9 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         }[];
         startedAt: number;
     }>;
+    _rpcDetachExec(detachId: string): Promise<{
+        detached: boolean;
+    }>;
     _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<{
         command: string;
         exitCode: number;
@@ -85,8 +88,25 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
     _rpcReadFile(path: string, _pid?: undefined, cred?: VfsCred): Promise<string | null>;
     _rpcReadFileBytes(path: string, _pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcWriteFile(path: string, content: string | Uint8Array, _pid?: undefined, cred?: VfsCred): Promise<number>;
-    _rpcStat(path: string, _pid?: undefined, cred?: VfsCred): Promise<any>;
-    _rpcLstat(path: string, _pid?: undefined, cred?: VfsCred): Promise<any>;
+    _rpcStat(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
+        type: string;
+        size: number;
+        mtime: number;
+        mode: number;
+        ctime?: number | undefined;
+        ino?: number | undefined;
+        revision?: number | undefined;
+    } | null>;
+    _rpcLstat(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
+        type: string;
+        size: number;
+        mtime: number;
+        mode: number;
+        ctime?: number | undefined;
+        ino?: number | undefined;
+        revision?: number | undefined;
+    } | null>;
+    _rpcReadlink(path: string, _pid?: undefined, cred?: VfsCred): Promise<string | null>;
     _rpcReaddir(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
         name: string;
         type: string;

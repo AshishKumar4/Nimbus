@@ -2,10 +2,8 @@
  * npm-resolve-preamble.ts — preamble injected into IsolatePool isolates
  * that run src/npm/resolve-facet.ts and src/npm/resolve-one-facet.ts.
  *
- * IsolatePool serialises the user function via fn.toString() and runs
- * it inside a dynamic worker. Names referenced by the function at module
- * scope are NOT in that worker's lexical scope at runtime — they must be
- * re-declared in the preamble.
+ * IsolatePool evaluates a task expression compiled at build time. The
+ * resolver's explicit guest-global policy/semver bindings are supplied here.
  *
  * The resolver facets reference the following preamble symbols:
  *   - SHOULD_SWAP(name)         → swap entry | undefined
@@ -22,7 +20,7 @@
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
  * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`
- * functions are embedded via `fn.toString()`, so the facet decisions are
+ * functions are compiled with their dependencies at build time, so the facet decisions are
  * the supervisor's decisions by construction. The parity unit test
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with the supervisor module.

@@ -25,10 +25,9 @@
  * whole npm policy — supervisor AND facets. Generated dynamic-Worker
  * facets cannot `import` this module, so
  * `src/loaders/npm-resolve-preamble.ts` SERIALIZES the policy object
- * (JSON) plus the `policy*` functions below (`fn.toString()`) into the
- * facet preamble at supervisor module-load time. The `policy*` functions
- * must therefore stay self-contained: parameters and globals only — no
- * references to module-scope bindings. The parity unit test
+ * (JSON) plus the build-time compiled `policy*` functions below into the
+ * facet preamble at supervisor module-load time. The compiler includes each
+ * policy function's lexical dependencies. The parity unit test
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with this module.
  */
@@ -392,8 +391,8 @@ export const PACKAGE_ABI_POLICY: PackageAbiPolicy = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
-// Policy functions — SERIALIZED into facet preambles via fn.toString().
-// Self-contained by contract: parameters and JS globals only.
+// Policy functions — bundled into facet preambles at build time.
+// The compiler follows their imports and lexical bindings.
 // ─────────────────────────────────────────────────────────────────────────
 
 

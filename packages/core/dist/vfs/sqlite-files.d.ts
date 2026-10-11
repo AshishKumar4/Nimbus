@@ -14,6 +14,8 @@ import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRev
 export declare class SqliteFiles implements VFS {
     private readonly engine;
     private readonly view;
+    /** VFS.storesWrites: a regular file holds what it was written. */
+    readonly storesWrites = true;
     readonly sync: SyncVFS;
     /** The database's change feed, in this principal's view (names it could list). */
     readonly changes: VfsChanges;

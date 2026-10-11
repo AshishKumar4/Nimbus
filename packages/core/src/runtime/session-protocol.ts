@@ -43,8 +43,17 @@ export const SessionFileStatSchema = z.object({
   ctime: z.number().optional(),
   mtime: z.number(),
   mode: z.number(),
+  /** Optional when the filesystem backend does not report a stable inode or revision. */
+  ino: z.number().optional(),
+  revision: z.number().optional(),
 });
 export type SessionFileStat = z.infer<typeof SessionFileStatSchema>;
+/** Runtime stat uses zero for unknown metadata; the session wire exposes that as absent. */
+export function sessionFileStatOf(stat: SessionFileStat | null): SessionFileStat | null {
+  if (stat === null) return null;
+  const { ino, revision, ...fields } = stat;
+  return { ...fields, ...(ino === undefined || ino === 0 ? {} : { ino }), ...(revision === undefined || revision === 0 ? {} : { revision }) };
+}
 export const SessionDirectoryEntrySchema = z.object({ name: z.string(), type: z.string() });
 export type SessionDirectoryEntry = z.infer<typeof SessionDirectoryEntrySchema>;
 
@@ -157,12 +166,14 @@ const SessionResultSchemas = {
   bootProbe: z.object({ ok: z.literal(true) }),
   exec: ExecOutputSchema,
   startProcess: SessionStartResultSchema,
+  detachExec: z.object({ detached: z.boolean() }),
   runCode: ExecOutputSchema,
   readFile: z.string().nullable(),
   readFileBytes: FileBytesSchema.nullable(),
   writeFile: z.number(), // The committed filesystem revision, not a byte count.
   stat: SessionFileStatSchema.nullable(),
   lstat: SessionFileStatSchema.nullable(),
+  readlink: z.string().nullable(),
   readdir: z.array(SessionDirectoryEntrySchema),
   rename: z.undefined(),
   chmod: z.undefined(),
@@ -227,6 +238,10 @@ export interface SessionExecOptions extends SessionReadyOptions {
   cred?: VfsCred;
   /** A caller's tag, inherited by descendant processes and reported by ports/apps. */
   execId?: string;
+  /** Invocation identity for _rpcDetachExec, separate from inherited execId attribution. */
+  detachId?: string;
+  /** Colocated only: release a named shell without killing the command; its stream and exit remain live. */
+  detach?: AbortSignal;
   /** startProcess only; spontaneous failures follow this restart policy. */
   restart?: SessionRestartPolicy;
 }
@@ -248,12 +263,14 @@ export interface SessionRpc {
   _rpcReady(options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
   _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>>;
   _rpcStartProcess(command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
+  _rpcDetachExec(detachId: string): Promise<SessionResult<'detachExec'>>;
   _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<SessionResult<'runCode'>>;
   _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFile'>>;
   _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFileBytes'>>;
   _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'writeFile'>>;
   _rpcStat(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'stat'>>;
   _rpcLstat(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'lstat'>>;
+  _rpcReadlink(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readlink'>>;
   _rpcReaddir(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readdir'>>;
   _rpcRename(from: string, to: string, pid?: undefined, cred?: VfsCred): Promise<void>;
   _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;

@@ -28,9 +28,11 @@
  */
 
 import type { RuntimeManifest } from './runtime-manifest.js';
+import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
-import type { Facet, FacetBindings, FacetHost } from './facet-host.js';
+import type { Facet, FacetHost } from './facet-host.js';
+import type { ClangFacetResult } from './facet-tasks.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
@@ -560,15 +562,6 @@ interface ClangToolchain {
   lld: ArrayBuffer;
 }
 
-interface ClangFacetResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  error?: string;
-  /** The toolchain's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
-  fsStats?: ResidentFilesystemStats | null;
-}
-
 async function loadClangToolchain(
   args: {
     clangVfsPath: string;
@@ -596,38 +589,8 @@ async function dispatchClangFacet(
   args: ClangFacetArgs,
   signal: AbortSignal,
 ): Promise<ClangFacetResult> {
-  const facetFn = async function clangFacetCall(
-    inArgs: { primaryName: string; argv: string[]; cred: WasiCred; processPid: number },
-    facetEnv: FacetBindings,
-  ): Promise<ClangFacetResult> {
-    const wasm = Reflect.get(globalThis, '__NIMBUS_WASM') as Record<string, unknown> | undefined;
-    const primaryMod = wasm?.['primary.wasm'];
-    if (!primaryMod) {
-      return {
-        exitCode: 127, stdout: '', stderr: '',
-        error: 'clang-runner: __NIMBUS_WASM missing primary.wasm',
-      };
-    }
-    const fn = Reflect.get(globalThis, '__clangRun') as
-      ((a: unknown) => Promise<ClangFacetResult>) | undefined;
-    if (typeof fn !== 'function') {
-      return {
-        exitCode: 127, stdout: '', stderr: '',
-        error: 'clang-runner preamble missing: __clangRun not in scope',
-      };
-    }
-    return await fn({
-      primaryName: inArgs.primaryName,
-      argv: inArgs.argv,
-      cred: inArgs.cred,
-      primaryMod,
-      supervisor: facetEnv?.SUPERVISOR,
-      processPid: inArgs.processPid,
-    });
-  };
-
   try {
-    const result = await target.facet.submit(facetFn, {
+    const result = await target.facet.submit(CLANG_CALL_TASK, {
       primaryName: target.primaryName,
       argv: args.argv,
       cred: args.cred,

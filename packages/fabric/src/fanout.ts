@@ -26,9 +26,10 @@ import {
   type WorkspaceNetwork,
   type WorkspaceNetworkRef,
 } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { djb2, serializeFunction } from './vendor/serialize.js';
+import { djb2 } from './vendor/serialize.js';
+import { requireFacetTaskSource, type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { BindingError } from './vendor/errors.js';
-import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
+import { IsolatePool } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, type DynamicWorkerClaim } from './budgets.js';
 import { hostRoute, type HostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -272,12 +273,12 @@ export class Fanout {
    * `fn` is the user function executed per task. It runs INSIDE a
    * Worker Loader isolate (in the in-DO path) or inside a peer DO's
    * Worker Loader isolate (in the peer-DO path); same trust posture
-   * as IsolatePool.submit. The function is serialized via
-   * the vendored serializeFunction (same as IsolatePool#prepare).
+   * as IsolatePool.submit. The precompiled task expression is forwarded
+   * unchanged on either route (same as IsolatePool#prepare).
    */
   async submitMany<A, R>(
     tasks: FanoutTask<A>[],
-    fn: FacetTaskFn<A, R>,
+    fn: FacetTaskSource<A, R>,
   ): Promise<R[]> {
     if (tasks.length === 0) return [];
 
@@ -314,7 +315,7 @@ export class Fanout {
 
   private async _dispatchInDo<A, R>(
     tasks: FanoutTask<A>[],
-    fn: FacetTaskFn<A, R>,
+    fn: FacetTaskSource<A, R>,
     claim: DynamicWorkerClaim,
   ): Promise<R[]> {
     // One slot — one Dynamic Worker — per task; submitMany has claimed
@@ -348,7 +349,7 @@ export class Fanout {
 
   private async _dispatchPeerDo<A, R>(
     tasks: FanoutTask<A>[],
-    fn: FacetTaskFn<A, R>,
+    fn: FacetTaskSource<A, R>,
   ): Promise<R[]> {
     // The peer-DO topology routes through the composed host namespace —
     // a workspace host names its own binding, and its stub forwards one
@@ -359,7 +360,7 @@ export class Fanout {
     // Each peer DO receives the same fnSource string; warm peer
     // loader isolates (keyed on fnHash) reuse across calls with
     // identical fns.
-    const fnSource = serializeFunction(fn);
+    const fnSource = requireFacetTaskSource(fn);
 
     // Cap peer count at maxPeers (default MAX_PEER_FANOUT). Tasks beyond
     // it bucket into existing shards; each peer runs its bucket through

@@ -64,7 +64,6 @@ import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
-  installPackagesInFacet,
   type InstallBatchSpec,
   type InstallBatchResult,
 } from './install-batch-facet.js';
@@ -79,12 +78,12 @@ import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
-  resolveOnePackumentInFacet,
   type ResolveOneSpec,
   type ResolveOneResult,
 } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
+import { NPM_INSTALL_BATCH_TASK, NPM_RESOLVE_ONE_TASK } from '../loaders/compiled-bodies.generated.js';
 import {
   buildSliceForSpecifierWithCap,
   type PrebundleSpec,
@@ -852,7 +851,7 @@ export class NpmInstaller {
       try {
         results = await fanoutPool.submitMany<ResolveOneSpec, ResolveOneResult>(
           tasks,
-          resolveOnePackumentInFacet,
+          NPM_RESOLVE_ONE_TASK,
         );
         layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms/${layerRoute.taken?.topology}`);
       } catch (e) {
@@ -1178,7 +1177,7 @@ export class NpmInstaller {
       try {
         shardResults = await fanoutPool.submitMany<InstallBatchSpec, InstallBatchResult>(
           tasks,
-          installPackagesInFacet,
+          NPM_INSTALL_BATCH_TASK,
         );
       } catch (e) {
         const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${batchRoute.taken?.topology})`;

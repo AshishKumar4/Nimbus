@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // isolate-pool-submit-request — the pool's fetch transport is its one
 // cancellable dispatch: the caller's Request (signal included) reaches
 // entrypoint.fetch, an aborted signal bumps the slot generation so the
@@ -62,7 +63,7 @@ const echoFn = async (request) => Response.json(await request.json());
     body: JSON.stringify({ line: 'print(1)' }),
     signal: ctl.signal,
   });
-  const response = await pool.submitRequest(echoFn, request);
+  const response = await pool.submitRequest(facetTaskSource("async (request) => Response.json(await request.json())"), request);
   assert.equal(response.status, 200);
   assert.deepEqual(seen.requests.length, 1, 'one fetch attempt');
   assert.notEqual(seen.requests[0], request,
@@ -91,7 +92,7 @@ const echoFn = async (request) => Response.json(await request.json());
   const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   const ctl = new AbortController();
   const pending = pool.submitRequest(
-    echoFn,
+    facetTaskSource("async (request) => Response.json(await request.json())"),
     new Request('https://facet.internal/step', { method: 'POST', body: 'x', signal: ctl.signal }),
   );
   ctl.abort();
@@ -100,7 +101,7 @@ const echoFn = async (request) => Response.json(await request.json());
   const firstId = seen.ids[0];
   seen.fetchImpl = async () => Response.json({ ok: true });
   await pool.submitRequest(
-    echoFn,
+    facetTaskSource("async (request) => Response.json(await request.json())"),
     new Request('https://facet.internal/step', { method: 'POST', body: 'x' }),
   );
   assert.notEqual(seen.ids[1], firstId,
@@ -124,7 +125,7 @@ const echoFn = async (request) => Response.json(await request.json());
   });
   const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 1 });
   const response = await pool.submitRequest(
-    echoFn,
+    facetTaskSource("async (request) => Response.json(await request.json())"),
     new Request('https://facet.internal/step', { method: 'POST', body: 'x' }),
   );
   assert.equal(response.status, 200);
@@ -139,7 +140,7 @@ const echoFn = async (request) => Response.json(await request.json());
   const request = new Request('https://facet.internal/step', { method: 'POST', body: 'x' });
   await request.text();
   await assert.rejects(
-    pool.submitRequest(echoFn, request),
+    pool.submitRequest(facetTaskSource("async (request) => Response.json(await request.json())"), request),
     /already consumed/,
     'a spent body cannot be re-issued — refuse loudly',
   );
@@ -156,7 +157,7 @@ const echoFn = async (request) => Response.json(await request.json());
   seen.fetchImpl = async () =>
     Response.json({ __nimbusFacetError: 'boom' }, { status: 500 });
   const response = await pool.submitRequest(
-    echoFn,
+    facetTaskSource("async (request) => Response.json(await request.json())"),
     new Request('https://facet.internal/step', { method: 'POST', body: 'x' }),
   );
   assert.equal(response.status, 500);
@@ -190,13 +191,13 @@ const echoFn = async (request) => Response.json(await request.json());
   const request = () => new Request('https://facet.internal/run', { method: 'POST', body: '{}' });
   // A process that writes: its error says what may be lost.
   const writer = new IsolatePool(dying().env, { ...ctx, id: { toString: () => 'unsettled-test-do' } }, { network: ISOLATE_NETWORK, supervisorPid: 77, timeoutMs: 0 });
-  const loud = await writer.submitRequest(echoFn, request()).catch((error) => error);
+  const loud = await writer.submitRequest(facetTaskSource("async (request) => Response.json(await request.json())"), request()).catch((error) => error);
   assert.match(loud.message, /Worker exceeded memory limit/);
   assert.ok(loud.message.includes(UNSETTLED_END_NOTE), loud.message);
   assert.equal(unsettledNoteOf(loud), `${UNSETTLED_END_NOTE}\n`);
   // A pool bound to no process writes nothing: its error is the run's own.
   const pure = new IsolatePool(dying().env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
-  const quiet = await pure.submitRequest(echoFn, request()).catch((error) => error);
+  const quiet = await pure.submitRequest(facetTaskSource("async (request) => Response.json(await request.json())"), request()).catch((error) => error);
   assert.equal(quiet.message.includes(UNSETTLED_END_NOTE), false);
 }
 

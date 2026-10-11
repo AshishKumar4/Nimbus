@@ -2,10 +2,8 @@
  * npm-resolve-preamble.ts — preamble injected into IsolatePool isolates
  * that run src/npm/resolve-facet.ts and src/npm/resolve-one-facet.ts.
  *
- * IsolatePool serialises the user function via fn.toString() and runs
- * it inside a dynamic worker. Names referenced by the function at module
- * scope are NOT in that worker's lexical scope at runtime — they must be
- * re-declared in the preamble.
+ * IsolatePool evaluates a task expression compiled at build time. The
+ * resolver's explicit guest-global policy/semver bindings are supplied here.
  *
  * The resolver facets reference the following preamble symbols:
  *   - SHOULD_SWAP(name)         → swap entry | undefined
@@ -22,7 +20,7 @@
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
  * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`
- * functions are embedded via `fn.toString()`, so the facet decisions are
+ * functions are compiled with their dependencies at build time, so the facet decisions are
  * the supervisor's decisions by construction. The parity unit test
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with the supervisor module.
@@ -40,15 +38,9 @@
 
 import {
   PACKAGE_ABI_POLICY,
-  policyApplyStagedArtifact,
-  policyIsOptionalNativeBinding,
-  policyLookupReject,
-  policyLookupStagedArtifact,
-  policyLookupSwap,
-  policyNativeBinAdvisory,
-  policyNativePlatformReject,
   STAGED_ARTIFACT_BIN_PREFIX,
 } from '../facets/wasm-swap-registry.js';
+import { NPM_ABI_POLICY_SOURCE } from './compiled-bodies.generated.js';
 import { NPM_RESOLVE_NODE_IMPORTS, NPM_RESOLVE_SRC } from '../npm/resolve-libs.generated.js';
 
 export const NPM_RESOLVE_PREAMBLE: string = `
@@ -57,13 +49,15 @@ ${NPM_RESOLVE_NODE_IMPORTS}
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
 // of truth; tests/unit/package-abi-policy.mjs enforces parity.
 const __NIMBUS_PACKAGE_ABI_POLICY = ${JSON.stringify(PACKAGE_ABI_POLICY)};
-const __policyLookupSwap = ${policyLookupSwap.toString()};
-const __policyLookupReject = ${policyLookupReject.toString()};
-const __policyNativePlatformReject = ${policyNativePlatformReject.toString()};
-const __policyNativeBinAdvisory = ${policyNativeBinAdvisory.toString()};
-const __policyLookupStagedArtifact = ${policyLookupStagedArtifact.toString()};
-const __policyApplyStagedArtifact = ${policyApplyStagedArtifact.toString()};
-const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
+const {
+  policyLookupSwap: __policyLookupSwap,
+  policyLookupReject: __policyLookupReject,
+  policyNativePlatformReject: __policyNativePlatformReject,
+  policyNativeBinAdvisory: __policyNativeBinAdvisory,
+  policyLookupStagedArtifact: __policyLookupStagedArtifact,
+  policyApplyStagedArtifact: __policyApplyStagedArtifact,
+  policyIsOptionalNativeBinding: __policyIsOptionalNativeBinding,
+} = ${NPM_ABI_POLICY_SOURCE};
 function SHOULD_SWAP(name) {
   return __policyLookupSwap(__NIMBUS_PACKAGE_ABI_POLICY, name);
 }

@@ -33,7 +33,17 @@ export const SessionFileStatSchema = z.object({
     ctime: z.number().optional(),
     mtime: z.number(),
     mode: z.number(),
+    /** Optional when the filesystem backend does not report a stable inode or revision. */
+    ino: z.number().optional(),
+    revision: z.number().optional(),
 });
+/** Runtime stat uses zero for unknown metadata; the session wire exposes that as absent. */
+export function sessionFileStatOf(stat) {
+    if (stat === null)
+        return null;
+    const { ino, revision, ...fields } = stat;
+    return { ...fields, ...(ino === undefined || ino === 0 ? {} : { ino }), ...(revision === undefined || revision === 0 ? {} : { revision }) };
+}
 export const SessionDirectoryEntrySchema = z.object({ name: z.string(), type: z.string() });
 export const SessionRuntimeSummarySchema = z.object({
     name: z.string(),
@@ -128,12 +138,14 @@ const SessionResultSchemas = {
     bootProbe: z.object({ ok: z.literal(true) }),
     exec: ExecOutputSchema,
     startProcess: SessionStartResultSchema,
+    detachExec: z.object({ detached: z.boolean() }),
     runCode: ExecOutputSchema,
     readFile: z.string().nullable(),
     readFileBytes: FileBytesSchema.nullable(),
     writeFile: z.number(), // The committed filesystem revision, not a byte count.
     stat: SessionFileStatSchema.nullable(),
     lstat: SessionFileStatSchema.nullable(),
+    readlink: z.string().nullable(),
     readdir: z.array(SessionDirectoryEntrySchema),
     rename: z.undefined(),
     chmod: z.undefined(),
