@@ -1272,7 +1272,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     },
     rawSocket() {
       const ask = options.session.published;
-      if (processGone !== null || ask === undefined) return null;
+      if (processGone !== null) return Promise.reject(processGone);
+      if (ask === undefined) return null;
       if (escaped === null) {
         // Its answer is the session's word on what it holds of the process's,
         // this client's waves and what it never saw (its launch's writes) alike.

@@ -75,6 +75,7 @@ const facetSql = () => createSqliteVfsTestHarness().sql;
   for (let i = 0; i < 10000; i++) c.submit(writeFile(`home/user/out/quota${i}`, `${i}\n`), { acknowledged: true });
   assert.equal(journal.entries().length, 10000, 'every returned synchronous write was durable before transport ran');
   await assert.rejects(c.settle(), /Too many subrequests/);
+  await assert.rejects(async () => { await c.rawSocket(); }, /Too many subrequests/, 'a failed invocation cannot bypass the filesystem gate to open a new transport');
   const reopened = sqlJournal(sql);
   assert.equal(reopened.entries().length, 10000, 'quota exhaustion must leave acknowledged writes for a fresh-invocation drain');
   s.fault = null;
