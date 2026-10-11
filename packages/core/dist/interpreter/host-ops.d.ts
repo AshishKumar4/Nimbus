@@ -44,6 +44,8 @@ export interface FunctionRuntime<F, E, R> {
     run(fi: F, env: E): unknown;
     /** Drive a suspending body for one step, restoring the native caller on suspension. */
     step(env: E, it: Generator<unknown, unknown, unknown>, kind: 'next' | 'throw' | 'return', value: unknown): IteratorResult<unknown, unknown>;
+    /** A sync body iterator whose native delegation runs each step in its activation. */
+    generator(fi: F, env: E): Generator<unknown, unknown, unknown>;
     /** Run a base class constructor: fields, then the body. */
     construct(fi: F, scope: E, ctor: Function, record: R, thisArg: object, args: IArguments, newTarget: Function): unknown;
     /** Run a derived class constructor, whose `this` comes from super(). */

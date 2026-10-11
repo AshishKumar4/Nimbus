@@ -47,7 +47,7 @@ function hostOperators(rt) {
   };
 }
 function sloppy(rt) {
-const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, generator: bodyGenerator, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
@@ -74,23 +74,6 @@ async function* drain(env, it, r) {
   }
 }
 drain.prototype = rt.SafeAsyncGeneratorPrototype;
-function* drainSync(env, it, r) {
-  for (;;) {
-    if (r.done) return r.value;
-    let value, ok = true, resumed = false;
-    try { value = yield r.value; resumed = true; }
-    catch (e) { ok = false; value = e; resumed = true; }
-    finally {
-      if (!resumed) {
-        const end = step(env, it, "return", MARK);
-        const result = end.done ? end.value : yield* drainSync(env, it, end);
-        if (result !== MARK) return result;
-      }
-    }
-    r = step(env, it, ok ? "next" : "throw", value);
-  }
-}
-drainSync.prototype = rt.SafeGeneratorPrototype;
 return {
   plain(fi, scope) {
     const f = (0, function () { return call(fi, scope, f, this, arguments, new.target, undefined); });
@@ -108,22 +91,7 @@ return {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
       if (fi.body) return run(fi, env);
-      const it = fi.gen(env);
-      let r = step(env, it, "next", undefined);
-      for (;;) {
-        if (r.done) return finish(fi, r.value);
-        let value, ok = true, resumed = false;
-        try { value = yield r.value; resumed = true; }
-        catch (e) { ok = false; value = e; resumed = true; }
-        finally {
-          if (!resumed) {
-            const end = step(env, it, "return", MARK);
-            const result = end.done ? end.value : yield* drainSync(env, it, end);
-            if (result !== MARK) return finish(fi, result);
-          }
-        }
-        r = step(env, it, ok ? "next" : "throw", value);
-      }
+      return finish(fi, yield* bodyGenerator(fi, env));
     });
     return f;
   },
@@ -203,7 +171,7 @@ return {
 const strict = (function () {
   "use strict";
   return function (rt) {
-const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, generator: bodyGenerator, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
@@ -230,23 +198,6 @@ async function* drain(env, it, r) {
   }
 }
 drain.prototype = rt.SafeAsyncGeneratorPrototype;
-function* drainSync(env, it, r) {
-  for (;;) {
-    if (r.done) return r.value;
-    let value, ok = true, resumed = false;
-    try { value = yield r.value; resumed = true; }
-    catch (e) { ok = false; value = e; resumed = true; }
-    finally {
-      if (!resumed) {
-        const end = step(env, it, "return", MARK);
-        const result = end.done ? end.value : yield* drainSync(env, it, end);
-        if (result !== MARK) return result;
-      }
-    }
-    r = step(env, it, ok ? "next" : "throw", value);
-  }
-}
-drainSync.prototype = rt.SafeGeneratorPrototype;
 return {
   plain(fi, scope) {
     const f = (0, function () { return call(fi, scope, f, this, arguments, new.target, undefined); });
@@ -264,22 +215,7 @@ return {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
       if (fi.body) return run(fi, env);
-      const it = fi.gen(env);
-      let r = step(env, it, "next", undefined);
-      for (;;) {
-        if (r.done) return finish(fi, r.value);
-        let value, ok = true, resumed = false;
-        try { value = yield r.value; resumed = true; }
-        catch (e) { ok = false; value = e; resumed = true; }
-        finally {
-          if (!resumed) {
-            const end = step(env, it, "return", MARK);
-            const result = end.done ? end.value : yield* drainSync(env, it, end);
-            if (result !== MARK) return finish(fi, result);
-          }
-        }
-        r = step(env, it, ok ? "next" : "throw", value);
-      }
+      return finish(fi, yield* bodyGenerator(fi, env));
     });
     return f;
   },

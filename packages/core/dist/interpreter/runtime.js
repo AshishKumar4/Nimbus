@@ -1,4 +1,4 @@
-import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, registerSource, resume, resumeReturning, resumeThrowing, stringOf, symbolDescription, withElement, } from './intrinsics.js';
+import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, reflectSetPrototypeOf, registerSource, resume, resumeReturning, resumeThrowing, stringOf, symbolDescription, withElement, } from './intrinsics.js';
 import { STACK_SLOTS, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The enclosing environment of `env`. */
 export function up(env) {
@@ -201,6 +201,34 @@ function step(env, it, kind, value) {
         popStack(previous);
     }
 }
+// Keep sync delegation V8's own: in particular return(value), yield*'s
+// forwarding and result getters. Only the already existing body iterator's
+// step methods establish the shadow activation; no adapter iterator or
+// generator (and no per-iteration closure) is allocated.
+const generatorFrames = new SafeWeakMap();
+const tracedGeneratorPrototype = objectCreate(SafeGeneratorPrototype);
+const tracedGeneratorMethods = {
+    next(value) {
+        return step(generatorFrames.get(this), this, 'next', value);
+    },
+    throw(value) {
+        return step(generatorFrames.get(this), this, 'throw', value);
+    },
+    return(value) {
+        return step(generatorFrames.get(this), this, 'return', value);
+    },
+};
+defineOrThrow(tracedGeneratorPrototype, 'next', dataDescriptor(tracedGeneratorMethods.next, true, false, true));
+defineOrThrow(tracedGeneratorPrototype, 'throw', dataDescriptor(tracedGeneratorMethods.throw, true, false, true));
+defineOrThrow(tracedGeneratorPrototype, 'return', dataDescriptor(tracedGeneratorMethods.return, true, false, true));
+function generator(fi, env) {
+    if (fi.gen === null)
+        throw new Error('interpreter: a generator without its body');
+    const it = fi.gen(env);
+    generatorFrames.set(it, env);
+    reflectSetPrototypeOf(it, tracedGeneratorPrototype);
+    return it;
+}
 /**
  * One evaluation of a class: what constructing an instance initializes, and
  * the home object of its constructor. Filled in once the class's elements
@@ -247,6 +275,7 @@ const runtime = {
     finish,
     run,
     step,
+    generator,
     construct(fi, scope, ctor, record, thisArg, args, newTarget) {
         if (record.initialize)
             record.initialize(thisArg);

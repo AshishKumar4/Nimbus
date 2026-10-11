@@ -153,14 +153,15 @@ function snapshot(position, above) {
             const named = dataName(fn, 'name', info.unit.isProxy);
             const name = typeof named === 'string' && named !== '' ? named : info.name;
             const constructor = env[at + CONSTRUCTOR] === true;
-            const isMethod = !constructor && receiver !== undefined && receiver !== null && receiver !== globalObject
+            const hasReceiver = receiver !== undefined && receiver !== null && receiver !== globalObject
                 && info.shape !== 'arrow' && info.shape !== 'asyncArrow' && (info.unit.isProxy === null || !info.unit.isProxy(receiver));
+            const isMethod = !constructor && hasReceiver;
             const method = isMethod ? methodName(receiver, fn, name, info.unit.isProxy) : null;
-            const ctor = isMethod ? (typeof receiver === 'function' ? receiver : dataName(receiver, 'constructor', info.unit.isProxy)) : undefined;
+            const ctor = hasReceiver ? (typeof receiver === 'function' ? receiver : dataName(receiver, 'constructor', info.unit.isProxy)) : undefined;
             const typeName = dataName(ctor, 'name', info.unit.isProxy);
             frames[frames.length] = {
                 unit: info.unit, name: name === '' ? null : name, method,
-                type: isMethod ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,
+                type: hasReceiver ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,
                 line: loc[0], column: loc[1], enclosingLine: enclosing[0], enclosingColumn: enclosing[1],
                 constructor, async, top: info.shape === 'module', fn: strict ? undefined : fn, receiver: strict ? undefined : receiver,
             };

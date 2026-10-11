@@ -25,13 +25,13 @@ export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-50991b0d4cb2289d.js";
-export const JS_INTERPRETER_BUILD_ID = "50991b0d4cb2289d";
-export const JS_INTERPRETER_SHA256 = "50991b0d4cb2289ddd2bd5becf46d59d14046ce248a5d4a050ca823f967788c1";
+export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-714a387b2ec2f498.js";
+export const JS_INTERPRETER_BUILD_ID = "714a387b2ec2f498";
+export const JS_INTERPRETER_SHA256 = "714a387b2ec2f498387060d43e34df8175c363687ca60fcdca971a7e107cfd80";
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
-export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-ccbd7d3e4dd7b3d1.js";
-export const JS_INTERPRETER_OPS_BUILD_ID = "ccbd7d3e4dd7b3d1";
-export const JS_INTERPRETER_OPS_SHA256 = "ccbd7d3e4dd7b3d1b5e1b5e42d223c6e4fbbf7e6c51d313d5251696411afecc6";
+export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-32cc78b8a580ed69.js";
+export const JS_INTERPRETER_OPS_BUILD_ID = "32cc78b8a580ed69";
+export const JS_INTERPRETER_OPS_SHA256 = "32cc78b8a580ed69cd7a2a738d584eb7805c1fcb4b43d1298ca60e5551a4c3f3";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-12b4803c53369862.js";
 export const NODE_LIB_BUILD_ID = "12b4803c53369862";
