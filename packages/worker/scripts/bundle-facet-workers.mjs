@@ -296,10 +296,12 @@ async function bundleProcessFsJournalReader() {
 
 /**
  * The git pack layer (src/git/pack/facet.ts) as an IIFE bound to the
- * module-local `__nimbusGitPack`, spliced into the git network facet beside
- * the wave writer. Its node:crypto and node:zlib imports resolve to the
- * facet module's own namespace imports of them (GIT_PACK_NODE_IMPORTS),
- * which an IIFE cannot make itself.
+ * module-local `__nimbusGitPack`: the git network facet's module, whose
+ * worker it exports (network-facet.ts assembleGitNetworkFacetSource). Its
+ * node:crypto and node:zlib imports resolve to the facet module's own
+ * namespace imports of them (GIT_PACK_NODE_IMPORTS), which an IIFE cannot
+ * make itself; its import of cf-git is the facet's module record's,
+ * resolved when it runs (pack/network-worker.ts).
  */
 async function bundleGitPack() {
   const builtins = {

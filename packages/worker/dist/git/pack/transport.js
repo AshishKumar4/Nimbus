@@ -62,7 +62,11 @@ export function retryingGitHttp(base, schedule = RETRY_BACKOFF_MS) {
                 retryReason: (outcome) => !outcome.ok ? 'failed in transit'
                     : TRANSIENT_HTTP_STATUSES.has(outcome.value.statusCode) ? 'HTTP ' + outcome.value.statusCode
                         : null,
-                discard: (response) => response.body?.cancel?.(),
+                // Its web client's body is the response's stream where streams iterate (workerd): cancelled, not left open.
+                discard: (response) => {
+                    if (response.body instanceof ReadableStream)
+                        void response.body.cancel();
+                },
             });
         },
     };

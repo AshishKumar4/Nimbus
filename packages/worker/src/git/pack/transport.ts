@@ -25,6 +25,8 @@
  */
 
 import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
+import type { HttpClient } from '../../../vendor/git-http.generated.js';
+
 
 export const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */
@@ -51,31 +53,13 @@ export function retryDelay(attempt: number, schedule: readonly number[] = RETRY_
   return new Promise((resolve) => setTimeout(resolve, retryDelayMs(schedule, attempt)));
 }
 
-/** cf-git's HTTP client surface (isomorphic-git's GitHttp). */
-export interface GitHttpRequest {
-  url: unknown;
-  method?: string;
-  body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
-  [key: string]: unknown;
-}
-
-export interface GitHttpResponse {
-  statusCode: number;
-  body?: { cancel?: () => unknown } | null;
-  [key: string]: unknown;
-}
-
-export interface GitHttp {
-  request(req: GitHttpRequest): Promise<GitHttpResponse>;
-}
-
 /**
  * cf-git's HTTP client under this policy (a push's: its fetch speaks
  * upload-pack.ts): a GET that fails before its answer, or is answered with a
  * transient status, is tried again; a receive-pack POST is not.
  * `schedule` is for tests.
  */
-export function retryingGitHttp(base: GitHttp, schedule: readonly number[] = RETRY_BACKOFF_MS): GitHttp {
+export function retryingGitHttp(base: HttpClient, schedule: readonly number[] = RETRY_BACKOFF_MS): HttpClient {
   return {
     async request(request) {
       if ((request.method ?? 'GET') !== 'GET') return await base.request(request);
@@ -85,7 +69,10 @@ export function retryingGitHttp(base: GitHttp, schedule: readonly number[] = RET
         retryReason: (outcome) => !outcome.ok ? 'failed in transit'
           : TRANSIENT_HTTP_STATUSES.has(outcome.value.statusCode) ? 'HTTP ' + outcome.value.statusCode
           : null,
-        discard: (response) => response.body?.cancel?.(),
+        // Its web client's body is the response's stream where streams iterate (workerd): cancelled, not left open.
+        discard: (response) => {
+          if (response.body instanceof ReadableStream) void response.body.cancel();
+        },
       });
     },
   };
