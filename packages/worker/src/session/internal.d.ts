@@ -78,7 +78,9 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   routeLoopback(port: number, request: Request): Promise<Response | null>;
   runtimeWorkspace: NimbusWorkspace | null;
   // ── Core session state (always set after first request) ─────────────
-  sqliteFs: SqliteVFS | null;
+  /** The session's filesystem resource (session-filesystem.ts); `sqliteFs` is its engine. */
+  filesystem: import('./session-filesystem.js').SessionFilesystem | null;
+  readonly sqliteFs: SqliteVFS | null;
   kernel: Kernel | null;
   shell: Shell | null;
   shellProcessPid: number | null;
