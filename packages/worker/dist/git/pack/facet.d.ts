@@ -9,14 +9,16 @@
 export { PackStreamProcessor, WORK_BUDGET_UNITS } from './processor.js';
 export type { PackStore, ProcessedObject, PackProcessResult, PackCheckpoint } from './processor.js';
 export { encodeIdxV2, ENTRY_BYTES } from './idx.js';
-export { discover, requestPack, UploadPackError } from './upload-pack.js';
+export { discover, requestPack } from './upload-pack.js';
+export { UploadPackError } from './transport.js';
 export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
 export { graphFiltersPlan, graphFiltersPiece, graphFiltersAssemble, graphFiltersDiscard } from './graph-filters.js';
 export { facetPacks } from './facet-packs.js';
-export { mountWriter, replaceFile, withinDeadline, GitWriteFailure, PhaseDeadlineError, CHECKOUT_FAILED } from './mount-writer.js';
+export { mountWriter, replaceFile, withinDeadline, GitWriteFailure, PhaseDeadlineError, CHECKOUT_FAILED, MOUNT_WAVE_FILE_MAX } from './mount-writer.js';
+export { listRefs, fetchPack, fetchPackResume, pushPack } from './remote.js';
 export { retryingGitHttp } from './transport.js';
 export { networkWorker } from './network-worker.js';
 //# sourceMappingURL=facet.d.ts.map

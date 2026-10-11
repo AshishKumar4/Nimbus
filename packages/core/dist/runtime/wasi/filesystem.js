@@ -497,10 +497,10 @@ export function installAuthorityFilesystem(imports, options) {
         const e = preopen(fd) ?? entry(fd);
         if (e.kind === 'resident')
             fail('ENOTDIR');
-        const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : e.entries ?? fs.readdirHandle(e.handle.id);
+        // The filesystem owns the listing's revision/lease, including on a
+        // rewind (cookie 0). An unversioned copy here would outlive its recall.
+        const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : fs.readdirHandle(e.handle.id);
         return after(list, entries => {
-            if (e.kind === 'authority')
-                e.entries = entries;
             const all = [{ name: '.', type: 'directory' }, { name: '..', type: 'directory' }, ...entries];
             let written = 0;
             for (let i = num(cookie); i < all.length && written < size; i++) {

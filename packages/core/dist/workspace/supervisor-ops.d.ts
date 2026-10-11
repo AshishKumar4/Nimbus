@@ -49,6 +49,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly wsSend: null;
     readonly wsClose: null;
     readonly fsOpen: "once";
+    readonly fsReadDirectories: "once";
     readonly fsRead: null;
     readonly fsWrite: "once";
     readonly fsClose: "once";

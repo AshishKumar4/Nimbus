@@ -8,10 +8,6 @@ export interface AuthorityFd {
     rights: bigint;
     rightsInheriting: bigint;
     fdflags: number;
-    entries?: {
-        name: string;
-        type: string;
-    }[];
 }
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes

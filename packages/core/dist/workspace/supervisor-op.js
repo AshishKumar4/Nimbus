@@ -6,12 +6,9 @@ import { traced } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
+import { RuntimeFsPathSchema as FsPath } from '../runtime/filesystem-path.js';
+import { readDirectoryBatch } from '../runtime/read-directory-batch.js';
 import { supervisorDeliveredOp, supervisorDeliveryAnswer, supervisorJoinedReadOp, SUPERVISOR_DELIVER_OP, } from './supervisor-delivery.js';
-const FsPath = z.union([
-    z.string(),
-    z.object({ directory: z.number().int().nonnegative(), path: z.string(), beneath: z.boolean().optional() }),
-    z.object({ root: z.string(), path: z.string(), beneath: z.literal(true) }),
-]);
 const OpenOptions = z.object({
     read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
     create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
@@ -225,6 +222,7 @@ const NATIVE_OPS = {
     // the store did (SqliteVFS holds none of its appends), so a refusal is that
     // write's, and a delivered write's receipt records its outcome.
     fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
+    fsReadDirectories: (e, t) => readDirectoryBatch(fsFor(e, t), e.args?.[0]),
     fsRead: (e, t) => {
         const length = numberArg(e, 2);
         return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));

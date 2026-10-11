@@ -32,6 +32,8 @@ import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { closeDescriptions, createSqliteDescriptorScope, fsError, modeAllows, reportLost, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
+import { registerDirectoryReadBridge, directoryReadHandleClosed, disposeDirectoryReadScope } from './read-directory-batch.js';
+import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -146,7 +148,10 @@ class GuardedProcessBridge {
     open(path, flags, options) { this.guard(); return this.target.open(path, flags, options); }
     read(handleId, offset, length) { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
     write(handleId, offset, bytes) { this.guard(); return this.target.write(handleId, offset, bytes); }
-    close(handleId) { return this.target.close(handleId); }
+    close(handleId) {
+        this.target.close(handleId);
+        directoryReadHandleClosed(this.scope, handleId);
+    }
     readdir(path, options) { this.guard(); return this.target.readdir(path, options); }
     mkdir(path, options) { this.guard(); return this.target.mkdir(path, options); }
     unlink(path, options) { this.guard(); return this.target.unlink(path, options); }
@@ -553,6 +558,7 @@ export class ProcessFiles {
         this.retireWriter(pid);
         if (!scope || scope.closed)
             return { lost: [] };
+        disposeDirectoryReadScope(scope);
         const lost = [];
         for (const [id, opened] of scope.handles) {
             if ((opened.node.pendingBytes?.() ?? 0) > 0)
@@ -595,6 +601,7 @@ export class ProcessFiles {
     closeScope(scope) {
         if (scope.closed)
             return;
+        disposeDirectoryReadScope(scope);
         const lost = closeDescriptions(scope);
         this.awaitedDescriptors.get(scope)?.opened.clear();
         for (const dispose of scope.subscriptions)
@@ -623,7 +630,16 @@ export class ProcessFiles {
             this.awaitedDescriptors.set(scope, awaited);
         }
         const listing = pid === undefined ? () => undefined : (create) => this.listingOf(pid, create);
-        return new AwaitingProcessBridge(guarded, view, () => this.engine.revision(), cred, awaited, scope, listing, signal);
+        const bridge = new AwaitingProcessBridge(guarded, view, () => this.engine.revision(), cred, awaited, scope, listing, signal);
+        registerDirectoryReadBridge(bridge, scope, async (path) => {
+            const real = await bridge.realpath(path);
+            if (real === '/' || view.composes(real))
+                return null;
+            const route = await view.route(real, { follow: true });
+            const key = normalizeVfsPath(real);
+            return route.point === '/' && route.source !== null && readLeaseCovers(key, true, SESSION_KERNEL_ROOTS) ? key : null;
+        });
+        return bridge;
     }
 }
 /** The kernel's own filesystems: never walked, and never in a process's listing, which is SQLite's and its embedder's. */
