@@ -158,7 +158,10 @@ def genX (S : St) : Gen X := do
   let k ← below 8
   if k < 3 then return .removeRecursive p
   else if k < 4 then return .readRange p
-  else if k < 5 then return (if (← below 2) == 0 then .writeFileIfRevision p ((← below 2) == 0) else .readFileAtRevision p)
+  else if k < 5 then
+    let revisionOp ← below 2
+    let creating ← below 2
+    return (if revisionOp == 0 then .writeFileIfRevision p (creating == 0) else .readFileAtRevision p)
   else if k < 7 then return .copy p (← genPath S) ((← below 3) != 0)
   else return .statMode p
 
