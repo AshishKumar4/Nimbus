@@ -957,12 +957,6 @@ async function npmCi(ctx, deps) {
         return 1;
     }
 }
-/**
- * Install a single npm package globally into the VFS.
- *
- * Called directly by `lifo install` to avoid the shell.execute()
- * round-trip which can silently swallow output and errors.
- */
 // ─── npx ───
 /** Where npx installs what it runs: a project of its own. */
 const NPX_CACHE_PROJECT = '/tmp/.npx-cache';
@@ -1083,6 +1077,11 @@ kernel, deps) {
         return 1;
     };
 }
+/**
+ * Install one package globally, through the install port (the host's, else
+ * the shell's own). Called directly by `lifo install` to avoid the
+ * shell.execute() round-trip, which can silently swallow output and errors.
+ */
 export async function npmInstallGlobal(packageName, ctx, registry, kernel, deps) {
     const startTime = Date.now();
     const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);

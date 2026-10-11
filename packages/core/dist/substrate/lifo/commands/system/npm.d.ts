@@ -79,6 +79,11 @@ export declare function createNpmCommand(registry: CommandRegistry, shellExecute
 export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, 
 /** Its network is the one the npx cache install fetches through. */
 kernel?: Kernel, deps?: NpmCommandDeps): Command;
+/**
+ * Install one package globally, through the install port (the host's, else
+ * the shell's own). Called directly by `lifo install` to avoid the
+ * shell.execute() round-trip, which can silently swallow output and errors.
+ */
 export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number>;
 export {};
 //# sourceMappingURL=npm.d.ts.map
