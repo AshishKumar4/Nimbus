@@ -11,9 +11,10 @@ import { type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
+type EngineDescription = Omit<VfsOpenDescription, 'path'>;
 /** An open file description: what a process's descriptors (dups included) share. Its name is known at once. */
 export type Description = {
-    [K in Exclude<keyof VfsOpenDescription, 'path'>]: Answering<VfsOpenDescription[K]>;
+    [K in keyof EngineDescription]: Answering<EngineDescription[K]>;
 } & {
     path(): string;
     /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
