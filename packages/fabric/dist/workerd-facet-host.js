@@ -319,6 +319,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         if (explicit && !book.live.has(name)) {
             facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
         }
+        params.created?.(name);
         facet = facets.get(name, start);
     }
     catch (error) {
@@ -329,7 +330,6 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     if (explicit)
         book.live.add(name);
     // A journaling process: the session holds its facet's name until its log is drained.
-    params.created?.(name);
     params.journal?.opened(name);
     // The facet's worker is one Dynamic Worker in flight for as long as the
     // process is resident, not only while a call is open: its WebSockets and

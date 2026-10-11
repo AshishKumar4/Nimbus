@@ -1563,8 +1563,7 @@ export function _rpcFanoutExecute(self: RpcHost, fnSource: string, args: unknown
 const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 
 /**
- * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
- * the hosting watch armed through the object's own scheduler.
+ * The PeerHost an object serves its siblings with, using Nimbus's boot specs.
  */
 export function peerHostFor(ctx: DurableObjectState, env: unknown): PeerHost {
   return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema });
