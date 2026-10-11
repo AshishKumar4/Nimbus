@@ -27,7 +27,7 @@ import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
-import { NATIVE_HTTP_IMPORTS } from '../runtime/native-http.js';
+import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -700,7 +700,7 @@ function entryFrameFile(filename, cwd, esModule) {
 function nodeProgramModule(bundleSource, runtime, usesSqlite, stagedBindings, wasmImports) {
     return moduleSource `
 ${bundleSource.imports}
-${NATIVE_HTTP_IMPORTS}
+${NODE_SHIMS_IMPORTS}
 ${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(stagedBindings)}

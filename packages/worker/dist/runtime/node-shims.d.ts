@@ -27,31 +27,10 @@
  */
 /**
  * The shims reach the platform's Node builtins through one provider,
- * `__nativeBuiltin`: the host's `process.getBuiltinModule`, taken before the
- * program's process replaces the global one. What it returns in workerd
- * (probe-verified 2026-05-04 at compat date 2026-04-01, flag `nodejs_compat`):
- *   - node:crypto       — full Node 20 surface
- *   - node:tls          — connect/TLSSocket/createSecureContext/...
- *   - node:async_hooks  — AsyncLocalStorage + AsyncResource + createHook
- *   - node:diagnostics_channel — full surface incl. tracingChannel +
- *                                Channel.runStores (fastify-critical)
- *   - node:repl         — surface stub (start/REPLServer)
- *   - node:vm           — surface stub: classes/constants present BUT every
- *                         code-running method throws ERR_METHOD_NOT_IMPLEMENTED;
- *                         the vm block forwards the surface and answers eval
- *                         through the runtime-code service.
- *   - node:inspector    — Session/console/url surface present; the V8
- *                         debugger isn't attachable in workerd, so a
- *                         constructed Session's connect/post are inert.
- *   - node:zlib         — full surface: every *Sync variant, brotli/zstd,
- *                         crc32, constants, and streaming create* factories
- *                         (probe-verified 2026-08-23).
- *   - node:string_decoder, node:perf_hooks — Node's surfaces (perf_hooks'
- *                         createHistogram and monitorEventLoopDelay throw
- *                         ERR_METHOD_NOT_IMPLEMENTED).
- *   - node:url          — full surface, including the legacy parse/format/
- *                         resolve/resolveObject/Url API (v1.20260926.1).
- * A unit embedding's host (Bun) answers with its own.
+ * `__nativeBuiltin`: the runner's static imports of them (node-shims-imports.ts),
+ * else the host's `process.getBuiltinModule`, taken before the program's
+ * process replaces the global one. A unit embedding's host (Bun) answers with
+ * its own.
  */
 export declare function generateShimsCode(): string;
 //# sourceMappingURL=node-shims.d.ts.map

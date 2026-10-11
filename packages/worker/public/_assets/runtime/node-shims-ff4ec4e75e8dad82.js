@@ -1,8 +1,10 @@
 
-// The platform's own builtins, which every native front below forwards to:
-// the host's process.getBuiltinModule, captured before the program's process
+// The platform's own builtins, which every native front below forwards to: a
+// generated runner's static imports of them (NODE_SHIMS_IMPORTS), else the
+// host's process.getBuiltinModule, captured before the program's process
 // replaces the global one.
-const __nativeBuiltin = globalThis.process.getBuiltinModule.bind(globalThis.process);
+const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined" ? host
+  : (id) => (Object.hasOwn(__nimbusNativeBuiltins, id) ? __nimbusNativeBuiltins[id] : host(id)))(globalThis.process.getBuiltinModule.bind(globalThis.process));
 // What process.exit throws to end the program where it stands; its host
 // catches it as the exit.
 class __ProcessExit extends Error {
@@ -11156,7 +11158,7 @@ Object.defineProperties(__nimbusInspect, {
   });
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
-// module are workerd's own node:url (the provider, generateShimsCode).
+// module are workerd's own node:url (runtime/node-shims-imports.ts).
 // It was imitated here over WHATWG `new URL()`, which throws for the path-only
 // URL every HTTP server receives as `req.url`: `url.parse("/hello.txt")` came
 // back as `{ href }` with no pathname, so node-static stat'ed
