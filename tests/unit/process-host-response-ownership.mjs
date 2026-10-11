@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createFacetWorld, createFacetCtx, createPeerNamespace } from './facet-host-harness.mjs';
-import { createProcessHost } from '../../packages/fabric/src/process-host.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { hostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
@@ -16,7 +16,7 @@ for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'er
   }), { resolveConfig: false });
   const ctx = createFacetCtx(world, mode + ending), env = { LOADER: world.loader };
   if (mode === 'peer') env.NIMBUS_SESSION = createPeerNamespace(world, env).ns;
-  const host = createProcessHost(mode, ctx, env, () => { throw new Error('no disk reads'); });
+  const host = processHostFor(ctx, { ...env, NIMBUS_PROCESS_HOST: mode }, () => { throw new Error('no disk reads'); });
   const process = await host.open({ pid: 11, workerKey: 'body-' + ending, writerId: crypto.randomUUID(), boot });
   await process.started; await turns();
   const remove = hostActivity(ctx).observe(async () => new Response(new ReadableStream({
