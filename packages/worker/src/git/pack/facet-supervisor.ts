@@ -30,7 +30,7 @@ export interface SupervisorStat {
 export type GitFacetSupervisor = Pick<SupervisorRPC,
   | 'stat' | 'lstat' | 'readdir' | 'readFileBytes' | 'fsReadRange' | 'fsReadRangeUncached' | 'readlink'
   | 'fsWriteRange' | 'fsTruncate' | 'rename' | 'unlink' | 'mkdir' | 'fsOpen' | 'fsWrite' | 'fsFstat' | 'fsClose' | 'chmod'
-  | 'hasLegacySymlinkUnder' | 'stdout' | 'writeBatchStream' | 'openWaveWriter'>;
+  | 'stdout' | 'writeBatchStream' | 'openWaveWriter'>;
 
 /** A file larger than this comes back by ranges: an RPC value's structured-clone ceiling. */
 export const WHOLE_FILE_RPC_SAFE_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
@@ -53,7 +53,6 @@ export interface SupervisorRpcCounters {
   writeBatchStream: number;
   readlink: number;
   symlink: number;
-  legacySymlinkSubtree: number;
   stdout: number;
   /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
   fileApi: number;
@@ -63,7 +62,7 @@ export function createSupervisorRpcCounters(): SupervisorRpcCounters {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
     fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
-    legacySymlinkSubtree: 0, stdout: 0, fileApi: 0,
+    stdout: 0, fileApi: 0,
   };
 }
 

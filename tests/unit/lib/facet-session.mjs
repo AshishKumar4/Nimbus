@@ -89,7 +89,6 @@ export async function createFacetSession(work, { realGit = false, asUser = false
     return {
       async stat(path) { try { return bridge.stat(path); } catch { return null; } },
       async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
-      async hasLegacySymlinkUnder() { return false; },
       async readdir(path) { return bridge.readdir(path); },
       async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
       async fsReadRange(path, offset, length) {

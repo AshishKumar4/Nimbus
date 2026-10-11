@@ -7,8 +7,8 @@
 //     is gone when the clone is; no wave passes the W7 path or byte limits;
 //     symlinks share waves; modes, links and gitlinks land as git's do;
 //   - a destination that is not an empty directory (a file, a symlink, a
-//     symlinked or file ancestor, a legacy symlink below it, an existing
-//     repository) is refused before anything is written, and no abort runs;
+//     symlinked or file ancestor, an existing repository) is refused
+//     before anything is written, and no abort runs;
 //   - missing parents are created under the clone's lease before the clone
 //     writes below them; an existing empty root keeps its directory mode;
 //   - an abort removes only a clone whose marker names its job; any other
@@ -33,7 +33,6 @@ import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-ru
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
@@ -136,7 +135,6 @@ export const git = {
   const supervisor = {
     async stat(path) { return bridge.stat(path); },
     async lstat(path) { return bridge.stat(path, { followSymlinks: false }); },
-    async hasLegacySymlinkUnder(path) { return getSymlinkRegistry(rawVfs).hasAtOrBelow(path); },
     async readdir(path) { return bridge.readdir(path); },
     async readFileBytes(path) { return bridge.readFile(path); },
     async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
@@ -272,7 +270,6 @@ export const git = {
     const nonempty = await refuse('/occupied', {
       async lstat(path) { assert.equal(path, 'occupied'); return supervisorStat('directory'); },
       async readdir(path) { assert.equal(path, 'occupied'); return [{ name: 'keep.txt', type: 'file' }]; },
-      async hasLegacySymlinkUnder() { return false; },
     });
     assert.equal(nonempty.supervisorRpc.lstat, 1);
     assert.equal(nonempty.supervisorRpc.readdir, 1);
@@ -286,13 +283,8 @@ export const git = {
     for (const [dir, at] of [['/file-parent/repo', 'file-parent'], ['/file-destination', 'file-destination']]) {
       await refuse(dir, {
         async lstat(path) { assert.equal(path, at); return supervisorStat('file', 4); },
-        async hasLegacySymlinkUnder() { return false; },
       });
     }
-    const legacySymlinks = getSymlinkRegistry(rawVfs);
-    legacySymlinks.set('orphan-root/injected', 'target.txt');
-    await refuse('/orphan-root', supervisor);
-    legacySymlinks.delete('orphan-root/injected');
     await bridge.mkdir('/existing-repo/.git', { recursive: true });
     const existingBytes = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
     await bridge.writeFile('/existing-repo/.git/sentinel', existingBytes);

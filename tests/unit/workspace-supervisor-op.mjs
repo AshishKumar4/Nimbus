@@ -43,7 +43,6 @@ try {
   assert.equal(await op('readlink', `${path}/link`), `${path}/a`);
   assert.equal((await op('lstat', `${path}/link`)).type, 'symlink');
   assert.equal((await op('stat', `${path}/link`)).type, 'file');
-  assert.equal(await op('hasLegacySymlinkUnder', path), false);
   await op('chmod', `${path}/a`, 0o600);
   await op('utimes', `${path}/a`, 100, 200);
   assert.equal((await op('stat', `${path}/a`)).mtime, 200);

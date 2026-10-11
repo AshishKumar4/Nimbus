@@ -21,9 +21,6 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { getSymlinkRegistry, LEGACY_SYMLINK_REGISTRY_PATH } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { memoryStorage } from './lib/do-storage.mjs';
@@ -167,18 +164,6 @@ try {
   raw.releaseExclusiveMutation(lease.owner);
 }
 
-// The legacy symlink registry is frozen while any lease is held, by its
-// name: a write to the name is refused even where the name is a link that
-// resolves outside every held tree.
-{
-  kernel.writeFile('home/user/outside.json', '{}');
-  kernel.symlink('/home/user/outside.json', LEGACY_SYMLINK_REGISTRY_PATH);
-  const lease = raw.acquireExclusiveMutation('home/user/frozen', { includeMissingAncestors: true });
-  assert.throws(() => kernel.writeFile(LEGACY_SYMLINK_REGISTRY_PATH, '{"repo/injected":"target"}'), { code: 'EBUSY' });
-  raw.releaseExclusiveMutation(lease.owner);
-  kernel.unlink(LEGACY_SYMLINK_REGISTRY_PATH);
-}
-
 // A copy in slices is checked again on each one: a lease taken over its
 // destination between two slices stops the rest. A slice is 200 pages of
 // 250 rows, so the source is one row more than a slice.
@@ -189,21 +174,6 @@ try {
   const lease = raw.acquireExclusiveMutation('home/user/copy', { includeMissingAncestors: true });
   await assert.rejects(copying, { code: 'EBUSY' }, 'the copy stops at the lease');
   raw.releaseExclusiveMutation(lease.owner);
-}
-
-// The clone's facet asks whether a legacy symlink sits under its root, by
-// the caller's name. The registry is keyed by storage key, so the question
-// is about the caller's own /tmp: a legacy link under the shared tmp/spoon
-// is not under A's, and one under A's private root is.
-{
-  const processes = new SessionProcessSupervisor();
-  const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
-  const { pid } = processes.spawn('git', ['git'], '/', { cred: A });
-  const asked = (path) => host.supervisorOp({ op: 'hasLegacySymlinkUnder', args: [path], pid });
-  getSymlinkRegistry(raw).set('tmp/shared-clone/link', 'elsewhere');
-  assert.equal(await asked('tmp/shared-clone'), false, 'the shared tree is not the caller\'s /tmp');
-  getSymlinkRegistry(raw).set(`${PRIVATE_ROOT}/own-clone/link`, 'elsewhere');
-  assert.equal(await asked('tmp/own-clone'), true, 'its own private tree is');
 }
 
 console.log('git clone into a confined /tmp: ok');
