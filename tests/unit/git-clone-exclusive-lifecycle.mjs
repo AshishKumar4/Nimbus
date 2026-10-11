@@ -71,6 +71,7 @@ function commandContext(args) {
     env: {},
     stdout: { write() {} },
     stderr: { write() {} },
+    signal: new AbortController().signal,
     // The command's view of the namespace: every path is itself, on the engine (device 1).
     vfs: {
       async realpath(path) { return path; },
