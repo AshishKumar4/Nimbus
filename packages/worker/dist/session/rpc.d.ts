@@ -450,8 +450,7 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     results: unknown[];
 }>;
 /**
- * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
- * the hosting watch armed through the object's own scheduler.
+ * The PeerHost an object serves its siblings with, using Nimbus's boot specs.
  */
 export declare function peerHostFor(ctx: DurableObjectState, env: unknown): PeerHost;
 interface PeerHostRpcHost {

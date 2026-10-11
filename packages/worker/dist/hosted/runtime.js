@@ -146,9 +146,8 @@ class RuntimeOwner {
     }
     _notifySession(line) { this.terminal.write(`${line}\r\n`); }
     /**
-     * What this object serves a sibling coordinator hosting a process on it. Its
-     * hosting watch goes through the embedder's lifecycle: the embedder owns
-     * this object's alarm, and its `onScheduled('hosting-watch')` hands it back.
+     * What this object serves a sibling coordinator; work owns observation,
+     * never an alarm on the embedder's lifecycle.
      */
     get peerHost() {
         return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env);

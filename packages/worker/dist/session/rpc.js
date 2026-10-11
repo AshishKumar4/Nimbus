@@ -1349,8 +1349,7 @@ export function _rpcFanoutExecute(self, fnSource, args, shardOpts) {
 /** The fabric's boot-spec shape, with the staged arm validated as Nimbus's opencode stage. */
 const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 /**
- * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
- * the hosting watch armed through the object's own scheduler.
+ * The PeerHost an object serves its siblings with, using Nimbus's boot specs.
  */
 export function peerHostFor(ctx, env) {
     return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema });

@@ -7,7 +7,7 @@
  *
  *   facet — the process is a named child actor of the user's own session DO.
  *   peer  — the process is a named child actor of a SIBLING session DO, and
- *           the coordinator reaches it over one held-open RPC, which
+ *           the coordinator reaches it over bounded RPC and native fetch, which
  *           `PeerProcessHost` here calls and `PeerHost` (peer-host.ts)
  *           serves.
  *
@@ -50,11 +50,11 @@
  *              parts, both with plain `ReadableStream` bodies that RPC carries
  *              with flow control. A live SSE body still streams; nothing is
  *              buffered.
- *   liveness — the host leg is held open for the process's whole life, which
- *              is also what keeps the hosting DO resident. A peer therefore
- *              never outlives its coordinator: the coordinator dying cancels
- *              the inbound call and the facet dies with it. Nothing in this
- *              fabric arms an alarm, on either substrate.
+ *   liveness — work owns a shared abortable observation. Idle has no watch;
+ *              the next use validates incarnation before admission. The
+ *              coordinator records peer ownership before starting it and
+ *              reconciles that ownership on cold start and explicit close.
+ *              Neither substrate arms a polling alarm.
  *
  * WebSockets are the one thing on that list the RPC path cannot carry at all.
  * A 101 Response owns a live socket, and RPC's Request/Response transport

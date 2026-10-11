@@ -173,9 +173,10 @@ class FacetProcessHost implements ProcessHost {
     // as the facet answers it: a run's own start and stop (a boot waiting on
     // stdin is replayed) are not the host's to judge.
     const loss = new HostLoss(facet.lost);
+    const starting = hostActivity(this.ctx).acquire();
     return {
       ...facet,
-      started: hostActivity(this.ctx).run(() => loss.route(() => facet.started)),
+      started: loss.route(() => facet.started).finally(starting.release),
       lost: loss.signal,
       handleHttpRequest: (request: Request) => loss.route(() => facet.handleHttpRequest(request)),
       handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
@@ -392,7 +393,8 @@ class PeerProcessHost implements ProcessHost {
       }));
       return peerFetchAnswer(response, webSocketCapability);
     }, (error) => loss.lose(error), opened.incarnation);
-    started = hostActivity(this.ctx).run(() => loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload)));
+    const starting = hostActivity(this.ctx).acquire();
+    started = loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload)).finally(starting.release);
     started.catch(() => {});
     } catch (error) {
       stopObserving();

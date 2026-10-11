@@ -82,7 +82,7 @@ export declare const HOSTED_WEBSOCKET_CAPABILITY_HEADER = "x-nimbus-hosted-webso
  */
 export declare function isHostedWebSocket(request: Request): boolean;
 export declare function isHostedWatch(request: Request): boolean;
-/** What the object hosting processes supplies: the two things the fabric cannot know. */
+/** The embedder's boot-spec authority. */
 export interface PeerHostOptions {
     /**
      * The boot-spec schema with the embedder's own stage
@@ -114,22 +114,7 @@ export declare class PeerHost {
     probe(): {
         isolateToken: string;
     };
-    /**
-     * Host a resident process. Held open by the coordinator for the process's
-     * whole life, and it is that held call which keeps this object resident —
-     * the hosting watch is armed to report a reset, never to wake a host back
-     * up. Resolves when the coordinator releases the process; rejects if it
-     * could not be opened at all.
-     *
-     * The runner's start CONTRACT never crosses. The coordinator's fabric decides
-     * from it when the process is over and releases, which cancels this call — so
-     * this leg holds uniformly and has no idea whether it is hosting a TUI or a
-     * server.
-     *
-     * If the coordinator dies, workerd cancels this inbound call, the facet is
-     * released in the `finally` below, and the process dies with it: a hosting
-     * peer never outlives its parent session.
-     */
+    /** Open once and answer. Observation and release are independently owned calls. */
     host(boot: unknown, opts: unknown): Promise<HostedReply<{
         ok: boolean;
         incarnation: string;
@@ -188,9 +173,8 @@ export declare class PeerHost {
     /**
      * Deterministic kill of a hosted process — the same teardown a coordinator
      * applies to a facet of its own, and it does not answer until it has
-     * happened. The facet is released HERE rather than left to the held call's
-     * `finally`, because a caller that has to guess whether the process is really
-     * gone cannot retire the writer identity behind it.
+     * happened: a caller that has to guess whether the process is gone cannot
+     * retire the writer identity behind it.
      */
     cancel(workerKey: string): Promise<{
         cancelled: boolean;
