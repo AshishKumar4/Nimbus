@@ -13,6 +13,7 @@
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 
 /** An inode as a backend reports it. */
 export interface GitFsStat {
@@ -51,28 +52,13 @@ export interface GitFsBackend {
   readlink(path: string, filepath: string): Promise<string>;
 }
 
-type FsErrorCode = 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'ENOTEMPTY' | 'EINVAL' | 'EIO' | 'ELOOP';
-
-const FS_ERRORS: Record<FsErrorCode, [errno: number, message: string]> = {
-  ENOENT: [-2, 'no such file or directory'],
-  ENOTDIR: [-20, 'not a directory'],
-  EISDIR: [-21, 'illegal operation on a directory'],
-  ENOTEMPTY: [-39, 'directory not empty'],
-  EINVAL: [-22, 'invalid argument'],
-  EIO: [-5, 'input/output error'],
-  ELOOP: [-40, 'too many symbolic links encountered'],
-};
-
-/** Node's error for `code` at `filepath`, as `syscall` reports it. */
-export function fsError(code: FsErrorCode, syscall: string, filepath: string, detail?: string): Error & { code: string; errno: number } {
-  const [errno, message] = FS_ERRORS[code];
-  return Object.assign(new Error(`${code}: ${message}, ${syscall} '${filepath}'${detail ? `: ${detail}` : ''}`), { code, errno });
+/** Whether `options` is an options object (`{ encoding: 'utf8' }`), not the bare encoding. */
+function isOptionsObject(options: unknown): options is { encoding?: unknown } {
+  return typeof options === 'object' && options !== null;
 }
 
 function wantsUtf8(options: unknown): boolean {
-  const encoding = typeof options === 'string'
-    ? options
-    : (options as { encoding?: unknown } | null | undefined)?.encoding;
+  const encoding = isOptionsObject(options) ? options.encoding : options;
   return encoding === 'utf8' || encoding === 'utf-8';
 }
 

@@ -15,7 +15,7 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters, type GitNetworkResult } from './network-facet.js';
-import { createGitFs, fsError, type GitFsBackend, type GitFsStat } from './git-fs.js';
+import { createGitFs, type GitFsBackend, type GitFsStat } from './git-fs.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import {
   bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, type CleanupBridge, type CloneJobRecord,
@@ -24,7 +24,7 @@ import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.j
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { fsError, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   DEFAULT_CONTEXT,
