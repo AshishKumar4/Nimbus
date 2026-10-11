@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const ROOT = '/home/user/frames';
 const SOURCE = [
@@ -73,9 +73,10 @@ const FILES = {
 const RUNS = ['adopt.cjs', 'runtime.cjs', 'runtime-cjs.cjs', 'fatal-adopt.cjs', 'fatal-runtime.cjs'];
 function said(text, fatal) {
   if (!fatal) return text.split('\n').filter((line) => /^(FRAMES|SITES|CJS) /.test(line));
-  const arrow = text.match(/(?:file:\/\/)?\/home\/user\/frames\/(?:late\/)?fatal\.mjs:\d+\n[^\n]+\n[ \t]*\^+\n/)?.[0] ?? null;
-  const frames = text.split('\n').filter((line) => line.startsWith('    at ') && /\/fatal\.mjs:/.test(line));
-  return { arrow, frames };
+  // Whole guest stderr, byte for byte except foreign loader/runtime frames,
+  // as node-fatal-report-matches-node-workerd does. Keep every source frame,
+  // arrow, header, version and blank line (including duplicate reports).
+  return text.split('\n').filter((line) => !line.startsWith('    at ') || /\/fatal\.mjs:/.test(line)).join('\n');
 }
 
 const disk = realpathSync(mkdtempSync(join(tmpdir(), 'interpreted-frames-')));
@@ -89,23 +90,33 @@ try {
     const run = spawnSync('node', [script], { cwd: disk, encoding: 'utf8' });
     const text = (run.stdout + run.stderr).replaceAll(disk, ROOT);
     assert.equal(run.status, script.startsWith('fatal-') ? 1 : 0, `Node premise: ${script}: ${text}`);
-    expected[script] = said(text, script.startsWith('fatal-'));
+    expected[script] = said(script.startsWith('fatal-') ? run.stderr.replaceAll(disk, ROOT) : text, script.startsWith('fatal-'));
   }
   assert.equal(expected['adopt.cjs'].length, 19, 'every frame and CallSite fixture ran under Node');
-  assert.ok(expected['fatal-runtime.cjs'].arrow, 'Node prints the module source and arrow for an unhandled rejection');
+  assert.match(expected['fatal-runtime.cjs'], /fatal\.mjs:\d+\n[^\n]+\n[ \t]*\^+\n/, 'Node prints the module source and arrow for an unhandled rejection');
 } finally {
   rmSync(disk, { recursive: true, force: true });
 }
 
 const probe = await startLocalProbe();
 try {
-  const { terminal: t, close: cleanup } = await localTerminal(probe);
+  const { terminal: t, run: command, close: cleanup } = await localTerminal(probe);
   try {
     for (const [rel, text] of Object.entries(FILES)) {
       const path = `${ROOT}/${rel}`;
       await t.run(`mkdir -p ${dirname(path)} && printf '%s' '${Buffer.from(text).toString('base64')}' | base64 -d > ${path}`, 15_000);
     }
     for (const script of RUNS) {
+      if (script.startsWith('fatal-')) {
+        await command(`cd ${ROOT} && node ${script} > frame-out.txt 2> frame-err.txt; echo $? > frame-code.txt`, 120_000);
+        const read = await command(`cd ${ROOT} && node -e "const fs = require('fs'); console.log(JSON.stringify({err:fs.readFileSync('frame-err.txt').toString('base64'),code:fs.readFileSync('frame-code.txt','utf8')}))"`, 60_000);
+        const line = splitScenarioOutput(read.stdout).lines.find((line) => line.startsWith('{'));
+        assert.ok(line, `${script}: read guest fd 2: ${read.stdout}`);
+        const got = JSON.parse(line);
+        assert.equal(Number(got.code.trim()), 1, `${script}: Node's exit code`);
+        assert.equal(said(Buffer.from(got.err, 'base64').toString('utf8'), true), expected[script], `${script}: whole guest stderr is Node's`);
+        continue;
+      }
       const run = await t.run(`cd ${ROOT} && node ${script}; echo "FRAME_STATUS=$?"`, 120_000);
       const text = run.output.replace(/\r/g, '');
       assert.equal(Number(/FRAME_STATUS=(\d+)/.exec(text)?.[1]), script.startsWith('fatal-') ? 1 : 0, `${script}: ${text}`);
