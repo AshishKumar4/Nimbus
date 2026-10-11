@@ -10,7 +10,7 @@
  * git's child, 1).
  */
 
-import type { GitHttp, GitHttpResponse } from './transport.js';
+import type { HttpClient, GitHttpResponse } from '../../../vendor/git-http.generated.js';
 
 /** Why a request to the git server failed. */
 export type RemoteFailure =
@@ -160,7 +160,7 @@ export function remoteFailureOf(error: unknown, http?: ObservedGitHttp): RemoteF
 }
 
 /** cf-git's HTTP client, with the failure of its last request kept (`failureOf`). */
-export interface ObservedGitHttp extends GitHttp {
+export interface ObservedGitHttp extends HttpClient {
   /** What `error` (thrown by cf-git) says failed at the server, or undefined when it is not a server's failure. */
   failureOf(error: unknown): RemoteFailure | undefined;
 }
@@ -176,7 +176,7 @@ async function* replay(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
  * plain text, which cf-git still reads after). cf-git's HttpError for that
  * status, or the transport's own error, is then known for what it is.
  */
-export function observedGitHttp(http: GitHttp): ObservedGitHttp {
+export function observedGitHttp(http: HttpClient): ObservedGitHttp {
   let thrown: { error: unknown; failure: RemoteFailure } | null = null;
   let answered: RemoteFailure & { kind: 'status' } | null = null;
   return {
