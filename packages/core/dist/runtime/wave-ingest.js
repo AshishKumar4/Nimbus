@@ -547,6 +547,47 @@ export class WaveIngest {
             if (call.alone === true || pendingCalls.length >= CALL_GROUP_OPS || pendingCallBytes >= CALL_GROUP_BYTES)
                 flushCalls();
         };
+        // What a routed record is applied with (routeRecord): one per wave.
+        const routing = {
+            get file() { return routedFile; },
+            set file(file) { routedFile = file; },
+            get index() { return recordIndex; },
+            waveId,
+            routes,
+            view: viewEpoch,
+            placeSync,
+            placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
+            reach: options.mountReach,
+            // Right before each call to the backend: the wave is still admitted, and not cancelled.
+            guard: () => {
+                signal.throwIfAborted();
+                options.admit?.();
+            },
+            // Whatever the wave wrote here before the record commits first.
+            settleBefore: async () => {
+                flushCalls();
+                await endLeading();
+                flushDirectories();
+                files.flush();
+                options.admit?.();
+            },
+            reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, signal)),
+            setPhase: (next) => { phase = next; },
+            committed: (receipt, bytes) => {
+                progress.committedGroupSequence++;
+                progress.committedPathCount++;
+                progress.committedOps++;
+                owe(1, bytes);
+                if (receipt !== null)
+                    progress.receipts.push(receipt);
+                // On a mount: the cursor moves once the backend has it, in a transaction of its own.
+                if (sequence !== null && applying !== null) {
+                    const seq = applying;
+                    scope.advanceSequence(sequence.spec.writer, seq);
+                    advanced(seq);
+                }
+            },
+        };
         try {
             if (sequence !== null) {
                 const opened = scope.openSequence(sequence.spec);
@@ -630,46 +671,7 @@ export class WaveIngest {
                         applying = seq;
                     }
                 }
-                if (router !== null && !landsHere(record) && await this.routeRecord(record, router, scope, {
-                    get file() { return routedFile; },
-                    set file(file) { routedFile = file; },
-                    index: recordIndex,
-                    waveId,
-                    routes,
-                    view: viewEpoch,
-                    placeSync,
-                    placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
-                    reach: options.mountReach,
-                    // Right before each call to the backend: the wave is still admitted, and not cancelled.
-                    guard: () => {
-                        signal.throwIfAborted();
-                        options.admit?.();
-                    },
-                    // Whatever the wave wrote here before the record commits first.
-                    settleBefore: async () => {
-                        flushCalls();
-                        await endLeading();
-                        flushDirectories();
-                        files.flush();
-                        options.admit?.();
-                    },
-                    reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, signal)),
-                    setPhase: (next) => { phase = next; },
-                    committed: (receipt, bytes) => {
-                        progress.committedGroupSequence++;
-                        progress.committedPathCount++;
-                        progress.committedOps++;
-                        owe(1, bytes);
-                        if (receipt !== null)
-                            progress.receipts.push(receipt);
-                        // On a mount: the cursor moves once the backend has it, in a transaction of its own.
-                        if (sequence !== null && applying !== null) {
-                            const seq = applying;
-                            scope.advanceSequence(sequence.spec.writer, seq);
-                            advanced(seq);
-                        }
-                    },
-                }))
+                if (router !== null && !landsHere(record) && await this.routeRecord(record, router, scope, routing))
                     continue;
                 // Only removals and directories are held in the leading phase: anything
                 // else that lands here ends it first (a routed record ends it in settleBefore).
