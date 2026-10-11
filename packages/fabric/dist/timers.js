@@ -105,7 +105,6 @@ export class Timers {
                 // dispatch no longer drops it.
                 let written;
                 if (!(reason in map) || whenMs < map[reason] || host._timerFiring?.get(reason) === map[reason]) {
-                    host._timerFiring?.delete(reason);
                     map[reason] = whenMs;
                     written = ctx.storage.put(TIMER_REASONS_KEY, map);
                 }
@@ -116,6 +115,8 @@ export class Timers {
                 const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
                 // Joined: either failing is the one failure, and neither is left unhandled.
                 await Promise.all([written, armed]);
+                if (written !== undefined)
+                    host._timerFiring?.delete(reason);
                 return true;
             }
             catch (e) {
@@ -243,9 +244,9 @@ async function dispatchBody(host, ctx, epoch, handlers, onLegacyAlarm, alarmInfo
         if (!current())
             return;
         await link(host, async () => {
+            const stored = (await ctx.storage.get(TIMER_REASONS_KEY));
             if (!current())
                 return;
-            const stored = (await ctx.storage.get(TIMER_REASONS_KEY));
             const map = { ...(stored || {}) };
             for (const reason of fired.keys())
                 delete map[reason];
