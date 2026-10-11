@@ -167,6 +167,12 @@ export function innerDoAdapter(
     jurisdiction(): DurableObjectNamespace { return this; }
   }
 
+  // These are observable platform type names (including serialization
+  // diagnostics), not compiler-private identifiers. State them explicitly
+  // so the compiled adapter preserves the native namespace/id contract.
+  Object.defineProperty(DurableObjectNamespace, 'name', { value: 'DurableObjectNamespace', configurable: true });
+  Object.defineProperty(DurableObjectId, 'name', { value: 'DurableObjectId', configurable: true });
+
   for (const name of names) {
     const remote: unknown = Reflect.get(runtime.env, name);
     if (isRemote(remote)) Reflect.set(runtime.env, name, new DurableObjectNamespace(remote));

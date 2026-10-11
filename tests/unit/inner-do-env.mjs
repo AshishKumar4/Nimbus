@@ -56,11 +56,13 @@ assert.equal(env.GREETING, 'hi');
 assert.equal(env.OTHER, other);
 assert.equal('ABSENT' in env, false, 'a name the env has no binding for is left alone');
 assert.deepEqual(Object.keys(env.P), [], 'a namespace has no own enumerable properties');
+assert.equal(env.P.constructor.name, 'DurableObjectNamespace', 'the compiled guest keeps the public platform type name');
 
 // Ids and stubs answer at once.
 const id = env.P.idFromName('x');
 assert.equal(id.toString(), innerDoIdFromName('x'));
 assert.equal(id.name, 'x');
+assert.equal(id.constructor.name, 'DurableObjectId');
 assert.ok(env.P.idFromString(id.toString()).equals(id));
 assert.match(env.P.newUniqueId().toString(), /^uniq:[0-9a-f]{32}$/);
 const stub = env.P.get(id);

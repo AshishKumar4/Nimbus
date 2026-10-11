@@ -23,9 +23,11 @@ try {
   symlinkSync(join(repo, 'packages/core/node_modules'), join(root, 'package/node_modules'));
   const source = `import { DurableObject } from 'cloudflare:workers';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { createNpmCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 export class Workspace extends DurableObject {
   async fetch() {
     const workspace = await NimbusWorkspace.create({ sql: this.ctx.storage.sql, transactions: this.ctx, generation: 1 });
+    workspace.registry.register('npm', createNpmCommand(workspace.registry, undefined, workspace.kernel));
     const result = await workspace.exec('npm --version');
     return Response.json(result);
   }
