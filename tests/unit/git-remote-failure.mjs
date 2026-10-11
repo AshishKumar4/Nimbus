@@ -144,10 +144,13 @@ try {
   {
     const hostRepo = join(work, 'host-repo-1');
     const repo = '/home/user/repo-1';
+    const differences = [];
     const compare = async (label, args) => {
       const h = await realGit(hostRepo, args);
       const o = await session.git(repo, args);
-      assert.deepEqual([o.code, fatal(o.stderr, false)], [h.code, fatal(h.stderr, false)], `${label}: git's ${h.stderr}; ours ${o.stderr}`);
+      const expected = [h.code, fatal(h.stderr, false)];
+      const actual = [o.code, fatal(o.stderr, false)];
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) differences.push({ label, actual, expected, stderr: o.stderr });
     };
     for (const args of [['fetch', 'origin'], ['pull', 'origin', 'main'], ['push', 'origin', 'main']]) {
       await compare(`-c destination for ${args[0]}`, ['-c', `remote.origin.url=${base}/forbidden.git`, ...args]);
@@ -164,6 +167,7 @@ try {
     await compare('pushurl-only remote', ['push', 'upload', 'main']);
     await compare('pushurl preferred over fetch URL', ['push', 'origin', 'main']);
     await compare('command-line pushurl preferred over stored pushurl', ['-c', `remote.origin.pushurl=${base}/missing.git`, 'push', 'origin', 'main']);
+    assert.deepEqual(differences, [], 'remote destination and reported failure agree with host git for every operation');
     console.log('  ok  each effective fetch/pull/push destination crosses the facet and appears in its error');
   }
 
