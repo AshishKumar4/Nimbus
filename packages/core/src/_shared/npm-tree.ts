@@ -219,7 +219,7 @@ export function projectRoots(
     for (const [name, range] of Object.entries(manifest?.devDependencies ?? {})) roots.set(name, { name, range });
   }
   for (const { name, range, saveType } of named) {
-    roots.set(name, { name, range: range ?? '', optional: saveType === 'optional', explicit: true });
+    roots.set(name, { name, range: range ?? 'latest', optional: saveType === 'optional', explicit: true });
   }
   return [...roots.values()];
 }
@@ -425,14 +425,14 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     (dependents.get(name) ?? []).filter((edge) => nearest(edge.from, name)?.at === at);
 
   /** Keep the installed copy at `at`: it is part of the tree now, and its edges are walked. */
-  const keep = (at: string, next: TreeEdge[]) => {
+  const keep = (at: string, onward: (edges: readonly TreeEdge[]) => void) => {
     const candidate = candidates.get(at);
     if (!candidate) return;
     candidates.delete(at);
     nodes.set(at, { at, planned: false, pkg: candidate });
     const edges = manifestEdges(candidate, at);
     index(edges);
-    next.push(...edges);
+    onward(edges);
   };
 
   type Place = { kind: 'keep'; at: string } | { kind: 'place'; at: string } | { kind: 'conflict' };
@@ -476,10 +476,20 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     return found;
   };
 
-  let queue = [...rootEdges];
-  while (queue.length > 0) {
+  // A required root of the project's own: its peers conflicting with the project's own dependency are npm's ERESOLVE.
+  const requiredRoots = new Set(rootEdges.filter(({ optional }) => !optional).map(({ name }) => name));
+  /**
+   * Settle `queue`'s edges: each met as it is, or resolved and placed. Edges
+   * of what is placed or kept go to `next`, but required peers, which go to
+   * `peers`: a package's peers are placed with it, before the next layer
+   * (npm's peer set).
+   */
+  const settle = async (queue: TreeEdge[], next: TreeEdge[], peers: TreeEdge[]) => {
+    const onward = (edges: readonly TreeEdge[]) => {
+      for (const edge of edges) (edge.kind === 'peer' ? peers : next).push(edge);
+    };
     queue.sort(npmOrder);
-    // What is installed where this layer's edges look, read once.
+    // What is installed where these edges look, read once.
     const unprobed = [...new Set(queue.flatMap((edge) => visiblePlacements(edge.from, edge.name)))]
       .filter((at) => !probed.has(at) && !nodes.has(at));
     for (const at of unprobed) probed.add(at);
@@ -491,23 +501,12 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
       });
     }
 
-    // Edges met as they are, peers met by a copy at another version, and
-    // what is left to resolve: each request once.
-    const next: TreeEdge[] = [];
+    // Edges met as they are, and what is left to resolve: each request once.
     const toPlace: TreeEdge[] = [];
     for (const edge of queue) {
       const seen = edge.explicit ? null : nearest(edge.from, edge.name);
       if (seen && meets(seen.pkg.version, edge)) {
-        keep(seen.at, next);
-        continue;
-      }
-      if (seen?.kept && edge.kind === 'peer') {
-        // The project's own dependency is npm's ERESOLVE; another's, npm's warning.
-        if (seen.at === edge.name && rootNames.has(edge.name) && !options.allowPeerConflicts) {
-          fail(edge, `ERESOLVE: ${edge.from} needs peer ${edge.name}@${edge.range}, and the project depends on ${edge.name}@${seen.pkg.version}`, false);
-        } else {
-          await host.peerMismatch?.(edge, seen.at, seen.pkg.version);
-        }
+        keep(seen.at, onward);
         continue;
       }
       toPlace.push(edge);
@@ -519,7 +518,7 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     }
 
     for (const edge of toPlace) {
-      // An edge before it in this layer may have placed what meets it.
+      // An edge before it may have placed what meets it.
       const seen = edge.explicit ? null : nearest(edge.from, edge.name);
       if (seen?.kept && meets(seen.pkg.version, edge)) continue;
       const answer = resolutions.get(requestKey(edge)) ?? { failed: 'the resolver returned no answer' };
@@ -527,14 +526,34 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
       if ('refused' in answer) { fail(edge, answer.refused, true); continue; }
       if ('omitted' in answer) { omitted.add(requestKey(edge)); continue; }
       const { package: pkg } = answer;
-      const place = placeFor(edge, pkg);
+      let place: Place;
+      if (edge.kind === 'peer' && seen?.kept) {
+        // A peer met by a copy at another version: the copy its range
+        // resolves to replaces that one where everything relying on it takes
+        // it too (build-ideal-tree's #loadPeerSet). Otherwise the conflict is
+        // npm's ERESOLVE when it is the project's own (a required root's
+        // peer against what the project depends on), and else its warning.
+        if (reliersOn(seen.at, edge.name).every((e) => meets(pkg.version, e))) {
+          place = { kind: 'place', at: seen.at };
+        } else {
+          const mine = parentPlacement(edge.from) === '' && requiredRoots.has(edge.from) && seen.at === edge.name && rootNames.has(edge.name);
+          if (mine && !options.allowPeerConflicts) {
+            fail(edge, `ERESOLVE: ${edge.from} needs peer ${edge.name}@${edge.range}, and the project depends on ${edge.name}@${seen.pkg.version}`, false);
+          } else {
+            await host.peerMismatch?.(edge, seen.at, seen.pkg.version);
+          }
+          continue;
+        }
+      } else {
+        place = placeFor(edge, pkg);
+      }
       if (place.kind === 'conflict') {
         if (edge.kind === 'peer' && seen) await host.peerMismatch?.(edge, seen.at, seen.pkg.version);
         else fail(edge, `${edge.name}@${edge.range} from ${edge.from || 'the project'} has no place: every copy it would replace or shadow is needed`, false);
         continue;
       }
       if (place.kind === 'keep') {
-        keep(place.at, next);
+        keep(place.at, onward);
         continue;
       }
       if (depthOf(place.at) > MAX_NEST_DEPTH) {
@@ -548,7 +567,16 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
       if (answer.skipIfOptional !== undefined) whenOptional.set(place.at, answer.skipIfOptional);
       const edges = manifestEdges(pkg, place.at);
       index(edges);
-      next.push(...edges);
+      onward(edges);
+    }
+  };
+
+  for (let queue: TreeEdge[] = [...rootEdges]; queue.length > 0;) {
+    const next: TreeEdge[] = [];
+    for (let peers: TreeEdge[] = queue; peers.length > 0;) {
+      const pending = peers;
+      peers = [];
+      await settle(pending, next, peers);
     }
     queue = next;
   }
@@ -673,22 +701,20 @@ export function holdTree(namespace: object, canonical: string, signal?: AbortSig
     held.set(canonical, []);
     return release;
   }
-  const { promise, resolve, reject } = Promise.withResolvers<() => void>();
-  const admit = () => {
-    signal?.removeEventListener('abort', abandon);
-    resolve(release);
-  };
-  const abandon = () => {
-    const at = waiting.indexOf(admit);
-    if (at >= 0) waiting.splice(at, 1);
-    reject(signal?.reason);
-  };
-  if (signal?.aborted) abandon();
-  else {
+  return new Promise<() => void>((resolve, reject) => {
+    const admit = () => {
+      signal?.removeEventListener('abort', abandon);
+      resolve(release);
+    };
+    const abandon = () => {
+      const at = waiting.indexOf(admit);
+      if (at >= 0) waiting.splice(at, 1);
+      reject(signal?.reason);
+    };
+    if (signal?.aborted) return abandon();
     signal?.addEventListener('abort', abandon, { once: true });
     waiting.push(admit);
-  }
-  return promise;
+  });
 }
 
 /**

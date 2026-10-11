@@ -1233,7 +1233,7 @@ export function createNpxCommand(
 		// Everything after the spec is passthrough args
 		passthrough.push(...rawArgs.slice(i + 1));
 
-		const { name: parsedName, range: version } = splitPackageSpec(explicitPkg || spec);
+		const { name: parsedName } = splitPackageSpec(explicitPkg || spec);
 		// The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
 		const binName = explicitPkg ? spec : parsedName.split('/').pop()!;
 

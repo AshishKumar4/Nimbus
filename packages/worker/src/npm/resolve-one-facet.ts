@@ -47,8 +47,8 @@
  *   6. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
- *      events, packumentBytesDecoded, packumentSource, error?}.
+ *   7. Return {pkg, cacheWrites, messages, events, packumentBytesDecoded,
+ *      packumentSource, error?, nativeExecutable?}.
  */
 
 import type { ResolvedPackage } from './resolver.js';
@@ -102,9 +102,6 @@ export interface ResolveOneSpec {
    * the best version that satisfies range.
    */
   cachedEntries: RegistryCacheEntry[];
-  /** X.5-G G1: this spec came from an optionalDependencies edge, so
-   *  platform-native bindings silent-skip rather than failing the parent. */
-  isOptional: boolean;
   /** Per-fetch timeout (ms). Default 15_000. */
   fetchTimeoutMs: number;
   /** Retries for transient failures. Default 3. */
@@ -114,15 +111,8 @@ export interface ResolveOneSpec {
 }
 
 export interface ResolveOneResult {
-  /** Resolved package, or null if a registry policy filtered it out. */
+  /** Resolved package (its edges are the plan's next layer), or null with `error`. */
   pkg: ResolvedPackage | null;
-  /**
-   * Edge sets that the supervisor uses to build layer N+1.
-   * Empty when pkg === null.
-   */
-  deps: Record<string, string>;
-  peerDeps: Record<string, string>;
-  optionalDeps: Record<string, string>;
   /**
    * Cache writes the task is asking the supervisor to flush. Includes
    * the resolved version + up to 5 recent versions seen in the
@@ -138,7 +128,7 @@ export interface ResolveOneResult {
    * the supervisor's facetCounters.
    */
   packumentBytesDecoded: number;
-  packumentSource: 'cache-hit' | 'r2-cache' | 'network' | 'skipped';
+  packumentSource: 'cache-hit' | 'r2-cache' | 'network';
   /**
    * Round trip of the packument read as this task observed it. Reported
    * verbatim in the supervisor's `npm http fetch` line, so it must stay a
@@ -161,11 +151,16 @@ export interface ResolveOneResult {
    */
   cacheStatEvents?: Array<CacheStatEvent & { cacheKind: 'packument' }>;
   /**
+   * The package has a native executable the policy names: it installs, with
+   * an advisory, where the plan finds it required, and is left out where
+   * the plan finds it optional (the installer decides, over the whole graph).
+   */
+  nativeExecutable?: { from: string; reason: string; suggest?: string };
+  /**
    * Why this task produced no package.
    *
-   * `w6-reject` is a registry-policy verdict: the supervisor either
-   * propagates it as a hard install failure or silent-skips it on a
-   * best-effort optional-peer path.
+   * `w6-reject` is a registry-policy verdict: a refusal, which fails a
+   * required placement and leaves an optional one out.
    *
    * `unresolved` is a resolution FAILURE — the registry said no, the
    * fetch never succeeded, or the packument carried no usable version.
@@ -173,9 +168,6 @@ export interface ResolveOneResult {
    * deliberate policy skip: without it both arrive as `pkg: null` and a
    * required dependency (plus its whole subtree) disappears from the
    * install while the command still reports success.
-   *
-   * A null `pkg` with no `error` means a deliberate skip, and those
-   * always carry `packumentSource: 'skipped'`.
    */
   error?:
     | { type: 'w6-reject'; from: string; reason: string; suggest?: string }
@@ -232,11 +224,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     bytes: number,
     source: ResolveOneResult['packumentSource'],
     error?: ResolveOneResult['error'],
+    nativeExecutable?: ResolveOneResult['nativeExecutable'],
   ): ResolveOneResult => ({
     pkg,
-    deps: pkg?.dependencies ?? {},
-    peerDeps: pkg?.peerDependencies ?? {},
-    optionalDeps: ((pkg as any)?.optionalDependencies as Record<string, string>) ?? {},
     cacheWrites,
     messages,
     events,
@@ -245,6 +235,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     packumentElapsedMs,
     cacheStatEvents,
     error,
+    nativeExecutable,
   });
   // npm parity: a table reject or a native-executable bin is a package
   // with no Workers-compatible build — real npm still installs it. The
@@ -272,31 +263,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       suggest: `${staged.from}@${newest}`,
     });
   };
-  const outNativeExecutableReject = (
+  // A native-executable bin is no failure (the package's JS tree installs);
+  // only an os/cpu/libc allowlist refuses it (EBADPLATFORM parity).
+  const outNativeExecutable = (
     pkg: ResolvedPackage,
     bytes: number,
     source: ResolveOneResult['packumentSource'],
   ): ResolveOneResult | null => {
     const reject = NATIVE_EXECUTABLE_REJECT(pkg);
     if (!reject) return null;
-    if (spec.isOptional) {
-      messages.push(`[npm] [skip] ${spec.name} — ${reject.reason}`);
-      events.push({
-        type: 'transitive-skip',
-        from: spec.name,
-        reason: reject.reason,
-      });
-      return out(null, bytes, 'skipped');
-    }
-    // Only an os/cpu/libc allowlist fails the install (EBADPLATFORM
-    // parity); a native-executable bin is advisory — the package's JS
-    // tree installs and the reason is reported as an advisory.
     // @ts-ignore — preamble.
     const platformReject = NATIVE_PLATFORM_REJECT(pkg);
-    if (!platformReject) {
-      emitAdvisory(reject);
-      return null;
-    }
+    if (!platformReject) return out(pkg, bytes, source, undefined, { from: reject.from, reason: reject.reason, suggest: reject.suggest });
     events.push({
       type: 'reject',
       from: platformReject.from,
@@ -598,8 +576,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   };
   const pkg = versionToResolved(vData);
   adviseStagedBindingVersion(pkg);
-  const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
-  if (nativeReject) return nativeReject;
+  const native = outNativeExecutable(pkg, bytes, packumentSource);
+  if (native?.pkg === null) return native;
 
   // 5. Stage cache writes.
   cacheWrites.push(registryRecord(pkg, Date.now()));
@@ -618,5 +596,5 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     } catch { /* skip malformed */ }
   }
 
-  return out(pkg, bytes, packumentSource);
+  return native ?? out(pkg, bytes, packumentSource);
 };

@@ -4,7 +4,7 @@
  * npm that ships with node) against a local registry, the worker's resolver
  * walk (NpmInstaller over a fake fanout), and the shell's fallback npm (lifo
  * commands/system/npm.ts) against the same registry. The two engines share
- * one placement rule (core _shared/npm-placement.ts); each tree here must
+ * one placement rule (core _shared/npm-tree.ts); each tree here must
  * give npm's placements and versions:
  *   - a version conflict, nested under the dependent the root copy fails;
  *   - a cycle through the nested copy (c@2 needs d, d needs c@2), which
@@ -246,7 +246,7 @@ try {
     const resultFor = (name, spec) => {
       const versions = REGISTRY[name] ?? {};
       const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
-      const empty = { deps: {}, peerDeps: {}, optionalDeps: {}, cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
+      const empty = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
       if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
       const fields = REGISTRY[name][version];
       const pkg = {
@@ -254,7 +254,7 @@ try {
         dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, optionalDependencies: fields.optionalDependencies,
         exports: null, main: 'index.js', module: '', bin: {},
       };
-      return { ...empty, pkg, deps: pkg.dependencies, peerDeps: pkg.peerDependencies ?? {}, optionalDeps: pkg.optionalDependencies ?? {}, cacheWrites: [registryRecord(pkg, Date.now())] };
+      return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
     };
     const harness = createSqliteVfsTestHarness(new Database(':memory:'));
     const vfs = new SqliteVFS(harness.sql, harness.ctx);
