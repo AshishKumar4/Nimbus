@@ -25,7 +25,6 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
@@ -608,7 +607,6 @@ try {
     SUPERVISOR: {
       stat: async (path) => bridge.stat(path),
       lstat: async (path) => bridge.stat(path, { followSymlinks: false }),
-      hasLegacySymlinkUnder: async (path) => getSymlinkRegistry(vfs).hasAtOrBelow(path),
       readdir: async (path) => bridge.readdir(path),
       readFileBytes: async (path) => bridge.readFile(path),
       readlink: async (path) => bridge.readlink(path),

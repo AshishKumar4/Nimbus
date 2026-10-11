@@ -14,7 +14,6 @@ import {
   MAX_TX_LOGICAL_ROWS,
   SQL_MAX_BOUND_PARAMETERS,
 } from '../../packages/platform/src/limits.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 
@@ -237,9 +236,9 @@ const CRED_OTHER = Object.freeze({
   assert.equal(reloadedVfs.exists('links/renamed.txt'), false);
 }
 
-// ── symlinks: intermediate components, loops, and legacy read fallback ──
+// ── symlinks: intermediate components, loops, and a link's `..` ──
 {
-  const { rawVfs, vfs, bridge } = makeBridge();
+  const { vfs, bridge } = makeBridge();
   await bridge.writeFile('/real/dir/file.txt', 'through-directory-link');
   await bridge.symlink('../real/dir', '/links/dir');
   assert.equal(
@@ -259,50 +258,42 @@ const CRED_OTHER = Object.freeze({
   await assert.rejects(async () => bridge.stat('/loop/one'), { code: 'ELOOP' }, 'a link loop is ELOOP, as stat(2) says');
   assert.equal(await bridge.readFile('/loop/one'), null);
 
-  getSymlinkRegistry(rawVfs).set('/legacy/link.txt', '/real/dir/file.txt');
-  assert.equal(
-    dec.decode(await bridge.readFile('/legacy/link.txt')),
-    'through-directory-link',
-    'pre-native registry entries remain readable during compatibility migration',
-  );
-  assert.equal((await bridge.stat('/legacy/link.txt', { followSymlinks: false })).mode, 0o120777);
-  // A registry target's `..` comes after the link before it, as in the kernel:
+  // A target's `..` comes after the link before it, as in the kernel:
   // /links/dir is /real/dir, so /links/dir/../side.txt is /real/side.txt.
   await bridge.writeFile('/real/side.txt', 'physical');
   await bridge.writeFile('/links/side.txt', 'lexical');
-  getSymlinkRegistry(rawVfs).set('/legacy/up.txt', '/links/dir/../side.txt');
-  assert.equal(dec.decode(await bridge.readFile('/legacy/up.txt')), 'physical');
+  await bridge.symlink('/links/dir/../side.txt', '/links/up.txt');
+  assert.equal(dec.decode(await bridge.readFile('/links/up.txt')), 'physical');
 
-  getSymlinkRegistry(rawVfs).set('/legacy/shadowed.txt', '/real/dir/file.txt');
-  vfs.mkdir('legacy', { recursive: true });
-  vfs.writeFile('legacy/shadowed.txt', 'native-wins');
-  assert.equal(
-    dec.decode(await bridge.readFile('/legacy/shadowed.txt')),
-    'native-wins',
-    'native inodes take precedence over stale legacy registry entries',
-  );
+  await bridge.writeFile('/links/source.txt', 'kept');
+  await assert.rejects(async () => bridge.rename('/links/missing-source', '/links/source.txt'), { code: 'ENOENT' });
+  assert.equal(dec.decode(await bridge.readFile('/links/source.txt')), 'kept');
+  await bridge.symlink('/real/dir/file.txt', '/links/source-link');
+  await bridge.rename('/links/source-link', '/links/source.txt');
+  assert.equal(vfs.readlink('links/source.txt'), '/real/dir/file.txt', 'a link renamed over a file replaces it');
+}
 
-  const registry = getSymlinkRegistry(rawVfs);
-  registry.set('/legacy/destination-link', '/real/dir/file.txt');
-  await assert.rejects(
-    async () => bridge.rename('/legacy/missing-source', '/legacy/destination-link'),
-    /ENOENT/,
-  );
-  assert.equal(registry.readlink('/legacy/destination-link'), '/real/dir/file.txt');
-
-  registry.set('/legacy/source-link', '/real/dir/file.txt');
-  vfs.writeFile('legacy/native-destination', 'replace-me');
-  await bridge.rename('/legacy/source-link', '/legacy/native-destination');
-  assert.equal(vfs.lstat('legacy/native-destination').type, 'symlink');
-  assert.equal(vfs.readlink('legacy/native-destination'), '/real/dir/file.txt');
-  assert.equal(registry.readlink('/legacy/source-link'), null);
-
-  vfs.writeFile('legacy/native-source', 'replacement');
-  registry.set('/legacy/shadowed-destination', '/real/dir/file.txt');
-  vfs.writeFile('legacy/shadowed-destination', 'old-native');
-  await bridge.rename('/legacy/native-source', '/legacy/shadowed-destination');
-  assert.equal(vfs.readFileString('legacy/shadowed-destination'), 'replacement');
-  assert.equal(registry.readlink('/legacy/shadowed-destination'), null);
+// ── A root /.nimbus-symlinks.json is an ordinary file: it names no links ──
+{
+  const { rawVfs, vfs, bridge } = makeBridge();
+  await bridge.writeFile('/real/dir/file.txt', 'target');
+  await bridge.mkdir('/legacy');
+  const registry = JSON.stringify({ 'legacy/link.txt': '/real/dir/file.txt' });
+  await bridge.writeFile('/.nimbus-symlinks.json', registry);
+  assert.equal(dec.decode(await bridge.readFile('/.nimbus-symlinks.json')), registry);
+  assert.equal(await bridge.readFile('/legacy/link.txt'), null);
+  assert.equal(await bridge.stat('/legacy/link.txt', { followSymlinks: false }), null);
+  assert.equal(await bridge.readlink('/legacy/link.txt'), null);
+  assert.deepEqual(await bridge.readdir('/legacy'), []);
+  await assert.rejects(async () => bridge.unlink('/legacy/link.txt'), { code: 'ENOENT' });
+  await bridge.symlink('/real/dir/file.txt', '/legacy/link.txt');
+  assert.equal(dec.decode(await bridge.readFile('/legacy/link.txt')), 'target');
+  // A lease elsewhere does not hold it.
+  const lease = rawVfs.acquireExclusiveMutation('home/user/held', { includeMissingAncestors: true });
+  vfs.writeFile('.nimbus-symlinks.json', '{}');
+  rawVfs.releaseExclusiveMutation(lease.owner);
+  await bridge.unlink('/.nimbus-symlinks.json');
+  assert.equal(vfs.exists('.nimbus-symlinks.json'), false);
 }
 
 console.log('runtime-fs-bridge-range: all assertions passed');

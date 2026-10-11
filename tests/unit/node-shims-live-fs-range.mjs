@@ -11,7 +11,6 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
@@ -85,11 +84,6 @@ assert.equal(liveLink.isSymbolicLink(), true);
 assert.equal(liveLink.mode, 0o120777);
 await assert.rejects(async () => bridge.symlink('live.bin', '/home/user/live.bin'), /EEXIST/);
 assert.equal(new TextDecoder().decode(vfs.readFile('home/user/live.bin')), '0123456789abcdef');
-
-vfs.mkdir('home/user/legacy-over-directory');
-getSymlinkRegistry(rawVfs).set('home/user/legacy-over-directory', 'live.bin');
-const legacyLstat = await bridge.stat('/home/user/legacy-over-directory', { followSymlinks: false });
-assert.equal(legacyLstat.type, 'directory');
 
 // open 'r' + positional FileHandle.read over live ranges
 {

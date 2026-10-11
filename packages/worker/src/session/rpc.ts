@@ -72,7 +72,6 @@ import {
 } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CredentialedVfs, SqliteVFS, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
-import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {

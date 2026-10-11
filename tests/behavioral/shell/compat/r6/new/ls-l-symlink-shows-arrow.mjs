@@ -2,12 +2,10 @@
 // shell/compat/r6/new/ls-l-symlink-shows-arrow — SHELL-R6-B4.
 //
 // Pre-fix: `ls -l` after `ln -s t.txt l.txt` showed ONLY t.txt
-// because lifo-sh's ls uses vfs.readdirStat which doesn't know about
-// our SymlinkRegistry sidecar.
+// because lifo-sh's ls had no symlink concept.
 //
-// Post-fix: our mkLs reads the dir AND merges SymlinkRegistry entries
-// whose link path is in this dir; long format prints `lrwxrwxrwx ...
-// link -> target`.
+// Post-fix: our mkLs lists every entry of the dir, links included; long
+// format prints `lrwxrwxrwx ... link -> target`.
 
 import { mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 

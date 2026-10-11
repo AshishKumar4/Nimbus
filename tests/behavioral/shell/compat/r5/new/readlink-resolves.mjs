@@ -4,7 +4,7 @@
 // Pre-fix: `readlink` was either missing or always reported "not a
 // symlink" (since ln -s did a copy, no symlink existed).
 // Post-fix:
-//   - `readlink LINK` → prints the target stored in SymlinkRegistry.
+//   - `readlink LINK` → prints the link's stored target.
 //   - exit 1 + no output for non-symlink paths.
 //   - `readlink -f LINK` → resolves chain to canonical absolute path.
 

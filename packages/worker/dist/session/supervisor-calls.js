@@ -284,9 +284,6 @@ export function supervisorCalls(base) {
         async lstat(path) {
             return this._call(this._fsRead('lstat', [path]));
         }
-        async hasLegacySymlinkUnder(path) {
-            return this._call(this._fsRead('hasLegacySymlinkUnder', [path]));
-        }
         async utimes(path, atimeMs, mtimeMs) {
             return this._call(this._fsMutation('utimes', [path, atimeMs, mtimeMs]));
         }

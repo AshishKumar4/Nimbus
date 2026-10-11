@@ -92,24 +92,36 @@ function attachSeedChunks(entry) {
 
 /**
  * Strip the embedded models.dev catalog literal from the ModelsDev chunk for
- * the ATTACH build. The ~2.8 MB literal lives inside an Effect thunk
- * (`g=e.sync(()=>({...}))`) that only `ModelsDev.populate` — server-side code
- * the attach TUI client never runs — would evaluate; models reach the client
- * from the opencode server's API. Carrying the literal costs the attach
- * facet ~3 MB of retained source plus parse work at boot, which matters on
- * memory-tight placed machines (#35). The thunk body becomes a fail-loud
- * throw, so an unforeseen client-side evaluation surfaces as a clear error,
- * never silent empty data. Anchor-matched against the staged build; if the
- * shape changes in a future opencode, the literal is KEPT (correctness over
+ * the ATTACH build. The multi-MB literal lives inside an Effect thunk that only
+ * `ModelsDev.populate` — server-side code the attach TUI client never runs —
+ * would evaluate; models reach the client from the opencode server's API.
+ * Carrying the literal costs the attach facet that much retained source plus
+ * parse work at boot, which matters on memory-tight placed machines (#35). The
+ * thunk body becomes a fail-loud throw, so an unforeseen client-side evaluation
+ * surfaces as a clear error, never silent empty data.
+ *
+ * Two minified shapes are accepted, because upstream writes the value as
+ * `typeof OPENCODE_MODELS_DEV === "undefined" ? undefined : OPENCODE_MODELS_DEV`
+ * (core/src/models-dev.ts) and bundlers differ on whether they fold that guard
+ * away once the define substitutes the literal:
+ *   sync(()=>({…}))                     folded — one copy of the catalog
+ *   sync(()=>typeof{…}>"u"?void 0:{…})  unfolded — two copies
+ * Identifier renaming is tolerated too (the local binding and the Effect
+ * namespace alias change whenever the chunk graph changes). If the shape itself
+ * changes in a future opencode, the literal is KEPT (correctness over
  * optimization) with a loud build warning.
  */
 function stripEmbeddedModelsCatalog(pack) {
-  const ANCHOR = ',a=e.fn("ModelsDev.fetchAndWrite")';
-  const OPEN = '=e.sync(()=>({';
+  const ANCHOR_RE = /,[A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\.fn\("ModelsDev\.fetchAndWrite"\)/;
   for (const [name, src] of Object.entries(pack)) {
-    const end = src.indexOf(ANCHOR);
-    if (end < 0) continue;
-    const start = src.lastIndexOf(OPEN, end);
+    const anchor = ANCHOR_RE.exec(src);
+    if (!anchor) continue;
+    const end = anchor.index;
+    const effect = anchor[1];
+    const start = Math.max(
+      src.lastIndexOf(`=${effect}.sync(()=>({`, end),
+      src.lastIndexOf(`=${effect}.sync(()=>typeof{`, end),
+    );
     if (start < 0 || end - start < 1024 * 1024) {
       console.warn(
         `[build-opencode-attach-entry] WARNING: ModelsDev anchor found in ${name} but the ` +
@@ -118,7 +130,7 @@ function stripEmbeddedModelsCatalog(pack) {
       return pack;
     }
     const replacement =
-      '=e.sync(()=>{throw new Error("Nimbus attach entry: the embedded models.dev catalog ' +
+      `=${effect}.sync(()=>{throw new Error("Nimbus attach entry: the embedded models.dev catalog ` +
       'is stripped from the attach client (models come from the opencode server API); ' +
       'client-side ModelsDev.populate is not expected to run")})';
     const stripped = src.slice(0, start) + replacement + src.slice(end);

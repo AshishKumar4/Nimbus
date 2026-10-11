@@ -142,33 +142,35 @@ export declare const OPENTUI_RENDERER_TRACKER = "RendererTracker";
  */
 export declare const OPENTUI_RESIZE_BRIDGE_SRC: string;
 /**
- * In-isolate Web Worker polyfill for the opencode TUI client/server split.
+ * In-isolate Web Worker polyfill for OpenTUI's syntax-highlight parser.
  *
- * opencode's TUI (the bare `opencode` process) is a CLIENT that spawns its API
- * SERVER as `new Worker("./worker.js", {env})` and talks to it over birpc
- * (cli/cmd/tui/worker.ts). OpenTUI's syntax-highlight tree-sitter parser
- * likewise runs in `new Worker("./parser.worker.js")`. On a real platform each
- * is a separate OS thread / V8 isolate; on workerd there is one isolate per
- * facet and no real `Worker` global (node-shims stubs worker_threads.Worker as
- * a no-op), so `client.call(...)` hangs forever before the renderer mounts.
+ * OpenTUI runs its tree-sitter parser as `new Worker("./parser.worker.js")`. On
+ * a real platform that is a separate OS thread / V8 isolate; on workerd there is
+ * one isolate per facet and no real `Worker` global (node-shims stubs
+ * worker_threads.Worker as a no-op), so the parser's first message would hang
+ * forever. This polyfill runs the parser module in the client's isolate,
+ * cooperating over an in-memory channel. `new Worker(file, opts)`:
  *
- * This polyfill runs BOTH the client and the worker module in the same isolate,
- * cooperating over an in-memory MessageChannel. `new Worker(file, opts)`:
- *
- *   1. Maps the worker `file` (`./worker.js` / `./parser.worker.js`) to its
- *      staged module-map specifier.
- *   2. Builds a worker-side context (the `__nimbusWorker` the worker bundle's
+ *   1. Maps the worker `file` to its staged module-map specifier.
+ *   2. Builds a worker-side context (the `__nimbusWorker` the parser bundle's
  *      build-time banner claims via globalThis.__nimbusWorkerClaim) carrying
  *      the worker's own `postMessage` (→ the Worker instance's message
  *      listeners) and `onmessage` (← messages the client posts). `self` members
  *      other than messaging fall through to globalThis.
  *   3. Parks that context for the claim, then dynamically imports the staged
- *      worker module — running its top-level (Rpc.listen / OTUI parser setup),
- *      which installs `context.onmessage`.
+ *      parser module — running its top-level, which installs `context.onmessage`.
  *   4. Bridges the two directions: the Worker instance's postMessage delivers to
  *      the worker context's onmessage; the worker's postMessage delivers to the
  *      instance's message listeners. Messages sent before the worker installs
  *      its handler are buffered and flushed on install.
+ *
+ * opencode's own API-server worker (upstream `cli/cmd/tui/worker.ts`) is not
+ * part of this. A Nimbus TUI attaches over HTTP to a dedicated `opencode serve`
+ * facet, so no supported path — serve, attach, explicit attach, or a one-shot
+ * subcommand — spawns it; it is neither built nor staged. Naming it is a
+ * fail-loud sentinel (see __nimbusWorkerSpecifier): it means the default command
+ * regressed to upstream's local-worker shape, whose split chunk graph also kills
+ * the production workerd process when imported into a live facet (defect #20).
  *
  * The Worker instance exposes the EventEmitter + DOM surface opencode uses:
  * `onmessage`, `onerror`, `postMessage`, `terminate`, and `on/once/off/

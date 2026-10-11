@@ -75,7 +75,6 @@ import {
   type CreditLease,
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
-import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
 import { RecallRequired, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
@@ -540,7 +539,7 @@ export interface CredentialedVfs {
   /**
    * The key storage holds `path` under for this credential: a confined
    * caller's /tmp/x is var/agents/<p>/tmp/x. For state kept by storage key
-   * rather than by name, such as the legacy symlink registry. It is not a
+   * rather than by name, such as exclusive mutation leases. It is not a
    * name the caller uses, so it is never reported back to one.
    */
   storageKey(path: string): string;
@@ -4788,13 +4787,6 @@ export class SqliteVFS {
     const normalized = normalizeVfsPath(key);
     // Another owner's lease first (EBUSY), whoever asks; then a lease
     // holder's own root (EPERM), which bounds where its work may land.
-    if (owner === null &&
-        normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
-        this.exclusiveMutationLeases.size > 0) {
-      // A session-wide hold that says why says it here too.
-      const global = [...this.exclusiveMutationLeases.values()].find((lease) => lease.root === '');
-      return { code: 'EBUSY', detail: global?.reason ?? 'locked while an exclusive mutation is active' };
-    }
     for (const [holder, lease] of this.exclusiveMutationLeases) {
       const { root } = lease;
       if (!this.mutationMeets(lease, normalized) || holder === owner) continue;

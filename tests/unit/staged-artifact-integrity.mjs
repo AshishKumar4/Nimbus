@@ -186,7 +186,7 @@ try {
 
   // Every file fetchAsset can be asked for is pinned — the entry bundle
   // included, which OPENCODE_ARTIFACT_FILES omits.
-  for (const file of ['index.js', 'index-attach.js', 'chunks.json', 'worker.js', 'parser.worker.js']) {
+  for (const file of ['index.js', 'index-attach.js', 'chunks.json', 'parser.worker.js']) {
     assert.ok(
       Object.prototype.hasOwnProperty.call(OPENCODE_ARTIFACT_DIGESTS, file),
       `OPENCODE_ARTIFACT_DIGESTS is missing ${file}`,
