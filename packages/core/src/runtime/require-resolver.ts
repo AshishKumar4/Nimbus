@@ -643,9 +643,17 @@ export async function prefetchForRequire(
     return resolved === null ? null : { resolved };
   }
 
-  /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
+  /**
+   * The file a dynamic import from `fromDir` loads, or null (a builtin, a
+   * data: URL, or an error the loader reports): each once per directory, as
+   * the walk resolves from the directory (resolveImportWith).
+   */
+  const importsFrom = new Map<string, Promise<string | null>>();
   async function resolveDynamicImport(specifier: string, fromDir: string): Promise<string | null> {
-    return await resolveImportWith(esm, specifier, fromDir);
+    const key = fromDir + '\0' + specifier;
+    let resolved = importsFrom.get(key);
+    if (resolved === undefined) importsFrom.set(key, resolved = resolveImportWith(esm, specifier, fromDir));
+    return await resolved;
   }
 
   /**
@@ -802,14 +810,32 @@ function isFacetProvided(id: string): boolean {
 function walkEsmResolver(
   vfs: RequireFs, progress: WalkProgress | undefined, readText: (path: string) => Promise<string | null>, conditions: readonly string[],
 ) {
+  // Each question once: the walk reads one snapshot, and its imports ask
+  // the same paths again (each node_modules up the tree, each scope).
+  const kinds = new Map<string, Promise<'file' | 'directory' | null>>();
+  const reals = new Map<string, Promise<string>>();
   return createEsmResolver({
-    async kind(path) {
+    kind(path) {
       const key = stripLeadingSlashes(path);
-      if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
-      if (!(await vfs.exists(key))) return null;
-      return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+      let known = kinds.get(key);
+      if (known === undefined) {
+        known = (async () => {
+          if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
+          if (!(await vfs.exists(key))) return null;
+          return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+        })();
+        kinds.set(key, known);
+      }
+      return known;
     },
-    realpath: async (path) => vfs.realpath ? '/' + stripLeadingSlashes(await vfs.realpath(stripLeadingSlashes(path))) : path,
+    realpath(path) {
+      let known = reals.get(path);
+      if (known === undefined) {
+        known = (async () => vfs.realpath ? '/' + stripLeadingSlashes(await vfs.realpath(stripLeadingSlashes(path))) : path)();
+        reals.set(path, known);
+      }
+      return known;
+    },
     readText,
     isBuiltin: (specifier) => isFacetProvided(specifier),
     async cjsResolve(specifier, parentPath) {

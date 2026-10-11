@@ -136,7 +136,7 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
 
   const codeOf = (error: unknown): unknown =>
     error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  const filePath = (url: URL | string): string => decodeURIComponent(new URL(String(url)).pathname);
+  const filePath = (url: URL | string): string => decodeURIComponent((typeof url === 'string' ? new URL(url) : url).pathname);
   const fileUrl = (path: string): URL => {
     const url = new URL('file://');
     url.pathname = path;
@@ -161,9 +161,20 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     type: 'module' | 'commonjs' | 'none';
   }
 
+  // Each package.json once, as Node's package_json_reader holds them for the
+  // process: a graph's modules share their scopes, and asked them again per
+  // import (a launch over pi's 1074 modules). One that does not parse is read
+  // again, its refusal naming each import.
+  const packageConfigs = new Map<string, PackageConfig>();
   function* readPackageConfig(pjsonPath: string, specifier: string, base: string | undefined): Step<PackageConfig> {
+    const known = packageConfigs.get(pjsonPath);
+    if (known !== undefined) return known;
     const text = (yield* ask.kind(pjsonPath)) === 'file' ? yield* ask.readText(pjsonPath) : null;
-    if (text === null) return { exists: false, pjsonPath, type: 'none' };
+    if (text === null) {
+      const absent: PackageConfig = { exists: false, pjsonPath, type: 'none' };
+      packageConfigs.set(pjsonPath, absent);
+      return absent;
+    }
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(text);
@@ -177,6 +188,7 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
       );
     }
     const config: PackageConfig = { exists: true, pjsonPath, type: 'none' };
+    packageConfigs.set(pjsonPath, config);
     if (parsed === null || typeof parsed !== 'object') return config;
     if (typeof parsed.name === 'string') config.name = parsed.name;
     if (typeof parsed.main === 'string') config.main = parsed.main;
