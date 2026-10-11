@@ -143,7 +143,13 @@ const HELPER = 'export const helper = true;';
   // reads the row it left and re-drives the launch from the image store.
   const gen2 = createInstance(session, 2, 'redrive');
   await gen2.manager.pumpResidentLaunches();
-  for (let i = 0; i < 400 && gen2.world.configs.size === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  const redriven = () => {
+    const rows = [...session.storage.keys()].filter((key) => key.startsWith('resident-launch:'));
+    const pid = rows.length === 1 ? Number(rows[0].slice('resident-launch:'.length)) : 0;
+    return pid > 2 * PID_GEN_STRIDE && gen2.processes.get(pid)?.state === 'running';
+  };
+  for (let i = 0; i < 400 && !redriven(); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(redriven(), 'the evaluated runner booted and the journal handed off to its new pid');
 
   assert.equal(gen2.notices.length, 1, 'the user is told once');
   assert.match(gen2.notices[0], /restarted while "durable app" was running — restarting it/);
