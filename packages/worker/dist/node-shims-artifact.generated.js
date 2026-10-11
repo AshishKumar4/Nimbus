@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-02bde2d1c833d8d6.js";
-export const NODE_SHIMS_BUILD_ID = "02bde2d1c833d8d6";
-export const NODE_SHIMS_SHA256 = "02bde2d1c833d8d603b8c6e6366d7d7d704b948df6a64ae90ae9d321e38fa3f7";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-ffc7cf2501de0e61.js";
+export const NODE_SHIMS_BUILD_ID = "ffc7cf2501de0e61";
+export const NODE_SHIMS_SHA256 = "ffc7cf2501de0e61cab5630cf61a5819034196c3635b0f7d1d2bd7c708619b9e";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-676daf190edbf75d.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "676daf190edbf75d";
@@ -25,9 +25,9 @@ export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-e7ad570ea5196125.js";
-export const JS_INTERPRETER_BUILD_ID = "e7ad570ea5196125";
-export const JS_INTERPRETER_SHA256 = "e7ad570ea51961253bb017c9f64f7216d06b56fb38545fbaa358239a552596f6";
+export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-1747f9450f364147.js";
+export const JS_INTERPRETER_BUILD_ID = "1747f9450f364147";
+export const JS_INTERPRETER_SHA256 = "1747f9450f36414751aa9a7e27e42592ffa18efed084d72da35acffb48bde19f";
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
 export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";
 export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";

@@ -363,7 +363,8 @@ export async function createNativeEsmLoader(context, cjs, main) {
             if (bun && name.startsWith('nimbus/meta-')) {
                 const instance = name.slice('nimbus/meta-'.length, -'.js'.length);
                 const source = metaModuleSource(false);
-                return applySourceEdits(source, readModuleImportSites(source).metas.map((site) => ({ ...site, text: JSON.stringify(`${root}${ESM_META_MODULE}?${instance}`) })));
+                // The instance's `import.meta`, as the query names it: Bun's is its file's.
+                return applySourceEdits(source, readModuleImportSites(source).metas.map((site) => ({ ...site, text: `({ url: ${JSON.stringify(`${root}${ESM_META_MODULE}?${instance}`)} })` })));
             }
             const record = byName.get(name);
             if (!record)

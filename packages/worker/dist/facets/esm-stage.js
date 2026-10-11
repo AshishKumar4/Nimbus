@@ -18,6 +18,7 @@ import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
 import { builtinFacadeModule, commonJsFacadeModule, ESM_FACADE_DIR, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource, stageEsModule, } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
+import { UNDICI_SHIM_EXPORTS } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { resolveRequireEx } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { typeScriptUnderNodeModules } from '@nimbus-sh/core/runtime/module-format.js';
 import { nodeModulesRefusal } from '@nimbus-sh/core/runtime/typescript-refusal.js';
@@ -32,6 +33,8 @@ export const ESM_MISSING_DIR = 'nimbus/missing/';
  * which loads the module as a file outside the map.
  */
 export const ESM_NOT_STAGED = 'ERR_NIMBUS_NOT_STAGED';
+/** The names each package the process provides has beside `default` (constants.ts FACET_PROVIDED_PACKAGES). */
+const PROVIDED_PACKAGE_EXPORTS = { undici: UNDICI_SHIM_EXPORTS };
 /** Builtins Node names only with their scheme (module.isBuiltin('test') is false). */
 const SCHEME_ONLY_BUILTINS = { sea: true, sqlite: true, test: true, 'test/reporters': true };
 /** module.isBuiltin, by Node 22.22.3's builtin table. */
@@ -109,8 +112,8 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     }, { conditions, cwd: () => cwd });
     const exportNames = async (path) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
     const notStaged = (path) => Object.assign(new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED });
-    /** The row an import with `attributes`, from the module at `importer`, of what `resolution` names loads. */
-    const target = async (resolution, attributes, importer) => {
+    /** The row an import with `attributes` of what `resolution` names loads. */
+    const target = async (resolution, attributes) => {
         resolver.validateAttributes(resolution.url, resolution.format, attributes);
         resolver.assertLoadable(resolution);
         if (resolution.format === 'builtin') {
@@ -118,10 +121,8 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             if (!FACET_PROVIDED_PACKAGES.includes(builtin)) {
                 return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
             }
-            // A package the process provides loads as the process's own, with the names Node finds in its installed copy.
-            const installed = await requireResolve(builtin, importer);
-            const exported = installed === null ? [] : await exportNames(installed);
-            return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, exported));
+            // A package the process provides loads as the process's own module, with its names.
+            return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, PROVIDED_PACKAGE_EXPORTS[builtin] ?? []));
         }
         if (resolution.path === undefined)
             throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
@@ -168,7 +169,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                         url.pathname = probed;
                         return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' : 'commonjs' };
                     });
-                const row = await target(resolution, site.attributes, parentUrl.pathname);
+                const row = await target(resolution, site.attributes);
                 rowTargets.push(row);
                 targets.push(table[row][2]);
             }
