@@ -1,30 +1,18 @@
 #!/usr/bin/env bun
-// module-format/export-survives-cjs-wrap — `.mjs` with top-level
-// export statements survives the two-pass ESM→CJS rewrite (the path
-// triggered by TLA + ESM imports). Pre-fix: convertEsmImportsToRequire
-// strips imports but leaves `export` keywords, which the async-IIFE
-// wrap then puts inside a function body → SyntaxError "Unexpected
-// token 'export'" at facet pre-compile.
+// module-format/export-survives-cjs-wrap — an `.mjs` with top-level await,
+// ES imports and every export form loads and runs from CommonJS, through
+// import(), as Node runs it: its body executes, its exports are bound, and
+// nothing reports "Unexpected token 'export'". (The probe was written for a
+// pipeline that lowered such a module to CommonJS, whose rewrite once left
+// `export` keywords in a function body; the registry now evaluates the module
+// itself.) A require() of such a module throws ERR_REQUIRE_ASYNC_MODULE, as
+// Node 22's does: checked once, below.
 //
-// Root cause (audit 2026-05-11-sk-exports-fix):
-//
-//   `convertEsmImportsToRequire` in src/runtime/esbuild-service.ts:393
-//   handles import statements but not export statements. The async-IIFE
-//   wrap (line 749) then puts top-level `export` declarations in a
-//   function body, which is illegal grammar (`export` is module-only).
-//
-// Probe asserts (the two-pass path is the buggy one; single-pass uses
-// esbuild's native CJS-format which already handles exports correctly):
-//
-//   1. synthetic-named-decl: `export const`, `export function`, `export
-//      class` survive. Module body logs each via side effect so we
-//      verify both that the file LOADS and that the values are correct.
-//   2. synthetic-named-list: `export { a, b as c };` (binding-only list,
-//      possibly with `as` renames). Same side-effect verification.
-//   3. synthetic-default: `export default expr` — module exports a
-//      default that the consumer reads via require('m').default.
-//   4. synthetic-reexport-named: `export { x } from './sub';`
-//   5. synthetic-reexport-star: `export * from './sub';`
+//   1. named-decl: `export const`, `export function`, `export class`.
+//   2. named-list: `export { a, b as c };`
+//   3. default: `export default expr`.
+//   4. re-export named: `export { x } from './sub';`
+//   5. re-export star: `export * from './sub';`
 //
 // The wild case, sv's own engine-*.mjs, runs once in
 // frameworks/sveltekit-real.
@@ -41,12 +29,8 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('module-format/export-survives-cjs-wrap');
 
-// All synthetics route through the two-pass path: TLA + an import.
-// The .mjs prints its OWN sentinel via console.log inside the module
-// body (no exports relied upon for the assertion; we only confirm the
-// file LOADS and runs its body). For shapes where the *consumer* needs
-// to read the export, we also have a consumer.js read via setImmediate
-// (async timing window after the IIFE settles).
+// Each synthetic has TLA and an import. The .mjs prints its OWN sentinel
+// via console.log inside the module body; a consumer.js import()s it.
 
 // ── Check 1: named-decl (const + function + class) ─────────────────
 await t.run('rm -rf /home/user/ex-decl && mkdir -p /home/user/ex-decl', 5_000);
@@ -64,7 +48,7 @@ console.log('FUNC=' + getSentinel());
 console.log('CLASS=' + (new SentinelHolder()).value);
 `;
 await t.writeFile('/home/user/ex-decl/sib.mjs', declSrc);
-await t.writeFile('/home/user/ex-decl/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-decl/consumer.js', "import('./sib.mjs');");
 const declResult = await t.run('cd /home/user/ex-decl && node consumer.js', 30_000);
 const declOut = declResult.output;
 A.check(
@@ -83,6 +67,15 @@ A.check(
   declOut.slice(-700),
 );
 
+// require() of a module with top-level await refuses, as Node 22's does.
+await t.writeFile('/home/user/ex-decl/requirer.js', "try { require('./sib.mjs'); } catch (e) { console.log('REQUIRE_REFUSED=' + e.code); }");
+const refused = (await t.run('cd /home/user/ex-decl && node requirer.js', 30_000)).output;
+A.check(
+  'named-decl: require() of it throws ERR_REQUIRE_ASYNC_MODULE, as Node',
+  /REQUIRE_REFUSED=ERR_REQUIRE_ASYNC_MODULE/.test(refused) && !/LOAD=/.test(refused),
+  refused.slice(-700),
+);
+
 // ── Check 2: named-list (export { a, b as c }) ─────────────────────
 await t.run('rm -rf /home/user/ex-list && mkdir -p /home/user/ex-list', 5_000);
 const listSrc = `
@@ -96,7 +89,7 @@ console.log('LIST_LOAD=' + (typeof join) + '_tla=' + _t);
 console.log('A=' + innerA + ' B=' + innerB + ' C=' + innerC$1);
 `;
 await t.writeFile('/home/user/ex-list/sib.mjs', listSrc);
-await t.writeFile('/home/user/ex-list/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-list/consumer.js', "import('./sib.mjs');");
 const listResult = await t.run('cd /home/user/ex-list && node consumer.js', 30_000);
 const listOut = listResult.output;
 A.check(
@@ -121,7 +114,7 @@ console.log('DEF_LOAD=' + (typeof join) + '_tla=' + _t);
 console.log('DEFVAL=' + JSON.stringify(myDefault));
 `;
 await t.writeFile('/home/user/ex-def/sib.mjs', defSrc);
-await t.writeFile('/home/user/ex-def/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-def/consumer.js', "import('./sib.mjs');");
 const defResult = await t.run('cd /home/user/ex-def && node consumer.js', 30_000);
 const defOut = defResult.output;
 A.check(
@@ -145,7 +138,7 @@ export { viaRe } from './sub.js';
 console.log('RE_LOAD=' + (typeof join) + '_tla=' + _t);
 `;
 await t.writeFile('/home/user/ex-re/sib.mjs', reSrc);
-await t.writeFile('/home/user/ex-re/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-re/consumer.js', "import('./sib.mjs');");
 const reResult = await t.run('cd /home/user/ex-re && node consumer.js', 30_000);
 const reOut = reResult.output;
 A.check(

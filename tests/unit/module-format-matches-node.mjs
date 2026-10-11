@@ -129,9 +129,10 @@ const RUNS = [
   ['meta.js'],
   ['tla.js'],
   ['redeclare.js'],
-  // destructured.js runs in native-esm-matches-node-workerd: here Bun loads an
-  // ES module of a .js that never imports as its own hybrid, with a `require`.
-  ['declarators.js'],
+  // destructured.js too: Bun loads an ES module of a .js that never imports
+  // as its own hybrid, with a `require`.
+  // declarators.js runs in native-esm-matches-node-workerd too: Bun refuses a
+  // module that declares `require`, which it binds in every module.
   ['escaped.js'],
   ['pattern.js'],
   ['class.js'],
