@@ -1,6 +1,10 @@
 // The harness models a native socket close, not an RPC promise cancellation.
 export class HostWatchSocket extends EventTarget {
-  constructor() { super(); this.readyState = 1; }
+  constructor() {
+    super(); this.readyState = 1;
+    /** @type {HostWatchSocket | undefined} */
+    this.peer = undefined;
+  }
   accept() {}
   close(code = 1000, reason = '') {
     for (const socket of [this, this.peer]) {
