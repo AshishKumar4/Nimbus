@@ -15,7 +15,7 @@ import type { CreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { concatBytes } from '../_shared/bytes.js';
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
-import { parentVfsPath } from '../vfs/path.js';
+import { parentKey } from '../vfs/path.js';
 import {
   CALL_GROUP_BYTES,
   CALL_GROUP_OPS,
@@ -114,7 +114,7 @@ export class WaveIngest {
     const routes = new Map<string, string>();
     for (const named of names) {
       const key = view.storageKey(named);
-      const looked = follow ? key : parentVfsPath(key);
+      const looked = follow ? key : parentKey(key);
       let resolved = routes.get(looked);
       if (resolved === undefined) {
         let answer: string | Promise<string>;
@@ -211,7 +211,7 @@ export class WaveIngest {
      */
     const placeSync = (kind: 'directory' | 'file' | 'delete', named: string): string | null | undefined => {
       if (router === null) return null;
-      const parent = parentVfsPath(named);
+      const parent = parentKey(named);
       const epoch = viewEpoch();
       let route = routes.get(parent);
       // A directory this wave placed in this view, not made yet: its names go under where it was placed.
@@ -274,7 +274,7 @@ export class WaveIngest {
         placements.delete(named);
         let now = placed.resolved;
         if (placed.epoch !== viewEpoch()) {
-          const parent = parentVfsPath(named);
+          const parent = parentKey(named);
           let dir = resolvedNow.get(parent);
           if (dir === undefined) {
             let answer: string | Promise<string> | null;
@@ -937,7 +937,7 @@ export class WaveIngest {
     const mountOf = async (kind: 'directory' | 'file' | 'delete', named: string): Promise<string | null> => {
       const quick = at.placeSync(kind, named);
       if (quick !== undefined) return quick;
-      const parent = parentVfsPath(named);
+      const parent = parentKey(named);
       let route = at.routes.get(parent);
       const epoch = at.view();
       if (route === undefined || route.epoch !== epoch) {
