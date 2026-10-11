@@ -117,6 +117,7 @@ import { initSession as _w11InitSession, type InitSessionOptions } from './init.
 // _w5SafePersistRing) extracted.
 import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind, terminalInput } from './ws.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
@@ -1337,20 +1338,30 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
   // relaxed for the methods (default-public; was async/private).
 
-  private terminalInputDispatcher: ((frame: string, terminalId: string) => Promise<void>) | null = null;
+  private terminalInputDispatcher: { _rpcTerminalInput(frame: string, terminalId: string): Promise<void> } | null = null;
+  private terminalInputPending = 0;
   dispatchTerminalInput(frame: string): void {
     const terminal = this.terminal;
     if (!terminal || terminal.signal.aborted) return;
     if (!this.terminalInputDispatcher) {
-      const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id) as unknown as { _rpcTerminalInput(frame: string, terminalId: string): Promise<void> };
-      this.terminalInputDispatcher = (input, id) => stub._rpcTerminalInput(input, id);
+      this.terminalInputDispatcher = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id) as unknown as { _rpcTerminalInput(frame: string, terminalId: string): Promise<void> };
     }
-    void this.terminalInputDispatcher(frame, terminal.id).catch((error: unknown) => {
-      if (!terminal.signal.aborted) {
-        console.error('[nimbus] terminal input request failed:', error);
-        terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+    const stub = this.terminalInputDispatcher;
+    this.terminalInputPending++;
+    void (async () => {
+      try { await stub._rpcTerminalInput(frame, terminal.id); }
+      catch (error) {
+        if (!terminal.signal.aborted) {
+          console.error('[nimbus] terminal input request failed:', error);
+          terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } finally {
+        if (--this.terminalInputPending === 0) {
+          this.terminalInputDispatcher = null;
+          disposeRpcResource(stub);
+        }
       }
-    });
+    })();
   }
 
   _rpcTerminalInput(frame: string, terminalId: string): Promise<void> {
