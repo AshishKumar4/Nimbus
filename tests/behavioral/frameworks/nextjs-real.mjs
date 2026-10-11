@@ -42,12 +42,16 @@ try {
     240_000,
   );
   const createOut = stripAnsi(createR.output);
-  const createTail = JSON.stringify(createOut.split(/\r?\n/).filter((l) => l.trim()).slice(-8).join(' | '));
+  const createLines = createOut.split(/\r?\n/).filter((l) => l.trim());
+  // A partial install's summary says "see above"; keep every cause as well
+  // as the trailing summary, without changing either completion predicate.
+  const createDetail = JSON.stringify(createLines.filter((line, index) =>
+    index >= createLines.length - 8 || /\[warn\]|\bFailed\b|\baborted\b/i.test(line)).join(' | '));
 
   a.check('create-next-app launches and initializes the local template (npm resolver + facet spawn)',
-    /Initializing project with template/.test(createOut), createTail);
+    /Initializing project with template/.test(createOut), createDetail);
   a.check('create-next-app completes: "Success! Created mvp" and exit 0',
-    /Success! Created mvp/.test(createOut) && createR.exitCode === 0, createTail);
+    /Success! Created mvp/.test(createOut) && createR.exitCode === 0, createDetail);
 
   const tpl = await t.run(
     `node -e "const fs=require('fs');const need=['mvp/next.config.ts','mvp/tsconfig.json','mvp/src'];console.log('TPL='+need.every(p=>fs.existsSync(p)));console.log('PKG='+fs.existsSync('mvp/package.json'));"`,

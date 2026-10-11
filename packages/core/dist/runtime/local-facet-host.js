@@ -321,6 +321,11 @@ class RealmFacet {
             if (timer !== undefined)
                 clearTimeout(timer);
             signal?.removeEventListener('abort', onAbort);
+            // Sending termination is not completion: the guest can still be
+            // executing (or unreaped) when SIGKILL/Worker.terminate returns. Keep
+            // the aborting call pending until its realm has actually ended.
+            if (state.stopped && this.realm)
+                await this.realm.then((ending) => ending.ended, () => undefined);
             realm?.hold(false);
         }
     }

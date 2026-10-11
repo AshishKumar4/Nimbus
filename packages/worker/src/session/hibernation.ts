@@ -348,9 +348,6 @@ export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | '_w1KeepaliveArm
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
 export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
 
-/** Where a host's attached clients are counted: its hibernatable sockets. */
-export type KeepaliveClients = Partial<Pick<DurableObjectState, 'getWebSockets'>>;
-
 /**
  * W1: arm the keep-alive alarm cycle for this instance, from the spawn hook
  * of a LONG-RUNNING process only.
@@ -396,8 +393,8 @@ export function armResidentKeepalive(host: ResidentKeepaliveHost, schedule: Resi
  * abandoned dev server did exactly that. The next resident spawn, or the
  * client's return, re-arms the cycle.
  */
-export function residentKeepaliveFired(host: ResidentKeepaliveHost, ctx: KeepaliveClients, now: number): number | null {
-  if (host.processes.residentRunning > 0 && residentClientPresent(host, ctx, now)) {
+export function residentKeepaliveFired(host: ResidentKeepaliveHost, now: number): number | null {
+  if (!host._w1SessionDestroyed && host.processes.residentRunning > 0 && residentClientPresent(host, now)) {
     return now + RESIDENT_KEEPALIVE_MS;
   }
   host._w1KeepaliveArmed = false;
@@ -444,14 +441,13 @@ export function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any):
 }
 
 /**
- * Whether a client is here: a hibernatable socket attached (terminal,
- * process log, file watch) or a request within the detached grace. The
- * keep-alive re-arms on this and on a running resident, never on the
- * resident alone.
+ * Only traffic delivered through this runtime's client boundaries counts.
+ * A host's socket table belongs to its embedder, not to Nimbus, and even an
+ * attached runtime terminal cannot renew an alarm forever without traffic.
+ * Attach/input/port requests renew this bounded interest; alarms and facet
+ * supervisor calls never do.
  */
-export function residentClientPresent(host: ResidentKeepaliveHost, ctx: KeepaliveClients, now: number): boolean {
-  const sockets: unknown[] = typeof ctx?.getWebSockets === 'function' ? ctx.getWebSockets() : [];
-  if (sockets.length > 0) return true;
+export function residentClientPresent(host: ResidentKeepaliveHost, now: number): boolean {
   return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 
@@ -532,7 +528,7 @@ export function dispatchAlarm(
       if (rearmAt !== null) return { rearmAt };
     },
     'resident-keepalive': (now) => {
-      const rearmAt = residentKeepaliveFired(host, ctx, now);
+      const rearmAt = residentKeepaliveFired(host, now);
       if (rearmAt !== null) return { rearmAt };
     },
     'hosting-watch': async () => {
