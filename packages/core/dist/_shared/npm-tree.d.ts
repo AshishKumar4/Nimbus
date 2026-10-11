@@ -141,8 +141,13 @@ export declare function projectRoots(manifest: {
 export declare function planTree<P extends TreePackage>(roots: readonly TreeRoot[], host: TreeHost<P>): Promise<TreePlan<P>>;
 /** The required placements of `plan` that could not be filled: any fails the install. */
 export declare function requiredFailures(plan: Pick<TreePlan<TreePackage>, 'failures' | 'required'>): TreeFailure[];
-/** `run` once no other install into the tree at `canonical` in `namespace` is running. */
-export declare function withTreeLock<T>(namespace: object, canonical: string, run: () => Promise<T>): Promise<T>;
+/**
+ * Hold the tree at `canonical` in `namespace` for one install, and give it
+ * back with the release this answers, once the install is done: at once
+ * when no install holds it, else (a promise) once those before have given it
+ * back.
+ */
+export declare function holdTree(namespace: object, canonical: string): (() => void) | Promise<() => void>;
 /**
  * Where `path` is: its deepest existing ancestor resolved through symlinks
  * (`realpath`), and the rest of it, which does not exist yet.

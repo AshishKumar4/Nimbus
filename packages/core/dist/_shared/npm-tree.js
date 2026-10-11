@@ -221,27 +221,36 @@ export function requiredFailures(plan) {
     return plan.failures.filter(({ at }) => plan.required.has(at));
 }
 /**
- * Installs into one node_modules tree, one at a time: each waits for the one
- * before it. Keyed by the tree's namespace (a workspace's kernel, a session's
- * store) and its canonical path there (`canonical`), so two paths to one tree
- * (a prefix through a symlink) are one queue.
+ * Installs into one node_modules tree, one at a time, in the order they
+ * asked. Keyed by the tree's namespace (a workspace's kernel, a session's
+ * store) and its canonical path there, so two paths to one tree (a prefix
+ * through a symlink) are one queue. A held tree's entry lists who waits for
+ * it next.
  */
-const installQueues = new WeakMap();
-/** `run` once no other install into the tree at `canonical` in `namespace` is running. */
-export async function withTreeLock(namespace, canonical, run) {
-    const queues = installQueues.get(namespace) ?? new Map();
-    installQueues.set(namespace, queues);
-    const before = queues.get(canonical) ?? Promise.resolve();
-    const done = before.then(run, run);
-    const settled = done.then(() => undefined, () => undefined);
-    queues.set(canonical, settled);
-    try {
-        return await done;
+const heldTrees = new WeakMap();
+/**
+ * Hold the tree at `canonical` in `namespace` for one install, and give it
+ * back with the release this answers, once the install is done: at once
+ * when no install holds it, else (a promise) once those before have given it
+ * back.
+ */
+export function holdTree(namespace, canonical) {
+    const held = heldTrees.get(namespace) ?? new Map();
+    if (held.size === 0)
+        heldTrees.set(namespace, held);
+    const release = () => {
+        const next = held.get(canonical)?.shift();
+        if (next === undefined)
+            held.delete(canonical);
+        else
+            next();
+    };
+    const waiting = held.get(canonical);
+    if (waiting === undefined) {
+        held.set(canonical, []);
+        return release;
     }
-    finally {
-        if (queues.get(canonical) === settled)
-            queues.delete(canonical);
-    }
+    return new Promise((resolve) => waiting.push(() => resolve(release)));
 }
 /**
  * Where `path` is: its deepest existing ancestor resolved through symlinks

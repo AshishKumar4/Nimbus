@@ -34,7 +34,7 @@ import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, still
 import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
 import { placementName, visiblePlacements } from '@nimbus-sh/core/_shared/npm-placement.js';
-import { canonicalTreePath, planTree, projectRoots, withTreeLock } from '@nimbus-sh/core/_shared/npm-tree.js';
+import { canonicalTreePath, holdTree, planTree, projectRoots } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -108,50 +108,57 @@ export class NpmInstaller {
         const start = Date.now();
         const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
         const nmDir = projDir + '/node_modules';
-        // One install into a tree at a time (core npm-tree.ts withTreeLock): the
-        // tree's own state, and this installer's progress and log sinks, are the
-        // running install's until it returns.
+        // The project is read and written through the invoking principal's view
+        // of the namespace. The engine's bulk paths (the batch facet, the bin
+        // stream, pre-bundling) serve it at its engine key, the project's path
+        // with every link resolved; a mounted project has none.
         const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
-        const canonical = await canonicalTreePath(async (path) => view.realpath(path), '/' + nmDir);
-        return withTreeLock(this.store, canonical, async () => {
-            // Per-invocation progress wins over whatever the ctor bound — the
-            // installer is shared, the terminal it should speak to is not.
-            const previousProgress = this.onProgress;
-            if (opts?.onProgress !== undefined)
-                this.onProgress = opts.onProgress;
-            // This invocation's terminal, while the command runs. Work that outlives
-            // it (the background pre-bundle) still logs through `log`, and once the
-            // command has returned and the prompt is back, that goes to the console
-            // instead: never into the next command's output, nor this one's prompt.
-            const progress = this.onProgress;
-            let returned = false;
-            const log = (msg) => {
-                if (!returned) {
-                    progress?.(msg);
-                    return;
-                }
-                try {
-                    console.log('[npm:late] ' + msg);
-                }
-                catch { }
-            };
-            this.npmLog = opts?.npmLog ?? (() => { });
-            // Reset phase to 'idle' on any exit path so /api/_diag/memory
-            // never reports a stale phase after a crash unwound the install.
-            // The DO reboot would zero this anyway; finally is defense against
-            // a non-fatal mid-install throw.
+        const engineDir = await engineKey(view, this.store, '/' + projDir);
+        // One install into a project at a time (core npm-tree.ts holdTree),
+        // keyed by where it is: its engine key, else (mounted) its resolved path.
+        // The tree's own state, and this installer's progress and log sinks, are
+        // the running install's until it returns.
+        const where = engineDir ?? await canonicalTreePath(async (path) => view.realpath(path), '/' + projDir);
+        const held = holdTree(this.store, where);
+        const release = typeof held === 'function' ? held : await held;
+        // Per-invocation progress wins over whatever the ctor bound — the
+        // installer is shared, the terminal it should speak to is not.
+        const previousProgress = this.onProgress;
+        if (opts?.onProgress !== undefined)
+            this.onProgress = opts.onProgress;
+        // This invocation's terminal, while the command runs. Work that outlives
+        // it (the background pre-bundle) still logs through `log`, and once the
+        // command has returned and the prompt is back, that goes to the console
+        // instead: never into the next command's output, nor this one's prompt.
+        const progress = this.onProgress;
+        let returned = false;
+        const log = (msg) => {
+            if (!returned) {
+                progress?.(msg);
+                return;
+            }
             try {
-                return await this._installInner(projDir, nmDir, opts, log, start);
+                console.log('[npm:late] ' + msg);
             }
-            finally {
-                returned = true;
-                setInstallPhase('idle');
-                this.npmLog = () => { };
-                this.onProgress = previousProgress;
-            }
-        });
+            catch { }
+        };
+        this.npmLog = opts?.npmLog ?? (() => { });
+        // Reset phase to 'idle' on any exit path so /api/_diag/memory
+        // never reports a stale phase after a crash unwound the install.
+        // The DO reboot would zero this anyway; finally is defense against
+        // a non-fatal mid-install throw.
+        try {
+            return await this._installInner(projDir, nmDir, opts, log, start, view, engineDir);
+        }
+        finally {
+            returned = true;
+            setInstallPhase('idle');
+            this.npmLog = () => { };
+            this.onProgress = previousProgress;
+            release();
+        }
     }
-    async _installInner(projDir, nmDir, opts, log, start) {
+    async _installInner(projDir, nmDir, opts, log, start, view, engineDir) {
         const registry = npmRegistryOrigin(opts?.registry);
         const phases = {};
         const installed = [];
@@ -163,13 +170,7 @@ export class NpmInstaller {
         this.npmLog('verbose', npmTitleLine(opts?.packages ?? []));
         let phaseStart = Date.now();
         log('Checking lockfile...');
-        // The project is read and written through the invoking principal's view
-        // of the namespace. The engine's bulk paths (the batch facet, the bin
-        // stream, pre-bundling) serve it at its engine key; a mounted project
-        // has none.
-        const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
         const project = projectFs(view);
-        const engineDir = await engineKey(view, this.store, '/' + projDir);
         // Where a mounted project's packages are staged; what an install cut
         // short left there goes first.
         const tmp = await engineKey(view, this.store, '/tmp');

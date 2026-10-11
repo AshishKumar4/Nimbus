@@ -7,7 +7,7 @@ import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { placementName } from '../../../../_shared/npm-placement.js';
-import { canonicalTreePath, planTree, projectRoots, requiredFailures, withTreeLock, } from '../../../../_shared/npm-tree.js';
+import { canonicalTreePath, holdTree, planTree, projectRoots, requiredFailures, } from '../../../../_shared/npm-tree.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
@@ -195,12 +195,19 @@ async function retiredCopies(vfs, dir, out = []) {
 const NO_KERNEL = {};
 /**
  * `run` holding the tree `install` lands in (core _shared/npm-tree.ts
- * withTreeLock): an install and what its caller reads and writes besides
+ * holdTree): an install and what its caller reads and writes besides
  * (the project's package.json).
  */
 async function lockTree(install, run) {
     const canonical = await canonicalTreePath((path) => install.vfs.realpath(path), install.targetBase);
-    return withTreeLock(install.kernel ?? NO_KERNEL, canonical, run);
+    const held = holdTree(install.kernel ?? NO_KERNEL, canonical);
+    const release = typeof held === 'function' ? held : await held;
+    try {
+        return await run();
+    }
+    finally {
+        release();
+    }
 }
 /**
  * Install `roots` and what they depend on under `install.targetBase`, as
