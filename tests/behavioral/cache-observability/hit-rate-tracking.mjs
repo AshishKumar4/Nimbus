@@ -11,19 +11,17 @@
 //      the snapshot from the same isolate where the install ran.
 //   2. Session A: npm i clsx (tiny CJS package, 619 B ESM dist, ~7 KB
 //      packument). Wait for install to settle. GET /api/_diag/cache.
-//      Assert: L1.packument.misses >= 1 (fresh isolate, NpmCache empty)
-//              L4.packument.hits >= 1 OR L3.packument.hits >= 1
-//              (either origin fetched, or warm R2 served)
-//              L1.tarball.misses >= 1 (tarball not in NpmCache yet)
-//              L4.tarball.hits >= 1 OR L3.tarball.hits >= 1
+//      Assert: L1.packument stays at zero (this resolver bypasses NpmCache)
+//              L1.tarball records a lookup; L1/L2/L3/L4 serves its bytes
+//              L2/L3/L4 serves the packument
 //   3. Same session: rm -rf node_modules && npm i clsx. Snapshot again.
-//      Assert: L1.tarball.hits increased (NpmCache survived the rm —
-//              it's per-DO keyed by name@version, not by file path).
+//      Assert: cached-tier hits increased. The verified local tarball store
+//              survives rm; a new isolate falls through to L2/L3.
 //   4. NEW session B (different sid → different DO instance → fresh
 //      isolate, possibly same or different colo): npm i clsx.
 //      Snapshot from session B's /api/_diag/cache.
-//      Assert: L1.packument.misses >= 1 (B's NpmCache is fresh)
-//              L2 OR L3 hit (cross-tenant tiers are global) — i.e.
+//      Assert: L1.tarball records a lookup, packument still bypasses L1
+//              L1/L2/L3 hit (the local store may share an isolate) — i.e.
 //              the counter for L4.packument.hits is NOT the only
 //              non-zero hit-tier (otherwise we never benefit from
 //              the cross-tenant cache).
@@ -107,14 +105,10 @@ console.log(`  phase1 snapshot:`, JSON.stringify({
 // v1 captured-and-drained L2/L3/L4 events because DO recursion guard
 // blocked the forward path. v2 fixes this by routing events through
 // FACET RETURN VALUES (recordR2RaceCounters pattern). The probe now
-// asserts non-zero L2/L3/L4 hits.
-//
-// L1 bypass note still stands: install-batch-facet doesn't call
-// NpmCache.getRegistryEntry/getTarballFiles for fresh installs. L1
-// stays at 0 hits/misses on `npm i clsx` (documented).
-
-A.check('L1 bypassed on single-package install (counters = 0 — documented)',
-  p1L1Tarball.hits === 0 && p1L1Tarball.misses === 0 &&
+// asserts non-zero shared-tier hits and the new local tarball lookup.
+// The resolver still bypasses NpmCache, so its L1 packument cells stay zero.
+A.check('L1 records the tarball lookup while packument resolution bypasses it',
+  p1L1Tarball.hits + p1L1Tarball.misses >= 1 &&
   p1L1Pack.hits === 0 && p1L1Pack.misses === 0,
   `L1.tarball=${JSON.stringify(p1L1Tarball)} L1.packument=${JSON.stringify(p1L1Pack)}`);
 
@@ -138,12 +132,12 @@ A.check('cache-obs-2 acceptance: L2/L3/L4 hits NON-ZERO after install',
 // tier. Asserts both kinds got served (otherwise the install
 // somehow completed without seeing one of them, which is wrong).
 const tarballServed =
-  p1L2Tarball.hits + p1L3Tarball.hits + p1L4Tarball.hits;
+  p1L1Tarball.hits + p1L2Tarball.hits + p1L3Tarball.hits + p1L4Tarball.hits;
 const packumentServed =
   p1L2Pack.hits + p1L3Pack.hits + p1L4Pack.hits;
-A.check('tarball sourced from at least one of L2/L3/L4',
+A.check('tarball sourced from at least one of L1/L2/L3/L4',
   tarballServed >= 1,
-  `L2=${p1L2Tarball.hits} L3=${p1L3Tarball.hits} L4=${p1L4Tarball.hits}`);
+  `L1=${p1L1Tarball.hits} L2=${p1L2Tarball.hits} L3=${p1L3Tarball.hits} L4=${p1L4Tarball.hits}`);
 A.check('packument sourced from at least one of L2/L3/L4',
   packumentServed >= 1,
   `L2=${p1L2Pack.hits} L3=${p1L3Pack.hits} L4=${p1L4Pack.hits}`);
@@ -158,21 +152,23 @@ const p2L1Tarball = sumKind(phase2, 'L1', 'tarball');
 const p2L1Pack    = sumKind(phase2, 'L1', 'packument');
 const p2L2Tarball = sumKind(phase2, 'L2', 'tarball');
 const p2L2Pack    = sumKind(phase2, 'L2', 'packument');
+const p2L3Tarball = sumKind(phase2, 'L3', 'tarball');
+const p2L3Pack    = sumKind(phase2, 'L3', 'packument');
 
 console.log(`  phase2 deltas: L1.tarball.hits +${p2L1Tarball.hits - p1L1Tarball.hits} L2.tarball.hits +${p2L2Tarball.hits - p1L2Tarball.hits} L2.packument.hits +${p2L2Pack.hits - p1L2Pack.hits}`);
 
-// cache-obs-2: phase-2 re-install on warmed L2 cache should hit L2
-// for at least one of (tarball, packument) — phase 1 already wrote
-// them through. Asserting BOTH would be stricter but the supervisor
-// caches the install metadata in-memory so the tarball fetch may
-// short-circuit; packument re-resolve through the resolver is the
-// most-reliable signal.
-const l2Delta =
+// Reinstallation must use a cache tier. Local verified bytes no longer
+// require an L2 read; eviction or migration can use the external tiers.
+const cachedDelta =
+  (p2L1Tarball.hits - p1L1Tarball.hits) +
+  (p2L1Pack.hits - p1L1Pack.hits) +
   (p2L2Tarball.hits - p1L2Tarball.hits) +
-  (p2L2Pack.hits - p1L2Pack.hits);
-A.check('phase 2: L2 cache served re-install (delta >= 1)',
-  l2Delta >= 1,
-  `L2.tarball.delta=${p2L2Tarball.hits - p1L2Tarball.hits} L2.packument.delta=${p2L2Pack.hits - p1L2Pack.hits}`);
+  (p2L2Pack.hits - p1L2Pack.hits) +
+  (p2L3Tarball.hits - p1L3Tarball.hits) +
+  (p2L3Pack.hits - p1L3Pack.hits);
+A.check('phase 2: L1/L2/L3 cache served re-install (delta >= 1)',
+  cachedDelta >= 1,
+  `cached.delta=${cachedDelta} L1.tarball.delta=${p2L1Tarball.hits - p1L1Tarball.hits}`);
 
 await tA.close();
 
@@ -212,25 +208,24 @@ console.log(`  phase3 snapshot:`, JSON.stringify({
   L4: { tarball: p3L4Tarball, packument: p3L4Pack },
 }, null, 0));
 
-// Session B fresh per-DO state. L1 still bypassed on this install
-// shape (documented). The cross-tenant L2/L3 SHOULD serve session
-// B because session A's install warmed them — that's the cache
-// payoff.
-A.check('phase 3: L1 still bypassed on fresh session (documented)',
-  p3L1Tarball.hits === 0 && p3L1Tarball.misses === 0 &&
+// Session B may share the verified local tarball store's isolate; if not,
+// the cross-tenant tiers warmed by A serve it. Packument resolution still
+// bypasses the per-DO metadata cache for this explicit install shape.
+A.check('phase 3: L1 records the tarball lookup, not a packument lookup',
+  p3L1Tarball.hits + p3L1Tarball.misses >= 1 &&
   p3L1Pack.hits === 0 && p3L1Pack.misses === 0,
   `L1.tarball=${JSON.stringify(p3L1Tarball)} L1.packument=${JSON.stringify(p3L1Pack)}`);
 
-// CRITICAL cache-obs-2 invariant: cross-tenant cache (L2 or L3)
+// CRITICAL cache-obs-2 invariant: a cache (local L1, L2 or L3)
 // MUST serve session B. Session A warmed those tiers; if session
 // B sees L4-only hits, the cross-tenant cache is broken OR the
 // counters lost the events. Either is a bug.
 const p3CrossTenant =
-  p3L2Tarball.hits + p3L3Tarball.hits +
+  p3L1Tarball.hits + p3L2Tarball.hits + p3L3Tarball.hits +
   p3L2Pack.hits + p3L3Pack.hits;
-A.check('phase 3: cross-tenant cache (L2 or L3) served at least one lookup',
+A.check('phase 3: L1/L2/L3 cache served at least one lookup',
   p3CrossTenant >= 1,
-  `L2.t=${p3L2Tarball.hits} L3.t=${p3L3Tarball.hits} L2.p=${p3L2Pack.hits} L3.p=${p3L3Pack.hits}`);
+  `L1.t=${p3L1Tarball.hits} L2.t=${p3L2Tarball.hits} L3.t=${p3L3Tarball.hits} L2.p=${p3L2Pack.hits} L3.p=${p3L3Pack.hits}`);
 
 await tB.close();
 
