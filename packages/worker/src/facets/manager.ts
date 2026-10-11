@@ -120,6 +120,7 @@ import { TransformStore } from './transform-store.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {
   parseResolvablePackageJson,
+  BUILD_BROWSER_PACKAGE_MAP_POLICY,
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
@@ -3217,8 +3218,8 @@ export async function greedyAddMainEntries(
     // `index.js`, which does not exist.
     const candidates: string[] = [];
     if (pkg) {
-      // As require resolves it, under the program's conditions (require-resolution.ts requirePackageEntry).
-      const entry = requirePackageEntry(pkg, '.', options.conditions ?? []);
+      // Speculative staging may oversample permissively; runtime Node resolution remains strict.
+      const entry = requirePackageEntry(pkg, '.', options.conditions ?? [], BUILD_BROWSER_PACKAGE_MAP_POLICY);
       if (entry !== null) candidates.push(entry);
       if (pkg.main !== undefined) candidates.push(pkg.main);
     }

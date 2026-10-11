@@ -7,7 +7,7 @@
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 import {
   createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageSelfReferenceSubpath, selectPackageMap,
-  type PackageMapSteps, type ResolvablePackageJson, type SelfReferencingPackageJson,
+  resolvePackageEntry, type PackageMapPolicy, type PackageMapSteps, type ResolvablePackageJson, type SelfReferencingPackageJson,
 } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
@@ -58,6 +58,8 @@ export interface RequireResolverOptions {
   conditions?: readonly string[];
   policy?: RequireResolutionPolicy;
   progress?: WalkProgress;
+  /** Staged guests already carry format facts; only loaders needing type rediscovery collect it. */
+  collectPackageScope?: boolean;
 }
 type PackageConfig = ResolvablePackageJson & SelfReferencingPackageJson & { type?: unknown };
 export interface RequirePackageScope {
@@ -342,7 +344,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     if (found === null) return null;
     if (found instanceof URL) return { builtin: found.pathname, scope: null, packageType: null };
     const path = yield* ask.realpath(found);
-    const scope = yield* nearestPackageScope(parentDir(path), state);
+    const scope = options.collectPackageScope === false ? null : yield* nearestPackageScope(parentDir(path), state);
     return { path, scope, packageType: scope?.type ?? null };
   }
   function* resolveFilePath(path: string): Step<string | null> {
@@ -490,8 +492,9 @@ export async function packageJsonVisible(vfs: RequireFs, path: string): Promise<
   catch (err) { if (codeOf(err) === 'EACCES') return false; throw err; }
 }
 
-/** Speculative entry selection reads the same Node map, never import/browser fallbacks. */
-export function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[]): string | null {
+/** Node selection by default; speculative builds opt into their named map policy. */
+export function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[], buildPolicy?: PackageMapPolicy<string>): string | null {
+  if (buildPolicy) return resolvePackageEntry(pkg, subpath, [...DEFAULT_CJS_CONDITIONS, ...conditions], buildPolicy);
   if (pkg.exports == null) return subpath === '.' ? pkg.main ?? null : subpath;
   const url = fileUrl('/package.json');
   const policy = createNodePackageMapPolicy(url, '/', false, function* () { throw new Error('An exports target cannot be bare'); });

@@ -11826,7 +11826,7 @@ const __requireResolver = createRequireResolver({
   isBuiltin(specifier) {
     return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
   },
-}, { conditions: __nimbusConditions, policy: NIMBUS_TYPESCRIPT_REQUIRE_POLICY });
+}, { conditions: __nimbusConditions, policy: NIMBUS_TYPESCRIPT_REQUIRE_POLICY, collectPackageScope: false });
 
 /**
  * Load and execute a JS/JSON module from VFS.

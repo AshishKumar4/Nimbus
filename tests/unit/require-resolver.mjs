@@ -14,6 +14,7 @@ const vfs = new FakeVfs({
       './oauth': {
         types: './dist/oauth.d.ts',
         import: './dist/oauth.js',
+        'module-sync': './dist/oauth.js',
       },
     },
   }),
@@ -104,9 +105,11 @@ assert.equal(
 // resolver's sink. This is the case that proves the sink call is load-bearing.
 const storeVfs = new FakeVfs({
   'home/user/app4.js': "require('dep/ctx');",
-  [`${nm}/dep/package.json`]: JSON.stringify({ name: 'dep', exports: { './ctx': '../.store/dep/lib/ctx.js' } }),
+  [`${nm}/dep/package.json`]: JSON.stringify({ name: 'dep', exports: { './ctx': './lib/ctx.js' } }),
+  [`${nm}/dep/lib/ctx.js`]: 'module.exports = { ctx: true };',
   [`${nm}/.store/dep/lib/ctx.js`]: 'module.exports = { ctx: true };',
 });
+storeVfs.realpath = (path) => path === `${nm}/dep/lib/ctx.js` ? `${nm}/.store/dep/lib/ctx.js` : path;
 const storeResult = (await prefetchForRequire(storeVfs, "require('dep/ctx');", '/home/user', '/home/user/app4.js'));
 assert.equal(
   storeResult.bundle[`${nm}/.store/dep/lib/ctx.js`],
@@ -115,7 +118,7 @@ assert.equal(
 );
 assert.equal(
   storeResult.bundle[`${nm}/dep/package.json`],
-  JSON.stringify({ name: 'dep', exports: { './ctx': '../.store/dep/lib/ctx.js' } }),
+  JSON.stringify({ name: 'dep', exports: { './ctx': './lib/ctx.js' } }),
   'walked package.json not shipped when exports target resolves outside the package dir',
 );
 
