@@ -23,6 +23,7 @@ import {
   ROUTED_FILE_MAX,
   ROUTED_LINK_TARGET_MAX,
   untilAborted,
+  validateFileChunks,
   validateInodeShape,
   withUmask,
   type WaveLocalOp,
@@ -758,7 +759,7 @@ export class WaveIngest {
             }
             case 'directory': {
               phase = 'validation';
-              validateInodeShape(record.inode);
+              validateFileChunks(record.inode, []);
               phase = 'publish';
               // Records commit in their order: files the stream wrote before
               // this directory commit before it.
@@ -861,6 +862,9 @@ export class WaveIngest {
         },
       };
     } finally {
+      // What the wave staged and never published goes back to the store, and
+      // every chunk lease it holds with it, before the decoder is let go.
+      files.abandon();
       // Data calls the wave did not make: what they held goes back.
       for (const lease of callLeases) lease.release();
       callLeases.clear();
@@ -875,8 +879,6 @@ export class WaveIngest {
         try { await unlessCut(recordIterator.return()); } catch { /* preserve the primary stream result */ }
       }
       drain.end();
-      // What the wave staged and never published goes back to the store.
-      files.abandon();
     }
   }
 

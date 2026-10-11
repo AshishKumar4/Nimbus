@@ -759,7 +759,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? error.message : String(error)}`, writer);
       return;
     }
-    // The session's own answer (SqliteVFS.writeStream's, through the binding).
+    // The session's own answer (WaveIngest's, through the binding).
     const answer = result as WriteBatchStreamResult;
     const error = answer.ok ? null : answer.error;
     // Unfenced, the session numbers nothing: committedOps says how far it went.

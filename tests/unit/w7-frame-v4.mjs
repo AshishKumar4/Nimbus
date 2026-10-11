@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { decodeWriteBatchStream, encodeWriteBatchStream, W7_MAGIC } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -128,13 +129,14 @@ const streamOf = (bytes) => new ReadableStream({ type: 'bytes', start(controller
 function open() {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
-  return { raw, kernel: raw.as(CRED_KERNEL) };
+  const waves = new WaveIngest(null);
+  return { raw, waves, kernel: raw.as(CRED_KERNEL) };
 }
 {
-  const { raw, kernel } = open();
+  const { raw, waves, kernel } = open();
   const order = [];
   raw.observeWrites((event) => { order.push([event.type, event.path, event.oldPath]); });
-  const result = await kernel.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
   assert.equal(result.ok, true, JSON.stringify(result.error));
   assert.equal(dec.decode(kernel.readFile('w/b')), 'fir');
   assert.equal(kernel.stat('w/b').mode & 0o777, 0o600);
@@ -158,13 +160,13 @@ function open() {
 }
 {
   // A file written twice in a row: the second write follows the first.
-  const { raw, kernel } = open();
+  const { raw, waves, kernel } = open();
   const events = [];
   raw.observeWrites((event) => {
     if (event.after?.type !== 'file') return;
     events.push([event.type, event.path, event.before === null ? null : dec.decode(event.before.read()), dec.decode(event.after.read())]);
   });
-  const result = await kernel.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
     directory('r'), file('r/f', 'one'), file('r/f', 'two'),
   ] }));
   assert.equal(result.ok, true, JSON.stringify(result.error));
@@ -172,9 +174,9 @@ function open() {
   assert.deepEqual(events, [['create', 'r/f', null, 'one'], ['modify', 'r/f', 'one', 'two']]);
 }
 {
-  const { kernel } = open();
+  const { waves, kernel } = open();
   // The truncate names a file nobody made: what came before it commits, nothing after.
-  const result = await kernel.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
     directory('p'),
     file('p/one', 'one'),
     { type: 'truncate', path: 'p/missing', size: 0 },

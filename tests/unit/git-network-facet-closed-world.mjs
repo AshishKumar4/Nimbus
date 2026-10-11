@@ -33,6 +33,7 @@ import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-ru
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
@@ -128,6 +129,7 @@ export const git = {
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const vfs = rawVfs.as(CRED_KERNEL);
   const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
   const wavePaths = [];
@@ -146,7 +148,7 @@ export const git = {
     async writeBatchStream(stream) {
       const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
       wavePaths.push(await drainWave(byteStream(bytes.slice())));
-      return vfs.writeStream(byteStream(bytes.slice()), lease ?? {});
+      return waves.writeStream(vfs, byteStream(bytes.slice()), lease ?? {});
     },
     async stdout() {},
   };

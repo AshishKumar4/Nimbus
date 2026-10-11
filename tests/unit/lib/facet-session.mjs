@@ -126,7 +126,7 @@ export async function createFacetSession(work, { realGit = false, asUser = false
           throw new Error('Network connection lost.');
         }
         return refused(async () => {
-          const result = await actor.writeStream(stream, lease);
+          const result = await files.waves.writeStream(actor, stream, lease);
           if (result.ok === false) requests.refusals.push(String(result.error?.code ?? result.error?.message));
           return result;
         });

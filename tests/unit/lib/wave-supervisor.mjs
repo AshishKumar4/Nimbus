@@ -11,15 +11,17 @@
  */
 
 import { decodeWriteBatchStream } from '../../../packages/platform/src/w7-frame.ts';
+import { WaveIngest } from '../../../packages/core/src/runtime/wave-ingest.ts';
 
 /** `supervisor` with openWaveWriter and writeBatchStream (unless it has them). */
 export function waveSupervisor(supervisor, engine) {
   if (typeof supervisor.writeBatchStream === 'function') return supervisor;
+  const waves = engine === undefined ? null : new WaveIngest(null);
   supervisor.openWaveWriter = async () => null;
   // A method of whichever supervisor it is called on: a test that copies
   // this one ({ ...supervisor, mkdir }) observes the calls of its copy.
   supervisor.writeBatchStream = engine !== undefined
-    ? (stream) => engine.writeStream(stream)
+    ? (stream) => waves.writeStream(engine, stream)
     : function writeBatchStream(stream) { return replay(this, stream); };
   return supervisor;
 }

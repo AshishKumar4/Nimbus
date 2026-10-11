@@ -28,6 +28,7 @@ import path from 'node:path';
 import { buildFixture, diffGraphs, referenceGraph } from './lib/commit-graph-reference.mjs';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
 import { commitRecord } from '../../packages/worker/src/git/pack/commit-graph.ts';
@@ -62,6 +63,7 @@ try {
   function session() {
     const harness = createSqliteVfsTestHarness();
     const vfs = new SqliteVFS(harness.sql, harness.ctx);
+    const waves = new WaveIngest(null);
     const kernel = vfs.as(CRED_KERNEL);
     kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
     kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
@@ -89,7 +91,7 @@ try {
     const context = {
       supervisor,
       dir: REPO,
-      writer: () => createWaveWriter({ supervisor: { writeBatchStream: (stream) => user.writeStream(stream) }, root: REPO, base: REPO }),
+      writer: () => createWaveWriter({ supervisor: { writeBatchStream: (stream) => waves.writeStream(user, stream) }, root: REPO, base: REPO }),
     };
     return { user, context, reads };
   }

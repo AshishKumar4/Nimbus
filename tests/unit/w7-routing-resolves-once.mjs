@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // A wave places each directory once while nothing else changes the namespace
-// (SqliteVFS consumeStream: `view`).
+// (WaveIngest consume: `view`).
 //
 // Every record of a wave is placed by the namespace's lookup (the wave
 // router), and a placement holds while the namespace it was made in does.
@@ -39,14 +39,14 @@ function session() {
     kernel.chown(`home/user/repo/d${d}`, 1000, 1000);
   }
   const files = new ProcessFiles(engine);
-  const router = engine.waveRouter;
-  assert.ok(router, 'the namespace installs its wave router');
+  const router = files.waves.router;
+  assert.ok(router, 'the namespace ingests with its wave router');
   const lookups = { count: 0, routed: 0 };
   const resolve = router.resolveDirectory.bind(router);
   router.resolveDirectory = (...args) => { lookups.count++; return resolve(...args); };
   // The asynchronous router path, which a record that lands here never takes.
-  const routeRecord = engine.routeRecord.bind(engine);
-  engine.routeRecord = (...args) => { lookups.routed++; return routeRecord(...args); };
+  const routeRecord = files.waves.routeRecord.bind(files.waves);
+  files.waves.routeRecord = (...args) => { lookups.routed++; return routeRecord(...args); };
   return { engine, files, kernel, user: engine.as(CRED_SESSION_USER), lookups };
 }
 
@@ -56,8 +56,8 @@ const wave = (inodes, chunkData = () => data) => ({ inodes, chunks: inodes.map((
 
 // ── Files only: each directory is looked up once ──
 {
-  const { user, lookups } = session();
-  const result = await user.writeStream(encodeWriteBatchStream(wave(Array.from({ length: FILES }, (_, i) => inode(i)))));
+  const { files, user, lookups } = session();
+  const result = await files.waves.writeStream(user, encodeWriteBatchStream(wave(Array.from({ length: FILES }, (_, i) => inode(i)))));
   assert.equal(result.ok, true, JSON.stringify(result.error));
   assert.equal(user.readdir('home/user/repo/d7').length, FILES / DIRS);
   assert.equal(lookups.count, DIRS, `a ${FILES}-file wave over ${DIRS} directories looked them up ${lookups.count} times`);
@@ -67,12 +67,12 @@ const wave = (inodes, chunkData = () => data) => ({ inodes, chunks: inodes.map((
 
 // ── A link of the wave's own starts a new view: the names after it are placed again ──
 {
-  const { user, lookups } = session();
+  const { files, user, lookups } = session();
   const inodes = Array.from({ length: 400 }, (_, i) => inode(i));
   inodes.push({ path: 'home/user/repo/link', parentPath: 'home/user/repo', kind: 'symlink', isDir: false, size: 2, mtime: 1, mode: 0o777, chunkCount: 1 });
   for (let i = 400; i < 800; i++) inodes.push(inode(i));
   const link = new TextEncoder().encode('d0');
-  const result = await user.writeStream(encodeWriteBatchStream(wave(inodes, (entry) => (entry.kind === 'symlink' ? link : data))));
+  const result = await files.waves.writeStream(user, encodeWriteBatchStream(wave(inodes, (entry) => (entry.kind === 'symlink' ? link : data))));
   assert.equal(result.ok, true, JSON.stringify(result.error));
   assert.equal(user.readlink('home/user/repo/link'), 'd0');
   assert.ok(lookups.count > DIRS + 1, `the names after the wave's own link were not placed again (${lookups.count} lookups)`);
@@ -114,7 +114,7 @@ function atCommitOf(s, path, change) {
   const s = aliasSession();
   const mounted = new MemoryVFS();
   const done = atCommitOf(s, 'home/user/repo/real/f200', () => s.files.vfs.mount('/home/user/repo/alias', mounted));
-  const result = await s.user.writeStream(encodeWriteBatchStream(aliased(FILES)));
+  const result = await s.files.waves.writeStream(s.user, encodeWriteBatchStream(aliased(FILES)));
   const before = done();
   assert.ok(before > 0 && before < FILES, `the mount came between groups (${before} committed before it)`);
   assert.equal(s.real(), before, `${s.real() - before} files were written to SQLite under a name a mount now covers`);
@@ -139,7 +139,7 @@ function atCommitOf(s, path, change) {
     s.kernel.unlink('home/user/repo/alias');
     s.kernel.symlink('/shared', 'home/user/repo/alias');
   });
-  const result = await s.user.writeStream(encodeWriteBatchStream(aliased(FILES)));
+  const result = await s.files.waves.writeStream(s.user, encodeWriteBatchStream(aliased(FILES)));
   const before = done();
   assert.ok(before > 0 && before < FILES, `the repoint came between groups (${before} committed before it)`);
   assert.equal(s.real(), before, `${s.real() - before} files were written to /real after the alias led to /shared`);
@@ -159,7 +159,7 @@ function atCommitOf(s, path, change) {
   const filler = Array.from({ length: 400 }, (_, i) => inode(i));
   const late = { path: 'home/user/repo/alias/b', parentPath: 'home/user/repo/alias', kind: 'file', isDir: false, size: 200, mtime: 1, mode: 0o644, chunkCount: 1 };
   const replacing = { path: 'home/user/repo/alias', parentPath: 'home/user/repo', kind: 'file', isDir: false, size: 200, mtime: 1, mode: 0o644, chunkCount: 1 };
-  const result = await s.user.writeStream(encodeWriteBatchStream(aliased(40, [replacing, ...filler, late])));
+  const result = await s.files.waves.writeStream(s.user, encodeWriteBatchStream(aliased(40, [replacing, ...filler, late])));
   assert.equal(shared.readdir('/').includes('b'), false, 'a name under the replaced link was written through it, to /shared/b');
   assert.equal(result.ok, false, 'the wave wrote a name under a regular file');
   assert.equal(result.error.errno, 'ENOTDIR', JSON.stringify(result.error));
