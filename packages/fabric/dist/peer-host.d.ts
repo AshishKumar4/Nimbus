@@ -145,9 +145,9 @@ export declare class PeerHost {
      * the leg carries the parts and rebuilds the object on each side: no
      * buffering, no size ceiling, and an SSE or chunked body still flows live.
      *
-     * The response body is re-piped through an identity stream owned by THIS
-     * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns.
+     * The resident facade re-pipes its response through this host's native
+     * stream while it owns the work. Its body is already this isolate's and
+     * can cross the RPC boundary without another pipe.
      */
     routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**

@@ -9,9 +9,19 @@ export class HostActivity {
         this.observations.add(observation);
         if (this.owners.size)
             this.start(observation);
-        return () => { this.observations.delete(observation); observation.current?.abort.abort(); };
+        return {
+            acquire: (signal) => {
+                if (!this.observations.has(observation))
+                    throw new Error('Nimbus: the process is no longer running');
+                return this.hold(signal, observation);
+            },
+            close: () => { this.observations.delete(observation); observation.current?.abort.abort(); },
+        };
     }
     acquire(signal) {
+        return this.hold(signal);
+    }
+    hold(signal, dependency) {
         signal?.throwIfAborted();
         let rejectReady;
         const cancel = () => {
@@ -26,9 +36,12 @@ export class HostActivity {
                 this.stop();
         };
         this.owners.add(cancel);
-        const ready = this.observations.size ? new Promise((resolve, reject) => {
+        for (const observation of this.observations)
+            if (!observation.failed)
+                this.start(observation);
+        const ready = dependency ? new Promise((resolve, reject) => {
             rejectReady = reject;
-            Promise.all([...this.observations].map((observation) => this.start(observation))).then(() => resolve(), reject);
+            this.start(dependency).then(resolve, reject);
         }) : undefined;
         ready?.catch(() => { });
         signal?.addEventListener('abort', release, { once: true });
@@ -139,6 +152,31 @@ export function hostActivity(host) {
         activities.set(host, activity);
     }
     return activity;
+}
+/** Target validation and response work share one lease through native body completion. */
+export async function hostResponse(ctx, observation, request, dispatch) {
+    const lease = observation.acquire(request.signal);
+    try {
+        await lease.ready;
+        request.signal.throwIfAborted();
+        const response = await dispatch();
+        // An upgrade transfers native socket ownership to its caller at the handshake.
+        if (response.webSocket || response.body === null) {
+            lease.release();
+            return response;
+        }
+        const declared = request.method === 'HEAD' ? null : response.headers.get('Content-Length');
+        const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
+        const { readable, writable } = Number.isSafeInteger(length)
+            ? new FixedLengthStream(length)
+            : new IdentityTransformStream();
+        ctx.waitUntil(response.body.pipeTo(writable).finally(lease.release).catch(() => { }));
+        return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
+    }
+    catch (error) {
+        lease.release();
+        throw error;
+    }
 }
 /** One native fetch endpoint, outside the guest's HTTP handler, on every resident class. */
 export function observeResidentConfig(config, capability) {

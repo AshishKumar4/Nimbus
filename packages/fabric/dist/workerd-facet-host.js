@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_WATCH_HEADER, observeResidentConfig } from './host-activity.js';
+import { hostActivity, hostResponse, HOST_WATCH_HEADER, observeResidentConfig } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -422,14 +422,16 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     // A caller reads whichever of `started` and the lifecycle it needs, so keep
     // the runtime from reporting the other as an unhandled rejection.
     started.catch(() => { });
-    stopObserving = hostActivity(ctx).observe((signal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } })), (error) => { if (!released)
+    const observation = hostActivity(ctx).observe((signal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } })), (error) => { if (!released)
         markLost(error); });
+    stopObserving = observation.close;
     return {
         started,
         lost,
+        acquireActivity: observation.acquire,
         // A request can arrive before the boot call; it creates the facet as that call would.
-        handleHttpRequest: (request) => facet.handleHttpRequest(request),
-        handleWebSocketRequest: (request) => facet.fetch(request),
+        handleHttpRequest: (request) => hostResponse(ctx, observation, request, () => facet.handleHttpRequest(request)),
+        handleWebSocketRequest: (request) => hostResponse(ctx, observation, request, () => facet.fetch(request)),
         release,
         name,
         slot,

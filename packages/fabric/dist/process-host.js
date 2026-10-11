@@ -67,7 +67,7 @@
  */
 import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity } from './host-activity.js';
+import { hostActivity, hostResponse } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
@@ -315,7 +315,6 @@ class PeerProcessHost {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const loss = new HostLoss();
         let stopObserving = () => { };
-        let started;
         try {
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
@@ -335,10 +334,30 @@ class PeerProcessHost {
             }));
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
-            stopObserving = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal), (error) => loss.lose(error), opened.incarnation);
+            const observation = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal), (error) => loss.lose(error), opened.incarnation);
+            stopObserving = observation.close;
             const starting = hostActivity(this.ctx).acquire();
-            started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
+            const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
             started.catch(() => { });
+            let released = false;
+            return {
+                started,
+                lost: loss.signal,
+                handleHttpRequest: (request) => loss.route(() => hostResponse(this.ctx, observation, request, () => this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request)))),
+                handleWebSocketRequest: (request) => loss.route(() => hostResponse(this.ctx, observation, request, () => this.withPeer(placement.peerName, (stub) => routeWebSocketThroughPeer(stub, params.workerKey, webSocketCapability, request)))),
+                release: async () => {
+                    if (released)
+                        return;
+                    released = true;
+                    stopObserving();
+                    loss.release();
+                    this.tokensInUse.delete(params.pid);
+                    await this._cancel(params.workerKey, placement.peerName);
+                    await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
+                },
+                describe: () => `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
+                    + `; ${describeImageDelivery(this.imageDelivery)}`,
+            };
         }
         catch (error) {
             stopObserving();
@@ -351,25 +370,6 @@ class PeerProcessHost {
             await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
             throw error;
         }
-        let released = false;
-        return {
-            started,
-            lost: loss.signal,
-            handleHttpRequest: (request) => loss.route(() => this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request))),
-            handleWebSocketRequest: (request) => loss.route(() => this.withPeer(placement.peerName, (stub) => routeWebSocketThroughPeer(stub, params.workerKey, webSocketCapability, request))),
-            release: async () => {
-                if (released)
-                    return;
-                released = true;
-                stopObserving();
-                loss.release();
-                this.tokensInUse.delete(params.pid);
-                await this._cancel(params.workerKey, placement.peerName);
-                await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
-            },
-            describe: () => `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
-                + `; ${describeImageDelivery(this.imageDelivery)}`,
-        };
     }
     reconcile() {
         if (!this.reconciliation) {

@@ -12,6 +12,7 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
+import { type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
@@ -138,6 +139,7 @@ export declare function abortFacet(ctx: DurableObjectState, name: string, reason
 export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
     name: string;
     slot?: number;
+    acquireActivity(signal?: AbortSignal): HostActivityLease;
 };
 /**
  * The process surface of one hosting actor: how a resident process comes

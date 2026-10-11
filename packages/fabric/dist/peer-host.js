@@ -18,7 +18,7 @@ import { z } from 'zod/v4';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
-import { hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { HOST_INCARNATION_HEADER } from './host-activity.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
@@ -297,9 +297,9 @@ export class PeerHost {
      * the leg carries the parts and rebuilds the object on each side: no
      * buffering, no size ceiling, and an SSE or chunked body still flows live.
      *
-     * The response body is re-piped through an identity stream owned by THIS
-     * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns.
+     * The resident facade re-pipes its response through this host's native
+     * stream while it owns the work. Its body is already this isolate's and
+     * can cross the RPC boundary without another pipe.
      */
     async routeHttp(workerKey, wire) {
         return this.answer(workerKey, async () => {
@@ -316,17 +316,11 @@ export class PeerHost {
                 init.duplex = 'half';
             }
             const response = await facet.handleHttpRequest(new Request(wire.url, init));
-            let body = null;
-            if (response.body) {
-                const { readable, writable } = new IdentityTransformStream();
-                this.ctx.waitUntil(response.body.pipeTo(writable).catch(() => { }));
-                body = readable;
-            }
             return {
                 status: response.status,
                 statusText: response.statusText,
                 headers: headerPairs(response.headers),
-                body,
+                body: response.body,
             };
         });
     }
@@ -394,8 +388,8 @@ export class PeerHost {
             return new Response('Not found', { status: 404 });
         const result = await this.answer(key, async () => {
             const record = await this.awaitRecord(key);
-            await record.facet;
-            const lease = hostActivity(this.ctx).acquire(request.signal);
+            const facet = await record.facet;
+            const lease = facet.acquireActivity(request.signal);
             let held;
             let released = false;
             const release = () => {
