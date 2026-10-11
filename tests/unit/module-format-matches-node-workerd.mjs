@@ -126,7 +126,8 @@ const RUNS = [
   ['class.js'],
   ['not-bindings.js'],
   ['awaits.js'],
-  ['template-await.js'],
+  // template-await.js's SyntaxError, V8's, is compared in es-module-scope-errors-workerd:
+  // its arrow there is the parser's, not V8's range.
   ['typeofs.mjs'],
   ['arrow.js'],
   ['awaitcall.js'],

@@ -87,10 +87,12 @@ export interface Interpreter {
    * The module cell for a file's text: Node's wrapper function of
    * (exports, require, module, __filename, __dirname). CommonJS text runs as
    * that function's body; an ES module is linked as runtime/esm-interop.ts
-   * says, with the host's moduleHelpers. `javaScript`: the text is
-   * JavaScript whatever the path's extension (a TypeScript file's emit).
+   * says, with the host's moduleHelpers. Which one the text is, is
+   * `format` where the loader knows it (an `.mjs`, a "type"), else its
+   * syntax (Node's detection). `javaScript`: the text is JavaScript
+   * whatever the path's extension (a TypeScript file's emit).
    */
-  compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean): ModuleCell;
+  compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean, format?: 'module' | 'commonjs'): ModuleCell;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -324,7 +326,9 @@ function hasModuleSyntax(program: Program): boolean {
  * import or export declarations, or when it parses only as one (top-level
  * await, import.meta); else CommonJS, a script whose top level may return.
  */
-function moduleProgram(text: string): { readonly module: boolean; readonly program: Owned<Program> } {
+function moduleProgram(text: string, format?: 'module' | 'commonjs'): { readonly module: boolean; readonly program: Owned<Program> } {
+  if (format === 'module') return { module: true, program: ownProgram(parseQuick(text, MODULE_OPTIONS)) };
+  if (format === 'commonjs') return { module: false, program: ownProgram(parseQuick(text, COMMONJS_OPTIONS)) };
   let module: Owned<Program> | null = null;
   try {
     module = ownProgram(parseQuick(text, MODULE_OPTIONS));
@@ -401,12 +405,12 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
     },
 
-    compileModule(path, text, origin, javaScript = false) {
+    compileModule(path, text, origin, javaScript = false, format) {
       if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
       const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
       const moduleHost = unitHost(host, origin, parentUrl);
-      const parsed = moduleProgram(text);
+      const parsed = moduleProgram(text, format);
       if (parsed.module) {
         const program = parsed.program;
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });

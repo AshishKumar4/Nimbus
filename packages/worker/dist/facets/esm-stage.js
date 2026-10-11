@@ -16,7 +16,7 @@ import { commonJsCellModuleName } from '@nimbus-sh/core/_shared/commonjs-cell.js
 import { createEsmResolver } from '@nimbus-sh/core/_shared/esm-resolver.js';
 import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
-import { builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource, stageEsModule, } from '@nimbus-sh/core/runtime/native-esm.js';
+import { builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource, stageEsModule, } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
 import { UNDICI_SHIM_EXPORTS } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { resolveRequireEx } from '@nimbus-sh/core/runtime/require-resolution.js';
@@ -183,6 +183,21 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         const exported = await exportNames(resolution.path);
         return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
     };
+    // A `.js` that is a module by its syntax alone, outside node_modules,
+    // under a package.json with no "type": Node's loader warns of it (ESM_TYPELESS).
+    for (let at = 0; at < targetIds.length; at++) {
+        const row = table[at];
+        if (row[0] !== 'module')
+            continue;
+        const key = row[1];
+        if (!key.endsWith('.js') || key.split('/').includes('node_modules'))
+            continue;
+        const url = new URL('file://');
+        url.pathname = '/' + key;
+        const scope = await resolver.packageScope(url.href);
+        if (scope.exists && scope.type === 'none')
+            table[at] = ['module', key, row[2], (row[3] ?? 0) | ESM_TYPELESS, scope.pjsonPath];
+    }
     // Each module's static imports, as the registry links them.
     const targetNames = [];
     let id = 0;

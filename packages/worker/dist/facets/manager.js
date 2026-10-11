@@ -689,7 +689,7 @@ function programEntry(userCode, filename, cwd, esModule, bundleSource) {
         const path = JSON.stringify('/' + key);
         return {
             name: cell, esModule: false, modules: {}, stackEntry: 'null',
-            evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(cell)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
+            evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(cell)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
         };
     }
     const code = rewriteProvidedCommonJsModules(userCode);
@@ -700,7 +700,7 @@ function programEntry(userCode, filename, cwd, esModule, bundleSource) {
         name,
         esModule: false,
         modules: { [name]: wrapped.text },
-        evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
+        evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
         // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
         stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail]),
     };

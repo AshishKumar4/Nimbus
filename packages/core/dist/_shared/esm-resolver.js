@@ -530,28 +530,32 @@ export function createEsmResolver(host, options = {}) {
         }
         return next.value;
     }
-    return {
-        async resolve(specifier, parentUrl) {
-            const steps = importTarget(specifier, parentUrl);
-            let next = steps.next();
-            while (!next.done) {
-                let answer;
-                try {
-                    answer = await next.value;
-                }
-                catch (error) {
-                    next = steps.throw(error);
-                    continue;
-                }
-                next = steps.next(answer);
+    async function runAsync(steps) {
+        let next = steps.next();
+        while (!next.done) {
+            let answer;
+            try {
+                answer = await next.value;
             }
-            return next.value;
-        },
+            catch (error) {
+                next = steps.throw(error);
+                continue;
+            }
+            next = steps.next(answer);
+        }
+        return next.value;
+    }
+    return {
+        resolve: (specifier, parentUrl) => runAsync(importTarget(specifier, parentUrl)),
         resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
         metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
         packageScopeSync(url) {
-            const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
-            return { pjsonPath, type };
+            const { exists, pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+            return { exists, pjsonPath, type };
+        },
+        async packageScope(url) {
+            const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(new URL(url)));
+            return { exists, pjsonPath, type };
         },
         assertLoadable({ format, path }) {
             if (format !== 'unknown' || path === undefined)
