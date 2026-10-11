@@ -17,7 +17,7 @@ const env = { NIMBUS_SESSION: {
       [Symbol.dispose]() { disposed++; },
     };
   },
-};
+} };
 const session = Object.assign(Object.create(NimbusSession.prototype), {
   ctx: { id: 'session' }, env, terminal: { id: 'terminal', signal: new AbortController().signal, writeln() {} },
   terminalInputDispatcher: null, terminalInputPending: 0,
