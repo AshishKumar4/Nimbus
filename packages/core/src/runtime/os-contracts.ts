@@ -328,7 +328,7 @@ export interface RuntimeFsBridge {
   /** N17: see {@link NimbusFilesystemAuthority.gateLaunch}; absent where nothing is ever imported lazily. */
   gateLaunch?(named: readonly string[]): Promise<void>;
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsStat | null>;
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<Uint8Array | null>;
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }): Awaitable<Uint8Array | null>;
   /**
    * Whole-file write. Returns the revision the write produced, so a caller
    * holding the bytes it just sent can tell its own mutation apart from a

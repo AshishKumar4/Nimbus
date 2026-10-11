@@ -1,7 +1,6 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
-import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
@@ -276,7 +275,7 @@ class PythonReplAdapter implements ReplAdapter {
     if (!(await vfs.exists(stdlibPath))) {
       throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
     }
-    this.wasmBytes = toArrayBuffer(await vfs.readFile(wasmPath));
+    this.wasmBytes = await vfs.readArrayBufferUncached(wasmPath);
 
     this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 

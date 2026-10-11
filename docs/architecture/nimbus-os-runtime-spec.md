@@ -553,6 +553,17 @@ Implementation rules:
   TCP remains separate. Inbound WebSocket upgrade to a Node guest server is
   not implemented in Nimbus (before or after this cutover); Cirrus's existing
   HMR bridge is unchanged.
+- W8 under a workspace egress: Node `net.connect` and `net.Socket` use the
+  native socket transport through the egress's `connect`. An optional
+  `connectTls({ hostname, port })` owns TLS and returns its plaintext streams;
+  `tls.connect({ socket })` closes the plain connection and continues on those
+  streams. Without that method TLS retains its named refusal. Without an
+  egress, Node outbound TCP retains its current refusal. Inline Node
+  WebSockets relay their upgrade, messages and close through `egress.fetch`.
+  Known Node difference: workerd resolves a refused plain CONNECT's
+  `socket.opened` and then signals EOF/close without bytes or the egress's
+  refusal text; it does not emit an ECONNREFUSED error. A rejected
+  `connectTls` RPC preserves the egress's error reason.
 - Static serving is explicit only. Do not hide static-server substitutions behind
   language server paths.
 

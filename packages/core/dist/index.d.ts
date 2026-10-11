@@ -21,7 +21,7 @@ export type { NimbusAppVerbs, NimbusShellCtx, NimbusVerbDeps, RuntimeWarmHook, R
 export type { MinShellRegistry, RunnerFactory, RuntimeSummary, } from './runtime/installed-runtimes.js';
 export type { ManifestEntrypoint, ManifestFile, RuntimeManifest, } from './runtime/runtime-manifest.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
-export { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from './_shared/workspace-network.js';
+export { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceEgressTls, type WorkspaceNetwork } from './_shared/workspace-network.js';
 export type { Facet, FacetBindings, FacetHost, FacetSpec, FacetSubmitOptions, } from './runtime/facet-host.js';
 export { facetTaskSource, type FacetTaskSource } from './runtime/facet-task.js';
 //# sourceMappingURL=index.d.ts.map

@@ -139,7 +139,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
 
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
     this.guard(); return this.target.writeFile(path, bytes, options);
   }
@@ -899,7 +899,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return stat === null ? null : runtimeStatOf(stat);
     });
   }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }) {
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }) {
     return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => this.namespace.readFile((await this.path(path, options?.followSymlinks !== false)))));
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions) {
@@ -1428,19 +1428,19 @@ export class ProcessView implements VFS {
   async readFileUncached(path: string): Promise<Uint8Array> {
     return new Uint8Array(await this.readArrayBufferUncached(path));
   }
-  /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+  /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
+   *
+   * One whole-file read through the normal credentialed namespace view, with
+   * the LRU bypassed: the image is read once for a facet's module map, never
+   * re-read from this isolate. One read is also one coherent image on every
+   * backend — no ranges to version against each other, no capability to
+   * probe. A caller mutating the returned buffer cannot disturb the store:
+   * the uncached path hands back its own buffer.
+   */
   async readArrayBufferUncached(path: string): Promise<ArrayBuffer> {
-    const stat = await this.stat(path);
-    if (stat === null) throw syscallError('ENOENT', 'open', path);
-    const buffer = new ArrayBuffer(stat.size);
-    const result = new Uint8Array(buffer);
-    for (let offset = 0; offset < result.length;) {
-      const bytes = await this.readRangeUncached(path, offset, Math.min(65536, result.length - offset));
-      if (bytes.length === 0) throw syscallError('ESTALE', 'read', path, { detail: 'changed during the read' });
-      result.set(bytes, offset);
-      offset += bytes.length;
-    }
-    return buffer;
+    const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false }));
+    if (bytes === null) throw syscallError('ENOENT', 'open', path);
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   }
   /**
    * rm: a file, or with `recursive` a tree, whole or not at all; `force`

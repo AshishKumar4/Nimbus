@@ -1,0 +1,1 @@
+{"version":3,"file":"realm-websocket-guest.d.ts","sourceRoot":"","sources":["../../src/runtime/realm-websocket-guest.ts"],"names":[],"mappings":"AAAA,OAAO,EAAwB,KAAK,mBAAmB,EAA2B,MAAM,sBAAsB,CAAC;AAG/G,gFAAgF;AAChF,wBAAgB,0BAA0B,CAAC,IAAI,EAAE,CAAC,KAAK,EAAE,mBAAmB,KAAK,IAAI,EAAE,OAAO,EAAE,MAAM,IAAI,EAAE,MAAM,EAAE,MAAM,MAAM;kBAiH9G,OAAO;;EAGxB"}
