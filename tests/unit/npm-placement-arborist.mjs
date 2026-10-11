@@ -45,7 +45,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { kernelInstaller, makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 /** name → version → manifest fields (dependencies, peerDependencies, optionalDependencies). */
@@ -253,7 +254,7 @@ try {
         dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, optionalDependencies: fields.optionalDependencies,
         exports: null, main: 'index.js', module: '', bin: {},
       };
-      return { ...empty, pkg, deps: pkg.dependencies, peerDeps: pkg.peerDependencies ?? {}, optionalDeps: pkg.optionalDependencies ?? {}, cacheWrites: [cacheRowForPackage(pkg)] };
+      return { ...empty, pkg, deps: pkg.dependencies, peerDeps: pkg.peerDependencies ?? {}, optionalDeps: pkg.optionalDependencies ?? {}, cacheWrites: [registryRecord(pkg, Date.now())] };
     };
     const harness = createSqliteVfsTestHarness(new Database(':memory:'));
     const vfs = new SqliteVFS(harness.sql, harness.ctx);
