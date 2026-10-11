@@ -116,8 +116,6 @@ declare const ReferenceErrorConstructor: ReferenceErrorConstructor;
 declare const RegExpConstructor: RegExpConstructor;
 declare const SyntaxErrorConstructor: SyntaxErrorConstructor;
 declare const TypeErrorConstructor: TypeErrorConstructor;
-/** Ignore a program's Error[Symbol.hasInstance] when stamping native errors. */
-export declare function errorInstance(value: unknown): boolean;
 export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, };
 /**
  * A data property descriptor that inherits nothing: ToPropertyDescriptor

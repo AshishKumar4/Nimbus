@@ -1964,7 +1964,7 @@ export class Compiler {
                 const bg = asGen(b);
                 return genCode(function* (env) { return (yield* tg(env)) ? yield* ag(env) : yield* bg(env); });
             }
-            case 'CallExpression': return this.located(this.call(node, false), node.callee.start);
+            case 'CallExpression': return this.located(this.call(node, false), node.callee.type === 'MemberExpression' ? node.callee.property.start : node.callee.start);
             case 'NewExpression': return this.located(this.newExpr(node), node.start);
             case 'SequenceExpression': {
                 const parts = this.exprs(node.expressions);
@@ -1988,7 +1988,7 @@ export class Compiler {
             case 'YieldExpression': return this.yieldExpr(node);
             case 'AwaitExpression': return this.awaitExpr(node);
             case 'TemplateLiteral': return this.template(node);
-            case 'TaggedTemplateExpression': return this.tagged(node);
+            case 'TaggedTemplateExpression': return this.located(this.tagged(node), node.tag.start);
             case 'ClassExpression': return this.classCode(node, node.id ? node.id.name : '');
             case 'MetaProperty': return syncCode(this.metaProperty(node));
             case 'ChainExpression': {
@@ -2204,19 +2204,24 @@ export class Compiler {
         const callee = this.callee(node.tag, false);
         const args = this.argumentList(node.quasi.expressions);
         const text = this.textOf(node.tag.start, node.tag.end);
+        const position = node.tag.start + this.base;
         if (callee.g === null && args.g === null) {
             const c = callee.s;
             const a = args.s;
             return syncCode((env) => {
                 const callee = c(env);
-                return callValue(callee[0], callee[1], withFirst(site(), a(env)), text);
+                const list = withFirst(site(), a(env));
+                callPosition(position);
+                return callResult(callValue(callee[0], callee[1], list, text));
             });
         }
         const cg = asGen(callee);
         const ag = asGen(args);
         return genCode(function* (env) {
             const callee = yield* cg(env);
-            return callValue(callee[0], callee[1], withFirst(site(), yield* ag(env)), text);
+            const list = withFirst(site(), yield* ag(env));
+            callPosition(position);
+            return callResult(callValue(callee[0], callee[1], list, text));
         });
     }
     unary(node) {
@@ -2631,6 +2636,7 @@ export class Compiler {
         }
         if (node.type === 'CallExpression' && node.callee.type !== 'Super') {
             const callee = node.callee;
+            const position = (callee.type === 'MemberExpression' ? callee.property.start : callee.start) + this.base;
             const optional = node.optional;
             const args = asGen(this.argumentList(node.arguments));
             const text = this.textOf(callee.start, callee.end);
@@ -2647,7 +2653,9 @@ export class Compiler {
                     const fn = privateName ? privateName(env).get(o) : ops.get(o, key ? yield* key(env) : name);
                     if (optional && (fn === null || fn === undefined))
                         return SHORT;
-                    return callValue(fn, o, yield* args(env), text);
+                    const list = yield* args(env);
+                    callPosition(position);
+                    return callResult(callValue(fn, o, list, text));
                 });
             }
             const fnCode = this.chainGen(callee);
@@ -2655,7 +2663,9 @@ export class Compiler {
                 const fn = yield* fnCode(env);
                 if (fn === SHORT || (optional && (fn === null || fn === undefined)))
                     return SHORT;
-                return callValue(fn, undefined, yield* args(env), text);
+                const list = yield* args(env);
+                callPosition(position);
+                return callResult(callValue(fn, undefined, list, text));
             });
         }
         return asGen(this.expr(node));

@@ -4,7 +4,7 @@
  * lazily. Nothing allocates a stack, or writes a statement position, until an
  * error is made. Native wrappers delimit these activations in V8's stack.
  */
-import { SafeWeakMap, charCodeAt, errorInstance, globalObject, newSafeList, objectHasOwn, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf, } from './intrinsics.js';
+import { SafeWeakMap, charCodeAt, globalObject, newSafeList, objectHasOwn, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf, } from './intrinsics.js';
 // Suffix slots, filled with own properties by frameTemplate/withElement.
 export const STACK_SLOTS = 9;
 const INFO = 0, FN = 1, RECEIVER = 2, CONSTRUCTOR = 3, PARENT = 4, ASYNC_PARENT = 5, ASYNC_AT = 6, RESUMED = 7, AT = 8;
@@ -50,15 +50,18 @@ export function callResult(value) {
     if (pendingAsync !== null)
         promises.set(value, pendingAsync);
     pendingAsync = null;
-    if (errorInstance(value))
-        stampStack(value);
+    if (active !== null) {
+        const info = active[active.length - STACK_SLOTS + INFO];
+        if (info.unit.isError !== null && info.unit.isError(value))
+            stampStack(value);
+    }
     return value;
 }
 export function suspendedStack(env) {
     const at = env.length - STACK_SLOTS;
     env[at + RESUMED] = true;
     const info = env[at + INFO];
-    if (info.shape === 'async' || info.shape === 'asyncArrow')
+    if (info.shape === 'async' || info.shape === 'asyncArrow' || info.shape === 'asyncGenerator')
         pendingAsync = env;
 }
 /** Only an await establishes an async parent; an un-awaited call does not. */
@@ -181,14 +184,15 @@ function snapshot(position, above) {
 export function stampStack(error, position, above, replace = false) {
     if (!object(error) || active === null || (!replace && stamped.has(error)))
         return;
+    const info = active[active.length - STACK_SLOTS + INFO];
+    if (info.unit.capture === null)
+        return;
     try {
         const frames = snapshot(position, above);
         if (frames.length === 0 && typeof above !== 'function')
             return;
         stamped.set(error, frames);
-        const info = active[active.length - STACK_SLOTS + INFO];
-        if (info.unit.capture !== null)
-            info.unit.capture(error, frames);
+        info.unit.capture(error, frames);
     }
     catch {
         // Diagnostics cannot replace the thrown value (a Proxy receiver or a

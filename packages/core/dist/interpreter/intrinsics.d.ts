@@ -73,7 +73,6 @@ export declare const SafeAsyncGeneratorPrototype: object;
 export declare const LAUNCH_PRIMORDIALS: object;
 export declare const BigInt: BigIntConstructor;
 export declare const Error: ErrorConstructor;
-export declare const errorInstance: typeof primordials.errorInstance;
 export declare const RangeError: RangeErrorConstructor;
 export declare const ReferenceError: ReferenceErrorConstructor;
 export declare const RegExp: RegExpConstructor;

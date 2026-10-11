@@ -290,9 +290,11 @@ export function createInterpreter(hostOps, host) {
     const runtime = new InterpreterRuntime(hostOps);
     const capture = reflectGetOwnPropertyDescriptor(host, 'stackCapture')?.value;
     const isProxy = reflectGetOwnPropertyDescriptor(host, 'stackIsProxy')?.value;
+    const isError = reflectGetOwnPropertyDescriptor(host, 'stackIsError')?.value;
     const stackUnit = (source, file, esModule) => ({
         source, file, esModule, capture: typeof capture === 'function' ? capture : null,
         isProxy: typeof isProxy === 'function' ? isProxy : null,
+        isError: typeof isError === 'function' ? isError : null,
     });
     const interpreter = {
         captureStack(error, above) { stampStack(error, undefined, above, true); },

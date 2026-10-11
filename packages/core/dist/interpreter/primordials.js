@@ -101,11 +101,6 @@ const ReferenceErrorConstructor = ReferenceError;
 const RegExpConstructor = RegExp;
 const SyntaxErrorConstructor = SyntaxError;
 const TypeErrorConstructor = TypeError;
-const FunctionPrototypeHasInstance = Function.prototype[Symbol.hasInstance];
-/** Ignore a program's Error[Symbol.hasInstance] when stamping native errors. */
-export function errorInstance(value) {
-    return reflectApply(FunctionPrototypeHasInstance, ErrorConstructor, [value]);
-}
 // The interpreter's modules import these under the globals' names, so their
 // `new TypeError(...)` constructs the realm's own.
 export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, };

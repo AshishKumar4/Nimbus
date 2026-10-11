@@ -46,6 +46,7 @@ export interface InterpreterHost {
     /** The launch's single stack path; absent in hosts with no Node stack formatter. */
     readonly stackCapture?: (error: object, frames: readonly InterpretedFrame[]) => void;
     readonly stackIsProxy?: (value: unknown) => boolean;
+    readonly stackIsError?: (value: unknown) => boolean;
 }
 /**
  * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
