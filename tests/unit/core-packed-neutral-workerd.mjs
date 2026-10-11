@@ -42,13 +42,16 @@ export default { fetch(request, env) { return env.WORKSPACES.get(env.WORKSPACES.
   await new Promise((resolve) => portServer.listen(0, '127.0.0.1', resolve));
   const port = portServer.address().port;
   await new Promise((resolve) => portServer.close(resolve));
+  // Native workerd's inMemory backend has no SQLite API; exercise the actual
+  // SQL-backed actor through its disk service, as a production workspace does.
+  mkdirSync(join(root, 'store'));
   writeFileSync(join(root, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
  services = [(name = "main", worker = (
-  modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat"],
+  modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["new_module_registry"],
   durableObjectNamespaces = [(className = "Workspace", uniqueKey = "packed-core", enableSql = true)],
-  durableObjectStorage = (inMemory = void), bindings = [(name = "WORKSPACES", durableObjectNamespace = "Workspace")]
- ))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]
+  durableObjectStorage = (localDisk = "store"), bindings = [(name = "WORKSPACES", durableObjectNamespace = "Workspace")]
+ )), (name = "store", disk = (path = ${JSON.stringify(join(root, 'store'))}, writable = true))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]
 );`);
   const require = createRequire(import.meta.url);
   const workerd = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
