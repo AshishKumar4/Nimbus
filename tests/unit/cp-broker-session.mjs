@@ -33,8 +33,9 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
 const decoder = new TextDecoder();
 
 {
-  const { NimbusSession, bindRuntimeServices } = await importWorkerBundle({
+  const { NimbusSession, SessionFilesystem, bindRuntimeServices } = await importWorkerBundle({
     'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
     'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
   });
 
@@ -72,8 +73,8 @@ const decoder = new TextDecoder();
   Object.assign(session, bindRuntimeServices(session, {
     ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; },
   }));
-  session.sqliteFs = rawVfs;
   session.processes = processes;
+  session.filesystem = new SessionFilesystem(rawVfs, session);
   session.terminal = terminal;
   const closedRelays = [];
   session.webSocketRelay = { closeForPid(pid) { closedRelays.push(pid); } };

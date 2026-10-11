@@ -6,6 +6,8 @@ import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SessionFilesystem } from './session-filesystem.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type PortVisibility } from './port-capability.js';
@@ -50,7 +52,11 @@ export interface ProgrammaticHost extends TimerHost {
     readonly runtimeWorkspace: NimbusWorkspace | null;
     shell: ProgrammaticShell | null;
     shellProcessPid: number | null;
-    sqliteFs: SqliteVFS | null;
+    readonly sqliteFs: SqliteVFS | null;
+    /** The session's filesystem resource, where the host owns one (NimbusSession): a destroy closes it. */
+    filesystem?: SessionFilesystem | null;
+    /** The namespace every file the caller names is read and changed through. */
+    getFilesystemAuthority(): ProcessFiles;
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
     facetManagerComposed: ComposedFacetManager | null;
@@ -78,9 +84,6 @@ export interface ProgrammaticHost extends TimerHost {
     } | null;
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
-    _supervisorOps?: {
-        forget(pid: number): void;
-    } | null;
     sessionBasePath?: string;
     sessionBasePathHydrated?: boolean;
     /** The origin the session was last reached at — what a path-form URL is built on. */

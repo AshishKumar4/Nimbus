@@ -1,7 +1,8 @@
 /**
  * The editor pane's filesystem messages, over the terminal's WebSocket
  * (fs-read, fs-write, fs-list, each answered by a `<type>-result` frame):
- * read and written as the kernel, each answer computed whole.
+ * read and written as the kernel through the session's namespace
+ * (ProcessFiles.namespaceFs), mounts included, each answer computed whole.
  *
  * Binary refuse: fs-read uses readFile(bytes) + fatal:true UTF-8 decode.
  * Throws on invalid bytes → reply { binary:true } with no content. The
@@ -11,6 +12,8 @@
  */
 import { parentVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
+/** A message's path, as the namespace names it. */
+const absolute = (path) => `/${stripLeadingSlashes(String(path || ''))}`;
 /**
  * The frame answering `msg`, computed again once a delegation it meets is
  * recalled (withRecall): the editor's reads and writes wait for a process
@@ -32,7 +35,7 @@ export function serveEditorFs(views, msg) {
 }
 function answerEditorFs(kernelFs, msg) {
     if (msg.type === 'fs-read') {
-        const p = stripLeadingSlashes(String(msg.path || ''));
+        const p = absolute(msg.path);
         if (!kernelFs.exists(p)) {
             return { type: 'fs-read-result', path: msg.path, error: 'ENOENT: no such file or directory' };
         }
@@ -64,23 +67,23 @@ function answerEditorFs(kernelFs, msg) {
         const parent = parentVfsPath(p);
         if (parent)
             try {
-                kernelFs.mkdir(parent, { recursive: true });
+                kernelFs.mkdir(`/${parent}`, { recursive: true });
             }
             catch (error) {
                 if (recallOf(error) !== null)
                     throw error;
             }
         const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
-        kernelFs.writeFile(p, content);
+        kernelFs.writeFile(`/${p}`, content);
         return { type: 'fs-write-result', path: msg.path, ok: true };
     }
     if (msg.type === 'fs-list') {
-        const dir = stripLeadingSlashes(String(msg.dir || ''));
+        const dir = absolute(msg.dir);
         const recursive = msg.recursive === true;
-        if (dir && !kernelFs.exists(dir)) {
+        if (!kernelFs.exists(dir)) {
             return { type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOENT' };
         }
-        if (dir && !kernelFs.isDirectory(dir)) {
+        if (!kernelFs.isDirectory(dir)) {
             return { type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOTDIR' };
         }
         // BFS walk with per-call cap so a 10k-file project doesn't
@@ -107,8 +110,8 @@ function answerEditorFs(kernelFs, msg) {
                     break;
                 if (e.name === 'node_modules' || e.name === '.git')
                     continue; // skip noisy
-                const child = cur ? cur + '/' + e.name : e.name;
-                out.push({ path: '/' + child, type: e.type });
+                const child = cur === '/' ? '/' + e.name : cur + '/' + e.name;
+                out.push({ path: child, type: e.type });
                 if (recursive && e.type === 'directory')
                     queue.push(child);
             }

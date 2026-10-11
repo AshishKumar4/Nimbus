@@ -29,7 +29,7 @@ import type {
   SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -38,7 +38,6 @@ import { PrebundlePool } from '../facets/prebundle-pool.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
 import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
@@ -120,7 +119,8 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
-import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
+import { answerSupervisorOp } from './supervisor-op.js';
+import { SessionFilesystem } from './session-filesystem.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
@@ -325,7 +325,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     await this.runtimeReady;
   }
 
-  sqliteFs: SqliteVFS | null = null;
+  /** The session's filesystem (SessionFilesystem): opened on first use, closed whole by a destroy. */
+  filesystem: SessionFilesystem | null = null;
+  get sqliteFs(): SqliteVFS | null { return this.filesystem?.engine ?? null; }
   kernel: Kernel | null = null;
   shell: Shell | null = null;
   shellProcessPid: number | null = null;
@@ -763,15 +765,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // DEFECT-D1: ctx is protected and not on a public interface).
 
   /**
-   * The one supervisor-op handler this session's bindings, loopback stubs and
-   * `_rpc*` delegates all dispatch through — native filesystem ops against
-   * the shared bridge store, session overrides for the accounting-carrying
-   * reads and the output stream, and the canonical route table for the rest.
-   * Lazy: sqliteFs exists only after ensureSqliteFs().
-   */
-  private _supervisorOps: SessionSupervisorOps | null = null;
-  private processFiles: ProcessFiles | null = null;
-  /**
    * This instance's receipts for its processes' mutations delivered exactly
    * once. Opened in the constructor, before anything is spawned, so every
    * SUPERVISOR binding minted from this ctx names this instance.
@@ -801,38 +794,15 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
 
   /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
   getFilesystemAuthority(): ProcessFiles {
-    this.ensureSqliteFs();
-    if (!this.sqliteFs) throw new Error('Filesystem is not initialized');
-    return this.processFiles ??= new ProcessFiles(this.sqliteFs, {
-      // A delegation's holder that did not answer a recall in time is stopped
-      // (SIGKILL): its later writes are refused already (its lease ended), and
-      // a process that kept running on a subtree it no longer holds would read
-      // a view of it that is no longer true.
-      delegationRevoked: ({ pid, root, reason }) => {
-        console.warn(`[delegation] pid ${pid} lost /${root}: ${reason}; stopping it`);
-        if (!this.facetManager?.kill(pid, 'KILL')) this.processes.kill(pid, 137);
-      },
-      // A holder that ended still holding a subtree (killed mid-run): what it
-      // had decided there and not yet sent is lost, at most what it logged
-      // after its last wave. Said in its own output, naming the subtree.
-      delegationOrphaned: ({ pid, root }) => {
-        console.warn(`[delegation] pid ${pid} ended holding /${root}`);
-        this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended holding /${root}: changes it made there after its last write wave reached the session are lost\n`);
-      },
-    });
-  }
-
-  private supervisorOps(): SessionSupervisorOps {
-    if (!this._supervisorOps) this._supervisorOps = buildSessionSupervisorOps(this);
-    return this._supervisorOps;
+    return this.openFilesystem().authority;
   }
 
   /** The pid-keyed filesystem bridge behind the supervisor ops. */
   supervisorBridge(pid?: number): RuntimeFsBridge {
-    return this.supervisorOps().bridge(pid);
+    return this.openFilesystem().supervisorOps().bridge(pid);
   }
 
-  supervisorRewindBridge(pid: number): Promise<void> { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
+  supervisorRewindBridge(pid: number): Promise<void> { return this.filesystem?.rewind(pid) ?? Promise.resolve(); }
 
   // A storage wait: its input gate keeps this session's events out while the isolate's other objects run.
   // (A timer under blockConcurrencyWhile never fires: the gate holds timers too, and the object resets.)
@@ -849,7 +819,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
     // The canonical handler journals logical answers downstream of its
     // transport joins, not each attempt that brought the same request.
-    const answer = this.supervisorOps().dispatch(envelope);
+    const answer = this.openFilesystem().supervisorOps().dispatch(envelope);
     if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number') return answer;
     // What this session served a process is the read profile's only evidence (read-profile.ts).
     return answer.then((value) => {
@@ -1151,50 +1121,38 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
 
   ensureSqliteFs(): SqliteVFS {
-    if (!this.sqliteFs) {
-      this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-      // Shrink the disposable LRU while the shared transient-allocation
-      // budget is active. Edge-triggered observer callbacks keep nested and
-      // concurrent reservations from restoring the cache prematurely.
-      const vfs = this.sqliteFs;
-      registerAllocObserver({
-        onAcquire: () => {
-          try { vfs.shrinkForInstall(); } catch (e: any) {
-            console.warn('[nimbus/W5] shrinkForInstall threw:', e?.message);
-          }
-        },
-        onRelease: () => {
-          try { vfs.restoreAfterInstall(); } catch (e: any) {
-            console.warn('[nimbus/W5] restoreAfterInstall threw:', e?.message);
-          }
-        },
-      });
-      // W5 Lever 5: rehydrate the OOM ring from storage (best-effort).
-      // Survives DO hibernation; lets cf-tail-style forensics include
-      // pre-hibernate failures. Fail-soft on garbage / missing — the
-      // rehydrate function's own contract.
-      this._w5RehydrateRingFromStorage().catch((e: any) => {
-        console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
-      });
-      // Clones an earlier generation left were cut short: their destinations
-      // are reserved before anything can write there, and cleaned up
-      // (git/clone-job.ts) in the background, a slice at a time. Records not
-      // listed (yet) hold every write instead: none is served on a guess.
-      const engine = this.sqliteFs;
-      (this.cloneRecovery ??= new CloneRecovery(this.ctx.storage, generation(this.ctx))).start({
-        as: (cred, options) => engine.as(cred, options),
-        releaseExclusiveMutation: (owner) => engine.releaseExclusiveMutation(owner),
-        acquireGlobalExclusiveMutation: (reason) => engine.acquireGlobalExclusiveMutation(reason),
-        // A clone on a mount, through the namespace (a host bridge presenting its lease).
-        namespace: (cred, owner) => {
-          const host = this.getFilesystemAuthority().openHost(cred);
-          const bridge = host.fs.synchronous;
-          if (bridge === undefined) throw new Error('the host bridge has no synchronous face');
-          return { fs: bridgeCleanupFs(bridge, owner), dispose: () => host.dispose() };
-        },
-      }, (task) => this.ctx.waitUntil(task));
-    }
-    return this.sqliteFs;
+    return this.openFilesystem().engine;
+  }
+
+  /** The session's filesystem, opened on first use (SessionFilesystem). */
+  private openFilesystem(): SessionFilesystem {
+    if (this.filesystem) return this.filesystem;
+    const engine = new SqliteVFS(this.ctx.storage.sql, this.ctx);
+    const filesystem = this.filesystem = new SessionFilesystem(engine, this);
+    // W5 Lever 5: rehydrate the OOM ring from storage (best-effort).
+    // Survives DO hibernation; lets cf-tail-style forensics include
+    // pre-hibernate failures. Fail-soft on garbage / missing — the
+    // rehydrate function's own contract.
+    this._w5RehydrateRingFromStorage().catch((e: any) => {
+      console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
+    });
+    // Clones an earlier generation left were cut short: their destinations
+    // are reserved before anything can write there, and cleaned up
+    // (git/clone-job.ts) in the background, a slice at a time. Records not
+    // listed (yet) hold every write instead: none is served on a guess.
+    (this.cloneRecovery ??= new CloneRecovery(this.ctx.storage, generation(this.ctx))).start({
+      as: (cred, options) => engine.as(cred, options),
+      releaseExclusiveMutation: (owner) => engine.releaseExclusiveMutation(owner),
+      acquireGlobalExclusiveMutation: (reason) => engine.acquireGlobalExclusiveMutation(reason),
+      // A clone on a mount, through the namespace (a host bridge presenting its lease).
+      namespace: (cred, owner) => {
+        const host = filesystem.authority.openHost(cred);
+        const bridge = host.fs.synchronous;
+        if (bridge === undefined) throw new Error('the host bridge has no synchronous face');
+        return { fs: bridgeCleanupFs(bridge, owner), dispose: () => host.dispose() };
+      },
+    }, (task) => this.ctx.waitUntil(task));
+    return filesystem;
   }
 
   /** The recovery of clones an earlier generation ran, discovered as this one began (git/clone-job.ts). */
