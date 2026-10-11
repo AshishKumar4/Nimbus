@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1998259db1d0fc6a10a35e0e9a4d4e9faf8d45160916e3b8ac731bd799122930",
+  "fingerprint": "90016ad96f32701df8dfdabc7a0dd7a1abe6ff12b34746ce8d3bb57ad14c0da6",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -683,7 +683,7 @@
     "packages/core/dist/runtime/wave-ingest.d.ts.map": "c69d65c5572e275bc62e99ddaf1fa2611614847b5a2402a9f308f30df306d815",
     "packages/core/dist/runtime/wave-ingest.js": "87d492d2f4a1c0724b3a0a4e2bc9d7607f276f5d79ece54d194841103991c991",
     "packages/core/dist/runtime/wave-router.d.ts": "7b9498d1ae9b3566256395a0f67c4f58d2701be8b712f33ab80185a6eb48146e",
-    "packages/core/dist/runtime/wave-router.d.ts.map": "89e4862b72fd835fc50422dafe78cefec7be3547a978378efe0b3b2aa537088b",
+    "packages/core/dist/runtime/wave-router.d.ts.map": "54ea991b2a00a09cea455bcb6a5e97142a7c4e61551b8c6ead48062c78fd43b4",
     "packages/core/dist/runtime/wave-router.js": "40d32ccda79ee7a0efbf4f96562ca3adaf0ce13776476a5c2823377b6e923c02",
     "packages/core/dist/runtime/websocket-arguments.d.ts": "fce0512c8a8b4f7084711009d4aec1ece84dc148797a330f82e2b114cf114a66",
     "packages/core/dist/runtime/websocket-arguments.d.ts.map": "f374b27396ee020c7841c32305fb1d473008b55a794e11896758353bef111f05",
@@ -1449,7 +1449,7 @@
     "packages/core/src/runtime/wasm-runner.ts": "de1c1dd50ecd6b464bea7c4fac76d19e2f5c1a2ff8fe0db8f7dc1b2ee6d57cc1",
     "packages/core/src/runtime/wave-contracts.ts": "3978313d71e4703b04a33876320f0c308d4aba3c9bb74731e01591a822de9ae4",
     "packages/core/src/runtime/wave-ingest.ts": "931486072f20539471abb4c4aaa676ed3f6c552227c46a1c714d4a856021fe4f",
-    "packages/core/src/runtime/wave-router.ts": "6fa9d87f3bdece5f0771dede069554005d53b6943fd6e8670b64087a7ae0b0b7",
+    "packages/core/src/runtime/wave-router.ts": "d0421594f9f53021486fcbd84957cd9d24e509eda1f57083fc7462865ef65d1e",
     "packages/core/src/runtime/websocket-arguments.ts": "0e6ddf36bb94148f61d0b666d38b07c128977b21500b05db45ab2f8b000bdf08",
     "packages/core/src/shell/elevation-commands.ts": "9e14a3560a23ee540f4fe258d4bac2a3e6495229e0d62912c5b8227ee76f928e",
     "packages/core/src/shell/exec-dispatch.ts": "e939ea137c65ec8fc4b430d50607fd7f7816497856f44dbfcbeb29f8b9738b71",
