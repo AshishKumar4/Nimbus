@@ -5,8 +5,12 @@
  * and the data they read. A `{ cjs }` module the shims require the first time
  * a program needs Node's library (node-shims.ts __nimbusNodeLib), so a launch
  * that never formats a value or requires util, assert, querystring or
- * punycode never compiles it. Staged as an asset beside the shims
- * (scripts/bundle-node-shims.mjs).
+ * punycode never compiles it. Of Node's modules it carries only what
+ * formatting a value requires (util.inspect, as an uncaught error's report
+ * and console.log of an object do); the others are in
+ * RUNTIME_NODE_LIB_REST_MODULE and DNS's in RUNTIME_NODE_DNS_MODULE, each
+ * compiled the first time a program requires one of its modules. Staged as
+ * assets beside the shims (scripts/bundle-node-shims.mjs).
  */
 import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
 import { NODE_DNS_BINDING_SOURCE } from './node-dns-binding.js';
@@ -14,15 +18,37 @@ import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PR
 import { NODE_OPTION_ALIASES, NODE_OPTIONS_TABLE } from '@nimbus-sh/core/runtime/node-cli-options.generated.js';
 const dnsModule = (id) => id === 'dns' || id === 'dns/promises' || id.startsWith('internal/dns/') || id === 'internal/net';
 const moduleFactory = (id, text) => `    ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n    },`;
+const deferredFactory = (module, id) => `    get ${JSON.stringify(id)}() { return require(${JSON.stringify(module)}).sources[${JSON.stringify(id)}]; },`;
+/** `root` and every module of Node's it requires, by the literal ids its text names. */
+function requireClosure(root) {
+    const closure = new Set();
+    const pending = [root];
+    for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+        if (closure.has(id) || !(id in NODE_LIB_SOURCES))
+            continue;
+        closure.add(id);
+        for (const [, required] of NODE_LIB_SOURCES[id].matchAll(/\brequire\(\s*['"]([^'"]+)['"]\s*\)/g))
+            pending.push(required);
+    }
+    return closure;
+}
+/** What formatting a value runs (node-shims.ts __nimbusNodeInspect), carried by RUNTIME_NODE_LIB_MODULE itself. */
+const FORMATTING = requireClosure('internal/util/inspect');
+const restModule = (id) => !dnsModule(id) && !FORMATTING.has(id);
 export function generateNodeDnsModule() {
     return `module.exports = { createCaresBinding: ${NODE_DNS_BINDING_SOURCE}, sources: {\n`
         + Object.entries(NODE_LIB_SOURCES).filter(([id]) => dnsModule(id)).map(([id, text]) => moduleFactory(id, text)).join('\n')
         + '\n} };';
 }
+export function generateNodeLibRestModule() {
+    return 'module.exports = { sources: {\n'
+        + Object.entries(NODE_LIB_SOURCES).filter(([id]) => restModule(id)).map(([id, text]) => moduleFactory(id, text)).join('\n')
+        + '\n} };';
+}
 export function generateNodeLibModule() {
     const sources = Object.entries(NODE_LIB_SOURCES).map(([id, text]) => dnsModule(id)
-        ? `    get ${JSON.stringify(id)}() { return require("./node-dns.js").sources[${JSON.stringify(id)}]; },`
-        : moduleFactory(id, text)).join('\n');
+        ? deferredFactory('./node-dns.js', id)
+        : restModule(id) ? deferredFactory('./node-lib-rest.js', id) : moduleFactory(id, text)).join('\n');
     return `module.exports = {
   createCaresBinding: (...args) => require("./node-dns.js").createCaresBinding(...args),
   createNodeLib: ${NODE_LIB_HOST_SOURCE},
