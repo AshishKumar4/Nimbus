@@ -211,6 +211,8 @@ export interface MountInfo {
 
 interface Mount {
   point: string;
+  /** `point` and a slash: what a path under it starts with. */
+  under: string;
   source: VfsSource;
   options: MountOptions;
   /**
@@ -499,7 +501,7 @@ export class CompositeVFS implements VFS {
       this.viewer = shared.principal;
       this.views = shared.views;
     } else {
-      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map() };
+      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map() };
       this.viewer = { cred: null };
       const refs = new Map<string, WeakRef<CompositeVFS>>();
       this.views = { refs, gone: new FinalizationRegistry((key: string) => {
@@ -769,7 +771,7 @@ export class CompositeVFS implements VFS {
     const at = normalizePath(point);
     if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
     if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
-    const mount: Mount = { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
+    const mount: Mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
     this.table.mounts.set(at, mount);
     this.table.generation++;
     this.resynthesize();
@@ -1315,7 +1317,7 @@ export class CompositeVFS implements VFS {
     let found: Mount | null = null;
     for (const mount of this.table.mounts.values()) {
       if (mount.point === ROOT_POINT) continue;
-      if (path !== mount.point && !path.startsWith(`${mount.point}/`)) continue;
+      if (path !== mount.point && !path.startsWith(mount.under)) continue;
       if (found !== null && found.point.length <= mount.point.length) continue;
       if (this.backend(mount) === null) found = mount;
     }
