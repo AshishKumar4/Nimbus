@@ -9,7 +9,7 @@ adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 const turns = async () => { for (let i = 0; i < 32; i++) await Promise.resolve(); };
 const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
 
-for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'partial-cancel', 'error']) {
+for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'partial-cancel', 'error', 'short', 'long']) {
   let output, cancelled = false, watching = 0;
   const world = createFacetWorld(() => ({
     startProcess: async () => ({}),
@@ -32,6 +32,12 @@ for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'pa
       if (ending === 'partial-cancel') { output.enqueue(new Uint8Array([1])); assert.deepEqual((await reader.read()).value, new Uint8Array([1])); }
       await reader.cancel(); await turns();
       assert.equal(cancelled, true, 'consumer cancellation reaches the source');
+    } else if (ending === 'short' || ending === 'long') {
+      output.enqueue(new Uint8Array(ending === 'short' ? 2 : 4)); output.close();
+      await assert.rejects(reader.read().then(async part => {
+        while (!part.done) part = await reader.read();
+      }), 'a framing mismatch must fail, never silently truncate or relabel the body');
+      await turns();
     } else {
       output.enqueue(new Uint8Array([1, 2, 3]));
       assert.deepEqual((await reader.read()).value, new Uint8Array([1, 2, 3]));

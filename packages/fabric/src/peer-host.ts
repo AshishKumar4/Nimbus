@@ -504,7 +504,7 @@ export class PeerHost {
       sockets.delete(server);
       releaseOwner();
     };
-    const ended = () => { if (released) return; release(); server.close(); afterEnd?.(); };
+    const ended = () => { if (released) return; release(); afterEnd?.(); server.close(); };
     sockets.set(server, release);
     server.addEventListener('close', ended);
     server.addEventListener('error', ended);

@@ -72,11 +72,12 @@ const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
 const processes = new bundle.SessionProcessSupervisor();
 processes.setPidBase(bundle.PID_GEN_STRIDE);
 const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 1 });
+const ports = new bundle.PortRegistry();
 const runtime = await bundle.composeHostedRuntime({
   workspace,
   ctx,
   env,
-  ports: new bundle.PortRegistry(),
+  ports,
   lifecycle: {
     waitUntil: (task) => { owned.push(task); facetCtx.waitUntil(task); },
     async schedule(task, at) { scheduled.push([task, at]); },
@@ -162,6 +163,28 @@ try {
     now += 61_000;
     await runtime.onScheduled('resident-keepalive');
     assert.equal(keepalives().length, count + 2, 'even this runtime\'s attached terminal expires when its traffic stops');
+
+    const pair = new WebSocketPair(), target = pair[0], app = pair[1];
+    ports.bindFacetStub(91, { async handleHttpRequest() { return new Response('page'); }, async handleWebSocketRequest() { return new Response(null, { status: 101, webSocket: target }); } });
+    ports.register(5091, 91);
+    const answer = await ports.routeRequest(5091, new Request('https://x/hmr', { headers: { upgrade: 'websocket' } }), '/hmr');
+    assert.equal(answer.status, 101);
+    answer.webSocket.accept(); app.accept();
+    await settle(() => keepalives().length > count + 2);
+    assert.equal(keepalives().length, count + 3, 'routed client socket open renews this runtime\'s interest');
+    for (let tick = 0; tick < 3; tick++) {
+      now += 61_000;
+      const before = keepalives().length;
+      await runtime.onScheduled('resident-keepalive');
+      assert.equal(keepalives().length, before + 1, 'a quiet routed socket remains interest after the traffic bound');
+    }
+    const closed = new Promise(resolve => app.addEventListener('close', resolve, { once: true }));
+    answer.webSocket.close(4001, 'tab closed'); await closed;
+    const afterClose = keepalives().length;
+    now += 5_000; await runtime.onScheduled('resident-keepalive');
+    assert.equal(keepalives().length, afterClose + 1, 'close begins the bounded idle grace');
+    now += 61_000; await runtime.onScheduled('resident-keepalive');
+    assert.equal(keepalives().length, afterClose + 1, 'closed preview sockets cannot keep a resident forever');
   } finally { Date.now = realNow; }
 } finally {
   await runtime.close();

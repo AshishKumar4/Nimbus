@@ -4,8 +4,16 @@ export class HostWatchSocket extends EventTarget {
     super(); this.readyState = 1;
     /** @type {HostWatchSocket | undefined} */
     this.peer = undefined;
+    this.accepted = false;
+    /** @type {Event[]} */
+    this.pending = [];
   }
-  accept() {}
+  accept() { this.accepted = true; for (const event of this.pending.splice(0)) this.dispatchEvent(event); }
+  send(data) {
+    if (this.readyState !== 1) throw new Error('WebSocket is closed');
+    const event = new MessageEvent('message', { data });
+    queueMicrotask(() => { if (this.peer?.accepted) this.peer.dispatchEvent(event); else this.peer?.pending.push(event); });
+  }
   close(code = 1000, reason = '') {
     for (const socket of [this, this.peer]) {
       if (!socket || socket.readyState === 3) continue;

@@ -414,6 +414,8 @@ class PeerProcessHost implements ProcessHost {
       if (response.status !== 101 || !response.webSocket || response.headers.get(HOST_INCARNATION_HEADER) !== opened.incarnation) {
         throw new Error('Nimbus: the hosting peer did not establish coordinator residency');
       }
+      // Accepting this endpoint starts a receive loop that pins the coordinator.
+      // Its process-owned fetch signal, not a close handshake, releases residency.
       residency.socket = response.webSocket;
       if (this.closed) throw new Error('Nimbus: the process host is closed');
       const observation = hostActivity(this.ctx).observe(
