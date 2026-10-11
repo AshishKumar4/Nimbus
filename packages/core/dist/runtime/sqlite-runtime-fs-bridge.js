@@ -100,7 +100,7 @@ export class SqliteRuntimeFsBridge {
                 throw fsError('ELOOP', 'stat', path);
             if (located.mount) {
                 const stat = located.mount.stat(located.path, { follow: followSymlinks });
-                const viewed = stat !== null && stat.type === 'file' ? this.processView(located.mount, located.path) : undefined;
+                const viewed = stat !== null && stat.type === 'file' ? this.processView(located, followSymlinks) : undefined;
                 if (viewed)
                     return { ...runtimeStatOf(stat), size: viewed.byteLength };
                 return stat === null ? null : runtimeStatOf(stat);
@@ -154,7 +154,7 @@ export class SqliteRuntimeFsBridge {
                         ? this.vfs.readFileUncached(located.path)
                         : this.vfs.readFile(located.path);
                 }
-                return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
+                return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
             }
             catch (error) {
                 if (hasErrorCode(error, 'ENOENT'))
@@ -164,8 +164,9 @@ export class SqliteRuntimeFsBridge {
         });
     }
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
-    processView(mount, name) {
-        return processView(this.scope, () => (mount.stat(name) === null ? null : mount.readFile(name)), name);
+    processView(located, follow) {
+        const { mount, namespace, path } = located;
+        return processView(this.scope, () => (mount.stat(path) === null ? null : mount.readFile(path)), () => namespace.pin(path, { follow, sync: true }).key);
     }
     writeFile(path, bytes, options = {}) {
         return called({ syscall: 'write', path }, () => {
@@ -220,7 +221,7 @@ export class SqliteRuntimeFsBridge {
                 if (options.expectedEpoch !== undefined)
                     throw fsError('ESTALE', 'read', path);
                 const mount = located.mount;
-                const viewed = this.processView(mount, located.path);
+                const viewed = this.processView(located, options.followSymlinks !== false);
                 if (viewed)
                     return viewed.slice(offset, offset + length);
                 return readRangeOrWhole(mount, located.path, offset, length);
@@ -362,8 +363,8 @@ export class SqliteRuntimeFsBridge {
             if (located.mount) {
                 const namespace = located.namespace;
                 const node = openMounted({
-                    files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
-                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name) => namespace.pin(name, { follow: true, sync: true }),
+                    name: located.path, flags: normalizedFlags, mode: flags.mode,
+                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
                     awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
                 });
                 // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.

@@ -14,29 +14,44 @@ import { isVfsError } from './vfs-error.js';
 /** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 /**
- * open(2) of `name`, one rule for every caller, Linux's where Linux and
- * POSIX differ: O_CREAT|O_EXCL is EEXIST on the name itself, a link
- * included; O_NOFOLLOW of a link is ELOOP; an absent name without O_CREAT is
- * ENOENT, and with O_DIRECTORY EINVAL; O_DIRECTORY of anything else is
- * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); and only
- * then is the file made, or truncated. Answers the file's stat. Who may
- * open a file for what is the mount's own policy, as for every operation on
- * it (VFS.access, which `authorize` asks of a file that is there, before
- * anything changes): a backend that takes a caller's credential enforces
- * modes; a backend of one identity has none. `describes`: whether the open
- * keeps a description, whose write rights a directory may carry (a WASI
- * guest asks a capability set); an open that keeps none (a wave's) is an
- * open to write, which a directory refuses. `settled` runs right before the
- * answer, or the change.
+ * Where an open looks its name up (CompositeVFS.pin): through a link at it,
+ * unless it declines to (O_NOFOLLOW) or answers for the name itself
+ * (O_CREAT|O_EXCL).
  */
-export function openOnMount(open, describes, hooks) {
-    const { files, name, flags, refuse } = open;
-    return andThen(files.stat(name, { follow: false }), (named) => {
+export function openFollows(flags) {
+    return flags.followSymlinks && !(flags.create && flags.exclusive);
+}
+/**
+ * open(2) of `file` (pinned where its name was looked up, openFollows), one
+ * rule for every caller, Linux's where Linux and POSIX differ: O_CREAT|O_EXCL
+ * is EEXIST on the name itself, a link included; O_NOFOLLOW of a link is
+ * ELOOP; an absent name without O_CREAT is ENOENT, and with O_DIRECTORY
+ * EINVAL; O_DIRECTORY of anything else is ENOTDIR; a directory refuses
+ * O_TRUNC and O_APPEND (EISDIR); and only then is the file made, or
+ * truncated, there. Answers the file's stat. Who may open a file for what is
+ * its mount's own policy, as for every operation on it (VFS.access, asked of
+ * a file that is there before anything changes): a backend that takes a
+ * caller's credential enforces modes; a backend of one identity has none.
+ * `describes`: whether the open keeps a description, whose write rights a
+ * directory may carry (a WASI guest asks a capability set); an open that
+ * keeps none (a wave's) is an open to write, which a directory refuses.
+ * `settled` runs right before the answer, or the change.
+ */
+export function openOnMount(file, open, describes, settled) {
+    const { files, path } = file;
+    const { flags, refuse } = open;
+    const statAfter = () => andThen(files.stat(path), (after) => {
+        if (after === null)
+            throw refuse('ENOENT', 'open');
+        return after;
+    });
+    return andThen(files.stat(path, { follow: false }), (named) => {
         if (named !== null && flags.create && flags.exclusive)
             throw refuse('EEXIST', 'open');
         if (named?.type === 'symlink' && !flags.followSymlinks)
             throw refuse('ELOOP', 'open');
-        return andThen(named?.type === 'symlink' ? files.stat(name) : named, (there) => {
+        // A link a backend resolves itself (MountOptions.resolvesPaths) is followed by that backend.
+        return andThen(named?.type === 'symlink' ? files.stat(path) : named, (there) => {
             if (there === null) {
                 if (!flags.create)
                     throw refuse('ENOENT', 'open');
@@ -49,37 +64,31 @@ export function openOnMount(open, describes, hooks) {
                 if (there.type === 'directory' && (flags.truncate || flags.append || (flags.write && !describes)))
                     throw refuse('EISDIR', 'open');
             }
-            return andThen(there === null ? undefined : hooks.authorize(there), () => andThen(hooks.settled?.(), () => {
+            const access = there === null ? undefined : files.access?.(path, openAccess(flags, there, describes));
+            return andThen(access, () => andThen(settled?.(), () => {
                 if (there !== null && !flags.truncate)
                     return there;
                 if (there !== null) {
                     // A description needs only the file's inode, which truncating keeps; a wave answers the stat after.
-                    const truncated = need(files.truncate, refuse, 'open').call(files, name, 0);
-                    return describes ? andThen(truncated, () => there) : andThen(truncated, () => statAfter(open));
+                    const truncated = need(files.truncate, refuse, 'open').call(files, path, 0);
+                    return describes ? andThen(truncated, () => there) : andThen(truncated, statAfter);
                 }
-                return andThen(files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), () => statAfter(open));
+                return andThen(files.writeFile(path, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), statAfter);
             }));
         });
     });
 }
-/** The access an open asks of a file that is there (VFS.access's mode): a directory's write rights are a capability, not an access. */
-export function openAccess(flags, there) {
-    return (flags.read ? 4 : 0) | (flags.write && there.type !== 'directory' ? 2 : 0);
+/**
+ * The access an open asks of a file that is there (VFS.access's mode). A
+ * description's write rights on a directory are a capability, not an
+ * access; a wave's open is to write.
+ */
+function openAccess(flags, there, describes) {
+    return (flags.read ? 4 : 0) | (flags.write && (!describes || there.type !== 'directory') ? 2 : 0);
 }
-function statAfter({ files, name, refuse }) {
-    return andThen(files.stat(name), (after) => {
-        if (after === null)
-            throw refuse('ENOENT', 'open');
-        return after;
-    });
-}
-/** open(2) of a mounted file, and the description its descriptors share. */
+/** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export function openMounted(options) {
-    // A file that is there is pinned to be asked; one the open makes, once it is made.
-    let pinned;
-    const pin = () => pinned ?? andThen(options.pin(options.name), (file) => (pinned = file));
-    const authorize = (there) => andThen(pin(), (file) => file.files.access?.(file.path, openAccess(options.flags, there)));
-    return andThen(openOnMount(options, true, { authorize }), (stat) => andThen(pin(), (file) => new MountedDescription(options, file, stat)));
+    return andThen(options.pin(options.name, openFollows(options.flags)), (file) => andThen(openOnMount(file, options, true), (stat) => new MountedDescription(options, file, stat)));
 }
 /**
  * The description of `name` on a mount. A write goes in place (writeRange);
@@ -98,8 +107,10 @@ class MountedDescription {
     files;
     /** The path they are handed. */
     at;
-    /** The namespace's name for it: what this process's path reads overlay (processView). */
+    /** The namespace's name for it, when it was opened. */
     name;
+    /** Which file it is (PinnedFile.key): whose held writes this process's reads of it overlay (processView). */
+    file;
     immediate;
     inPlace = true;
     pending = [];
@@ -112,9 +123,11 @@ class MountedDescription {
         this.files = file.files;
         this.at = file.path;
         this.name = file.name;
+        this.file = file.key;
         this.immediate = options.sync || options.awaits;
     }
     path() { return this.name; }
+    key() { return this.file; }
     stat() {
         return andThen(this.files.stat(this.at), (there) => {
             if (there === null)
@@ -183,7 +196,7 @@ class MountedDescription {
         return processView(this.options.scope, () => {
             const file = this.whole();
             return isPromise(file) ? null : file;
-        }, this.name);
+        }, this.file);
     }
     heldAppend(bytes) {
         return andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));

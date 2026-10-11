@@ -135,11 +135,13 @@ export interface VfsRoute {
 }
 /** A pinned file's backend operations (CompositeVFS.pin), handed the backend's own path. */
 export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile' | 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
-/** A file as an open holds it (CompositeVFS.pin): its operations, the path they take, and the namespace's name for it. */
+/** A file as an open holds it (CompositeVFS.pin): its operations, the path they take, the namespace's name for it, and its identity. */
 export interface PinnedFile {
     readonly files: PinnedFiles;
     readonly path: string;
     readonly name: string;
+    /** Which file it is (its mount, and the path there): the same for every pin of it, whatever name reached it. */
+    readonly key: string;
 }
 export interface MountInfo {
     readonly point: string;
@@ -380,18 +382,21 @@ export declare class CompositeVFS implements VFS {
      * The file at `path` as an open(2) holds it: where this view's lookup
      * lands now (links followed, the last only with `follow`), on the backend
      * there as this principal sees it, whatever is mounted, unmounted or
-     * linked at the name later. Each of its mutations is still this view's: a
-     * read-only mount refuses it, the guard is asked at the name it landed at,
-     * and the namespace's write observers hear of it there. A directory the
-     * namespace makes (a mount point, one above) is the namespace's own, by
-     * its name. `sync`: through the backends' synchronous faces only.
+     * linked at the name later. Every operation of the open and of its
+     * description goes there (Pinned): its stat keeps that mount's identity,
+     * its mutations stay this view's (a read-only mount refuses them, the
+     * guard is asked at the name), and the namespace's observers hear of them
+     * while that mount is still the one at its point. A directory the
+     * namespace makes above a mount point is the namespace's own, by its name;
+     * a mount point is its backend's root. `sync`: through the backends'
+     * synchronous faces only.
      */
     pin(path: string, options: {
         follow: boolean;
         sync: boolean;
     }): Awaitable<PinnedFile>;
-    /** The backend operations on one pinned file (pin): its mutations this view's, each named as the namespace names it. */
-    private pinned;
+    /** One pinned file's operations (pin): on what it captured, named as the namespace named it. */
+    private static readonly Pinned;
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
      * (links on the way followed, the last only with `follow`), the mount
@@ -575,7 +580,15 @@ export declare class CompositeVFS implements VFS {
      * here, per path, stable while it stays mounted.
      */
     private identify;
+    /** `identify`, on the mount `path` was found on (a pin's, which may since have left its point). */
+    private identifyOn;
     private statAt;
+    /**
+     * A mount point's stat: its backend root's. Only a backend that cannot
+     * stat its own root (a container that derives stat from a parent listing)
+     * gets a synthesized directory; one with no modes has the namespace's.
+     */
+    private mountPointStat;
     /** The stat of a resolved namespace path, before its identity is stamped. */
     private statResolved;
     /** stat, with ENOENT/ENOTDIR from the backend read as "not there". */

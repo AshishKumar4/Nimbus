@@ -81,23 +81,29 @@ export function reportLost(lost) {
 }
 /**
  * A mounted file as this process sees it while it holds buffered writes to
- * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
- * of this process's descriptions of it applied, in open order. Undefined
- * when it holds none pending: then the mount's own file is the answer.
- * Another process's pending writes are never in it.
+ * it (VFS-PF-001 viewAs, page-cache semantics): the file `file` names
+ * (PinnedFile.key) with each of this process's descriptions of it applied,
+ * in open order. Undefined when it holds none pending: then the mount's own
+ * file is the answer. Another process's pending writes are never in it, nor
+ * a file that only shares its name. `file` is asked only once some
+ * description holds writes.
  */
-export function processView(scope, read, name) {
-    let file;
+export function processView(scope, read, file) {
+    let view;
+    let key;
     const seen = new Set();
     for (const opened of scope.handles.values()) {
         const node = opened.node;
-        if (seen.has(node) || node.applyPending === undefined || node.path() !== name || (node.pendingBytes?.() ?? 0) === 0)
+        if (seen.has(node) || node.applyPending === undefined || (node.pendingBytes?.() ?? 0) === 0)
+            continue;
+        key ??= typeof file === 'string' ? file : file();
+        if (node.key?.() !== key)
             continue;
         seen.add(node);
-        file ??= read() ?? new Uint8Array(0);
-        file = node.applyPending(file);
+        view ??= read() ?? new Uint8Array(0);
+        view = node.applyPending(view);
     }
-    return file;
+    return view;
 }
 /** The descriptor operations, over a scope: answered in the caller's turn unless the description awaits. */
 export class Descriptors {

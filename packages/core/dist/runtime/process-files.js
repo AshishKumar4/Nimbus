@@ -992,9 +992,9 @@ class AwaitingProcessBridge {
             const name = await this.path(path, opened.followSymlinks);
             const files = this.owned(mutates ? options : undefined);
             const node = await openMounted({
-                files, name, flags: opened, mode: flags.mode,
+                name, flags: opened, mode: flags.mode,
                 refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
-                pin: (file) => files.pin(file, { follow: true, sync: false }),
+                pin: (file, follow) => files.pin(file, { follow, sync: false }),
                 awaits: true, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
             });
             this.live();
