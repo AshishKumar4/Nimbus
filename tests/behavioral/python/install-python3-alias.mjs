@@ -9,6 +9,8 @@
 // which is what the rest of this probe then failed on. `nimbus install python3`
 // resolves to the same CPython runtime `nimbus install python` does now, and
 // the paths below say so.
+// Each one-shot opens its own PID-bound facet; installation does not promise
+// interpreter reuse or a sub-second wall-clock latency for another process.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 

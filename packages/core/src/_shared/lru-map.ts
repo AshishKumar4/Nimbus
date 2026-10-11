@@ -58,7 +58,8 @@ export class LruMap<K, V> {
   }
 }
 
-/** Estimated cost of an entry's key, Map node, value object and ArrayBuffer. */
+/** Estimated cost of an entry's key, Map node, value object and ArrayBuffer.
+ * Charging payload alone leaves a cache of many small entries undercounted. */
 export const BYTE_LRU_ENTRY_OVERHEAD = 160;
 
 /** A least-recently-used map bounded by its values' bytes, not their count. */

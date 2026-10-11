@@ -27,8 +27,10 @@ await withColoCache(async colo => {
   assert.equal(await new R2CacheClient(shared, null).putTarball(integrity, input), true);
   input[0] ^= 0xff; // The writer still owns its input after the write.
   for (let run = 0; run < 5; run++) {
-    const bytes = await new R2CacheClient(shared, null).getTarball(integrity);
+    const reader = new R2CacheClient(shared, null);
+    const bytes = await reader.getTarball(integrity);
     assert.deepEqual(bytes, original, 'a fresh supervisor sees the verified immutable bytes');
+    assert.deepEqual(reader._cacheEvents, [{ kind: 'hit', tier: 'L1', cacheKind: 'tarball', bytes: original.byteLength }]);
     bytes[0] ^= 0xff; // Returned views cannot mutate another caller's cached bytes.
   }
   assert.equal(externalReads, 0, 'verified uploads and warm reads need no repeated colo-cache I/O');
