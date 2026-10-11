@@ -795,7 +795,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     seedFilesystem(): void;
     private terminalInputDispatcher;
     readonly dispatchTerminalInput: (frame: string) => void;
-    _rpcTerminalInput(frame: string): Promise<void>;
+    _rpcTerminalInput(frame: string, terminalId: string): Promise<void>;
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
     webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void>;
     webSocketError(ws: WebSocket, error?: any): Promise<void>;

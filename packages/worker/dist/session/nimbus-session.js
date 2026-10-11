@@ -1184,16 +1184,23 @@ export class NimbusSession extends CloudflareDurableObject {
     // relaxed for the methods (default-public; was async/private).
     terminalInputDispatcher = null;
     dispatchTerminalInput = (frame) => {
+        const terminal = this.terminal;
+        if (!terminal || terminal.signal.aborted)
+            return;
         if (!this.terminalInputDispatcher) {
             const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
-            this.terminalInputDispatcher = (input) => stub._rpcTerminalInput(input);
+            this.terminalInputDispatcher = (input, id) => stub._rpcTerminalInput(input, id);
         }
-        void this.terminalInputDispatcher(frame).catch((error) => {
-            console.error('[nimbus] terminal input request failed:', error);
-            this.terminal?.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+        void this.terminalInputDispatcher(frame, terminal.id).catch((error) => {
+            if (!terminal.signal.aborted) {
+                console.error('[nimbus] terminal input request failed:', error);
+                terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
         });
     };
-    _rpcTerminalInput(frame) { return terminalInput(this, frame); }
+    _rpcTerminalInput(frame, terminalId) {
+        return terminalInput(this, frame, terminalId);
+    }
     async webSocketMessage(ws, message) {
         const { kind } = wsKind(ws);
         if (kind === 'shell' || kind === 'process-logs' || kind === 'cirrus-hmr')

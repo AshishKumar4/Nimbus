@@ -147,7 +147,7 @@ interface WsAttachment {
 }
 export declare function wsKind(ws: WebSocket): WsAttachment;
 export declare function wsMessage(self: WsHost, ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
-export declare function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string): Promise<void>;
+export declare function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string, terminalId: string): Promise<void>;
 export declare function wsClose(self: WsHost, ws: WebSocket, code?: number, reason?: string, _wasClean?: boolean): Promise<void>;
 export declare function wsError(self: WsHost, ws: WebSocket, error?: unknown): Promise<void>;
 /**

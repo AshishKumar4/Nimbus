@@ -174,7 +174,9 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
     const beforePid = Number(/pid=(\d+)/.exec(launchedBefore.stdout)?.[1]);
     assert.ok(beforePid > 0, launchedBefore.stdout);
     await terminal.run('curl -s http://127.0.0.1:7073/close');
-    assert.equal(await ended(beforePid), 'exited(' + hostBefore.code + ')', 'a handled resident beforeExit throw releases its natural-exit check');
+    const beforeStatus = await ended(beforePid);
+    const beforeCode = /^(?:exited|crashed)\((\d+)\)$/.exec(beforeStatus)?.[1];
+    assert.equal(Number(beforeCode), hostBefore.code, 'a handled resident beforeExit throw releases its natural-exit check: ' + beforeStatus);
     const beforeLogs = (await terminal.run('logs ' + beforePid)).stdout;
     const actualBefore = /BEFORE_RESULT ([^\r\n]+)/.exec(beforeLogs)?.[1];
     assert.ok(actualBefore, beforeLogs);

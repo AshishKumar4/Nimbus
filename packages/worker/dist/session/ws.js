@@ -347,9 +347,9 @@ export async function wsMessage(self, ws, message) {
         console.error('[nimbus] webSocketMessage error:', e?.message);
     }
 }
-export async function terminalInput(self, frame) {
+export async function terminalInput(self, frame, terminalId) {
     const terminal = self.terminal;
-    if (!terminal || terminal.signal.aborted)
+    if (!terminal || terminal.id !== terminalId || terminal.signal.aborted)
         return;
     let release;
     const closed = new Promise((resolve) => { release = resolve; });
