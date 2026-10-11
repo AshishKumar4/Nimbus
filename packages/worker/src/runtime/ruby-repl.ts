@@ -33,7 +33,6 @@ import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
-import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { RUBY_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import type { RubyReplStep, RubyReplFacetResult } from './repl-facet-tasks.js';
@@ -187,12 +186,12 @@ class RubyReplAdapter implements ReplAdapter {
     if (this.pool) return;
     const { installRoot, facetMgr } = this.deps;
     const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
-    this.wasmBytesAB = toArrayBuffer(await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
+    this.wasmBytesAB = await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
       if (!(await vfs.exists(wasmPath))) {
         throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
       }
-      return vfs.readFile(wasmPath);
-    }));
+      return vfs.readArrayBufferUncached(wasmPath);
+    });
 
     // The one canonical Ruby facet preamble. A hand-rolled copy here once
     // drifted (it lacked the language-prelude const __rubyRun requires, so

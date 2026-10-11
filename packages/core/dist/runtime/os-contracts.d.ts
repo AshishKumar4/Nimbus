@@ -259,6 +259,7 @@ export interface RuntimeFsBridge {
     }): Awaitable<RuntimeVfsStat | null>;
     readFile(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
+        cached?: boolean;
     }): Awaitable<Uint8Array | null>;
     /**
      * Whole-file write. Returns the revision the write produced, so a caller
