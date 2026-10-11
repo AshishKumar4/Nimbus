@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // host-namespace-routing — every execution path that reaches the host DO
 // resolves it through the COMPOSED namespace (composeFabric({hostNamespace})),
 // never the literal env.NIMBUS_SESSION. A workspace host that names its own
@@ -51,7 +52,7 @@ const ctx = { id: { toString: () => 'host-namespace-test-do' }, waitUntil() {} }
   // Wider than the coordinator's Dynamic Worker budget, so it shards.
   const width = DO_DYNAMIC_WORKER_LIMIT + 1;
   const tasks = Array.from({ length: width }, (_, i) => ({ key: `t-${i}`, args: i }));
-  const results = await pool.submitMany(tasks, (x) => x);
+  const results = await pool.submitMany(tasks, facetTaskSource("(x) => x"));
   assert.equal(results.length, width, 'every task answered through the composed namespace');
   assert.ok(seen.length > 0, 'peer dispatch ran — the WORKSPACES stub was used');
 }

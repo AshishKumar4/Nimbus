@@ -1,4 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -233,7 +234,7 @@ class PythonReplAdapter {
         const pool = this.pool;
         if (!pool)
             throw new Error('Python REPL is not initialized');
-        const response = await pool.submitRequest(pythonReplStepRequestFn, new Request('https://facet.internal/python-repl-step', {
+        const response = await pool.submitRequest(PYTHON_REPL_TASK, new Request('https://facet.internal/python-repl-step', {
             method: 'POST',
             body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
             signal,
@@ -262,40 +263,6 @@ export function pythonReplStep(deps, pythonHome, userCode) {
         progName: 'python',
         ...(deps.start ? { enter: enterWorkingDirectory(deps.start.binName, deps.start.cwd) } : {}),
     };
-}
-/**
- * Facet-side, request-shaped: serialized with fn.toString() into the
- * pool's fetch entrypoint, so it captures nothing and names no import —
- * __cpythonReplRun is put on globalThis by the preamble, and unlike
- * __cpythonRun it keeps its interpreter between calls. The request body
- * is the step payload the adapter JSON-encodes; the response is the
- * step result. Request transport because it is the pool's only
- * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
- * interpreter at its suspension point.
- */
-export async function pythonReplStepRequestFn(request, facetEnv) {
-    const args = await request.json();
-    if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
-        throw new Error('Python REPL request must contain userCode');
-    }
-    const run = Reflect.get(globalThis, '__cpythonReplRun');
-    if (typeof run !== 'function') {
-        return Response.json({
-            stdout: '', stderr: '', exitCode: 127,
-            error: 'cpython preamble missing: __cpythonReplRun not in scope',
-        });
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where the boot re-adopts it after the mount, because
-    // __wasiInitFS clears the adoption on purpose. Omitting this here — while
-    // cpython-runner's entry had it — is what made the prompt start with no
-    // filesystem it could read.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-    if (typeof adopt === 'function')
-        Reflect.apply(adopt, undefined, [supervisor ?? null]);
-    return Response.json(await run(args));
 }
 export async function runPythonRepl(deps) {
     const adapter = new PythonReplAdapter(deps);

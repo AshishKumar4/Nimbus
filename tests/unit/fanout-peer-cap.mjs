@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // fanout-peer-cap — a fan-out may bound how many peer DOs one submitMany
 // spreads across, without dropping tasks, reordering results, or lowering
 // concurrency.
@@ -55,7 +56,7 @@ async function dispatch(count, opts = {}) {
     ...opts,
   });
   const tasks = Array.from({ length: count }, (_, i) => ({ key: `pkg-${i}`, args: i }));
-  const results = await pool.submitMany(tasks, (x) => x);
+  const results = await pool.submitMany(tasks, facetTaskSource("(x) => x"));
   return {
     results,
     peers: new Set(seen.map((s) => s.peer)),

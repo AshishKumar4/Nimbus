@@ -206,6 +206,8 @@ async function dispatchRemoteRpc(ctx) {
         case 'readFile':
             fileOptions(args[1]);
             return ctx.stub._rpcReadFile(stringArg(args[0], 'path'));
+        case 'detachExec':
+            return ctx.stub._rpcDetachExec(stringArg(args[0], 'detachId'));
         case 'readFileBytes':
             fileOptions(args[1]);
             return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
@@ -218,6 +220,9 @@ async function dispatchRemoteRpc(ctx) {
         case 'lstat':
             fileOptions(args[1]);
             return ctx.stub._rpcLstat(stringArg(args[0], 'path'));
+        case 'readlink':
+            fileOptions(args[1]);
+            return ctx.stub._rpcReadlink(stringArg(args[0], 'path'));
         case 'rename':
             fileOptions(args[2]);
             return ctx.stub._rpcRename(stringArg(args[0], 'from'), stringArg(args[1], 'to'));
@@ -346,6 +351,16 @@ function execOptions(ctx, value) {
     // and is trusted with `cred` the same way it is trusted with kernel writes.
     if (options.cred !== undefined) {
         throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+    }
+    if (options.detach !== undefined)
+        throw apiError('detach must be sent by invocation id over the remote API', 'E_ARG_SHAPE', 400);
+    if (options.detachId !== undefined) {
+        try {
+            parseExecId(options.detachId);
+        }
+        catch (error) {
+            throw apiError(errorMessage(error), 'E_ARG_SHAPE', 400);
+        }
     }
     if (options.execId !== undefined) {
         try {

@@ -145,7 +145,7 @@ export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
   return {
     dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
     ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
-    mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: 0,
+    mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : 0,
   };
 }
 

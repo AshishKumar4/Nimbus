@@ -168,6 +168,36 @@ try {
   await assert.rejects(a.destroy(), /EPERM/, 'a session cannot destroy the workspace');
   assert.equal(await runtime.files.readFileString('/tmp/shared.txt'), 'one plane', 'and the workspace is intact');
   console.log('  [5] a scoped session cannot destroy the workspace');
+
+  // Detaching leaves shell ownership, not the process. Use an explicit gate
+  // so the next call must finish before the old command is allowed to exit.
+  let release, enter;
+  const released = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { enter = resolve; });
+  workspace.registry.register('detached-gate', async (ctx) => {
+    enter();
+    await released;
+    await ctx.stdout.write('still-running\n');
+    return 6;
+  });
+  const detached = await runtime.execStream('cd /home/user; detached-gate', { shellId: 'agent-a', detachId: 'scoped-invocation' });
+  const chunks = [];
+  const drained = (async () => { for await (const chunk of detached.output) chunks.push(new TextDecoder().decode(chunk.data)); return detached.exit; })();
+  await entered;
+  try {
+    assert.deepEqual(await runtime.session({ shellId: 'agent-b' })._rpcDetachExec('scoped-invocation'), { detached: false });
+    assert.deepEqual(await runtime.session({ cred: STRANGER })._rpcDetachExec('scoped-invocation'), { detached: false });
+    assert.deepEqual(await surface._rpcDetachExec('scoped-invocation'), { detached: true });
+    let timer;
+    try {
+      const next = await Promise.race([a.exec('pwd'), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('detached shell remained busy')), 5000); })]);
+      assert.equal(next.stdout, '/tmp\n', 'the new owner starts from the last saved cwd');
+    } finally { clearTimeout(timer); }
+  } finally { release(); }
+  assert.equal((await drained).exitCode, 6);
+  assert.equal(chunks.join(''), 'still-running\n');
+  assert.deepEqual(await surface._rpcDetachExec('scoped-invocation'), { detached: false });
+  assert.equal((await a.exec('pwd')).stdout, '/tmp\n', 'the late command did not save its cwd');
 } finally {
   await runtime.close();
 }

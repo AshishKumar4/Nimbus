@@ -46,6 +46,8 @@ export interface NamedShellOptions {
    * either way.
    */
   readonly persist?: boolean;
+  /** Release this call's ownership, without stopping it or saving its later state. */
+  readonly detach?: AbortSignal;
 }
 
 /** A shell's name, the rule an `execId` follows. */
@@ -90,6 +92,12 @@ export class NamedShells {
     const tail = previous.then(() => gate);
     this.queues.set(name, tail);
     await previous;
+    let detached = false;
+    const leave = () => {
+      release();
+      if (this.queues.get(name) === tail) this.queues.delete(name);
+    };
+    const detach = () => { detached = true; leave(); };
     try {
       // Every call, so a workspace whose tables were dropped makes it again.
       this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
@@ -97,16 +105,21 @@ export class NamedShells {
       const state = saved === undefined
         ? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} }
         : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
+      // The next owner may start before this body settles. It sees the last
+      // durable state, including a new name's initial root, never this body's
+      // in-flight cwd/environment or its later completion.
+      if (saved === undefined) this.save(name, state);
+      if (options.detach?.aborted) detach();
+      else options.detach?.addEventListener('abort', detach, { once: true });
       const call: { shell?: Shell } = {};
       try {
         return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
       } finally {
-        if (options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
-        else if (saved === undefined) this.save(name, state);
+        if (!detached && options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
       }
     } finally {
-      release();
-      if (this.queues.get(name) === tail) this.queues.delete(name);
+      options.detach?.removeEventListener('abort', detach);
+      leave();
     }
   }
 
