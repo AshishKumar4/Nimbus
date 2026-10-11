@@ -35,7 +35,7 @@ import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, r
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
 import {
-  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode,
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, charCodeAt, isWhitespaceCode,
   reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
@@ -93,6 +93,12 @@ export interface Interpreter {
    * whatever the path's extension (a TypeScript file's emit).
    */
   compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean, format?: 'module' | 'commonjs'): ModuleCell;
+  /**
+   * Whether compileModule made `cell` an ES module by its syntax alone, given
+   * no format: Node's detection, which warns of a package.json with no
+   * "type" (node-shims' MODULE_TYPELESS_PACKAGE_JSON).
+   */
+  detectedModule(cell: unknown): boolean;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -255,6 +261,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     isProxy: typeof isProxy === 'function' ? isProxy : null,
     isError: typeof isError === 'function' ? isError : null,
   });
+  const detected = new SafeWeakSet<ModuleCell>();
   const interpreter: Interpreter = {
     captureStack(error, above) { stampStack(error, undefined, above, true); },
     stackFrames,
@@ -290,7 +297,9 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
         const root = analysis.functionScopeOf(program);
         const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, stackFile, true)), text, 0, root).modulePlan(program, root);
         releaseScopes(root);
-        return moduleCell(plan, runtime.ops, host.moduleHelpers);
+        const cell = moduleCell(plan, runtime.ops, host.moduleHelpers);
+        if (format === undefined) detected.add(cell);
+        return cell;
       }
       const script = parsed.program;
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
@@ -299,6 +308,10 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
+    },
+
+    detectedModule(cell) {
+      return typeof cell === 'function' && detected.has(cell as ModuleCell);
     },
 
     compileExpression(code, origin) {

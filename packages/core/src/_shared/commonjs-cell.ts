@@ -1080,6 +1080,10 @@ function __nimbusRuntimeInterpreter() {
   }
   return __nimbusInterpreter;
 }
+// Whether the interpreter made \`cell\` an ES module by its syntax alone (Node's detection).
+function __nimbusDetectedModule(cell) {
+  return __nimbusInterpreter !== null && __nimbusInterpreter.detectedModule(cell);
+}
 // A staged module's code from an origin (runtimeFunctionModule): a module
 // takes the origin's Function; a constructor's code takes its import() too,
 // or the shape that reads the global Function for an origin without one,

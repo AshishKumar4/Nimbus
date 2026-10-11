@@ -109,6 +109,16 @@ const FILES = {
     "writeFileSync(new URL('package.json', dir), JSON.stringify({ type: 'commonjs' }));",
     "console.log('rewritten', await kind('c.js', 'exports.kind = typeof module;'));",
   ].join('\n') + '\n',
+  // A .js written at run time, imported: an ES module by its syntax alone
+  // warns of its typeless package.json, once (Node's detection); CommonJS does not.
+  'detect/package.json': json({ name: 'detect' }),
+  'detect/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "const write = (name, text) => { const url = new URL(name, import.meta.url); writeFileSync(url, text); return url; };",
+    "console.log('first', (await import(write('gen.js', 'export const kind = typeof module;'))).kind);",
+    "console.log('second', (await import(write('gen2.js', 'export const kind = typeof require;'))).kind);",
+    "console.log('cjs', (await import(write('gen3.js', 'exports.kind = typeof module;'))).default.kind);",
+  ].join('\n') + '\n',
   // An uncaught error's report.
   'fatal/main.mjs': "import { sep } from 'node:path';\nconst x = sep.length;\nthrow new TypeError('fatal ' + x);\n",
   'fatal/syntax.mjs': "import './broken.mjs';\nconsole.log('never');\n",
@@ -118,7 +128,7 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs',
+  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs', 'node detect/main.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];

@@ -11921,8 +11921,14 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       // In the format the loader gives the file: a typeless .js, imported or
       // required, is CommonJS or an ES module by its syntax, as Node detects it.
-      cell = __nimbusRuntimeModule(normalizedPath, text, __nimbusFileFormat(filename));
+      const format = __nimbusFileFormat(filename);
+      cell = __nimbusRuntimeModule(normalizedPath, text, format);
       compiledText = text;
+      // An imported .js its syntax made an ES module warns as a staged one does.
+      if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
+        const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
+        if (scope.exists && scope.type === "none") __nimbusWarnTypeless(filename, scope.pjsonPath);
+      }
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
@@ -12310,6 +12316,16 @@ function __nimbusEsmRequired(record) {
 }
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
+// Node's warning of an imported .js that is an ES module by its syntax alone
+// under \`pjsonPath\`, a package.json with no "type" (get_format.js
+// warnTypelessPackageJsonFile): once per package.json, never under node_modules.
+function __nimbusWarnTypeless(path, pjsonPath) {
+  if (__nimbusTypelessWarned.has(pjsonPath) || path.includes("/node_modules/")) return;
+  __nimbusTypelessWarned.add(pjsonPath);
+  __processMod.emitWarning("Module type of " + __nimbusEsmUrl(path) + " is not specified and it doesn't parse as CommonJS.\\n"
+    + "Reparsing as ES module because module syntax was detected. This incurs a performance overhead.\\n"
+    + "To eliminate this warning, add \\"type\\": \\"module\\" to " + pjsonPath + ".", { code: "MODULE_TYPELESS_PACKAGE_JSON" });
+}
 // Node's warning as it loads a \`.js\` that is a module by its syntax alone
 // under a package.json with no "type", once per package.json, naming the
 // first such module it loads: \`id\`'s graph, in the order a load reaches
@@ -12320,12 +12336,7 @@ function __nimbusEsmWarnTypeless(id) {
   for (let at = 0; at < queue.length; at++) {
     const row = __nimbusEsm.table[queue[at]];
     if (row[0] !== "module") continue;
-    if (((row[3] ?? 0) & ${ESM_TYPELESS}) !== 0 && !__nimbusTypelessWarned.has(row[4])) {
-      __nimbusTypelessWarned.add(row[4]);
-      __processMod.emitWarning("Module type of " + __nimbusEsmUrl("/" + row[1]) + " is not specified and it doesn't parse as CommonJS.\\n"
-        + "Reparsing as ES module because module syntax was detected. This incurs a performance overhead.\\n"
-        + "To eliminate this warning, add \\"type\\": \\"module\\" to " + row[4] + ".", { code: "MODULE_TYPELESS_PACKAGE_JSON" });
-    }
+    if (((row[3] ?? 0) & ${ESM_TYPELESS}) !== 0) __nimbusWarnTypeless("/" + row[1], row[4]);
     for (const target of row[2]) {
       if (target >= 0 && !seen.has(target)) { seen.add(target); queue.push(target); }
     }
