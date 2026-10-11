@@ -192,6 +192,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     linkLeadsTo(path: string, link: string): string | null;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
     private locateMutation;
+    /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
+    private reached;
     /**
      * Refuses a mutation at the namespace path `path` that another owner's
      * exclusive-mutation lease covers (EBUSY), or that lies outside the
