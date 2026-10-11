@@ -17,7 +17,7 @@ import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/l
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { z } from 'zod/v4';
 import parseArgv from 'yargs-parser';
-import { posix as path } from 'node:path';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 type Output = { write(data: string): void };
 
@@ -348,12 +348,12 @@ const OPENCODE_SUBCOMMANDS = new Set([
 // Upstream v1.16.2 uses yargs with populate--, these option types and aliases.
 // Let its tokenizer own operands, = values, short groups and boolean negation.
 const OC_BOOLEAN = ['help', 'version', 'print-logs', 'pure', 'continue', 'fork', 'mdns'];
-const OC_STRING = ['_', 'log-level', 'model', 'prompt', 'agent', 'session', 'hostname', 'mdns-domain'];
+const OC_STRING = ['_', 'log-level', 'model', 'prompt', 'agent', 'session', 'hostname', 'mdns-domain', 'cors'];
 const OC_ALIAS = { help: ['h'], version: ['v'], model: ['m'], continue: ['c'], session: ['s'] };
 export function parseOpenCodeArgv(argv: string[]) {
   return parseArgv.detailed(argv, {
     boolean: OC_BOOLEAN, string: OC_STRING, number: ['port'],
-    array: [{ key: 'cors', string: true }], alias: OC_ALIAS,
+    array: ['cors'], alias: OC_ALIAS,
     configuration: { 'populate--': true },
   });
 }
@@ -393,7 +393,8 @@ export function buildOpenCodeTransportPlan(
   };
   try {
     const project = args._[0] === undefined ? undefined : String(args._[0]);
-    const projectCwd = project === undefined ? path.resolve(cwd) : path.resolve(env.PWD ?? cwd, project);
+    const projectCwd = '/' + (project
+      ? resolveVfsPath(project, resolveVfsPath(env.PWD ?? cwd, cwd)) : resolveVfsPath(cwd, '/'));
     const level = scalar('log-level');
     if (level !== undefined && !['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(level)) return { error: `invalid --log-level: ${level}` };
     const port = args.port;
@@ -408,7 +409,7 @@ export function buildOpenCodeTransportPlan(
       // Explicit defaults prevent serve's global server config from changing
       // the default command's local-only network disposition.
       serveArgv: ['serve', '--hostname', scalar('hostname') ?? '127.0.0.1', '--mdns', 'false',
-        ...globals, ...(args.cors ?? []).flatMap((domain) => ['--cors', String(domain)])],
+        ...globals, ...(args.cors ?? []).flatMap((domain: string) => ['--cors', domain])],
       attachArgv: [...(args.continue ? ['--continue'] : []), ...(args.fork ? ['--fork'] : []),
         ...(session === undefined ? [] : ['--session', session]), ...globals],
     };

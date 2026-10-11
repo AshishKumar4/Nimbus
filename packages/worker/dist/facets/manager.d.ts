@@ -16,6 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type OpenCodeTransportPlan } from '../shell/npm-bin-entrypoints.js';
 import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
@@ -1939,6 +1940,7 @@ export declare class FacetManager {
         cwd: string;
         command?: string;
         invokerPid?: number;
+        plan?: OpenCodeTransportPlan;
     }): Promise<StagedArtifactExecResult>;
     /**
      * A staged opencode resident: the attached TUI, or with `port` a headless

@@ -79,9 +79,8 @@ export async function fetchOpencodeWasmBytes(env, file) {
     return fetchAsset(env, file);
 }
 /**
- * Fetch a staged TUI worker bundle source as text (the API server worker.js or
- * the OpenTUI parser.worker.js). Rides into the facet module map as an ESM
- * module the in-isolate Worker polyfill imports.
+ * Fetch the staged OpenTUI parser worker bundle source as text. Rides into the
+ * facet module map as an ESM module the in-isolate Worker polyfill imports.
  */
 export async function fetchOpencodeWorkerSource(env, file) {
     const ab = await fetchAsset(env, file);
@@ -89,9 +88,9 @@ export async function fetchOpencodeWorkerSource(env, file) {
 }
 /**
  * Fetch and expand the split-build chunk pack (chunks.json): one JSON asset
- * mapping every `chunk-<hash>.js` module name to its ESM source. index.js and
- * worker.js import these shared chunks; the facet module map carries each as
- * its own module.
+ * mapping every `chunk-<hash>.js` module name to its ESM source. index.js
+ * imports these chunks from its lazy command handlers; the facet module map
+ * carries each as its own module.
  */
 export async function fetchOpencodeChunkSources(env, packFile) {
     const ab = await fetchAsset(env, packFile);
