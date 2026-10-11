@@ -62,6 +62,7 @@ export interface InterpreterHost {
   /** The launch's single stack path; absent in hosts with no Node stack formatter. */
   readonly stackCapture?: (error: object, frames: readonly InterpretedFrame[]) => void;
   readonly stackIsProxy?: (value: unknown) => boolean;
+  readonly stackIsError?: (value: unknown) => boolean;
 }
 
 /**
@@ -401,9 +402,11 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
   const runtime = new InterpreterRuntime(hostOps);
   const capture = reflectGetOwnPropertyDescriptor(host, 'stackCapture')?.value;
   const isProxy = reflectGetOwnPropertyDescriptor(host, 'stackIsProxy')?.value;
+  const isError = reflectGetOwnPropertyDescriptor(host, 'stackIsError')?.value;
   const stackUnit = (source: string, file: string | null, esModule: boolean): StackUnit => ({
     source, file, esModule, capture: typeof capture === 'function' ? capture : null,
     isProxy: typeof isProxy === 'function' ? isProxy : null,
+    isError: typeof isError === 'function' ? isError : null,
   });
   const interpreter: Interpreter = {
     captureStack(error, above) { stampStack(error, undefined, above, true); },

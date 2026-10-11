@@ -5,7 +5,7 @@
  * error is made. Native wrappers delimit these activations in V8's stack.
  */
 import {
-  SafeWeakMap, charCodeAt, errorInstance, globalObject, newSafeList, objectHasOwn, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf,
+  SafeWeakMap, charCodeAt, globalObject, newSafeList, objectHasOwn, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf,
 } from './intrinsics.js';
 import type { Env } from './runtime.js';
 
@@ -15,6 +15,7 @@ export interface StackUnit {
   readonly esModule: boolean;
   readonly capture: ((error: object, frames: readonly InterpretedFrame[]) => void) | null;
   readonly isProxy: ((value: unknown) => boolean) | null;
+  readonly isError: ((value: unknown) => boolean) | null;
 }
 export interface StackInfo {
   readonly unit: StackUnit;
@@ -82,7 +83,10 @@ export function callResult<T>(value: T): T {
   if (!object(value)) { pendingAsync = null; return value; }
   if (pendingAsync !== null) promises.set(value, pendingAsync);
   pendingAsync = null;
-  if (errorInstance(value)) stampStack(value);
+  if (active !== null) {
+    const info = active[active.length - STACK_SLOTS + INFO] as StackInfo;
+    if (info.unit.isError !== null && info.unit.isError(value)) stampStack(value);
+  }
   return value;
 }
 
@@ -90,7 +94,7 @@ export function suspendedStack(env: Env): void {
   const at = env.length - STACK_SLOTS;
   env[at + RESUMED] = true;
   const info = env[at + INFO] as StackInfo;
-  if (info.shape === 'async' || info.shape === 'asyncArrow') pendingAsync = env;
+  if (info.shape === 'async' || info.shape === 'asyncArrow' || info.shape === 'asyncGenerator') pendingAsync = env;
 }
 
 /** Only an await establishes an async parent; an un-awaited call does not. */
@@ -197,12 +201,13 @@ function snapshot(position: number | undefined, above: unknown): readonly Interp
 /** Stamp before code can read .stack. Re-throwing an error keeps its origin. */
 export function stampStack(error: unknown, position?: number, above?: unknown, replace = false): void {
   if (!object(error) || active === null || (!replace && stamped.has(error))) return;
+  const info = active[active.length - STACK_SLOTS + INFO] as StackInfo;
+  if (info.unit.capture === null) return;
   try {
     const frames = snapshot(position, above);
     if (frames.length === 0 && typeof above !== 'function') return;
     stamped.set(error, frames);
-    const info = active[active.length - STACK_SLOTS + INFO] as StackInfo;
-    if (info.unit.capture !== null) info.unit.capture(error, frames);
+    info.unit.capture(error, frames);
   } catch {
     // Diagnostics cannot replace the thrown value (a Proxy receiver or a
     // locked Error formatter may refuse introspection).

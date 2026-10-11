@@ -492,7 +492,7 @@ export const COMMONJS_CELL_IMPORTS = [
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
-const __nimbusStackIsProxy = __nimbusRegistryRequire("node:util").types.isProxy;
+const { isProxy: __nimbusStackIsProxy, isNativeError: __nimbusStackIsError } = __nimbusRegistryRequire("node:util").types;
 // A bridged filesystem links only after its runner has installed the shims.
 function __nimbusReadBundleFile(path, encoding) {
   return __nimbusRegistryRequire("node:fs").readFileSync(path, encoding);
@@ -1068,6 +1068,7 @@ function __nimbusRuntimeInterpreter() {
       moduleHelpers: ${ESM_MODULE_HELPERS},
       stackCapture: __nimbusRecordInterpretedStack,
       stackIsProxy: __nimbusStackIsProxy,
+      stackIsError: __nimbusStackIsError,
     });
   }
   return __nimbusInterpreter;
