@@ -55,11 +55,11 @@ export function webSocketConstructor(input: unknown, options: unknown): { url: U
 
 export function webSocketSend(value: unknown): string | Uint8Array | Blob {
   if (object(value)) {
-    const tag = value[Symbol.toStringTag];
-    if (value instanceof Blob || ((tag === 'Blob' || tag === 'File')
-      && (typeof value.stream === 'function' || typeof value.arrayBuffer === 'function'))) {
-      const blob = value as unknown as Blob;
-      return blob;
+    if (value instanceof Blob) return value;
+    if (typeof value === 'object') {
+      const tag = value[Symbol.toStringTag];
+      if ((tag === 'Blob' || tag === 'File') && (('stream' in value && typeof value.stream === 'function')
+        || ('arrayBuffer' in value && typeof value.arrayBuffer === 'function'))) return value as unknown as Blob;
     }
     if (ArrayBuffer.isView(value) || isArrayBuffer(value)) {
       const buffer = ArrayBuffer.isView(value) ? value.buffer : value;

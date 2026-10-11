@@ -80,6 +80,8 @@ export function webSocketSend(value) {
         }
         if (ArrayBuffer.isView(value) || isArrayBuffer(value)) {
             const buffer = ArrayBuffer.isView(value) ? value.buffer : value;
+            if (!isArrayBuffer(buffer))
+                throw new TypeError('SharedArrayBuffer is not allowed');
             if ('resizable' in buffer && buffer.resizable || 'growable' in buffer && buffer.growable)
                 throw new TypeError('Received a resizable ArrayBuffer');
             const data = ArrayBuffer.isView(value)

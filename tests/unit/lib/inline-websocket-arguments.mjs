@@ -41,7 +41,8 @@ export async function inlineWebSocketArguments(base) {
   events.push(['binaryType invalid', socket.binaryType]);
   socket.binaryType = { toString() { return 'arraybuffer'; } };
   events.push(['binaryType object', socket.binaryType]);
-  const values = [7, true, null, undefined, { toString() { return 'custom'; } }, '\ud800', 'text',
+  const callableBlob = Object.assign(() => {}, { [Symbol.toStringTag]: 'Blob', arrayBuffer: async () => new Uint8Array([99]).buffer, toString() { return 'callable'; } });
+  const values = [7, true, null, undefined, { toString() { return 'custom'; } }, callableBlob, '\ud800', 'text',
     new Uint8Array([0, 128, 255]), new DataView(new Uint8Array([8, 9, 10]).buffer, 1, 2),
     new Uint8Array([11, 12]).buffer, new Blob(['blob'])];
   await new Promise((resolve, reject) => {
