@@ -84,6 +84,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
   }
   // What session/rpc.ts answers itself rather than through the op table.
   supervisor.fsAcquire = async (epoch, cursor, options) => session.bridge.bridge(pid).acquire(epoch, cursor, options);
+  supervisor.fsReadDirectories = async (request) => session.dispatch({ op: 'fsReadDirectories', args: [request], pid });
   // The process's waves (its filesystem client's), fenced as SupervisorRPC fences them.
   supervisor.openWaveWriter = async () => /** @type {{ writer: string | null }} */ (await session.dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
   supervisor.retireWaveWriter = async (writer) => { await session.dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
