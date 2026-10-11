@@ -40,6 +40,7 @@ import {
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { type ModuleRequest, programRequests } from './module-requests.js';
+import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from './stack.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
@@ -58,6 +59,10 @@ export interface InterpreterHost {
   readonly primordials: object;
   /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
   readonly moduleHelpers: ModuleHelpers;
+  /** The launch's single stack path; absent in hosts with no Node stack formatter. */
+  readonly stackCapture?: (error: object, frames: readonly InterpretedFrame[]) => void;
+  readonly stackIsProxy?: (value: unknown) => boolean;
+  readonly stackIsError?: (value: unknown) => boolean;
 }
 
 /**
@@ -74,6 +79,8 @@ export interface CodeOrigin {
 }
 
 export interface Interpreter {
+  captureStack(error: object, above?: unknown): void;
+  stackFrames(error: object): readonly InterpretedFrame[] | null;
   /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
   compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
   /**
@@ -220,8 +227,8 @@ const REALM: SourceRealm = {
   },
 };
 
-function unitContext(runtime: InterpreterRuntime, source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
-  return { source, module, host, runtime, imports: new SafeMap(), moduleScope };
+function unitContext(runtime: InterpreterRuntime, source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null, stack: StackUnit): UnitContext {
+  return { source, module, host, runtime, imports: new SafeMap(), moduleScope, stack };
 }
 
 /** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
@@ -240,7 +247,17 @@ function unitHost(host: InterpreterHost, origin: CodeOrigin | undefined, parentU
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
   if (host.primordials !== LAUNCH_PRIMORDIALS) throw new Error('interpreter: its built-ins were not captured at the launch start');
   const runtime = new InterpreterRuntime(hostOps);
+  const capture = reflectGetOwnPropertyDescriptor(host, 'stackCapture')?.value;
+  const isProxy = reflectGetOwnPropertyDescriptor(host, 'stackIsProxy')?.value;
+  const isError = reflectGetOwnPropertyDescriptor(host, 'stackIsError')?.value;
+  const stackUnit = (source: string, file: string | null, esModule: boolean): StackUnit => ({
+    source, file, esModule, capture: typeof capture === 'function' ? capture : null,
+    isProxy: typeof isProxy === 'function' ? isProxy : null,
+    isError: typeof isError === 'function' ? isError : null,
+  });
   const interpreter: Interpreter = {
+    captureStack(error, above) { stampStack(error, undefined, above, true); },
+    stackFrames,
     compileFunction(kind, params, body, origin) {
       // A trailing source map is parsed only when the shortened body fails.
       const short = withoutTrailingLineComments(body);
@@ -255,7 +272,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const node = ownFunctionExpression(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null);
+      const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null, stackUnit(text, null, false));
       const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
       releaseScopes(root);
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
@@ -264,20 +281,21 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     compileModule(path, text, origin, javaScript = false, format) {
       if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
+      const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
       const moduleHost = unitHost(host, origin, parentUrl);
       const parsed = moduleProgram(text, format);
       if (parsed.module) {
         const program = parsed.program;
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
-        const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root), text, 0, root).modulePlan(program, root);
+        const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, stackFile, true)), text, 0, root).modulePlan(program, root);
         releaseScopes(root);
         return moduleCell(plan, runtime.ops, host.moduleHelpers);
       }
       const script = parsed.program;
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);
-      const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null, stackUnit(text, stackFile, false)), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
       releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
@@ -294,7 +312,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const program = ownProgram(parse(text, SCRIPT_OPTIONS));
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
-      const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null);
+      const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null, stackUnit(text, null, false));
       const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
       releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');

@@ -47,11 +47,11 @@ function hostOperators(rt) {
   };
 }
 function sloppy(rt) {
-const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, generator: bodyGenerator, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
-async function* drain(it, r) {
+async function* drain(env, it, r) {
   for (;;) {
     if (r.done) return r.value;
     const mark = r.value, x = operand();
@@ -64,13 +64,13 @@ async function* drain(it, r) {
       catch (e) { ok = false; value = e; resumed = true; }
       finally {
         if (!resumed) {
-          const end = it.return(MARK);
-          const result = end.done ? end.value : yield* drain(it, end);
+          const end = step(env, it, "return", MARK);
+          const result = end.done ? end.value : yield* drain(env, it, end);
           if (result !== MARK) return result;
         }
       }
     }
-    r = ok ? it.next(value) : it.throw(value);
+    r = step(env, it, ok ? "next" : "throw", value);
   }
 }
 drain.prototype = rt.SafeAsyncGeneratorPrototype;
@@ -84,43 +84,46 @@ return {
     return f;
   },
   arrow(fi, scope) {
-    return (...args) => callArrow(fi, scope, args);
+    const f = (0, (...args) => callArrow(fi, scope, f, args));
+    return f;
   },
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
-      return finish(fi, fi.body ? fi.body(env) : yield* fi.gen(env));
+      if (fi.body) return run(fi, env);
+      return finish(fi, yield* bodyGenerator(fi, env));
     });
     return f;
   },
   async(fi, scope, home) {
     const f = (0, async function () {
       const env = enter(fi, scope, f, this, arguments, undefined, home);
-      if (fi.body) return finish(fi, fi.body(env));
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       while (!r.done) {
         let value, ok = true;
         try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);
     });
     return f;
   },
   asyncArrow(fi, scope) {
-    return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);
-      if (fi.body) return finish(fi, fi.body(env));
+    const f = (0, async (...args) => {
+      const env = enter(fi, scope, f, undefined, args, undefined, undefined);
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       while (!r.done) {
         let value, ok = true;
         try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);
-    };
+    });
+    return f;
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
   // return() request at a yield is a return completion this frame cannot
@@ -129,9 +132,9 @@ return {
   asyncGenerator(fi, scope, home) {
     const f = (0, async function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
-      if (fi.body) return finish(fi, fi.body(env));
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       for (;;) {
         if (r.done) return finish(fi, r.value);
         const mark = r.value, x = operand();
@@ -144,13 +147,13 @@ return {
           catch (e) { ok = false; value = e; resumed = true; }
           finally {
             if (!resumed) {
-              const end = it.return(MARK);
-              const result = end.done ? end.value : yield* drain(it, end);
+              const end = step(env, it, "return", MARK);
+              const result = end.done ? end.value : yield* drain(env, it, end);
               if (result !== MARK) return finish(fi, result);
             }
           }
         }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
     });
     return f;
@@ -168,11 +171,11 @@ return {
 const strict = (function () {
   "use strict";
   return function (rt) {
-const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
+const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, run, step, generator: bodyGenerator, construct, constructDerived, operand, AWAIT, YIELD, MARK } = rt;
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
-async function* drain(it, r) {
+async function* drain(env, it, r) {
   for (;;) {
     if (r.done) return r.value;
     const mark = r.value, x = operand();
@@ -185,13 +188,13 @@ async function* drain(it, r) {
       catch (e) { ok = false; value = e; resumed = true; }
       finally {
         if (!resumed) {
-          const end = it.return(MARK);
-          const result = end.done ? end.value : yield* drain(it, end);
+          const end = step(env, it, "return", MARK);
+          const result = end.done ? end.value : yield* drain(env, it, end);
           if (result !== MARK) return result;
         }
       }
     }
-    r = ok ? it.next(value) : it.throw(value);
+    r = step(env, it, ok ? "next" : "throw", value);
   }
 }
 drain.prototype = rt.SafeAsyncGeneratorPrototype;
@@ -205,43 +208,46 @@ return {
     return f;
   },
   arrow(fi, scope) {
-    return (...args) => callArrow(fi, scope, args);
+    const f = (0, (...args) => callArrow(fi, scope, f, args));
+    return f;
   },
   generator(fi, scope, home) {
     const f = (0, function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
-      return finish(fi, fi.body ? fi.body(env) : yield* fi.gen(env));
+      if (fi.body) return run(fi, env);
+      return finish(fi, yield* bodyGenerator(fi, env));
     });
     return f;
   },
   async(fi, scope, home) {
     const f = (0, async function () {
       const env = enter(fi, scope, f, this, arguments, undefined, home);
-      if (fi.body) return finish(fi, fi.body(env));
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       while (!r.done) {
         let value, ok = true;
         try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);
     });
     return f;
   },
   asyncArrow(fi, scope) {
-    return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);
-      if (fi.body) return finish(fi, fi.body(env));
+    const f = (0, async (...args) => {
+      const env = enter(fi, scope, f, undefined, args, undefined, undefined);
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       while (!r.done) {
         let value, ok = true;
         try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
       return finish(fi, r.value);
-    };
+    });
+    return f;
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
   // return() request at a yield is a return completion this frame cannot
@@ -250,9 +256,9 @@ return {
   asyncGenerator(fi, scope, home) {
     const f = (0, async function* (...{ [enterGenerator(fi, scope, f, this, arguments, home)]: length }) {
       const env = takeFrame(arguments);
-      if (fi.body) return finish(fi, fi.body(env));
+      if (fi.body) return run(fi, env);
       const it = fi.gen(env);
-      let r = it.next();
+      let r = step(env, it, "next", undefined);
       for (;;) {
         if (r.done) return finish(fi, r.value);
         const mark = r.value, x = operand();
@@ -265,13 +271,13 @@ return {
           catch (e) { ok = false; value = e; resumed = true; }
           finally {
             if (!resumed) {
-              const end = it.return(MARK);
-              const result = end.done ? end.value : yield* drain(it, end);
+              const end = step(env, it, "return", MARK);
+              const result = end.done ? end.value : yield* drain(env, it, end);
               if (result !== MARK) return finish(fi, result);
             }
           }
         }
-        r = ok ? it.next(value) : it.throw(value);
+        r = step(env, it, ok ? "next" : "throw", value);
       }
     });
     return f;

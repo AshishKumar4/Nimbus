@@ -1,4 +1,5 @@
-import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, registerSource, stringOf, symbolDescription, withElement, } from './intrinsics.js';
+import { Error, ReferenceError, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeWeakMap, SafeWeakSet, TypeError, arrayIsArray, copyList, dataDescriptor, defineOrThrow, globalObject, newList, objectCreate, objectFreeze, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectConstruct, reflectOwnKeys, reflectSetPrototypeOf, registerSource, resume, resumeReturning, resumeThrowing, stringOf, symbolDescription, withElement, } from './intrinsics.js';
+import { STACK_SLOTS, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The enclosing environment of `env`. */
 export function up(env) {
     const parent = env[0];
@@ -50,6 +51,7 @@ export class FunctionInfo {
     length;
     strict;
     source;
+    stack = null;
     body = null;
     gen = null;
     /** The body evaluates to the return value itself (an arrow's expression body). */
@@ -96,10 +98,33 @@ export function frameTemplate(size, tdz) {
         frame[tdz[i]] = TDZ;
     return frame;
 }
+/**
+ * Simple-parameter templates contain only undefined. Populate their small
+ * environments and activation suffix together, instead of copying the
+ * template through a primordial .with and then storing the suffix again.
+ * Array literals create every slot as an own data property (no setters,
+ * iterators, or species); this remains the call's one environment allocation.
+ */
+function callFrame(fi, scope, fn, receiver, constructor) {
+    const info = fi.stack;
+    if (info !== null && fi.params !== null) {
+        switch (fi.frame.length - STACK_SLOTS) {
+            case 1: return [scope, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 2: return [scope, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 3: return [scope, undefined, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 4: return [scope, undefined, undefined, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+            case 5: return [scope, undefined, undefined, undefined, undefined, info, fn, receiver, constructor, null, null, 0, false, info.start];
+        }
+    }
+    const env = withElement(fi.frame, 0, scope);
+    if (info !== null)
+        initializeStack(env, info, fn, receiver, constructor);
+    return env;
+}
 function enter(fi, scope, fn, thisArg, args, newTarget, home) {
     if (fi.lazy !== null)
         fi.lazy();
-    const env = withElement(fi.frame, 0, scope);
+    const env = callFrame(fi, scope, fn, thisArg, newTarget !== undefined);
     if (fi.thisSlot !== 0)
         env[fi.thisSlot] = fi.derived ? TDZ : thisArg;
     if (fi.argumentsSlot !== 0)
@@ -120,7 +145,18 @@ function enter(fi, scope, fn, thisArg, args, newTarget, home) {
             env[params[i]] = i < count ? args[i] : undefined;
     }
     else if (fi.bindParams !== null) {
-        fi.bindParams(env, args);
+        const previous = fi.stack === null ? null : pushStack(env);
+        try {
+            fi.bindParams(env, args);
+        }
+        catch (error) {
+            stampStack(error);
+            throw error;
+        }
+        finally {
+            if (fi.stack !== null)
+                popStack(previous);
+        }
     }
     return env;
 }
@@ -133,7 +169,65 @@ function run(fi, env) {
     const body = fi.body;
     if (body === null)
         throw new Error('interpreter: a suspending body called synchronously');
-    return finish(fi, body(env));
+    const previous = fi.stack === null ? null : pushStack(env);
+    try {
+        return finish(fi, body(env));
+    }
+    catch (error) {
+        stampStack(error);
+        throw error;
+    }
+    finally {
+        if (fi.stack !== null)
+            popStack(previous);
+    }
+}
+/** One generator step: no shadow activation remains live across a yield/await. */
+function step(env, it, kind, value) {
+    const previous = pushStack(env);
+    try {
+        if (kind === 'next')
+            return resume(it, value);
+        if (kind === 'throw')
+            return resumeThrowing(it, value);
+        return resumeReturning(it, value);
+    }
+    catch (error) {
+        stampStack(error);
+        throw error;
+    }
+    finally {
+        suspendedStack(env);
+        popStack(previous);
+    }
+}
+// Keep sync delegation V8's own: in particular return(value), yield*'s
+// forwarding and result getters. Only the already existing body iterator's
+// step methods establish the shadow activation; no adapter iterator or
+// generator (and no per-iteration closure) is allocated.
+const generatorFrames = new SafeWeakMap();
+const tracedGeneratorPrototype = objectCreate(SafeGeneratorPrototype);
+const tracedGeneratorMethods = {
+    next(value) {
+        return step(generatorFrames.get(this), this, 'next', value);
+    },
+    throw(value) {
+        return step(generatorFrames.get(this), this, 'throw', value);
+    },
+    return(value) {
+        return step(generatorFrames.get(this), this, 'return', value);
+    },
+};
+defineOrThrow(tracedGeneratorPrototype, 'next', dataDescriptor(tracedGeneratorMethods.next, true, false, true));
+defineOrThrow(tracedGeneratorPrototype, 'throw', dataDescriptor(tracedGeneratorMethods.throw, true, false, true));
+defineOrThrow(tracedGeneratorPrototype, 'return', dataDescriptor(tracedGeneratorMethods.return, true, false, true));
+function generator(fi, env) {
+    if (fi.gen === null)
+        throw new Error('interpreter: a generator without its body');
+    const it = fi.gen(env);
+    generatorFrames.set(it, env);
+    reflectSetPrototypeOf(it, tracedGeneratorPrototype);
+    return it;
 }
 /**
  * One evaluation of a class: what constructing an instance initializes, and
@@ -174,11 +268,14 @@ const runtime = {
     call(fi, scope, fn, thisArg, args, newTarget, home) {
         return run(fi, enter(fi, scope, fn, thisArg, args, newTarget, home));
     },
-    arrow(fi, scope, args) {
-        return run(fi, enter(fi, scope, undefined, undefined, args, undefined, undefined));
+    arrow(fi, scope, fn, args) {
+        return run(fi, enter(fi, scope, fn, undefined, args, undefined, undefined));
     },
     enter,
     finish,
+    run,
+    step,
+    generator,
     construct(fi, scope, ctor, record, thisArg, args, newTarget) {
         if (record.initialize)
             record.initialize(thisArg);
@@ -200,7 +297,7 @@ const runtime = {
             throw new Error('interpreter: a suspending constructor');
         // Undefined falls through to `this`; anything else is the native
         // constructor's own answer (an object, or the TypeError for a primitive).
-        const value = finish(fi, body(env));
+        const value = run(fi, env);
         if (value !== undefined)
             return value;
         const self = fi.thisSlot === 0 ? TDZ : env[fi.thisSlot];
