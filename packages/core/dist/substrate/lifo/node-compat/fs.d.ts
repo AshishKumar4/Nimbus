@@ -80,7 +80,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         native: (path: string | URL) => string;
     };
     truncateSync: (path: string | URL, len?: number) => void;
-    openSync: (path: string | URL, flags?: string | number, mode?: number) => number;
+    openSync: (path: string | URL, flags?: string | number | null, mode?: number) => number;
     closeSync: (fd: number) => void;
     readSync: (fd: number, buffer: Uint8Array, offset?: number, length?: number, position?: number | null) => number;
     writeSync: (fd: number, bufferOrString: Uint8Array | string, offsetOrPosition?: number | null, lengthOrEncoding?: number | string, position?: number | null) => number;

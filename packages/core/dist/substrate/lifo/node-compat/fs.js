@@ -71,7 +71,10 @@ const FLAG_STRINGS = {
 };
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
 function openFlagsOf(flags, mode) {
-    const bits = flags === undefined ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
+    if (typeof flags === 'number' && (!Number.isInteger(flags) || flags < -0x80000000 || flags > 0x7fffffff)) {
+        throw Object.assign(new RangeError(`The value of "flags" is out of range. It must be an integer. Received ${String(flags)}`), { code: 'ERR_OUT_OF_RANGE' });
+    }
+    const bits = flags === undefined || flags === null ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
     if (bits === undefined) {
         throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${String(flags)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
     }

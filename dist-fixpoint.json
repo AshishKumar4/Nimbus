@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "bf2804448fccda6eba78483704fd8d4b62e531c90490dfa2e2e791f023ad4e9d",
+  "fingerprint": "e365854eb342b5407b522dbdb6e205ee692c3ff34f9fb392c7ea328903ecc8b3",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -994,9 +994,9 @@
     "packages/core/dist/substrate/lifo/node-compat/filesystem.d.ts": "61dcf33452c3669c4265ff93951e29fcc215aac73a44ad21bf309db9bbb44a26",
     "packages/core/dist/substrate/lifo/node-compat/filesystem.d.ts.map": "f7284333aacb095e65ad88224f68999928408a0c2e509517873ed50dd4d23de3",
     "packages/core/dist/substrate/lifo/node-compat/filesystem.js": "7ee55f96f0cb1c240adb9c94253092696a98507b24dcb2403e9d225eac13fff5",
-    "packages/core/dist/substrate/lifo/node-compat/fs.d.ts": "74b20eacbeffbc4d79ca0be709635af8b9af2ea91613a728a7abcbab7b394c8a",
-    "packages/core/dist/substrate/lifo/node-compat/fs.d.ts.map": "0f609659955c2c6a205b6b443360d3f4a447380cb000cecf75b3e0bc7ba471b4",
-    "packages/core/dist/substrate/lifo/node-compat/fs.js": "24813e5a0a649539132edc1d0b1d8631e721da4ac7ef7605d40de87ac28f5a10",
+    "packages/core/dist/substrate/lifo/node-compat/fs.d.ts": "d2f9dfa47ea133e28b18530653ee231c8d3d2e7d31a5527f2d3c5c4e7085f099",
+    "packages/core/dist/substrate/lifo/node-compat/fs.d.ts.map": "8f6eb9001db221c0b09a6e415a60a20e66f365c4478821c68ff5c11917e8a3a2",
+    "packages/core/dist/substrate/lifo/node-compat/fs.js": "fda564b439fe528438b1fcdd91905d77f09ffdee6caa9817eaa1c7cd703a798f",
     "packages/core/dist/substrate/lifo/node-compat/http.d.ts": "16e5a9b7e5d98d426c49702dfa8b8409fa4347b4d1241955571de10e1dae1624",
     "packages/core/dist/substrate/lifo/node-compat/http.d.ts.map": "29ef847f0dbe3a9ad8563842619d2c2c134c10b2800b978af9365c481fee2e96",
     "packages/core/dist/substrate/lifo/node-compat/http.js": "7a2c779faea861cf7e578d75264bebccba836bfde94971cf25c43e243a8c9c54",
@@ -1554,7 +1554,7 @@
     "packages/core/src/substrate/lifo/node-compat/esbuild.ts": "4cfec5fc949de61c9774d51571cdd732346067e6cbb6c7f784160f1cf807c260",
     "packages/core/src/substrate/lifo/node-compat/events.ts": "08c632d4ccecd87f963014aa53dfd78c5bf5b55172338295b717041a4ffa2f2a",
     "packages/core/src/substrate/lifo/node-compat/filesystem.ts": "90edb7ef24178145826f4fef9feaf3298d3bf8e255f86c74e927e90e9fa6ea1a",
-    "packages/core/src/substrate/lifo/node-compat/fs.ts": "bb8faa137d10fb29938c1a366df60eff16bd8451a714f3e5d4ffefa06fa2b1f6",
+    "packages/core/src/substrate/lifo/node-compat/fs.ts": "dcde8b03b3ed9a2b3281eb35bbe086e90dfe37aec2705d411baf8ffeeab1265e",
     "packages/core/src/substrate/lifo/node-compat/http.ts": "f2a048e414aae4e2cba471e46135a7f6e59d6fa95a233556284b963e580d3ec6",
     "packages/core/src/substrate/lifo/node-compat/index.ts": "bbfcde3f3a7fd73a684626894090bffdef4c5c2b2d011a20ff2bc4d4a09d0c43",
     "packages/core/src/substrate/lifo/node-compat/loose-equality.ts": "14888e7570115c4d19d1c060cfc14020c87550a92d287044602e7649fa6c4fd7",
