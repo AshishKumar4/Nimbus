@@ -211,6 +211,7 @@ export class NpmInstaller {
         // An optional placement that fails after the plan (its download) is
         // skipped, not failed; with no plan (a lockfile kept whole), none is.
         let skipOptional = () => false;
+        let kept = new Set();
         const recordOf = this.lockRecords();
         if (packageLock !== null) {
             ({ resolved, nested } = packageLock);
@@ -258,6 +259,8 @@ export class NpmInstaller {
             nested = tree.nested;
             if (tree.skip)
                 skipOptional = tree.skip;
+            if (tree.kept)
+                kept = tree.kept;
             phases['resolve'] = Date.now() - phaseStart;
             // Transitive platform-gate refusals. Required ones join `failed`
             // with their reason; optional-edge ones stay out of the outcome
@@ -305,6 +308,10 @@ export class NpmInstaller {
         const toFetch = [];
         for (const target of hoistPlacements(hoistPlan)) {
             const { pkg } = target;
+            // A named install changes what its plan placed; what the plan keeps
+            // is the installed tree, as the lockfile records it, left as it is.
+            if (opts?.packages && kept.has(target.placement))
+                continue;
             if (!pkg.tarballUrl) {
                 // Resolved metadata with no tarball cannot be installed. Silently
                 // dropping it here left the package absent from node_modules and
@@ -774,7 +781,7 @@ export class NpmInstaller {
             `, dispatch barriers=${dispatchBarriers}, ` +
             `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
             (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''));
-        return { resolved, nested, unresolved, rejected, skip: plan.skip };
+        return { resolved, nested, unresolved, rejected, skip: plan.skip, kept: new Set([...plan.kept.keys()].filter((at) => !plan.skipped.has(at))) };
     }
     /**
      * Batch install via two-tier fan-out (Fanout).
