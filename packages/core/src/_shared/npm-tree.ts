@@ -298,19 +298,19 @@ export function requiredFailures(plan: Pick<TreePlan<TreePackage>, 'failures' | 
  */
 const installQueues = new WeakMap<object, Map<string, Promise<unknown>>>();
 
-/** `run` once no other install into the tree at `canonical` in `namespace` is running. */
-export async function withTreeLock<T>(namespace: object, canonical: string, run: () => Promise<T>): Promise<T> {
+/**
+ * `run` once no other install into the tree at `canonical` in `namespace` is
+ * running; at once when none is.
+ */
+export function withTreeLock<T>(namespace: object, canonical: string, run: () => Promise<T>): Promise<T> {
   const queues = installQueues.get(namespace) ?? new Map<string, Promise<unknown>>();
-  installQueues.set(namespace, queues);
-  const before = queues.get(canonical) ?? Promise.resolve();
-  const done = before.then(run, run);
-  const settled = done.then(() => undefined, () => undefined);
+  if (queues.size === 0) installQueues.set(namespace, queues);
+  const before = queues.get(canonical);
+  const done = before === undefined ? run() : before.then(run, run);
+  const release = () => { if (queues.get(canonical) === settled) queues.delete(canonical); };
+  const settled: Promise<unknown> = done.then(release, release);
   queues.set(canonical, settled);
-  try {
-    return await done;
-  } finally {
-    if (queues.get(canonical) === settled) queues.delete(canonical);
-  }
+  return done;
 }
 
 /**

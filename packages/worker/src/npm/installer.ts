@@ -257,12 +257,18 @@ export class NpmInstaller {
     const start = Date.now();
     const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
     const nmDir = projDir + '/node_modules';
-    // One install into a tree at a time (core npm-tree.ts withTreeLock): the
-    // tree's own state, and this installer's progress and log sinks, are the
-    // running install's until it returns.
+    // The project is read and written through the invoking principal's view
+    // of the namespace. The engine's bulk paths (the batch facet, the bin
+    // stream, pre-bundling) serve it at its engine key, the project's path
+    // with every link resolved; a mounted project has none.
     const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
-    const canonical = await canonicalTreePath(async (path) => view.realpath(path), '/' + nmDir);
-    return withTreeLock(this.store, canonical, async () => {
+    const engineDir = await engineKey(view, this.store, '/' + projDir);
+    // One install into a project at a time (core npm-tree.ts withTreeLock),
+    // keyed by where it is: its engine key, else (mounted) its resolved path.
+    // The tree's own state, and this installer's progress and log sinks, are
+    // the running install's until it returns.
+    const where = engineDir ?? await canonicalTreePath(async (path) => view.realpath(path), '/' + projDir);
+    return withTreeLock(this.store, where, async () => {
       // Per-invocation progress wins over whatever the ctor bound — the
       // installer is shared, the terminal it should speak to is not.
       const previousProgress = this.onProgress;
@@ -286,7 +292,7 @@ export class NpmInstaller {
       // never reports a stale phase after a crash unwound the install.
       // The DO reboot would zero this anyway; finally is defense against
       // a non-fatal mid-install throw.
-      try { return await this._installInner(projDir, nmDir, opts, log, start); }
+      try { return await this._installInner(projDir, nmDir, opts, log, start, view, engineDir); }
       finally {
         returned = true;
         setInstallPhase('idle');
@@ -310,6 +316,8 @@ export class NpmInstaller {
     },
     log: (msg: string) => void,
     start: number,
+    view: ProcessView,
+    engineDir: string | null,
   ): Promise<NpmInstallResult> {
     const registry = npmRegistryOrigin(opts?.registry);
     const phases: Record<string, number> = {};
@@ -323,13 +331,7 @@ export class NpmInstaller {
     this.npmLog('verbose', npmTitleLine(opts?.packages ?? []));
     let phaseStart = Date.now();
     log('Checking lockfile...');
-    // The project is read and written through the invoking principal's view
-    // of the namespace. The engine's bulk paths (the batch facet, the bin
-    // stream, pre-bundling) serve it at its engine key; a mounted project
-    // has none.
-    const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
     const project = projectFs(view);
-    const engineDir = await engineKey(view, this.store, '/' + projDir);
     // Where a mounted project's packages are staged; what an install cut
     // short left there goes first.
     const tmp = await engineKey(view, this.store, '/tmp');
