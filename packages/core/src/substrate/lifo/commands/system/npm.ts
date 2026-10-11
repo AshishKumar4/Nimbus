@@ -3,7 +3,7 @@ import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../../_shared/work
 import { resolveContext, type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
-import { basename, dirname, resolve, join } from '../../utils/path.js';
+import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
@@ -13,7 +13,7 @@ import {
 	canonicalTreePath, depthOf, holdTree, isManifest, namedPackages, placementName, planTree, projectRoots, requiredFailures, saveNamed,
 	type ProjectManifest, type TreeNode, type TreePackage, type TreeResolution, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
-import { renameOutcome } from '../../../../vfs/vfs-error.js';
+import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
 	RegistryPackumentSchema,
@@ -290,95 +290,8 @@ type ResolvedShellPackage = TreePackage & { readonly info: RegistryVersionInfo }
 /** A package installed before this install: its manifest on disk. */
 type InstalledShellPackage = TreePackage;
 
-/**
- * The install journal, at `<node_modules>/.nimbus-install-journal`: every
- * rename publication makes, recorded before it starts and once its outcome
- * is known, and `committed` once every package is published. An install
- * that did not finish (a crash, a lost isolate) is undone from it by the
- * next, and only from what it records.
- */
-const JOURNAL = '.nimbus-install-journal';
-
-/** A rename publication makes: `kind` says whose content `from` holds. */
-interface JournalStep {
-	/** retire: the installed copy moved aside; publish: a staged package moved in; carry: a kept package moved from a retired copy into the new tree. */
-	readonly kind: 'retire' | 'publish' | 'carry';
-	readonly from: string;
-	readonly to: string;
-	/** begun: not known to have finished; done: `to` holds all of it (what is left at `from` is residue); none: nothing moved. */
-	state: 'begun' | 'done' | 'none';
-}
-
-interface Journal {
-	readonly run: string;
-	readonly steps: JournalStep[];
-	committed: boolean;
-}
-
-/** A journal as read back: null where it is not one. */
-function journalOf(value: unknown): Journal | null {
-	if (typeof value !== 'object' || value === null || !('run' in value) || !('steps' in value) || !('committed' in value)) return null;
-	const { run, steps, committed } = value;
-	if (typeof run !== 'string' || typeof committed !== 'boolean' || !Array.isArray(steps)) return null;
-	const read: JournalStep[] = [];
-	for (const step of steps) {
-		if (typeof step !== 'object' || step === null || !('kind' in step) || !('from' in step) || !('to' in step) || !('state' in step)) return null;
-		const { kind, from, to, state } = step;
-		if ((kind !== 'retire' && kind !== 'publish' && kind !== 'carry') || typeof from !== 'string' || typeof to !== 'string') return null;
-		if (state !== 'begun' && state !== 'done' && state !== 'none') return null;
-		read.push({ kind, from, to, state });
-	}
-	return { run, steps: read, committed };
-}
-
 /** The kernel-less shell's install queues are one namespace. */
 const NO_KERNEL = {};
-
-/**
- * Undo what `journal` records, newest first: a published package goes (its
- * content is new), and a retired or carried copy moves back, over any
- * residue a rename left where it came from. A step that may have moved part
- * of an installed copy (begun, its outcome unknown, both names there) is
- * not guessed at: both are kept, and named. Answers whether every installed
- * copy is back where it was; `recovering`, an install that did not finish,
- * says what it put back.
- */
-async function undoJournal(vfs: VFS, journal: Journal, stderr: CommandOutputStream, recovering = false): Promise<boolean> {
-	let restored = true;
-	for (const step of [...journal.steps].reverse()) {
-		const { kind, from, to } = step;
-		let state = step.state;
-		try {
-			if (state === 'begun') {
-				const atFrom = await vfs.exists(from);
-				const atTo = await vfs.exists(to);
-				state = !atTo ? 'none' : !atFrom ? 'done' : kind === 'publish' ? 'done' : 'begun';
-			}
-			if (state === 'none') continue;
-			if (kind === 'publish') {
-				// Staged and published content alike are this install's own.
-				await vfs.remove(to, { recursive: true, force: true });
-				await vfs.remove(from, { recursive: true, force: true });
-				continue;
-			}
-			if (state === 'begun') {
-				await stderr.write(`npm ERR! could not tell whether ${from} or ${to} holds the installed copy; both are kept\n`);
-				restored = false;
-				continue;
-			}
-			await vfs.remove(from, { recursive: true, force: true });
-			await vfs.mkdir(dirname(from), { recursive: true });
-			await vfs.rename(to, from);
-			if (recovering) await stderr.write(`npm WARN restored ${from}, which an install that did not finish had moved\n`);
-		} catch (error) {
-			await stderr.write(kind === 'publish'
-				? `npm ERR! could not remove ${to}, which an install that did not finish published: ${describeError(error)}\n`
-				: `npm ERR! could not restore ${from}; its copy is kept at ${to}: ${describeError(error)}\n`);
-			restored = false;
-		}
-	}
-	return restored;
-}
 
 const describeError = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -427,22 +340,9 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 		}
 		return { installed: [], failed: [name] };
 	};
-	const journalPath = join(targetBase, JOURNAL);
-	const writeJournal = async (journal: Journal) => {
-		await vfs.writeFile(journalPath, JSON.stringify(journal));
-	};
-
 	// ── Recover ──
-	if (await vfs.exists(journalPath)) {
-		let journal: Journal | null = null;
-		try { journal = journalOf(JSON.parse(await vfs.readFileString(journalPath))); } catch { journal = null; }
-		if (journal !== null && !journal.committed && !(await undoJournal(vfs, journal, stderr, true))) {
-			return await fail(targetBase, 'an install that did not finish could not be undone; its copies are kept as named above');
-		}
-		if (journal?.committed) {
-			for (const { kind, to, state } of journal.steps) if (kind === 'retire' && state !== 'none') await vfs.remove(to, { recursive: true, force: true });
-		}
-		await vfs.remove(journalPath, { force: true });
+	if (!(await InstallJournal.recover(vfs, targetBase, stderr))) {
+		return await fail(targetBase, 'an install that did not finish could not be undone; its copies are kept as named above');
 	}
 	// A staging directory left behind holds only new packages: no install
 	// into this tree is using it while this one holds it.
@@ -515,25 +415,8 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 		const publish = planned.filter((node) => tree.has(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
 		if (publish.length === 0 && removals.length === 0) return { installed: [], failed: [] };
 
-		const journal: Journal = { run, steps: [], committed: false };
-		const retiredFor = (target: string) => join(dirname(target), `.${basename(target)}-retired-${run}`);
+		const journal = InstallJournal.begin(vfs, targetBase, run);
 		const retiredAt = new Map<string, string>();
-		const step = async (kind: JournalStep['kind'], from: string, to: string) => {
-			const entry: JournalStep = { kind, from, to, state: 'begun' };
-			journal.steps.push(entry);
-			await writeJournal(journal);
-			try {
-				await vfs.mkdir(dirname(to), { recursive: true });
-				await vfs.rename(from, to);
-				entry.state = 'done';
-			} catch (error) {
-				const outcome = renameOutcome(error);
-				if (outcome !== undefined) entry.state = outcome === 'all' ? 'done' : 'none';
-				await writeJournal(journal);
-				throw error;
-			}
-			await writeJournal(journal);
-		};
 		// The package the step being made is for, should it fail.
 		let current = targetBase;
 		try {
@@ -542,17 +425,17 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 				current = placementName(at);
 				const target = join(targetBase, at);
 				if (!(await vfs.exists(target))) continue;
-				await step('retire', target, retiredFor(target));
-				retiredAt.set(at, retiredFor(target));
+				await journal.move('retire', target, journal.retired(target));
+				retiredAt.set(at, journal.retired(target));
 			}
 			for (const node of publish) {
 				current = node.edge.name;
 				const target = join(targetBase, node.at);
 				if (await vfs.exists(target)) {
-					await step('retire', target, retiredFor(target));
-					retiredAt.set(node.at, retiredFor(target));
+					await journal.move('retire', target, journal.retired(target));
+					retiredAt.set(node.at, journal.retired(target));
 				}
-				await step('publish', stagedAt.get(node.at) ?? staging, target);
+				await journal.move('publish', stagedAt.get(node.at) ?? staging, target);
 			}
 			// A kept package whose ancestor was retired (replaced, or bundling
 			// its own node_modules) went with it: it moves back into the tree,
@@ -565,23 +448,13 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 				if (ancestor === undefined) continue;
 				current = node.at;
 				const source = (retiredAt.get(ancestor) ?? '') + node.at.slice(ancestor.length);
-				if (await vfs.exists(source)) await step('carry', source, target);
+				if (await vfs.exists(source)) await journal.move('carry', source, target);
 			}
 		} catch (error) {
-			const restored = await undoJournal(vfs, journal, stderr);
-			if (restored) await vfs.remove(journalPath, { force: true });
+			await journal.undo(stderr);
 			return await fail(current, describeError(error));
 		}
-		journal.committed = true;
-		await writeJournal(journal);
-		// Published: the retired copies this run made are the old tree's.
-		for (const { kind, to, state } of journal.steps) {
-			if (kind !== 'retire' || state === 'none') continue;
-			try { await vfs.remove(to, { recursive: true, force: true }); } catch (error) {
-				await stderr.write(`npm WARN could not remove ${to}: ${describeError(error)}\n`);
-			}
-		}
-		await vfs.remove(journalPath, { force: true });
+		await journal.commit(stderr);
 		if (install.globalBinDir) {
 			for (const node of publish) {
 				if (node.edge.from === '') await linkGlobalBins(node.pkg.info, join(targetBase, node.at), install.globalBinDir, install);
