@@ -6,7 +6,8 @@
 // import.meta, import() identity, CommonJS and builtin namespaces, JSON,
 // resolution under exports/imports conditions and its refusals,
 // require(esm)'s values and refusals, a throw that stops a graph, top-level
-// I/O (sync fs, timers, randomness, the clock) and TypeScript Node strips.
+// I/O (sync fs, timers, randomness, the clock), TypeScript Node strips, and
+// package.json as Node's reader holds it.
 // stdout, stderr and the exit code are host Node's (lib/node-differential.mjs).
 
 import { matchNodeInWorkerd } from './lib/node-differential.mjs';
@@ -93,6 +94,19 @@ const FILES = {
   'ts/package.json': json({ type: 'module' }),
   'ts/lib.ts': "export function twice(n: number): number { return n * 2; }\nexport type T = string;\n",
   'ts/main.ts': "import { twice, type T } from './lib.ts';\nconst label: T = 'twice';\nconsole.log(label, twice(21), import.meta.url.endsWith('/ts/main.ts'));\n",
+  // package.json as Node's reader holds it: read once, an absent one read when written later.
+  'pjson/package.json': json({ name: 'pjson' }),
+  'pjson/main.mjs': [
+    "import { mkdirSync, writeFileSync } from 'node:fs';",
+    "const dir = new URL('./late/', import.meta.url);",
+    'mkdirSync(dir, { recursive: true });',
+    "const kind = async (name, text) => { writeFileSync(new URL(name, dir), text); try { const ns = await import(new URL(name, dir)); return ns.kind ?? ns.default?.kind; } catch (e) { return e.name; } };",
+    "console.log('typeless', await kind('a.js', 'export const kind = typeof module;'));",
+    "writeFileSync(new URL('package.json', dir), JSON.stringify({ type: 'commonjs' }));",
+    "console.log('written', await kind('b.js', 'exports.kind = typeof module;'));",
+    "writeFileSync(new URL('package.json', dir), JSON.stringify({ type: 'module' }));",
+    "console.log('rewritten', await kind('c.js', 'exports.kind = typeof module;'));",
+  ].join('\n') + '\n',
   // An uncaught error's report.
   'fatal/main.mjs': "import { sep } from 'node:path';\nconst x = sep.length;\nthrow new TypeError('fatal ' + x);\n",
   'fatal/syntax.mjs': "import './broken.mjs';\nconsole.log('never');\n",
@@ -102,7 +116,7 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs',
+  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];
