@@ -818,7 +818,7 @@ function __nimbusProgramSites(error, original) {
   for (const site of physical) {
     if (__nimbusInterpreterSite(site)) {
       internal = true;
-      if (site.getFileName() === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_OPS_MODULE)} && next < stamp.frames.length && !stamp.frames[next].async) {
+      if (site.getFileName() === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_OPS_MODULE)} && next < stamp.frames.length && stamp.frames[next].async === site.isAsync()) {
         output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
         internal = false;
       }
