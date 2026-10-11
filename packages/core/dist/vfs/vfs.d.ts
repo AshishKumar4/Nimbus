@@ -196,6 +196,13 @@ export interface VFS {
      * backend without it is never cached.
      */
     readonly changes?: VfsChanges;
+    /**
+     * Whether a write of a whole regular file leaves exactly the bytes it was
+     * given as its content: true for a backend that stores what it is written
+     * (SQLite, memory). One that does not say so (a device that discards or
+     * streams, a /proc) has its content read back where an observer asks.
+     */
+    readonly storesWrites?: boolean;
     describe?(): VfsMountDescription;
     usage?(): Awaitable<VfsUsage | null>;
 }

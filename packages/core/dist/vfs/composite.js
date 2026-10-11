@@ -2,7 +2,7 @@ import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error
 import { normalizeVfsPath } from './path.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
-import { S_IFMT } from './vfs.js';
+import { S_IFMT, isCharacterDevice } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -691,7 +691,13 @@ export class CompositeVFS {
         }
         const { path, route, ops, follow, kind, oldPath, written } = spec;
         const held = [];
-        const capture = (read) => this.capture(ops, route.rel, read, follow, held);
+        // Whether what stood before was a regular file (not a device): with a
+        // backend that stores what it is written, the bytes it was given are
+        // then its after-image (VFS.storesWrites).
+        let regular = false;
+        const capture = (read) => this.capture(ops, route.rel, read, follow, held, (stat) => {
+            regular = stat.type === 'file' && !isCharacterDevice(stat.mode);
+        });
         const release = () => { for (const ref of held)
             ref.release(); };
         const report = () => {
@@ -709,8 +715,9 @@ export class CompositeVFS {
                         release();
                         return result;
                     }
+                    const stores = written !== undefined && wantsAfter && ops.storesWrites === true && (prior === null || regular);
                     const after = kind === 'remove' ? null
-                        : written !== undefined && wantsAfter ? this.keep(held, 'file', written.slice())
+                        : stores ? this.keep(held, 'file', written.slice())
                             : capture(wantsAfter);
                     return then(after, (now) => {
                         const known = (ref) => (ref === false ? undefined : ref);
@@ -765,11 +772,12 @@ export class CompositeVFS {
      * was not read (not wanted, or the backend would not say). What it reads
      * is held in `held`, let go when the observers are done.
      */
-    capture(ops, rel, read, follow, held) {
+    capture(ops, rel, read, follow, held, seen) {
         const keep = (type, bytes) => this.keep(held, type, bytes);
         return attempt(() => then(this.softStat(ops, rel, follow), (stat) => {
             if (stat === null)
                 return null;
+            seen?.(stat);
             if (stat.type === 'directory')
                 return keep('directory', null);
             if (!read)

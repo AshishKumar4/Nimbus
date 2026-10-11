@@ -18,6 +18,8 @@ function segments(path) {
 }
 export class MemoryVFS {
     owner;
+    /** VFS.storesWrites: a regular file holds what it was written. */
+    storesWrites = true;
     root;
     clock = 0;
     sync = this;
