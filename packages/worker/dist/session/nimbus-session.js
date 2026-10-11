@@ -224,7 +224,12 @@ export class NimbusSession extends CloudflareDurableObject {
             ensureDurableAppOnPort: (dark) => this.ensureDurableAppOnPort(dark),
         }, port, request);
     }
+    /** The destroy running (programmatic.ts rpcDestroy), until it is answered. */
+    destroying = null;
     async ensureRuntimeReady() {
+        // A request that comes while the session is destroyed is served by the one made again.
+        while (this.destroying !== null)
+            await this.destroying.catch(() => { });
         if (this.shell)
             return;
         this.runtimeReady ??= this.initSession(null).then(() => {

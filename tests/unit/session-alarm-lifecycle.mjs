@@ -216,7 +216,7 @@ function makeDestroyHost(storage) {
       if (this.sqliteFs) return;
       this.sqliteFs = {
         publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
-        acquireGlobalExclusiveMutation: () => ({ root: '', owner: 'destroy-test' }),
+        seizeGlobalExclusiveMutation: () => ({ root: '', owner: 'destroy-test' }),
         releaseExclusiveMutation() {},
       };
     },

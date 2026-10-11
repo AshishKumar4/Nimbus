@@ -50,12 +50,23 @@ const key = (dir) => CLONE_JOB_PREFIX + dir;
 export async function writeCloneJob(storage, record) {
     await storage.put(key(record.dir), record);
 }
+/**
+ * Whether the destination's record is `record`'s job's. A record is its
+ * job's alone: a job changes and deletes only its own, so one cut short
+ * (its session destroyed and made again, say) never touches the record of
+ * another clone of the same destination.
+ */
+async function owns(storage, record) {
+    return (await storage.get(key(record.dir)))?.jobId === record.jobId;
+}
 export async function setCloneJobPhase(storage, record, phase) {
     record.phase = phase;
-    await storage.put(key(record.dir), record);
+    if (await owns(storage, record))
+        await storage.put(key(record.dir), record);
 }
-export async function deleteCloneJob(storage, dir) {
-    await storage.delete(key(dir));
+export async function deleteCloneJob(storage, record) {
+    if (await owns(storage, record))
+        await storage.delete(key(record.dir));
 }
 export async function listCloneJobs(storage) {
     return [...(await storage.list({ prefix: CLONE_JOB_PREFIX })).values()];
@@ -93,7 +104,7 @@ export async function cleanUpClone(fs, storage, record, options = {}) {
     const { dir } = record;
     const job = markerJob(fs, dir);
     if (job !== null && job !== record.jobId) {
-        await deleteCloneJob(storage, dir);
+        await deleteCloneJob(storage, record);
         return { outcome: 'not-ours', removed: 0, slices: 0 };
     }
     let removed = 0;
@@ -123,7 +134,7 @@ export async function cleanUpClone(fs, storage, record, options = {}) {
         if (!record.rootExisted)
             removed += removeIfEmpty(fs, dir);
     }
-    await deleteCloneJob(storage, dir);
+    await deleteCloneJob(storage, record);
     return { outcome: record.phase === 'transport' ? 'removed' : 'kept-repo', removed, slices };
 }
 /** 1 when the empty directory `path` was removed; 0 when it is gone or not empty. */

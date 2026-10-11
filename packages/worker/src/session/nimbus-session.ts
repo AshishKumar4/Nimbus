@@ -25,7 +25,7 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type {
   SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions,
-  SessionDestroyOptions, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions,
+  SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions,
   SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -317,7 +317,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     }, port, request);
   }
 
+  /** The destroy running (programmatic.ts rpcDestroy), until it is answered. */
+  destroying: Promise<SessionDestroyResult> | null = null;
+
   async ensureRuntimeReady(): Promise<void> {
+    // A request that comes while the session is destroyed is served by the one made again.
+    while (this.destroying !== null) await this.destroying.catch(() => {});
     if (this.shell) return;
     this.runtimeReady ??= this.initSession(null).then(() => {
       this._b4Phase = 'drained';
