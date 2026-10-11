@@ -16,7 +16,7 @@ export function createSupervisorRpcCounters() {
     return {
         stat: 0, lstat: 0, readdir: 0, readFile: 0,
         fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
-        legacySymlinkSubtree: 0, stdout: 0, fileApi: 0,
+        stdout: 0, fileApi: 0,
     };
 }
 export function emptyMetadataOverlayStats() {

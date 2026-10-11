@@ -226,7 +226,6 @@ declare const NATIVE_OPS: {
     fsReadRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     fsReadRangeUncached: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     fsRevision: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
-    hasLegacySymlinkUnder: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => boolean;
     writeFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     writeFileStat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<WriteFileStatAnswer>;
     mkdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
