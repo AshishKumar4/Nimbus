@@ -161,6 +161,7 @@ export class NimbusSandbox {
             _rpcReady: (options) => this.remoteRpc('ready', [options]),
             _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
             _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
+            _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
             _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
             // A credential rides the wire as a trailing `{ cred }` options object
             // so the payload names it explicitly; the remote dispatcher decides
@@ -170,6 +171,7 @@ export class NimbusSandbox {
             _rpcWriteFile: (path, content, _pid, cred) => this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)]),
             _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)]),
             _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)]),
+            _rpcReadlink: (path, _pid, cred) => this.remoteRpc('readlink', [path, ...fileWireOptions(cred)]),
             _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)]),
             _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)]),
             _rpcFsReadRange: (path, offset, length, _pid, cred) => this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)]),
@@ -258,7 +260,28 @@ export class NimbusSandbox {
      */
     async execStream(command, options = {}) {
         await this.ready();
-        return decodeExecStream(await this.stub()._rpcExecStream(command, this.execOptions(options)));
+        const stub = this.stub();
+        const wire = this.execOptions(options);
+        const detach = options.detach;
+        if (!detach)
+            return decodeExecStream(await stub._rpcExecStream(command, wire));
+        const detachId = wire.detachId ?? crypto.randomUUID();
+        const stream = decodeExecStream(await stub._rpcExecStream(command, { ...wire, detachId }));
+        // Register only after the start is acknowledged, so independent HTTP
+        // requests cannot deliver detach before the invocation exists. An abort
+        // that happened while awaiting start is sent immediately afterwards.
+        let rejectDetach;
+        const failedDetach = new Promise((_resolve, reject) => { rejectDetach = reject; });
+        const leave = () => { this.rpc(stub._rpcDetachExec(detachId)).catch(rejectDetach); };
+        const forget = () => detach.removeEventListener('abort', leave);
+        const exit = Promise.race([stream.exit, failedDetach]);
+        exit.catch(() => { });
+        stream.exit.then(forget, forget);
+        if (detach.aborted)
+            leave();
+        else
+            detach.addEventListener('abort', leave, { once: true });
+        return { output: stream.output, exit };
     }
     /**
      * Start a command in the background. Returns as soon as the process has a
@@ -319,6 +342,10 @@ export class NimbusSandbox {
             lstat: async (path) => {
                 await this.ready();
                 return this.rpc(this.stub()._rpcLstat(path, undefined, cred));
+            },
+            readlink: async (path) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcReadlink(path, undefined, cred));
             },
             rename: async (from, to) => {
                 await this.ready();
@@ -593,6 +620,8 @@ export class NimbusSandbox {
     execOptions(options) {
         const shellId = options.shellId ?? this.options.shellId;
         const normalized = { ...options, ...(shellId === undefined ? {} : { shellId }) };
+        // Signals are local capabilities; a detach crosses the wire by invocation id.
+        delete normalized.detach;
         if (typeof normalized.cwd === 'string') {
             // The session shell only understands absolute paths; a relative cwd
             // forwarded verbatim used to reach it anyway — `pwd` echoed the

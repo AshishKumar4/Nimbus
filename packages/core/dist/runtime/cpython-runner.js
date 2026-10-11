@@ -41,6 +41,7 @@
  * program that wrote a file and then raised still wrote the file.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { CPYTHON_RUN_TASK } from './compiled-bodies.generated.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -167,7 +168,7 @@ function errorMessage(error) {
  * names no import: everything it needs is on globalThis, put there by the
  * preamble.
  */
-async function cpythonRunFacetFn(args, facetEnv) {
+export async function cpythonRunFacetFn(args, facetEnv) {
     const run = Reflect.get(globalThis, '__cpythonRun');
     if (typeof run !== 'function') {
         return {
@@ -375,7 +376,7 @@ export function makeCPythonRunnerFactory(deps) {
                     preamble: buildCPythonPreamble(),
                     wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
                 });
-                const result = await facet.submit(cpythonRunFacetFn, facetArgs, {
+                const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
                     signal: stdio.signal,
                 });
                 exitCode = result.error ? result.exitCode || 1 : result.exitCode;

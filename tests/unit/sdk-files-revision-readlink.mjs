@@ -21,10 +21,19 @@ const remote = Nimbus.connect({ endpoint: 'https://files.test', fetch: async (ur
 const local = Nimbus.fromEnv(env).sandbox('revision');
 try {
   const path = '/home/user/file', link = '/home/user/link';
-  await local.files.write(path, 'one');
-  fs.symlink('file', link);
-  const before = await remote.files.stat(path);
-  await remote.files.write(path, 'two');
+  const realNow = Date.now;
+  const fixedTime = realNow();
+  let before;
+  try {
+    Date.now = () => fixedTime;
+    await local.files.write(path, 'one');
+    fs.symlink('file', link);
+    before = await remote.files.stat(path);
+    await remote.files.write(path, 'two');
+    const second = await remote.files.stat(path);
+    assert.equal(second.mtime, before.mtime, 'same millisecond');
+    assert.ok(second.revision > before.revision, 'two same-length writes in one millisecond have distinct revisions');
+  } finally { Date.now = realNow; }
   fs.utimes(path, before.mtime, before.mtime);
   const after = await remote.files.stat(path);
   assert.equal(after.size, before.size);

@@ -32,7 +32,7 @@ import { z } from 'zod';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-contracts.js';
-import type { FacetBindings } from './facet-host.js';
+import type { BashStepArgs } from './facet-tasks.js';
 import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { exists } from '../vfs/vfs.js';
@@ -45,8 +45,6 @@ type BashRunnerFactory = (
   binName: string,
   binKind: string | undefined,
 ) => Command;
-
-type BashStepArgs = BashBootArgs | BashFeedArgs;
 
 const BashSliceSchema = z.object({
   state: z.enum(['need-input', 'exited', 'error']),
@@ -81,40 +79,6 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-/** The step the classic submit transport carries: args object in, slice out.
- *  Serialized verbatim into the facet — every name it touches must be
- *  reachable there (globals or its own literals). */
-export async function bashFacetStep(args: BashStepArgs, bindings: FacetBindings): Promise<unknown> {
-  const step: unknown = Reflect.get(globalThis, '__bashStep');
-  return typeof step === 'function' ? step(args, bindings.SUPERVISOR) : {
-    state: 'error',
-    exitCode: 127,
-    stdout: '',
-    stderr: '',
-    error: 'bash-runner preamble missing (__bashStep not in scope)',
-  };
-}
-
-/**
- * The same step reached through a Request, for hosts whose facet can carry
- * a fetch signal. Serialized verbatim like `bashFacetStep` — no closure
- * references — and the dispatch inside is the same `__bashStep` call; only
- * the transport wrapper differs (JSON in, Response out).
- */
-export async function bashRequestStep(request: Request, bindings: FacetBindings): Promise<Response> {
-  const step: unknown = Reflect.get(globalThis, '__bashStep');
-  if (typeof step !== 'function') {
-    return Response.json({
-      state: 'error',
-      exitCode: 127,
-      stdout: '',
-      stderr: '',
-      error: 'bash-runner preamble missing (__bashStep not in scope)',
-    });
-  }
-  return Response.json(await step(await request.json(), bindings.SUPERVISOR));
 }
 
 export interface BashFacetSession {

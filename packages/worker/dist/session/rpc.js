@@ -22,6 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 import { enc, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
+import { sessionFileStatOf } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
@@ -333,10 +334,13 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
     fs.chmod(protectedPath, 0o444);
 }
 export async function _rpcStat(self, path, pid, cred) {
-    return self.supervisorOp({ op: 'stat', args: [path], pid, cred });
+    return sessionFileStatOf(await self.supervisorOp({ op: 'stat', args: [path], pid, cred }));
 }
 export async function _rpcLstat(self, path, pid, cred) {
-    return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
+    return sessionFileStatOf(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred }));
+}
+export async function _rpcReadlink(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'readlink', args: [path], pid, cred });
 }
 export async function _rpcChmod(self, path, mode, pid, cred) {
     await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });

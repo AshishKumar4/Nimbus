@@ -69,6 +69,11 @@ export class HostedSession extends RpcTarget {
     async _rpcStartProcess(command, options) {
         return operations.rpcStartProcess(this.client(), command, this.exec(options));
     }
+    async _rpcDetachExec(detachId) {
+        if (this.scope !== null && this.scope.shellId === undefined)
+            return { detached: false };
+        return operations.rpcDetachExec(this.client(), detachId, this.scope?.shellId);
+    }
     async _rpcRunCode(code, options) { return operations.rpcRunCode(this.client(), code, this.exec(options)); }
     // The file methods keep the session's wire shape: the third slot is a
     // process claim no SDK caller makes, and is not accepted here either.
@@ -83,6 +88,7 @@ export class HostedSession extends RpcTarget {
     }
     async _rpcStat(path, _pid, cred) { return rpc._rpcStat(this.client(), path, undefined, this.cred(cred)); }
     async _rpcLstat(path, _pid, cred) { return rpc._rpcLstat(this.client(), path, undefined, this.cred(cred)); }
+    async _rpcReadlink(path, _pid, cred) { return rpc._rpcReadlink(this.client(), path, undefined, this.cred(cred)); }
     async _rpcReaddir(path, _pid, cred) { return rpc._rpcReaddir(this.client(), path, undefined, this.cred(cred)); }
     async _rpcRename(from, to, _pid, cred) {
         return rpc._rpcRename(this.client(), from, to, undefined, this.cred(cred));

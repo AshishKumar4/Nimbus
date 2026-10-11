@@ -18,12 +18,12 @@ const outputs = [
     path: `${core}/compiled-bodies.generated.ts`,
     taskImport: './facet-task.js',
     tasks: [
-      ['CPYTHON_RUN_TASK', './cpython-runner.js', 'cpythonRunFacetFn'],
-      ['WASM_CALL_TASK', './wasm-runner.js', 'wasmFacetCall'],
-      ['CLANG_CALL_TASK', './clang-runner.js', 'clangFacetCall'],
-      ['RUBY_CALL_TASK', './ruby-runner.js', 'rubyFacetCall'],
-      ['BASH_STEP_TASK', './bash-runner.js', 'bashFacetStep'],
-      ['BASH_REQUEST_TASK', './bash-runner.js', 'bashRequestStep'],
+      ['CPYTHON_RUN_TASK', './facet-tasks.js', 'cpythonRunFacetFn'],
+      ['WASM_CALL_TASK', './facet-tasks.js', 'wasmFacetCall'],
+      ['CLANG_CALL_TASK', './facet-tasks.js', 'clangFacetCall'],
+      ['RUBY_CALL_TASK', './facet-tasks.js', 'rubyFacetCall'],
+      ['BASH_STEP_TASK', './facet-tasks.js', 'bashFacetStep'],
+      ['BASH_REQUEST_TASK', './facet-tasks.js', 'bashRequestStep'],
     ],
     bodies: [
       ['ESBUILD_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['buildWithEsbuild']],
@@ -42,8 +42,8 @@ const outputs = [
     tasks: [
       ['NPM_INSTALL_BATCH_TASK', '../npm/install-batch-facet.js', 'installPackagesInFacet'],
       ['NPM_RESOLVE_ONE_TASK', '../npm/resolve-one-facet.js', 'resolveOnePackumentInFacet'],
-      ['PYTHON_REPL_TASK', '../runtime/python-repl.js', 'pythonReplStepRequestFn'],
-      ['RUBY_REPL_TASK', '../runtime/ruby-repl.js', 'rubyReplStepFacetFn'],
+      ['PYTHON_REPL_TASK', '../runtime/repl-facet-tasks.js', 'pythonReplStepRequestFn'],
+      ['RUBY_REPL_TASK', '../runtime/repl-facet-tasks.js', 'rubyReplStepFacetFn'],
       ['FANOUT_BENCH_TASK', './bench-tasks.js', 'fanoutBenchTask'],
       ['SERIAL_BENCH_TASK', './bench-tasks.js', 'serialBenchTask'],
     ],
@@ -77,7 +77,7 @@ export async function compileFacetBodies() {
       if (compiled.imports.length) throw new Error(`${name}: task expression has external imports: ${compiled.imports.join(' ')}`);
       const type = `typeof import(${JSON.stringify(entry)}).${exported}`;
       const parameters = `Parameters<${type}>[0], Awaited<ReturnType<${type}>>`;
-      lines.push(`export const ${name}: FacetTaskSource<${parameters}> = facetTaskSource<${parameters}>(${JSON.stringify(`${compiled.expression}.${exported}`)});`);
+      lines.push(`export const ${name}: FacetTaskSource<${parameters}> = /* @__PURE__ */ facetTaskSource<${parameters}>(${JSON.stringify(`${compiled.expression}.${exported}`)});`);
     }
     for (const [name, entry, names, contents] of output.bodies) {
       const compiled = await compiledBodies(contents ? { contents, resolveDir: repo } : { entry: resolve(parent, entry.replace(/\.js$/, '.ts')), exports: names });

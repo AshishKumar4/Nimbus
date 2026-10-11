@@ -50,6 +50,8 @@ import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-re
 import type { FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { type NimbusFilesystemAuthority } from './os-contracts.js';
+import type { WasiAbi } from './wasi-instance.js';
+import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
 export declare function formatWasmRunnerWasiInfo(): string;
@@ -77,4 +79,71 @@ export declare function wasmRunnerSpec(deps: {
     facets: FacetHost;
     processes: SessionProcessSupervisor;
 }): RuntimeSpec;
+export declare const wasmFacetCall: (args: {
+    mode: "direct" | "wasi";
+    processPid?: number;
+    liveOutput?: boolean;
+    exportName?: string;
+    intArgs?: number[];
+    wasiArgv?: string[];
+    wasiEnv?: Record<string, string>;
+    wasiAbi?: WasiAbi;
+    /**
+     * The import namespace to bind, resolved supervisor-side.
+     *
+     * This function is serialized with fn.toString() and evaluated in the
+     * facet isolate, where module imports do not exist — reaching for
+     * WASI_ABI_NAMESPACE here is a ReferenceError at instantiate time that
+     * surfaces as "wasi trap: instantiate failed", with the guest blamed
+     * for a defect in the host. Values the facet needs travel as arguments.
+     */
+    wasiNamespace?: string;
+    /**
+     * Present only for a wasi-threads build. Carries the imported memory's
+     * declared limits, which the host must reproduce exactly — read from
+     * the binary supervisor-side because the JS API exposes an import's
+     * name but not its type.
+     */
+    threads?: {
+        memory: {
+            module: string;
+            name: string;
+            initial: number;
+            maximum: number;
+        };
+    };
+    wasiFs?: {
+        root: string;
+        preopens: Array<{
+            wasiPath: string;
+            vfsPath: string;
+        }>;
+        cred?: {
+            uid: number;
+            gid: number;
+            groups: number[];
+        };
+    };
+}, facetEnv?: {
+    SUPERVISOR?: unknown;
+}) => Promise<WasmCallResult>;
+type WasmCallResult = {
+    ok: boolean;
+    mode: 'direct' | 'wasi';
+    result?: number | string;
+    exports?: string[];
+    stdout?: string;
+    stderr?: string;
+    streamedOutput?: boolean;
+    exitCode?: number;
+    error?: string;
+    fsStats?: ResidentFilesystemStats | null;
+    fsDiff?: {
+        filesWritten: Record<string, string>;
+        filesDeleted: string[];
+        dirsCreated: string[];
+        dirsDeleted: string[];
+    };
+};
+export {};
 //# sourceMappingURL=wasm-runner.d.ts.map

@@ -37,7 +37,8 @@
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */
-import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeBinAdvisory, policyNativePlatformReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
+import { PACKAGE_ABI_POLICY, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
+import { NPM_ABI_POLICY_SOURCE } from './compiled-bodies.generated.js';
 import { NPM_RESOLVE_NODE_IMPORTS, NPM_RESOLVE_SRC } from '../npm/resolve-libs.generated.js';
 export const NPM_RESOLVE_PREAMBLE = `
 ${NPM_RESOLVE_NODE_IMPORTS}
@@ -45,13 +46,15 @@ ${NPM_RESOLVE_NODE_IMPORTS}
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
 // of truth; tests/unit/package-abi-policy.mjs enforces parity.
 const __NIMBUS_PACKAGE_ABI_POLICY = ${JSON.stringify(PACKAGE_ABI_POLICY)};
-const __policyLookupSwap = ${policyLookupSwap.toString()};
-const __policyLookupReject = ${policyLookupReject.toString()};
-const __policyNativePlatformReject = ${policyNativePlatformReject.toString()};
-const __policyNativeBinAdvisory = ${policyNativeBinAdvisory.toString()};
-const __policyLookupStagedArtifact = ${policyLookupStagedArtifact.toString()};
-const __policyApplyStagedArtifact = ${policyApplyStagedArtifact.toString()};
-const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
+const {
+  policyLookupSwap: __policyLookupSwap,
+  policyLookupReject: __policyLookupReject,
+  policyNativePlatformReject: __policyNativePlatformReject,
+  policyNativeBinAdvisory: __policyNativeBinAdvisory,
+  policyLookupStagedArtifact: __policyLookupStagedArtifact,
+  policyApplyStagedArtifact: __policyApplyStagedArtifact,
+  policyIsOptionalNativeBinding: __policyIsOptionalNativeBinding,
+} = ${NPM_ABI_POLICY_SOURCE};
 function SHOULD_SWAP(name) {
   return __policyLookupSwap(__NIMBUS_PACKAGE_ABI_POLICY, name);
 }

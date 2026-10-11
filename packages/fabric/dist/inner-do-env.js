@@ -34,7 +34,7 @@
  * and loads it again in each later request, so the child's env can carry
  * nothing made in one request, the session's own stubs included.
  */
-import { ESBUILD_NAME_MODULE_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
+import { INNER_DO_ADAPTER_SOURCE } from './compiled-bodies.generated.js';
 /**
  * The id string a name gives: deterministic (FNV-style, 64-bit hex), with the
  * prefix `name:` so it never collides with a `uniq:` id. Self-contained: its
@@ -172,9 +172,8 @@ export function innerWorkerModules(bundle, names) {
     const adapter = [
         "import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';",
         `import * as main from './${MAIN_MODULE}';`,
-        // The functions below are serialized from the bundled worker, which wraps them in __name.
-        ESBUILD_NAME_MODULE_SHIM,
-        `const { ${CLASSES_ENTRYPOINT} } = (${innerDoAdapter.toString()})(${innerDoIdFromName.toString()}, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
+        `const { innerDoAdapter, innerDoIdFromName } = ${INNER_DO_ADAPTER_SOURCE};`,
+        `const { ${CLASSES_ENTRYPOINT} } = innerDoAdapter(innerDoIdFromName, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
         `export { ${CLASSES_ENTRYPOINT} };`,
     ].join('\n');
     return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter }, classesEntrypoint };
