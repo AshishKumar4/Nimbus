@@ -8483,7 +8483,11 @@ const __fsMod = (() => {
         if (chunk.byteLength < want) this.push(null);
       }
       open() {}
-      close(cb) { this.destroy(); if (cb) cb(); }
+      // lib/internal/fs/streams.js: `cb` once it has closed (finished's answer).
+      close(cb) {
+        if (typeof cb === "function") __streamMod.finished(this, cb);
+        this.destroy();
+      }
     };
     return __ReadStreamClass;
   }
@@ -8492,7 +8496,8 @@ const __fsMod = (() => {
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
       constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
-        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
+        // Acknowledged, the caller may reuse its buffer: the stream keeps its own bytes.
+        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(new Uint8Array(chunk)); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
         cb();
       }
@@ -11827,12 +11832,17 @@ const __childProcessMod = (() => {
     child._stderrEnded = stdio[2] === 'ignore';
     if (stdio[1] === 'inherit' || stdio[2] === 'inherit') _trackCloseInterest('close');
     // Listen to the underlying streams' 'end' events so 'close' fires
-    // only after actual data has flushed.
+    // only after actual data has flushed; or 'close', for a stream destroyed
+    // before its end (a pipeline's failing sink), as Node counts its pipes'.
     if (child.stdout) {
-      child.stdout.on("end", () => { child._stdoutEnded = true; _maybeFireClose(child); });
+      const done = () => { child._stdoutEnded = true; _maybeFireClose(child); };
+      child.stdout.on("end", done);
+      child.stdout.on("close", done);
     }
     if (child.stderr) {
-      child.stderr.on("end", () => { child._stderrEnded = true; _maybeFireClose(child); });
+      const done = () => { child._stderrEnded = true; _maybeFireClose(child); };
+      child.stderr.on("end", done);
+      child.stderr.on("close", done);
     }
 
     child.kill = function(signal) {
@@ -11937,9 +11947,12 @@ const __childProcessMod = (() => {
           for (const c of chunks) {
             // Ended by the exit-time drain meanwhile: what is left was its.
             if (stream.writableEnded) return;
+            // Destroyed by its consumer (a pipeline's failing sink), it takes
+            // nothing more; what the child writes still drains, so the child
+            // is never held on it.
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
-            const written = stream.write(__BufferMod.from(c.data));
+            const written = stream.destroyed || stream.write(__BufferMod.from(c.data));
             if (written && typeof written.then === 'function') await written;
             else if (written === false && stream.writableNeedDrain) {
               await new Promise((resolve) => {
@@ -12131,6 +12144,7 @@ const __childProcessMod = (() => {
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
+        _flushStdio(child);
         _maybeFireClose(child);
       });
       return child;
@@ -12501,11 +12515,11 @@ const __childProcessMod = (() => {
           );
           // Output means it started: 'spawn' before its first byte.
           if (r && ((r.stdout && r.stdout.byteLength > 0) || (r.stderr && r.stderr.byteLength > 0))) _markSpawned(child);
-          // What the pump has not delivered, to a stream it has not ended.
-          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout && !child.stdout.writableEnded) {
+          // What the pump has not delivered, to a stream still open to it.
+          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout?.writable) {
             child.stdout.write(__BufferMod.from(r.stdout));
           }
-          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr && !child.stderr.writableEnded) {
+          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr?.writable) {
             child.stderr.write(__BufferMod.from(r.stderr));
           }
           // Force-close streams so listeners receive 'end'. The 'end'
@@ -15846,12 +15860,24 @@ builtins.dgram = (() => {
 
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
+  // The process's terminal: a ReadStream reads the process's stdin, a
+  // WriteStream writes its stdout (fd 2: its stderr).
   ReadStream: class extends __streamMod.Readable {
-    constructor() { super(); this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
+    constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
     setRawMode(mode) { this.isRaw = mode !== false; return this; }
+    _read() {
+      const stdin = __processMod.stdin;
+      if (this._stdin === undefined) {
+        this._stdin = stdin;
+        stdin.on("data", (chunk) => { if (!this.push(chunk)) stdin.pause(); });
+        stdin.once("end", () => this.push(null));
+      }
+      stdin.resume();
+    }
   },
   WriteStream: class extends __streamMod.Writable {
-    constructor() { super(); this.isTTY = __nimbusAttachedTty; }
+    constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; }
+    _write(chunk, encoding, callback) { (this.fd === 2 ? __processMod.stderr : __processMod.stdout).write(chunk, encoding, callback); }
     get columns() { return __nimbusTtyColumns; }
     get rows() { return __nimbusTtyRows; }
     getColorDepth(env) { return __nimbusColorDepth(env); }
