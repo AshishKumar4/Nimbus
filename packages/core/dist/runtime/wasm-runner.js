@@ -148,7 +148,9 @@ export function makeWasmRunner(deps) {
         // for it, so a host lease carries the read rather than a process binding.
         let bytes;
         try {
-            const program = await withHostView(deps.filesystem, cred, async (fs) => (await fs.exists(wasmPath)) ? fs.readFile(wasmPath) : null);
+            // A whole program image bypasses the content cache: it is read once and
+            // handed to the facet's module map, never re-read from this isolate.
+            const program = await withHostView(deps.filesystem, cred, async (fs) => (await fs.exists(wasmPath)) ? fs.readFileUncached(wasmPath) : null);
             if (program === null) {
                 return {
                     exitCode: 1,

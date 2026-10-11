@@ -52,11 +52,6 @@ function normalizeSlice(raw) {
         control: parsed.data.control,
     };
 }
-function toArrayBuffer(bytes) {
-    const out = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(out).set(bytes);
-    return out;
-}
 function errorMessage(error) {
     if (error instanceof Error)
         return error.message;
@@ -113,7 +108,7 @@ export async function createBashFacetSession(deps) {
     userEnv.BASH_ENV ||= '/etc/nimbus.bashrc';
     userEnv.PWD = deps.cwd;
     const wasmModules = {
-        'bash.async.wasm': toArrayBuffer(await deps.artifacts.readFile(bashWasmPath)),
+        'bash.async.wasm': await deps.artifacts.readArrayBufferUncached(bashWasmPath),
     };
     for (const file of deps.manifest.files) {
         const prefix = 'share/bash/coreutils/';
@@ -122,7 +117,7 @@ export async function createBashFacetSession(deps) {
         const name = file.path.slice(prefix.length, -'.wasm'.length);
         const vfsPath = `${deps.installRoot}/${file.path}`;
         if (await deps.artifacts.exists(vfsPath)) {
-            wasmModules[`cu_${name}.wasm`] = toArrayBuffer(await deps.artifacts.readFile(vfsPath));
+            wasmModules[`cu_${name}.wasm`] = await deps.artifacts.readArrayBufferUncached(vfsPath);
         }
     }
     const appletsPath = findFile('share/bash/coreutils/busybox.applets');
