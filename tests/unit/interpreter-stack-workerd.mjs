@@ -90,7 +90,7 @@ try {
 
 const probe = await startLocalProbe();
 try {
-  const { t, cleanup } = await localTerminal(probe);
+  const { terminal: t, close: cleanup } = await localTerminal(probe);
   try {
     for (const [rel, text] of Object.entries(FILES)) {
       const path = `${ROOT}/${rel}`;
