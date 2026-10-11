@@ -11,12 +11,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createEsmResolver } from '../../packages/core/src/_shared/esm-resolver.ts';
+import { createRequireResolver } from '../../packages/core/src/runtime/require-resolution.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'esm-resolver-')));
 try {
@@ -57,6 +57,14 @@ try {
         './feat/*.css': null,
         './deep/*': { node: './deep/*/index.mjs' },
         './arr': [{ worker: './w.mjs' }, './e.mjs'],
+        './conditional-null': { import: null, default: './e.mjs' },
+        './array-invalid': ['../bad.mjs', 7, './e.mjs'],
+        './array-null': [null, './e.mjs'],
+        './array-invalid-null': ['../bad.mjs', null],
+        './array-null-invalid': [null, '../bad.mjs'],
+        './array-missing': ['./missing.mjs', './e.mjs'],
+        './*/long-suffix': './e.mjs',
+        './a/*': './specific/*.mjs',
         './nomatch': { browser: './b.mjs' },
         './bad': 'e.mjs',
         './escape': './../x.mjs',
@@ -68,6 +76,7 @@ try {
     'node_modules/dual/pub.mjs': 'export const p = 1;\n',
     'node_modules/dual/features/a.mjs': 'export const a = 1;\n',
     'node_modules/dual/deep/x/index.mjs': 'export const x = 1;\n',
+    'node_modules/dual/specific/x/long-suffix.mjs': 'export default 1;\n',
     'node_modules/order/package.json': JSON.stringify({
       name: 'order',
       exports: { browser: './b.mjs', module: './m.mjs', 'module-sync': './ms.mjs', node: './n.mjs', default: './d.mjs' },
@@ -126,6 +135,13 @@ try {
     ['dual pattern missing', 'dual/feat/zz'],
     ['dual deep condition', 'dual/deep/x'],
     ['dual array', 'dual/arr'],
+    ['dual condition null blocks default', 'dual/conditional-null'],
+    ['dual array invalid falls through', 'dual/array-invalid'],
+    ['dual array null precedes valid', 'dual/array-null'],
+    ['dual array last null', 'dual/array-invalid-null'],
+    ['dual array last invalid', 'dual/array-null-invalid'],
+    ['dual array missing is not fallback', 'dual/array-missing'],
+    ['dual pattern prefix beats total length', 'dual/a/x/long-suffix'],
     ['dual no condition', 'dual/nomatch'],
     ['dual bad target', 'dual/bad'],
     ['dual escape', 'dual/escape'],
@@ -201,7 +217,7 @@ process.stdout.write(JSON.stringify(out));
   // node's own answer for each name the cases can ask about.
   const names = [...new Set(cases.flatMap(([, specifier]) => [specifier, 'node:' + specifier.replace(/^node:/, '')]))];
   const builtins = new Set(JSON.parse(spawnSync('node', ['-p', `JSON.stringify(${JSON.stringify(names)}.filter((n) => require('module').isBuiltin(n)))`], { encoding: 'utf8' }).stdout));
-  const resolver = createEsmResolver({
+  const host = {
     kind(path) {
       try {
         const st = statSync(path);
@@ -214,8 +230,12 @@ process.stdout.write(JSON.stringify(out));
     },
     // Some builtins exist only with the scheme (node:test).
     isBuiltin: (specifier) => builtins.has(specifier),
+  };
+  const cjs = createRequireResolver(host);
+  const resolver = createEsmResolver({
+    ...host,
     cjsResolve(specifier, parentPath) {
-      try { return createRequire(parentPath).resolve(specifier); } catch { return null; }
+      try { return cjs.resolveSync(specifier, dirname(parentPath))?.path ?? null; } catch { return null; }
     },
   });
   const parentUrl = pathToFileURL(parent).href;

@@ -437,18 +437,34 @@ export interface ResolveSubpathResult {
   scope?: RequirePackageScope | null;
   packageType?: PackageType;
 }
+/** The launch names reachable files; runtime resolution still reports refusals. */
+function loaderReportsResolutionError(err: unknown): boolean {
+  return ['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+    'ERR_PACKAGE_IMPORT_NOT_DEFINED', 'ERR_INVALID_MODULE_SPECIFIER', 'ERR_INVALID_PACKAGE_TARGET',
+    'ERR_INVALID_PACKAGE_CONFIG', 'ERR_UNKNOWN_BUILTIN_MODULE'].includes(String(codeOf(err)));
+}
 export async function resolveRequireEx(
   vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress,
   conditions: readonly string[] = [],
   policy: RequireResolutionPolicy = NIMBUS_TYPESCRIPT_REQUIRE_POLICY,
 ): Promise<ResolveSubpathResult | null> {
-  const result = await requireResolverOverFs(vfs, sink, progress, conditions, policy).resolve(id, absolute(fromDir));
-  if (!result?.path) return null;
-  return { resolved: stripLeadingSlashes(result.path), scope: result.scope, packageType: result.packageType };
+  try {
+    const result = await requireResolverOverFs(vfs, sink, progress, conditions, policy).resolve(id, absolute(fromDir));
+    if (!result?.path) return null;
+    return { resolved: stripLeadingSlashes(result.path), scope: result.scope, packageType: result.packageType };
+  } catch (err) {
+    if (loaderReportsResolutionError(err)) return null;
+    throw err;
+  }
 }
 export async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<string | null> {
-  const path = await requireResolverOverFs(vfs, sink, progress).resolveFile(absolute(base));
-  return path === null ? null : stripLeadingSlashes(path);
+  try {
+    const path = await requireResolverOverFs(vfs, sink, progress).resolveFile(absolute(base));
+    return path === null ? null : stripLeadingSlashes(path);
+  } catch (err) {
+    if (loaderReportsResolutionError(err)) return null;
+    throw err;
+  }
 }
 export async function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType> {
   return (await requireResolverOverFs(vfs, undefined, progress).packageScope(absolute(dir)))?.type ?? null;

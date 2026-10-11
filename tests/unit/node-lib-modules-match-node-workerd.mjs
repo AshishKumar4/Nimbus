@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd for the Node module/runtime differential.
 // @serial
 // assert, assert/strict, util, querystring and punycode are Node v22.22.3's own
 // modules (node-lib-source.ts, run over node-lib-host.ts): each program here
@@ -65,6 +66,75 @@ const attempt = (label, fn) => { try { fn(); show(label); } catch (e) { show(lab
 process.on('warning', (w) => console.log('warning: ' + w.name + ' ' + w.code + ' ' + w.message));
 `;
 const FILES = {
+  'resolution/package.json': JSON.stringify({ name: 'resolution-self', type: 'commonjs', exports: { '.': './self.cjs' }, imports: {
+    '#x': './self.cjs', '#dep': 'rx', '#null': null, '#conditional-null': { require: null, default: './self.cjs' }, '#pat/*': './lib/*.js',
+  } }),
+  'resolution/self.cjs': 'module.exports = 1;',
+  'resolution/lib/one.js': 'module.exports = 1;',
+  'resolution/main.cjs': String.raw`
+const path = require('path');
+const fs = require('fs');
+const out = (id, run) => { try { const p = run(); console.log(id + ' ' + (p.startsWith('/') ? path.relative(__dirname, p) : p)); } catch (e) { console.log(id + ' ' + e.code); } };
+out('sync', () => require.resolve('rx'));
+out('require-first', () => require.resolve('rx/require-first'));
+out('default-first', () => require.resolve('rx/default-first'));
+out('array-invalid', () => require.resolve('rx/array-invalid'));
+out('array-null', () => require.resolve('rx/array-null'));
+out('array-missing', () => require.resolve('rx/array-missing'));
+out('null', () => require.resolve('rx/null'));
+out('condition-null', () => require.resolve('rx/condition-null'));
+out('pattern-prefix', () => require.resolve('rx/a/x/long-suffix'));
+out('private', () => require.resolve('rx/private/secret'));
+out('imports', () => require.resolve('#x'));
+out('imports-bare', () => require.resolve('#dep'));
+out('imports-pattern', () => require.resolve('#pat/one'));
+out('imports-null', () => require.resolve('#null'));
+out('imports-condition-null', () => require.resolve('#conditional-null'));
+out('self', () => require.resolve('resolution-self'));
+out('self-private', () => require.resolve('resolution-self/private'));
+out('main-directory', () => require.resolve('./dir'));
+out('index-json', () => require.resolve('./json-dir'));
+out('exact-cjs', () => require.resolve('./self.cjs'));
+out('exact-mjs', () => require.resolve('./m.mjs'));
+out('exact-json', () => require.resolve('./data.json'));
+out('exact-node', () => require.resolve('./addon.node'));
+out('implicit-node', () => require.resolve('./addon'));
+out('no-implicit-mjs', () => require.resolve('./m'));
+out('no-implicit-cjs', () => require.resolve('./self'));
+out('suffix-directory-is-not-file', () => require.resolve('./not-file'));
+out('exports-exact', () => require.resolve('rx/extensionless'));
+fs.symlinkSync('../real/linked', path.join(__dirname, 'node_modules/rx-link'));
+out('symlink-package', () => require.resolve('rx-link'));
+fs.symlinkSync('./self.cjs', path.join(__dirname, 'source-link.cjs'));
+out('symlink-file', () => require.resolve('./source-link.cjs'));
+`,
+  'resolution/m.mjs': 'export default 1;',
+  'resolution/data.json': '{"x":1}',
+  'resolution/addon.node': '',
+  'resolution/not-file.js/child.js': '',
+  'resolution/dir/package.json': JSON.stringify({ main: 'inner' }),
+  'resolution/dir/inner/package.json': JSON.stringify({ main: '../hidden.js' }),
+  'resolution/dir/inner/index.json': '{"x":1}',
+  'resolution/dir/hidden.js': 'module.exports = 1;',
+  'resolution/json-dir/index.json': '{"x":1}',
+  'resolution/real/linked/package.json': JSON.stringify({ main: 'index.cjs' }),
+  'resolution/real/linked/index.cjs': 'module.exports = 1;',
+  'resolution/node_modules/rx/package.json': JSON.stringify({ exports: {
+    '.': { 'module-sync': './sync.mjs', require: './require.cjs', default: './default.js' },
+    './require-first': { require: './require.cjs', 'module-sync': './sync.mjs' },
+    './default-first': { default: './default.js', require: './require.cjs' },
+    './array-invalid': ['../invalid.js', 7, './require.cjs'], './array-null': [null, './require.cjs'],
+    './array-missing': ['./missing.js', './require.cjs'], './null': null,
+    './condition-null': { require: null, default: './default.js' },
+    './*/long-suffix': './default.js', './a/*': './specific/*.js',
+    './private/*': null, './*': './*.js', './extensionless': './raw',
+  } }),
+  'resolution/node_modules/rx/sync.mjs': 'export default 1;',
+  'resolution/node_modules/rx/require.cjs': 'module.exports = 1;',
+  'resolution/node_modules/rx/default.js': 'module.exports = 1;',
+  'resolution/node_modules/rx/specific/x/long-suffix.js': 'module.exports = 1;',
+  'resolution/node_modules/rx/private/secret.js': 'module.exports = 1;',
+  'resolution/node_modules/rx/raw.js': 'module.exports = 1;',
   'assert.cjs': SHOW + String.raw`
 const assert = require('assert');
 const util = require('util');
@@ -916,6 +986,7 @@ import('zlib').then((ns) => {
 // Each program's command line, after \`node\`.
 const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'dns.cjs', 'dns-unavailable.cjs', 'fronts.cjs', 'fronts-more.cjs', 'random.cjs', 'zlib.cjs'];
 
+PROGRAMS.unshift('resolution/main.cjs');
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
 for (const [path, text] of Object.entries(FILES)) {
