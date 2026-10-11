@@ -134,6 +134,7 @@ export function createProcessHost(
 // ── facet: the process is a child of the user's own session DO ──────────────
 
 class FacetProcessHost implements ProcessHost {
+  assertDurableStorage(): void {}
   /**
    * The process shares its session's Durable Object, so the session's own
    * store is reachable by copy-on-write — and its storage budget is the same
@@ -316,6 +317,9 @@ interface PeerResidency {
 }
 
 class PeerProcessHost implements ProcessHost {
+  assertDurableStorage(): never {
+    throw new Error('Nimbus: a durable spawn must be facet-hosted on its own coordinator; NIMBUS_PROCESS_HOST=peer cannot own retained application storage');
+  }
   /**
    * A peer buys independent CPU and its own storage budget, and pays for both
    * with the image path: nothing crosses a Durable Object boundary by
@@ -373,10 +377,7 @@ class PeerProcessHost implements ProcessHost {
       // Durable Object — its `app-slot-<n>` row and retained SQLite live in
       // that DO's storage. A sibling host would own storage the coordinator's
       // durable-slot book and removeDurableApp cannot reach.
-      throw new Error(
-        'Nimbus: a durable spawn must be facet-hosted on its own coordinator; '
-          + 'the peer substrate cannot serve one',
-      );
+      this.assertDurableStorage();
     }
     await this.reconcile();
     const placement = await this._place(params.pid);

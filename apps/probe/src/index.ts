@@ -199,10 +199,15 @@ export class NimbusSession extends SdkNimbusSession {
     this.requireProbeDiagnostics();
     return peerPlacement(this.ctx, pid);
   }
-  async _rpcProbePeer(workerKey: string, action: 'inspect' | 'facet-reset' | 'host-reset') {
+  _rpcProbeCoordinatorReset(): never {
+    this.requireProbeDiagnostics();
+    this.ctx.abort('probe: coordinator reset');
+  }
+  async _rpcProbePeer(workerKey: string, action: 'inspect' | 'facet-reset' | 'host-reset', coordinator: string) {
     this.requireProbeDiagnostics();
     const current = await this.peerHost.inspect(workerKey);
     if (!current.found) return current;
+    if (current.coordinator !== coordinator) throw new Error('the probe placement belongs to another coordinator');
     if (action === 'host-reset') this.ctx.abort('probe: hosting actor reset');
     if (action === 'facet-reset') {
       if (current.facet === null) throw new Error('the probe process is already absent');
@@ -254,7 +259,8 @@ type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
 };
 const HostLossProbe = z.discriminatedUnion('action', [
   z.object({ action: z.literal('mode') }),
-  z.object({ action: z.enum(['inspect', 'state', 'facet-reset', 'host-reset']), pid: z.number().int().positive().safe() }),
+  z.object({ action: z.enum(['inspect', 'state', 'facet-reset', 'host-reset', 'coordinator-reset']), pid: z.number().int().positive().safe() }),
+  z.object({ action: z.literal('placement-state'), peerName: z.string(), workerKey: z.string() }),
 ]);
 
 export default {
@@ -362,6 +368,11 @@ async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string)
     const input = parsed.data;
     if (input.action === 'mode') return Response.json({ mode: processHostMode(env) });
     const coordinator = env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`).toString();
+    if (input.action === 'placement-state') {
+      const peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(input.peerName));
+      try { return Response.json(await peer._rpcProbePeer(input.workerKey, 'inspect', coordinator)); }
+      finally { disposeRpcResource(peer); }
+    }
     owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromString(coordinator));
     const rows = await owner._rpcListProcesses();
     const process = rows.find((row) => row.pid === input.pid);
@@ -369,18 +380,23 @@ async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string)
     if (input.action === 'state') return Response.json(process);
     const placement = await owner._rpcProbePlacement(input.pid);
     if (!placement) return new Response('Peer process not found', { status: 404 });
+    if (input.action === 'coordinator-reset') {
+      try { await owner._rpcProbeCoordinatorReset(); }
+      catch { return Response.json({ reset: true, placement }); }
+      throw new Error('the coordinator reset returned normally');
+    }
     const peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(placement.peerName));
     try {
-      const before = await peer._rpcProbePeer(placement.workerKey, 'inspect');
+      const before = await peer._rpcProbePeer(placement.workerKey, 'inspect', coordinator);
       if (!before.found) return new Response('Peer process not found', { status: 404 });
-      if (input.action === 'inspect') return Response.json(before);
+      if (input.action === 'inspect') return Response.json({ ...before, placement });
       try {
-        return Response.json(await peer._rpcProbePeer(placement.workerKey, input.action));
+        return Response.json(await peer._rpcProbePeer(placement.workerKey, input.action, coordinator));
       } catch (error) {
         if (input.action !== 'host-reset') throw error;
         const fresh = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(placement.peerName));
         try {
-          const after = await fresh._rpcProbePeer(placement.workerKey, 'inspect');
+          const after = await fresh._rpcProbePeer(placement.workerKey, 'inspect', coordinator);
           if (after.incarnation === before.incarnation) throw new Error('the hosting actor did not reset');
           return Response.json({ reset: true, before: before.incarnation, after: after.incarnation });
         } finally { disposeRpcResource(fresh); }

@@ -8738,6 +8738,13 @@ export class FacetManager {
     await this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
     const cwd = opts.cwd || '/home/user';
+    if (!this.processHost.imageDelivery.storageSharedWithSession) {
+      const argv = launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv });
+      const derived = await deriveResidentOwner(cwd, argv);
+      const declared = opts.port === undefined ? null : await readPortReservation(this.ctx, opts.port);
+      const owner = declared?.kind === 'explicit' && declared.owner !== null ? declared.owner : derived;
+      if (await readPortReservationByOwner(this.ctx, owner)) this.processHost.assertDurableStorage();
+    }
     let entry: ProcessEntry;
     if (opts.skipSpawn && opts.callerPid != null) {
       const found = this.processes.get(opts.callerPid);
@@ -9326,6 +9333,7 @@ export class FacetManager {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
+    if (opts.durable) this.processHost.assertDurableStorage();
     await this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.

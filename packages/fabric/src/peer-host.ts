@@ -259,11 +259,12 @@ export class PeerHost {
   }
 
   /** A hosting record's current physical actor, without admitting guest work. */
-  async inspect(workerKey: string): Promise<{ found: boolean; incarnation: string; facet: string | null }> {
+  async inspect(workerKey: string): Promise<{ found: boolean; incarnation: string; facet: string | null; coordinator: string | null; residencies: number }> {
     const record = this.records.get(workerKey);
     const stored = await this.ctx.storage.get<HostingRecord>(HOSTING_KEY_PREFIX + workerKey);
     const facet = record && !record.closed ? (await record.facet).name : null;
-    return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet };
+    return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet,
+      coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0 };
   }
 
   /** Open once and answer. Observation and release are independently owned calls. */
@@ -503,7 +504,7 @@ export class PeerHost {
       sockets.delete(server);
       releaseOwner();
     };
-    const ended = () => { release(); server.close(); afterEnd?.(); };
+    const ended = () => { if (released) return; release(); server.close(); afterEnd?.(); };
     sockets.set(server, release);
     server.addEventListener('close', ended);
     server.addEventListener('error', ended);

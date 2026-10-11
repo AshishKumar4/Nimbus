@@ -17,7 +17,7 @@ export class Peer extends DurableObject {
   status(){return {watches:this.watches.size,codes:this.codes,replyErrors:this.replyErrors};}
   abortSelf(){this.ctx.abort('peer reset');}
   closeAll(){for(const socket of this.watches)socket.close(1000,'peer deliberately closed');}
-  fetch(request) {
+  async fetch(request) {
     const [client,server]=Object.values(new WebSocketPair());
     this.watches.add(server);
     const ended=()=>{this.watches.delete(server);server.close();};
@@ -31,6 +31,7 @@ export class Peer extends DurableObject {
     server.addEventListener('error',ended);
     server.addEventListener('message',event=>server.send(event.data));
     server.accept();
+    if(new URL(request.url).searchParams.has('delay'))await new Promise(resolve=>setTimeout(resolve,20));
     return new Response(null,{status:101,webSocket:client,headers:{'x-nimbus-host-incarnation':'peer'}});
   }
 }
@@ -39,6 +40,8 @@ export class NimbusProcess extends DurableObject { startProcess(){return 'booted
 export class Host extends DurableObject {
   activity;
   lease;
+  passive;
+  passiveAbort;
   losses=[];
   async startWatch(name){
     this.activity=new HostActivity();
@@ -48,6 +51,18 @@ export class Host extends DurableObject {
   watchStatus(){return this.losses;}
   releaseWatch(){this.lease.release();}
   abortSelf(){this.ctx.abort('coordinator reset');}
+  async startPassive(name,cancelPending=false){
+    this.passiveAbort=new AbortController();
+    const stub=this.env.PEER.get(this.env.PEER.idFromName(name));
+    try{
+      const pending=stub.fetch(new Request('https://peer.invalid/'+(cancelPending?'?delay':''),{signal:this.passiveAbort.signal,headers:{Upgrade:'websocket'}}));
+      if(cancelPending)this.passiveAbort.abort();
+      const response=await pending;
+      this.passive=response.webSocket;
+    }finally{stub[Symbol.dispose]?.();}
+    return this.passive.readyState;
+  }
+  releasePassive(){this.passiveAbort.abort();}
   async run() {
     const make = async (name) => {
       const activity = new HostActivity(), lost=[];
@@ -149,7 +164,17 @@ export class Host extends DurableObject {
       for(let i=0;i<100&&watches;i++)await new Promise(resolve=>setTimeout(resolve,1));
       streamCases.push({ending,atHeaders,after:watches,length:response.headers.get('Content-Length')});target.close();
     }
-    return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,streamCases};
+    const passiveCases=[];
+    for(const cause of ['release','coordinator-reset','peer-reset','pending-release']){
+      const name='passive-'+cause,owner=this.env.HOST.get(this.env.HOST.idFromName(name)),peer=this.env.PEER.get(this.env.PEER.idFromName(name));
+      let state;try{state=await owner.startPassive(name,cause==='pending-release');}catch{}
+      const before=await peer.status();
+      try{if(cause==='release')await owner.releasePassive();else if(cause==='coordinator-reset')await owner.abortSelf();else if(cause==='peer-reset')await peer.abortSelf();}catch{}
+      let after;
+      for(let i=0;i<100;i++){after=await peer.status();if(after.watches===0)break;await new Promise(resolve=>setTimeout(resolve,10));}
+      passiveCases.push({cause,state,before:before.watches,after:after.watches});
+    }
+    return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,streamCases,passiveCases};
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
@@ -200,6 +225,10 @@ try{
     assert.equal(test.atHeaders,1,JSON.stringify(test));
     assert.equal(test.after,0,JSON.stringify(test));
     assert.equal(test.length,'3','native ownership preserves declared length');
+  }
+  for(const test of result.passiveCases){
+    if(test.cause!=='pending-release')assert.equal(test.before,1,JSON.stringify(test));
+    assert.equal(test.after,0,JSON.stringify(test));
   }
   console.log('host-activity-workerd: native abort, shared watch, active reset and idle incarnation change');
 }finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}

@@ -1,11 +1,11 @@
-import { BASE, mintSession, deleteSession, Terminal, makeAsserter, requestHeaders, sleep, hasOutputLine, termBody, fetchPort } from '../../_driver.mjs';
+import { BASE, mintSession, deleteSession, Terminal, makeAsserter, requestHeaders, sleep, hasOutputLine, termBody, fetchPort, diagMemory } from '../../_driver.mjs';
 
 const a = makeAsserter('peer-host-observation');
 const sessions = [], terminals = [];
-async function probe(sid, action, pid) {
+async function probe(sid, action, pid, fields = {}) {
   const response = await fetch(`${BASE}/api/embedder/${sid}/host-loss`, {
     method: 'POST', headers: requestHeaders({ 'content-type': 'application/json' }, sid),
-    body: JSON.stringify({ action, pid }),
+    body: JSON.stringify({ action, pid, ...fields }),
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`host-loss ${action}: ${response.status} ${text}`);
@@ -68,11 +68,33 @@ try {
     const quiet = await server(third);
     const beforeIdle = await probe(third, 'inspect', quiet.pid);
     await quiet.terminal.close();
-    // Keep only the coordinator reachable. These status reads own no guest work
-    // and never contact its peer; the hosting actor must naturally hibernate.
+    // No peer traffic while the coordinator stays alive. Residency must survive
+    // without an RPC stub, active watch, polling alarm or peer heartbeat.
     for (let i = 0; i < 75; i++) { await sleep(2000); await probe(third, 'state', quiet.pid); }
     const afterIdle = await probe(third, 'inspect', quiet.pid);
-    a.check('an idle hosting peer naturally changes incarnation', beforeIdle.incarnation !== afterIdle.incarnation, JSON.stringify({ beforeIdle, afterIdle }));
+    a.check('an idle peer resident lives while its coordinator is active', beforeIdle.incarnation === afterIdle.incarnation && afterIdle.residencies === 1, JSON.stringify({ beforeIdle, afterIdle }));
+    const stillAlive = await fetchPort(third, 3217, '/');
+    a.check('the same process still serves after unrelated coordinator activity', stillAlive.status === 200 && stillAlive.body === 'alive', JSON.stringify(stillAlive));
+    const generation = (await diagMemory(third))?.hib?.isolateGen;
+    for (let i = 0; i < 15; i++) await sleep(10000);
+    const afterQuiet = await probe(third, 'placement-state', undefined, beforeIdle.placement);
+    a.check('coordinator hibernation closes passive residency without a cancel call', afterQuiet.residencies === 0 && !afterQuiet.found, JSON.stringify(afterQuiet));
+    const nextGeneration = (await diagMemory(third))?.hib?.isolateGen;
+    a.check('passive residency does not pin the coordinator', typeof generation === 'number' && nextGeneration > generation, `${generation} -> ${nextGeneration}`);
+
+    const fourth = await mintSession(); sessions.push(fourth);
+    const resetting = await server(fourth);
+    const owned = resetting.terminal.run('echo COORDINATOR_OWNED; sleep 5', 15000);
+    void owned.catch(() => {});
+    await resetting.terminal.waitFor(() => hasOutputLine(termBody(resetting.terminal.buf), 'COORDINATOR_OWNED'), 10000, 'the coordinator owns active work');
+    const resetOwner = await probe(fourth, 'coordinator-reset', resetting.pid);
+    let peerAfterReset;
+    for (let i = 0; i < 40; i++) {
+      peerAfterReset = await probe(fourth, 'placement-state', undefined, resetOwner.placement);
+      if (!peerAfterReset.found && peerAfterReset.residencies === 0) break;
+      await sleep(50);
+    }
+    a.check('coordinator reset releases residency during active work without a cancel call', !peerAfterReset.found && peerAfterReset.residencies === 0, JSON.stringify(peerAfterReset));
   }
 } finally {
   for (const terminal of terminals) await terminal.close().catch(() => {});

@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: peer residents retain a passive native coordinator-lifetime socket;
+  idle traffic on the hosting peer no longer ends a process while its coordinator
+  is alive. Releasing or losing the coordinator ends residency without polling.
+- Changed: durable application spawns require facet hosting and fail before
+  announcing a pid under peer mode; retained SQLite is not silently relocated.
 - Fixed: a resident's host loss is reported on that process and cannot refuse
   unrelated commands or healthy siblings. Resident preparation and streamed
   HTTP responses retain their work ownership through startup or body completion.

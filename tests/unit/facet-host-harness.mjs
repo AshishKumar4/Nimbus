@@ -256,7 +256,7 @@ import {
   _rpcRouteHostedHttp,
   peerHostFor,
 } from '../../packages/worker/src/session/rpc.ts';
-import { isolateToken, isHostedWatch } from '../../packages/fabric/src/peer-host.ts';
+import { isolateToken, isHostedWatch, isHostedResidency } from '../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
@@ -386,6 +386,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // to the same real handler the production entrypoint calls first.
         async fetch(request) {
           if (peer.resetBy) throw peer.resetBy;
+          if (isHostedResidency(request)) return peer.peerHost.reside(new Request(request, { signal: AbortSignal.any([request.signal, peer.deathSignal.signal]) }));
           if (isHostedWatch(request)) return peer.peerHost.watch(new Request(request, { signal: AbortSignal.any([request.signal, peer.deathSignal.signal]) }));
           return peer.peerHost.routeWebSocket(request);
         },

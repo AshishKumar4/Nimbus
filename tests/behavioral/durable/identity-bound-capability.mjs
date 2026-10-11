@@ -18,7 +18,7 @@
 //   `/s/<sid>/port/<n>/` with the capability header otherwise — both reach
 //   the same session gate.
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep } from '../_driver.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep, requestHeaders } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const SUFFIX = process.env.NIMBUS_PREVIEW_HOST_SUFFIX ?? null;
@@ -159,8 +159,14 @@ try {
   a.check('kill ends the unrelated server', killedOther.exitCode === 0, killedOther.output.slice(-200));
   const again = await t.run('node server.js', 30_000);
   const againPid = Number(again.output.match(/pid=(\d+)/)?.[1] || 0);
-  a.check('the app is running again', againPid > 0, again.output.slice(-200));
-  const reExposed = await box.apps.expose({ owner: OWNER }, { visibility: 'public' });
+  const modeResponse = await fetch(`${BASE}/api/embedder/${sid}/host-loss`, { method: 'POST', headers: requestHeaders({ 'content-type': 'application/json' }, sid), body: JSON.stringify({ action: 'mode' }) });
+  const mode = modeResponse.ok ? (await modeResponse.json()).mode : 'facet';
+  if (mode === 'peer') {
+    a.check('durable relaunch refuses peer hosting before a pid is announced', againPid === 0 && /durable spawn must be facet-hosted/.test(again.output), again.output.slice(-600));
+    a.check('the refused relaunch leaves its old public link retired', (await fetchPublic(CAP1)).status === 404);
+  } else {
+    a.check('the app is running again', againPid > 0, again.output.slice(-200));
+    const reExposed = await box.apps.expose({ owner: OWNER }, { visibility: 'public' });
   a.check('re-expose answers the same identity', reExposed.owner === OWNER, JSON.stringify(reExposed));
   a.check('re-expose mints a fresh capability', /^[a-f0-9]{24}$/.test(reExposed.capability ?? '') && reExposed.capability !== CAP1,
     `old=${CAP1} new=${reExposed.capability}`);
@@ -169,6 +175,7 @@ try {
   a.check('the new shared link answers the app', publicAgain.ok, `status=${publicAgain.last.status} body=${publicAgain.last.body?.slice(0, 100)}`);
   const stale = await fetchPublic(CAP1, '/');
   a.check('the retired link stays dead', stale.status === 404, `status=${stale.status}`);
+  }
 
   await box.apps.remove({ owner: OWNER }).catch(() => {});
 } finally {
