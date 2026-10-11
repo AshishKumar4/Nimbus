@@ -19,7 +19,7 @@ import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
 import type { ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import {
-  builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
+  builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
   stageEsModule, type StagedEsModule,
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
@@ -39,7 +39,7 @@ import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
  * (esmRowName): its cell's module for a staged module, else its facade by id.
  */
 export type EsmModuleRow =
-  | readonly [kind: 'module', key: string, targets: readonly number[], flags?: number]
+  | readonly [kind: 'module', key: string, targets: readonly number[], flags?: number, packageJson?: string]
   | readonly [kind: 'commonjs', key: string]
   | readonly [kind: 'builtin', builtin: string]
   | readonly [kind: 'json', key: string];
@@ -248,6 +248,19 @@ export async function stageEsModules(
     const exported = await exportNames(resolution.path);
     return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
   };
+
+  // A `.js` that is a module by its syntax alone, outside node_modules,
+  // under a package.json with no "type": Node's loader warns of it (ESM_TYPELESS).
+  for (let at = 0; at < targetIds.length; at++) {
+    const row = table[at]!;
+    if (row[0] !== 'module') continue;
+    const key = row[1];
+    if (!key.endsWith('.js') || key.split('/').includes('node_modules')) continue;
+    const url = new URL('file://');
+    url.pathname = '/' + key;
+    const scope = await resolver.packageScope(url.href);
+    if (scope.exists && scope.type === 'none') table[at] = ['module', key, row[2], (row[3] ?? 0) | ESM_TYPELESS, scope.pjsonPath];
+  }
 
   // Each module's static imports, as the registry links them.
   const targetNames: string[][] = [];

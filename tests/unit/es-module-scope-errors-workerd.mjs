@@ -35,9 +35,11 @@ const files = {
   'import-in.cjs': "import { sep } from 'node:path';\nconsole.log(sep);\n",
   'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
   'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  // V8's "Missing } in template expression", which Node does not retry as a module.
+  'template-await.js': 'console.log(`${await 1}`);\n',
 };
 // Entries print their uncaught error; the rest report what they caught.
-const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs', 'import-in.cjs', 'commonjs/import.js'];
+const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs', 'import-in.cjs', 'commonjs/import.js', 'template-await.js'];
 
 /**
  * An uncaught error's `<Name>: <message>` and further message lines, and its

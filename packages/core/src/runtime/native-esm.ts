@@ -56,6 +56,12 @@ export const ESM_FACADE_DIR = 'nimbus/facade/';
 export const ESM_BUN_SCOPE = 1;
 /** A staged module's flag in its launch's table: it awaits at its top level (esm-require-hoist.ts hasTopLevelAwait). */
 export const ESM_TOP_LEVEL_AWAIT = 2;
+/**
+ * A staged module's flag in its launch's table: a `.js` an ES module by its
+ * syntax alone, under a package.json with no "type" (its row names that
+ * package.json), which Node warns about as it loads it (MODULE_TYPELESS_PACKAGE_JSON).
+ */
+export const ESM_TYPELESS = 4;
 
 /**
  * Where a module's edits change a line, by line: [line, source column,
