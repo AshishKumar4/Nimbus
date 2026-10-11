@@ -78,6 +78,12 @@ export interface CommonJsResolution {
 export interface RequireResolveOptions {
   /** Already absolute. Undefined is the parent lookup, [] is no lookup. */
   paths?: readonly string[];
+  /**
+   * The requiring module's filename, which an imports ("#name") refusal says
+   * it is imported from, as Node's Module._resolveFilename passes the
+   * parent's path; the directory resolved from where there is none.
+   */
+  parent?: string;
 }
 
 const codeOf = (error: unknown): unknown =>
@@ -317,11 +323,12 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     if (id.startsWith('#')) {
       const scope = yield* nearestPackageScope(dir, state);
       if (scope && scope.pkg.imports != null) {
+        const from = request.parent ?? dir;
         if (id === '#' || id.startsWith('#/') || id.endsWith('/')) {
-          throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
+          throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + from, TypeError);
         }
         let target: URL | null | undefined;
-        try { target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state); }
+        try { target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, from, true, state); }
         catch (err) {
           // Node's CJS boundary translates an ESM PACKAGE_RESOLVE miss to
           // its own MODULE_NOT_FOUND, with this require's stack.
@@ -329,7 +336,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
           throw err;
         }
         if (target != null) return yield* finalizeTarget(target, scope.packageJsonPath);
-        throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + ' imported from ' + dir, TypeError);
+        throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + ' imported from ' + from, TypeError);
       }
     }
     const self = yield* loadPackageSelf(id, dir, state);

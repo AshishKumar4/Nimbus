@@ -221,6 +221,11 @@ try {
         expected[i], 'guest: ' + label);
     }
     assert.deepEqual(differences, [], 'all hosts agree with Node under ' + JSON.stringify(conditions));
+    // An imports refusal names the requiring file, as Node's does (not its directory).
+    const refusal = (resolveId) => { try { resolveId(); } catch (e) { return { code: e.code, message: e.message }; } return null; };
+    const nodeRefusal = spawnSync('node', ['-e', 'try { require("module").createRequire(' + JSON.stringify(disk(W) + '/main.cjs')
+      + ').resolve("#missing"); } catch (e) { console.log(JSON.stringify({ code: e.code, message: e.message })); }'], { encoding: 'utf8' });
+    assert.deepEqual(refusal(() => guest.resolve('#missing')), JSON.parse(nodeRefusal.stdout.split(root).join('')), 'the guest names the requiring file, as Node');
     const typed = sync.resolveSync('./typed/file.js', disk(W));
     assert.equal(typed.packageType, 'module');
     assert.equal(typed.scope.packageJsonPath, disk(W + '/typed/package.json'));
