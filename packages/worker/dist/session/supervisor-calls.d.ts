@@ -383,23 +383,6 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      */
     writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<WriteBatchStreamResult>;
     /**
-     * Bulk-write npm registry cache entries (resolved packument metadata)
-     * in ONE RPC. Used by the resolver-facet to flush a wave of resolved
-     * packages back to the supervisor without per-entry round-trips.
-     *
-     * `entries` is an array of RegistryCacheEntry from src/npm-cache.ts:
-     *   { name, version, tarballUrl, integrity, depsJson, exportsJson,
-     *     main, moduleField, binJson, fetchedAt }
-     *
-     * Returns { written, failed } — partial writes are tolerated; cache
-     * is best-effort (resolver correctness depends on the returned
-     * ResolvedPackage[], not on cache hits).
-     */
-    putRegistryEntries(entries: any[]): Promise<{
-        written: number;
-        failed: number;
-    }>;
-    /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns
      * { bytes, events } where:

@@ -160,7 +160,6 @@ const INPUTS = {
   writeBatchStream: [stream],
   openWaveWriter: [],
   retireWaveWriter: ['00000000-0000-4000-8000-000000000000'],
-  putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
   reportExit: [code, tail, ['home/user/app/node_modules/on-change/source/index.js'], ['home/user/app/node_modules/pkg/learned.js'], [{ kind: 'async', params: ['a'], body: 'return a' }], ['home/user/app/node_modules/late/index.js']],

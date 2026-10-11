@@ -80,7 +80,7 @@ export const REPLAY_OPERATION_POLICY = {
   openWaveWriter: mutation,
   // Ends a write-wave epoch the session holds open for the process.
   retireWaveWriter: mutation,
-  putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
+  stdout: output, stderr: output, prefetch: read,
   registerPort: effect, allocatePort: effect, unregisterPort: effect,
   reportExit: output, routeLoopback: effect, transform: read,
   cpSpawn: effect, reportRuntimeCode: output, cpStdinWrite: effect,

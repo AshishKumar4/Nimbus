@@ -629,34 +629,6 @@ export function supervisorCalls(base) {
                 rpcPayloadEnd(STREAM_RESIDENT_BYTES);
             }
         }
-        /**
-         * Bulk-write npm registry cache entries (resolved packument metadata)
-         * in ONE RPC. Used by the resolver-facet to flush a wave of resolved
-         * packages back to the supervisor without per-entry round-trips.
-         *
-         * `entries` is an array of RegistryCacheEntry from src/npm-cache.ts:
-         *   { name, version, tarballUrl, integrity, depsJson, exportsJson,
-         *     main, moduleField, binJson, fetchedAt }
-         *
-         * Returns { written, failed } — partial writes are tolerated; cache
-         * is best-effort (resolver correctness depends on the returned
-         * ResolvedPackage[], not on cache hits).
-         */
-        async putRegistryEntries(entries) {
-            // Phase 2 A'.2: track the inbound array's resident byte cost.
-            // Each registry entry is ~500 B (deps + integrity + tarballUrl);
-            // a wave of 100 entries is ~50 KiB. Bounded; counted in
-            // streamingBuffersBytes for visibility.
-            const REGISTRY_ENTRY_BYTES = 512;
-            const payloadBytes = (Array.isArray(entries) ? entries.length : 0) * REGISTRY_ENTRY_BYTES;
-            rpcPayloadStart(payloadBytes);
-            try {
-                return await this._call(this._op('putRegistryEntries', [entries]));
-            }
-            finally {
-                rpcPayloadEnd(payloadBytes);
-            }
-        }
         // ── R2-backed npm cache RPC [W4] ─────────────────────────────────────
         //
         // The R2 buckets are bindings on the SUPERVISOR worker (not the

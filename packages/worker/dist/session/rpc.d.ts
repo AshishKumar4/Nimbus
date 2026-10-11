@@ -16,8 +16,7 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets; rpcPutRegistryEntries
- * uses self.ctx.storage.sql). The InitHost-style escape applies because
+ * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
@@ -344,19 +343,6 @@ export declare function _rpcWriteBatch(self: RpcHost, payload: unknown, pid?: nu
  * the exact durable progress.
  */
 export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult>;
-/**
- * Bulk-write npm registry cache entries in ONE RPC. Used by the
- * resolver-facet to flush a wave of resolved packages back to the
- * supervisor without per-entry round-trips.
- *
- * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
- * Returns { written, failed } so the facet can surface partial-write
- * warnings to the install log.
- */
-export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): Promise<{
-    written: number;
-    failed: number;
-}>;
 export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
 export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
