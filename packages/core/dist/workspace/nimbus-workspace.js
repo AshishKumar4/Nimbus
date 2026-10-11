@@ -770,7 +770,7 @@ export function seedBaseFilesystem(target, home = DEFAULT_HOME) {
 }
 /**
  * The base seed on a namespace: each step placed by the namespace's
- * dispatcher (SqliteVFS.placesHere, as a wave's records are). One placed on
+ * dispatcher (WaveIngest.placesHere, as a wave's records are). One placed on
  * the session's filesystem is the engine's, as the session's own seed makes
  * it; any other is the call a program would make on the namespace.
  */
@@ -786,7 +786,7 @@ async function seedOnNamespace(steps, filesystem) {
         // record there is. A step is placed as its call looks its name up: every
         // one follows a link at it but a lone mkdir (mkdir -p stats it first).
         const follow = call.op !== 'mkdir' || call.recursive === true;
-        if (filesystem.engine.placesHere([call.path], cred, { aboveMounts: true, follow })) {
+        if (filesystem.waves.placesHere(engine[call.as], [call.path], { aboveMounts: true, follow })) {
             answer = engineStep(engine[call.as], call);
         }
         else {

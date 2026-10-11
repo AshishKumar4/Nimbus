@@ -15,6 +15,7 @@
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
+import { WaveIngest } from './wave-ingest.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
 import type { OutputGate } from './output-gate.js';
@@ -44,6 +45,13 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     readonly delegations: Delegations;
     /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
     private readonly bufferedWriteBytes;
+    /**
+     * Every wave's ingestion, whoever streams it (a process's binding, or a
+     * command holding the engine): its records placed by this namespace's
+     * mutation lookup, those it places on a mount applied there by its own
+     * operations (wave-router.ts).
+     */
+    readonly waves: WaveIngest;
     constructor(engine: SqliteVFS, options?: {
         hydration?: HydratorOptions;
         bufferedWriteBytes?: number;

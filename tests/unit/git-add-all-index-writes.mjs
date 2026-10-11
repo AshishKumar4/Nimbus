@@ -48,9 +48,9 @@ vfs.as = (cred) => {
   const engine = engineAs(cred);
   return new Proxy(engine, {
     get(target, key) {
-      if (key !== 'writeStream') return Reflect.get(target, key, target);
-      return async (stream, options) => {
-        const result = await target.writeStream(stream, options);
+      if (key !== 'wave') return Reflect.get(target, key, target);
+      return async (options, work) => {
+        const result = await target.wave(options, work);
         const objects = result.receipts.filter(({ path }) => path.startsWith(`${REPO}/.git/objects/`)).length;
         objectsPublished += objects;
         filesInFlight -= objects;

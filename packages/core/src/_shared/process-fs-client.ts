@@ -46,7 +46,7 @@ import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { SYSCALL_VERDICTS, type VfsErrorCode } from '../vfs/vfs-error.js';
-import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../vfs/sqlite-vfs.js';
+import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../runtime/wave-contracts.js';
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
 
 export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
@@ -759,7 +759,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? error.message : String(error)}`, writer);
       return;
     }
-    // The session's own answer (SqliteVFS.writeStream's, through the binding).
+    // The session's own answer (WaveIngest's, through the binding).
     const answer = result as WriteBatchStreamResult;
     const error = answer.ok ? null : answer.error;
     // Unfenced, the session numbers nothing: committedOps says how far it went.

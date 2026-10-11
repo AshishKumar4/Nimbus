@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -84,7 +85,8 @@ function tree(user) {
 
 async function asWave(calls) {
   const { raw, user } = engine();
-  const result = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
+  const waves = new WaveIngest(null);
+  const result = await waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
   return { result, tree: tree(user), raw };
 }
 
@@ -112,8 +114,9 @@ await differential('writeFile creates, less the umask', [{ call: 'writeFile', pa
 {
   // An existing file keeps its mode, owner and inode: only its bytes change.
   const { user } = engine();
+  const waves = new WaveIngest(null);
   const before = user.lstat('home/user/kept');
-  const result = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [{ type: 'call', call: { call: 'writeFile', path: 'home/user/kept', mode: 0o666, data: enc.encode('new bytes') } }] }));
+  const result = await waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops: [{ type: 'call', call: { call: 'writeFile', path: 'home/user/kept', mode: 0o666, data: enc.encode('new bytes') } }] }));
   assert.equal(result.ok, true, JSON.stringify(result.error));
   const after = user.lstat('home/user/kept');
   assert.equal(after.mode & 0o7777, 0o600, 'an existing file keeps its mode');
@@ -206,7 +209,7 @@ await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/u
     { call: 'mkdir', path: 'shared/there', mode: 0o755 },
     { call: 'writeFile', path: 'shared/never', mode: 0o644, data: enc.encode('x') },
   ];
-  const result = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
+  const result = await files.waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
   assert.equal(result.ok, false, 'a mkdir of a mounted name that is there was taken');
   assert.equal(result.committedOps, 6, result.error?.message);
   assert.equal(result.error.errno, 'EEXIST');

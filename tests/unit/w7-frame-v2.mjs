@@ -9,6 +9,7 @@ import {
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const bytes = (length, seed = 0) => {
@@ -305,8 +306,9 @@ async function expectDecodeFailure(value, pattern) {
   ]) {
     const harness = createSqliteVfsTestHarness();
     const engine = new SqliteVFS(harness.sql, harness.ctx);
+    const waves = new WaveIngest(null);
     const kernel = engine.as(CRED_KERNEL);
-    const answer = await kernel.writeStream(streamBytes(misframed, 7));
+    const answer = await waves.writeStream(kernel, streamBytes(misframed, 7));
     assert.equal(answer.ok, false, `${what} is refused`);
     assert.match(answer.error.message, pattern, `${what}: refused by the decoder's own check`);
     assert.equal(kernel.exists(file), false, `${what}: ${file} was not stored`);

@@ -6,6 +6,20 @@
 export type VfsErrorCode = 'E2BIG' | 'EPERM' | 'ENOENT' | 'EIO' | 'ENXIO' | 'EAGAIN' | 'EACCES' | 'EBUSY' | 'EEXIST' | 'EXDEV' | 'ENOTDIR' | 'EISDIR' | 'EINVAL' | 'ENOSPC' | 'EROFS' | 'ELOOP' | 'ENAMETOOLONG' | 'ENOTEMPTY' | 'ENOTSUP' | 'ESTALE' | 'EBADF';
 /** Linux errno numbers, negative as libuv reports them. */
 export declare const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>>;
+/**
+ * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which
+ * a layer that reports the error for its own call keeps (the runtime bridge,
+ * toVfsError). A `detail` given is the reason about the name `what` and is
+ * appended to the message; without one, `what` is the whole reason. Name a
+ * storage key only in `what`, never in the reason: the caller's layer names
+ * the caller's own path.
+ */
+export declare function vfsError(code: string, what: string, detail?: string): Error & {
+    code: string;
+    detail: string;
+};
+/** An error's errno (an `E…` code), if it carries one. */
+export declare function errnoCodeOf(error: unknown): string | undefined;
 /** What a VfsError carries besides its cause: Node's `err.syscall` and `err.dest`. */
 export interface VfsErrorOptions extends ErrorOptions {
     /** The call that failed (`open`, `scandir`, `rename`), as Node names it. */

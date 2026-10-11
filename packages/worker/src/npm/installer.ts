@@ -1902,7 +1902,7 @@ export class NpmInstaller {
     // byte bounds; the manifest goes last.
     const engine = target.engine;
     const writer = createWaveWriter({
-      supervisor: { writeBatchStream: (stream) => engine.writeStream(stream) },
+      supervisor: { writeBatchStream: (stream) => this.filesystem.waves.writeStream(engine, stream) },
       root: binDir,
       mtimeMs: Date.now(),
     });

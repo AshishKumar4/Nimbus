@@ -13,6 +13,7 @@ import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters, type GitNetworkResult } from './network-facet.js';
 import { createGitFs, type GitFsBackend, type GitFsStat } from './git-fs.js';
@@ -2585,8 +2586,12 @@ export async function runGitCommand(
   doEnv?: any,
   /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
   network: WorkspaceNetwork = ISOLATE_NETWORK,
-  /** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
-  filesystem?: { openHost(cred: VfsCred): { fs: { synchronous?: CleanupBridge }; dispose(): Promise<void> } },
+  /**
+   * The session's filesystem authority: a host bridge on the namespace, for
+   * the cleanup of a clone on a mount, and the namespace's ingestion of the
+   * waves a repository's objects go in.
+   */
+  filesystem?: { openHost(cred: VfsCred): { fs: { synchronous?: CleanupBridge }; dispose(): Promise<void> }; readonly waves: WaveIngest },
   /** The session's process table: a background clone runs as a process of its own. */
   processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>,
 ): Promise<number> {
@@ -2680,7 +2685,8 @@ export async function runGitCommand(
     // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
     commandEngines.set(fs, {
       key: async (path) => await engineKey(ctx.vfs, vfs, path),
-      writeStream: (stream) => vfs.as(ctx.cred).writeStream(stream),
+      // Without the session's namespace (a bare engine), nothing is placed elsewhere.
+      writeStream: (stream) => (filesystem?.waves ?? new WaveIngest(null)).writeStream(vfs.as(ctx.cred), stream),
     });
     // Where a network command writes a repository: its engine key, or on a
     // mount its path in the namespace (every link resolved), which the

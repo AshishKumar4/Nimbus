@@ -39,4 +39,6 @@ export declare class StreamTextDecoders<K> {
  * chunks. One per stream; do not share a sink between stdout and stderr.
  */
 export declare function textSink(write: (text: string) => void | Promise<void>): (bytes: Uint8Array) => Promise<void>;
+/** `parts`, one after another, in one array. */
+export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;
 //# sourceMappingURL=bytes.d.ts.map

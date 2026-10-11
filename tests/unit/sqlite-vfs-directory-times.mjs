@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // The VFS clock (Date.now) stepped by hand: each operation lands at a known time.
@@ -22,6 +23,7 @@ const tick = () => (clock += 1_000);
 
 const harness = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(harness.sql, harness.ctx);
+const waves = new WaveIngest(null);
 const vfs = raw.as(CRED_KERNEL);
 const enc = new TextEncoder();
 const times = (path) => {
@@ -151,7 +153,7 @@ assert.equal(vfs.stat('w/fresh').mtime, 9, 'a directory written with its files w
 
 // writeStream: a W7 wave's group, and a deletion record
 at = tick();
-const result = await vfs.writeStream(encodeWriteBatchStream({
+const result = await waves.writeStream(vfs, encodeWriteBatchStream({
   inodes: [
     { path: 'w/s/one', parentPath: 'w/s', kind: 'file', isDir: false, size: 3, mtime: 7, mode: 0o644, chunkCount: 1 },
     { path: 'w/d/two', parentPath: 'w/d', kind: 'file', isDir: false, size: 3, mtime: 7, mode: 0o644, chunkCount: 1 },
@@ -259,6 +261,7 @@ console.log('sqlite vfs directory times: ok');
 for (const pinned of [false, true]) {
   const h = createSqliteVfsTestHarness();
   const r = new SqliteVFS(h.sql, h.ctx);
+  const waves = new WaveIngest(null);
   const k = r.as(CRED_KERNEL);
   k.mkdir('repo', { recursive: true });
   if (pinned) r.snapshot('pin');
@@ -269,7 +272,7 @@ for (const pinned of [false, true]) {
       inodes.push({ path: `repo/t${top}/l${leaf}`, parentPath: `repo/t${top}`, kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
     }
   }
-  const result = await k.writeStream(encodeWriteBatchStream({ inodes, chunks: [] }));
+  const result = await waves.writeStream(k, encodeWriteBatchStream({ inodes, chunks: [] }));
   assert.equal(result.ok, true, `${pinned ? 'pinned: ' : ''}${result.error?.message}`);
   assert.equal(k.readdir('repo').length, 30);
   assert.equal(k.readdir('repo/t29').length, 30);
