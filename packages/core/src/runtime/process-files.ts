@@ -678,11 +678,6 @@ function underKernelMount(path: string): boolean {
   return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
 
-/**
- * The engine keys of `view`'s mount points, a source absent now included
- * (one can answer later, with no mount or unmount): none of what is at or
- * under one is the engine's.
- */
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view: CompositeVFS): boolean {
   return view.mounts().some((mount) => isEmbedderMount(mount.point));
