@@ -184,7 +184,9 @@ export class Timers {
         const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
         // Joined: either failing is the one failure, and neither is left unhandled.
         await Promise.all([written, armed]);
-        if (written !== undefined) host._timerFiring?.delete(reason);
+        // Armed: what the map holds for it is this request's or sooner, and a
+        // dispatch that fired it keeps that, whichever attempt wrote it.
+        host._timerFiring?.delete(reason);
         return true;
       } catch (e) {
         console.warn('[nimbus/W1] timers.schedule threw:', errorText(e));

@@ -351,7 +351,31 @@ async function mustComplete(promise, label) {
   assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now + 5 });
 }
 
-// ── 12. A reset while the dispatch reads the map back writes nothing ───────
+// ── 12. A re-arm whose map write landed but whose alarm did not is kept ────
+//
+// The retry finds its deadline already in the map and writes nothing; its
+// arm still takes the reason from what the dispatch drops.
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('resident-launch', now - 10);
+  const setAlarm = ctx.storage.setAlarm;
+  let failures = 1;
+  ctx.storage.setAlarm = (at) => {
+    if (failures-- > 0) return Promise.reject(new Error('alarm down'));
+    return setAlarm(at);
+  };
+  await mustComplete(
+    timers(host, ctx).dispatch({ 'resident-launch': () => timers(host, ctx).arm('resident-launch', now + 5) }),
+    'a re-arm whose alarm failed once',
+  );
+  assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now + 5 });
+  assert.equal(ctx.alarms.at(-1), now + 5);
+}
+
+// ── 13. A reset while the dispatch reads the map back writes nothing ───────
 
 {
   const ctx = createCtx();
