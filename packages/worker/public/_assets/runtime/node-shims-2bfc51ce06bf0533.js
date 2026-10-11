@@ -12210,17 +12210,13 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     secureTransport: 'on', upgraded: false, close,
     startTls() { throw new TypeError('Cannot startTls on a TLS socket.'); },
   };
-  const placeholderRead = new ReadableStream({ type: 'bytes' });
-  const placeholderWrite = new WritableStream();
   let carrier;
   const initial = {
-    readable: placeholderRead, writable: placeholderWrite, opened: Promise.resolve({}), closed: new Promise(() => {}),
-    secureTransport: 'starttls', upgraded: false,
-    close,
+    ...transport, secureTransport: 'starttls',
     startTls() { carrier._handle = null; admit(); return transport; },
   };
   carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
-    socket: initial, reader: placeholderRead.getReader({ mode: 'byob' }), writer: placeholderWrite.getWriter(),
+    socket: initial, reader: readable.getReader({ mode: 'byob' }), writer: writable.getWriter(),
     bytesRead: 0, bytesWritten: 0, reading: false,
     options: { host: options.host ?? previous?._host ?? 'localhost', port: Number(options.port ?? previous?._handle?.options.port), addressType: 0 },
   } });
