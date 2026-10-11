@@ -102,8 +102,6 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     private readonly hydrator: Hydrator | null,
     /** The session's delegations: a process's own are granted, recalled and released here. */
     private readonly delegations: Delegations,
-    /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
-    private readonly mounted: () => readonly string[],
     /** The session's gate on the process's output (ProcessFiles.outputGate). */
     private readonly gate: Required<OutputGate>,
   ) {}
@@ -207,7 +205,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
       if ((error as { code?: unknown } | null)?.code !== 'EAGAIN') throw error;
       lease = null;
     }
-    return lease === null ? answer : { ...answer, readLease: { ...lease, uncovered: this.mounted() } };
+    return lease === null ? answer : { ...answer, readLease: lease };
   }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
@@ -639,7 +637,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
     const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
     const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
-    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
+    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
     // Every other method forwards to the guarded bridge.
     let awaited = this.awaitedDescriptors.get(scope);
     if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
@@ -685,10 +683,6 @@ function underKernelMount(path: string): boolean {
  * (one can answer later, with no mount or unmount): none of what is at or
  * under one is the engine's.
  */
-function mountedKeys(view: CompositeVFS): string[] {
-  return view.mountPoints().flatMap((point) => (point === '/' ? [] : [point.slice(1)]));
-}
-
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view: CompositeVFS): boolean {
   return view.mounts().some((mount) => isEmbedderMount(mount.point));

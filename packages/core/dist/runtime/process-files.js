@@ -56,15 +56,12 @@ class GuardedProcessBridge {
     pid;
     hydrator;
     delegations;
-    mounted;
     gate;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
     hydrator, 
     /** The session's delegations: a process's own are granted, recalled and released here. */
     delegations, 
-    /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
-    mounted, 
     /** The session's gate on the process's output (ProcessFiles.outputGate). */
     gate) {
         this.target = target;
@@ -73,7 +70,6 @@ class GuardedProcessBridge {
         this.pid = pid;
         this.hydrator = hydrator;
         this.delegations = delegations;
-        this.mounted = mounted;
         this.gate = gate;
     }
     gateLaunch(named) {
@@ -181,7 +177,7 @@ class GuardedProcessBridge {
                 throw error;
             lease = null;
         }
-        return lease === null ? answer : { ...answer, readLease: { ...lease, uncovered: this.mounted() } };
+        return lease === null ? answer : { ...answer, readLease: lease };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
     subscribe(path, listener) {
@@ -610,7 +606,7 @@ export class ProcessFiles {
         const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
-        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
+        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);
         if (!awaited) {
@@ -637,9 +633,6 @@ function underKernelMount(path) {
  * (one can answer later, with no mount or unmount): none of what is at or
  * under one is the engine's.
  */
-function mountedKeys(view) {
-    return view.mountPoints().flatMap((point) => (point === '/' ? [] : [point.slice(1)]));
-}
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {
     return view.mounts().some((mount) => isEmbedderMount(mount.point));

@@ -1016,11 +1016,6 @@ export class CompositeVFS implements VFS {
     return ref;
   }
 
-  /** Every point something is mounted at, root first, in mount order: whether or not its source answers this principal now. */
-  mountPoints(): readonly string[] {
-    return [...this.table.mounts.keys()];
-  }
-
   /** The mounts this view's principal has now, root first, in mount order. */
   mounts(): readonly MountInfo[] {
     const out: MountInfo[] = [];

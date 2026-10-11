@@ -1044,13 +1044,12 @@ export function processFsClient(options) {
             return failures.splice(0, failures.length);
         },
         readTrusted() {
-            // A Worker's clock stands still between events: trusted at one, it is
-            // before asked + trust, and the session publishes past this lease
-            // unanswered only after confirmed + trust + margin (confirmed >= asked).
+            // Asked only where I/O just moved the clock to real time (a resumption
+            // that arrived by I/O; never a timer's turn, which leaves it where it
+            // was): trusted there, it is before asked + trust, and the session
+            // publishes past this lease unanswered only after confirmed + trust +
+            // margin (confirmed >= asked).
             return readLease !== null && readLease.logged === logged && now() < readLease.until;
-        },
-        readUncovered() {
-            return readLease?.uncovered ?? NOTHING_UNCOVERED;
         },
         readLeaseAsk() {
             if (session.grants === undefined || runEnded)
@@ -1071,7 +1070,7 @@ export function processFsClient(options) {
                 void back.finally(() => givingBack.delete(back));
                 return;
             }
-            readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1, uncovered: lease.uncovered };
+            readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
             counters.readLeases++;
             void answerReadRecalls(lease.owner);
         },
@@ -1080,7 +1079,6 @@ export function processFsClient(options) {
                 return;
             readLease.until = ask.at + lease.trustMs;
             readLease.logged = ask.logged;
-            readLease.uncovered = lease.uncovered;
             counters.readConfirms++;
         },
         takeFailuresError() {
@@ -1098,7 +1096,6 @@ export function processFsClient(options) {
     };
     return client;
 }
-const NOTHING_UNCOVERED = Object.freeze([]);
 /** Where a drain's wave numbers start: past any a process sends (2^40 waves). */
 const DRAIN_WAVE_BASE = 2 ** 40;
 /**
