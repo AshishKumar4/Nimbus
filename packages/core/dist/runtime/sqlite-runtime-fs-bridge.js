@@ -1,9 +1,9 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
+import { andThen, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -689,9 +689,7 @@ export class SqliteRuntimeFsBridge {
         describe: (id, file, ino, rights) => andThen(file.hold(rights), (held) => {
             // Released while its file was found: nothing would close it.
             if (this.scope.closed) {
-                const closed = held.close();
-                if (isPromise(closed))
-                    closed.catch(() => { });
+                abandon(held);
                 throw fsError('EBADF', 'open', file.name);
             }
             return this.keepWaveDescription(id, describeMounted({

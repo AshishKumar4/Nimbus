@@ -97,6 +97,10 @@ export declare function settleHeld(scope: DescriptorScope): void;
  * scope, and everything it revokes, open.
  */
 export declare function closeDescriptions(scope: DescriptorScope): unknown[];
+/** `file`, opened for a scope released meanwhile: closed, unheard (nothing was written through it). */
+export declare function abandon(file: {
+    close(): Awaitable<void>;
+}): void;
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
 export declare function reportLost(lost: readonly unknown[]): void;
 /** A file as a path read finds it (PinnedName), or as a description holds it (HeldFile): which file, and its content. */
