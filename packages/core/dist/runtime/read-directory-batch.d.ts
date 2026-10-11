@@ -50,23 +50,8 @@ export interface ReadDirectorySupervisor {
 interface Scope {
     readonly closed: boolean;
 }
-interface Channel {
-    sequence: number;
-}
-interface Tracked {
-    readonly channel: string;
-    claimed: boolean;
-}
-interface Budget {
-    ended: boolean;
-    reserved: number;
-    readonly channels: Map<string, Channel>;
-    readonly tracked: Map<number, Tracked>;
-    tail: Promise<void>;
-}
 interface Binding {
     readonly scope: Scope;
-    readonly budget: Budget;
     readonly place: (path: RuntimeFsPath, handle: RuntimeFileHandle) => Awaitable<string | null>;
 }
 /** Called only by ProcessFiles where each face is bound to its actual descriptor scope. */

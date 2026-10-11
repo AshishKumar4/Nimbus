@@ -20,20 +20,17 @@ const Request = z.object({
     lease: z.boolean(),
 });
 const scopes = new WeakMap();
+const endedScopes = new WeakSet();
 const bridges = new WeakMap();
 /** Called only by ProcessFiles where each face is bound to its actual descriptor scope. */
 export function registerDirectoryReadBridge(fs, scope, place) {
-    let budget = scopes.get(scope);
-    if (!budget) {
-        budget = { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
-        scopes.set(scope, budget);
-    }
-    bridges.set(fs, { scope, budget, place });
+    bridges.set(fs, { scope, place });
 }
 /** A normal close also retires a prefetched handle's accounting. */
 export function directoryReadHandleClosed(scope, id) { scopes.get(scope)?.tracked.delete(id); }
 /** The authoritative scope closes descriptions; drop accounting at that same lifetime boundary. */
 export function disposeDirectoryReadScope(scope) {
+    endedScopes.add(scope);
     const budget = scopes.get(scope);
     if (!budget)
         return;
@@ -56,7 +53,12 @@ export async function readDirectoryBatch(fs, input) {
     const bound = bridges.get(fs);
     if (!bound)
         throw refusal('ENOTSUP', 'directory prefetch needs a process descriptor scope');
-    const { budget, scope } = bound;
+    const { scope } = bound;
+    if (scope.closed || endedScopes.has(scope))
+        throw refusal('ESTALE', 'directory descriptor scope ended');
+    const budget = scopes.get(scope)
+        ?? { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
+    scopes.set(scope, budget);
     const live = () => { if (scope.closed || budget.ended)
         throw refusal('ESTALE', 'directory descriptor scope ended'); };
     const run = async () => {

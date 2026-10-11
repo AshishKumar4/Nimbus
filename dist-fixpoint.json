@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "80bcb98db0c1e84c9005e13885d6d18a0b5c72f81a7c2c2f03b4c9762b3e1d00",
+  "fingerprint": "d7583566282181194ec63863341f9c8a72b46523c1d69f5ca325f1540d2c5d9c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -523,9 +523,9 @@
     "packages/core/dist/runtime/python-server-adapter.d.ts": "c32aea244014813fc9a6d9cbc8b3c022a214c1dab27e9977200d456a0fe5943f",
     "packages/core/dist/runtime/python-server-adapter.d.ts.map": "32f3ed6df9611a72a7d5baf0465d53bdfed2bf8bcde54f0a269e2da05027cce0",
     "packages/core/dist/runtime/python-server-adapter.js": "48bb1597d57c98ae8b5abd429cd5561c15fdf4907e1710264ebdf6a7085a6ce4",
-    "packages/core/dist/runtime/read-directory-batch.d.ts": "f4deae51c13c9bc26f013184985da9c7482c6b6907a55562f7462b715d35e0a8",
-    "packages/core/dist/runtime/read-directory-batch.d.ts.map": "d38a4f5296f8289a1a5e67e78254aa5995691459670f29fdc53443991a9bbf7c",
-    "packages/core/dist/runtime/read-directory-batch.js": "c66608e3ce65c4e9ac7159093e46cbff827dff9ee438998a9331ae8835e0c6fb",
+    "packages/core/dist/runtime/read-directory-batch.d.ts": "e2516b86f3db690331720436d1c40e4fc2e63e38529bfc68ed80c056fb91ee21",
+    "packages/core/dist/runtime/read-directory-batch.d.ts.map": "bf80e17da1ccb4ec895d8c70884c6daf61fa704c55a466f141a1ad9a04e38447",
+    "packages/core/dist/runtime/read-directory-batch.js": "2a3e71b10e15e428cace0e1fe396d4965848644ea26e52d2c78a1b36b33b41eb",
     "packages/core/dist/runtime/realm-egress-guest.d.ts": "baa2f72b8c1c4928c0f76cfe72c22b275b742cff62b3bd4f51feb77ed652ba57",
     "packages/core/dist/runtime/realm-egress-guest.d.ts.map": "501412a0527bd1a55eb36327729261fa2f4c916b0236b4735f4c827d0f9378cc",
     "packages/core/dist/runtime/realm-egress-guest.js": "ba4a1e6ae3e36d80bbab10ad8f6419f18f2049b7c2570ed22131b9e7e201af0f",
@@ -1408,7 +1408,7 @@
     "packages/core/src/runtime/provided-packages.ts": "33edf8c2adcde267ccefef8147e7bc6b1d262e8569fe8535b0dcbe39d8420cad",
     "packages/core/src/runtime/python-pip.ts": "a96cc60c2fdf51c79a5e0178dee7bd19467be610899d00e1d3fd9e824e5ea611",
     "packages/core/src/runtime/python-server-adapter.ts": "166dd887cefb0e5e2b31a22a4ae34682124547a0779da70b4e76b338a9364dd6",
-    "packages/core/src/runtime/read-directory-batch.ts": "ec752146e52c06ea300fc978e0e2ee4bfd28bcc8eaa27c7cae1d23e2baba7eb6",
+    "packages/core/src/runtime/read-directory-batch.ts": "c3d05e41987fd24252e0ae446c09cdf1117d462e06b855fa3186a70c1e55d9ca",
     "packages/core/src/runtime/realm-egress-guest.ts": "853618c98c45e14c1f0fa4601e8531bd570bb9b6e1f3ebf2ae063db67de35b18",
     "packages/core/src/runtime/realm-egress.ts": "501e977e62aa944fd79f9dd19cd3bc80f760971cce5fb43c4391ec329d93e00b",
     "packages/core/src/runtime/realm-guest.ts": "ded5ffb077debf7e37691b7d8f14da04ad403565c28b9967f90bb9df944cfcaa",
