@@ -18785,7 +18785,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     let cell = esmId === -1 ? __nimbusModuleCell(normalizedPath) : null;
     let compiledText = null;
     if (esmId !== -1) {
-      // The staged module's own text, as it was before it was staged.
+      // The staged module's own text, as it was before it was staged. Node's
+      // ES loader warns of a typeless one it loads; its require() does not.
+      if (!required) __nimbusEsmWarnTypeless(esmId);
       compiledText = __nimbusEsmSourceText(esmId);
       cell = __nimbusAdoptedModule(normalizedPath, compiledText);
     } else if (!cell) {
@@ -18799,7 +18801,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
-      cell = __nimbusRuntimeModule(normalizedPath, text);
+      cell = __nimbusRuntimeModule(normalizedPath, text, esModule ? "module" : __nimbusFileFormat(filename));
       compiledText = text;
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
@@ -19165,27 +19167,31 @@ Did you mean to import ${JSON.stringify(found)}?`;
     }
     return next.value;
   }
-  return {
-    async resolve(specifier, parentUrl) {
-      const steps = importTarget(specifier, parentUrl);
-      let next = steps.next();
-      while (!next.done) {
-        let answer;
-        try {
-          answer = await next.value;
-        } catch (error) {
-          next = steps.throw(error);
-          continue;
-        }
-        next = steps.next(answer);
+  async function runAsync(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      let answer;
+      try {
+        answer = await next.value;
+      } catch (error) {
+        next = steps.throw(error);
+        continue;
       }
-      return next.value;
-    },
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+  return {
+    resolve: (specifier, parentUrl) => runAsync(importTarget(specifier, parentUrl)),
     resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
     metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
     packageScopeSync(url) {
-      const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
-      return { pjsonPath, type };
+      const { exists, pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+      return { exists, pjsonPath, type };
+    },
+    async packageScope(url) {
+      const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(new URL(url)));
+      return { exists, pjsonPath, type };
     },
     assertLoadable({ format, path }) {
       if (format !== "unknown" || path === void 0) return;
@@ -19268,6 +19274,18 @@ function __nimbusAssertLoadable(resolution, type) {
 // fails with, by the number of the missing module it names.
 const __nimbusEsm = typeof __NIMBUS_ESM === "undefined" || __NIMBUS_ESM === null ? { table: [], missing: [] } : __NIMBUS_ESM;
 let __nimbusEsmIds = null;
+// Node's format for the file at `filename` where its extension or its
+// package's "type" says it ("module" or "commonjs"), else undefined: its
+// syntax decides (detection).
+function __nimbusFileFormat(filename) {
+  try {
+    const url = __nimbusEsmUrl(filename);
+    const format = __esmResolver.resolveSync(url, url).format;
+    return format === "module" || format === "commonjs" ? format : undefined;
+  } catch {
+    return undefined;
+  }
+}
 // The map module of row `id` (worker facets/esm-stage.ts esmRowName): a
 // staged module's cell's module, else its facade by id.
 function __nimbusEsmName(id) {
@@ -19291,7 +19309,7 @@ function __nimbusEsmId(kind, key) {
 const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
 const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
-  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined, requirer: undefined };
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, required: undefined, error: undefined, module: undefined, requirer: undefined };
 }
 // What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
 const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
@@ -19344,7 +19362,7 @@ function __nimbusEsmEnter(metaUrl) {
     __nimbusCompiling(url, () => __nimbusEsmSourceText(id));
     const scope = { m: __nimbusFileImportMeta(filename, url, row[1] === __nimbusEsmEntryKey), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
     // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
-    if (row[3] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
+    if (((row[3] ?? 0) & 1) !== 0) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
     return scope;
   }
   if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
@@ -19371,18 +19389,26 @@ function __nimbusEsmCheck(record) {
   record.state = __ESM_BEGAN;
   batch.running.add(record);
 }
-// Whether a module's body has a top-level await, read once from its text:
-// only asked of a body that began and has not completed.
+// Whether a module's body awaits at its top level, as staging read it.
 function __nimbusEsmSuspends(record) {
-  if (record.suspends === undefined) {
-    const row = __nimbusEsm.table[record.id];
-    let text = null;
-    if (row[0] === "module") {
-      try { text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + __nimbusEsmName(record.id), "utf8"); } catch {}
-    }
-    record.suspends = text !== null && text.includes("await") && __nimbusRegistryRequire("./nimbus/interpreter.js").hasTopLevelAwait(text);
+  const row = __nimbusEsm.table[record.id];
+  return row[0] === "module" && ((row[3] ?? 0) & 2) !== 0;
+}
+// Whether a module of row `id`'s graph awaits at its top level: Node's
+// require() refuses such a graph, evaluated or not.
+function __nimbusEsmGraphAwaits(id) {
+  const seen = new Set();
+  const stack = [id];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (at < 0 || seen.has(at)) continue;
+    seen.add(at);
+    const row = __nimbusEsm.table[at];
+    if (row[0] !== "module") continue;
+    if (((row[3] ?? 0) & 2) !== 0) return true;
+    for (const target of row[2]) stack.push(target);
   }
-  return record.suspends;
+  return false;
 }
 // A staged module's text as it was before it was staged: what the
 // interpreter evaluates when it adopts the module.
@@ -19426,8 +19452,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE) {
     if (!required) return record.namespace;
-    // Node's require(esm) leaves a Module in require.cache, and takes it again after a delete.
     const filename = "/" + __nimbusEsm.table[id][1];
+    if (__nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, filename);
+    // Node's require(esm) leaves a Module in require.cache, and takes it again after a delete.
     if (record.module === undefined) {
       record.module = new __NodeModule(filename, null);
       record.module.filename = filename;
@@ -19494,12 +19521,36 @@ function __nimbusEsmRequired(record) {
   }
   return record.required;
 }
+// The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
+const __nimbusTypelessWarned = new Set();
+// Node's warning as it loads a `.js` that is a module by its syntax alone
+// under a package.json with no "type", once per package.json, naming the
+// first such module it loads: `id`'s graph, in the order a load reaches
+// it (each module, then the modules it imports, level by level).
+function __nimbusEsmWarnTypeless(id) {
+  const seen = new Set([id]);
+  const queue = [id];
+  for (let at = 0; at < queue.length; at++) {
+    const row = __nimbusEsm.table[queue[at]];
+    if (row[0] !== "module") continue;
+    if (((row[3] ?? 0) & 4) !== 0 && !__nimbusTypelessWarned.has(row[4])) {
+      __nimbusTypelessWarned.add(row[4]);
+      __processMod.emitWarning("Module type of " + __nimbusEsmUrl("/" + row[1]) + " is not specified and it doesn't parse as CommonJS.\n"
+        + "Reparsing as ES module because module syntax was detected. This incurs a performance overhead.\n"
+        + "To eliminate this warning, add \"type\": \"module\" to " + row[4] + ".", { code: "MODULE_TYPELESS_PACKAGE_JSON" });
+    }
+    for (const target of row[2]) {
+      if (target >= 0 && !seen.has(target)) { seen.add(target); queue.push(target); }
+    }
+  }
+}
 // The namespace of the staged module (or facade) `id`, evaluated by the
 // registry where it can be; the one place Nimbus calls the registry's import().
 async function __nimbusEsmImport(id) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
+  if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
   if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
   let batch = null;
   try {
@@ -19526,9 +19577,8 @@ async function __nimbusEsmImport(id) {
     }
     // The body that threw: one its evaluation began and did not complete
     // (marked already where a later body's check stopped). It keeps what it
-    // threw, for a require() of it, and the error is explained as Node's
-    // loader explains it, from that module. A body suspended in its
-    // top-level await is the thrower only where no other is.
+    // threw, for a require() of it. A body suspended in its top-level await
+    // is the thrower only where no other is.
     let thrower = null;
     for (const record of __nimbusEsmRecords) {
       if (record === undefined || (batch !== null && record.batch !== batch)) continue;
@@ -19544,8 +19594,10 @@ async function __nimbusEsmImport(id) {
       thrower.state = __ESM_FAILED;
       thrower.batch?.running.delete(thrower);
       thrower.error = { value: error };
-      __nimbusExplainCommonJSGlobalLike(error, __nimbusEsmUrl("/" + __nimbusEsm.table[thrower.id][1]), __nimbusEsmSuspends(thrower));
     }
+    // Node's ModuleJob explains what escapes its evaluation by the job's own
+    // module, the one imported: its URL and its top-level await.
+    if (row[0] === "module") __nimbusExplainCommonJSGlobalLike(error, __nimbusEsmUrl("/" + row[1]), __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw __nimbusEsmLinkError(error, id);
   }
 }
@@ -19701,7 +19753,7 @@ function __nimbusEsmRunEntry(key) {
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
   return __nimbusEsmImport(id).then(() => undefined, (e) => {
-    __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmRecords[id]?.suspends === true);
+    __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw e;
   });
 }
@@ -20312,14 +20364,47 @@ function __requireFrom(id, fromDir, parent, required = true) {
   return __loadModule(resolved, resolved, required, parent);
 }
 
+// V8's errors compiling CommonJS that an ES module would not have
+// (lib/internal/modules/helpers.js esmSyntaxErrorMessages), and those only
+// CommonJS throws, which Node retries as a module (throwsOnlyInCommonJSErrorMessages).
+const __NIMBUS_ESM_SYNTAX_ERRORS = ["Cannot use import statement outside a module", "Unexpected token 'export'", "Cannot use 'import.meta' outside a module"];
+const __NIMBUS_COMMONJS_ONLY_ERRORS = [
+  "Identifier 'module' has already been declared", "Identifier 'exports' has already been declared",
+  "Identifier 'require' has already been declared", "Identifier '__filename' has already been declared",
+  "Identifier '__dirname' has already been declared", "await is only valid in async functions and the top level bodies of modules",
+];
+// Node's enrichCJSError, for the main module (CJS loader wrapSafe): a
+// SyntaxError compiling it, whose source has module syntax, is preceded by a
+// warning, emitted at once, as the process is about to end.
+function __nimbusEnrichCommonJsError(e, source, filename) {
+  if (!(e instanceof SyntaxError)) return;
+  let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
+  if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
+    const text = source();
+    moduleSyntax = text !== null && __nimbusRegistryRequire("./nimbus/interpreter.js").fatalLocation(text, "module", -1) === null;
+  }
+  if (!moduleSyntax) return;
+  const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \"type\": \"module\" in the nearest package.json file or use the .mjs extension.");
+  warning.name = "Warning";
+  Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
+  __processMod.emit("warning", warning);
+}
 // A CommonJS entry evaluated as Node's loader runs it (manager.ts
 // entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
-function __nimbusEvaluateEntry(wrapper, mod, filename, dirname) {
+function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   __nimbusLoadsTypeScript(filename);
-  __nimbusCompiling(filename, () => __nimbusModuleSourceText(__nimbusEntryModule() ?? __nimbusModuleAtPath(String(filename).replace(/^\/+/, ""))));
+  const source = () => __nimbusModuleSourceText(__nimbusEntryModule() ?? __nimbusModuleAtPath(String(filename).replace(/^\/+/, "")));
+  __nimbusCompiling(filename, source);
   // A file's `this` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose `this` is the global object.
   const evaluated = filename === "<eval>" || filename === "[stdin]";
+  let wrapper;
+  try {
+    wrapper = load();
+  } catch (e) {
+    if (!evaluated) __nimbusEnrichCommonJsError(e, source, filename);
+    throw e;
+  }
   // A file entry is process.mainModule and require.main (Module._load's
   // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
   if (!evaluated) {
