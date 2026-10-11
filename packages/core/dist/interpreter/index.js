@@ -30,7 +30,7 @@ import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { programRequests } from './module-requests.js';
 import { stampStack, stackFrames } from './stack.js';
@@ -188,6 +188,7 @@ export function createInterpreter(hostOps, host) {
         isProxy: typeof isProxy === 'function' ? isProxy : null,
         isError: typeof isError === 'function' ? isError : null,
     });
+    const detected = new SafeWeakSet();
     const interpreter = {
         captureStack(error, above) { stampStack(error, undefined, above, true); },
         stackFrames,
@@ -225,7 +226,10 @@ export function createInterpreter(hostOps, host) {
                 const root = analysis.functionScopeOf(program);
                 const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, stackFile, true)), text, 0, root).modulePlan(program, root);
                 releaseScopes(root);
-                return moduleCell(plan, runtime.ops, host.moduleHelpers);
+                const cell = moduleCell(plan, runtime.ops, host.moduleHelpers);
+                if (format === undefined)
+                    detected.add(cell);
+                return cell;
             }
             const script = parsed.program;
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
@@ -234,6 +238,9 @@ export function createInterpreter(hostOps, host) {
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
+        },
+        detectedModule(cell) {
+            return typeof cell === 'function' && detected.has(cell);
         },
         compileExpression(code, origin) {
             const at = scriptExpression(code, REALM);

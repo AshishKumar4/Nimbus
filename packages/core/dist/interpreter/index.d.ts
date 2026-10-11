@@ -52,6 +52,12 @@ export interface Interpreter {
      */
     compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean, format?: 'module' | 'commonjs'): ModuleCell;
     /**
+     * Whether compileModule made `cell` an ES module by its syntax alone, given
+     * no format: Node's detection, which warns of a package.json with no
+     * "type" (node-shims' MODULE_TYPELESS_PACKAGE_JSON).
+     */
+    detectedModule(cell: unknown): boolean;
+    /**
      * A function returning the value of the script `code` when it is one
      * expression (scriptExpression): vm.runInThisContext's code, as node-shims
      * hands it over and calls it, with the global object as `this` (a script's
