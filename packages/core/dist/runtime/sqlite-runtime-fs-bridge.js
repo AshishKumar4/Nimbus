@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { andThen, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
@@ -163,6 +163,10 @@ export class SqliteRuntimeFsBridge {
             }
         });
     }
+    /** Before a cut of a mounted file (a truncate, a whole-file write): the writes this process holds on it, written (settleHeldAt). */
+    settleAt(located) {
+        syncValue(settleHeldAt(this.scope, () => located.namespace.pin(located.path, { follow: true, sync: true })));
+    }
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
     processView(located, follow) {
         // The synchronous face pins through synchronous faces only: every answer is a value.
@@ -176,6 +180,7 @@ export class SqliteRuntimeFsBridge {
                     throw fsError('ESTALE', 'write', path);
                 if (options.createParents === true)
                     mountParents(located.mount, located.path);
+                this.settleAt(located);
                 located.mount.writeFile(located.path, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
                 return this.rawVfs.revision();
             }
@@ -206,6 +211,7 @@ export class SqliteRuntimeFsBridge {
         // whole file in one write: nothing reaches it until the source is read,
         // and a source that fails changes nothing.
         const data = await readDeclaredSource(source, size, () => fsError('EINVAL', 'write', path));
+        this.settleAt(located);
         located.mount.writeFile(located.path, data);
         return this.rawVfs.revision();
     }
@@ -273,6 +279,7 @@ export class SqliteRuntimeFsBridge {
         return called({ syscall: 'truncate', path }, () => {
             const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate', options.mutationOwner);
             if (located.mount) {
+                this.settleAt(located);
                 mountOp(located.mount.truncate, 'truncate', path)(located.path, size);
                 return this.mountReceipt();
             }
@@ -406,7 +413,7 @@ export class SqliteRuntimeFsBridge {
             else if (normalizedFlags.truncate) {
                 this.owned(owner).truncate(p, 0);
             }
-            return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags);
+            return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags, p);
         });
     }
     // A description on an asynchronous mount refuses this synchronous face's

@@ -32,7 +32,7 @@ import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeld } from './descriptors.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
@@ -606,15 +606,11 @@ export class ProcessFiles {
         // The scope is checked again by the namespace right before each mutation
         // reaches a backend, after the lookups it awaited: a write still
         // resolving when the process is released or killed, or its lease is
-        // disposed, does not land. The writes the process's descriptions hold
-        // are settled there first (settleHeld): the mutation is ordered after them.
+        // disposed, does not land.
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
-        const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => {
-            assertScopeLive(scope, signal);
-            settleHeld(scope);
-        }, undefined, holds);
+        const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes, this.waves);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
@@ -873,12 +869,18 @@ class AwaitingProcessBridge {
     async viewed(name, follow) {
         return processView(this.scope, () => this.namespace.pin(name, { follow, sync: false }));
     }
+    /** Before a cut of `name` (a truncate, a whole-file write): the writes this process holds on its file, written (settleHeldAt). */
+    settleAt(name) {
+        return settleHeldAt(this.scope, () => this.namespace.pin(name, { follow: true, sync: false }));
+    }
     writeFile(path, bytes, options) {
         return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
             // createParents makes the directories above where the write lands, in
             // the same lookup as the write (a link's target's, not the link's).
             const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
-            await this.namespace.writeFile(await this.path(path), data, { parents: options?.createParents === true });
+            const p = await this.path(path);
+            await this.settleAt(p);
+            await this.namespace.writeFile(p, data, { parents: options?.createParents === true });
             return this.clock();
         });
     }
@@ -897,13 +899,16 @@ class AwaitingProcessBridge {
             // for a process released while its source was read.
             const data = await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p));
             this.live();
+            await this.settleAt(p);
             await this.namespace.writeFile(p, data);
             return this.clock();
         });
     }
     truncate(path, size, options) {
         return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-            await this.owned(options).truncate((await this.path(path)), size);
+            const p = await this.path(path);
+            await this.settleAt(p);
+            await this.owned(options).truncate(p, size);
             return this.receipt();
         });
     }

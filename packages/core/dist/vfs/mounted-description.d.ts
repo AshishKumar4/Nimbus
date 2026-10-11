@@ -11,8 +11,8 @@
  * create (two awaiting opens can both create). A file on a backend that
  * keeps no open files (VFS.openFile) is held by its name, and a description
  * of it refuses (ESTALE) once that name holds another file. The writes a
- * description holds are its process's: written before any later change that
- * process makes (settleHeld), never before another process's.
+ * description holds are its process's: written before that process cuts
+ * their file (settleHeld), never before another process's change.
  */
 import { type DescriptorScope, type MountedFileDescription } from '../runtime/descriptors.js';
 import type { RuntimeFileHandle } from '../runtime/os-contracts.js';

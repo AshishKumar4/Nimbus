@@ -49,6 +49,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         followSymlinks?: boolean;
         cached?: boolean;
     }): Uint8Array | null;
+    /** Before a cut of a mounted file (a truncate, a whole-file write): the writes this process holds on it, written (settleHeldAt). */
+    private settleAt;
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
     private processView;
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {

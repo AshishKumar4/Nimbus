@@ -46,8 +46,8 @@ export interface MountedFileDescription {
     close(): Awaitable<void>;
     /**
      * A description whose mount cannot write in place holds its writes until a
-     * flush (fsync, the last close, the process's release, or a later change
-     * of the same file the process makes, settleHeld): `pendingBytes` is what a
+     * flush (fsync, the last close, the process's release, or a cut of its
+     * file the process makes, settleHeld): `pendingBytes` is what a
      * process killed now would lose, and `applyPending` lays them over `file`,
      * as the flush will.
      */
@@ -81,14 +81,19 @@ export declare function openFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['f
 export declare function awaitsRefusal(path: string): Error;
 export declare function createDescriptorScope(): DescriptorScope;
 /**
- * Every write this process holds, settled: before the process changes
- * anything else (its namespace's check, ProcessFiles), so a later truncate,
- * rename or write of the same file is ordered after them, as the page cache
- * orders them. A description holds writes only where its mount answers at
- * once, so this is done in the caller's turn. One that fails keeps its
- * failure for its next fsync or close, and the change goes on.
+ * This process's held writes on the file `key` names, written, in open
+ * order: before the process cuts that file (a truncate, an O_TRUNC open, a
+ * whole-file write), so the cut is ordered after them, as the page cache
+ * orders them (VFS-PF-001), and nothing brings back what it cut. A
+ * description holds writes only where its mount answers at once, so this is
+ * done in the caller's turn. One that fails keeps its failure for its next
+ * fsync or close, and the cut goes on.
  */
-export declare function settleHeld(scope: DescriptorScope): void;
+export declare function settleHeld(scope: DescriptorScope, key: string | null): void;
+/** settleHeld of the file `file` finds (a path's, CompositeVFS.pin), looked up only while the process holds writes; a lookup that fails settles nothing (the cut's own lookup says why). */
+export declare function settleHeldAt(scope: DescriptorScope, file: () => Awaitable<{
+    key(): Awaitable<string | null>;
+}>): Awaitable<void>;
 /**
  * Closes every description `scope` holds, each whatever another's flush
  * answers, and empties it. The flushes that failed (lastClose's errors) are
@@ -130,8 +135,8 @@ export declare class Descriptors {
     clock: () => number, 
     /** A synchronous face's: a description that awaits refuses its operations (awaitsRefusal), as its mount does; every other answers at once. */
     synchronous?: boolean);
-    /** A descriptor for `node`, new, at `position`. */
-    issue(node: Description, flags: RuntimeFileHandle['flags'], position?: number): RuntimeFileHandle;
+    /** A descriptor for `node`, new, at offset 0, opened at `path` (the description's own name for its file unless the opener has it). */
+    issue(node: Description, flags: RuntimeFileHandle['flags'], path?: string): RuntimeFileHandle;
     /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */
     description(id: number): Description;
     private opened;

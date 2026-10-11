@@ -11,8 +11,8 @@
  * create (two awaiting opens can both create). A file on a backend that
  * keeps no open files (VFS.openFile) is held by its name, and a description
  * of it refuses (ESTALE) once that name holds another file. The writes a
- * description holds are its process's: written before any later change that
- * process makes (settleHeld), never before another process's.
+ * description holds are its process's: written before that process cuts
+ * their file (settleHeld), never before another process's change.
  */
 import { processView, settleHeld } from '../runtime/descriptors.js';
 import { runtimeStatOf } from './composite.js';
@@ -110,7 +110,13 @@ export function openOnMount(file, open, describes, admit) {
 }
 /** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export function openMounted(options) {
-    return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true), (stat) => (andThen(name.hold({ read: options.flags.read, write: options.flags.write }), (file) => describeMounted(options, file, stat.ino ?? 0)))));
+    // An O_TRUNC open cuts the file after the writes the process holds on it (settleHeld): those are only on a mount that answers at once.
+    const settle = (name) => () => {
+        const key = name.key();
+        if (!isPromise(key))
+            settleHeld(options.scope, key);
+    };
+    return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true, settle(name)), (stat) => (andThen(name.hold({ read: options.flags.read, write: options.flags.write }), (file) => describeMounted(options, file, stat.ino ?? 0)))));
 }
 /** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
 export function describeMounted(context, file, ino) {
@@ -120,10 +126,9 @@ export function describeMounted(context, file, ino) {
  * The description of a file on a mount. A write goes in place; on a mount
  * that cannot (ENOTSUP), the description holds its writes, at most
  * `bufferedWriteBytes` (EFBIG past it, nothing held), and a flush (fsync,
- * the last close, the process's release, or any other change the process
+ * the last close, the process's release, or a cut of that file the process
  * makes, settleHeld) reads the file, applies them in order and writes it
- * back; this process reads the file with them applied. A truncate through it
- * writes them first. Writes made by awaiting, or under O_SYNC, are
+ * back; this process reads the file with them applied. Writes made by awaiting, or under O_SYNC, are
  * flushed as each is made, so a write's answer is what the mount did.
  */
 class MountedDescription {
@@ -177,8 +182,9 @@ class MountedDescription {
             return isPromise(written) ? written.then((end) => end ?? this.heldAppend(bytes, admit)) : written;
         });
     }
-    /** After every write the process holds, its own first (settleHeld): none of them comes back after it. */
+    /** After the writes the process holds on its file, its own among them (settleHeld): none of them comes back after it. */
     truncate(size, admit) {
+        settleHeld(this.options.scope, this.file.key);
         return this.file.truncate(size, this.admitted('ftruncate', admit));
     }
     readdir() {
@@ -258,16 +264,14 @@ class MountedDescription {
     }
     /**
      * `admit` (the operation's own admission), after the description's: its
-     * process's descriptors still open (EBADF once released), and every write
-     * the process holds settled first (settleHeld). Run right before the mount
-     * is asked, after every await.
+     * process's descriptors still open (EBADF once released). Run right before
+     * the mount is asked, after every await.
      */
     admitted(syscall, admit) {
         const { scope, refuse } = this.options;
         return () => {
             if (scope.closed)
                 throw refuse('EBADF', syscall);
-            settleHeld(scope);
             admit?.();
         };
     }

@@ -121,30 +121,15 @@ export class MemoryVFS {
         const call = { syscall: 'open', path };
         if (this.find(path, call) === null)
             this.writeFile(path, EMPTY);
-        this.writeAt(this.file(path, call), offset, bytes);
-    }
-    truncate(path, size) {
-        this.truncateTo(this.file(path, { syscall: 'open', path }), size);
-    }
-    /** The entry itself: renamed or unlinked, it is still what its holder reads and writes. */
-    openFile(path) {
-        const entry = this.file(path, { syscall: 'open', path });
-        return {
-            stat: () => this.stats(entry),
-            read: (offset, length) => entry.data.slice(offset, offset + length),
-            write: (offset, bytes) => this.writeAt(entry, offset, bytes),
-            truncate: (size) => this.truncateTo(entry, size),
-            close: () => { },
-        };
-    }
-    writeAt(entry, offset, bytes) {
+        const entry = this.file(path, call);
         const next = new Uint8Array(Math.max(entry.data.length, offset + bytes.length));
         next.set(entry.data);
         next.set(bytes, offset);
         entry.data = next;
         this.touch(entry);
     }
-    truncateTo(entry, size) {
+    truncate(path, size) {
+        const entry = this.file(path, { syscall: 'open', path });
         const next = new Uint8Array(size);
         next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
         entry.data = next;
