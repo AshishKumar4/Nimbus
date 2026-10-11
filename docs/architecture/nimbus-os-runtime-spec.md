@@ -560,6 +560,10 @@ Implementation rules:
   streams. Without that method TLS retains its named refusal. Without an
   egress, Node outbound TCP retains its current refusal. Inline Node
   WebSockets relay their upgrade, messages and close through `egress.fetch`.
+  Known Node difference: workerd resolves a refused plain CONNECT's
+  `socket.opened` and then signals EOF/close without bytes or the egress's
+  refusal text; it does not emit an ECONNREFUSED error. A rejected
+  `connectTls` RPC preserves the egress's error reason.
 - Static serving is explicit only. Do not hide static-server substitutions behind
   language server paths.
 

@@ -1,8 +1,24 @@
 // @serial
 // A real session's tls.connect crosses the embedder's optional connectTls RPC.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
+const policy = process.argv[2];
+if (policy) {
+  const probe = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: policy === 'without-egress' ? '0' : '1' } });
+  try {
+    const terminal = await localTerminal(probe, { install: [] });
+    try {
+      const tls = policy === 'without-tls';
+      const result = await terminal.run(`node -e "const s=require('${tls ? 'tls' : 'net'}').connect(${tls ? 443 : 7},'egress-test.invalid'); s.on('error',e=>console.log(e.code+' '+e.message));"`, 60000);
+      assert.equal(result.status, 0, result.stdout);
+      assert.match(result.stdout, tls ? /ERR_NIMBUS_EGRESS_TLS Nimbus: TLS sockets are not available/
+        : /ERR_NET_SOCKET_NOT_AVAILABLE net.Socket: outbound TCP from Nimbus facet not yet supported/);
+    } finally { await terminal.close(); }
+  } finally { await probe.stop(); }
+} else {
 const probe = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: '1', NIMBUS_TEST_EGRESS_TLS: '1' } });
 try {
   const terminal = await localTerminal(probe, { install: [] });
@@ -40,11 +56,19 @@ try {
     assert.equal(plain.status, 0, plain.stdout);
     assert.match(plain.stdout, /tcp true 0,128,255/);
     const refusedTcp = await run(`
-      const socket = require('net').connect(7, 'tcp-refused.invalid');
+      const socket = require('net').connect(7, 'tcp-refused.invalid', () => {
+        socket._handle.socket.opened.then(() => console.log('opened refused TCP'));
+      });
+      let bytes = 0;
+      socket.on('data', (part) => { bytes += part.length; });
+      socket.on('end', () => console.log('refused TCP EOF', bytes));
+      socket.on('close', () => console.log('refused TCP close'));
       socket.on('error', (error) => console.log('refused TCP', error.message));
     `);
     assert.equal(refusedTcp.status, 0, refusedTcp.stdout);
-    assert.match(refusedTcp.stdout, /refused TCP .*egress refused this TCP destination/);
+    assert.match(refusedTcp.stdout, /opened refused TCP/);
+    assert.match(refusedTcp.stdout, /refused TCP EOF 0/);
+    assert.match(refusedTcp.stdout, /refused TCP close/);
     const rejected = await run(`
       const socket = require('tls').connect(443, 'tls-refused.invalid', () => console.log('unexpected secureConnect'));
       socket.on('error', (error) => console.log('refused', error.message));
@@ -72,23 +96,8 @@ try {
     assert.match(upgraded.stdout, /answer via-egress-tls egress-test\.invalid:443 HEAD \/upgrade HTTP\/1\.0/);
   } finally { await terminal.close(); }
 } finally { await probe.stop(); }
-
-const without = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: '1' } });
-try {
-  const terminal = await localTerminal(without, { install: [] });
-  try {
-    const result = await terminal.run(`node -e "const s=require('tls').connect(443,'egress-test.invalid'); s.on('error',e=>console.log(e.code+' '+e.message));"`, 60000);
-    assert.equal(result.status, 0, result.stdout);
-    assert.match(result.stdout, /ERR_NIMBUS_EGRESS_TLS Nimbus: TLS sockets are not available/);
-  } finally { await terminal.close(); }
-} finally { await without.stop(); }
-
-const isolate = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: '0' } });
-try {
-  const terminal = await localTerminal(isolate, { install: [] });
-  try {
-    const result = await terminal.run(`node -e "const s=require('net').connect(7,'egress-test.invalid'); s.on('error',e=>console.log(e.code+' '+e.message));"`, 60000);
-    assert.equal(result.status, 0, result.stdout);
-    assert.match(result.stdout, /ERR_NET_SOCKET_NOT_AVAILABLE net.Socket: outbound TCP from Nimbus facet not yet supported/);
-  } finally { await terminal.close(); }
-} finally { await isolate.stop(); }
+for (const mode of ['without-tls', 'without-egress']) {
+  const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), mode], { encoding: 'utf8', timeout: 90000 });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
+}
+}
