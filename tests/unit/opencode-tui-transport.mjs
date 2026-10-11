@@ -37,6 +37,17 @@ const tui = command('$0 [project]');
 const attach = command('attach <url>');
 const serve = command('serve');
 assert.ok(tui && attach && serve, 'the staged OpenCode registers its actual TUI, attach and serve commands');
+for (const object of commands) {
+  const spec = property(object, 'command');
+  const spellings = spec.type === 'ArrayExpression' ? value(spec) : [spec.value];
+  for (const spelling of spellings) {
+    if (typeof spelling !== 'string' || spelling.startsWith('$0')) continue;
+    const name = spelling.split(' ')[0];
+    const expected = ['serve', 'web'].includes(name) ? 'server' : name === 'attach' ? 'attached' : 'oneshot';
+    assert.equal(classifyStagedArtifact('opencode', [name]), expected, `actual command ${name}`);
+    assert.equal(classifyStagedArtifact('opencode', ['--log-level', 'DEBUG', name]), expected, `global options before ${name}`);
+  }
+}
 const network = [...bindings.values()].find(node => node?.type === 'ObjectExpression' && property(node, 'port') && property(node, 'hostname') && property(node, 'cors'));
 assert.ok(network, 'the staged shared network option object is present');
 const networkOptions = value(network);
@@ -58,7 +69,7 @@ const native = (argv, which = tui) => {
 };
 
 const cases = [
-  [], ['project'], ['../project'], ['123'], ['--port=4096'], ['--port', '4096'],
+  [], ['project'], ['../project'], [''], ['123'], ['--port=4096'], ['--port', '4096'],
   ['--hostname', '0.0.0.0'], ['--pure', '--print-logs', '--log-level=DEBUG'],
   ['-c'], ['--continue=false'], ['--no-continue'], ['-cs=abc'], ['-s', 'abc', '--fork'],
   ['--session=abc', '../project'], ['--cors', 'https://a.test', 'https://b.test'],
