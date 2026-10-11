@@ -1,21 +1,24 @@
 #!/usr/bin/env bun
-// Arming a timer from inside a dispatch handler must complete, not deadlock.
+// Arming a timer while a dispatch runs its handlers must complete, not wait
+// for them: from inside a handler, or from anywhere else.
 //
-// The hazard: `timers.schedule` serializes through the same per-host chain
-// as `dispatch`, so a handler that AWAITS a schedule call is waiting on a
-// chain entry queued behind the dispatch it is running inside. Nothing
-// exotic reaches this — an embedder's schedule callback that queues into an
-// outbox does exactly it, because `Outbox.queue` awaits `timers.schedule`.
+// The hazard: `timers.schedule` serializes through a per-host chain, so an
+// arm queued behind a dispatch's handlers waits for whatever they wait for.
+// A handler that AWAITS an arm, or waits on work that does (a launch's chunk
+// the alarm granted, PacedWork.pump), never finishes, and neither does the
+// arm. An embedder's schedule callback that queues into an outbox does it
+// from inside, because `Outbox.queue` awaits `timers.schedule`.
 //
-// The contract under test: while a dispatch runs its handlers, schedule
-// requests for the SAME host are collected and folded into the reason map
-// before the dispatcher's own re-arm, earliest-deadline-first — so the
-// await resolves, the arm lands, and the platform alarm covers it.
+// The contract under test: only the reason map's read-modify-writes are on
+// the chain, never a handler, so an arm lands while handlers run; the
+// dispatcher's re-arm reads the map again and keeps it, earliest-deadline-
+// first, and a reason it fired goes only if it still holds the fired deadline.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { timers, TIMER_REASONS_KEY } from '../../packages/fabric/src/timers.ts';
 import { outbox } from '../../packages/fabric/src/outbox.ts';
+import { PacedWork, TurnBudget } from '../../packages/fabric/src/turn-budget.ts';
 
 function createCtx(db = new Database(':memory:')) {
   const kv = new Map();
@@ -163,12 +166,37 @@ async function mustComplete(promise, label) {
   assert.equal(ctx.alarms.at(-1), now + 5_000);
 }
 
-// ── 5. A CONCURRENT turn's schedule is NOT captured by the dispatch ────────
+// ── 5. A launch whose granted chunk arms from its own turn is not parked ───
 //
-// The redirect is scoped to the dispatch's own async context. A turn that
-// schedules while a handler awaits external IO takes the chain path: it
-// serializes behind the dispatch, performs its own read-modify-write, and
-// keeps its own turn-gated persistence.
+// The session's shape (FacetManager.launchPump): the alarm's
+// 'resident-launch' handler pumps the paced launches and awaits the chunk
+// each resumed one runs (PacedWork.pump). The chunk below awaits an arm made
+// in the launch's own async context, not the handler's (PeerHost.armWatch
+// awaits one so); queued behind the handler, it waited for the chunk that
+// waited for it, and the launch never finished.
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const pump = new PacedWork(ctx, { requestTurn: (notBefore) => timers(host, ctx).arm('resident-launch', Math.max(Date.now(), notBefore ?? 0)) });
+  const budget = new TurnBudget(pump, 10);
+  const launch = (async () => {
+    await budget.spend(10);
+    await timers(host, ctx).arm('hosting-watch', Date.now() + 60_000);
+    budget.settle();
+    return 'launched';
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(ctx.kv.get(TIMER_REASONS_KEY)['resident-launch'] !== undefined, 'the launch asked for its turn');
+  await mustComplete(timers(host, ctx).dispatch({ 'resident-launch': () => pump.pump() }), 'the alarm granting the launch its turn');
+  assert.equal(await mustComplete(launch, 'the launch'), 'launched');
+  assert.deepEqual(Object.keys(ctx.kv.get(TIMER_REASONS_KEY)), ['hosting-watch']);
+}
+
+// ── 6. An arm from another turn lands while a handler still waits ──────────
+//
+// It queues behind no handler: it is in the map, and the platform alarm
+// covers it, before the dispatch's handler is let go.
 
 {
   const ctx = createCtx();
@@ -185,26 +213,29 @@ async function mustComplete(promise, label) {
   // Give the dispatch time to enter the handler, then schedule from an
   // unrelated async context (this test turn).
   await new Promise((resolve) => setTimeout(resolve, 10));
-  const concurrent = timers(host, ctx).schedule('from-outside', now + 40_000);
+  assert.equal(await mustComplete(timers(host, ctx).schedule('from-outside', now + 40_000), 'an arm while a handler waits'), true);
+  assert.equal(ctx.kv.get(TIMER_REASONS_KEY)['from-outside'], now + 40_000);
+  // The fired reason stays in the map until its handler is done: an alarm
+  // retried after a reset here fires it again.
+  assert.equal(ctx.kv.get(TIMER_REASONS_KEY).slow, now - 10);
 
   releaseHandler();
   await mustComplete(dispatchDone, 'dispatch with a slow handler');
-  assert.equal(await mustComplete(concurrent, 'concurrent schedule behind a dispatch'), true);
-  // The concurrent arm landed through its own chained write.
-  assert.equal(ctx.kv.get(TIMER_REASONS_KEY)['from-outside'], now + 40_000);
+  assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'from-outside': now + 40_000 });
+  assert.equal(ctx.alarms.at(-1), now + 40_000);
 }
 
-// ── 6. Without setAlarm, both arm paths refuse alike ────────────────────────
+// ── 7. Without setAlarm, an arm refuses, inside a handler as outside ───────
 
 {
   const ctx = createCtx();
   delete ctx.storage.setAlarm;
   const host = {};
   const now = Date.now();
-  // Chain path refuses on a runtime without alarms.
+  // An arm refuses on a runtime without alarms.
   assert.equal(await timers(host, ctx).schedule('nope', now), false);
-  // In-dispatch path refuses the same way. Seed the map directly, since
-  // schedule() cannot arm without setAlarm.
+  // And from inside a handler. Seed the map directly, since schedule()
+  // cannot arm without setAlarm.
   ctx.kv.set(TIMER_REASONS_KEY, { seeded: now - 10 });
   let armed = null;
   await mustComplete(
@@ -217,13 +248,12 @@ async function mustComplete(promise, label) {
   assert.equal(ctx.kv.get(TIMER_REASONS_KEY), undefined);
 }
 
-// ── 7. Work a handler started and did not await arms after the dispatch ───
+// ── 8. Work a handler started and did not await arms after the dispatch ───
 //
 // A cold-start alarm re-drives an interrupted resident launch without
 // awaiting it (fenced-work.ts recoverInterrupted: the launch asks for its next
 // turn through this same alarm). That launch keeps the handler's async
-// context; when it arms after the dispatch has folded its collection, the arm
-// must take the chain and land, not join a collection nothing reads again: a
+// context; when it arms after the dispatch is done, the arm must land: a
 // launch past one turn's budget (TURN_CHUNK_MAX_BYTES) re-driven so waited
 // forever for a turn (workspace-egress-reset-recovery-workerd, a resident's
 // image over the budget).
@@ -252,6 +282,28 @@ async function mustComplete(promise, label) {
   assert.equal(await mustComplete(launchArm, 'a detached arm after the dispatch'), true);
   assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now + 1 });
   assert.equal(ctx.alarms.at(-1), now + 1);
+}
+
+// ── 9. A reason armed again from outside while its handler runs is kept ────
+//
+// Its fired deadline is still in the map then, and earlier than the new
+// one: the re-arm is no later request to ignore, and the dispatch, which
+// drops the deadline it fired, keeps the one armed since.
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('resident-launch', now - 10);
+  let releaseHandler;
+  const gate = new Promise((resolve) => { releaseHandler = resolve; });
+  const dispatchDone = timers(host, ctx).dispatch({ 'resident-launch': async () => { await gate; } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(await mustComplete(timers(host, ctx).schedule('resident-launch', now + 5), 'the fired reason armed again'), true);
+  releaseHandler();
+  await mustComplete(dispatchDone, 'dispatch of the re-armed reason');
+  assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now + 5 });
+  assert.equal(ctx.alarms.at(-1), now + 5);
 }
 
 console.log('fabric-timers-arm-during-dispatch: all assertions passed');
