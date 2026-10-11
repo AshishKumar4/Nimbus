@@ -454,8 +454,8 @@ export class PeerHost {
     const key = `${HOSTING_KEY_PREFIX}${workerKey}`;
     const stored = await this.ctx.storage.get<HostingRecord>(key);
     if (!stored) return { cancelled: record !== undefined };
-    if (!stored.incarnation) throw new Error('Nimbus: cannot release a legacy peer record without its physical ownership metadata');
     if (stored.facet) { abortFacet(this.ctx, stored.facet, new Error('Nimbus: the coordinator released its previous process')); deleteFacetStorage(this.ctx, stored.facet); }
+    else if (!stored.incarnation) console.warn(`[nimbus] dropped legacy peer record '${workerKey}': its peer facet could not be named`);
     await this.ctx.storage.delete(key);
     return { cancelled: true };
   }

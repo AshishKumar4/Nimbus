@@ -14,7 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { HOST_WATCH_HEADER, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 
 /**
  * @param {(config: unknown, info: { loaderId: string, facetName: string, className: string })
@@ -314,6 +314,7 @@ export function createProcessHost(mode, world, disk, {
     () => disk,
   );
   host.peers = peers;
+  host.acquireActivity = () => hostActivity(coordinator).acquire();
   host.namesResolved = calls;
   host.stubs = stubs;
   host.hostIncarnation = hostIncarnation;

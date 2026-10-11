@@ -251,6 +251,8 @@ export class PeerHost {
                 }
             });
             await located;
+            if (record.closed)
+                throw new Error('Nimbus: the peer process was cancelled while opening');
             return { ok: true, incarnation: this.incarnation };
         }
         catch (e) {

@@ -517,12 +517,12 @@ for (const mode of PROCESS_HOST_MODES) {
   // process, so it parks exactly one key: anything else is refused at once,
   // and without that anyone holding a sibling stub could pile up map entries
   // and 30-second timers here by the thousand.
-  const route = _rpcRouteHostedHttp(peer, 'k62', { method: 'GET', url: 'http://x/', headers: [], body: null });
+  const route = _rpcRouteHostedHttp(peer, 'k62', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null });
   let routeSettled = false;
   route.then(() => { routeSettled = true; }, () => { routeSettled = true; });
   // Refused at once: settled before any timer can fire, the parked key's
   // 30-second wait included.
-  const second = _rpcRouteHostedHttp(peer, 'other-key', { method: 'GET', url: 'http://x/', headers: [], body: null });
+  const second = _rpcRouteHostedHttp(peer, 'other-key', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null });
   let refusedAtOnce = false;
   second.catch(() => { refusedAtOnce = true; });
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -552,9 +552,11 @@ for (const mode of PROCESS_HOST_MODES) {
     onWriterActivated() {}, onWriterRetired: (id) => retired.push(id),
   });
   await handle.booted();
+  const activity = host.acquireActivity(); await activity.ready;
   [...host.peers.values()][0].die(new Error('peer reset under a running process'));
   await assert.rejects(handle.done, /peer reset under a running process/,
-    'the held host leg severing ends the process');
+    'active observation reports the host reset');
+  activity.release();
   assert.equal(retired.length, 1, 'and the writer identity it held is reclaimed');
   console.log('  caseP5: a peer reset ends the process it was hosting');
 }

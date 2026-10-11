@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: peer process hosts use activity-owned, abortable loss observation and
+  validate incarnation on use; idle peers no longer hold a permanent hosting
+  RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy
+  throwaway-only hosting records without a physical facet name, logs that the
+  peer facet could not be named, and never guesses which facet to delete.
 - Breaking: the legacy symlink registry is gone. `@nimbus-sh/core/vfs/symlink-registry.js`
   (`SymlinkRegistry`, `getSymlinkRegistry`, `LEGACY_SYMLINK_REGISTRY_PATH`) and the
   supervisor's `hasLegacySymlinkUnder` call are removed. No Nimbus since the core
