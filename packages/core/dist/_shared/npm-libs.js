@@ -9,3 +9,4 @@ export const typeDefs = compiled.typeDefs;
 export const typeDescription = compiled.typeDescription;
 export const ini = compiled.ini;
 export const nopt = compiled.nopt;
+export const validateName = compiled.validateName;

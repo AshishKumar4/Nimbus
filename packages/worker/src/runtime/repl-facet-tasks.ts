@@ -1,7 +1,7 @@
 /** REPL entries compiled without the host's interpreter/bootstrap modules. */
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 /**
- * Facet-side, request-shaped: serialized with fn.toString() into the
+ * Facet-side, request-shaped: compiled at build time into the
  * pool's fetch entrypoint, so it captures nothing and names no import —
  * __cpythonReplRun is put on globalThis by the preamble, and unlike
  * __cpythonRun it keeps its interpreter between calls. The request body
@@ -50,8 +50,7 @@ export interface RubyReplFacetResult {
     control?: Record<string, string>;
 }
 /**
- * Facet-side function. Self-contained — serialized via fn.toString();
- * no closure captures, no class refs, no bare 'this' word.
+ * Facet-side entry compiled with its dependencies at build time.
  *
  * Calls globalThis.__rubyRun (installed by RUBY_RUNNER_PREAMBLE_TAIL)
  * with the user code wrapped by the driver above, in the caller's working

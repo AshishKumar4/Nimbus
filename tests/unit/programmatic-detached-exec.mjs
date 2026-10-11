@@ -3,6 +3,7 @@ import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 import { rpcExec, rpcExecStream, rpcDetachExec } from '../../packages/worker/src/session/programmatic.ts';
 import { collectExecStream, encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
 import { programmaticHost } from './lib/programmatic-host.mjs';
+import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 
 const gates = new Map();
 const gate = (name) => {
@@ -82,6 +83,45 @@ try {
   queued.release();
   await queuedOutput;
   await blocked;
+
+  // An already-fired signal crosses HTTP only after start acknowledges the
+  // invocation, so detach cannot race ahead and answer "not found".
+  const remoteGate = gate('remote');
+  const remoteDetach = new AbortController();
+  remoteDetach.abort();
+  const remoteSdk = Nimbus.connect({ endpoint: 'https://detach.test', fetch: async (url, init) =>
+    handleNimbusRemoteApi(new Request(url, init), { NIMBUS_SESSION: { idFromName: (name) => name, get: () => stub } }, { remote: { enabled: true, allowLegacy: true } }),
+  }).sandbox('remote', { shellId: 'remote' });
+  const remoteOutput = collectExecStream(await remoteSdk.execStream('hold remote', { detach: remoteDetach.signal }));
+  pending.push(remoteOutput);
+  await remoteGate.entered;
+  assert.equal((await within(remoteSdk.exec('echo remote-free'))).stdout, 'remote-free\n');
+  remoteGate.release();
+  assert.equal((await remoteOutput).exitCode, 7);
+
+  // A failed control RPC is not a command failure. Observe its report, then
+  // let the original command exit normally and keep its output and exit code.
+  const deniedGate = gate('denied');
+  const denied = new AbortController();
+  let reported;
+  const heard = new Promise((resolve) => { reported = resolve; });
+  const originalError = console.error;
+  console.error = (message, error) => reported({ message, error });
+  try {
+    const failure = new Error('detach credentials expired');
+    const deniedSdk = Nimbus.fromSession(() => ({ ...stub, _rpcDetachExec: async () => { throw failure; } })).sandbox('denied', { shellId: 'denied' });
+    const deniedOutput = collectExecStream(await deniedSdk.execStream('hold denied', { detach: denied.signal }));
+    pending.push(deniedOutput);
+    await deniedGate.entered;
+    denied.abort();
+    const report = await within(heard);
+    assert.match(report.message, /could not detach invocation/);
+    assert.equal(report.error, failure);
+    deniedGate.release();
+    const completed = await deniedOutput;
+    assert.equal(completed.exitCode, 7, 'exit still describes the actual command, not the control request');
+    assert.equal(completed.stdout, 'finished\n');
+  } finally { console.error = originalError; deniedGate.release(); }
 } finally {
   for (const held of gates.values()) held.release();
   await Promise.allSettled(pending);

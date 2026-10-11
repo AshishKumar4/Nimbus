@@ -29,6 +29,10 @@ const outputs = [
       ['ESBUILD_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['buildWithEsbuild']],
       ['TRANSFORM_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['runTransformRequest']],
       ['OPENTUI_BACKEND_CLASS_SOURCE', './opentui-wasm-backend.js', ['OpenTUIWasmBackend']],
+      ['COMMONJS_CELL_HELPERS_SOURCE', null, [], [
+        "export { moduleImporterUrl } from './packages/core/src/_shared/module-importer.ts';",
+        "export { runtimeCodeKeySource, runtimeCodeSourceCharge } from './packages/core/src/_shared/runtime-code-identity.ts';",
+      ].join('\n')],
     ],
   },
   {

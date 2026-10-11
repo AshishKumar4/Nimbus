@@ -3,15 +3,17 @@ import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { programmaticHost } from './lib/programmatic-host.mjs';
-import { processBridge } from './lib/process-bridge.mjs';
+import { sessionFileStatOf } from '../../packages/core/src/runtime/session-protocol.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 
 const box = await programmaticHost();
-const fs = processBridge(box.ws.vfs, CRED_SESSION_USER);
+const lease = box.ws.filesystem.openHost(CRED_SESSION_USER);
+const fs = lease.fs;
 const stub = {
   _rpcReady: async () => ({ ok: true, preinstalled: [] }),
   _rpcWriteFile: async (path, content) => fs.writeFile(path, content),
-  _rpcStat: async (path) => fs.stat(path),
-  _rpcLstat: async (path) => fs.stat(path, { followSymlinks: false }),
+  _rpcStat: async (path) => sessionFileStatOf(await fs.stat(path)),
+  _rpcLstat: async (path) => sessionFileStatOf(await fs.stat(path, { followSymlinks: false })),
   _rpcReadlink: async (path) => fs.readlink(path),
 };
 const env = { NIMBUS_SESSION: { idFromName: (name) => name, get: () => stub } };
@@ -27,14 +29,14 @@ try {
   try {
     Date.now = () => fixedTime;
     await local.files.write(path, 'one');
-    fs.symlink('file', link);
+    await fs.symlink('file', link);
     before = await remote.files.stat(path);
     await remote.files.write(path, 'two');
     const second = await remote.files.stat(path);
     assert.equal(second.mtime, before.mtime, 'same millisecond');
     assert.ok(second.revision > before.revision, 'two same-length writes in one millisecond have distinct revisions');
   } finally { Date.now = realNow; }
-  fs.utimes(path, before.mtime, before.mtime);
+  await fs.utimes(path, before.mtime, before.mtime);
   const after = await remote.files.stat(path);
   assert.equal(after.size, before.size);
   assert.equal(after.mtime, before.mtime);
@@ -44,7 +46,28 @@ try {
   assert.notEqual((await remote.files.lstat(link)).ino, after.ino);
   assert.equal(await remote.files.readlink(link), 'file');
   assert.equal(await local.files.readlink(link), 'file');
+  const mounted = new MemoryVFS(CRED_SESSION_USER);
+  mounted.writeFile('/file', new TextEncoder().encode('mounted'));
+  const backend = (metadata) => ({
+    stat(path, options) {
+      const stat = mounted.stat(path, options);
+      if (stat === null) return null;
+      const { ino, revision, ...fields } = stat;
+      return { ...fields, ...metadata };
+    },
+    readFile: mounted.readFile.bind(mounted), writeFile: mounted.writeFile.bind(mounted),
+    readdir: mounted.readdir.bind(mounted), mkdir: mounted.mkdir.bind(mounted), unlink: mounted.unlink.bind(mounted),
+  });
+  box.ws.filesystem.vfs.mount('/plain', backend({}));
+  box.ws.filesystem.vfs.mount('/stamped', backend({ ino: 123, revision: 23 }));
+  const plain = await remote.files.stat('/plain/file');
+  assert.equal(Object.hasOwn(plain, 'ino'), false, 'an unstamped mount reports no invented inode');
+  assert.equal(Object.hasOwn(plain, 'revision'), false, 'an unstamped mount reports no invented revision');
+  const stamped = await remote.files.stat('/stamped/file');
+  assert.equal(stamped.ino, 123);
+  assert.equal(stamped.revision, 23, 'a mounted backend numeric revision survives the namespace and wire');
 } finally {
+  lease.release();
   await box.ws.close();
   box.close();
 }

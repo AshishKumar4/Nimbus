@@ -12,6 +12,12 @@ published independently in the `@nimbus-sh` npm scope.
   `FacetFn`, `FacetTaskFn` and `serializeFunction` exports are removed.
   Nimbus's tasks and embedded helpers use one build-time compiler and survive
   host identifier minification; no runtime function-source serialization remains.
+  Guest entry helpers now live in core `runtime/facet-tasks.js` and worker
+  `runtime/repl-facet-tasks.js`; the former runner/REPL exports are not re-exported.
+  `runtimeModuleScope` moves from `_shared/commonjs-cell.js` to
+  `_shared/runtime-code-identity.js`, where the host/guest identity helpers are compiled together.
+  The obsolete `_shared/esbuild-facet-shim.js` and its `ESBUILD_NAME_*_SHIM`
+  exports are removed; compiled bodies carry their own lexical bindings.
 - Fixed: published core bundles npm's CommonJS dependencies with explicit ESM
   builtin imports, so a neutral ESM bundle can start under workerd without
   eager dynamic `require` failures.

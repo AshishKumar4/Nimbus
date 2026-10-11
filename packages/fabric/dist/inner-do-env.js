@@ -107,7 +107,7 @@ export function innerDoAdapter(idFromName, names, main, runtime) {
      */
     const stubPrototype = Object.create(Object.prototype, {
         constructor: {
-            value: function DurableObject() { throw new TypeError('Illegal constructor'); },
+            value: Object.defineProperty(function () { throw new TypeError('Illegal constructor'); }, 'name', { value: 'DurableObject', configurable: true }),
             writable: true,
             configurable: true,
         },

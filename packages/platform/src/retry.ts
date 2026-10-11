@@ -12,8 +12,8 @@
  * Every wait is its schedule's entry ±25%, uniformly, so concurrent callers
  * that failed together do not try again together.
  *
- * Self-contained, both functions: a facet that cannot import carries them
- * by source (fn.toString(); the npm install facet's preamble does).
+ * A facet carries these same functions and their dependencies in its
+ * build-time compiled task expression (the npm install facet does).
  */
 
 /**

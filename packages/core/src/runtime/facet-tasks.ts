@@ -1,4 +1,5 @@
 /** Guest entries compiled independently of the host's runtime/bootstrap modules. */
+import { errorText } from '../_shared/error-text.js';
 import type { FacetBindings } from './facet-host.js';
 import type { CPythonFacetResult } from './cpython-runner.js';
 import type { RubyFacetCallArgs } from './ruby-runner.js';
@@ -40,9 +41,8 @@ export async function bashRequestStep(request: Request, bindings: FacetBindings)
     return Response.json(await step(await request.json(), bindings.SUPERVISOR));
 }
 /**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
+ * Facet-side entry, compiled as a task expression at build time. The
+ * interpreter is installed on globalThis by the facet's preamble.
  */
 export async function cpythonRunFacetFn(args: Record<string, unknown>, facetEnv: {
     SUPERVISOR?: unknown;
@@ -188,11 +188,8 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
     /**
      * The import namespace to bind, resolved supervisor-side.
      *
-     * This function is serialized with fn.toString() and evaluated in the
-     * facet isolate, where module imports do not exist — reaching for
-     * WASI_ABI_NAMESPACE here is a ReferenceError at instantiate time that
-     * surfaces as "wasi trap: instantiate failed", with the guest blamed
-     * for a defect in the host. Values the facet needs travel as arguments.
+     * The host has already inspected the binary's ABI, so the namespace
+     * travels with that result rather than being re-derived in the guest.
      */
     wasiNamespace?: string;
     /**
@@ -224,12 +221,6 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
 }, facetEnv?: {
     SUPERVISOR?: unknown;
 }): Promise<WasmCallResult> {
-    // This body is serialized into the facet isolate, where the supervisor's
-    // module graph — and so _shared/error-text.js — does not exist. Same
-    // fallback as errorText, spelled out locally.
-    const errText = (err: unknown): string => typeof err === 'object' && err !== null && 'message' in err && err.message
-        ? String(err.message)
-        : String(err);
     const wasmTable = globalThis.__NIMBUS_WASM || {};
     const mod = wasmTable['user.wasm'];
     if (!mod) {
@@ -358,7 +349,7 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
                     mode: 'wasi',
                     error: `wasi-threads: could not reserve the shared memory the module declares `
                         + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
-                        + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errText(e)}. `
+                        + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errorText(e)}. `
                         + 'A shared memory reserves its maximum immediately — lower --max-memory.',
                 };
             }
@@ -382,7 +373,7 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
             return {
                 ok: false,
                 mode: 'wasi',
-                error: `instantiate failed: ${errText(e)}`,
+                error: `instantiate failed: ${errorText(e)}`,
             };
         }
         if (!memRef.mem) {
@@ -437,7 +428,7 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
         return {
             ok: false,
             mode: 'direct',
-            error: `instantiate failed: ${errText(e)}`,
+            error: `instantiate failed: ${errorText(e)}`,
         };
     }
     const exportNames = Object.keys(inst.exports);
@@ -460,7 +451,7 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
             ok: false,
             mode: 'direct',
             exports: exportNames,
-            error: `${args.exportName}(${(args.intArgs || []).join(', ')}) threw: ${errText(e)}`,
+            error: `${args.exportName}(${(args.intArgs || []).join(', ')}) threw: ${errorText(e)}`,
         };
     }
     // BigInt (i64) → string; everything else → as-is.

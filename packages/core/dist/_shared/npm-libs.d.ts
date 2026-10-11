@@ -7,4 +7,5 @@ export declare const typeDefs: typeof import('@npmcli/config/lib/type-defs.js').
 export declare const typeDescription: typeof import('@npmcli/config/lib/type-description.js').default;
 export declare const ini: typeof import('ini').default;
 export declare const nopt: typeof import('nopt').default;
+export declare const validateName: typeof import('validate-npm-package-name').default;
 //# sourceMappingURL=npm-libs.d.ts.map
