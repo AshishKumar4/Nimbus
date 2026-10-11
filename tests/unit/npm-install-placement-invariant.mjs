@@ -35,17 +35,20 @@ let seed = 20260921;
 const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 const pick = (list) => list[Math.floor(rnd() * list.length)];
 
+/** A range some published version of `name` meets: an install with an edge none meets changes nothing, and checks nothing. */
+const pickRange = (registry, name) => pick(RANGES.filter((range) => Object.keys(registry[name]).some((v) => satisfiesRange(v, range))));
+
 function genRegistry() {
   const registry = {};
   for (const name of NAMES) {
     registry[name] = {};
-    for (const version of VERSIONS) {
-      if (rnd() < 0.3) continue;
-      const deps = {};
-      for (const dep of NAMES) if (dep !== name && rnd() < 0.3) deps[dep] = pick(RANGES);
-      registry[name][version] = deps;
-    }
+    for (const version of VERSIONS) if (rnd() >= 0.3) registry[name][version] = {};
     if (Object.keys(registry[name]).length === 0) registry[name]['1.0.0'] = {};
+  }
+  for (const name of NAMES) {
+    for (const version of Object.keys(registry[name])) {
+      for (const dep of NAMES) if (dep !== name && rnd() < 0.3) registry[name][version][dep] = pickRange(registry, dep);
+    }
   }
   return registry;
 }
@@ -60,7 +63,7 @@ async function install(registry, deps) {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
       dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
     };
-    return { ...base, pkg, deps: pkg.dependencies, cacheWrites: [registryRecord(pkg, Date.now())] };
+    return { ...base, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
   };
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -76,17 +79,19 @@ async function install(registry, deps) {
 
 const RUNS = 120;
 let nestedTrees = 0;
+let failedTrees = 0;
 let edgesChecked = 0;
 for (let run = 0; run < RUNS; run++) {
   const registry = genRegistry();
   const deps = {};
-  for (const name of NAMES) if (rnd() < 0.5) deps[name] = pick(RANGES);
+  for (const name of NAMES) if (rnd() < 0.5) deps[name] = pickRange(registry, name);
   if (Object.keys(deps).length === 0) deps.a = '*';
   const { result, lock } = await install(registry, deps);
   if (!lock) {
-    // A tree that resolved nothing writes no lockfile; that is a failure the
-    // install must have reported, and there are no placements to check.
+    // A failed install changes nothing and writes no lockfile (a cycle of
+    // incompatible ranges nests without end); there are no placements to check.
     assert.ok(result.failed.length > 0, `run ${run}: no lockfile and no failure`);
+    failedTrees++;
     continue;
   }
   const placed = new Map([...lock].map(([placement, entry]) => [placement, entry]));
@@ -108,6 +113,6 @@ for (let run = 0; run < RUNS; run++) {
     }
   }
 }
-assert.ok(nestedTrees > RUNS / 4, `the fuzz exercises nesting (${nestedTrees}/${RUNS} trees nested)`);
-console.log(`  ${RUNS} trees (${nestedTrees} with nesting), ${edgesChecked} edges met by their nearest visible copy`);
+assert.ok(nestedTrees > RUNS / 4, `the fuzz exercises nesting (${nestedTrees}/${RUNS} trees nested, ${failedTrees} failed)`);
+console.log(`  ${RUNS} trees (${nestedTrees} with nesting, ${failedTrees} failed), ${edgesChecked} edges met by their nearest visible copy`);
 console.log('npm-install-placement-invariant: ok');

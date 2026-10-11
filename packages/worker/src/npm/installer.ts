@@ -590,7 +590,7 @@ export class NpmInstaller {
     else if (!usedLockfile || pruned > 0) this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir);
 
     // ── Update package.json if explicit packages were added ─────────
-    if (named.length > 0 && manifest !== null && failed.length === 0) {
+    if (named.length > 0 && failed.length === 0) {
       await this.updatePackageJson(projDir, project, principal, named, resolved);
     }
 
@@ -1410,9 +1410,11 @@ export class NpmInstaller {
     const advised = new Set<string>();
     const pkgJsonPath = projDir + '/package.json';
     let manifest: ProjectManifest | null = null;
+    // A package.json the install cannot read fails it; a corrupt one declares nothing.
     if (await fs.exists(pkgJsonPath)) {
+      const text = await fs.readFileString(pkgJsonPath);
       try {
-        const parsed: unknown = JSON.parse(await fs.readFileString(pkgJsonPath));
+        const parsed: unknown = JSON.parse(text);
         if (isManifest(parsed)) manifest = parsed;
       } catch { /* corrupt package.json */ }
     }

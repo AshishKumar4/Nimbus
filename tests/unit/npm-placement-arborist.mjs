@@ -192,8 +192,9 @@ async function fallbackWorkspace() {
   const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel));
   const fs = ws.vfs.as(CRED_KERNEL);
-  const write = (pkg) => fs.writeFile('/home/user/package.json', JSON.stringify({ name: 'app', version: '1.0.0', ...pkg }));
-  write({});
+  // As the user writes it: the project is theirs.
+  const write = async (pkg) => assert.equal((await ws.exec(`printf '%s' '${JSON.stringify({ name: 'app', version: '1.0.0', ...pkg })}' > package.json`)).exitCode, 0);
+  await write({});
   return {
     write,
     run: async (args) => (await ws.exec(`NPM_REGISTRY=${base} npm ${args.map((arg) => `'${arg}'`).join(' ')}`)).exitCode === 0,
@@ -301,7 +302,7 @@ async function sequence(commands) {
     try {
       for (const args of commands) {
         if (!Array.isArray(args)) {
-          if (args.manifest) project.write(args.manifest);
+          if (args.manifest) await project.write(args.manifest);
           if (args.remove) await project.remove(args.remove);
           if (args.break) brokenNow.add(args.break);
           continue;
@@ -353,7 +354,7 @@ try {
   worker.close();
 
   const fallback = await fallbackWorkspace();
-  fallback.write({ dependencies: ROOT });
+  await fallback.write({ dependencies: ROOT });
   assert.equal(await fallback.run(['install']), true);
   assert.deepEqual(fallback.tree(), npm, "the shell's fallback npm places as npm does");
   fallback.close();

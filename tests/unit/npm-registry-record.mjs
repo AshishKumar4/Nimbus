@@ -71,10 +71,12 @@ console.log('  ok  a warm resolve answers what the cold one did');
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx });
   installer.npmCache.putRegistryEntries(cold.cacheWrites);
-  const lockfile = new Map([['pkg', { name: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' }]]);
-  const { resolved } = installer.lockfileToResolved(lockfile, installer.lockRecords());
-  assert.deepEqual(plain(resolved.get('pkg')), plain(cold.pkg), "a lockfile's package is the one its resolve answered");
-  console.log("  ok  a lockfile's package is the one its resolve answered");
+  const entry = { name: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' };
+  const recordOf = installer.lockRecords();
+  assert.deepEqual(plain(resolvedFromRecord(recordOf(entry))), plain(cold.pkg), "a lockfile's package is the one its resolve answered");
+  // Another package's record under the name (an alias retargeted) is not this placement's.
+  assert.equal(recordOf({ ...entry, integrity: 'sha512-another' }), null, 'a record of another package is none');
+  console.log("  ok  a lockfile's package is the one its resolve answered, and only that one");
 }
 
 {

@@ -154,7 +154,7 @@ const packument = (versions, distTags = {}) => JSON.stringify({
   );
   assert.equal(res.error, undefined);
   assert.equal(res.pkg?.version, '2.0.2');
-  assert.deepEqual(res.deps, { isexe: '^2.0.0' });
+  assert.deepEqual(res.pkg.dependencies, { isexe: '^2.0.0' });
   console.log('  resolvable package → resolved');
 }
 
