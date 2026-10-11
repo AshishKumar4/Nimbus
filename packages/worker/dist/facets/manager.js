@@ -1643,6 +1643,24 @@ export class NimbusProcess extends DurableObject {
  * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
  * length) plus 1%, a row per chunk and head, and a page of slack.
  */
+/** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
+function esmStageSize(esm) {
+    if (esm === undefined)
+        return null;
+    let text = 0;
+    let columns = 0;
+    for (const staged of esm.modules.values()) {
+        text += staged.text.length;
+        columns += JSON.stringify(staged.columns).length;
+    }
+    let members = 0;
+    for (const member of Object.values(esm.members))
+        members += member.length;
+    return {
+        ms: esm.ms, modules: esm.modules.size, rows: esm.table.length, missing: esm.missing.length, text, columns, members,
+        table: JSON.stringify({ table: esm.table, missing: esm.missing }).length,
+    };
+}
 /** What a module map costs the facet's store that adopts it (N18). A denial is a head row only; a code-only file is none. */
 function moduleMapStorageBytes(bundle, codeOnly) {
     let bytes = 0;
@@ -4335,7 +4353,11 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             if (code !== undefined)
                 cells.set(key, { code, sites: JSON.parse(sites) });
         }
-        esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path) }, cells, {
+        const held = (key) => {
+            const cell = bundle[key];
+            return typeof cell === 'string' ? cell : undefined;
+        };
+        esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), held }, cells, {
             conditions,
             cwd,
             scope: moduleScope,
@@ -7930,7 +7952,7 @@ export class FacetManager {
         const plan = async () => {
             if (this.debugEnabled) {
                 this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
-                    + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
+                    + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(esmStageSize(vfsState.esm))} (${pacer.chunks} turns so far)\n`);
             }
             const planStart = Date.now();
             const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);

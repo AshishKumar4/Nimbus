@@ -42,6 +42,8 @@ export interface EsmStage {
     readonly table: EsmModuleRow[];
     /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
     readonly missing: EsmMissing[];
+    /** How long staging took, in milliseconds: the launch's debug line. */
+    readonly ms: number;
 }
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
 export declare const ESM_MISSING_DIR = "nimbus/missing/";
@@ -56,6 +58,8 @@ export declare const ESM_NOT_STAGED = "ERR_NIMBUS_NOT_STAGED";
 export interface EsmStageFs {
     readonly files: BridgeRequireFs;
     realpath(path: string): Promise<string>;
+    /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
+    held?(key: string): string | undefined;
 }
 /**
  * Stage `cells`, the launch's ES modules (their code and import sites, by VFS

@@ -43,6 +43,15 @@ function isNodeBuiltin(specifier) {
         return Object.hasOwn(NODE_BUILTIN_EXPORTS, specifier.slice(5));
     return Object.hasOwn(NODE_BUILTIN_EXPORTS, specifier) && !SCHEME_ONLY_BUILTINS[specifier];
 }
+/** `make()`'s promise, once per key of `cache`. */
+function once(cache, key, make) {
+    let found = cache.get(key);
+    if (found === undefined) {
+        found = make();
+        cache.set(key, found);
+    }
+    return found;
+}
 /** A refusal's error, as the process rebuilds it. */
 function refusal(error) {
     const failure = error instanceof Error ? error : new Error(String(error));
@@ -56,6 +65,7 @@ function refusal(error) {
  * the launch carries the cell at a key as code.
  */
 export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }) {
+    const started = Date.now();
     const table = [];
     const members = {
         [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
@@ -85,27 +95,46 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         }
         return id;
     };
-    const readText = async (path) => {
-        try {
-            return await fs.files.readFileString(stripLeadingSlashes(path));
-        }
-        catch {
-            return null;
-        }
+    // Each filesystem question once per staging, the launch's own cells
+    // first: a graph's modules share their directories, packages and
+    // manifests, and asks them thousands of times.
+    const kinds = new Map();
+    const reals = new Map();
+    const texts = new Map();
+    const requires = new Map();
+    const readText = (path) => {
+        const key = stripLeadingSlashes(path);
+        return once(texts, key, async () => {
+            const held = fs.held?.(key);
+            if (held !== undefined)
+                return held;
+            try {
+                return await fs.files.readFileString(key);
+            }
+            catch {
+                return null;
+            }
+        });
     };
-    const requireResolve = async (specifier, fromPath) => {
+    const requireResolve = (specifier, fromPath) => {
         const fromDir = stripLeadingSlashes(fromPath.slice(0, fromPath.lastIndexOf('/')));
-        const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
-        return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+        return once(requires, `${fromDir}\n${specifier}`, async () => {
+            const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
+            return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+        });
     };
     const resolver = createEsmResolver({
-        async kind(path) {
+        kind(path) {
             const key = stripLeadingSlashes(path);
-            if (!(await fs.files.exists(key)))
-                return null;
-            return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+            return once(kinds, key, async () => {
+                if (fs.held?.(key) !== undefined)
+                    return 'file';
+                if (!(await fs.files.exists(key)))
+                    return null;
+                return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+            });
         },
-        realpath: (path) => fs.realpath(path),
+        realpath: (path) => once(reals, path, () => fs.realpath(path)),
         readText,
         isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
         cjsResolve: requireResolve,
@@ -184,5 +213,5 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         }));
         id++;
     }
-    return { modules, members, table, missing };
+    return { modules, members, table, missing, ms: Date.now() - started };
 }
