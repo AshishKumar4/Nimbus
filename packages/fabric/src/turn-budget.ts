@@ -166,7 +166,7 @@ export class PacedWork implements TurnScheduler {
    * half-built work for pids that no longer exist, where re-driving a launch
    * from its inputs is the same idempotent work again.
    */
-  private waiters: Array<{ resume: () => void; reject: (error: unknown) => void; chunkEnded: Promise<void>; notBefore: number }> = [];
+  private waiters: Array<{ resume: () => void; reject: (error: unknown) => void; chunkEnded: Promise<void>; notBefore: number; since: number }> = [];
   private closed: Error | undefined;
 
   /**
@@ -191,7 +191,7 @@ export class PacedWork implements TurnScheduler {
   nextTurn(chunkEnded: Promise<void>, notBefore = 0): Promise<void> {
     if (this.closed) return Promise.reject(this.closed);
     return new Promise<void>((resume, reject) => {
-      const waiter = { resume, reject, chunkEnded, notBefore };
+      const waiter = { resume, reject, chunkEnded, notBefore, since: Date.now() };
       this.waiters.push(waiter);
       if (this.host.requestTurn) {
         void this.requestTurn(notBefore).catch((error: unknown) => {
@@ -255,6 +255,13 @@ export class PacedWork implements TurnScheduler {
   /** Whether any launch is suspended waiting for a turn. */
   get hasPending(): boolean {
     return this.waiters.length > 0;
+  }
+
+  /** The launches suspended waiting for a turn, and how long the oldest has waited. */
+  state(now = Date.now()): { waiting: number; oldestMs: number | null } {
+    // Suspended in order; a pump keeps the order of those it leaves.
+    const oldest = this.waiters[0];
+    return { waiting: this.waiters.length, oldestMs: oldest === undefined ? null : now - oldest.since };
   }
 }
 

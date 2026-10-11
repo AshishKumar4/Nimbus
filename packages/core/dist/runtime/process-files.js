@@ -507,6 +507,10 @@ export class ProcessFiles {
         if (this.outputHeld)
             this.continuing.add(pid);
     }
+    /** Process `pid` has ended (exited, killed, its host lost): see Delegations.endReads. */
+    processEnded(pid) {
+        this.delegations.endReads(pid);
+    }
     async releaseProcess(pid) {
         this.retired.add(pid);
         this.listings.delete(pid);

@@ -157,6 +157,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * ending this (`escaped`).
      */
     continueAtCommit(pid: number): void;
+    /** Process `pid` has ended (exited, killed, its host lost): see Delegations.endReads. */
+    processEnded(pid: number): void;
     releaseProcess(pid: number): Promise<void>;
     /** See NimbusFilesystemAuthority.rewindProcess. */
     rewindProcess(pid: number): Promise<void>;

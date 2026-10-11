@@ -21,7 +21,8 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { visiblePlacements } from '../../packages/worker/src/npm/placement.ts';
 import { resolveVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
-import { kernelInstaller, makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -59,7 +60,7 @@ async function install(registry, deps) {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
       dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
     };
-    return { ...base, pkg, deps: pkg.dependencies, cacheWrites: [cacheRowForPackage(pkg)] };
+    return { ...base, pkg, deps: pkg.dependencies, cacheWrites: [registryRecord(pkg, Date.now())] };
   };
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);

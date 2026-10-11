@@ -183,6 +183,7 @@ export class FacetProcessManager {
             outputBytes: { 1: 0, 2: 0 },
             outputDrained: [],
             outputWrites: { 1: Promise.resolve(), 2: Promise.resolve() },
+            outputClosed: { 1: false, 2: false },
             parentClosed: null,
             outputWaiters: [],
             exitCode: null,
@@ -444,19 +445,22 @@ export class FacetProcessManager {
     }
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     _appendOutput(child, fd, data) {
+        // The child has ended, or its parent closed this read end: a write to a pipe with no reader.
+        const readerGone = () => {
+            if (child.exitCode !== null || child.outputClosed[fd])
+                throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+        };
         const task = child.outputWrites[fd].then(async () => {
             if (child.stdio[fd] === 'ignore')
                 return;
             for (let at = 0; at < data.byteLength; at += CHILD_STDIO_QUEUE_MAX_BYTES) {
                 const piece = data.subarray(at, Math.min(data.byteLength, at + CHILD_STDIO_QUEUE_MAX_BYTES));
                 while (child.outputBytes[fd] + piece.byteLength > CHILD_STDIO_QUEUE_MAX_BYTES) {
-                    if (child.exitCode !== null)
-                        throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+                    readerGone();
                     await new Promise(resolve => child.outputDrained.push(resolve));
                 }
                 await this.deps.processes.releaseOutput(child.pid, () => {
-                    if (child.exitCode !== null)
-                        throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+                    readerGone();
                     this._pushOutput(child, fd, piece);
                 });
             }
@@ -551,6 +555,29 @@ export class FacetProcessManager {
             }, expiresAt - Date.now());
             child.outputWaiters.push(waiter);
         });
+    }
+    /**
+     * The parent closed its read end of the child's fd 1 or 2 (a consumer
+     * destroyed the stream): what is queued there goes, and the child's
+     * writes there, those waiting for room and those to come, fail EPIPE, as a
+     * write to a pipe whose reader has gone does.
+     */
+    closeOutput(childPid, fd) {
+        const child = this.children.get(childPid);
+        if (!child || child.outputClosed[fd])
+            return;
+        child.outputClosed[fd] = true;
+        child.outputs[fd] = [];
+        child.outputBytes[fd] = 0;
+        for (const wake of child.outputDrained.splice(0))
+            wake();
+        for (let i = child.outputWaiters.length - 1; i >= 0; i--) {
+            const waiter = child.outputWaiters[i];
+            if (waiter.fd !== fd)
+                continue;
+            child.outputWaiters.splice(i, 1);
+            waiter.resolve(this._readResult(child, fd, waiter.sinceSeq));
+        }
     }
     /**
      * One-shot final flush. Used by the parent's exit-time drain (BLOCKER-1

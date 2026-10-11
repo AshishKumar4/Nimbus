@@ -163,9 +163,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     retireWaveWriter: {
         readonly kind: "mutation";
     };
-    putRegistryEntries: {
-        readonly kind: "effect";
-    };
     stdout: {
         readonly kind: "output";
     };
@@ -235,6 +232,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     };
     cpDrainOutput: {
         readonly kind: "observation";
+    };
+    cpCloseOutput: {
+        readonly kind: "effect";
     };
     cpKill: {
         readonly kind: "effect";

@@ -36,7 +36,11 @@ class Counter {
   private pos = 0;
   private carry = new Uint8Array(0);
 
+  /** `bytesOnly`: only the byte count is asked for, which needs no character read (GNU's wc -c reads none). */
+  constructor(private readonly bytesOnly = false) {}
+
   feed(chunk: Uint8Array, final = false): void {
+    if (this.bytesOnly) { this.c.bytes += chunk.length; return; }
     const data = this.carry.length === 0 ? chunk : (() => { const d = new Uint8Array(this.carry.length + chunk.length); d.set(this.carry); d.set(chunk, this.carry.length); return d; })();
     this.c.bytes += chunk.length;
     let i = 0;
@@ -130,8 +134,9 @@ const command: Command = async (ctx) => {
 
   const results: { label: string | undefined; counts: Counts | null; regular: boolean }[] = [];
   let status = 0;
+  const bytesOnly = !want.lines && !want.words && !want.chars && !want.width;
   for (const file of operands) {
-    const counter = new Counter();
+    const counter = new Counter(bytesOnly);
     try {
       for await (const chunk of inputChunks(ctx, file)) counter.feed(chunk);
       results.push({ label: file, counts: counter.finish(), regular: file !== undefined && file !== '-' });

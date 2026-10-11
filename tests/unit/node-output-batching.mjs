@@ -63,6 +63,7 @@ function contiguous(list) {
   const N = 200_000;
   const { result, calls: made, stdout } = await run(`for (let i = 0; i < ${N}; i++) console.log(i);`);
   assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, '', 'what is relayed live is not also kept for the result');
   const lines = stdout.split('\n');
   assert.equal(lines.length, N + 1);
   assert.equal(lines[0], '0');

@@ -16,8 +16,7 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets; rpcPutRegistryEntries
- * uses self.ctx.storage.sql). The InitHost-style escape applies because
+ * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
@@ -28,7 +27,6 @@ import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
-import { NpmCache } from '../npm/cache.js';
 import { failureOf as errorFromCacheFailure } from '../runtime/stop-replay-body.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -826,22 +824,6 @@ export async function _rpcWriteBatchStream(self, stream, mutationOwner, pid) {
     });
 }
 /**
- * Bulk-write npm registry cache entries in ONE RPC. Used by the
- * resolver-facet to flush a wave of resolved packages back to the
- * supervisor without per-entry round-trips.
- *
- * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
- * Returns { written, failed } so the facet can surface partial-write
- * warnings to the install log.
- */
-export async function _rpcPutRegistryEntries(self, entries) {
-    self.ensureSqliteFs();
-    const npmCache = new NpmCache(self.ctx.storage.sql);
-    if (!Array.isArray(entries))
-        return { written: 0, failed: 0 };
-    return npmCache.putRegistryEntries(entries);
-}
-/**
  * Post-reset semantics: a pid at or below the current generation's pid floor
  * belongs to a facet spawned by a PREVIOUS DO instance (see PID_GEN_STRIDE).
  * The in-memory process state that owned it — table entry, input store, shell
@@ -1308,6 +1290,9 @@ export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acq
 export async function _rpcCpDrainOutput(self, childPid) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.drainOutput(childPid);
+}
+export async function _rpcCpCloseOutput(self, childPid, fd) {
+    self._ensureFacetProcessManager().closeOutput(childPid, fd);
 }
 export async function _rpcCpKill(self, childPid, signal) {
     const fpm = self._ensureFacetProcessManager();

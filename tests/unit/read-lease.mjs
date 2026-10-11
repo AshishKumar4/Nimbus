@@ -591,6 +591,21 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal((await waved).held, undefined);
 }
 
+// ── A process that ends holds no read lease from then on: a write after it is not refused for its recall, whether it exited or was killed, before its release ──
+for (const end of ['exit', 'kill']) {
+  const s = session();
+  const processes = new SessionProcessSupervisor();
+  processes.setRelease((released) => s.files.releaseProcess(released), (ended) => s.files.processEnded(ended));
+  const { pid } = processes.spawn('node', ['r.js'], '/home/user', { cred: USER });
+  // A shell's foreground job holds its release until the shell is done with it.
+  const done = processes.holdWork(pid, () => {});
+  const { readLease } = barrier(s, s.files.bind({ pid, cred: USER }));
+  assert.ok(readLease, 'no lease granted');
+  if (end === 'exit') processes.exit(pid, 0); else processes.kill(pid);
+  s.files.bind({ pid: 7, cred: USER }).synchronous.writeFile('/home/user/after.txt', end);
+  done();
+}
+
 // ── A gated writer that exits with nothing printed: its exit, reported after its scope is released, waits for what it wrote, and closes its relayed sockets with it ──
 {
   const s = session();

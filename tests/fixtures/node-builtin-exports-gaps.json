@@ -5,35 +5,7 @@
  "_http_incoming": "absent",
  "_http_outgoing": "absent",
  "_http_server": "absent",
- "_stream_duplex": {
-  "missing": [
-   "from",
-   "fromWeb",
-   "toWeb"
-  ],
-  "extra": [],
-  "type": []
- },
- "_stream_readable": {
-  "missing": [
-   "ReadableState",
-   "_fromList",
-   "toWeb",
-   "wrap"
-  ],
-  "extra": [],
-  "type": []
- },
  "_stream_wrap": "absent",
- "_stream_writable": {
-  "missing": [
-   "WritableState",
-   "fromWeb",
-   "toWeb"
-  ],
-  "extra": [],
-  "type": []
- },
  "_tls_common": "absent",
  "_tls_wrap": "absent",
  "builtinModules": {
@@ -227,26 +199,6 @@
   "extra": [
    "_builtinLibs",
    "builtinModules"
-  ],
-  "type": []
- },
- "stream": {
-  "missing": [
-   "_isArrayBufferView",
-   "_isUint8Array",
-   "_uint8ArrayToBuffer",
-   "compose",
-   "destroy",
-   "duplexPair",
-   "getDefaultHighWaterMark",
-   "isDestroyed",
-   "promises",
-   "setDefaultHighWaterMark"
-  ],
-  "extra": [
-   "_Readable",
-   "_Transform",
-   "_Writable"
   ],
   "type": []
  },
