@@ -2292,6 +2292,7 @@ export class Compiler {
 
   private binary(node: BinaryExpression): Code {
     const ops = this.ops;
+    const position = skipTrivia(this.text, node.left.end) + this.base;
     if (node.left.type === 'PrivateIdentifier') {
       const name = this.privateName(node.left);
       const right = this.expr(node.right);
@@ -2345,14 +2346,18 @@ export class Compiler {
       switch (node.operator) {
         case '===': return syncCode((env) => ls(env) === rs(env));
         case '!==': return syncCode((env) => ls(env) !== rs(env));
-        default: return syncCode((env) => op(ls(env), rs(env)));
+        default: return syncCode((env) => {
+          const a = ls(env), b = rs(env);
+          try { return op(a, b); } catch (error) { return errorAt(error, position); }
+        });
       }
     }
     const lg = asGen(l);
     const rg = asGen(r);
     return genCode(function* (env) {
       const a = yield* lg(env);
-      return op(a, yield* rg(env));
+      const b = yield* rg(env);
+      try { return op(a, b); } catch (error) { return errorAt(error, position); }
     });
   }
 

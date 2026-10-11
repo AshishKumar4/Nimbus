@@ -49,6 +49,9 @@ const SOURCE = [
   '  Error.prepareStackTrace = saved;',
   '}',
   'afterAwait();',
+  'const alias = { other: function named() { return new Error("alias").stack; } };',
+  'report("alias", alias.other());',
+  'try { 1n + 2; } catch (e) { report("binary", e.stack); }',
 ].join('\n') + '\n';
 const FATAL = 'export {};\nfunction crash() { throw new Error("fatal-frame"); }\ncrash();\n';
 const FILES = {
@@ -60,10 +63,11 @@ const FILES = {
   'runtime.cjs': `const fs = require("fs"); fs.mkdirSync(${JSON.stringify(ROOT + '/late')}, {recursive:true}); fs.writeFileSync(${JSON.stringify(ROOT + '/late/frames.mjs')}, ${JSON.stringify(SOURCE.replace('./bridge.cjs', '../bridge.cjs'))}); import("./late/frames.mjs");\n`,
   'fatal-adopt.cjs': 'require("./fatal.mjs");\n',
   'fatal-runtime.cjs': `const fs = require("fs"); fs.mkdirSync(${JSON.stringify(ROOT + '/late')}, {recursive:true}); fs.writeFileSync(${JSON.stringify(ROOT + '/late/fatal.mjs')}, ${JSON.stringify(FATAL)}); import("./late/fatal.mjs");\n`,
+  'runtime-cjs.cjs': `const fs = require("fs"); fs.mkdirSync(${JSON.stringify(ROOT + '/late')}, {recursive:true}); fs.writeFileSync(${JSON.stringify(ROOT + '/late/module.cjs')}, 'function leaf() { return new Error("cjs").stack; }\\nexports.stack = leaf();\\nexports.top = new Error("top").stack;\\n'); const m = require("./late/module.cjs"); for (const [name,stack] of Object.entries(m)) console.log("CJS " + JSON.stringify([name, stack.split("\\n").filter((line) => line.startsWith("    at ") && line.includes("/late/module.cjs:"))]));\n`,
 };
-const RUNS = ['adopt.cjs', 'runtime.cjs', 'fatal-adopt.cjs', 'fatal-runtime.cjs'];
+const RUNS = ['adopt.cjs', 'runtime.cjs', 'runtime-cjs.cjs', 'fatal-adopt.cjs', 'fatal-runtime.cjs'];
 function said(text, fatal) {
-  if (!fatal) return text.split('\n').filter((line) => /^(FRAMES|SITES) /.test(line));
+  if (!fatal) return text.split('\n').filter((line) => /^(FRAMES|SITES|CJS) /.test(line));
   const arrow = text.match(/(?:file:\/\/)?\/home\/user\/frames\/(?:late\/)?fatal\.mjs:\d+\n[^\n]+\n[ \t]*\^+\n/)?.[0] ?? null;
   const frames = text.split('\n').filter((line) => line.startsWith('    at ') && /\/fatal\.mjs:/.test(line));
   return { arrow, frames };
@@ -82,7 +86,7 @@ try {
     assert.equal(run.status, script.startsWith('fatal-') ? 1 : 0, `Node premise: ${script}: ${text}`);
     expected[script] = said(text, script.startsWith('fatal-'));
   }
-  assert.equal(expected['adopt.cjs'].length, 14, 'every frame and CallSite fixture ran under Node');
+  assert.equal(expected['adopt.cjs'].length, 16, 'every frame and CallSite fixture ran under Node');
   assert.ok(expected['fatal-runtime.cjs'].arrow, 'Node prints the module source and arrow for an unhandled rejection');
 } finally {
   rmSync(disk, { recursive: true, force: true });
