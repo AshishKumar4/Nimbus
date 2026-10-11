@@ -138,6 +138,11 @@ export function innerDoAdapter(idFromName, names, main, runtime) {
         getByName(name) { return this.get(this.idFromName(name)); }
         jurisdiction() { return this; }
     }
+    // These are observable platform type names (including serialization
+    // diagnostics), not compiler-private identifiers. State them explicitly
+    // so the compiled adapter preserves the native namespace/id contract.
+    Object.defineProperty(DurableObjectNamespace, 'name', { value: 'DurableObjectNamespace', configurable: true });
+    Object.defineProperty(DurableObjectId, 'name', { value: 'DurableObjectId', configurable: true });
     for (const name of names) {
         const remote = Reflect.get(runtime.env, name);
         if (isRemote(remote))
