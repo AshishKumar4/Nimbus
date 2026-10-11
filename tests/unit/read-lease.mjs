@@ -206,9 +206,7 @@ function sequenced(bridge, pid, key, first) {
   const held = new Set();
   await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'one'), undefined, held);
   assert.equal(held.size, 1, 'the first call held nothing for its end');
-  const started = Date.now();
   await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'two'), undefined, held);
-  assert.ok(Date.now() - started < 50, `the writer's own second call waited ${Date.now() - started} ms on its own hold`);
   let done = false;
   const ending = Promise.all(held).then(() => { done = true; });
   await sleep(10);
@@ -217,6 +215,8 @@ function sequenced(bridge, pid, key, first) {
   reader.recalled(readLease.owner, 'revoke');
   await ending;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'two');
+  const { reads } = s.files.delegations.stats();
+  assert.deepEqual([reads.answered, reads.expired], [1, 0], 'the later call needed another recall');
 }
 
 // ── Held writes acked together publish at the generations they committed: no write of their own ──
@@ -885,9 +885,9 @@ for (const end of ['exit', 'kill']) {
   reader.recalled(readLease.owner, 'revoke');
   await first;
   assert.equal(barrier(s, reader).readLease, undefined, 'a reader recalled just now was leased again');
-  const started = Date.now();
-  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'w2'));
-  assert.ok(Date.now() - started < 50, `the writer's next change waited ${Date.now() - started} ms`);
+  const next = mock(() => writer.writeFile('/home/user/d/a.txt', 'w2'));
+  await withRecall(next);
+  assert.equal(next.mock.calls.length, 1, 'the writer retried its next change for a recall');
   await sleep(READ_LEASE_TRUST_MS + 20);
   assert.equal(typeof barrier(s, reader).readLease?.owner, 'string', 'a reader past the hold-off was not leased again');
 }
@@ -909,18 +909,36 @@ for (const end of ['exit', 'kill']) {
 
 // ── A holder whose trust ran out already costs a writer nothing, a synchronous one included ──
 {
-  const s = session();
-  const reader = s.files.bind({ pid: 7, cred: USER });
-  const writer = s.files.bind({ pid: 8, cred: USER });
-  barrier(s, reader);
-  await sleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS + 20);
-  const started = Date.now();
-  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'v4'));
-  assert.ok(Date.now() - started < 50, `a write waited ${Date.now() - started} ms on a lease no barrier used`);
-  // The engine's own synchronous writer meets none either.
-  barrier(s, reader);
-  await sleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS + 20);
-  s.kernel.writeFile('home/user/d/a.txt', 'v4b');
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const s = session();
+    const reader = s.files.bind({ pid: 7, cred: USER });
+    const writer = s.files.bind({ pid: 8, cred: USER });
+    const { readLease } = barrier(s, reader);
+    const recalled = reader.awaitRecall(readLease.owner, 1000);
+    now += READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS;
+    const writing = mock(() => writer.writeFile('/home/user/d/a.txt', 'v4'));
+    await withRecall(writing);
+    assert.equal(writing.mock.calls.length, 1, 'the writer retried for an expired lease');
+    assert.equal(await recalled, null, 'an expired lease asked its holder for a recall');
+    assert.equal(new TextDecoder().decode(reader.readFile('/home/user/d/a.txt')), 'v4');
+    assert.deepEqual(s.engine.readLeaseStats(), { held: 0, broken: 0 });
+
+    // The engine's own synchronous writer meets none either.
+    const again = barrier(s, reader);
+    const recalledAgain = reader.awaitRecall(again.readLease.owner, 1000);
+    now += READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS;
+    s.kernel.writeFile('home/user/d/a.txt', 'v4b');
+    assert.equal(await recalledAgain, null, 'a synchronous writer recalled an expired lease');
+    assert.equal(new TextDecoder().decode(reader.readFile('/home/user/d/a.txt')), 'v4b');
+    assert.deepEqual(s.engine.readLeaseStats(), { held: 0, broken: 0 });
+    const { reads } = s.files.delegations.stats();
+    assert.deepEqual([reads.expired, reads.answered, reads.waitMs], [2, 0, 0], 'the writers waited on or recalled an expired lease');
+  } finally {
+    Date.now = realNow;
+  }
 }
 
 // ── A recall asked: the next barrier confirms nothing until it is answered ──
@@ -1006,10 +1024,8 @@ for (const end of ['exit', 'kill']) {
   await sleep(5);
   const { readLease } = barrier(s, reader);
   go.resolve();
-  const started = Date.now();
   const result = await wave;
   assert.equal(result.ok, true, JSON.stringify(result.error));
-  assert.ok(Date.now() - started < 200, `the wave waited ${Date.now() - started} ms on its own lease`);
   const { reads } = s.files.delegations.stats();
   assert.deepEqual([reads.answered, reads.expired], [0, 0], 'the wave recalled its own process\'s lease');
   assert.equal(barrier(s, reader, { rev: s.engine.revision() }).readLease?.owner, readLease.owner, 'its lease did not survive its own wave');
