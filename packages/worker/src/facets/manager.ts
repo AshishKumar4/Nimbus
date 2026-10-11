@@ -86,9 +86,9 @@ import {
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
-import { mayHaveDynamicImport, readModuleImportSites, type ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
+import { mayHaveDynamicImport, type ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { stageEsModules, type EsmStage } from './esm-stage.js';
-import { bunScopeNames, ESM_HOST_MODULE } from '@nimbus-sh/core/runtime/native-esm.js';
+import { ESM_HOST_MODULE, readEsModule } from '@nimbus-sh/core/runtime/native-esm.js';
 import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
@@ -4936,8 +4936,7 @@ async function _buildPrefetchBundle(
   if (esModules.size > 0 || entryEsModule !== undefined) {
     const cells = new Map<string, { code: string; sites: ImportSites }>();
     if (entryEsModule !== undefined && entryCode !== undefined) {
-      const sites = readModuleImportSites(entryCode);
-      cells.set(entryEsModule, { code: entryCode, sites: moduleScope === 'bun' ? { ...sites, commonJsNames: bunScopeNames(entryCode) } : sites });
+      cells.set(entryEsModule, { code: entryCode, sites: readEsModule(entryCode, moduleScope) });
     }
     for (const [key, sites] of esModules) {
       const code = emits.get(key);

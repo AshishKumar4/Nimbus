@@ -79,10 +79,10 @@ export interface Interpreter {
   /**
    * The module cell for a file's text: Node's wrapper function of
    * (exports, require, module, __filename, __dirname). CommonJS text runs as
-   * that function's body; an ES module linked as the next launch's lowering
-   * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
+   * that function's body; an ES module is linked as runtime/esm-interop.ts
+   * says, with the host's moduleHelpers. `javaScript`: the text is
+   * JavaScript whatever the path's extension (a TypeScript file's emit).
    */
-  /** `javaScript`: the text is JavaScript whatever the path's extension (a TypeScript file's emit). */
   compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean): ModuleCell;
   /**
    * A function returning the value of the script `code` when it is one
@@ -177,36 +177,6 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
     }
   }
   return programRequests(program);
-}
-
-/**
- * Whether an ES module's text awaits at its top level (an `await`, or a
- * `for await`, outside any function): the module's evaluation can suspend.
- * Text the parser cannot read as a module has none. The process asks only of
- * a module whose body began and has not completed (node-shims'
- * __nimbusEsmSuspends).
- */
-export function hasTopLevelAwait(text: string): boolean {
-  let program: Program;
-  try {
-    program = parseQuick(text, MODULE_OPTIONS);
-  } catch {
-    return false;
-  }
-  return awaitsOutsideFunctions(program);
-}
-
-/** Whether `node`'s tree has an await not inside a function of it. */
-function awaitsOutsideFunctions(node: unknown): boolean {
-  if (node === null || typeof node !== 'object') return false;
-  const type: unknown = reflectGet(node, 'type');
-  if (type === 'AwaitExpression') return true;
-  if (type === 'ForOfStatement' && reflectGet(node, 'await') === true) return true;
-  if (type === 'FunctionDeclaration' || type === 'FunctionExpression' || type === 'ArrowFunctionExpression') return false;
-  for (const key in node) {
-    if (key !== 'type' && awaitsOutsideFunctions(reflectGet(node, key))) return true;
-  }
-  return false;
 }
 
 interface BlockParser extends AcornParser {

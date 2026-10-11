@@ -9,6 +9,7 @@ import { createEsmResolver, type EsmResolution } from '../../../_shared/esm-reso
 import { cjsModuleExportNames } from '../../../runtime/cjs-module-exports.js';
 import { NODE_BUILTIN_EXPORTS } from '../../../runtime/node-builtin-exports.js';
 import { escapedIdentifierNames, readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
+import { hasTopLevelAwait } from '../../../runtime/esm-require-hoist.js';
 import { applySourceEdits, containsModuleSyntax, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from '../../../runtime/javascript-ast.js';
 import {
 	builtinFacadeModule, bunScopeNames, commonJsFacadeModule, ESM_HOST_MODULE, ESM_META_MODULE,
@@ -116,18 +117,6 @@ interface BunPlugin {
 		onResolve(options: { filter: RegExp }, callback: (args: { path: string; importer: string }) => { path: string } | undefined): void;
 		onLoad(options: { filter: RegExp }, callback: (args: { path: string }) => { contents: string; loader: 'js' }): void;
 	}): void;
-}
-
-/** Await nodes are removed when their containing function finishes parsing. */
-function hasTopLevelAwait(source: string): boolean {
-	const awaits: number[] = [];
-	parseStatements(source, MODULE_PARSE_OPTIONS, { onNode(node) {
-		if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
-		else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-			while (awaits.length > 0 && awaits[awaits.length - 1]! >= node.start) awaits.pop();
-		}
-	} });
-	return awaits.length > 0;
 }
 
 /** Node's require(esm) result, over Bun's engine-evaluated namespace. */

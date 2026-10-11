@@ -61,7 +61,7 @@ import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
-import { ESM_FACADE_DIR } from '@nimbus-sh/core/runtime/native-esm.js';
+import { ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT } from '@nimbus-sh/core/runtime/native-esm.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -12447,7 +12447,7 @@ function __nimbusEsmId(kind, key) {
 const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
 const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
-  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined, requirer: undefined };
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, required: undefined, error: undefined, module: undefined, requirer: undefined };
 }
 // What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
 const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
@@ -12500,7 +12500,7 @@ function __nimbusEsmEnter(metaUrl) {
     __nimbusCompiling(url, () => __nimbusEsmSourceText(id));
     const scope = { m: __nimbusFileImportMeta(filename, url, row[1] === __nimbusEsmEntryKey), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
     // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
-    if (row[3] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
+    if (((row[3] ?? 0) & ${ESM_BUN_SCOPE}) !== 0) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
     return scope;
   }
   if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
@@ -12527,18 +12527,26 @@ function __nimbusEsmCheck(record) {
   record.state = __ESM_BEGAN;
   batch.running.add(record);
 }
-// Whether a module's body has a top-level await, read once from its text:
-// only asked of a body that began and has not completed.
+// Whether a module's body awaits at its top level, as staging read it.
 function __nimbusEsmSuspends(record) {
-  if (record.suspends === undefined) {
-    const row = __nimbusEsm.table[record.id];
-    let text = null;
-    if (row[0] === "module") {
-      try { text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + __nimbusEsmName(record.id), "utf8"); } catch {}
-    }
-    record.suspends = text !== null && text.includes("await") && __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").hasTopLevelAwait(text);
+  const row = __nimbusEsm.table[record.id];
+  return row[0] === "module" && ((row[3] ?? 0) & ${ESM_TOP_LEVEL_AWAIT}) !== 0;
+}
+// Whether a module of row \`id\`'s graph awaits at its top level: Node's
+// require() refuses such a graph, evaluated or not.
+function __nimbusEsmGraphAwaits(id) {
+  const seen = new Set();
+  const stack = [id];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (at < 0 || seen.has(at)) continue;
+    seen.add(at);
+    const row = __nimbusEsm.table[at];
+    if (row[0] !== "module") continue;
+    if (((row[3] ?? 0) & ${ESM_TOP_LEVEL_AWAIT}) !== 0) return true;
+    for (const target of row[2]) stack.push(target);
   }
-  return record.suspends;
+  return false;
 }
 // A staged module's text as it was before it was staged: what the
 // interpreter evaluates when it adopts the module.
@@ -12582,8 +12590,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE) {
     if (!required) return record.namespace;
-    // Node's require(esm) leaves a Module in require.cache, and takes it again after a delete.
     const filename = "/" + __nimbusEsm.table[id][1];
+    if (__nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, filename);
+    // Node's require(esm) leaves a Module in require.cache, and takes it again after a delete.
     if (record.module === undefined) {
       record.module = new __NodeModule(filename, null);
       record.module.filename = filename;
@@ -12857,7 +12866,7 @@ function __nimbusEsmRunEntry(key) {
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
   return __nimbusEsmImport(id).then(() => undefined, (e) => {
-    __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmRecords[id]?.suspends === true);
+    __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw e;
   });
 }
