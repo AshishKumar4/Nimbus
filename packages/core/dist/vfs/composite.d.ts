@@ -604,7 +604,9 @@ export declare class CompositeVFS implements VFS {
      * Copy an entry (a tree when it is a directory) between backends, links as
      * links. `toAt` is the namespace path `toRel` names: each write, link and
      * directory is guarded there (guardMutation) right before it is made,
-     * after the reads it waited on.
+     * after the reads it waited on. `made` is the copy's own root: a tree
+     * copied into itself (two mounts of one backend) meets it on the way and
+     * passes it by, as it was not there when the copy began.
      */
     private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */

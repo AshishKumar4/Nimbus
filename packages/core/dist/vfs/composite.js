@@ -1880,9 +1880,11 @@ export class CompositeVFS {
      * Copy an entry (a tree when it is a directory) between backends, links as
      * links. `toAt` is the namespace path `toRel` names: each write, link and
      * directory is guarded there (guardMutation) right before it is made,
-     * after the reads it waited on.
+     * after the reads it waited on. `made` is the copy's own root: a tree
+     * copied into itself (two mounts of one backend) meets it on the way and
+     * passes it by, as it was not there when the copy began.
      */
-    copyBytes(from, fromRel, stat, to, toRel, toAt) {
+    copyBytes(from, fromRel, stat, to, toRel, toAt, made = { ops: to, rel: toRel }) {
         const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
         if (stat.type === 'symlink') {
             if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
@@ -1903,9 +1905,11 @@ export class CompositeVFS {
         return then(to.mkdir(toRel, mode === undefined ? undefined : { mode }), () => then(from.readdir(fromRel), (entries) => entries.reduce((count, entry) => then(count, (n) => {
             const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
             const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
+            if (from === made.ops && child === made.rel)
+                return n;
             return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
                 ? n
-                : then(this.copyBytes(from, child, childStat, to, dest, `${toAt}/${entry.name}`), (m) => n + m)));
+                : then(this.copyBytes(from, child, childStat, to, dest, `${toAt}/${entry.name}`, made), (m) => n + m)));
         }), 1)));
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
