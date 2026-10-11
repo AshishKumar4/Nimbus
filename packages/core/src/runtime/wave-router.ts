@@ -90,14 +90,11 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       const ns = view(cred, undefined, owner);
       const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
       const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
-      const pinned = pinOf(ns, parentOf(call.path));
+      await pinOf(ns, parentOf(call.path))();
       const opened = await openOnMount(file, {
-        flags, mode: call.mode, refuse: (code) => new VfsError(code as VfsErrorCode, VFS_DESCRIPTION[code as VfsErrorCode], call.path),
-      }, false, () => {
-        guard();
-        return pinned();
-      });
-      return { file, stat: statOf(opened)! };
+        flags, mode: call.mode, refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
+      }, false, guard);
+      return { file, stat: statOf(opened) };
     },
   };
 }
@@ -266,6 +263,8 @@ async function applyRecord(
   }
 }
 
+function statOf(stat: VfsStat): RoutedStat;
+function statOf(stat: VfsStat | null): RoutedStat | null;
 function statOf(stat: VfsStat | null): RoutedStat | null {
   if (stat === null) return null;
   return {

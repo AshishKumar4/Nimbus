@@ -31,7 +31,7 @@ import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
-import { isVfsError, syscallError, toVfsError, VfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
+import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
@@ -64,8 +64,8 @@ import {
   type RuntimeMutationOwner,
 } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, type DescriptorScope } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type DescriptorScope } from './descriptors.js';
+import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
   const checked = requireVfsCred(cred, 'filesystem binding');
@@ -579,7 +579,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     if (!scope || scope.closed) return { lost: [] };
     const lost: number[] = [];
     for (const [id, opened] of scope.handles) {
-      if ((opened.node.pendingBytes?.() ?? 0) > 0) lost.push(id);
+      if (opened.node.mounted && opened.node.pendingBytes() > 0) lost.push(id);
       // Dropped unflushed; a description another process still holds stays open.
       opened.refs--;
     }
@@ -902,12 +902,19 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   private async viewed(name: string, follow: boolean): Promise<Uint8Array | undefined> {
     return processView(this.scope, () => this.namespace.pin(name, { follow, sync: false }));
   }
+
+  /** Before a cut of `name` (a truncate, a whole-file write): the writes this process holds on its file, written (settleHeldAt). */
+  private settleAt(name: string): Awaitable<void> {
+    return settleHeldAt(this.scope, () => this.namespace.pin(name, { follow: true, sync: false }));
+  }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
     return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
       // createParents makes the directories above where the write lands, in
       // the same lookup as the write (a link's target's, not the link's).
       const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
-      await this.namespace.writeFile(await this.path(path), data, { parents: options?.createParents === true });
+      const p = await this.path(path);
+      await this.settleAt(p);
+      await this.namespace.writeFile(p, data, { parents: options?.createParents === true });
       return this.clock();
     });
   }
@@ -926,13 +933,16 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       // for a process released while its source was read.
       const data = await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p));
       this.live();
+      await this.settleAt(p);
       await this.namespace.writeFile(p, data);
       return this.clock();
     });
   }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-      await this.owned(options).truncate((await this.path(path)), size);
+      const p = await this.path(path);
+      await this.settleAt(p);
+      await this.owned(options).truncate(p, size);
       return this.receipt();
     });
   }
@@ -1033,16 +1043,23 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.open(path, flags, options), async () => {
       const opened = openFlags(flags);
+      const flagged = flagsRefusal(opened);
+      if (flagged !== null) throw syscallError(flagged, 'open', typeof path === 'string' ? path : path.path);
       const mutates = opened.write || opened.create || opened.truncate || opened.append;
       const name = await this.path(path, openFollows(opened));
       const files = this.owned(mutates ? options : undefined);
       const node = await openMounted({
         name, flags: opened, mode: flags.mode,
-        refuse: (code, syscall) => syscallError(code as VfsErrorCode, syscall, name), scope: this.scope,
+        refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
         pin: (file, follow) => files.pin(file, { follow, sync: false }),
         sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
       });
-      this.live();
+      try {
+        this.live();
+      } catch (error) {
+        abandon(node);
+        throw error;
+      }
       return this.descriptors.issue(node, opened);
     });
   }

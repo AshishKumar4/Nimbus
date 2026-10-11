@@ -13,6 +13,7 @@ export declare class MemoryVFS implements VFS {
     readonly storesWrites = true;
     private readonly root;
     private clock;
+    private inos;
     readonly sync: SyncVFS;
     constructor(owner?: {
         uid: number;

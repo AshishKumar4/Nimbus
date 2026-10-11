@@ -12,31 +12,52 @@ import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
-import type { PinnedFile } from '../vfs/composite.js';
 
-type Answering<F> = F extends (...args: infer A) => infer R ? (...args: A) => Awaitable<R> : F;
-type EngineDescription = Omit<VfsOpenDescription, 'path'>;
+/** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
+export type EngineDescription = VfsOpenDescription & { readonly mounted?: undefined; readonly awaits?: undefined };
 
-/** An open file description: what a process's descriptors (dups included) share. Its name is known at once. */
-export type Description = { [K in keyof EngineDescription]: Answering<EngineDescription[K]> } & {
-  path(): string;
+/**
+ * A mounted file's description (vfs/mounted-description.ts): its answers
+ * await where its mount does (`awaits`), and its stat is the mount's, which
+ * never moves the SQLite clock.
+ */
+export interface MountedFileDescription {
+  readonly mounted: true;
   /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
-  readonly awaits?: true;
-  /** A mounted file's: its stat is the mount's, which never moves the SQLite clock. */
-  readonly mounted?: true;
+  readonly awaits: boolean;
+  readonly ino: number;
+  path(): string;
+  /** Which file it is (HeldFile.key): what its held writes overlay. */
+  key(): string;
+  stat(): Awaitable<RuntimeVfsStat>;
+  read(offset: number, length: number): Awaitable<Uint8Array>;
+  /** `admit`: the current operation's own admission, run right before its backend is asked. */
+  write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<number>;
   /** An O_APPEND write: at the end of the file as it is then; answers that end after it. */
-  append?(bytes: Uint8Array): Awaitable<number>;
-  /** Which file it is, wherever it is named (PinnedFile.key): what its held writes overlay. */
-  key?(): string;
+  append(bytes: Uint8Array, admit?: () => void): Awaitable<number>;
+  truncate(size: number, admit?: () => void): Awaitable<void>;
+  readdir(): Awaitable<RuntimeVfsDirEntry[]>;
+  chmod(mode: number, admit?: () => void): Awaitable<void>;
+  chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+  utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+  /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
+  flush(): Awaitable<void>;
+  /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
+  settle(): void;
+  close(): Awaitable<void>;
   /**
    * A description whose mount cannot write in place holds its writes until a
-   * flush (fsync, the last close, the process's release): `pendingBytes` is
-   * what a process killed now would lose, and `applyPending` lays them over
-   * `file`, as the flush will.
+   * flush (fsync, the last close, the process's release, or a cut of its
+   * file the process makes, settleHeld): `pendingBytes` is what a
+   * process killed now would lose, and `applyPending` lays them over `file`,
+   * as the flush will.
    */
-  pendingBytes?(): number;
-  applyPending?(file: Uint8Array): Uint8Array;
-};
+  pendingBytes(): number;
+  applyPending(file: Uint8Array): Uint8Array;
+}
+
+/** An open file description: what a process's descriptors (dups included) share. */
+export type Description = EngineDescription | MountedFileDescription;
 
 interface Opened {
   handle: RuntimeFileHandle;
@@ -47,6 +68,8 @@ interface Opened {
 export interface DescriptorScope {
   nextId: number;
   handles: Map<number, Opened>;
+  /** The descriptions that hold writes now (a mount that cannot write in place): settled before the process changes anything else. */
+  held: Set<MountedFileDescription>;
   /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
   waveDescriptions: Map<string, number>;
   closed: boolean;
@@ -78,7 +101,7 @@ export function awaitsRefusal(path: string): Error {
 }
 
 export function createDescriptorScope(): DescriptorScope {
-  return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
+  return { nextId: 1, handles: new Map(), held: new Set(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
 }
 
 /**
@@ -87,14 +110,53 @@ export function createDescriptorScope(): DescriptorScope {
  * the failure as its cause (EIO where it carries no code: an abort, a dropped
  * call). Node's close reports a deferred write's failure the same way.
  */
-function lastClose(node: Description): void {
-  try {
-    // An awaiting description holds nothing at its close (its writes land as they are made).
-    void node.close();
-  } catch (error) {
+function lastClose(node: Description): Awaitable<void> {
+  const lost = (error: unknown): never => {
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'EIO';
     const reason = error instanceof Error ? error.message : String(error);
     throw fsError(code, 'close', node.path(), undefined, { detail: `its buffered writes are lost (${reason})`, cause: error });
+  };
+  try {
+    const closed = node.close();
+    return isPromise(closed) ? closed.catch(lost) : closed;
+  } catch (error) {
+    return lost(error);
+  }
+}
+
+/** This process's descriptions of the file `key` names (MountedFileDescription.key) that hold writes, in open order. */
+function holding(scope: DescriptorScope, key: string | null): MountedFileDescription[] {
+  const mine: MountedFileDescription[] = [];
+  if (key === null) return mine;
+  for (const { node } of scope.handles.values()) {
+    if (node.mounted && scope.held.has(node) && node.key() === key && !mine.includes(node)) mine.push(node);
+  }
+  return mine;
+}
+
+/**
+ * This process's held writes on the file `key` names, written, in open
+ * order: before the process cuts that file (a truncate, an O_TRUNC open, a
+ * whole-file write), so the cut is ordered after them, as the page cache
+ * orders them (VFS-PF-001), and nothing brings back what it cut. A
+ * description holds writes only where its mount answers at once, so this is
+ * done in the caller's turn. One that fails keeps its failure for its next
+ * fsync or close, and the cut goes on.
+ */
+export function settleHeld(scope: DescriptorScope, key: string | null): void {
+  if (scope.held.size === 0) return;
+  for (const node of holding(scope, key)) node.settle();
+}
+
+/** settleHeld of the file `file` finds (a path's, CompositeVFS.pin), looked up only while the process holds writes; a lookup that fails settles nothing (the cut's own lookup says why). */
+export function settleHeldAt(scope: DescriptorScope, file: () => Awaitable<{ key(): Awaitable<string | null> }>): Awaitable<void> {
+  if (scope.held.size === 0) return;
+  const settle = (found: { key(): Awaitable<string | null> }): Awaitable<void> => andThen(found.key(), (key) => settleHeld(scope, key));
+  try {
+    const settled = andThen(file(), settle);
+    return isPromise(settled) ? settled.catch(() => {}) : settled;
+  } catch {
+    // The cut's own lookup refuses as it refuses.
   }
 }
 
@@ -111,14 +173,27 @@ export function closeDescriptions(scope: DescriptorScope): unknown[] {
     if (--opened.refs !== 0) continue;
     opened.handle.closed = true;
     try {
-      lastClose(opened.node);
+      const closed = lastClose(opened.node);
+      // An awaiting description holds nothing (its writes land as they are made): its backend's close is all that waits.
+      if (isPromise(closed)) closed.catch((error: unknown) => { lost.push(error); });
     } catch (error) {
       lost.push(error);
     }
   }
   scope.handles.clear();
+  scope.held.clear();
   scope.waveDescriptions.clear();
   return lost;
+}
+
+/** `file`, opened for a scope released meanwhile: closed, unheard (nothing was written through it). */
+export function abandon(file: { close(): Awaitable<void> }): void {
+  try {
+    const closed = file.close();
+    if (isPromise(closed)) closed.catch(() => {});
+  } catch {
+    // Nothing was written through it.
+  }
 }
 
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
@@ -129,31 +204,28 @@ export function reportLost(lost: readonly unknown[]): void {
   }
 }
 
+/** A file as a path read finds it (PinnedName), or as a description holds it (HeldFile): which file, and its content. */
+interface Viewed {
+  key(): Awaitable<string | null>;
+  readAll(): Awaitable<Uint8Array>;
+}
+
 /**
- * A mounted file as this process sees it while it holds buffered writes to
- * it (VFS-PF-001 viewAs, page-cache semantics): `file` (pinned where its
- * name led, CompositeVFS.pin) read through its pin, with each of this
- * process's descriptions of that same file (PinnedFile.key) applied, in open
- * order. Undefined when it holds none pending for it: then the file's own
- * content is the answer. Another process's pending writes are never in it,
- * nor a file that only shares its name. `file` is pinned only once some
+ * A mounted file as this process sees it while it holds writes to it
+ * (VFS-PF-001 viewAs, page-cache semantics): `file`'s content with each of
+ * this process's descriptions of that same file (HeldFile.key) applied, in
+ * open order. Undefined when it holds none for it: then the file's own
+ * content is the answer. Another process's held writes are never in it, nor
+ * a file that only shares its name. `file` is asked only once some
  * description holds writes.
  */
-export function processView(scope: DescriptorScope, file: PinnedFile | (() => Awaitable<PinnedFile>)): Awaitable<Uint8Array | undefined> {
-  let holding: Description[] | undefined;
-  for (const opened of scope.handles.values()) {
-    const node = opened.node;
-    if (node.applyPending === undefined || (node.pendingBytes?.() ?? 0) === 0 || holding?.includes(node)) continue;
-    (holding ??= []).push(node);
-  }
-  if (holding === undefined) return undefined;
-  const writers = holding;
-  return andThen(typeof file === 'function' ? file() : file, ({ files, path, key }) => {
-    const mine = writers.filter((node) => node.key?.() === key);
+export function processView(scope: DescriptorScope, file: () => Awaitable<Viewed>): Awaitable<Uint8Array | undefined> {
+  if (scope.held.size === 0) return undefined;
+  return andThen(file(), (viewed) => andThen(viewed.key(), (key) => {
+    const mine = holding(scope, key);
     if (mine.length === 0) return undefined;
-    return andThen(files.stat(path), (there) => andThen(there === null ? new Uint8Array(0) : files.readFile(path), (base) => (
-      mine.reduce((view, node) => node.applyPending!(view), base))));
-  });
+    return andThen(viewed.readAll(), (base) => mine.reduce((view, node) => node.applyPending(view), base));
+  }));
 }
 
 /** The descriptor operations, over a scope: answered in the caller's turn unless the description awaits. */
@@ -162,18 +234,20 @@ export class Descriptors {
     private readonly scope: DescriptorScope,
     /** The SQLite clock: the revision an fstat of a description on SQLite reports. */
     private readonly clock: () => number,
+    /** A synchronous face's: a description that awaits refuses its operations (awaitsRefusal), as its mount does; every other answers at once. */
+    private readonly synchronous = false,
   ) {}
 
-  /** A descriptor for `node`, new, at `position`. */
-  issue(node: Description, flags: RuntimeFileHandle['flags'], position = 0): RuntimeFileHandle {
-    const handle: RuntimeFileHandle = { id: this.scope.nextId++, path: node.path(), flags: Object.freeze(flags), position, closed: false };
+  /** A descriptor for `node`, new, at offset 0, opened at `path` (the description's own name for its file unless the opener has it). */
+  issue(node: Description, flags: RuntimeFileHandle['flags'], path = node.path()): RuntimeFileHandle {
+    const handle: RuntimeFileHandle = { id: this.scope.nextId++, path, flags: Object.freeze(flags), position: 0, closed: false };
     this.scope.handles.set(handle.id, { handle, node, refs: 1 });
     return { ...handle };
   }
 
-  /** The description `id` names (EBADF when none, or once the scope is closed). */
+  /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */
   description(id: number): Description {
-    return this.opened(id).node;
+    return this.answering(id).node;
   }
 
   private opened(id: number): Opened {
@@ -182,12 +256,22 @@ export class Descriptors {
     return opened;
   }
 
+  /** Descriptor `id`, for an operation that answers: refused on a synchronous face where its description awaits. */
+  private answering(id: number): Opened {
+    const opened = this.opened(id);
+    if (this.synchronous && opened.node.awaits === true) throw awaitsRefusal(opened.node.path());
+    return opened;
+  }
+
   // A descriptor's reads and writes answer in the caller's turn without a
   // callback where the description does (andThen allocates one per call).
+  // An explicit offset is where they are, never a negative one (EINVAL, as
+  // pread(2) answers it); null is the descriptor's own.
   read(id: number, offset: number | null, length: number): Awaitable<Uint8Array> {
-    const { handle, node } = this.opened(id);
+    const { handle, node } = this.answering(id);
     if (!handle.flags.read) throw fsError('EBADF', 'read', handle.path);
-    const start = offset == null ? handle.position : Math.max(0, offset);
+    if (offset != null && offset < 0) throw fsError('EINVAL', 'read', handle.path);
+    const start = offset ?? handle.position;
     const out = node.read(start, Math.max(0, length));
     if (offset != null) return out;
     if (isPromise(out)) return out.then((bytes) => read(handle, start, bytes));
@@ -195,17 +279,16 @@ export class Descriptors {
   }
 
   write(id: number, offset: number | null, bytes: Uint8Array): Awaitable<number> {
-    const { handle, node } = this.opened(id);
+    const { handle, node } = this.answering(id);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
-    if (handle.flags.append && node.append) {
+    if (offset != null && offset < 0) throw fsError('EINVAL', 'write', handle.path);
+    if (handle.flags.append && node.mounted) {
       const end = node.append(bytes);
       if (isPromise(end)) return end.then((at) => moved(handle, at, bytes));
       return moved(handle, end, bytes);
     }
-    const start = handle.flags.append
-      ? node.end?.() ?? andThen(node.stat(), (stat) => stat.size)
-      : offset == null ? handle.position : Math.max(0, offset);
-    if (isPromise(start)) return start.then((at) => this.writeAt(handle, node, at, offset, bytes));
+    // The engine's O_APPEND: at the end it keeps (VfsOpenDescription.end).
+    const start = handle.flags.append && !node.mounted ? node.end?.() ?? node.stat().size : offset ?? handle.position;
     return this.writeAt(handle, node, start, offset, bytes);
   }
 
@@ -228,7 +311,7 @@ export class Descriptors {
    * in the store before its call returned.
    */
   fsync(id?: number): Awaitable<void> {
-    if (id !== undefined) return this.opened(id).node.flush?.();
+    if (id !== undefined) return this.answering(id).node.flush?.();
   }
 
   /** The absolute path a descriptor was opened at. */
@@ -237,8 +320,8 @@ export class Descriptors {
   }
 
   fstat(id: number): Awaitable<RuntimeVfsStat> {
-    const node = this.opened(id).node;
-    return andThen(node.stat(), (stat) => (node.mounted ? stat as RuntimeVfsStat : { ...stat, revision: this.clock() }));
+    const node = this.answering(id).node;
+    return node.mounted ? node.stat() : { ...node.stat(), revision: this.clock() };
   }
 
   dup(id: number): RuntimeFileHandle {
@@ -250,7 +333,7 @@ export class Descriptors {
   }
 
   seek(id: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number> {
-    const handle = this.opened(id).handle;
+    const handle = this.answering(id).handle;
     const base = whence === 'set' ? 0 : whence === 'current' ? handle.position : whence === 'end' ? andThen(this.fstat(id), (stat) => stat.size) : NaN;
     return andThen(base, (from) => {
       const position = from + offset;
@@ -265,18 +348,18 @@ export class Descriptors {
     if (status.append !== undefined) handle.flags = Object.freeze({ ...handle.flags, append: status.append });
   }
 
-  readdir(id: number): Awaitable<RuntimeVfsDirEntry[]> { return this.opened(id).node.readdir(); }
+  readdir(id: number): Awaitable<RuntimeVfsDirEntry[]> { return this.answering(id).node.readdir(); }
 
   /** ftruncate(2) of a descriptor not open for writing is EINVAL, as Linux answers it. */
   ftruncate(id: number, size: number): Awaitable<void> {
-    const { handle, node } = this.opened(id);
+    const { handle, node } = this.answering(id);
     if (!handle.flags.write) throw fsError('EINVAL', 'ftruncate', handle.path);
     return node.truncate(size);
   }
 
-  fchmod(id: number, mode: number): Awaitable<void> { return this.opened(id).node.chmod(mode); }
-  fchown(id: number, uid: number, gid: number): Awaitable<void> { return this.opened(id).node.chown(uid, gid); }
-  futimes(id: number, atime: number, mtime: number): Awaitable<void> { return this.opened(id).node.utimes(atime, mtime); }
+  fchmod(id: number, mode: number): Awaitable<void> { return this.answering(id).node.chmod(mode); }
+  fchown(id: number, uid: number, gid: number): Awaitable<void> { return this.answering(id).node.chown(uid, gid); }
+  futimes(id: number, atime: number, mtime: number): Awaitable<void> { return this.answering(id).node.utimes(atime, mtime); }
 }
 
 /** A read at the descriptor's offset: the offset moved past what it read. */

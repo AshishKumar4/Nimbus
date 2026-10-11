@@ -123,8 +123,8 @@ for (const [face, at] of [['sync', '/s'], ['async', '/a']]) {
   await check(`${face}: a mounted fstat carries the mount's revision, not the SQLite clock`, async () => {
     assert.equal((await proc.fstat(reading.id)).revision, (await proc.stat(`${at}/plain`)).revision);
   });
-  await check(`${face}: a negative offset reads from 0`, async () => {
-    assert.equal(dec.decode(await proc.read(reading.id, -5, 2)), 'ab');
+  await check(`${face}: a negative offset is EINVAL, as pread(2) answers it`, async () => {
+    await assert.rejects(async () => proc.read(reading.id, -5, 2), refused('EINVAL'));
   });
   await check(`${face}: a seek to no integer, or by an unknown whence, is EINVAL`, async () => {
     await assert.rejects(async () => proc.seek(reading.id, 0.5, 'set'), refused('EINVAL'));
@@ -188,20 +188,22 @@ await check('a credentialed mount refuses an open its modes deny, before the rea
   files.vfs.unmount('/q');
 });
 
+/** `vfs` that writes no range (a mount that cannot write in place): a description holds its writes. */
+const unranged = (vfs) => new Proxy(vfs, {
+  get(target, key) {
+    if (key === 'writeRange') return undefined;
+    if (key === 'sync') return unranged(target);
+    const value = target[key];
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+  has: (target, key) => key !== 'writeRange' && key in target,
+});
+
 // An O_SYNC description's own writes are flushed as made; it reads the
 // process's other descriptions' held writes all the same.
 await check('an O_SYNC descriptor reads what another descriptor holds', async () => {
   const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
-  const unranged = new Proxy(backend, {
-    get(target, key) {
-      if (key === 'writeRange') return undefined;
-      if (key === 'sync') return unranged;
-      const value = target[key];
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-    has: (target, key) => key !== 'writeRange' && key in target,
-  });
-  files.vfs.mount('/h', unranged);
+  files.vfs.mount('/h', unranged(backend));
   backend.writeFile('/x', enc.encode('0123456789'));
   const proc = files.bind({ pid: ++pid, cred: USER });
   const writer = proc.open('/h/x', { read: true, write: true });
@@ -238,15 +240,6 @@ await check('a description holds its file across an unmount and a mount at its n
 
 // ── The open resolves once: everything it and its description do is the file it found ──
 const text = (ref) => (ref === null || ref === undefined ? ref : dec.decode(ref.read()));
-const unranged = (vfs) => new Proxy(vfs, {
-  get(target, key) {
-    if (key === 'writeRange') return undefined;
-    if (key === 'sync') return unranged(target);
-    const value = target[key];
-    return typeof value === 'function' ? value.bind(target) : value;
-  },
-  has: (target, key) => key !== 'writeRange' && key in target,
-});
 
 await check('a mount made at the name while the open awaits its access check is not what it truncates', async () => {
   const first = new MemoryVFS({ uid: 1000, gid: 1000 });
@@ -478,6 +471,289 @@ await check('a wave\'s description of a mounted file holds it: its writes, appen
     await wave([{ type: 'call', call: { call: 'close', path: 'g/x', description: 'd1' } }]);
   } finally {
     files.vfs.unmount('/g');
+  }
+});
+
+// ── open(2)'s rule, in Linux's order, on every filesystem: a mount's (either face), SQLite's ──
+const kernel = ws.vfs.as(CRED_KERNEL);
+kernel.writeFile('home/user/rule.txt', 'rule');
+kernel.symlink('/home/user', 'home/user/dir-link');
+backends.sync.symlink('/dir', '/dir-link');
+backends.async.symlink('/dir', '/dir-link');
+
+await check('O_CREAT|O_DIRECTORY is EINVAL before any name is looked up, on every filesystem', async () => {
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  for (const name of ['/s/dir', '/s/plain', '/s/absent/below', '/a/dir', '/a/plain', '/a/absent/below', '/home/user', '/home/user/rule.txt', '/home/user/absent/below', '/']) {
+    await assert.rejects(async () => proc.open(name, { read: true, create: true, directory: true }), refused('EINVAL'), name);
+    await assert.rejects(async () => proc.open(name, { read: true, create: true, exclusive: true, directory: true }), refused('EINVAL'), `${name}, O_EXCL`);
+  }
+});
+
+await check('O_CREAT of a directory is EISDIR (O_EXCL: EEXIST), on every filesystem', async () => {
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  for (const dir of ['/s/dir', '/a/dir', '/home/user', '/']) {
+    await assert.rejects(async () => proc.open(dir, { read: true, create: true }), refused('EISDIR'), dir);
+    await assert.rejects(async () => proc.open(dir, { read: true, create: true, exclusive: true }), refused('EEXIST'), `${dir}, O_EXCL`);
+  }
+});
+
+await check('O_DIRECTORY|O_NOFOLLOW of a link is ENOTDIR, plain O_NOFOLLOW ELOOP, on every filesystem', async () => {
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  for (const link of ['/s/dir-link', '/s/link', '/s/dangling', '/a/dir-link', '/a/dangling', '/home/user/dir-link']) {
+    await assert.rejects(async () => proc.open(link, { read: true, directory: true, followSymlinks: false }), refused('ENOTDIR'), link);
+    await assert.rejects(async () => proc.open(link, { read: true, followSymlinks: false }), refused('ELOOP'), `${link}, O_NOFOLLOW alone`);
+  }
+});
+
+await check('O_TRUNC asks to write, whatever access the descriptor has, on every filesystem', async () => {
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  await assert.rejects(async () => proc.open('/proc/cpuinfo', { read: true, truncate: true }), refused('EACCES'), '/proc');
+  const other = createSqliteVfsTestHarness();
+  const backend = sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL);
+  backend.writeFile('/kept', enc.encode('kept'));
+  backend.chmod('/kept', 0o444);
+  files.vfs.mount('/q2', backend);
+  try {
+    await assert.rejects(async () => proc.open('/q2/kept', { read: true, truncate: true }), refused('EACCES'), 'a credentialed mount');
+    assert.equal(dec.decode(backend.readFile('/kept')), 'kept');
+  } finally {
+    files.vfs.unmount('/q2');
+  }
+  kernel.writeFile('home/user/kept.txt', 'kept');
+  kernel.chmod('home/user/kept.txt', 0o444);
+  await assert.rejects(async () => proc.open('/home/user/kept.txt', { read: true, truncate: true }), refused('EACCES'), 'sqlite');
+  assert.equal(dec.decode(kernel.readFile('home/user/kept.txt')), 'kept');
+});
+
+// ── A description's held writes, and every later change of their file ──
+/** `vfs` that writes no range in place (ENOTSUP), but truncates. */
+const refusingRanges = (vfs) => new Proxy(vfs, {
+  get(target, key) {
+    if (key === 'writeRange') return () => { throw new VfsError('ENOTSUP', 'no ranges here', '/'); };
+    if (key === 'sync') return refusingRanges(target);
+    const value = target[key];
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
+
+await check('held writes are written before their process cuts their file, and nothing brings back what it cut', async () => {
+  for (const [how, cut] of [
+    ['an ftruncate through another descriptor', (proc) => { const other = proc.open('/t/x', { read: true, write: true }); proc.ftruncate(other.id, 0); proc.close(other.id); }],
+    ['an ftruncate through the same descriptor', (proc, fd) => proc.ftruncate(fd.id, 0)],
+    ['an O_TRUNC open', (proc) => proc.close(proc.open('/t/x', { write: true, truncate: true }).id)],
+    ['a truncate by name', (proc) => proc.truncate('/t/x', 0)],
+  ]) {
+    const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+    backend.writeFile('/x', enc.encode('0123456789'));
+    files.vfs.mount('/t', refusingRanges(backend));
+    try {
+      const proc = files.bind({ pid: ++pid, cred: USER });
+      const fd = proc.open('/t/x', { read: true, write: true });
+      proc.write(fd.id, 2, enc.encode('ab'));
+      cut(proc, fd);
+      assert.equal(proc.fstat(fd.id).size, 0, `${how}: the descriptor sees the cut`);
+      assert.equal(proc.read(fd.id, 0, 4).byteLength, 0, `${how}: and reads it`);
+      proc.close(fd.id);
+      assert.equal(backend.readFile('/x').byteLength, 0, `${how}: its close brings nothing back`);
+    } finally {
+      files.vfs.unmount('/t');
+    }
+  }
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('abcdef'));
+  files.vfs.mount('/t', unranged(backend));
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/t/x', { read: true, write: true });
+    proc.write(fd.id, 4, enc.encode('XX'));
+    proc.ftruncate(fd.id, 2);
+    assert.equal(proc.fstat(fd.id).size, 2);
+    proc.close(fd.id);
+    assert.equal(dec.decode(backend.readFile('/x')), 'ab', 'a held write past the cut is not written back');
+  } finally {
+    files.vfs.unmount('/t');
+  }
+});
+
+await check('held writes overlay the file of the backend they were made on, not one a source gives since at its name', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  const [fromFirst, fromSecond] = [unranged(first), unranged(second)];
+  let current = fromFirst;
+  files.vfs.mount('/dyn', () => current);
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/dyn/x', { read: true, write: true });
+    proc.write(fd.id, 0, enc.encode('FI'));
+    current = fromSecond;
+    assert.equal(dec.decode(proc.readFile('/dyn/x')), 'second', 'a path read');
+    const other = proc.open('/dyn/x', { read: true });
+    assert.equal(dec.decode(proc.read(other.id, 0, 10)), 'second', 'a descriptor opened since');
+    proc.close(other.id);
+    proc.close(fd.id);
+    assert.equal(dec.decode(first.readFile('/x')), 'FIrst');
+    assert.equal(dec.decode(second.readFile('/x')), 'second');
+  } finally {
+    files.vfs.unmount('/dyn');
+  }
+});
+
+// ── A description holds its file, not its name ──
+await check('a description of a file its mount keeps open is that file across a rename, and the new file at its name is another', async () => {
+  const other = createSqliteVfsTestHarness();
+  const backend = sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL);
+  backend.writeFile('/x', enc.encode('old'));
+  backend.chown('/x', 1000, 1000);
+  files.vfs.mount('/o', backend);
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/o/x', { read: true, write: true });
+    backend.rename('/x', '/y');
+    backend.writeFile('/x', enc.encode('new'));
+    proc.write(fd.id, 0, enc.encode('OLD'));
+    assert.equal(dec.decode(proc.read(fd.id, 0, 3)), 'OLD');
+    assert.equal(proc.fstat(fd.id).ino, proc.stat('/o/y').ino);
+    proc.close(fd.id);
+    assert.equal(dec.decode(backend.readFile('/y')), 'OLD');
+    assert.equal(dec.decode(backend.readFile('/x')), 'new');
+  } finally {
+    files.vfs.unmount('/o');
+  }
+});
+
+await check('a description held by its name refuses (ESTALE) once the name holds another file or none, and writes neither', async () => {
+  for (const [how, change] of [
+    ['renamed, and another made at its name', (backend) => { backend.rename('/x', '/y'); backend.writeFile('/x', enc.encode('new')); }],
+    ['unlinked', (backend) => backend.unlink('/x')],
+  ]) {
+    const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+    backend.writeFile('/x', enc.encode('old'));
+    files.vfs.mount('/n', unranged(backend));
+    try {
+      const proc = files.bind({ pid: ++pid, cred: USER });
+      const fd = proc.open('/n/x', { read: true, write: true });
+      proc.write(fd.id, 0, enc.encode('OLD'));
+      change(backend);
+      if (backend.stat('/x') !== null) assert.equal(dec.decode(proc.readFile('/n/x')), 'new', `${how}: a path read is the file there now`);
+      assert.throws(() => proc.close(fd.id), refused('ESTALE'), how);
+      assert.equal(backend.stat('/x') === null ? null : dec.decode(backend.readFile('/x')), how === 'unlinked' ? null : 'new', `${how}: nothing written at the name`);
+      if (backend.stat('/y') !== null) assert.equal(dec.decode(backend.readFile('/y')), 'old', `${how}: nor to the file renamed`);
+    } finally {
+      files.vfs.unmount('/n');
+    }
+  }
+});
+
+await check('a write to a file a mount made since covers is not heard as a change to what is there now', async () => {
+  const outer = new MemoryVFS({ uid: 1000, gid: 1000 });
+  outer.mkdir('/sub');
+  outer.writeFile('/sub/x', enc.encode('old'));
+  const inner = new MemoryVFS({ uid: 1000, gid: 1000 });
+  inner.writeFile('/x', enc.encode('new'));
+  files.vfs.mount('/c', outer);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const fd = proc.open('/c/sub/x', { read: true, write: true });
+  files.vfs.mount('/c/sub', inner);
+  const heard = [];
+  const stop = files.vfs.observeWrites((event) => { if (event.path.startsWith('/c')) heard.push(event.path); });
+  try {
+    proc.write(fd.id, 0, enc.encode('OLD'));
+    assert.deepEqual(heard, []);
+    assert.equal(dec.decode(outer.readFile('/sub/x')), 'OLD');
+    assert.equal(dec.decode(proc.readFile('/c/sub/x')), 'new');
+  } finally {
+    stop();
+    proc.close(fd.id);
+    files.vfs.unmount('/c/sub');
+    files.vfs.unmount('/c');
+  }
+});
+
+// ── A wave's description: its calls are its own, its process's while that lives ──
+const waveOf = (proc, options) => async (ops) => proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }), options);
+
+await check('a wave\'s call through a description is that description\'s: its file with its mount gone, EBADF once closed', async () => {
+  const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+  first.writeFile('/x', enc.encode('first'));
+  second.writeFile('/x', enc.encode('second'));
+  files.vfs.mount('/e', first);
+  const wave = waveOf(files.bind({ pid: ++pid, cred: USER }));
+  try {
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'e/x', mode: 0o644, read: true, description: 'd1' } }]);
+    assert.equal(opened.ok, true, JSON.stringify(opened.error));
+    files.vfs.unmount('/e');
+    const live = await wave([{ type: 'call', call: { call: 'write', path: 'e/x', description: 'd1', offset: 0, data: enc.encode('FI') } }]);
+    assert.equal(live.ok, true, JSON.stringify(live.error));
+    assert.equal(dec.decode(first.readFile('/x')), 'FIrst', 'a live description writes its file, its mount gone');
+    files.vfs.mount('/e', second);
+    assert.equal((await wave([{ type: 'call', call: { call: 'close', path: 'e/x', description: 'd1' } }])).ok, true);
+    for (const call of [
+      { call: 'write', path: 'e/x', description: 'd1', offset: 0, data: enc.encode('NO') },
+      { call: 'append', path: 'e/x', description: 'd1', data: enc.encode('NO') },
+      { call: 'ftruncate', path: 'e/x', description: 'd1', size: 0 },
+    ]) {
+      const closed = await wave([{ type: 'call', call }]);
+      assert.equal(closed.ok, false, call.call);
+      assert.equal(closed.error.errno, 'EBADF', call.call);
+    }
+    assert.equal(dec.decode(second.readFile('/x')), 'second', 'never the file at its name');
+  } finally {
+    files.vfs.unmount('/e');
+  }
+});
+
+await check('a wave\'s open of a mounted file answers its descriptor, and answers it again when re-sent', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('x'));
+  files.vfs.mount('/rc', backend);
+  const procPid = ++pid;
+  const proc = files.bind({ pid: procPid, cred: USER });
+  const send = waveOf(proc, { sequence: { writer: `${procPid}:w`, first: 1, ack: 0, pid: procPid } });
+  const open = [{ type: 'call', call: { call: 'open', path: 'rc/x', mode: 0o644, read: true, description: 'd1' } }];
+  try {
+    const first = await send(open);
+    assert.equal(first.ok, true, JSON.stringify(first.error));
+    const handle = first.receipts[0]?.handle;
+    assert.equal(typeof handle, 'number', 'the open answers its descriptor');
+    assert.equal(dec.decode(proc.read(handle, 0, 1)), 'x');
+    const again = await send(open);
+    assert.equal(again.ok, true, JSON.stringify(again.error));
+    assert.equal(again.receipts[0]?.handle, handle, 'and the same one when re-sent');
+  } finally {
+    files.vfs.unmount('/rc');
+  }
+});
+
+await check('a wave\'s change through a description does not reach its mount once its process is released', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('kept'));
+  let gate = null;
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/k', asyncOnly(backend, { deep: true, beforeCall: (method) => (gate !== null && method === 'stat' ? (entered(), gate) : undefined) }));
+  const procPid = ++pid;
+  const wave = waveOf(files.bind({ pid: procPid, cred: USER }));
+  // An observer: the before-image is read first, by awaiting.
+  const stop = files.vfs.observeWrites(() => {});
+  try {
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'k/x', mode: 0o644, read: true, description: 'd1' } }]);
+    assert.equal(opened.ok, true, JSON.stringify(opened.error));
+    let release;
+    gate = new Promise((resolve) => { release = resolve; });
+    const cutting = wave([{ type: 'call', call: { call: 'ftruncate', path: 'k/x', description: 'd1', size: 0 } }]);
+    await entering;
+    await files.releaseProcess(procPid).catch(() => {});
+    release();
+    assert.equal((await cutting).ok, false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(dec.decode(backend.readFile('/x')), 'kept');
+  } finally {
+    gate = null;
+    stop();
+    files.vfs.unmount('/k');
   }
 });
 

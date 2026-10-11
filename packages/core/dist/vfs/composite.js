@@ -3,7 +3,7 @@ import { normalizeVfsPath } from './path.js';
 import { posixAccess } from './posix-access.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
-import { S_IFMT, andThen, isCharacterDevice, isPromise } from './vfs.js';
+import { S_IFMT, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -91,14 +91,30 @@ function lookupReport(trace, run) {
         return refused(error);
     }
 }
-const mountKeys = new WeakMap();
-let mountsKeyed = 0;
-/** A mount's own number, for as long as it lives: two mounts at one point are two. */
-function mountKey(mount) {
-    let key = mountKeys.get(mount);
+const sourceKeys = new WeakMap();
+let sourcesKeyed = 0;
+/** `fn`, a backend's optional operation, or ENOTSUP for `path` where it has none. */
+function need(fn, path) {
+    if (fn === undefined)
+        throw new Refusal('ENOTSUP', path, 'this filesystem does not support it');
+    return fn;
+}
+/** A backend's own number: a dynamic source that gives another backend gives other files. */
+function sourceKey(source) {
+    let key = sourceKeys.get(source);
     if (key === undefined)
-        mountKeys.set(mount, key = ++mountsKeyed);
+        sourceKeys.set(source, key = ++sourcesKeyed);
     return key;
+}
+/**
+ * Which file `id` (its stat's) is, at `rel` on `target`: its device and
+ * number where the backend gives both (whatever object answered), else its
+ * number on that backend object, else its name there.
+ */
+function fileKey(target, id) {
+    if (id.ino === undefined)
+        return `${sourceKey(target.source)}:${target.rel}`;
+    return id.dev === undefined ? `${sourceKey(target.source)}#${id.ino}` : `dev${id.dev}#${id.ino}`;
 }
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
@@ -132,11 +148,6 @@ function relativeTo(point, path) {
     if (point === ROOT_POINT)
         return path;
     return path.length === point.length ? '/' : path.slice(point.length);
-}
-function syncValue(value) {
-    if (isPromise(value))
-        throw new Error('synchronous filesystem operation returned a promise');
-    return value;
 }
 /** An rm -r report (VfsRemoval). */
 function isRemoval(value) {
@@ -743,9 +754,10 @@ export class CompositeVFS {
                     const after = kind === 'remove' ? null
                         : stores ? this.keep(held, 'file', written.slice())
                             : capture(wantsAfter);
-                    return andThen(after, (now) => {
-                        // A mount that left its point while the write was in flight: no change to what is there now.
-                        if (this.table.mounts.get(route.mount.point) !== route.mount) {
+                    return andThen(after, (now) => andThen(spec.still?.() ?? true, (still) => {
+                        // What the namespace no longer shows there (its mount left its point, or one mounted since covers it,
+                        // or its name holds another file now): no change to what is there now.
+                        if (!still || !this.feedShows(path, route.mount)) {
                             release();
                             return result;
                         }
@@ -763,7 +775,7 @@ export class CompositeVFS {
                         const type = oldPath !== undefined ? 'rename' : prior === null ? 'create' : 'modify';
                         this.deliverWrite({ type, path, ...(oldPath !== undefined ? { oldPath } : {}), before: known(prior), after: known(now), principal }, release);
                         return result;
-                    });
+                    }));
                 });
             });
         };
@@ -881,107 +893,272 @@ export class CompositeVFS {
         return trace === undefined ? run() : lookupReport(trace, run);
     }
     /**
-     * The file at `path` as an open(2) holds it: where this view's lookup
-     * lands now (links followed, the last only with `follow`), on the backend
-     * there as this principal sees it, whatever is mounted, unmounted or
-     * linked at the name later. Every operation of the open and of its
-     * description goes there (Pinned): its stat keeps that mount's identity,
-     * its mutations stay this view's (a read-only mount refuses them, the
-     * guard is asked at the name), and the namespace's observers hear of them
-     * while that mount is still the one at its point. A directory the
-     * namespace makes above a mount point is the namespace's own, by its name;
-     * a mount point is its backend's root. `sync`: through the backends'
-     * synchronous faces only.
+     * The name `path` leads to now, for an open (PinnedName): links on the
+     * way followed, the last only with `follow`. The open's decisions, and the
+     * description it keeps (PinnedName.hold), go to the backend that lookup
+     * landed on, as this view's principal sees it, whatever is mounted,
+     * unmounted or linked at the name later. A directory the namespace makes
+     * above mount points is the namespace's own, by its name; a mount point
+     * is its backend's root. Inside a backend that resolves its own paths
+     * (MountOptions.resolvesPaths) the name is held as given: a link of the
+     * backend's repointed later is the backend's to follow. `sync`: through the
+     * backends' synchronous faces only.
      */
     pin(path, options) {
-        const { sync } = options;
-        const run = () => andThen(this.resolve(path, options.follow, sync), (at) => {
+        const run = () => andThen(this.resolve(path, options.follow, options.sync), (at) => {
             this.present(at);
             const point = this.table.mounts.get(at);
             if (point === undefined && this.isStructural(at))
-                return { files: sync ? this.sync : this, path: at, name: at, key: at, awaits: !sync };
+                return new CompositeVFS.NamespaceName(this, at, options.sync);
             const route = this.locate(at);
-            return andThen(this.reachable(at, sync), () => {
+            const source = this.sourceOf(route.mount);
+            if (source === null)
+                throw this.absent(route.mount, at);
+            return andThen(this.reachable(at, options.sync), () => {
                 // Found by awaiting, a file on a backend that answers at once is held as one: its description need not await.
-                const synchronous = sync || this.backend(route.mount)?.sync !== undefined;
-                const files = new CompositeVFS.Pinned(this, { mount: route.mount, backend: this.ops(route, synchronous), rel: route.rel, name: at, root: point !== undefined }, synchronous);
-                return { files, path: route.rel, name: at, key: files.key, awaits: !synchronous };
+                const files = this.backendView(source);
+                const sync = options.sync || files.sync !== undefined;
+                const backend = sync ? this.synchronousFace(files, route) : files;
+                return new CompositeVFS.Pinned(this, { mount: route.mount, backend, source, rel: route.rel, name: at, root: point !== undefined, sync });
             });
         });
-        return sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
+        return options.sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
     }
-    /** One pinned file's operations (pin): on what it captured, named as the namespace named it. */
+    /** A pinned target's mutation: refused on a read-only mount and by the guard, `admit` right before the backend, observed while `still`. */
+    changingOn(target, run, admit, written, still) {
+        const { mount, name, rel, backend } = target;
+        if (mount.options.readOnly)
+            throw new Refusal('EROFS', name, `${mount.point} is mounted read-only`);
+        const guarded = () => {
+            this.guardMutation([name]);
+            admit?.();
+            return run();
+        };
+        return this.reportWrite({ path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still, ...(written === undefined ? {} : { written }) }, guarded, target.sync);
+    }
+    /** A name an open found on a backend (pin). */
     static Pinned = class {
         host;
         target;
-        sync;
-        key;
-        constructor(host, target, sync) {
+        name;
+        awaits;
+        constructor(host, target) {
             this.host = host;
             this.target = target;
-            this.sync = sync;
-            this.key = `${mountKey(target.mount)}:${target.rel}`;
+            this.name = target.name;
+            this.awaits = !target.sync;
         }
         call(syscall, run) {
             const call = { syscall, path: this.target.name };
-            return this.sync ? reported(call, run) : awaited(call, run);
+            return this.target.sync ? reported(call, run) : awaited(call, run);
         }
-        /** A mutation: refused on a read-only mount and by the guard, reported while its mount is still the one at its point. */
-        changing(syscall, run, written) {
-            return this.call(syscall, () => {
-                const { host, target } = this;
-                const { mount, name, rel, backend } = target;
-                if (mount.options.readOnly)
-                    throw new Refusal('EROFS', name, `${mount.point} is mounted read-only`);
-                const guarded = () => {
-                    host.guardMutation([name]);
-                    return run();
-                };
-                if (host.table.mounts.get(mount.point) !== mount)
-                    return guarded();
-                return host.reportWrite({ path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', ...(written === undefined ? {} : { written }) }, guarded, this.sync);
-            });
-        }
-        /** The backend's optional operation `name`, or ENOTSUP when it has none (asked after the guard, as the namespace asks). */
-        optional(name) {
-            const fn = this.target.backend[name];
-            if (typeof fn !== 'function')
-                throw new Refusal('ENOTSUP', this.target.name, `this filesystem does not support ${name}`);
-            return fn.bind(this.target.backend);
-        }
-        stat(path, options) {
+        statAt(follow) {
             const { host, target } = this;
-            return this.call('stat', () => andThen(target.root ? host.mountPointStat(target.backend) : target.backend.stat(path, options), (stat) => (stat === null ? null : host.identifyOn(target.mount, target.name, stat))));
+            return andThen(target.root ? host.mountPointStat(target.backend) : target.backend.stat(target.rel, { follow }), (stat) => (stat === null ? null : host.identifyOn(target.mount, target.name, stat)));
         }
-        readFile(path) { return this.call('open', () => this.target.backend.readFile(path)); }
-        readRange(path, offset, length) { return this.call('read', () => this.optional('readRange')(path, offset, length)); }
+        lstat() { return this.call('lstat', () => this.statAt(false)); }
+        stat() { return this.call('stat', () => this.statAt(true)); }
+        access(mode) {
+            const { backend, rel } = this.target;
+            const access = backend.access;
+            if (access !== undefined)
+                return this.call('open', () => access.call(backend, rel, mode));
+        }
+        create(mode, admit) {
+            const { backend, rel } = this.target;
+            const empty = new Uint8Array(0);
+            return this.call('open', () => this.host.changingOn(this.target, () => backend.writeFile(rel, empty, mode === undefined ? undefined : { mode }), admit, empty, () => true));
+        }
+        truncate(size, admit) {
+            const { backend, rel } = this.target;
+            return this.call('open', () => this.host.changingOn(this.target, () => need(backend.truncate, this.target.name).call(backend, rel, size), admit, undefined, () => true));
+        }
+        key() {
+            return andThen(this.target.backend.stat(this.target.rel), (stat) => (stat === null ? null : fileKey(this.target, stat)));
+        }
+        readAll() {
+            return this.call('open', () => this.target.backend.readFile(this.target.rel));
+        }
+        hold(rights) {
+            const { host, target } = this;
+            const { backend, rel } = target;
+            return this.call('open', () => andThen(target.root ? host.mountPointStat(backend) : backend.stat(rel), (stat) => {
+                if (stat === null)
+                    throw new Refusal('ENOENT', target.name);
+                const openFile = backend.openFile;
+                if (stat.type !== 'file' || openFile === undefined)
+                    return new CompositeVFS.Held(host, target, stat, null);
+                return andThen(openFile.call(backend, rel, rights), (file) => new CompositeVFS.Held(host, target, stat, file));
+            }));
+        }
+    };
+    /** A file a description holds (HeldFile), on the backend its pin captured. */
+    static Held = class {
+        host;
+        target;
+        file;
+        name;
+        awaits;
+        /** Its backend's number for it, when it numbers its files: the file at its name after its own replace of it (replace). */
+        ino;
+        dev;
+        constructor(host, target, opened, 
+        /** The backend's own open file, where it keeps them (VFS.openFile). */
+        file) {
+            this.host = host;
+            this.target = target;
+            this.file = file;
+            this.name = target.name;
+            this.awaits = !target.sync;
+            this.ino = opened.ino;
+            this.dev = opened.dev;
+        }
+        get key() {
+            return fileKey(this.target, { ino: this.ino, dev: this.dev });
+        }
+        call(syscall, run) {
+            const call = { syscall, path: this.target.name };
+            return this.target.sync ? reported(call, run) : awaited(call, run);
+        }
+        /** Whether `now`, what its name holds, is this file: always, where the backend numbers none. */
+        is(now) {
+            return this.ino === undefined || this.target.root || now?.ino === this.ino;
+        }
+        still() {
+            const { backend, rel, root } = this.target;
+            if (this.ino === undefined || root)
+                return true;
+            return andThen(backend.stat(rel), (now) => this.is(now));
+        }
+        stale() {
+            throw new Refusal('ESTALE', this.target.name, 'the name this file was opened at holds another file now, or none');
+        }
+        /** `run` by its name, refused (ESTALE) once the name holds another file, or none. */
+        named(run) {
+            return andThen(this.still(), (still) => (still ? run() : this.stale()));
+        }
+        changing(syscall, run, admit, written) {
+            return this.call(syscall, () => this.host.changingOn(this.target, run, admit, written, () => this.still()));
+        }
+        stat() {
+            const { host, target, file } = this;
+            const now = () => (file !== null ? file.stat()
+                : target.root ? host.mountPointStat(target.backend)
+                    : andThen(target.backend.stat(target.rel), (there) => (this.is(there) ? there : this.stale())));
+            return this.call('fstat', () => andThen(now(), (stat) => {
+                if (stat === null)
+                    throw new Refusal('ENOENT', target.name);
+                return host.identifyOn(target.mount, target.name, stat);
+            }));
+        }
+        read(offset, length) {
+            const { file, target } = this;
+            return this.call('read', () => (file !== null ? file.read(offset, length) : this.named(() => readRangeOrWhole(target.backend, target.rel, offset, length))));
+        }
+        readAll() {
+            const { file, target } = this;
+            return this.call('read', () => (file !== null ? andThen(file.stat(), (stat) => file.read(0, stat.size)) : this.named(() => target.backend.readFile(target.rel))));
+        }
+        write(offset, bytes, admit) {
+            const { file, target } = this;
+            if (file !== null)
+                return this.changing('write', () => file.write(offset, bytes), admit);
+            return this.call('write', () => this.named(() => this.host.changingOn(target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still())));
+        }
+        /** By its name, the file there after it is this one: a backend may write a whole file as a new one (a new number) at its name. */
+        replace(bytes, admit) {
+            const { file, target } = this;
+            if (file !== null)
+                return this.changing('write', () => andThen(file.truncate(0), () => file.write(0, bytes)), admit, bytes);
+            const { backend, rel } = target;
+            return this.call('write', () => this.named(() => andThen(this.host.changingOn(target, () => backend.writeFile(rel, bytes), admit, bytes, () => true), () => (this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined)
+                this.ino = now.ino; })))));
+        }
+        truncate(size, admit) {
+            const { file, target } = this;
+            if (file !== null)
+                return this.changing('ftruncate', () => file.truncate(size), admit);
+            return this.byName('ftruncate', (backend) => need(backend.truncate, target.name).call(backend, target.rel, size), admit);
+        }
+        chmod(mode, admit) {
+            return this.byName('fchmod', (backend) => need(backend.chmod, this.target.name).call(backend, this.target.rel, mode), admit);
+        }
+        chown(uid, gid, admit) {
+            return this.byName('fchown', (backend) => need(backend.chown, this.target.name).call(backend, this.target.rel, uid, gid), admit);
+        }
+        utimes(atime, mtime, admit) {
+            return this.byName('futimes', (backend) => need(backend.utimes, this.target.name).call(backend, this.target.rel, atime, mtime), admit);
+        }
+        /** A mutation at its name (refused once that holds another file): `run` on its backend. */
+        byName(syscall, run, admit) {
+            const { target } = this;
+            return this.call(syscall, () => this.named(() => this.host.changingOn(target, () => run(target.backend), admit, undefined, () => this.still())));
+        }
         /** A mount point's entries: its backend root's, and the mount points the namespace puts in it while that mount is still there. */
-        readdir(path) {
+        readdir() {
             const { host, target } = this;
-            return this.call('scandir', () => andThen(target.backend.readdir(path), (entries) => {
+            return this.call('scandir', () => this.named(() => andThen(target.backend.readdir(target.rel), (entries) => {
                 if (!target.root || host.table.mounts.get(target.mount.point) !== target.mount)
                     return entries;
                 const mounted = host.mountedNames(target.name);
                 const covered = new Set(mounted.map((entry) => entry.name));
                 return [...entries.filter((entry) => !covered.has(entry.name)), ...mounted];
-            }));
+            })));
         }
-        writeFile(path, data, options) { return this.changing('open', () => this.target.backend.writeFile(path, data, options), data); }
-        writeRange(path, offset, bytes) { return this.changing('write', () => this.optional('writeRange')(path, offset, bytes)); }
-        truncate(path, size) { return this.changing('ftruncate', () => this.optional('truncate')(path, size)); }
-        chmod(path, mode) { return this.changing('fchmod', () => this.optional('chmod')(path, mode)); }
-        chown(path, uid, gid) { return this.changing('fchown', () => this.optional('chown')(path, uid, gid)); }
-        utimes(path, atime, mtime) { return this.changing('futimes', () => this.optional('utimes')(path, atime, mtime)); }
-        access(path, mode) {
-            const { backend } = this.target;
-            const access = backend.access;
-            if (access !== undefined)
-                return this.call('open', () => access.call(backend, path, mode));
+        close() {
+            return this.file?.close();
+        }
+    };
+    /** A directory the namespace makes above mount points, pinned (pin): the namespace's own, by its name. */
+    static NamespaceName = class {
+        host;
+        name;
+        sync;
+        awaits;
+        constructor(host, name, sync) {
+            this.host = host;
+            this.name = name;
+            this.sync = sync;
+            this.awaits = !sync;
+        }
+        get files() {
+            return this.sync ? this.host.sync : this.host;
+        }
+        lstat() { return this.files.stat(this.name, { follow: false }); }
+        stat() { return this.files.stat(this.name); }
+        access() { }
+        create() { throw new Refusal('EISDIR', this.name); }
+        truncate() { throw new Refusal('EISDIR', this.name); }
+        key() { return `namespace:${this.name}`; }
+        readAll() { throw new Refusal('EISDIR', this.name); }
+        hold() {
+            const { name, awaits } = this;
+            const files = this.files;
+            const directory = () => { throw new Refusal('EISDIR', name); };
+            return {
+                name, awaits, key: `namespace:${name}`,
+                stat: () => andThen(files.stat(name), (stat) => {
+                    if (stat === null)
+                        throw new Refusal('ENOENT', name);
+                    return stat;
+                }),
+                read: directory, readAll: directory, write: directory, replace: directory, truncate: directory,
+                chmod: (mode, admit) => { admit?.(); return need(files.chmod, name).call(files, name, mode); },
+                chown: (uid, gid, admit) => { admit?.(); return need(files.chown, name).call(files, name, uid, gid); },
+                utimes: (atime, mtime, admit) => { admit?.(); return need(files.utimes, name).call(files, name, atime, mtime); },
+                readdir: () => files.readdir(name),
+                close: () => { },
+            };
         }
     };
     mutationRoute(path, options) {
-        const trace = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
-        const run = () => reported({ syscall: 'route', path }, () => {
+        if (options?.report !== true)
+            return this.mutationRouteOf(path, options, undefined);
+        const trace = { links: [], at: normalizePath(path) };
+        return lookupReport(trace, () => this.mutationRouteOf(path, options, trace));
+    }
+    mutationRouteOf(path, options, trace) {
+        return reported({ syscall: 'route', path }, () => {
             if (trace !== undefined) {
                 trace.links.length = 0;
                 trace.at = normalizePath(path);
@@ -994,7 +1171,6 @@ export class CompositeVFS {
                 return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
             });
         });
-        return trace === undefined ? run() : lookupReport(trace, run);
     }
     /**
      * Whether `path` is a directory above a live mount point (not the root):
@@ -1219,9 +1395,16 @@ export class CompositeVFS {
         }
     }
     backend(mount) {
+        const found = this.sourceOf(mount);
+        return found === null ? null : this.backendView(found);
+    }
+    /** What `mount`'s source gives this view's principal now (the backend itself, before a principal's view of it). */
+    sourceOf(mount) {
         const found = typeof mount.source === 'function' ? mount.source(this.viewer) : mount.source;
-        if (found === null || found === undefined)
-            return null;
+        return found ?? null;
+    }
+    /** `found` as this view's principal sees it (its `as`), one view per backend. */
+    backendView(found) {
         const cred = this.viewer.cred;
         if (cred === null || found.as === undefined)
             return found;
@@ -1235,6 +1418,13 @@ export class CompositeVFS {
             this.viewed.set(found, view = found.as(cred, this.viewer.actor, options));
         }
         return view;
+    }
+    /** `files`' synchronous face, or EAGAIN for a caller that cannot wait (an asynchronous mount). */
+    synchronousFace(files, route) {
+        if (files.sync === undefined) {
+            throw Object.assign(new Refusal('EAGAIN', route.path, `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`), { asyncMount: true });
+        }
+        return files.sync;
     }
     /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */
     absentOn(path) {
@@ -1272,12 +1462,7 @@ export class CompositeVFS {
         const files = this.backend(route.mount);
         if (files === null)
             throw this.absent(route.mount, route.path);
-        if (!sync)
-            return files;
-        if (files.sync === undefined) {
-            throw Object.assign(new Refusal('EAGAIN', route.path, `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`), { asyncMount: true });
-        }
-        return files.sync;
+        return sync ? this.synchronousFace(files, route) : files;
     }
     /** The root, a live mount point, or a directory above one (rule 2): this namespace's, not a backend's. */
     isStructural(path) {

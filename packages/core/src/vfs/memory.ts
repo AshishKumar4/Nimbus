@@ -10,6 +10,8 @@ import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 
 type Entry = {
+  /** Its number, its own for its life (a rename keeps it). */
+  ino: number;
   data: Uint8Array;
   target: string;
   mode: number;
@@ -46,6 +48,7 @@ export class MemoryVFS implements VFS {
   readonly storesWrites = true;
   private readonly root: Entry;
   private clock = 0;
+  private inos = 0;
   readonly sync: SyncVFS = this as unknown as SyncVFS;
 
   constructor(private readonly owner: { uid: number; gid: number } = { uid: 0, gid: 0 }) {
@@ -54,7 +57,7 @@ export class MemoryVFS implements VFS {
 
   private entry(type: VfsFileType, mode: number): Entry {
     const fields = {
-      data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
+      ino: ++this.inos, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
     };
     return type === 'directory' ? { type, ...fields, children: new Map<string, Entry>() } : { type, ...fields, children: null };
   }
@@ -94,6 +97,7 @@ export class MemoryVFS implements VFS {
 
   private stats(entry: Entry): VfsStat {
     return {
+      ino: entry.ino,
       type: entry.type,
       size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
       mtimeMs: entry.mtimeMs,

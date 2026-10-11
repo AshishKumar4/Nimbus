@@ -32,8 +32,8 @@ import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -555,7 +555,7 @@ export class ProcessFiles {
             return { lost: [] };
         const lost = [];
         for (const [id, opened] of scope.handles) {
-            if ((opened.node.pendingBytes?.() ?? 0) > 0)
+            if (opened.node.mounted && opened.node.pendingBytes() > 0)
                 lost.push(id);
             // Dropped unflushed; a description another process still holds stays open.
             opened.refs--;
@@ -869,12 +869,18 @@ class AwaitingProcessBridge {
     async viewed(name, follow) {
         return processView(this.scope, () => this.namespace.pin(name, { follow, sync: false }));
     }
+    /** Before a cut of `name` (a truncate, a whole-file write): the writes this process holds on its file, written (settleHeldAt). */
+    settleAt(name) {
+        return settleHeldAt(this.scope, () => this.namespace.pin(name, { follow: true, sync: false }));
+    }
     writeFile(path, bytes, options) {
         return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
             // createParents makes the directories above where the write lands, in
             // the same lookup as the write (a link's target's, not the link's).
             const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
-            await this.namespace.writeFile(await this.path(path), data, { parents: options?.createParents === true });
+            const p = await this.path(path);
+            await this.settleAt(p);
+            await this.namespace.writeFile(p, data, { parents: options?.createParents === true });
             return this.clock();
         });
     }
@@ -893,13 +899,16 @@ class AwaitingProcessBridge {
             // for a process released while its source was read.
             const data = await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p));
             this.live();
+            await this.settleAt(p);
             await this.namespace.writeFile(p, data);
             return this.clock();
         });
     }
     truncate(path, size, options) {
         return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-            await this.owned(options).truncate((await this.path(path)), size);
+            const p = await this.path(path);
+            await this.settleAt(p);
+            await this.owned(options).truncate(p, size);
             return this.receipt();
         });
     }
@@ -1003,6 +1012,9 @@ class AwaitingProcessBridge {
     open(path, flags, options) {
         return this.either([path], () => this.bridge.open(path, flags, options), async () => {
             const opened = openFlags(flags);
+            const flagged = flagsRefusal(opened);
+            if (flagged !== null)
+                throw syscallError(flagged, 'open', typeof path === 'string' ? path : path.path);
             const mutates = opened.write || opened.create || opened.truncate || opened.append;
             const name = await this.path(path, openFollows(opened));
             const files = this.owned(mutates ? options : undefined);
@@ -1012,7 +1024,13 @@ class AwaitingProcessBridge {
                 pin: (file, follow) => files.pin(file, { follow, sync: false }),
                 sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
             });
-            this.live();
+            try {
+                this.live();
+            }
+            catch (error) {
+                abandon(node);
+                throw error;
+            }
             return this.descriptors.issue(node, opened);
         });
     }

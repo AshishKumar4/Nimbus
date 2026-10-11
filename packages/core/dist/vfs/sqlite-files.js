@@ -122,6 +122,24 @@ export class SqliteFiles {
     access(path, mode) {
         this.run('open', path, () => this.view.access(path, mode));
     }
+    /** The engine's own description of the file (its access the open's): its inode, whatever name it has later. */
+    openFile(path, rights) {
+        const { view } = this;
+        const node = this.run('open', path, () => {
+            const there = view.statIfPresent(path, true);
+            const described = there === null ? null : this.engine.describeInode(there.ino, path.replace(/^\/+/, ''), view.cred, rights, view.principal, view.holds);
+            if (described === null)
+                throw syscallError('ENOENT', 'open', path);
+            return described;
+        });
+        return {
+            stat: () => this.run('fstat', path, () => statOf(node.stat(), view.epoch)),
+            read: (offset, length) => this.run('read', path, () => node.read(offset, length)),
+            write: (offset, bytes) => { this.run('write', path, () => node.write(offset, bytes)); },
+            truncate: (size) => this.run('ftruncate', path, () => node.truncate(size)),
+            close: () => this.run('close', path, () => node.close()),
+        };
+    }
     writeFile(path, data, options) {
         this.run('open', path, () => this.view.writeFile(path, data, options));
     }

@@ -17,6 +17,8 @@ import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPag
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
 export declare function isPromise<T>(value: Awaitable<T>): value is Promise<T>;
+/** `value`, which a synchronous face answers at once: one that would wait is its caller's fault, never a value. */
+export declare function syncValue<T>(value: Awaitable<T>): T;
 /**
  * Apply `next` to a value that may or may not be a promise, staying
  * synchronous when it is not. (Not `then`: a module exporting `then` is a
@@ -135,6 +137,16 @@ export interface VfsViewOptions {
     holds?: () => ReadonlySet<string>;
     landed?: boolean;
 }
+/** A file a backend holds open (VFS.openFile). */
+export interface VfsOpenFile {
+    stat(): Awaitable<VfsStat>;
+    /** At most `length` bytes from `offset`, clamped at its end. */
+    read(offset: number, length: number): Awaitable<Uint8Array>;
+    /** `bytes` at `offset`, zero-filling any gap past its end. */
+    write(offset: number, bytes: Uint8Array): Awaitable<void>;
+    truncate(size: number): Awaitable<void>;
+    close(): Awaitable<void>;
+}
 export interface VFS {
     /** Null when nothing is there. `follow: false` is lstat. */
     stat(path: string, options?: {
@@ -171,6 +183,16 @@ export interface VFS {
      * of one identity, which refuses no one at open.
      */
     access?(path: string, mode: number): Awaitable<void>;
+    /**
+     * The regular file at `path`, held open with `rights` (its access decided
+     * by the open that asks, VFS.access): its operations reach that file
+     * wherever it is named later, renamed or unlinked, until its close. Absent:
+     * a backend that keeps no open files; its files are held by name.
+     */
+    openFile?(path: string, rights: {
+        read: boolean;
+        write: boolean;
+    }): Awaitable<VfsOpenFile>;
     /** rm -r; nothing returned means the whole operand went. */
     removeRecursive?(path: string): Awaitable<VfsRemoval | void>;
     symlink?(target: string, path: string): Awaitable<void>;
@@ -265,6 +287,10 @@ export interface SyncVFS {
     writeRange?(path: string, offset: number, bytes: Uint8Array): void;
     truncate?(path: string, size: number): void;
     access?(path: string, mode: number): void;
+    openFile?(path: string, rights: {
+        read: boolean;
+        write: boolean;
+    }): VfsOpenFile;
     removeRecursive?(path: string): VfsRemoval | void;
     symlink?(target: string, path: string): void;
     readlink?(path: string): string;

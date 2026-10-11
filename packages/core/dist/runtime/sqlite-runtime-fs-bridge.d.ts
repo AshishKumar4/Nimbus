@@ -49,6 +49,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         followSymlinks?: boolean;
         cached?: boolean;
     }): Uint8Array | null;
+    /** Before a cut of a mounted file (a truncate, a whole-file write): the writes this process holds on it, written (settleHeldAt). */
+    private settleAt;
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
     private processView;
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
@@ -77,12 +79,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): VfsMutationReceipt;
     /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
     open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
-    /**
-     * Descriptor `id`, for this synchronous face: a description on an
-     * asynchronous mount refuses, as its mount does. Every other answers in
-     * the caller's turn, so its operations' answers are values.
-     */
-    private now;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     close(handleId: number): void;

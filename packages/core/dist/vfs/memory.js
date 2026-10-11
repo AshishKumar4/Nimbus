@@ -22,6 +22,7 @@ export class MemoryVFS {
     storesWrites = true;
     root;
     clock = 0;
+    inos = 0;
     sync = this;
     constructor(owner = { uid: 0, gid: 0 }) {
         this.owner = owner;
@@ -29,7 +30,7 @@ export class MemoryVFS {
     }
     entry(type, mode) {
         const fields = {
-            data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
+            ino: ++this.inos, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
         };
         return type === 'directory' ? { type, ...fields, children: new Map() } : { type, ...fields, children: null };
     }
@@ -71,6 +72,7 @@ export class MemoryVFS {
     }
     stats(entry) {
         return {
+            ino: entry.ino,
             type: entry.type,
             size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
             mtimeMs: entry.mtimeMs,
