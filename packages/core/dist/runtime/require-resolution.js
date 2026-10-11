@@ -269,8 +269,6 @@ export function createRequireResolver(host, options = {}) {
             return null;
         if (host.isBuiltin?.(id))
             return new URL(id.startsWith('node:') ? id : 'node:' + id);
-        if (id.startsWith('node:'))
-            throw error('ERR_UNKNOWN_BUILTIN_MODULE', 'No such built-in module: ' + id);
         if (id.startsWith('/'))
             return yield* resolveFile(id, state, id.endsWith('/'));
         if (relativeRequest(id)) {
@@ -287,7 +285,17 @@ export function createRequireResolver(host, options = {}) {
             }
             const scope = yield* nearestPackageScope(dir, state);
             if (scope && scope.pkg.imports !== null && typeof scope.pkg.imports === 'object') {
-                const target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
+                let target;
+                try {
+                    target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
+                }
+                catch (err) {
+                    // Node's CJS boundary translates an ESM PACKAGE_RESOLVE miss to
+                    // its own MODULE_NOT_FOUND, with this require's stack.
+                    if (codeOf(err) === 'ERR_MODULE_NOT_FOUND')
+                        return null;
+                    throw err;
+                }
                 if (target != null)
                     return yield* finalizeTarget(target, scope.packageJsonPath);
             }
