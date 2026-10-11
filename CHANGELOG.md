@@ -23,10 +23,15 @@ published independently in the `@nimbus-sh` npm scope.
   refuses with `ENOTSUP` holds the writes until fsync or close, as one without
   `writeRange` does, and a descriptor that awaits writes them as it makes them.
   Who may open a mounted file for what is the mount's own policy, as for every
-  other operation on it: the synchronous face no longer refuses an open with
-  `EACCES` by the mode a mount reports. The synchronous face refuses a
-  descriptor on an asynchronous mount with that mount's `EAGAIN`, not `EBADF`.
-  `CompositeVFS.writesInPlace` is removed.
+  other operation on it, asked before the open changes anything (the new
+  optional `VFS.access`, which `SqliteFiles` and `/proc` implement): the
+  synchronous face no longer refuses an open with `EACCES` by the mode a
+  backend of one identity reports, and both faces now refuse what a
+  credentialed backend's modes deny. A description holds the file its open
+  found (`CompositeVFS.pin`): an unmount, a mount or a link changed at its
+  name later moves neither its I/O nor its held writes. The synchronous face
+  refuses a descriptor on an asynchronous mount with that mount's `EAGAIN`,
+  not `EBADF`. `CompositeVFS.writesInPlace` is removed.
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the
   namespace's `WaveIngest` (`@nimbus-sh/core/runtime/wave-ingest.js`,
   `ProcessFiles.waves`). `CredentialedVfs.writeStream` and `writeBatchPlaced`

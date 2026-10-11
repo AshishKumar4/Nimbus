@@ -124,6 +124,10 @@ export class SqliteFiles implements VFS {
     return this.run('open', path, () => this.view.readRange(path, offset, length));
   }
 
+  access(path: string, mode: number): void {
+    this.run('open', path, () => this.view.access(path, mode));
+  }
+
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): void {
     this.run('open', path, () => this.view.writeFile(path, data, options));
   }

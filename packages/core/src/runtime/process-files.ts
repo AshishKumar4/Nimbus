@@ -1021,11 +1021,11 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const opened = openFlags(flags);
       const mutates = opened.write || opened.create || opened.truncate || opened.append;
       const name = await this.path(path, opened.followSymlinks);
+      const files = this.owned(mutates ? options : undefined);
       const node = await openMounted({
-        files: this.owned(mutates ? options : undefined), name, flags: opened, mode: flags.mode,
+        files, name, flags: opened, mode: flags.mode,
         refuse: (code, syscall) => syscallError(code as VfsErrorCode, syscall, name), scope: this.scope,
-        // The file it opened, by the name the namespace resolved for it: a link on the way repointed later does not move it.
-        realpath: async (file) => (await this.namespace.mutationRoute(file, { follow: true })).path,
+        pin: (file) => files.pin(file, { follow: true, sync: false }),
         awaits: true, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
       });
       this.live();

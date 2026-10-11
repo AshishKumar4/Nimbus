@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { asyncOnly } from './lib/async-memory-vfs.mjs';
@@ -168,6 +170,69 @@ await check('a mount whose writeRange refuses (ENOTSUP) holds the writes, read b
   assert.equal(dec.decode(backend.readFile('/x')), '0123456789');
   proc.close(fd.id);
   assert.equal(dec.decode(backend.readFile('/x')), '01ab456789');
+});
+
+// Who may open a mounted file for what is its backend's own policy (VFS.access), asked
+// before anything changes: a backend that takes a caller's credential refuses by its modes.
+await check('a credentialed mount refuses an open its modes deny, before the read', async () => {
+  const other = createSqliteVfsTestHarness();
+  const backend = sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL);
+  backend.writeFile('/secret', enc.encode('no'));
+  backend.chown('/secret', 2000, 2000);
+  backend.chmod('/secret', 0o000);
+  files.vfs.mount('/q', backend);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  await assert.rejects(async () => proc.open('/q/secret', { read: true }), refused('EACCES'));
+  await assert.rejects(async () => proc.open('/proc/mounts', { write: true }), refused('EACCES'));
+  files.vfs.unmount('/q');
+});
+
+// An O_SYNC description's own writes are flushed as made; it reads the
+// process's other descriptions' held writes all the same.
+await check('an O_SYNC descriptor reads what another descriptor holds', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const unranged = new Proxy(backend, {
+    get(target, key) {
+      if (key === 'writeRange') return undefined;
+      if (key === 'sync') return unranged;
+      const value = target[key];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    has: (target, key) => key !== 'writeRange' && key in target,
+  });
+  files.vfs.mount('/h', unranged);
+  backend.writeFile('/x', enc.encode('0123456789'));
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const writer = proc.open('/h/x', { read: true, write: true });
+  proc.write(writer.id, 0, enc.encode('ab'));
+  const reader = proc.open('/h/x', { read: true, sync: true });
+  assert.equal(dec.decode(proc.read(reader.id, 0, 10)), 'ab23456789');
+  proc.close(reader.id);
+  proc.close(writer.id);
+  files.vfs.unmount('/h');
+});
+
+// A description holds the file its open found: a mount made at its name
+// later, after the first was unmounted, is not where its I/O goes, nor
+// where its held writes are flushed.
+await check('a description holds its file across an unmount and a mount at its name', async () => {
+  for (const [face, wrap] of [['sync', (vfs) => vfs], ['async', (vfs) => asyncOnly(vfs, { deep: true })]]) {
+    const first = new MemoryVFS({ uid: 1000, gid: 1000 });
+    const second = new MemoryVFS({ uid: 1000, gid: 1000 });
+    first.writeFile('/x', enc.encode('first'));
+    second.writeFile('/x', enc.encode('second'));
+    files.vfs.mount('/p', wrap(first));
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = await proc.open('/p/x', { read: true, write: true });
+    files.vfs.unmount('/p');
+    files.vfs.mount('/p', wrap(second));
+    assert.equal(dec.decode(await proc.read(fd.id, 0, 5)), 'first', `${face}: it reads the file it opened`);
+    await proc.write(fd.id, 0, enc.encode('FIRST'));
+    await proc.close(fd.id);
+    assert.equal(dec.decode(first.readFile('/x')), 'FIRST', `${face}: and writes it`);
+    assert.equal(dec.decode(second.readFile('/x')), 'second', `${face}: never the one mounted since`);
+    files.vfs.unmount('/p');
+  }
 });
 
 {

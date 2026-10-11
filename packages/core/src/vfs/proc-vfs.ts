@@ -8,6 +8,7 @@
  */
 import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
 import { syscallError } from './vfs-error.js';
+import { posixAccess } from './posix-access.js';
 
 /** A /proc file's content, for the credential of the process reading it (null: the embedder's view). */
 export type ProcGenerator = (cred: VfsCred | null) => string;
@@ -60,6 +61,13 @@ export class ProcVFS implements VFS {
 
   readFile(path: string): Uint8Array {
     return this.generate(path);
+  }
+
+  /** Its files are root's, 0444: a credential asks them by their mode (the embedder's view is not judged). */
+  access(path: string, mode: number): void {
+    const stat = this.stat(path);
+    if (stat === null) throw syscallError('ENOENT', 'open', path);
+    if (this.cred !== null && !posixAccess({ mode: stat.mode ?? 0, uid: stat.uid ?? 0, gid: stat.gid ?? 0 }, mode, this.cred)) throw syscallError('EACCES', 'open', path);
   }
 
   readRange(path: string, offset: number, length: number): Uint8Array {
