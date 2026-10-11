@@ -25,6 +25,7 @@
  * in the PR that introduced this file.
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
@@ -178,6 +179,8 @@ export interface GitNetworkResult {
     errorCode?: GitNetworkErrorCode;
     /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
     gitFailure?: string;
+    /** The git server could not be reached, or refused: what it did (pack/remote-failure.ts), for git's message. */
+    remoteFailure?: RemoteFailure;
     budget?: GitCloneBudgetDiagnostic;
     /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
     cleanup?: boolean;
