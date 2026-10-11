@@ -1,3 +1,11 @@
+/**
+ * session/programmatic.ts - public sandbox RPC helpers.
+ *
+ * These helpers are called by NimbusSession one-line delegators so the
+ * Durable Object exposes a typed, programmatic sandbox surface without
+ * duplicating the interactive terminal boot path.
+ */
+import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
@@ -20,7 +28,7 @@ export interface ProgrammaticShell {
 }
 type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
-    kill(pid: number): boolean;
+    kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
     closeLaunches(): Promise<void>;
     hasResidentProcess(pid: number): boolean;
     removeDurableApp(owner: string): Promise<boolean>;

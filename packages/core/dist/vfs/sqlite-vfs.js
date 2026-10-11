@@ -3078,6 +3078,7 @@ export class SqliteVFS {
         }
         this.exclusiveMutationLeases.set(owner, {
             root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null, reason: null,
+            ...(options.stoppable === true ? { stoppable: true } : {}),
         });
         return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
     }
@@ -3387,11 +3388,14 @@ export class SqliteVFS {
     }
     /**
      * Whether a holder's exclusive mutation is active: a lease taken for work,
-     * not a commit held for its publication.
+     * not a commit held for its publication. `stoppable: false` leaves out what
+     * goes when every process is stopped: the delegations, which end with
+     * their processes, and the leases of the work processes run
+     * (ExclusiveMutationOptions.stoppable).
      */
-    hasExclusiveMutation() {
+    hasExclusiveMutation({ stoppable = true } = {}) {
         for (const lease of this.exclusiveMutationLeases.values()) {
-            if (lease.held === undefined)
+            if (lease.held === undefined && (stoppable || (lease.delegation === null && lease.stoppable === undefined)))
                 return true;
         }
         return false;

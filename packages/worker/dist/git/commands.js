@@ -2967,9 +2967,10 @@ processes) {
                 // to the destination as the namespace sees it (SQLite's own inodes do
                 // not say), held at that path: the namespace refuses another's
                 // mutations there by it, as it does on SQLite. A delegation it
-                // overlaps is recalled first (withRecall).
+                // overlaps is recalled first (withRecall). It goes when the clone's
+                // process is stopped (stoppable): a destroy stops the clone first.
                 const leaseRoot = place.mount ? await firstMissing(ctx.vfs, target) : target;
-                const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, place.mount ? {} : { includeMissingAncestors: true }));
+                const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, { includeMissingAncestors: !place.mount, stoppable: true }));
                 // A piece of the clone that hung may still write: the facet runner
                 // hands the lease to a new owner before it runs the piece again.
                 let mutationOwner = mutationLease.owner;

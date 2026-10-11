@@ -55,6 +55,12 @@ export interface InodeRange {
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
     /**
+     * Its holder is work a process runs (a clone's job), which lets it go when
+     * that process is stopped, as a delegation goes with its process: a caller
+     * about to stop every process does not count it (hasExclusiveMutation).
+     */
+    readonly stoppable?: boolean;
+    /**
      * Make the lease a delegation: its holder decides the subtree's operations
      * itself and sends them later (as writes under the lease), so another
      * caller's access recalls them first (RecallRequired) instead of being
@@ -1512,9 +1518,14 @@ export declare class SqliteVFS {
     rotateExclusiveMutation(owner: string): string;
     /**
      * Whether a holder's exclusive mutation is active: a lease taken for work,
-     * not a commit held for its publication.
+     * not a commit held for its publication. `stoppable: false` leaves out what
+     * goes when every process is stopped: the delegations, which end with
+     * their processes, and the leases of the work processes run
+     * (ExclusiveMutationOptions.stoppable).
      */
-    hasExclusiveMutation(): boolean;
+    hasExclusiveMutation({ stoppable }?: {
+        stoppable?: boolean;
+    }): boolean;
     /** Cut every wave being read now: each ends as a refused one does, what it committed published once its recalls are answered. */
     cancelStreams(reason: string): void;
     /**
