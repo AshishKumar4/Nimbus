@@ -16,6 +16,7 @@ const source = fs.readFileSync(new URL('../../packages/worker/public/_assets/ope
 const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
 const bindings = new Map();
 let globalOptions = [];
+let rootCommands = [];
 const property = (object, name) => object?.properties?.find(p => (p.key.name ?? p.key.value) === name)?.value;
 const value = node => Function(`return (${source.slice(node.start, node.end)});`)();
 walk.simple(ast, { VariableDeclarator(node) { if (node.id.type === 'Identifier') bindings.set(node.id.name, node.init); } });
@@ -27,6 +28,10 @@ for (const init of bindings.values()) {
   const calls = chain(init);
   if (calls.some(call => call.callee.property.name === 'scriptName' && call.arguments[0]?.value === 'opencode')) {
     globalOptions = calls.filter(call => call.callee.property.name === 'option').map(call => [value(call.arguments[0]), value(call.arguments[1])]);
+    rootCommands = calls.filter(call => call.callee.property.name === 'command').map(call => {
+      const init = bindings.get(call.arguments[0]?.name);
+      return init?.type === 'CallExpression' ? init.arguments[0] : init;
+    }).filter(node => property(node, 'command'));
   }
 }
 assert.ok(globalOptions.length > 0, 'the actual global option chain was found');
@@ -37,7 +42,8 @@ const tui = command('$0 [project]');
 const attach = command('attach <url>');
 const serve = command('serve');
 assert.ok(tui && attach && serve, 'the staged OpenCode registers its actual TUI, attach and serve commands');
-for (const object of commands) {
+assert.ok(rootCommands.length > 0, 'the actual root command registration chain was found');
+for (const object of rootCommands) {
   const spec = property(object, 'command');
   const spellings = spec.type === 'ArrayExpression' ? value(spec) : [spec.value];
   for (const spelling of spellings) {

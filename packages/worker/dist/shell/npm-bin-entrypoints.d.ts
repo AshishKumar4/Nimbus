@@ -2,7 +2,6 @@ import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
-import parseArgv from 'yargs-parser';
 type Output = {
     write(data: string): void;
 };
@@ -51,16 +50,5 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
  */
 export type StagedArtifactDisposition = 'dual' | 'server' | 'attached' | 'oneshot';
 export declare function classifyStagedArtifact(artifact: string, argv: string[]): StagedArtifactDisposition;
-export declare function parseOpenCodeArgv(argv: string[]): parseArgv.DetailedArguments;
-export type OpenCodeTransportPlan = {
-    cwd: string;
-    serveArgv: string[];
-    attachArgv: string[];
-    port?: number;
-};
-/** Lossless supported default-TUI options, or a named refusal before any spawn. */
-export declare function buildOpenCodeTransportPlan(argv: string[], cwd: string, env?: Record<string, string>): OpenCodeTransportPlan | {
-    error: string;
-};
 export {};
 //# sourceMappingURL=npm-bin-entrypoints.d.ts.map
