@@ -4374,9 +4374,16 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
             gate: true,
         });
-        for (const key of esm.modules.keys())
+        // Staging reads and rewrites its modules' text, not the bundle: that is
+        // what it spends (a pass's bundle weight here cost a launch over lodash-es
+        // a turn of its own).
+        let staged = 0;
+        for (const [key, module] of esm.modules) {
             emits.delete(key);
-        await paceAfterPass();
+            staged += module.text.length;
+        }
+        if (pacer)
+            await pacer.spend(staged);
     }
     return {
         bundle,
