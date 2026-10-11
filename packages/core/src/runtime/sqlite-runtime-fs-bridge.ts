@@ -40,10 +40,12 @@ export interface SqliteDescriptorScope {
   /** Aborted when the scope closes; cancels in-flight stream commits. */
   abort: AbortController;
   subscriptions: Set<() => void>;
+  /** The exclusive leases the process took itself (not delegations), by owner: each one's release, among the subscriptions. */
+  leases: Map<string, () => void>;
 }
 
 export function createSqliteDescriptorScope(): SqliteDescriptorScope {
-  return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
+  return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
 }
 
 /**

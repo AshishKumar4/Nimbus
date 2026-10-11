@@ -123,6 +123,9 @@ export interface VfsWriteEvent {
 /** Told of each landed mutation; a promise it returns holds the event's content until it settles. */
 export type VfsWriteObserver = (event: VfsWriteEvent) => void | Promise<void>;
 
+/** Which of a write's sides an observer wants read (CompositeVFS.observeWrites): both, neither, or each. */
+export type VfsWriteWants = boolean | { readonly before: boolean; readonly after: boolean };
+
 export interface VfsMountDescription {
   /** df's "Filesystem" column. */
   source: string;

@@ -22,7 +22,7 @@
  */
 import type {
   Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure,
-  VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver,
+  VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
@@ -223,10 +223,10 @@ interface Mount {
   inos: Map<string, number>;
 }
 
-/** One observeWrites registration: its observer, and where it wants content read. */
+/** One observeWrites registration: its observer, and where it wants content read, per side. */
 interface WriteWatch {
   observer: VfsWriteObserver;
-  wants: (path: string, principal: Principal) => boolean;
+  wants: (path: string, principal: Principal) => VfsWriteWants;
 }
 
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
@@ -261,6 +261,8 @@ interface WriteSpec<T> {
   existingIsNoop?: boolean;
   /** Where it landed, by its result; default its path. */
   landed?: (result: T) => readonly string[];
+  /** The whole content it writes (writeFile, a compare-and-write): what stands after, without reading it back. */
+  written?: Uint8Array;
 }
 
 interface Table {
@@ -358,6 +360,11 @@ function isRemoval(value: unknown): value is VfsRemoval {
 /** A compare-and-write that won (VfsCasResult ok). */
 function casWon(value: unknown): boolean {
   return typeof value === 'object' && value !== null && (value as VfsCasResult).ok === true;
+}
+
+/** A compare-and-write expecting nothing there: an absent path's revision is 0 (SqliteFiles.writeFileIfRevision). */
+function createsIfAbsent(expected: VfsRevision): boolean {
+  return String(expected) === '0';
 }
 
 /**
@@ -808,10 +815,12 @@ export class CompositeVFS implements VFS {
    * it (a process's, a W7 stream's), its content held until the observer is
    * done. Any other backend's mutations are reported as they are made
    * through this namespace: each costs a stat of its path before, and,
-   * where `wants` says (by default, everywhere), a read of its content
-   * before and after.
+   * where `wants` says (by default, everywhere; per side when it answers
+   * `{ before, after }`), a read of its content before and after. What a
+   * writeFile or a compare-and-write leaves is the bytes it was given, so
+   * its after costs no read.
    */
-  observeWrites(observer: VfsWriteObserver, options?: { wants?: (path: string, principal: Principal) => boolean }): () => void {
+  observeWrites(observer: VfsWriteObserver, options?: { wants?: (path: string, principal: Principal) => VfsWriteWants }): () => void {
     const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), turn: { tail: Promise.resolve(), busy: false } };
     const watch: WriteWatch = { observer, wants: options?.wants ?? (() => true) };
     writes.watches.add(watch);
@@ -906,15 +915,21 @@ export class CompositeVFS implements VFS {
     const writes = this.table.writes;
     if (writes === undefined || writes.subscribed.has(spec.route.mount)) return run();
     const principal = this.viewer;
-    let wanted = false;
-    for (const watch of writes.watches) if (watch.wants(spec.path, principal)) { wanted = true; break; }
-    const { path, route, ops, follow, kind, oldPath } = spec;
+    let wantsBefore = false;
+    let wantsAfter = false;
+    for (const watch of writes.watches) {
+      const wants = watch.wants(spec.path, principal);
+      wantsBefore ||= typeof wants === 'boolean' ? wants : wants.before;
+      wantsAfter ||= typeof wants === 'boolean' ? wants : wants.after;
+      if (wantsBefore && wantsAfter) break;
+    }
+    const { path, route, ops, follow, kind, oldPath, written } = spec;
     const held: CapturedRef[] = [];
-    const capture = (): Awaitable<VfsContentRef | null | false> => this.capture(ops, route.rel, wanted, follow, held);
+    const capture = (read: boolean): Awaitable<VfsContentRef | null | false> => this.capture(ops, route.rel, read, follow, held);
     const release = (): void => { for (const ref of held) ref.release(); };
     const report = (): Awaitable<T> => {
       // A plain mkdir made what was not there (EEXIST otherwise); mkdir -p looks.
-      const before = kind === 'create' && spec.existingIsNoop !== true ? null : capture();
+      const before = kind === 'create' && spec.existingIsNoop !== true ? null : capture(wantsBefore);
       return then(before, (prior) => {
         // Nothing to make: mkdir -p of a directory that is there.
         if (kind === 'create' && prior !== null && prior !== false && prior.type === 'directory') {
@@ -924,7 +939,9 @@ export class CompositeVFS implements VFS {
         return then(run(), (result) => {
           const landed = spec.landed?.(result) ?? [path];
           if (landed.length === 0) { release(); return result; }
-          const after = kind === 'remove' ? null : capture();
+          const after = kind === 'remove' ? null
+            : written !== undefined && wantsAfter ? this.keep(held, 'file', written.slice())
+              : capture(wantsAfter);
           return then(after, (now) => {
             const known = (ref: VfsContentRef | null | false): VfsContentRef | null | undefined => (ref === false ? undefined : ref);
             if (kind === 'remove') {
@@ -982,11 +999,7 @@ export class CompositeVFS implements VFS {
    * is held in `held`, let go when the observers are done.
    */
   private capture(ops: Ops, rel: string, read: boolean, follow: boolean, held: CapturedRef[]): Awaitable<VfsContentRef | null | false> {
-    const keep = (type: VfsContentRef['type'], bytes: Uint8Array | null): VfsContentRef => {
-      const ref = capturedRef(type, bytes);
-      held.push(ref);
-      return ref;
-    };
+    const keep = (type: VfsContentRef['type'], bytes: Uint8Array | null): VfsContentRef => this.keep(held, type, bytes);
     return attempt(() => then(this.softStat(ops, rel, follow), (stat): Awaitable<VfsContentRef | null | false> => {
       if (stat === null) return null;
       if (stat.type === 'directory') return keep('directory', null);
@@ -994,6 +1007,13 @@ export class CompositeVFS implements VFS {
       if (stat.type === 'symlink') return then((ops as SyncVFS).readlink!(rel), (target) => keep('symlink', utf8.encode(target)));
       return then((ops as SyncVFS).readFile(rel), (bytes) => keep('file', bytes));
     }), () => false);
+  }
+
+  /** Content the observers are told of, held in `held` until they are done. */
+  private keep(held: CapturedRef[], type: VfsContentRef['type'], bytes: Uint8Array | null): VfsContentRef {
+    const ref = capturedRef(type, bytes);
+    held.push(ref);
+    return ref;
   }
 
   /** Every point something is mounted at, root first, in mount order: whether or not its source answers this principal now. */
@@ -1032,9 +1052,12 @@ export class CompositeVFS implements VFS {
    * its own paths is lexical. A mount absent for this principal (any mount
    * on the path, rule 1) answers a null source, with its absentReason.
    * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
+   * `creating`: the lookup of a write that makes its parents (writeFile's
+   * `parents`): directories missing on the way are allowed, a file among
+   * them is still ENOTDIR, and a link to where nothing is yet leads there.
    */
-  async route(path: string, options?: { follow?: boolean }): Promise<VfsRoute> {
-    return awaited({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at): Awaitable<VfsRoute> => {
+  async route(path: string, options?: { follow?: boolean; creating?: boolean }): Promise<VfsRoute> {
+    return awaited({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false, options?.creating === true), (at): Awaitable<VfsRoute> => {
       const gone = this.absentOn(at);
       if (gone !== null) return { point: gone.point, source: null, path: relativeTo(gone.point, at), absentReason: this.absentReason(gone) };
       const { mount } = this.locate(at);
@@ -1053,10 +1076,10 @@ export class CompositeVFS implements VFS {
    * The lookup is the mutations' own (onMutation's), so a writer that asks
    * before it writes lands where the operation would. Rejects as that
    * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
-   * the lookup stays on synchronous backends.
+   * the lookup stays on synchronous backends. `creating`: as route's.
    */
-  mutationRoute(path: string, options?: { follow?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
-    return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
+  mutationRoute(path: string, options?: { follow?: boolean; creating?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
+    return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false, options?.creating === true), (at) => {
       this.present(at);
       const { mount } = this.locate(at);
       return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
@@ -1383,10 +1406,10 @@ export class CompositeVFS implements VFS {
    * `Vfs/CompositeOps`, unsupported_is_enotsup.)
    */
   private capability<K extends keyof SyncVFS, T>(
-    ops: Ops, name: K, rel: string, path: string, run: (fn: NonNullable<SyncVFS[K]>) => Awaitable<T>,
+    ops: Ops, name: K, rel: string, path: string, run: (fn: NonNullable<SyncVFS[K]>) => Awaitable<T>, creates: boolean,
   ): Awaitable<T> {
     return then(this.softStat(ops, rel, true), (stat) => {
-      if (stat === null) throw new Refusal('ENOENT', path);
+      if (stat === null && !creates) throw new Refusal('ENOENT', path);
       const fn = (ops as SyncVFS)[name];
       if (typeof fn !== 'function') throw new Refusal('ENOTSUP', path, `this filesystem does not support ${String(name)}`);
       return run(fn.bind(ops) as NonNullable<SyncVFS[K]>);
@@ -1396,9 +1419,14 @@ export class CompositeVFS implements VFS {
   /**
    * readRange and the revision ops: `/` and a mount point are EISDIR;
    * anything else is the backend's, looked up before its capability is asked.
+   * `written`: a write's whole content (a compare-and-write's), what
+   * observers are told stands after. `creates`: a missing path is the
+   * backend's to answer, as a compare-and-write expecting nothing there
+   * (revision 0) creates it.
    */
   private onCapability<K extends keyof SyncVFS, T>(
     input: string, sync: boolean, name: K, write: boolean, run: (fn: NonNullable<SyncVFS[K]>, rel: string) => Awaitable<T>,
+    { written, creates = false }: { written?: Uint8Array; creates?: boolean } = {},
   ): Awaitable<T> {
     return then(this.resolve(input, true, sync), (path) => {
       this.present(path);
@@ -1412,14 +1440,17 @@ export class CompositeVFS implements VFS {
         const call = (fn: NonNullable<SyncVFS[K]>): Awaitable<T> => {
           if (!write) return run(fn, route.rel);
           // A compare-and-write landed only when it won.
-          return this.reportWrite<T>({ path, route, ops, follow: true, kind: 'write', landed: (result) => (casWon(result) ? [path] : []) }, () => {
+          return this.reportWrite<T>({
+            path, route, ops, follow: true, kind: 'write', landed: (result) => (casWon(result) ? [path] : []),
+            ...(written === undefined ? {} : { written }),
+          }, () => {
             this.guardMutation([input, path]);
             return run(fn, route.rel);
           }, sync);
         };
         // A backend that resolves its own paths answers a missing path itself.
         if (route.mount.options.resolvesPaths && typeof (ops as SyncVFS)[name] === 'function') return call(this.method(ops, name, path));
-        return this.capability(ops, name, route.rel, path, call);
+        return this.capability(ops, name, route.rel, path, call, creates);
       });
     });
   }
@@ -1795,11 +1826,15 @@ export class CompositeVFS implements VFS {
     });
   }
 
-  /** `parents`: missing directories on the way are made first (makeTree), where the lookup lands. */
+  /**
+   * `parents`: missing directories on the way are made first (makeTree),
+   * where the lookup lands. `written`: the whole content it writes, what
+   * observers are told stands after (WriteSpec.written).
+   */
   private onMutation<T>(
     input: string, follow: boolean, sync: boolean, what: string,
     run: (ops: Ops, rel: string, path: string) => Awaitable<T>,
-    parents = false,
+    { parents = false, written }: { parents?: boolean; written?: Uint8Array } = {},
   ): Awaitable<T> {
     return then(this.resolve(input, follow, sync, parents), (path) => {
       this.present(path);
@@ -1824,6 +1859,7 @@ export class CompositeVFS implements VFS {
         const removes = what === 'unlinked' || what === 'removed';
         return this.reportWrite<T>({
           path, route, ops, follow, kind: removes ? 'remove' : 'write',
+          ...(written === undefined ? {} : { written }),
           // rm -r reports what it removed: its operand, unless it kept it.
           ...(what === 'removed' ? { landed: (result: T) => (isRemoval(result) ? result.removed : [path]) } : {}),
         }, () => {
@@ -2191,13 +2227,13 @@ export class CompositeVFS implements VFS {
   async writeFile(path: string, data: Uint8Array, options?: { mode?: number; parents?: boolean }): Promise<void> {
     const mode = options?.mode === undefined ? undefined : { mode: options.mode };
     return awaited({ syscall: 'open', path }, () =>
-      this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, mode), options?.parents === true));
+      this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, mode), { parents: options?.parents === true, written: data }));
   }
 
   /** `parents`: as writeFile's. */
   async writeRange(path: string, offset: number, bytes: Uint8Array, options?: { parents?: boolean }): Promise<void> {
     return awaited({ syscall: 'open', path }, () =>
-      this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes), options?.parents === true));
+      this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes), { parents: options?.parents === true }));
   }
 
   async truncate(path: string, size: number): Promise<void> {
@@ -2291,7 +2327,8 @@ export class CompositeVFS implements VFS {
   }
 
   async writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult> {
-    return awaited({ syscall: 'open', path }, () => this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)));
+    return awaited({ syscall: 'open', path }, () =>
+      this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }));
   }
 
   async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
@@ -2315,7 +2352,7 @@ export class CompositeVFS implements VFS {
       readRange: (path, offset, length) => syncValue(reported({ syscall: 'open', path }, () =>
         this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)))),
       writeFile: (path, data, options) => syncValue(reported({ syscall: 'open', path }, () =>
-        this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options)))),
+        this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options), { written: data }))),
       writeRange: (path, offset, bytes) => syncValue(reported({ syscall: 'open', path }, () =>
         this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)))),
       truncate: (path, size) => syncValue(reported({ syscall: 'open', path }, () =>
@@ -2340,7 +2377,7 @@ export class CompositeVFS implements VFS {
       copy: (from, to, options) => syncValue(reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () =>
         this.copyAt(from, to, options, true))),
       writeFileIfRevision: (path, data, expected) => syncValue(reported({ syscall: 'open', path }, () =>
-        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)))),
+        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }))),
       readFileAtRevision: (path, revision, range) => syncValue(reported({ syscall: 'open', path }, () =>
         this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)))),
     };
