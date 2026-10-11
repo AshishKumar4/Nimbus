@@ -282,12 +282,13 @@ export function createRequireResolver(host, options = {}) {
         if (id.startsWith('#')) {
             const scope = yield* nearestPackageScope(dir, state);
             if (scope && scope.pkg.imports != null) {
+                const from = request.parent ?? dir;
                 if (id === '#' || id.startsWith('#/') || id.endsWith('/')) {
-                    throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
+                    throw error('ERR_INVALID_MODULE_SPECIFIER', 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + from, TypeError);
                 }
                 let target;
                 try {
-                    target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
+                    target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, from, true, state);
                 }
                 catch (err) {
                     // Node's CJS boundary translates an ESM PACKAGE_RESOLVE miss to
@@ -298,7 +299,7 @@ export function createRequireResolver(host, options = {}) {
                 }
                 if (target != null)
                     return yield* finalizeTarget(target, scope.packageJsonPath);
-                throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + ' imported from ' + dir, TypeError);
+                throw error('ERR_PACKAGE_IMPORT_NOT_DEFINED', 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + ' imported from ' + from, TypeError);
             }
         }
         const self = yield* loadPackageSelf(id, dir, state);

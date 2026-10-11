@@ -11076,7 +11076,10 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
   }
   const lookup = relative ? dirs : [__nimbusModuleDir(parent)];
   for (const dir of lookup) {
-    const found = __requireResolver.resolveSync(request, absolute(dir), relative ? undefined : { paths: dirs.map(absolute) });
+    const found = __requireResolver.resolveSync(request, absolute(dir), {
+      ...(relative ? {} : { paths: dirs.map(absolute) }),
+      ...(typeof parent?.filename === "string" ? { parent: parent.filename } : {}),
+    });
     if (found) return found.builtin ? "node:" + found.builtin : found.path;
   }
   throw __nimbusModuleNotFound(request, parent);
@@ -11964,8 +11967,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
  * Resolve a module ID from a given directory.
  * Returns the resolved VFS path, or null.
  */
-function __resolveFrom(id, fromDir) {
-  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\\/+/, ""));
+function __resolveFrom(id, fromDir, parentFile) {
+  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\\/+/, ""), typeof parentFile === "string" ? { parent: parentFile } : undefined);
   if (!found) return null;
   return found.builtin ? "node:" + found.builtin : found.path.replace(/^\\/+/, "");
 }
@@ -13099,7 +13102,7 @@ function __requireFrom(id, fromDir, parent, required = true) {
     const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
     return __loadModule(key, key, false, parent, esModule);
   }
-  const resolved = __resolveFrom(id, fromDir);
+  const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
 }

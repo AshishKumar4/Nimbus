@@ -16057,7 +16057,10 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
   }
   const lookup = relative ? dirs : [__nimbusModuleDir(parent)];
   for (const dir of lookup) {
-    const found = __requireResolver.resolveSync(request, absolute(dir), relative ? undefined : { paths: dirs.map(absolute) });
+    const found = __requireResolver.resolveSync(request, absolute(dir), {
+      ...(relative ? {} : { paths: dirs.map(absolute) }),
+      ...(typeof parent?.filename === "string" ? { parent: parent.filename } : {}),
+    });
     if (found) return found.builtin ? "node:" + found.builtin : found.path;
   }
   throw __nimbusModuleNotFound(request, parent);
@@ -17748,18 +17751,19 @@ function createRequireResolver(host, options = {}) {
     if (id.startsWith("#")) {
       const scope = yield* nearestPackageScope(dir, state);
       if (scope && scope.pkg.imports != null) {
+        const from = request.parent ?? dir;
         if (id === "#" || id.startsWith("#/") || id.endsWith("/")) {
-          throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
+          throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + from, TypeError);
         }
         let target;
         try {
-          target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
+          target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, from, true, state);
         } catch (err) {
           if (codeOf2(err) === "ERR_MODULE_NOT_FOUND") return null;
           throw err;
         }
         if (target != null) return yield* finalizeTarget(target, scope.packageJsonPath);
-        throw error("ERR_PACKAGE_IMPORT_NOT_DEFINED", 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + " imported from " + dir, TypeError);
+        throw error("ERR_PACKAGE_IMPORT_NOT_DEFINED", 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + " imported from " + from, TypeError);
       }
     }
     const self = yield* loadPackageSelf(id, dir, state);
@@ -18032,8 +18036,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
  * Resolve a module ID from a given directory.
  * Returns the resolved VFS path, or null.
  */
-function __resolveFrom(id, fromDir) {
-  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\/+/, ""));
+function __resolveFrom(id, fromDir, parentFile) {
+  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\/+/, ""), typeof parentFile === "string" ? { parent: parentFile } : undefined);
   if (!found) return null;
   return found.builtin ? "node:" + found.builtin : found.path.replace(/^\/+/, "");
 }
@@ -19527,7 +19531,7 @@ function __requireFrom(id, fromDir, parent, required = true) {
     const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
     return __loadModule(key, key, false, parent, esModule);
   }
-  const resolved = __resolveFrom(id, fromDir);
+  const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
 }

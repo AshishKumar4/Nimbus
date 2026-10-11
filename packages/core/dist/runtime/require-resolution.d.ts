@@ -72,6 +72,12 @@ export interface CommonJsResolution {
 export interface RequireResolveOptions {
     /** Already absolute. Undefined is the parent lookup, [] is no lookup. */
     paths?: readonly string[];
+    /**
+     * The requiring module's filename, which an imports ("#name") refusal says
+     * it is imported from, as Node's Module._resolveFilename passes the
+     * parent's path; the directory resolved from where there is none.
+     */
+    parent?: string;
 }
 /** Node's node_modules lookup paths, with no node_modules/node_modules. */
 export declare function requireNodeModulePaths(fromDir: string): string[];
