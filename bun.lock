@@ -50,8 +50,10 @@
       "version": "0.1.0",
       "dependencies": {
         "@nimbus-sh/core": "workspace:^",
+        "@nimbus-sh/fabric": "workspace:^",
         "@nimbus-sh/sdk": "workspace:^",
         "@nimbus-sh/worker": "workspace:^",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "wrangler": "^4.143.0",
