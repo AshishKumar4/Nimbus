@@ -309,12 +309,13 @@ const FILES = {
     'input.on("end", () => { input.destroy(); });',
     'input.on("close", () => { new tty.WriteStream(2).write("TTY-ERR\\n"); new tty.WriteStream(1).write("TTY " + JSON.stringify(got) + " " + process.stdin.listenerCount("data") + "\\n"); });',
   ].join('\n'),
-  // Its only reader of the terminal gone, the program exits.
+  // Its only reader of stdin gone, the program exits, its input still open.
   'tty-release.js': [
+    'const t0 = Date.now();',
     'const input = new (require("tty").ReadStream)(0);',
     'input.resume();',
-    'input.on("close", () => console.log("RELEASED"));',
     'setTimeout(() => input.destroy(), 50);',
+    'process.on("exit", () => console.log("RELEASED " + (Date.now() - t0 < 3000)));',
   ].join('\n'),
   'url.js': [
     'const url = require("url");',
@@ -468,8 +469,8 @@ try {
     assert.match(ttyRun.stdout, /^TTY "TTY-IN\\n" 0$/m, `a tty.ReadStream reads stdin and lets go of it, a tty.WriteStream writes stdout: ${JSON.stringify(ttyRun)}`);
     assert.match(`${ttyRun.stdout}${ttyRun.stderr ?? ''}`, /TTY-ERR/, 'and fd 2 its stderr');
 
-    const released = await terminal.run(`cd ${W} && node tty-release.js && echo EXITED`);
-    assert.match(released.stdout, /RELEASED[\s\S]*EXITED/, `the last tty.ReadStream destroyed, the program exits: ${JSON.stringify(released)}`);
+    const released = await terminal.run(`cd ${W} && sleep 8 | node tty-release.js`);
+    assert.match(released.stdout, /^RELEASED true$/m, `the last tty.ReadStream destroyed, the program exits before its stdin ends: ${JSON.stringify(released)}`);
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });
