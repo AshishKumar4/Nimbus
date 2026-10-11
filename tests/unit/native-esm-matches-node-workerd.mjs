@@ -94,17 +94,19 @@ const FILES = {
   'ts/package.json': json({ type: 'module' }),
   'ts/lib.ts': "export function twice(n: number): number { return n * 2; }\nexport type T = string;\n",
   'ts/main.ts': "import { twice, type T } from './lib.ts';\nconst label: T = 'twice';\nconsole.log(label, twice(21), import.meta.url.endsWith('/ts/main.ts'));\n",
-  // package.json as Node's reader holds it: read once, an absent one read when written later.
+  // package.json as Node's reader holds it: read once (the rewrite to
+  // commonjs is not seen), an absent one read when written later (the
+  // second file is then an ES module, its `exports` unbound).
   'pjson/package.json': json({ name: 'pjson' }),
   'pjson/main.mjs': [
     "import { mkdirSync, writeFileSync } from 'node:fs';",
     "const dir = new URL('./late/', import.meta.url);",
     'mkdirSync(dir, { recursive: true });',
     "const kind = async (name, text) => { writeFileSync(new URL(name, dir), text); try { const ns = await import(new URL(name, dir)); return ns.kind ?? ns.default?.kind; } catch (e) { return e.name; } };",
-    "console.log('typeless', await kind('a.js', 'export const kind = typeof module;'));",
-    "writeFileSync(new URL('package.json', dir), JSON.stringify({ type: 'commonjs' }));",
-    "console.log('written', await kind('b.js', 'exports.kind = typeof module;'));",
+    "console.log('typeless', await kind('a.js', 'exports.kind = typeof module;'));",
     "writeFileSync(new URL('package.json', dir), JSON.stringify({ type: 'module' }));",
+    "console.log('written', await kind('b.js', 'exports.kind = typeof module;'));",
+    "writeFileSync(new URL('package.json', dir), JSON.stringify({ type: 'commonjs' }));",
     "console.log('rewritten', await kind('c.js', 'exports.kind = typeof module;'));",
   ].join('\n') + '\n',
   // An uncaught error's report.
