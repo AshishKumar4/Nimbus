@@ -142,7 +142,7 @@ def xJson (P : Principal) (x : X) (o : XOut) : Json :=
   match x with
   | .removeRecursive p => base "removeRecursive" p []
   | .readRange p => base "readRange" p [("offset", .ofNat 0), ("length", .ofNat 64)]
-  | .writeFileIfRevision p => base "writeFileIfRevision" p []
+  | .writeFileIfRevision p c => base "writeFileIfRevision" p [("expected", .ofNat (if c then 0 else 1))]
   | .readFileAtRevision p => base "readFileAtRevision" p []
   | .copy a b r => base "copy" a [("to", .str b), ("recursive", .bool r)]
   | .statMode p => base "statMode" p []
@@ -158,7 +158,7 @@ def genX (S : St) : Gen X := do
   let k ← below 8
   if k < 3 then return .removeRecursive p
   else if k < 4 then return .readRange p
-  else if k < 5 then return (if (← below 2) == 0 then .writeFileIfRevision p else .readFileAtRevision p)
+  else if k < 5 then return (if (← below 2) == 0 then .writeFileIfRevision p ((← below 2) == 0) else .readFileAtRevision p)
   else if k < 7 then return .copy p (← genPath S) ((← below 3) != 0)
   else return .statMode p
 
@@ -255,7 +255,8 @@ def directedX : Json := Id.run do
   let steps : List (Principal × (Op ⊕ X)) :=
     [(0, .inr (.statMode "/")), (0, .inr (.statMode "/m1")), (0, .inr (.statMode "/m2")),
      (0, .inr (.readRange "/m1/f")), (0, .inr (.readRange "/m2/g")), (0, .inr (.readFileAtRevision "/m1/f")),
-     (0, .inr (.writeFileIfRevision "/m2/g")),
+     (0, .inr (.writeFileIfRevision "/m2/g" false)), (0, .inr (.writeFileIfRevision "/m2/new" true)),
+     (0, .inr (.writeFileIfRevision "/m1/new" true)), (0, .inr (.writeFileIfRevision "/m1/missing/new" true)),
      (0, .inr (.copy "/m1/f" "/m2/f" false)), (0, .inl (.readFile "/m2/f")),
      (0, .inr (.copy "/m1/e" "/m2/e" true)), (0, .inl (.readdir "/m2/e")),
      (0, .inr (.copy "/m1" "/m2/all" true)), (0, .inl (.readdir "/m2/all")),

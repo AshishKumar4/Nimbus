@@ -362,6 +362,11 @@ function casWon(value: unknown): boolean {
   return typeof value === 'object' && value !== null && (value as VfsCasResult).ok === true;
 }
 
+/** A compare-and-write expecting revision 0, nothing there: create-if-absent (SqliteFiles.writeFileIfRevision). */
+function createsIfAbsent(expected: VfsRevision): boolean {
+  return String(expected) === '0';
+}
+
 /**
  * An asynchronous call of the namespace: `run` reported as `call`, and run
  * again once a delegation it meets is recalled (withRecall).
@@ -1401,10 +1406,10 @@ export class CompositeVFS implements VFS {
    * `Vfs/CompositeOps`, unsupported_is_enotsup.)
    */
   private capability<K extends keyof SyncVFS, T>(
-    ops: Ops, name: K, rel: string, path: string, run: (fn: NonNullable<SyncVFS[K]>) => Awaitable<T>,
+    ops: Ops, name: K, rel: string, path: string, run: (fn: NonNullable<SyncVFS[K]>) => Awaitable<T>, creates: boolean,
   ): Awaitable<T> {
     return then(this.softStat(ops, rel, true), (stat) => {
-      if (stat === null) throw new Refusal('ENOENT', path);
+      if (stat === null && !creates) throw new Refusal('ENOENT', path);
       const fn = (ops as SyncVFS)[name];
       if (typeof fn !== 'function') throw new Refusal('ENOTSUP', path, `this filesystem does not support ${String(name)}`);
       return run(fn.bind(ops) as NonNullable<SyncVFS[K]>);
@@ -1415,11 +1420,14 @@ export class CompositeVFS implements VFS {
    * readRange and the revision ops: `/` and a mount point are EISDIR;
    * anything else is the backend's, looked up before its capability is asked.
    * `written`: a write's whole content (a compare-and-write's), what
-   * observers are told stands after.
+   * observers are told stands after. `creates`: a missing final component
+   * is the backend's to answer, as a compare-and-write expecting revision 0
+   * (nothing there: O_CREAT|O_EXCL) creates it, atomically only there. Its
+   * parents are the lookup's, as any path's.
    */
   private onCapability<K extends keyof SyncVFS, T>(
     input: string, sync: boolean, name: K, write: boolean, run: (fn: NonNullable<SyncVFS[K]>, rel: string) => Awaitable<T>,
-    { written }: { written?: Uint8Array } = {},
+    { written, creates = false }: { written?: Uint8Array; creates?: boolean } = {},
   ): Awaitable<T> {
     return then(this.resolve(input, true, sync), (path) => {
       this.present(path);
@@ -1443,7 +1451,7 @@ export class CompositeVFS implements VFS {
         };
         // A backend that resolves its own paths answers a missing path itself.
         if (route.mount.options.resolvesPaths && typeof (ops as SyncVFS)[name] === 'function') return call(this.method(ops, name, path));
-        return this.capability(ops, name, route.rel, path, call);
+        return this.capability(ops, name, route.rel, path, call, creates);
       });
     });
   }
@@ -2321,7 +2329,7 @@ export class CompositeVFS implements VFS {
 
   async writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult> {
     return awaited({ syscall: 'open', path }, () =>
-      this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data }));
+      this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }));
   }
 
   async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
@@ -2370,7 +2378,7 @@ export class CompositeVFS implements VFS {
       copy: (from, to, options) => syncValue(reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () =>
         this.copyAt(from, to, options, true))),
       writeFileIfRevision: (path, data, expected) => syncValue(reported({ syscall: 'open', path }, () =>
-        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data }))),
+        this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }))),
       readFileAtRevision: (path, revision, range) => syncValue(reported({ syscall: 'open', path }, () =>
         this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)))),
     };
