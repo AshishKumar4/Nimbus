@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { WebSocketTerminal } from '../../packages/worker/src/facets/ws-terminal.ts';
-import { wsMessage } from '../../packages/worker/src/session/ws.ts';
+import * as sessionWs from '../../packages/worker/src/session/ws.ts';
 import { testBox } from './lib/test-box.mjs';
 
 const frames=[];
@@ -11,8 +11,9 @@ const terminal=new WebSocketTerminal(socket);
 const box=await testBox();
 box.shell.bindTerminal(terminal);
 const tasks=[];
-const host={shell:box.shell,kernel:box.kernel,terminal,ctx:{waitUntil(p){tasks.push(p);}},_wakeRebuild:null,processes:box.workspace.processes};
-const input=(data)=>wsMessage(host,socket,JSON.stringify({type:'input',data}));
+const host={shell:box.shell,kernel:box.kernel,terminal,ctx:{waitUntil(){assert.fail('terminal completion must belong to its own request');}},_wakeRebuild:null,processes:box.workspace.processes,
+  dispatchTerminalInput(frame){tasks.push(Promise.resolve().then(()=>sessionWs.terminalInput(host,frame)));}};
+const input=(data)=>sessionWs.wsMessage(host,socket,JSON.stringify({type:'input',data}));
 let release;
 try {
   for(const stop of ['finish','interrupt']) {
@@ -28,6 +29,7 @@ try {
     const before=tasks.length;
     await input('controlled\r');
     await entered.promise;
+    assert.ok(tasks.length>before,'the terminal completion is owned by a dispatched request');
     assert.ok(frames.some(f=>f.data?.includes('controlled')),'the typed command is flushed while its completion remains held, without a timer turn');
     let completed=false;
     const completion=Promise.all(tasks.slice(before)).then(()=>{completed=true;});
@@ -74,7 +76,7 @@ try {
     assert.ok(reported.some(args=>args.some(x=>String(x).includes(error.message))));
     assert.ok(frames.some(frame=>frame.data?.includes(error.message)),'failed input is visible to the client');
   } finally {console.error=oldError;}
-  console.log('session-terminal-input-lifetime: command completion handed to waitUntil, Ctrl-C, concurrent REPL input and rejection');
+  console.log('session-terminal-input-lifetime: self-request completion, Ctrl-C, concurrent REPL input and rejection');
 } finally {
   release?.resolve('finish');
   terminal.close();
