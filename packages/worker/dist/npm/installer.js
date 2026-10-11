@@ -309,16 +309,11 @@ export class NpmInstaller {
             return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
         }
         // ── Phase 3: Diff (cache check) ─────────────────────────────────
-        // Per placement: a nested copy is checked at its own directory. A
-        // project in the engine is read there, one lookup a placement, as its
-        // bulk paths read it; a mounted one through the invoking principal's view.
+        // Per placement: a nested copy is checked at its own directory, read
+        // once through the invoking principal's view (and its read cache).
         phaseStart = Date.now();
         setInstallPhase('diff');
         const toFetch = [];
-        const engine = engineDir === null ? null : this.store.as(opts.cred);
-        const manifestAt = async (placement) => engine === null
-            ? project.readFileString(`${nmDir}/${placement}/package.json`)
-            : engine.readFileString(`${engineDir}/node_modules/${placement}/package.json`);
         for (const target of hoistPlacements(hoistPlan)) {
             const { pkg } = target;
             // Already installed at the placement: that version, and (where the
@@ -327,7 +322,7 @@ export class NpmInstaller {
             if (locked === undefined || locked.integrity === pkg.integrity) {
                 let version;
                 try {
-                    version = JSON.parse(await manifestAt(target.placement)).version;
+                    version = JSON.parse(await project.readFileString(`${nmDir}/${target.placement}/package.json`)).version;
                 }
                 catch { /* none, or corrupt: install it */ }
                 if (version === pkg.version) {
@@ -395,7 +390,7 @@ export class NpmInstaller {
         // them, but those of a package that failed.
         // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
         const linked = failedAt.size === 0 ? resolved : new Map([...resolved].filter(([at]) => !failedAt.has(at)));
-        await withRecall(() => this.linkBins(linked, engine === null ? { fs: project, nmDir } : { engine, nmDir: `${engineDir}/node_modules` }, []));
+        await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, []));
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         // The lockfile is the inventory pruning reads, so it records what is on
