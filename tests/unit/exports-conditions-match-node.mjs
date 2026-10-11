@@ -55,6 +55,8 @@ const pPkg = JSON.parse(files['node_modules/p/package.json']);
 // Intentional divergence: build/browser's historically permissive policy
 // accepts bare targets and falls through null conditions. Node never uses it.
 assert.equal(resolveExports({ require: null, default: 'compat.js' }, '.', ['require'], BUILD_BROWSER_PACKAGE_MAP_POLICY), 'compat.js');
+assert.equal(resolveExports({ browser: '', default: './default.js' }), './default.js', 'build/browser keeps its empty-string condition fallback');
+assert.equal(resolveExports(['', './array.js']), './array.js', 'build/browser keeps its empty-string array fallback');
 assert.equal(resolveExports({ browser: './browser.js', default: './default.js' }), './browser.js');
 
 for (const conditions of [[], ['development']]) {
