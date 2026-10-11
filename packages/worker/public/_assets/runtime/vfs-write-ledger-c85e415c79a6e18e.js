@@ -1942,9 +1942,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       readTrusted() {
         return readLease !== null && readLease.logged === logged && now() < readLease.until;
       },
-      readUncovered() {
-        return readLease?.uncovered ?? NOTHING_UNCOVERED;
-      },
       readLeaseAsk() {
         if (session.grants === void 0 || runEnded) return null;
         return { at: now(), logged: answered === logged ? logged : -1 };
@@ -1961,7 +1958,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           void back.finally(() => givingBack.delete(back));
           return;
         }
-        readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1, uncovered: lease.uncovered };
+        readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
         counters.readLeases++;
         void answerReadRecalls(lease.owner);
       },
@@ -1969,7 +1966,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (readLease?.owner !== lease.owner) return;
         readLease.until = ask.at + lease.trustMs;
         readLease.logged = ask.logged;
-        readLease.uncovered = lease.uncovered;
         counters.readConfirms++;
       },
       takeFailuresError() {
@@ -1989,7 +1985,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     };
     return client;
   }
-  var NOTHING_UNCOVERED = Object.freeze([]);
   var DRAIN_WAVE_BASE = 2 ** 40;
   function failuresError(failures) {
     const gone = failures.find((failure) => failure.errno === "ESRCH");
