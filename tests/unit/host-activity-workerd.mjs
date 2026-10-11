@@ -171,7 +171,7 @@ export class Host extends DurableObject {
       const before=await peer.status();
       try{if(cause==='release')await owner.releasePassive();else if(cause==='coordinator-reset')await owner.abortSelf();else if(cause==='peer-reset')await peer.abortSelf();}catch{}
       let after;
-      for(let i=0;i<100;i++){after=await peer.status();if(after.watches===0)break;await new Promise(resolve=>setTimeout(resolve,10));}
+      for(let i=0;i<100;i++){after=await this.env.PEER.get(this.env.PEER.idFromName(name)).status();if(after.watches===0)break;await new Promise(resolve=>setTimeout(resolve,10));}
       passiveCases.push({cause,state,before:before.watches,after:after.watches});
     }
     return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,streamCases,passiveCases};

@@ -171,7 +171,7 @@ const out3AtExit = new Map();
 const realExit = processes.exit.bind(processes);
 processes.exit = (pid, code) => { if (pid === oom.pid && !out3AtExit.has(pid)) out3AtExit.set(pid, out3()); return realExit(pid, code); };
 const observing = hostActivity(ctx).acquire();
-await observing.ready;
+for (const observation of hostActivity(ctx).observations) await observation.current?.ready;
 world.die(oomRow.facet);
 await settle(() => processes.get(oom.pid)?.state !== 'running');
 observing.release();

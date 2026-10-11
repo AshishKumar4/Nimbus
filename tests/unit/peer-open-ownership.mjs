@@ -5,6 +5,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 import { peerPlacement } from '../../packages/fabric/src/process-host.ts';
+import { HOSTED_RESIDENCY_HEADER, HOSTED_WEBSOCKET_CAPABILITY_HEADER } from '../../packages/fabric/src/peer-host.ts';
 
 adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
 const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: ['nodejs_compat'], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
@@ -61,6 +62,10 @@ for (const reset of [false, true]) {
   assert.equal(before.found, true);
   assert.equal(before.facet, t.world.boots[0].facetName);
   assert.equal([...peer.peerHost.records.values()][0].residencies.size, 1, 'one passive socket belongs to this coordinator incarnation');
+  const unauthorized = await peer.peerHost.reside(new Request('https://peer.invalid/', { headers: {
+    [HOSTED_RESIDENCY_HEADER]: placement.workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: 'wrong-capability',
+  } }));
+  assert.equal(unauthorized.status, 404, 'a derived worker key cannot claim coordinator residency');
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'idle owns no peer RPC stub');
   const lease = hostActivity(t.ctx).acquire(); await lease.ready;
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 1, 'only the active fetch watch owns a stub');
@@ -105,6 +110,7 @@ for (const code of [1000, 1005, 1006, 'error']) {
   const lease = hostActivity(t.ctx).acquire(); await lease.ready;
   const peer = [...t.peers.values()][0];
   const record = [...peer.peerHost.records.values()][0];
+  for (let i = 0; i < 20 && !record.watchers.size; i++) await turns();
   const server = [...record.watchers.keys()][0];
   assert.equal(hostActivity(peer.ctx).owners.size, 1);
   const replies = [], close = server.close.bind(server);
