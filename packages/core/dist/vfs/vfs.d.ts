@@ -181,6 +181,12 @@ export interface VFS {
         read: boolean;
         write: boolean;
     }): Awaitable<VfsOpenFile>;
+    /**
+     * The store its files' numbers (VfsStat.ino) are its own in: one object
+     * for every view of the same files (`as`), whatever wraps them, and another
+     * for any other files. Absent: the backend object is.
+     */
+    readonly fileStore?: object;
     /** rm -r; nothing returned means the whole operand went. */
     removeRecursive?(path: string): Awaitable<VfsRemoval | void>;
     symlink?(target: string, path: string): Awaitable<void>;

@@ -243,6 +243,12 @@ class MountedDescription {
             return rethrow();
         }
     }
+    discard() {
+        this.pending = [];
+        this.held = 0;
+        this.options.scope.held.delete(this);
+        return this.file.close();
+    }
     pendingBytes() { return this.held; }
     applyPending(base) { return apply(this.pending, base); }
     hold(write, bytes, admit) {

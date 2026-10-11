@@ -23,6 +23,8 @@ export class MemoryVFS {
     root;
     clock = 0;
     inos = 0;
+    /** VFS.fileStore: this one, through any wrapper of it. */
+    fileStore = this;
     sync = this;
     constructor(owner = { uid: 0, gid: 0 }) {
         this.owner = owner;

@@ -725,7 +725,7 @@ export class SqliteRuntimeFsBridge {
                 return;
             this.scope.waveDescriptions.delete(id);
             if (this.scope.handles.has(handleId))
-                this.close(handleId);
+                return this.descriptors.close(handleId);
         },
     };
     waveDescription(id) {

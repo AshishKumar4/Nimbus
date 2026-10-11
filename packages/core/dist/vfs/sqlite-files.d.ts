@@ -20,6 +20,8 @@ export declare class SqliteFiles implements VFS {
     /** The database's change feed, in this principal's view (names it could list). */
     readonly changes: VfsChanges;
     constructor(engine: SqliteVFS, view: CredentialedVfs);
+    /** VFS.fileStore: the database, through every principal's view of it. */
+    get fileStore(): object;
     /** The engine's credentialed view this speaks for (for the engine's own callers). */
     get credentialed(): CredentialedVfs;
     as(cred: VfsCred, actor?: string, options?: VfsViewOptions): SqliteFiles;

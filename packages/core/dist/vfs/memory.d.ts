@@ -14,6 +14,8 @@ export declare class MemoryVFS implements VFS {
     private readonly root;
     private clock;
     private inos;
+    /** VFS.fileStore: this one, through any wrapper of it. */
+    readonly fileStore: object;
     readonly sync: SyncVFS;
     constructor(owner?: {
         uid: number;
