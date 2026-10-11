@@ -27,6 +27,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
@@ -338,6 +339,7 @@ async function spawnEmbedderWorker(request: Request, env: any, sessionId: string
 }
 
 async function probeHostLoss(request: Request, env: any, sessionId: string): Promise<Response> {
+  let owner;
   try {
     if (env.NIMBUS_DEBUG !== '1') return new Response('Not found', { status: 404 });
     const verified = await verifyRequestToken(request, env);
@@ -348,13 +350,14 @@ async function probeHostLoss(request: Request, env: any, sessionId: string): Pro
     if (input.action === 'mode') return Response.json({ mode: processHostMode(env) });
     if (!Number.isSafeInteger(input.pid) || input.pid! <= 0 || !['inspect', 'state', 'facet-reset', 'host-reset'].includes(input.action ?? '')) return new Response('Bad probe request', { status: 400 });
     const coordinator = env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`).toString();
-    const owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromString(coordinator));
+    owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromString(coordinator));
     const rows = await owner._rpcListProcesses();
     const process = rows.find((row: { pid: number }) => row.pid === input.pid);
     if (!process) return new Response('Unknown process', { status: 404 });
     if (input.action === 'state') return Response.json(process);
     for (let attempt = 0; attempt < 4; attempt++) {
       const peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${coordinator}:proc:${input.pid}:${attempt}`));
+      try {
       const before = await peer._rpcProbePeer(input.pid, coordinator, 'inspect');
       if (!before.found) continue;
       if (input.action === 'inspect') return Response.json(before);
@@ -362,18 +365,20 @@ async function probeHostLoss(request: Request, env: any, sessionId: string): Pro
         return Response.json(await peer._rpcProbePeer(input.pid, coordinator, input.action));
       } catch (error) {
         if (input.action !== 'host-reset') throw error;
-        peer[Symbol.dispose]?.();
         const fresh = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${coordinator}:proc:${input.pid}:${attempt}`));
+        try {
         const after = await fresh._rpcProbePeer(input.pid, coordinator, 'inspect');
         if (after.incarnation === before.incarnation) throw new Error('the hosting actor did not reset');
         return Response.json({ reset: true, before: before.incarnation, after: after.incarnation });
+        } finally { disposeRpcResource(fresh); }
       }
+      } finally { disposeRpcResource(peer); }
     }
     return new Response('Peer process not found', { status: 404 });
   } catch (error) {
     if (error instanceof NimbusAuthError) return authErrorResponse(error);
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
-  }
+  } finally { disposeRpcResource(owner); }
 }
 
 function authRequiredResponse(): Response {

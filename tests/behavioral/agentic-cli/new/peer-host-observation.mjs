@@ -61,6 +61,16 @@ try {
     }
     a.check('the refused work reports host loss', /host.*reset|peer.*restarted/i.test(resumed.buf), resumed.buf.slice(-700));
     a.check('the lost process is terminal before the next work', afterUse.exitCode === 137, JSON.stringify(afterUse));
+
+    const third = await mintSession(); sessions.push(third);
+    const quiet = await server(third);
+    const beforeIdle = await probe(third, 'inspect', quiet.pid);
+    await quiet.terminal.close();
+    // Keep only the coordinator reachable. These status reads own no guest work
+    // and never contact its peer; the hosting actor must naturally hibernate.
+    for (let i = 0; i < 75; i++) { await sleep(2000); await probe(third, 'state', quiet.pid); }
+    const afterIdle = await probe(third, 'inspect', quiet.pid);
+    a.check('an idle hosting peer naturally changes incarnation', beforeIdle.incarnation !== afterIdle.incarnation, JSON.stringify({ beforeIdle, afterIdle }));
   }
 } finally {
   for (const terminal of terminals) await terminal.close().catch(() => {});
