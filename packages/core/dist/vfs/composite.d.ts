@@ -134,7 +134,7 @@ export interface VfsRoute {
     readonly absentReason?: string;
 }
 /** A pinned file's backend operations (CompositeVFS.pin), handed the backend's own path. */
-export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile'> & Pick<VFS, 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
+export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile' | 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
 /** A file as an open holds it (CompositeVFS.pin): its operations, the path they take, and the namespace's name for it. */
 export interface PinnedFile {
     readonly files: PinnedFiles;
@@ -390,7 +390,7 @@ export declare class CompositeVFS implements VFS {
         follow: boolean;
         sync: boolean;
     }): Awaitable<PinnedFile>;
-    /** The backend operations on one pinned file (pin): each named as the namespace names it. */
+    /** The backend operations on one pinned file (pin): its mutations this view's, each named as the namespace names it. */
     private pinned;
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves

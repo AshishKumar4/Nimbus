@@ -191,6 +191,56 @@ function principalKey(principal) {
     const id = cred === null ? '-' : `${cred.uid}:${cred.gid}:${[...cred.groups].join(',')}:${cred.umask}`;
     return actor === undefined ? id : `${id}@${actor}`;
 }
+/** A pinned file's backend operations (CompositeVFS.pin): an operation its backend lacks is ENOTSUP, but access, which only refuses. */
+class Pinned {
+    backend;
+    name;
+    sync;
+    mutate;
+    constructor(backend, 
+    /** The namespace path it was pinned at: what its errors name. */
+    name, sync, mutate) {
+        this.backend = backend;
+        this.name = name;
+        this.sync = sync;
+        this.mutate = mutate;
+    }
+    call(syscall, run) {
+        return this.sync ? reported({ syscall, path: this.name }, run) : awaited({ syscall, path: this.name }, run);
+    }
+    changing(syscall, run, written) {
+        return this.call(syscall, () => this.mutate(syscall, run, written));
+    }
+    /** The backend's optional operation `name`: ENOTSUP, before anything is asked, when it has none. */
+    optional(name) {
+        const fn = this.backend[name];
+        if (typeof fn !== 'function')
+            throw new Refusal('ENOTSUP', this.name, `this filesystem does not support ${name}`);
+        return fn.bind(this.backend);
+    }
+    /** A mutation by an optional operation: refused as ENOTSUP before the namespace hears of it. */
+    changingBy(syscall, name, run) {
+        return this.call(syscall, () => {
+            const fn = this.optional(name);
+            return this.mutate(syscall, () => run(fn));
+        });
+    }
+    stat(path, options) { return this.call('stat', () => this.backend.stat(path, options)); }
+    readFile(path) { return this.call('open', () => this.backend.readFile(path)); }
+    readdir(path) { return this.call('scandir', () => this.backend.readdir(path)); }
+    readRange(path, offset, length) { return this.call('read', () => this.optional('readRange')(path, offset, length)); }
+    writeFile(path, data, options) { return this.changing('open', () => this.backend.writeFile(path, data, options), data); }
+    writeRange(path, offset, bytes) { return this.changingBy('write', 'writeRange', (fn) => fn(path, offset, bytes)); }
+    truncate(path, size) { return this.changingBy('ftruncate', 'truncate', (fn) => fn(path, size)); }
+    chmod(path, mode) { return this.changingBy('fchmod', 'chmod', (fn) => fn(path, mode)); }
+    chown(path, uid, gid) { return this.changingBy('fchown', 'chown', (fn) => fn(path, uid, gid)); }
+    utimes(path, atime, mtime) { return this.changingBy('futimes', 'utimes', (fn) => fn(path, atime, mtime)); }
+    access(path, mode) {
+        const access = this.backend.access;
+        if (access !== undefined)
+            return this.call('open', () => access.call(this.backend, path, mode));
+    }
+}
 export class CompositeVFS {
     table;
     /** The last st_dev a mount was given. */
@@ -855,11 +905,9 @@ export class CompositeVFS {
         });
         return sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
     }
-    /** The backend operations on one pinned file (pin): each named as the namespace names it. */
+    /** The backend operations on one pinned file (pin): its mutations this view's, each named as the namespace names it. */
     pinned(route, ops, sync) {
-        const backend = ops;
-        const call = (syscall, run) => (sync ? reported({ syscall, path: route.path }, run) : awaited({ syscall, path: route.path }, run));
-        const mutate = (syscall, run, written) => call(syscall, () => {
+        return new Pinned(ops, route.path, sync, (syscall, run, written) => {
             if (route.mount.options.readOnly)
                 throw new Refusal('EROFS', route.path, `${route.mount.point} is mounted read-only`);
             return this.reportWrite({ path: route.path, route, ops, follow: false, kind: 'write', ...(written === undefined ? {} : { written }) }, () => {
@@ -867,20 +915,6 @@ export class CompositeVFS {
                 return run();
             }, sync);
         });
-        const { readRange, writeRange, truncate, chmod, chown, utimes, access } = backend;
-        return {
-            stat: (at, opts) => call('stat', () => backend.stat(at, opts)),
-            readFile: (at) => call('open', () => backend.readFile(at)),
-            readdir: (at) => call('scandir', () => backend.readdir(at)),
-            writeFile: (at, data, opts) => mutate('open', () => backend.writeFile(at, data, opts), data),
-            ...(readRange === undefined ? {} : { readRange: (at, offset, length) => call('read', () => readRange.call(backend, at, offset, length)) }),
-            ...(writeRange === undefined ? {} : { writeRange: (at, offset, bytes) => mutate('write', () => writeRange.call(backend, at, offset, bytes)) }),
-            ...(truncate === undefined ? {} : { truncate: (at, size) => mutate('ftruncate', () => truncate.call(backend, at, size)) }),
-            ...(chmod === undefined ? {} : { chmod: (at, mode) => mutate('fchmod', () => chmod.call(backend, at, mode)) }),
-            ...(chown === undefined ? {} : { chown: (at, uid, gid) => mutate('fchown', () => chown.call(backend, at, uid, gid)) }),
-            ...(utimes === undefined ? {} : { utimes: (at, atime, mtime) => mutate('futimes', () => utimes.call(backend, at, atime, mtime)) }),
-            ...(access === undefined ? {} : { access: (at, mode) => call('open', () => access.call(backend, at, mode)) }),
-        };
     }
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
