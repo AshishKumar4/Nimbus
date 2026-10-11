@@ -400,7 +400,7 @@ export class NpmInstaller {
         else if (!usedLockfile || pruned > 0)
             this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir);
         // ── Update package.json if explicit packages were added ─────────
-        if (named.length > 0 && manifest !== null && failed.length === 0) {
+        if (named.length > 0 && failed.length === 0) {
             await this.updatePackageJson(projDir, project, principal, named, resolved);
         }
         // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
@@ -1191,9 +1191,11 @@ export class NpmInstaller {
         const advised = new Set();
         const pkgJsonPath = projDir + '/package.json';
         let manifest = null;
+        // A package.json the install cannot read fails it; a corrupt one declares nothing.
         if (await fs.exists(pkgJsonPath)) {
+            const text = await fs.readFileString(pkgJsonPath);
             try {
-                const parsed = JSON.parse(await fs.readFileString(pkgJsonPath));
+                const parsed = JSON.parse(text);
                 if (isManifest(parsed))
                     manifest = parsed;
             }

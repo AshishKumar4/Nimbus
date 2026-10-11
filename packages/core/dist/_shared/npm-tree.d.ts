@@ -140,9 +140,9 @@ export declare function projectRoots(manifest: ProjectManifest | null, named: re
  * saves it after an install: each package that installed (`installed`: the
  * version under its name) under its save type, at `^version` unless the
  * spec given is a range `^version` would widen, an alias as the package it
- * names; out of the fields its save type excludes; an optional one also
- * under dependencies (npm's affordance for older npms). One that did not
- * install keeps the spec given.
+ * names; out of the fields its save type excludes. One that did not install
+ * keeps the spec given. As npm writes package.json, a name in
+ * optionalDependencies is not repeated in dependencies.
  */
 export declare function saveNamed(manifest: ProjectManifest, named: readonly NamedPackage[], installed: (name: string) => string | null): ProjectManifest;
 /** What a host answers for a request it resolves. */

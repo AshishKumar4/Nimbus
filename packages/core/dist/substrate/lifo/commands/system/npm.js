@@ -236,7 +236,9 @@ async function undoJournal(vfs, journal, stderr, recovering = false) {
                 await stderr.write(`npm WARN restored ${from}, which an install that did not finish had moved\n`);
         }
         catch (error) {
-            await stderr.write(`npm ERR! could not restore ${from}; its copy is kept at ${to}: ${describeError(error)}\n`);
+            await stderr.write(kind === 'publish'
+                ? `npm ERR! could not remove ${to}, which an install that did not finish published: ${describeError(error)}\n`
+                : `npm ERR! could not restore ${from}; its copy is kept at ${to}: ${describeError(error)}\n`);
             restored = false;
         }
     }
