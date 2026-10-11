@@ -30,6 +30,7 @@ for (const method of ['fsList', 'reportExit']) {
     const pendingReply = Promise.withResolvers();
     let disposed = 0, replyDisposed = 0;
     const env = { NIMBUS_SESSION: {
+      idFromName: (id) => id,
       idFromString: (id) => id,
       get: () => ({ supervisorOp: () => pendingReply.promise, [Symbol.dispose]() { disposed++; } }),
     } };
