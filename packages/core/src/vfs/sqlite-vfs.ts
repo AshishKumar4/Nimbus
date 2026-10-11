@@ -28,7 +28,7 @@
  */
 
 import { VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
-import { normalizeVfsPath, parentVfsPath, pathsOverlap } from './path.js';
+import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap } from './path.js';
 import { PathRevisions, type OwnGeneration } from './path-revisions.js';
 import { z } from 'zod/v4';
 import {
@@ -51,23 +51,15 @@ import {
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { concatBytes, dec, enc } from '../_shared/bytes.js';
 import {
-  acquireSupervisorAllocation,
-  tryAcquireSupervisorAllocation,
-} from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { enc, dec } from '../_shared/bytes.js';
-import {
-  decodeWriteBatchStream,
   w7ChunkCount,
   w7Chunks,
-  encodeWriteBatchStream,
   type BatchChunkEntry,
   type BatchInodeEntry,
   type BatchWritePayload,
   type VfsInodeKind,
-  type W7Attrs,
   type W7DataCall,
-  type W7DecodedRecord,
   type W7PathCall,
 } from '@nimbus-sh/platform/w7-frame.js';
 import {
@@ -80,7 +72,25 @@ import { RecallRequired, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource, type Principal, type VfsContentRef, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
-import { SYSCALL_VERDICTS, type VfsErrorCode } from './vfs-error.js';
+import { errnoCodeOf, vfsError } from './vfs-error.js';
+import {
+  inodeKind,
+  linkedSignal,
+  untilAborted,
+  validateFileChunks,
+  validateInodeShape,
+  withUmask,
+  type WaveDescriptions,
+  type WaveFileHooks,
+  type WaveFiles,
+  type WaveLocalOp,
+  type WaveScope,
+  type WaveSequence,
+  type WaveSequenceAnswer,
+  type WriteBatchStreamResult,
+  type WriteStreamOptions,
+  type WriteStreamReceipt,
+} from '../runtime/wave-contracts.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import {
   CDC_MIN,
@@ -513,16 +523,14 @@ export interface CredentialedVfs {
   copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string; mutationOwner?: string }): Promise<number>;
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number };
   /**
-   * writeBatch where the namespace places it (setWaveRouter): one atomic
-   * batch when every record lands on this filesystem; else the same records
-   * as a wave, each applied where it lands, in order, refused as a whole
-   * call is (its error) at the first refusal.
+   * A wave on this filesystem as this view's caller (WaveIngest): its
+   * delegations, its lease and whether it continues as it is answered,
+   * taken now, in the caller's turn; `work` applies the wave through the
+   * scope. Answered once what it committed is published, or held (`held`).
    */
-  writeBatchPlaced(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }>;
-  writeStream(
-    stream: ReadableStream<Uint8Array>,
-    options?: WriteStreamOptions,
-  ): Promise<WriteBatchStreamResult>;
+  wave(options: WriteStreamOptions, work: (scope: WaveScope) => Promise<WriteBatchStreamResult>): Promise<WriteBatchStreamResult>;
+  /** `fn`, a lookup made on this view's caller's behalf: as its delegations, in this turn. */
+  asCaller<T>(fn: () => T): T;
   mkdirBatch(paths: string[]): number;
   revision(path?: string): number;
   /**
@@ -566,247 +574,6 @@ export interface CredentialedVfs {
   readonly epoch: string;
 }
 
-export interface WriteBatchStreamProgress {
-  /** 1-based sequence of the last durable publish group; zero means none. */
-  committedGroupSequence: number;
-  committedPathCount: number;
-  /**
-   * The wave's operations committed, in order: each removal, directory,
-   * file, rename, truncate, attribute change and call counts one. On a
-   * refusal, the refused operation is the one at this index.
-   */
-  committedOps: number;
-  inodes: number;
-  chunks: number;
-  /** Each published file and link, by the path the stream named, as stat will report it. */
-  receipts: WriteStreamReceipt[];
-  /** A sequenced wave's answer (WriteStreamOptions.sequence). */
-  sequence?: WaveSequenceAnswer;
-  /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
-  mutations?: WaveMutation[];
-  /**
-   * Answered at its commit while a commit of its writer's is held for its
-   * publication (SqliteVFS.as's `continues`; its own, or, for a resend, the
-   * attempt's before it): what its writer's runtime waits for before an
-   * effect leaves by a way the session's gate does not see
-   * (RuntimeFsBridge.published).
-   */
-  held?: true;
-}
-
-/**
- * One op a wave committed (`index`, its place among the wave's ops, from 0):
- * its path's revision right before it and the session's right after, read
- * in the turn it committed, as a single call's receipt has them
- * (VfsMutationReceipt): a copy dated at or above `before` was current, and
- * with this op on it is current at `after`.
- */
-export interface WaveMutation {
-  index: number;
-  before: number;
-  after: number;
-}
-
-/**
- * A sequenced writer's wave (a process's filesystem client): its ops are
- * numbered `first`, `first + 1`, … in order, under `writer` (the pid and
- * writer epoch the session admits the wave under). The session keeps, per
- * writer, the highest number it has committed (its cursor), moved in the
- * transaction that commits that op, so an op a re-sent wave carries again
- * is answered, never applied twice. `ack`: the highest cursor the writer
- * has had answered; the refusal stored for it is dropped.
- */
-export interface WaveSequence {
-  writer: string;
-  first: number;
-  ack: number;
-  /** The process whose writer it is: what the session keeps of the process (its waves' open descriptions) is kept under it. */
-  pid: number;
-}
-
-/**
- * What a sequenced wave committed: every op up to `cursor`. `refused`: the
- * op the session refused (its number, its errno); nothing after it in the
- * wave was applied. The same answer comes back for a re-send of the wave.
- */
-export interface WaveSequenceAnswer {
-  cursor: number;
-  refused?: { seq: number; errno: string; message: string };
-}
-
-/** A streamed file's stat as published: what a producer's git index entry records. */
-export interface WriteStreamReceipt {
-  path: string;
-  /** An `open` call's: the session's descriptor of the description it opened (WaveDescriptions.open). */
-  handle?: number;
-  ino: number;
-  mode: number;
-  size: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  uid: number;
-  gid: number;
-  dev: number;
-  /** The session's revision once a call's file landed: what its writeFile answers. */
-  revision?: number;
-}
-
-/**
- * A wave's consecutive calls that commit together, in one transaction (the
- * stream's call group): at most this many, or this many bytes of their
- * data. Measured in process: a writeFile call alone cost 177 us, most of it
- * its own commit (2026-10-07, apply-prof); a group pays that once.
- */
-const CALL_GROUP_OPS = 512;
-const CALL_GROUP_BYTES = 1024 * 1024;
-
-/** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
-export const ROUTED_LINK_TARGET_MAX = 4096;
-
-/**
- * The largest file a wave writes to a mount. A routed file is one
- * whole-file writeFile, its bytes held until that call under credit its
- * record reserves whole when it is admitted (so an admitted record always
- * finishes; at most the shared write credit, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
- * and half of it, so a held file never starves the wave); a larger one is
- * refused (ENOTSUP, naming this) before anything is touched. A backend that
- * declares an atomic streaming write could take more; none does yet.
- */
-export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
-
-/**
- * The most bytes one data call (W7DataCall: a writeFile, appendFile or
- * write at an offset) carries. Its bytes are held until the call is made,
- * under credit its record reserves whole when it begins, as a routed
- * file's are; a client splits a larger write into pieces of this size
- * (process-fs-client's DATA_PIECE_BYTES, WAVE_BYTES). A larger call is
- * refused (EINVAL) before any of its bytes are read.
- */
-export const DATA_CALL_MAX = 4 * 1024 * 1024;
-
-/** `cred` with the umask a process's call was made under, when the call carries one (W7Call umask). */
-function withUmask(cred: VfsCred, umask: number | undefined): VfsCred {
-  return umask === undefined || umask === cred.umask ? cred : { ...cred, umask };
-}
-
-/**
- * A wave's record that the namespace places on a mount (WaveRouter.apply),
- * each the single call a program would make there. Paths are where the
- * namespace's lookup placed them ('/'-rooted, the directory's links
- * resolved). A link is made at `slot` beside its name first: a name the
- * wave owns (its id and the record's index), renamed over the link's.
- */
-export type RoutedWaveRecord =
-  | { readonly type: 'delete'; readonly path: string }
-  | { readonly type: 'directory'; readonly path: string; readonly mode: number }
-  | { readonly type: 'file'; readonly path: string; readonly mode: number; readonly bytes: Uint8Array }
-  | { readonly type: 'symlink'; readonly path: string; readonly target: string; readonly slot: string }
-  /** A process's call (W7Call), made by the namespace's operation of that name, its data whole. */
-  | { readonly type: 'call'; readonly call: W7PathCall }
-  | { readonly type: 'data-call'; readonly call: W7DataCall; readonly path: string; readonly mode: number; readonly bytes: Uint8Array; readonly offset?: number }
-  /** A process's rename, truncate or attribute change (W7 v4), made by the namespace's operation of that name. */
-  | { readonly type: 'rename'; readonly from: string; readonly to: string }
-  | { readonly type: 'truncate'; readonly path: string; readonly size: number }
-  | { readonly type: 'setattr'; readonly path: string; readonly attrs: W7Attrs };
-
-/** A routed name's stat once published: what its receipt reports. */
-export interface RoutedStat {
-  readonly ino: number;
-  readonly mode: number;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly ctimeMs: number;
-  readonly uid: number;
-  readonly gid: number;
-  readonly dev: number;
-}
-
-/**
- * The namespace above this filesystem (SqliteVFS.setWaveRouter): every
- * record of every wave, whoever streams it, is placed by its lookup, and one
- * it places on a mount is applied there by its own operations. ProcessFiles
- * installs its CompositeVFS.
- */
-export interface WaveRouter {
-  /**
-   * The namespace path ('/'-rooted) directory `path` resolves to by the
-   * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
-   * that does not exist yet is kept as named, after the nearest ancestor
-   * that resolves. Synchronous while the lookup stays on synchronous
-   * backends, so a commit can recheck a placement in its own turn, and the
-   * engine runs it as the wave's holder (SqliteVFS.withHolds).
-   */
-  resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
-  /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
-  placement(path: string): string | null;
-  /** The namespace's mount-table generation (CompositeVFS.mountGeneration): a placement made under another may be stale. */
-  mounts(): number;
-  /**
-   * Whether resolved namespace path `path` is a directory the namespace
-   * composes (one above a mount point): a removal of it is EBUSY and a file
-   * or link at it EISDIR, before anything commits.
-   */
-  composes(path: string): boolean;
-  /**
-   * Apply `record` on the namespace as `cred`; `guard` runs right before
-   * each call to the backend (the wave's admission and cancellation). A
-   * refusal throws its errno. Answers the published name's stat, for its
-   * receipt (null for a removal). `owner`, the wave's exclusive-mutation
-   * lease, is presented to the namespace's lease check, as a group commit
-   * presents it here.
-   */
-  apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
-}
-
-/**
- * How far an earlier attempt of the same fenced wave may have reached into
- * mounted records (`prior`: the highest record index, -1 for none), and how
- * this attempt notes its own (`note`, before the backend is called). A
- * mounted record cannot be deduplicated, so one an earlier attempt may have
- * applied is refused as outcome-unknown rather than applied again.
- */
-export interface WaveMountReach {
-  readonly prior: number;
-  note(index: number): void;
-}
-
-/** How a wave is applied (writeStream): its cancellation, lease, timing, admission and mount reach. */
-export interface WriteStreamOptions {
-  decodeDrainStartedAt?: number;
-  signal?: AbortSignal;
-  mutationOwner?: string;
-  /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
-  admit?: () => void;
-  /** Between committed groups: the isolate is given to whatever else it hosts (another session), never to this one. */
-  turn?: () => Promise<void>;
-  mountReach?: WaveMountReach;
-  sequence?: WaveSequence;
-  /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
-  descriptions?: WaveDescriptions;
-}
-
-/**
- * A process's open descriptions as its waves name them (W7Call
- * `description`): kept by the binding that serves the process, as its
- * descriptors are (SqliteRuntimeFsBridge), so the process reads, stats and
- * closes them as its own. Each one's access was decided at its open: a later
- * chmod, chown, rename or unlink never changes what it can do, and its file
- * lives until its last close.
- */
-export interface WaveDescriptions {
-  /**
-   * Open `id`, a description of the file `ino` numbers with `rights`, its
-   * access decided already (SqliteVFS.describeInode): the session's
-   * descriptor of it, or null when no file has that number any more.
-   */
-  adopt(id: string, ino: number, rights: { read: boolean; write: boolean }, path: string, cred: VfsCred): number | null;
-  /** The description `id` names, or undefined (never opened, or closed). */
-  node(id: string): VfsOpenDescription | undefined;
-  /** The session's descriptor of `id`, or undefined. */
-  handle(id: string): number | undefined;
-  close(id: string): void;
-}
-
 /**
  * The descriptions a wave's calls name: its binding's (WaveDescriptions),
  * and for a process's sequenced wave (`pid`) the ones the session kept for
@@ -817,64 +584,12 @@ interface DescribedBy {
   readonly pid: number | null;
 }
 
-export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
-
-export type WriteBatchStreamResult =
-  | (WriteBatchStreamProgress & { ok: true })
-  | (WriteBatchStreamProgress & {
-      ok: false;
-      error: {
-        code: 'ERR_WRITE_BATCH_STREAM';
-        phase: WriteBatchStreamFailurePhase;
-        message: string;
-        /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
-        errno?: string;
-      };
-    });
-
 const INODE_ROW_COLUMNS = 15;
 const CHUNK_ROW_COLUMNS = 4;
 const MANIFEST_ROW_COLUMNS = 4;
 const CONTENT_ROW_COLUMNS = 6;
 const GC_ROW_COLUMNS = 2;
 export const INODE_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / INODE_ROW_COLUMNS);
-
-/**
- * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
- * is not in every runtime this code ships to, so the combination is a small
- * linked controller instead.
- */
-export function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController();
-  const listeners: Array<() => void> = [];
-  for (const signal of signals) {
-    if (!signal) continue;
-    if (signal.aborted) { controller.abort(signal.reason); break; }
-    const onAbort = (): void => controller.abort(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-    listeners.push(() => signal.removeEventListener('abort', onAbort));
-  }
-  return { signal: controller.signal, dispose: () => { for (const remove of listeners) remove(); } };
-}
-
-/**
- * `work`, something a wave waits for, raced with the wave's `signal`: once
- * it aborts, the wave goes on at once (ending refused), and a late answer is
- * `discard`ed. The namespace's guard starts no backend call after the abort
- * (WaveRouter.apply).
- */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined, discard?: (late: T) => void): Promise<T> {
-  if (signal === undefined) return work;
-  return new Promise<T>((resolve, reject) => {
-    const abort = (): void => { work.then((late) => discard?.(late), () => {}); reject(signal.reason); };
-    if (signal.aborted) return abort();
-    signal.addEventListener('abort', abort, { once: true });
-    work.then(
-      (value) => { signal.removeEventListener('abort', abort); resolve(value); },
-      (error: unknown) => { signal.removeEventListener('abort', abort); reject(error); },
-    );
-  });
-}
 
 /** A batch's directory record over a symbolic link it does not remove: refused, never followed or replaced. */
 function linkedDirectoryRefusal(path: string): Error {
@@ -1633,17 +1348,6 @@ interface Mutation {
 /** The principal of a mutation no view made (the engine's own work). */
 const KERNEL_ORIGIN: Principal = Object.freeze({ cred: null });
 
-/** The paths a W7 record writes at (none for a chunk, a file's end or the batch's end). */
-function recordPaths(record: W7DecodedRecord): string[] {
-  switch (record.type) {
-    case 'delete': case 'truncate': case 'setattr': return [record.path];
-    case 'directory': case 'file-begin': return [record.inode.path];
-    case 'rename': return [record.from, record.to];
-    case 'call': return [record.call.path];
-    default: return [];
-  }
-}
-
 /** Whether two calls are the same principal's: one credential (sameCred) and one actor. */
 function samePrincipal(a: Principal | null, b: Principal | null): boolean {
   if (a === b) return true;
@@ -1702,7 +1406,7 @@ const LEAF_READS: ReadonlySet<keyof CredentialedVfs> = new Set([
 /**
  * The synchronous mutations of a credentialed view: a view bound to a
  * mutation lease makes each within it (callerView). Spanning ones
- * (writeFileFrom, copyTreeAsync, writeStream) carry the owner per slice.
+ * (writeFileFrom, copyTreeAsync, wave) carry the owner per slice.
  */
 const OWNED_MUTATIONS: ReadonlySet<keyof CredentialedVfs> = new Set([
   'mkdir', 'writeFile', 'symlink', 'writeRange', 'truncate', 'utimes', 'chmod',
@@ -1712,7 +1416,7 @@ const OWNED_MUTATIONS: ReadonlySet<keyof CredentialedVfs> = new Set([
 
 /** The mutations of a credentialed view that span turns (their slices carry the caller's lease themselves). */
 const SPANNING_MUTATIONS: ReadonlySet<keyof CredentialedVfs> = new Set([
-  'writeFileFrom', 'copyTreeAsync', 'writeStream', 'writeBatchPlaced',
+  'writeFileFrom', 'copyTreeAsync', 'wave',
 ] satisfies (keyof CredentialedVfs)[]);
 
 /**
@@ -2127,7 +1831,7 @@ export class SqliteVFS {
   private activePipeline: Pipeline | null = null;
   /** Pipelines whose commits are held, not yet published: no read lease is granted until they are. */
   private readonly heldPipelines = new Set<Pipeline>();
-  /** Each wave being read now (writeStream), to cut (cancelStreams). */
+  /** Each wave being read now (wave), to cut (cancelStreams). */
   private readonly streams = new Set<AbortController>();
   /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
   private activeWrite = false;
@@ -2175,9 +1879,9 @@ export class SqliteVFS {
   private readonly pageDigests = new Map<string, { digest: string; next: string | null }>();
   /** Snapshot generations by name, loaded on first use. */
   private snapshotGens: Map<string, number> | null = null;
-  /** writeStreams in flight, for snapshot's quiesce. */
+  /** Waves in flight, for snapshot's quiesce. */
   /**
-   * Work that spans awaits and changes the tree across them (writeStream,
+   * Work that spans awaits and changes the tree across them (wave,
    * restoreAsync, sliced copyTree), for snapshot's quiesce.
    */
   private readonly activeWork = new Set<Promise<unknown>>();
@@ -2597,7 +2301,7 @@ export class SqliteVFS {
   private readAlong(keys: Iterable<string>): void {
     const paths = new Set<string>();
     for (const key of keys) {
-      for (let at = key; at !== '' && !paths.has(at); at = this.parentPath(at)) paths.add(at);
+      for (let at = key; at !== '' && !paths.has(at); at = parentKey(at)) paths.add(at);
     }
     this.readPriors([...paths], new Map());
   }
@@ -3066,10 +2770,6 @@ export class SqliteVFS {
 
   private now(): number { return Date.now(); }
 
-  private parentPath(path: string): string {
-    return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-  }
-
   private blobToUint8Array(blob: unknown): Uint8Array {
     if (blob instanceof Uint8Array) return blob;
     if (blob instanceof ArrayBuffer) return new Uint8Array(blob);
@@ -3117,7 +2817,7 @@ export class SqliteVFS {
     epoch: number; tableEpoch: number; cred: VfsCred; name: string; key: string; inode: INode; leafIsLink: boolean;
   } | null = null;
   private resolutionEpoch = 0;
-  /** A wave's watch for its own commit's publication (consumeStream's ownFiles): called once, at it. */
+  /** A wave's watch for its own commit's publication (waveFiles' ownFiles): called once, at it. */
   private publishWatch: ((revision: number, reshaped: boolean) => void) | null = null;
   private readonly sharedDirectories = new Map<string, { ino: number; gid: number; acl: number; mode: number }>();
 
@@ -3136,7 +2836,7 @@ export class SqliteVFS {
 
   private sharedDirectory(path: string): { ino: number; gid: number; acl: number; mode: number } | undefined {
     if (this.sharedDirectories.size === 0) return undefined;
-    for (let root = this.parentPath(path); root !== ''; root = this.parentPath(root)) {
+    for (let root = parentKey(path); root !== ''; root = parentKey(root)) {
       const registration = this.sharedDirectories.get(root);
       if (!registration) continue;
       const inode = this.inodes.get(root);
@@ -3236,8 +2936,8 @@ export class SqliteVFS {
     directory: boolean,
     staged?: ReadonlyMap<string, { mode: number; gid: number; defaultAcl: number | null }>,
   ): { mode: number; gid: number; defaultAcl: number | null } {
-    const parentKey = this.parentPath(key);
-    const parent = staged?.get(parentKey) ?? this.inodes.get(parentKey);
+    const above = parentKey(key);
+    const parent = staged?.get(above) ?? this.inodes.get(above);
     const acl = parent?.defaultAcl ?? null;
     let mode = acl === null
       ? this.creationMode(requested, cred)
@@ -3410,9 +3110,8 @@ export class SqliteVFS {
         return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
       },
       writeBatch: (payload) => this.writeBatch(payload, bound),
-      writeBatchPlaced: (payload, options) => this.writeBatchPlaced(payload, bound, origin, mutationOwner, options?.signal),
-      writeStream: (stream, options) => this.writeStream(stream,
-        mutationOwner === undefined ? options : { ...options, mutationOwner }, bound, origin),
+      wave: (options, work) => this.wave(mutationOwner === undefined ? options : { ...options, mutationOwner }, work, bound, origin),
+      asCaller: (fn) => fn(),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
       revision: (path) => this.revision(path, bound),
       contentKey: (path) => this.contentKey(path, bound),
@@ -3611,7 +3310,7 @@ export class SqliteVFS {
           if (hops === 40) throw vfsKeyError('ELOOP', path);
           const target = dec.decode(this.readWhole(inode));
           const suffix = parts.slice(index + 1).join('/');
-          const base = target.startsWith('/') ? target : `${this.parentPath(prefix)}/${target}`;
+          const base = target.startsWith('/') ? target : `${parentKey(prefix)}/${target}`;
           current = this.nameOf(suffix ? `${base}/${suffix}` : base, cred);
           restarted = true;
           break;
@@ -3747,7 +3446,7 @@ export class SqliteVFS {
   }
 
   private checkParentAccess(path: string, cred: VfsCred): void {
-    const parent = this.parentPath(normalizeVfsPath(path));
+    const parent = parentKey(normalizeVfsPath(path));
     if (parent === '') { this.checkRootWritable(path, cred); return; }
     const resolved = this.checkAccess(parent, 0o3, cred);
     if (resolved.inode?.kind !== 'directory') throw vfsKeyError('ENOTDIR', parent);
@@ -3765,7 +3464,7 @@ export class SqliteVFS {
    */
   private checkStickyParentMutation(path: string, inode: INode, cred: VfsCred): void {
     if (cred.uid === 0) return;
-    const parent = this.parentPath(normalizeVfsPath(path));
+    const parent = parentKey(normalizeVfsPath(path));
     if (parent === '') return;
     const parentInode = this.inodes.get(parent);
     if (!parentInode || (parentInode.mode & 0o1000) === 0) return;
@@ -3918,7 +3617,7 @@ export class SqliteVFS {
       // A directory above a mutated path is stamped at the clock, and one
       // whose stamp was dropped since is at the floor, which the drop raised
       // to the clock.
-      const parent = this.parentPath(key);
+      const parent = parentKey(key);
       if (parent !== '') this._record(rev, parent);
     }
     this.committedRows.clear();
@@ -4094,10 +3793,10 @@ export class SqliteVFS {
     removedAt: ReadonlyMap<string, number>,
     closedAbove: Map<string, string | null>,
   ): string | null {
-    const parent = this.parentPath(name);
+    const parent = parentKey(name);
     let behind = this.closedAbove(parent, cred, closedAbove);
     if (removedAt.size > 0) {
-      for (let dir = parent; dir !== ''; dir = this.parentPath(dir)) {
+      for (let dir = parent; dir !== ''; dir = parentKey(dir)) {
         if ((removedAt.get(dir) ?? -1) >= rev && (behind === null || dir.length < behind.length)) behind = dir;
       }
     }
@@ -4109,7 +3808,7 @@ export class SqliteVFS {
     if (dir === '') return null;
     const known = memo.get(dir);
     if (known !== undefined) return known;
-    let closed = this.closedAbove(this.parentPath(dir), cred, memo);
+    let closed = this.closedAbove(parentKey(dir), cred, memo);
     if (closed === null) {
       const inode = this.inodes.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
       if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred)) closed = dir;
@@ -4194,7 +3893,7 @@ export class SqliteVFS {
           ? 'removed'
           : Number(row.kind) === INODE_KIND_DIRECTORY ? 'changed' : undefined;
         note(path, gen, structural);
-        const parent = this.parentPath(path);
+        const parent = parentKey(path);
         if (parent !== '') note(parent, gen);
       }
       if (latest.size > SQL_DELTA_MAX_PATHS) return null;
@@ -4432,7 +4131,7 @@ export class SqliteVFS {
       const key = normalizeVfsPath(path);
       if (key === '') continue;
       holdAt(key, false);
-      holdAt(this.parentPath(key), true);
+      holdAt(parentKey(key), true);
     }
     for (const [path, change] of structural) {
       if (publication.structural.get(path) !== 'removed') publication.structural.set(path, change);
@@ -4855,7 +4554,7 @@ export class SqliteVFS {
     const builder = this.newPlan();
     builder.addInode({
       path,
-      parentPath: this.parentPath(path),
+      parentPath: parentKey(path),
       kind: 'directory',
       isDir: true,
       size: 0,
@@ -4899,7 +4598,7 @@ export class SqliteVFS {
     const made = prior ? undefined : this.creationAttrs(effectivePath, options?.mode ?? 0o666, cred, false);
     return {
       path: effectivePath,
-      parentPath: this.parentPath(effectivePath),
+      parentPath: parentKey(effectivePath),
       kind: 'file',
       isDir: false,
       size,
@@ -4949,7 +4648,7 @@ export class SqliteVFS {
     const now = this.now();
     const inode: BatchInodeEntry = {
       path: placed,
-      parentPath: this.parentPath(placed),
+      parentPath: parentKey(placed),
       kind: 'symlink',
       isDir: false,
       size: data.length,
@@ -5516,7 +5215,7 @@ export class SqliteVFS {
   private rewrittenEntry(node: INode, path: string | null, newSize: number, content: InodeContent, madeAt?: number): StoredInodeEntry {
     return {
       path: path ?? node.path,
-      parentPath: path === null ? node.parentPath : this.parentPath(path),
+      parentPath: path === null ? node.parentPath : parentKey(path),
       kind: 'file',
       isDir: false,
       size: newSize,
@@ -5946,7 +5645,7 @@ export class SqliteVFS {
         // entry that exists: every directory above it, as the caller names
         // them, is traversable. A confined caller's /tmp answers for its own
         // root, never for the storage directories that happen to hold it.
-        const parent = this.parentPath(logical);
+        const parent = parentKey(logical);
         if (parent !== checkedParent) {
           checkedParent = parent;
           try {
@@ -6236,7 +5935,7 @@ export class SqliteVFS {
     }
     // A directory moved to another parent has its `..` rewritten: that needs
     // write permission on the directory itself (Linux may_delete/may_create).
-    if (inode.isDir && this.parentPath(oldPath) !== this.parentPath(newPath) && !this.accessInode(inode, 0o2, cred)) {
+    if (inode.isDir && parentKey(oldPath) !== parentKey(newPath) && !this.accessInode(inode, 0o2, cred)) {
       throw vfsKeyError('EACCES', oldPath);
     }
     if (destInode?.isDir && this.collectSubtreeInodes([newPath]).some((entry) => entry.path !== newPath)) {
@@ -6299,7 +5998,7 @@ export class SqliteVFS {
       const path = newPath + entry.path.substring(oldPath.length);
       const stored: StoredInodeEntry = {
         path,
-        parentPath: this.parentPath(path),
+        parentPath: parentKey(path),
         kind: entry.kind,
         isDir: entry.isDir,
         size: entry.size,
@@ -6537,7 +6236,7 @@ export class SqliteVFS {
     const builder = this.newPlan();
     builder.addInode({
       path: target.path,
-      parentPath: this.parentPath(target.path),
+      parentPath: parentKey(target.path),
       kind: 'file',
       isDir: false,
       size: inode.size,
@@ -6707,7 +6406,7 @@ export class SqliteVFS {
       // The slice that publishes the copy's root adds a name to the
       // destination's directory, which is dated with it (and its before-image
       // kept for a snapshot).
-      const touched = cursor === null && page.length > 0 && this.parentPath(job.dst) !== '' ? [this.parentPath(job.dst)] : [];
+      const touched = cursor === null && page.length > 0 && parentKey(job.dst) !== '' ? [parentKey(job.dst)] : [];
       this.executeMeasuredTransaction(
         this.metricsOnlyPlan({
           blobBytes: 0,
@@ -6751,7 +6450,7 @@ export class SqliteVFS {
                FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path
                RETURNING path`,
               job.dst, tail,
-              job.src, this.parentPath(job.dst), job.dst, tail,
+              job.src, parentKey(job.dst), job.dst, tail,
               job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now,
               job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid,
               firstIno, gen,
@@ -6915,7 +6614,7 @@ export class SqliteVFS {
   /**
    * Pin the current tree under `name`: one row and pin_gen, in one
    * transaction, whatever the tree's size. Every synchronous operation runs
-   * inside one turn, so it cannot interleave with one; a `writeStream` spans
+   * inside one turn, so it cannot interleave with one; a `wave` spans
    * awaits, and without `quiesce` the snapshot holds its committed groups, the
    * state a reset would leave. `quiesce` waits for every stream first.
    */
@@ -7200,7 +6899,7 @@ export class SqliteVFS {
             if (entries.length >= pageLimit) return { epoch: this._epoch, rev: g, entries, next: entries[entries.length - 1]!.path };
             const logical = this.logicalPath(inode.path, bound);
             if (logical === null) continue;
-            const parent = this.parentPath(inode.path);
+            const parent = parentKey(inode.path);
             if (parent !== '' && bound.uid !== 0) {
               let searchable = searchableDirs.get(parent);
               if (searchable === undefined) {
@@ -7242,8 +6941,8 @@ export class SqliteVFS {
       copyTree: readOnly,
       copyTreeAsync: readOnly,
       writeBatch: readOnly,
-      writeBatchPlaced: async () => readOnly(),
-      writeStream: readOnly,
+      wave: readOnly,
+      asCaller: (fn) => fn(),
       writeFileFrom: readOnly,
       mkdirBatch: readOnly,
       revision: () => g,
@@ -8319,7 +8018,7 @@ export class SqliteVFS {
   /** What an import beginning at `target` now records of where it stands (ImportJobArgsSchema). */
   private importPlacement(target: string): { parentIno?: number; dstIno?: number } {
     if (target === '') return { parentIno: ROOT_INODE };
-    const parent = this.parentPath(target);
+    const parent = parentKey(target);
     const parentIno = parent === '' ? ROOT_INODE : this.inodes.get(parent)?.ino;
     const dstIno = this.inodes.get(target)?.ino;
     return { ...(parentIno === undefined ? {} : { parentIno }), ...(dstIno === undefined ? {} : { dstIno }) };
@@ -8327,7 +8026,7 @@ export class SqliteVFS {
 
   /** Whether every directory above `path` is one, from the root down: a path an import can reach. */
   private reachable(path: string): boolean {
-    for (let at = this.parentPath(path); at !== ''; at = this.parentPath(at)) {
+    for (let at = parentKey(path); at !== ''; at = parentKey(at)) {
       if (!this.inodes.get(at)?.isDir) return false;
     }
     return true;
@@ -8347,7 +8046,7 @@ export class SqliteVFS {
     if (job.parentIno === undefined) return false;
     if (job.dst === '') return true;
     if (!this.reachable(job.dst)) return false;
-    const parent = this.parentPath(job.dst);
+    const parent = parentKey(job.dst);
     if ((parent === '' ? ROOT_INODE : this.inodes.get(parent)?.ino) !== job.parentIno) return false;
     const here = this.inodes.get(job.dst);
     return job.dstIno === undefined ? here === undefined : here?.ino === job.dstIno;
@@ -8422,7 +8121,7 @@ export class SqliteVFS {
       if (this.hasChildren(target)) throw vfsKeyError('ENOTEMPTY', target);
     } else if (target === '' && this.hasChildren('')) throw vfsError('ENOTEMPTY', '/');
     // Every directory above it, not only its parent: a sliced restore removes a directory before what it held.
-    if (target !== '' && !this.reachable(target)) throw vfsKeyError('ENOENT', this.parentPath(target));
+    if (target !== '' && !this.reachable(target)) throw vfsKeyError('ENOENT', parentKey(target));
   }
 
   /** A job for a new import into `target`, recording where it stands (importPlaced). */
@@ -8451,7 +8150,7 @@ export class SqliteVFS {
     }
     const entry: StoredInodeEntry = {
       path,
-      parentPath: this.parentPath(path),
+      parentPath: parentKey(path),
       kind,
       isDir: kind === 'directory',
       ino,
@@ -8687,7 +8386,7 @@ export class SqliteVFS {
   private createdPath(key: string, cred: VfsCred, memo: Map<string, string> = new Map()): string {
     const known = memo.get(key);
     if (known !== undefined) return known;
-    const parent = this.parentPath(key);
+    const parent = parentKey(key);
     let placed = key;
     if (parent !== '') {
       const name = key.slice(parent.length + 1);
@@ -8715,8 +8414,8 @@ export class SqliteVFS {
     // The entry must name its own parent, as the caller wrote it; placement
     // (links followed) comes after.
     const namedParent = this.storageKey(entry.parentPath, cred);
-    if (namedParent !== this.parentPath(literal)) {
-      throw vfsError('EINVAL', literal, `parentPath ${namedParent} does not match ${this.parentPath(literal)}`);
+    if (namedParent !== parentKey(literal)) {
+      throw vfsError('EINVAL', literal, `parentPath ${namedParent} does not match ${parentKey(literal)}`);
     }
     const path = this.createdPath(literal, cred, memo);
     const prior = priors?.has(path) ? priors.get(path) : this.inodes.get(path);
@@ -8731,7 +8430,7 @@ export class SqliteVFS {
     const normalized: NormalizedBatchInodeEntry = {
       ...fields,
       path,
-      parentPath: this.parentPath(path),
+      parentPath: parentKey(path),
       // A record replacing an inode of another kind (a directory over a link) takes none of its mode.
       mode: prior && prior.kind === inodeKind(entry)
         ? prior.mode
@@ -8779,7 +8478,7 @@ export class SqliteVFS {
     const checkedParents = new Set<string>();
     const placedParents = new Set<string>();
     const checkParent = (path: string, placing: boolean): void => {
-      const parent = this.parentPath(path);
+      const parent = parentKey(path);
       if (parent === '') { this.checkRootWritable(path, cred); return; }
       const checked = placing ? placedParents : checkedParents;
       if (checked.has(parent)) return;
@@ -8800,7 +8499,7 @@ export class SqliteVFS {
     };
     const replaced = (key: string): void => {
       const resolved = this.checkAccess(key, 0o2, cred, { followLeaf: false });
-      if (resolved.path !== key) throw unplaceable(this.parentPath(key));
+      if (resolved.path !== key) throw unplaceable(parentKey(key));
     };
 
     // A row left at its literal key (under a link's own name, by an older
@@ -8906,7 +8605,7 @@ export class SqliteVFS {
     data: Uint8Array,
     onCommit?: () => void,
   ): { inodes: number; chunks: number } {
-    this.validateInodeContentShape(inode);
+    validateInodeShape(inode);
     if (inode.size !== data.byteLength) {
       throw vfsError('EINVAL', inode.path, `${data.byteLength} bytes for size ${inode.size}`);
     }
@@ -9053,330 +8752,16 @@ export class SqliteVFS {
   }
 
   /**
-   * Incremental W7 v3 consumer. Chunk payload is admitted through one
-   * per-VFS weighted credit pool and committed in bounded synchronous
-   * transactions, which release their credit before the decoder pulls
-   * another record.
-   *
-   * Publication is group-atomic with a committed prefix: a bounded group of
-   * whole files commits in one transaction, and either every file in it is
-   * durable or none is. A file never publishes partially — a group is closed
-   * on the record boundary before the file that would overflow it, so a file
-   * too large for one transaction stages across several and publishes on the
-   * last. Chunks staged for a file still in flight may ride along in a group
-   * that publishes other files; they belong to a state-0 content no inode
-   * references yet, so nothing observes them.
-   *
-   * The wire's 64 KiB positional chunks are re-cut by FastCDC as they arrive
-   * (ContentCutter holds at most one chunk of carry), so a streamed file is
-   * stored exactly as the same bytes written any other way.
+   * A wave on this filesystem as `cred`'s caller (WaveIngest): the
+   * delegations it holds and whether its view continues as it is answered,
+   * taken in the caller's turn; `work` applies the wave through the scope.
+   * Answered once what it committed is published, or held (`held`).
    */
-  private waveRouter: WaveRouter | null = null;
-
-  /** The namespace that places every wave's records (ProcessFiles installs its CompositeVFS). */
-  setWaveRouter(router: WaveRouter | null): void {
-    this.waveRouter = router;
-  }
-
-  /**
-   * Whether the namespace places every one of `names` (as `cred` names
-   * them) on this filesystem, by lookups made in this turn: false when one
-   * lands on a mount or (unless `aboveMounts`) is a directory above a mount
-   * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
-   * namespace would.
-   */
-  placesHere(names: readonly string[], cred: VfsCred = CRED_KERNEL, options?: { aboveMounts?: boolean; follow?: boolean }): boolean {
-    return this.placedHere(names, cred, undefined, options?.aboveMounts === true, options?.follow === true);
-  }
-
-  /**
-   * `aboveMounts`: a directory above a mount point counts as this
-   * filesystem's, as a directory record there is (making, reading or
-   * owning the root's directory); else it is the namespace's to answer.
-   * `follow`: each name is looked up whole, a link at it followed, as an
-   * operation that follows its name's link (stat, chown, writeFile) is
-   * placed; else by its directory, the name itself not followed.
-   */
-  private placedHere(names: readonly string[], cred: VfsCred, signal?: AbortSignal, aboveMounts = false, follow = false): boolean {
-    const router = this.waveRouter;
-    if (router === null) return true;
-    const routes = new Map<string, string>();
-    for (const named of names) {
-      const key = this.storageKey(named, cred);
-      const looked = follow ? key : this.parentPath(key);
-      let resolved = routes.get(looked);
-      if (resolved === undefined) {
-        let answer: string | Promise<string>;
-        try {
-          answer = looked === '' ? '/' : router.resolveDirectory('/' + looked, cred, signal);
-        } catch {
-          return false;
-        }
-        if (answer instanceof Promise) { answer.catch(() => {}); return false; }
-        resolved = answer;
-        routes.set(looked, resolved);
-      }
-      const path = follow ? resolved : `${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`;
-      // On a mount, or a directory above a mount point: the namespace's to answer.
-      if (router.placement(path) !== null || (!aboveMounts && router.composes(path))) return false;
-    }
-    return true;
-  }
-
-  /**
-   * writeBatch where the namespace places it. When every record is placed on
-   * this filesystem by lookups made in this turn, the batch commits here,
-   * atomic as before, in that same turn; otherwise (a record on a mount, or
-   * a lookup that left the synchronous backends) it goes as a wave, each
-   * record applied where it lands and rechecked at its commit. `signal`
-   * cancels it before anything commits.
-   */
-  private async writeBatchPlaced(
-    payload: BatchWritePayload,
+  private wave(
+    options: WriteStreamOptions,
+    work: (scope: WaveScope) => Promise<WriteBatchStreamResult>,
     cred: VfsCred,
     origin: Principal | null,
-    mutationOwner?: string,
-    signal?: AbortSignal,
-  ): Promise<{ inodes: number; chunks: number }> {
-    signal?.throwIfAborted();
-    // Read now, in the caller's turn: its lookups recall none of what it holds.
-    const holds = mutationOwner !== undefined ? new Set([mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
-    const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
-    if (this.withHolds(holds, () => this.placedHere(names, cred, signal))) return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, cred)));
-    const result = await this.writeStream(encodeWriteBatchStream(payload), { mutationOwner, signal }, cred, origin);
-    if (!result.ok) throw Object.assign(new Error(result.error.message), result.error.errno === undefined ? {} : { code: result.error.errno });
-    return { inodes: result.committedPathCount, chunks: result.chunks };
-  }
-
-
-  /**
-   * Route `record` through `router` when the namespace places it on a mount,
-   * in its place in the wave: what the wave wrote here before it commits
-   * first (`at.settleBefore`), then the namespace's own operation, with its
-   * refusals (EROFS on a read-only mount, EACCES, ENOENT). A file's chunks
-   * are handed to the router as they arrive, each held by the wave's credit
-   * until the router has written it. True when the record was routed.
-   */
-  private async routeRecord(
-    record: W7DecodedRecord,
-    router: WaveRouter,
-    cred: VfsCred,
-    at: {
-      file: RoutedFile | null;
-      index: number;
-      /** The wave's own name, for the slots its links are staged at. */
-      waveId: string;
-      routes: Map<string, { resolved: string; epoch: number }>;
-      /** The view of the namespace the wave's placements are made in (consumeStream's `view`). */
-      view: () => number;
-      /**
-       * Where `named` lands, decided synchronously when it can be (placeSync
-       * in consumeStream): the namespace path on a mount, null when placed
-       * here (and noted), undefined when only the asynchronous lookup decides.
-       */
-      placeSync: (kind: 'directory' | 'file' | 'delete', named: string) => string | null | undefined;
-      /** The process's open descriptions: a call through one is applied by it, wherever its file is named now. */
-      described: DescribedBy;
-      /** A name placed on this filesystem: rechecked right before its commit. */
-      placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, epoch: number) => void;
-      /** The delegations the wave's writer holds: its lookups recall none of them. */
-      holds: ReadonlySet<string> | null;
-      signal?: AbortSignal;
-      reach?: WaveMountReach;
-      guard: () => void;
-      settleBefore: () => Promise<void>;
-      /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
-      reserve: (bytes: number) => Promise<CreditLease | null>;
-      setPhase: (phase: WriteBatchStreamFailurePhase) => void;
-      committed: (receipt: WriteStreamReceipt | null) => void;
-      /** The exclusive-mutation lease the wave writes under (WriteStreamOptions.mutationOwner), presented to the namespace's guard. */
-      owner?: string;
-    },
-  ): Promise<boolean> {
-    /** Every answer a mounted backend owes the wave, which its cut does not wait for (untilAborted). */
-    const backend = <T>(work: Promise<T>): Promise<T> => untilAborted(work, at.signal);
-    /**
-     * Where `named` lands, by the namespace's lookup: its directory resolved
-     * (again when anything has committed since), then the name placed by the
-     * mount table. The namespace path when that is on a mount; else null,
-     * the placement noted with the revision its resolution saw, for its
-     * commit to recheck. A removal of a directory above a mount point is
-     * EBUSY and a file at one EISDIR, as the single call is, before anything
-     * commits.
-     */
-    const mountOf = async (kind: 'directory' | 'file' | 'delete', named: string): Promise<string | null> => {
-      const quick = at.placeSync(kind, named);
-      if (quick !== undefined) return quick;
-      const parent = this.parentPath(named);
-      let route = at.routes.get(parent);
-      const epoch = at.view();
-      if (route === undefined || route.epoch !== epoch) {
-        // Synchronous while the lookup stays on this filesystem's backends.
-        const answer = parent === '' ? '' : this.withHolds(at.holds, () => router.resolveDirectory('/' + parent, cred, at.signal));
-        const resolved = typeof answer === 'string' ? answer : await backend(answer);
-        route = { resolved, epoch };
-        at.routes.set(parent, route);
-      }
-      const path = `${route.resolved === '/' ? '' : route.resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
-      if (router.placement(path) !== null) return path;
-      if (kind !== 'directory' && router.composes(path)) {
-        throw vfsError(kind === 'delete' ? 'EBUSY' : 'EISDIR', named, 'a directory above a mount point');
-      }
-      at.placedHere(kind, named, path, route.epoch);
-      return null;
-    };
-    /** Refuse a record an earlier attempt may have applied; note this one. */
-    const reached = (): void => {
-      if (at.reach === undefined) return;
-      if (at.index <= at.reach.prior) {
-        throw vfsError('EIO', `record ${at.index}`, 'outcome unknown: an earlier attempt of this wave may have applied this mounted record, which cannot be applied twice');
-      }
-      at.reach.note(at.index);
-    };
-    switch (record.type) {
-      case 'delete': {
-        // A removal may change where later names resolve.
-        at.routes.clear();
-        const placed = await mountOf('delete', record.path);
-        if (placed === null) return false;
-        at.setPhase('publish');
-        await at.settleBefore();
-        reached();
-        await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner));
-        at.committed(null);
-        return true;
-      }
-      case 'directory': {
-        const placed = await mountOf('directory', record.inode.path);
-        if (placed === null) return false;
-        at.setPhase('publish');
-        await at.settleBefore();
-        reached();
-        // A directory has no receipt, here as in a group.
-        await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner));
-        at.committed(null);
-        return true;
-      }
-      case 'call': {
-        const call = record.call;
-        // A description's call is the description's: its file is this filesystem's (a mount keeps none).
-        if (call.call === 'close' || ('description' in call && call.description !== undefined && this.isDescribed(at.described, call.description))) return false;
-        if (call.call !== 'mkdir') at.routes.clear();
-        const placed = await mountOf(
-          call.call === 'mkdir' ? 'directory'
-            : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' || call.call === 'open' ? 'file' : 'delete',
-          call.path,
-        );
-        if (placed === null) return false;
-        at.setPhase('publish');
-        await at.settleBefore();
-        reached();
-        // Made under the umask the process made it with, as on this filesystem (W7Call umask).
-        const stat = await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner));
-        // An open's answer is the file's stat (its description writes it by number).
-        at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null);
-        return true;
-      }
-      case 'rename': {
-        // Both names placed: on one filesystem, the rename is that one's;
-        // between this filesystem and a mount (or two mounts), EXDEV, as
-        // rename(2) across mounts is. A directory above a mount point is
-        // EBUSY to move, as one is to remove.
-        at.routes.clear();
-        const from = await mountOf('delete', record.from);
-        const to = await mountOf('file', record.to);
-        if (from === null && to === null) return false;
-        if (from === null || to === null || router.placement(from) !== router.placement(to)) {
-          throw vfsError('EXDEV', record.from, `a rename to '${record.to}' crosses a mount`);
-        }
-        at.setPhase('publish');
-        await at.settleBefore();
-        reached();
-        await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner));
-        at.committed(null);
-        return true;
-      }
-      case 'truncate':
-      case 'setattr': {
-        // A mode changes who may search a directory: later names resolve again.
-        if (record.type === 'setattr') at.routes.clear();
-        const placed = await mountOf('file', record.path);
-        if (placed === null) return false;
-        at.setPhase('publish');
-        await at.settleBefore();
-        reached();
-        await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner));
-        at.committed(null);
-        return true;
-      }
-      case 'file-begin': {
-        if (record.inode.description !== undefined && this.isDescribed(at.described, record.inode.description)) return false;
-        const placed = await mountOf('file', record.inode.path);
-        if (placed === null) return false;
-        if (record.inode.kind === 'symlink') at.routes.clear();
-        at.setPhase('validation');
-        this.validateInodeContentShape(record.inode);
-        // Refused before anything is touched: past what one whole-file call carries.
-        if (record.inode.kind === 'symlink' && record.inode.size > ROUTED_LINK_TARGET_MAX) {
-          throw vfsError('ENAMETOOLONG', record.inode.path, `a link's target is at most ${ROUTED_LINK_TARGET_MAX} bytes; this one is ${record.inode.size}`);
-        }
-        if (record.inode.kind !== 'symlink' && record.inode.size > ROUTED_FILE_MAX) {
-          throw vfsError('ENOTSUP', record.inode.path, `a wave writes a file to a mount in one call, up to ${ROUTED_FILE_MAX} bytes; this one is ${record.inode.size}`);
-        }
-        // Admitted with its whole size reserved: its chunks draw on that, never
-        // on the shared credit, so three waves each holding part of a file
-        // cannot all wait for more before their file-ends.
-        const lease = await at.reserve(record.inode.size);
-        at.file = {
-          named: record.inode.path, placed, link: record.inode.kind === 'symlink',
-          mode: record.inode.mode, size: record.inode.size, held: [], index: at.index,
-          credit: { left: record.inode.size, lease },
-          ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
-          ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
-          ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
-        };
-        return true;
-      }
-      case 'file-chunk': {
-        // The decoder yields a file's chunks in order, each its size, after
-        // its file-begin and before its file-end (decodeWriteBatchStream).
-        const file = at.file;
-        if (file === null) return false;
-        // Held under the wave's credit until the file's call.
-        file.held.push({ data: record.data, release: () => record.retention.release() });
-        return true;
-      }
-      case 'file-end': {
-        const file = at.file;
-        if (file === null) return false;
-        at.setPhase('publish');
-        try {
-          await at.settleBefore();
-          reached();
-          const bytes = concatBytes(file.held.map((chunk) => chunk.data));
-          const stat = await backend(router.apply(file.call !== undefined
-            ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
-            : file.link
-            ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
-            : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, at.owner));
-          at.committed(stat === null ? null : { path: file.named, ...stat });
-        } finally {
-          at.file = null;
-          for (const chunk of file.held) chunk.release();
-          file.credit.lease?.release();
-        }
-        return true;
-      }
-      default:
-        return false;
-    }
-  }
-
-  private writeStream(
-    stream: ReadableStream<Uint8Array>,
-    options: WriteStreamOptions = {},
-    cred: VfsCred,
-    origin: Principal | null = null,
   ): Promise<WriteBatchStreamResult> {
     // The delegations its caller holds, in the caller's turn: its records apply as them. A process's
     // own set is live (one it takes meanwhile is its own too), and holds the lease it writes under.
@@ -9396,7 +8781,7 @@ export class SqliteVFS {
     return this.spanning(async () => {
       let result: WriteBatchStreamResult;
       try {
-        result = await this.consumeStream(stream, { ...options, signal: linked.signal }, cred, origin, holds, pipeline);
+        result = await work(this.waveScope(options, cred, origin, holds, pipeline, linked.signal));
       } finally {
         this.streams.delete(cut);
         linked.dispose();
@@ -9414,13 +8799,495 @@ export class SqliteVFS {
     }, options.mutationOwner);
   }
 
+  /** The storage one wave composes: each operation as its writer (`holds`, `pipeline`) or its caller (`origin`, its lease). */
+  private waveScope(
+    options: WriteStreamOptions,
+    cred: VfsCred,
+    origin: Principal | null,
+    holds: ReadonlySet<string> | null,
+    pipeline: Pipeline,
+    signal: AbortSignal,
+  ): WaveScope {
+    const owner = options.mutationOwner;
+    // A delegation's holder's wave: the names it made are owned as the caller's.
+    const delegated = owner !== undefined && (this.exclusiveMutationLeases.get(owner)?.delegation ?? null) !== null;
+    // As the stream's writer: the delegations it holds, and what it commits ahead of a reader's recall (`pipeline`).
+    const asWriter = <T>(fn: () => T): T => this.inPipeline(pipeline, () => this.withHolds(holds, fn));
+    // As the stream's caller: its origin and the lease it writes under, too.
+    const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(owner, () => asWriter(fn)));
+    // The descriptions its calls name: its binding's, and what the session kept of its process's.
+    const described: DescribedBy = { descriptions: options.descriptions, pid: options.sequence?.pid ?? null };
+    return {
+      cred,
+      signal,
+      mutationOwner: owner,
+      deviceId: this.deviceId,
+      asWriter,
+      revision: () => this._revision,
+      pathRevision: (path) => this.revision(path, cred),
+      leased: () => this.exclusiveMutationLeases.size > 0 || this.readLeases.size > 0,
+      recall: (path) => this.recallDelegationsAt(path, holds, pipeline, signal),
+      decodeDrain: (startedAt) => {
+        const token = {};
+        this._decodeDrainStarts.set(token, startedAt);
+        let waitMs = Math.max(0, performance.now() - startedAt);
+        let ended = false;
+        return {
+          waited: (ms) => { waitMs += ms; },
+          end: () => {
+            if (ended) return;
+            ended = true;
+            this._decodeDrainStarts.delete(token);
+            this.recordDuration(this._decodeDrainDuration, waitMs);
+          },
+        };
+      },
+      creditWait: () => {
+        const token = {};
+        const startedAt = performance.now();
+        this._creditWaitStarts.set(token, startedAt);
+        return () => {
+          this._creditWaitStarts.delete(token);
+          this.recordDuration(this._creditWaitDuration, performance.now() - startedAt);
+        };
+      },
+      credit: {
+        tryAcquire: (bytes) => this.writeStreamCredits.tryAcquire(bytes),
+        acquire: (bytes, abort) => this.writeStreamCredits.acquire(bytes, abort),
+      },
+      files: (hooks) => this.waveFiles(cred, asCaller, hooks),
+      directoriesFit: (count) => this.newPlan().wouldExceedInodes(count) === null,
+      commitDirectories: (inodes) => asCaller(() => this.writeBatch({ inodes: [...inodes], chunks: [] }, cred)).inodes,
+      commitDelete: (path) => {
+        const affected = Math.max(1, this.collectSubtreeInodes([path]).length);
+        asCaller(() => {
+          this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] }, cred);
+        });
+        return affected;
+      },
+      // Checked together before any of them commits: a directory record over
+      // a symbolic link they do not remove refuses the wave with nothing
+      // committed (linkReplacedByDirectory).
+      checkLeading: (directories, deletes) => asCaller(() => this.inodes.lookingUp(() => {
+        const keys = [...directories.map((inode) => this.storageKey(inode.path, cred)), ...deletes.map((path) => this.storageKey(path, cred))];
+        this.readAlong(keys);
+        const placed = new Map<string, string>();
+        const placedAt = (path: string): string => {
+          const key = this.storageKey(path, cred);
+          return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
+        };
+        const linked = this.linkReplacedByDirectory(
+          directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred, placed)),
+          deletes.map(placedAt),
+        );
+        if (linked !== null) throw linkedDirectoryRefusal(linked);
+      })),
+      // A name a delegation's holder made is the caller's, as a create of
+      // its own would make it (creationAttrs): its owner, and a setgid
+      // directory's group. The holder made it so; this keeps it so.
+      adoptCreation: (inode, directory) => {
+        if (!delegated || this.inodes.get(inode.path)) return;
+        const attrs = this.creationAttrs(inode.path, inode.mode, cred, directory);
+        Object.assign(inode, { uid: cred.uid, gid: attrs.gid, mode: attrs.mode });
+      },
+      commitCalls: (calls, writer) => {
+        const befores: number[] = [];
+        const results: (VfsStat | null | void)[] = [];
+        let failed: { at: number; error: unknown } | null = null;
+        try {
+          asWriter(() => this.publishedTransaction(() => {
+            for (const [at, call] of calls.entries()) {
+              befores.push(this.revision(call.path, cred));
+              try {
+                results.push(asCaller(() => this.applyWaveOp(call.op, cred, described)));
+              } catch (error) {
+                failed = { at, error };
+                throw error;
+              }
+              if (writer !== null && call.seq !== null) this.advanceSequence(writer, call.seq);
+            }
+          }, (error) => error));
+        } catch (error) {
+          return failed ?? { at: 0, error };
+        }
+        return { befores, results, after: this._revision };
+      },
+      isDescribed: (id) => this.isDescribed(described, id),
+      reopened: (path, id) => this.reopened(described, path, id, cred),
+      openSequence: (sequence) => this.openSequence(sequence),
+      advanceSequence: (writer, seq) => this.transactionSync(() => this.advanceSequence(writer, seq)),
+      refuseInSequence: (writer, refused, closed) => this.refuseInSequence(writer, refused, closed),
+    };
+  }
+
+  /** A wave's op that lands here, applied by this filesystem's operation of that name: an open's or a data call's stat. */
+  private applyWaveOp(op: WaveLocalOp, cred: VfsCred, described: DescribedBy): VfsStat | null | void {
+    if (op.type === 'data-call') {
+      try {
+        return this.applyDataCall(op.file, op.bytes, cred, described);
+      } finally {
+        op.made();
+      }
+    }
+    if (op.type === 'rename') this.rename(op.from, op.to, cred);
+    else if (op.type === 'truncate') this.truncate(op.path, op.size, cred);
+    else if (op.type === 'setattr') {
+      if ('mode' in op.attrs) this.chmod(op.path, op.attrs.mode, cred);
+      else if ('uid' in op.attrs) this.chown(op.path, op.attrs.uid, op.attrs.gid, cred, true);
+      else this.utimes(op.path, op.attrs.atime, op.attrs.mtime, cred, true);
+    } else {
+      const call = op.call;
+      if (call.call === 'mkdir') {
+        // mkdir(2): a name that is there, whatever it is, is EEXIST
+        // (the engine's mkdir keeps an existing directory as made);
+        // `existing: 'ok'` takes a directory there (followed, as mkdir -p does).
+        const there = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+        if (there !== undefined) {
+          const directory = call.existing === 'ok' && (there.kind === 'directory' || (there.kind === 'symlink' && this.isDirectory(call.path, cred)));
+          if (!directory) throw vfsError('EEXIST', call.path);
+        } else {
+          this.mkdir(call.path, { mode: call.mode, ino: call.ino }, withUmask(cred, call.umask));
+        }
+      }
+      else if (call.call === 'unlink') this.unlink(call.path, cred);
+      else if (call.call === 'rmdir') this.rmdir(call.path, cred);
+      else if (call.call === 'ftruncate') {
+        // Through its description when it names one: authorized at its open.
+        if (call.description !== undefined) this.describedBy(described, call.description, call.path, cred)?.truncate(call.size);
+        else {
+          const at = this.describedFile(call.path, call.ino, cred);
+          if (at !== null) this.truncate(at, call.size, cred);
+        }
+      }
+      else if (call.call === 'rm') {
+        // fs.rm: a name not there is no refusal when forced.
+        try {
+          if (call.recursive) this.removeRecursive(call.path, cred);
+          else this.unlink(call.path, cred);
+        } catch (error) {
+          if (!(call.force && errnoCodeOf(error) === 'ENOENT')) throw error;
+        }
+      }
+      else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
+      else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
+      else if (call.call === 'open') return this.openToWrite(call, cred, described);
+      // Closing a description already gone (a mount's open keeps none) closes nothing.
+      else if (call.call === 'close') this.closeDescribed(described, call.description);
+      else this.symlink(call.target, call.path, cred, call.ino);
+    }
+  }
+
   /**
-   * A sequenced writer's state as its wave starts: its cursor, and the
-   * refusal it has not had answered (dropped once `ack` reaches it). Kept
-   * until its process is over and its log drained (forgetSequences). A
-   * wave that starts past the op after the cursor
-   * names ops the session never had: refused, ESTALE (they are lost).
+   * A wave's files on this filesystem (WaveFiles). Chunk payload is admitted
+   * through the engine's one weighted credit pool and committed in bounded
+   * synchronous transactions, which release their credit before the decoder
+   * pulls another record. A file whole enough for one group is held until
+   * its group commits and authorised there, with the group's other files; a
+   * larger one is authorised at its begin and stages its chunks as groups
+   * flush, publishing with its last.
+   *
+   * Publication is group-atomic with a committed prefix: a bounded group of
+   * whole files commits in one transaction, and either every file in it is
+   * durable or none is. A file never publishes partially — a group is closed
+   * on the record boundary before the file that would overflow it. Chunks
+   * staged for a file still in flight may ride along in a group that
+   * publishes other files; they belong to a state-0 content no inode
+   * references yet, so nothing observes them.
+   *
+   * The wire's 64 KiB positional chunks are re-cut by FastCDC as they arrive
+   * (ContentCutter holds at most one chunk of carry), so a streamed file is
+   * stored exactly as the same bytes written any other way.
    */
+  private waveFiles(cred: VfsCred, asCaller: <T>(fn: () => T) => T, hooks: WaveFileHooks): WaveFiles {
+    /** Staging contents this stream created and has not yet published. */
+    const ownedStaging = new Set<StagingContent>();
+    let activeFile = null as {
+      /** The path the stream names it by; `inode.path` is where it lands. */
+      named: string;
+      inode: BatchInodeEntry;
+      cutter: ContentCutter;
+      /** Whole-file mode: the file commits in one group, its chunks held until file-end. */
+      held: Piece[] | null;
+      heldLeases: CreditLease[];
+      /** Staged mode: chunks go to this content as groups flush. */
+      staging: StagingContent | null;
+      stagedBytes: number;
+      /** The inode as streamed: what a whole file's group authorises. */
+      raw: BatchInodeEntry;
+      /** A staged file's prior, read when it was authorised at file-begin. */
+      prior: KnownPrior | null;
+    } | null;
+    // Assigned as records apply (withHolds): typed so, not narrowed to their first value.
+    let decodedRecordLease = null as CreditLease | null;
+    // The pending publish group. Everything reset by a flush lives here.
+    let group = this.newPlan();
+    let groupLeases: CreditLease[] = [];
+    let groupInodes: string[] = [];
+    /** The path the stream named each of the group's files by, keyed by where it lands. */
+    let groupNames = new Map<string, string>();
+    let groupPublishedChunks = 0;
+    let groupPaths = 0;
+    let groupStagedBytes = 0;
+    // Where each streamed name lands (links followed), while nothing has
+    // committed since it was worked out.
+    let placement = { gen: -1, placed: new Map<string, string>() };
+    // The group's whole files, entered with their names as streamed:
+    // authorised together in the turn the group commits.
+    let unauthorized: { raw: BatchInodeEntry; entry: StoredInodeEntry }[] = [];
+    /**
+     * Around a commit of the wave's own files: the view holds across it when
+     * nothing else had committed since the view was taken, and the commit's
+     * own publication reshaped nothing a name resolves through (no directory
+     * or link made, replaced or removed). The revision taken is the one that
+     * publication made, at the publication itself (publishWatch), so a write
+     * anything else makes in the same turn still starts a new view.
+     */
+    const ownFiles = <T>(commit: () => T): T => {
+      const before = this._revision;
+      let published: { revision: number; reshaped: boolean } | null = null;
+      this.publishWatch = (revision, reshaped) => { published = { revision, reshaped }; this.publishWatch = null; };
+      try {
+        return commit();
+      } finally {
+        this.publishWatch = null;
+        const own = published as { revision: number; reshaped: boolean } | null;
+        if (own !== null && !own.reshaped) hooks.published(before, own.revision);
+      }
+    };
+
+    const flush = (): void => {
+      if (group.empty) return;
+      hooks.admit();
+      // The group's whole files are authorised here, together, in the turn
+      // that commits them: nothing between the check and the write can
+      // change a mode, an owner or a link (one read finds what each replaces).
+      if (unauthorized.length > 0) {
+        const pending = unauthorized;
+        unauthorized = [];
+        const priors = new Map<string, INode | undefined>();
+        asCaller(() => {
+          const normalized = this.authorizeBatch({ inodes: pending.map((file) => file.raw), chunks: [] }, cred, priors).inodes;
+          normalized.forEach((inode, index) => {
+            const { entry } = pending[index]!;
+            const from = entry.path;
+            Object.assign(entry, this.fileEntry(inode, entry.content, { inode: priors.get(inode.path), gen: this._gen }));
+            if (inode.path !== from) {
+              // A link appeared above it since its name was placed.
+              group.moveInode(from, entry);
+              const named = groupNames.get(from);
+              groupNames.delete(from);
+              if (named !== undefined) groupNames.set(inode.path, named);
+              const at = groupInodes.indexOf(from);
+              if (at >= 0) groupInodes[at] = inode.path;
+            }
+          });
+        });
+      }
+      // The files this commit publishes, placed again in its turn.
+      hooks.recheck(groupNames.values());
+      const plan = group.build();
+      const leases = groupLeases;
+      const inodes = groupInodes;
+      const names = groupNames;
+      const publishedChunks = groupPublishedChunks;
+      const paths = groupPaths;
+      const stagedBytes = groupStagedBytes;
+      group = this.newPlan();
+      groupLeases = [];
+      groupInodes = [];
+      groupNames = new Map();
+      groupPublishedChunks = 0;
+      groupPaths = 0;
+      groupStagedBytes = 0;
+      try {
+        if (inodes.length === 0) {
+          // No file has completed, so the plan publishes nothing: these are
+          // the staged chunks of a file still in flight, and the bytes stay
+          // charged to it until its publication commits.
+          this.assertTransactionFits(plan.metrics);
+          ownFiles(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
+          this._stagedStreamBytes += plan.metrics.blobBytes;
+          this._peakStagedStreamBytes = Math.max(this._peakStagedStreamBytes, this._stagedStreamBytes);
+          if (activeFile) activeFile.stagedBytes += plan.metrics.blobBytes;
+          return;
+        }
+        this.assertTransactionFits(plan.metrics);
+        // Re-check the mutation guard here rather than only where each file
+        // was accepted: a group commits after the records that follow it, so
+        // this is the check that is contemporaneous with the write.
+        const result = ownFiles(() => asCaller(() => {
+          this.assertMutationsAllowed(inodes);
+          return this._writeBatchOnce(
+            { plan, deletedInodes: [] },
+            { source: 'content-publish', limitMode: 'bounded' },
+          );
+        }));
+        let activeStaged = 0;
+        for (const staged of plan.staged) {
+          if (staged.content === activeFile?.staging) activeStaged += staged.piece.data.byteLength;
+        }
+        if (activeFile) activeFile.stagedBytes += activeStaged;
+        this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes + activeStaged - stagedBytes);
+        for (const entry of plan.inodes) {
+          if (entry.content.type === 'staged') ownedStaging.delete(entry.content.content);
+        }
+        const receipts: WriteStreamReceipt[] = [];
+        for (const entry of plan.inodes) {
+          const named = names.get(entry.path);
+          if (named === undefined || entry.isDir) continue;
+          receipts.push({
+            path: named,
+            ino: entry.ino!,
+            mode: entry.mode,
+            size: entry.size,
+            mtimeMs: entry.mtime,
+            ctimeMs: entry.ctime!,
+            uid: entry.uid,
+            gid: entry.gid,
+            dev: this.deviceId,
+          });
+        }
+        hooks.committed({ paths, inodes: result.inodes, chunks: publishedChunks, receipts });
+      } finally {
+        for (const lease of leases) lease.release();
+      }
+    };
+
+    const stagePiece = (file: NonNullable<typeof activeFile>, piece: Piece): void => {
+      if (file.held !== null) {
+        file.held.push(piece);
+        return;
+      }
+      if (file.staging === null) {
+        file.staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
+        ownedStaging.add(file.staging);
+      }
+      if (group.wouldExceedPieces(piece.data.byteLength, 1) !== null) flush();
+      group.addStagedPiece(file.staging, piece, file.inode.path);
+    };
+
+    return {
+      get pending() { return groupInodes.length > 0; },
+      flush,
+      wouldExceedPieces: (bytes) => group.wouldExceedPieces(bytes, 1) !== null,
+      begin: (inode) => {
+        // The file lands where its name resolves (links followed, as a
+        // batch places it), and that is the path its lease is checked on.
+        // Close the group before the file that would overflow it, so a
+        // file either fits whole or begins a group of its own; one too
+        // large for any group stages across several.
+        if (group.wouldExceedFile(inode.size) !== null) flush();
+        const whole = group.wouldExceedFile(inode.size) === null;
+        if (placement.gen !== this._gen) placement = { gen: this._gen, placed: new Map() };
+        let placedInode: BatchInodeEntry;
+        let placedPrior: KnownPrior | null = null;
+        if (whole) {
+          // Held whole until its group commits, and authorised there.
+          const path = this.createdPath(this.storageKey(inode.path, cred), cred, placement.placed);
+          asCaller(() => this.assertMutationsAllowed([path]));
+          placedInode = { ...inode, path, parentPath: parentKey(path) };
+        } else {
+          // Too large for one group: its chunks commit as they arrive, so it
+          // is authorised before the first of them.
+          const priors = new Map<string, INode | undefined>();
+          placedInode = asCaller(() => {
+            const [placed] = this.authorizeBatch({ inodes: [inode], chunks: [] }, cred, priors).inodes;
+            this.assertMutationsAllowed([placed!.path]);
+            return placed!;
+          });
+          placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
+        }
+        activeFile = {
+          named: inode.path,
+          inode: placedInode,
+          cutter: new ContentCutter(),
+          held: whole ? [] : null,
+          heldLeases: [],
+          staging: null,
+          stagedBytes: 0,
+          raw: inode,
+          prior: placedPrior,
+        };
+      },
+      chunk: (record) => {
+        // The decoder yields a file's chunks in order, each its size,
+        // between its file-begin and file-end (decodeWriteBatchStream).
+        decodedRecordLease = record.retention;
+        const file = activeFile!;
+        if (file.inode.size <= CHUNK_SIZE) {
+          // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
+          file.held!.push({ data: record.data, hash: new Uint8Array(0) });
+        } else {
+          for (const data of file.cutter.push(record.data)) stagePiece(file, { data, hash: chunkHash(data) });
+        }
+        if (file.held !== null) file.heldLeases.push(record.retention);
+        else groupLeases.push(record.retention);
+        decodedRecordLease = null;
+      },
+      end: (record) => {
+        const file = activeFile!;
+        let content: InodeContent;
+        if (file.inode.size === 0) content = { type: 'none' };
+        else if (file.inode.size <= CHUNK_SIZE) {
+          const parts = file.held!;
+          const data = parts.length === 1 ? parts[0]!.data : concatBytes(parts.map((part) => part.data));
+          content = { type: 'small', piece: { data, hash: chunkHash(data) } };
+        } else {
+          for (const data of file.cutter.finish()) stagePiece(file, { data, hash: chunkHash(data) });
+          if (file.held !== null) {
+            const digest = new ManifestDigest();
+            for (const piece of file.held) digest.add(piece.hash);
+            content = { type: 'large', pieces: file.held, size: file.inode.size, digest: digest.digest(file.inode.size) };
+          } else {
+            content = { type: 'staged', content: file.staging! };
+          }
+        }
+        const overflows = file.held !== null
+          ? group.wouldExceedFile(file.inode.size)
+          : group.wouldExceedInode();
+        if (overflows !== null) flush();
+        // Every file of the group, staged ones included, is authorised
+        // (again) in the turn its group commits; until then its entry
+        // holds the group's place and accounting, and claims no prior.
+        const entry = asCaller(() => (
+          this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })
+        ));
+        group.addInode(entry);
+        unauthorized.push({ raw: file.raw, entry });
+        groupLeases.push(...file.heldLeases);
+        groupInodes.push(entry.path);
+        groupNames.set(entry.path, file.named);
+        groupPublishedChunks += record.chunkCount;
+        groupStagedBytes += file.stagedBytes;
+        groupPaths++;
+        activeFile = null;
+      },
+      release: () => {
+        const file = activeFile;
+        if (file !== null && file.held !== null && file.held.length > 0) {
+          const pieces = file.held;
+          file.held = null;
+          groupLeases.push(...file.heldLeases);
+          file.heldLeases = [];
+          for (const piece of pieces) stagePiece(file, piece);
+        }
+        if (!group.empty) flush();
+      },
+      abandon: () => {
+        decodedRecordLease?.release();
+        for (const lease of groupLeases) lease.release();
+        for (const lease of activeFile?.heldLeases ?? []) lease.release();
+        groupLeases = [];
+        // Staged bytes belonging to work that never reached a commit: the
+        // file in flight, plus any completed file still pending in the group.
+        const abandonedStagedBytes = (activeFile?.stagedBytes ?? 0) + groupStagedBytes;
+        this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes - abandonedStagedBytes);
+        for (const staging of ownedStaging) if (staging.id !== 0) this.abandonStaging(staging);
+        this.runContentMaintenanceSafely(2);
+      },
+    };
+  }
+
   private openSequence(sequence: WaveSequence): { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null } {
     if (!Number.isSafeInteger(sequence.first) || sequence.first < 1 || !Number.isSafeInteger(sequence.ack) || sequence.ack < 0) {
       throw vfsError('EINVAL', sequence.writer, 'a sequenced wave numbers its ops from 1');
@@ -9653,1115 +9520,6 @@ export class SqliteVFS {
     const prior = this.activeHolds;
     this.activeHolds = holds;
     try { return run(); } finally { this.activeHolds = prior; }
-  }
-
-  private async consumeStream(
-    stream: ReadableStream<Uint8Array>,
-    options: WriteStreamOptions,
-    cred: VfsCred,
-    origin: Principal | null,
-    holds: ReadonlySet<string> | null,
-    pipeline: Pipeline,
-  ): Promise<WriteBatchStreamResult> {
-    // A delegation's holder's wave: the names it made are owned as the caller's.
-    const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
-    // Each group commits in its own turn, as the stream's caller (its lease, its principal).
-    // As the stream's writer: the delegations it holds, and what it commits ahead of a reader's recall (`pipeline`).
-    const asWriter = <T>(fn: () => T): T => this.inPipeline(pipeline, () => this.withHolds(holds, fn));
-    // As the stream's caller: its origin and the lease it writes under, too.
-    const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, () => asWriter(fn)));
-    /** What the wave waits for that does not take its signal: ended by its cut too (untilAborted). */
-    const unlessCut = <T>(work: Promise<T>, discard?: (late: T) => void): Promise<T> => untilAborted(work, options.signal, discard);
-    const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
-    const decodeDrainToken = {};
-    this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
-    let decodeDrainFinished = false;
-    let decodeDrainWaitMs = Math.max(0, performance.now() - decodeDrainStartedAt);
-    let recordIterator: AsyncIterator<W7DecodedRecord> | null = null;
-    let recordIteratorFinished = false;
-    // Assigned as records apply (withHolds): typed so, not narrowed to their first value.
-    let decodedRecordLease = null as CreditLease | null;
-    /** Staging contents this stream created and has not yet published. */
-    const ownedStaging = new Set<StagingContent>();
-    let activeFile = null as {
-      /** The path the stream names it by; `inode.path` is where it lands. */
-      named: string;
-      inode: BatchInodeEntry;
-      cutter: ContentCutter;
-      /** Whole-file mode: the file commits in one group, its chunks held until file-end. */
-      held: Piece[] | null;
-      heldLeases: CreditLease[];
-      /** Staged mode: chunks go to this content as groups flush. */
-      staging: StagingContent | null;
-      stagedBytes: number;
-      /** The inode as streamed: what a whole file's group authorises. */
-      raw: BatchInodeEntry;
-      /** A staged file's prior, read when it was authorised at file-begin. */
-      prior: KnownPrior | null;
-    } | null;
-    /** A call's file (W7DataCall), its bytes gathered until its end. */
-    let callFile: {
-      path: string;
-      call: W7DataCall;
-      mode: number;
-      size: number;
-      ino?: number;
-      offset?: number;
-      umask?: number;
-      description?: string;
-      parts: Uint8Array[];
-      /** Its whole size, reserved when it began: its chunks draw on it, and it is given back once the call is made. */
-      credit: { left: number; lease: CreditLease | null };
-    } | null = null;
-    /** Reserved for data calls not yet made (callFile's credit): given back at each call, or when the wave ends. */
-    const callLeases = new Set<CreditLease>();
-    const progress: WriteBatchStreamProgress = {
-      committedGroupSequence: 0,
-      committedPathCount: 0,
-      committedOps: 0,
-      inodes: 0,
-      chunks: 0,
-      receipts: [],
-    };
-    let phase: WriteBatchStreamFailurePhase = 'decode';
-    const router = this.waveRouter;
-    /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
-    const routed: { file: RoutedFile | null } = { file: null };
-    /** Each directory's resolved namespace path and the view it was resolved in, until a link or removal of the wave's. */
-    const routes = new Map<string, { resolved: string; epoch: number }>();
-    /**
-     * The namespace as the wave's placements see it: `epoch` numbers the
-     * views, `revision` is the store's revision the current one holds at.
-     * The wave's own commit of files that are not links changes no directory
-     * a later name resolves through, so the view holds across it. Anything
-     * else that commits (another writer, or the wave's own links, removals
-     * and directories) starts a new view, and every name placed in an older
-     * one is resolved again: without this, each commit of the wave's own
-     * files sent every later record back through the namespace's lookup.
-     */
-    const view = { revision: this._revision, mounts: router?.mounts() ?? 0, epoch: 0 };
-    const viewEpoch = (): number => {
-      const mounts = router?.mounts() ?? 0;
-      if (this._revision !== view.revision || mounts !== view.mounts) { view.revision = this._revision; view.mounts = mounts; view.epoch++; }
-      return view.epoch;
-    };
-    /**
-     * Where `named` lands, decided in this turn when the lookup of its
-     * directory answers synchronously (it stays on this filesystem's
-     * backends): the namespace path when that is on a mount; null when it
-     * is placed here, noted for its commit to recheck. Undefined when the
-     * lookup would wait, or would refuse (a directory above a mount point,
-     * a lookup that fails): routeRecord decides those, with its errors.
-     */
-    const placeSync = (kind: 'directory' | 'file' | 'delete', named: string): string | null | undefined => {
-      if (router === null) return null;
-      const parent = this.parentPath(named);
-      const epoch = viewEpoch();
-      let route = routes.get(parent);
-      // A directory this wave placed in this view, not made yet: its names go under where it was placed.
-      const made = placedHere.directory.get(parent);
-      if ((route === undefined || route.epoch !== epoch) && made !== undefined && made.epoch === epoch) {
-        route = { resolved: made.resolved, epoch };
-        routes.set(parent, route);
-      }
-      if (route === undefined || route.epoch !== epoch) {
-        let answer: string | Promise<string>;
-        try {
-          answer = parent === '' ? '' : asWriter(() => router.resolveDirectory('/' + parent, cred, options.signal));
-        } catch {
-          return undefined;
-        }
-        if (typeof answer !== 'string') { answer.catch(() => {}); return undefined; }
-        route = { resolved: answer, epoch };
-        routes.set(parent, route);
-      }
-      const path = `${route.resolved === '/' ? '' : route.resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
-      if (router.placement(path) !== null) return path;
-      if (kind !== 'directory' && router.composes(path)) return undefined;
-      placedHere[kind].set(named, { resolved: path, epoch });
-      return null;
-    };
-    // The descriptions its calls name: its binding's, and what the session kept of its process's.
-    const described: DescribedBy = { descriptions: options.descriptions, pid: options.sequence?.pid ?? null };
-    /** The wave's close calls, by number: a refused one forgets its description as an applied one does. */
-    const closing = new Map<number, string>();
-    /**
-     * A record that lands on this filesystem, decided without an await: a
-     * file (not a link) or directory placed here by placeSync, a chunk or end
-     * of a file no mount takes, or the batch's end. Every other record (a
-     * removal, a call, a link) goes to routeRecord.
-     */
-    const landsHere = (record: W7DecodedRecord): boolean => {
-      if (routed.file !== null) return false;
-      switch (record.type) {
-        case 'file-chunk':
-        case 'file-end':
-        case 'batch-end':
-          return true;
-        case 'file-begin':
-          // A description's write is its file's, wherever that is named now.
-          if (record.inode.description !== undefined && this.isDescribed(described, record.inode.description)) return true;
-          return record.inode.kind !== 'symlink' && placeSync('file', record.inode.path) === null;
-        case 'directory':
-          return placeSync('directory', record.inode.path) === null;
-        default:
-          return false;
-      }
-    };
-    /**
-     * Around a commit of the wave's own files: the view holds across it when
-     * nothing else had committed since the view was taken, and the commit's
-     * own publication reshaped nothing a name resolves through (no directory
-     * or link made, replaced or removed). The revision taken is the one that
-     * publication made, at the publication itself (publishWatch), so a write
-     * anything else makes in the same turn still starts a new view.
-     */
-    const ownFiles = <T>(commit: () => T): T => {
-      const before = this._revision;
-      let published: { revision: number; reshaped: boolean } | null = null;
-      this.publishWatch = (revision, reshaped) => { published = { revision, reshaped }; this.publishWatch = null; };
-      try {
-        return commit();
-      } finally {
-        this.publishWatch = null;
-        const own = published as { revision: number; reshaped: boolean } | null;
-        if (own !== null && !own.reshaped && before === view.revision) view.revision = own.revision;
-      }
-    };
-    /** This wave's own name: the slots its routed links are staged at. */
-    const waveId = crypto.randomUUID().slice(0, 8);
-    /**
-     * Names the namespace placed on this filesystem, by the commit that
-     * publishes them, each dated by the revision it was placed at. Right
-     * before that commit, in its turn, each is placed again (resolved anew
-     * when anything has been committed since): a peer that repointed a link
-     * between the placement and the commit, or a mount made there, refuses
-     * the wave (ESTALE) instead of writing rows a mount hides.
-     */
-    const placedHere = {
-      directory: new Map<string, { resolved: string; epoch: number }>(),
-      file: new Map<string, { resolved: string; epoch: number }>(),
-      delete: new Map<string, { resolved: string; epoch: number }>(),
-    };
-    /** Place `names` again, the ones this commit publishes, and forget them. */
-    const recheck = (placements: Map<string, { resolved: string; epoch: number }>, names: Iterable<string>): void => {
-      if (router === null || placements.size === 0) return;
-      const resolvedNow = new Map<string, string | null>();
-      for (const named of names) {
-        const placed = placements.get(named);
-        if (placed === undefined) continue;
-        placements.delete(named);
-        let now = placed.resolved;
-        if (placed.epoch !== viewEpoch()) {
-          const parent = this.parentPath(named);
-          let dir = resolvedNow.get(parent);
-          if (dir === undefined) {
-            let answer: string | Promise<string> | null;
-            try {
-              answer = parent === '' ? '' : asWriter(() => router.resolveDirectory('/' + parent, cred));
-            } catch {
-              answer = null;
-            }
-            // A lookup that leaves this filesystem's synchronous backends left it.
-            if (answer instanceof Promise) { answer.catch(() => {}); answer = null; }
-            dir = answer;
-            resolvedNow.set(parent, dir);
-          }
-          now = dir === null ? '' : `${dir === '/' ? '' : dir}/${named.slice(named.lastIndexOf('/') + 1)}`;
-        }
-        if (now !== placed.resolved || router.placement(now) !== null || (placements !== placedHere.directory && router.composes(now))) {
-          throw vfsError('ESTALE', named, 'the namespace changed under the wave: this name no longer lands where the wave placed it');
-        }
-      }
-    };
-    /** The index of the record being applied, as committedOps counts them. */
-    let recordIndex = -1;
-
-    // The pending publish group. Everything reset by a flush lives here.
-    let group = this.newPlan();
-    let groupLeases: CreditLease[] = [];
-    let groupInodes: string[] = [];
-    /** The path the stream named each of the group's files by, keyed by where it lands. */
-    let groupNames = new Map<string, string>();
-    let groupPublishedChunks = 0;
-    let groupPaths = 0;
-    let groupStagedBytes = 0;
-    // Directory upserts batch on their own: authorising a file consults the
-    // committed inode tree for its parent, so directories flush before the
-    // first file record rather than sharing the file group.
-    let pendingDirectories: BatchInodeEntry[] = [];
-    // Where each streamed name lands (links followed), while nothing has
-    // committed since it was worked out.
-    let placement = { gen: -1, placed: new Map<string, string>() };
-    // The group's whole files, entered with their names as streamed:
-    // authorised together in the turn the group commits.
-    let unauthorized: { raw: BatchInodeEntry; entry: StoredInodeEntry }[] = [];
-
-    const flushGroup = (): void => {
-      if (group.empty) return;
-      // In the turn that commits: a fenced wave overtaken by its re-send stops here.
-      options.admit?.();
-      // The group's whole files are authorised here, together, in the turn
-      // that commits them: nothing between the check and the write can
-      // change a mode, an owner or a link (one read finds what each replaces).
-      if (unauthorized.length > 0) {
-        const pending = unauthorized;
-        unauthorized = [];
-        const priors = new Map<string, INode | undefined>();
-        asCaller(() => {
-          const normalized = this.authorizeBatch({ inodes: pending.map((file) => file.raw), chunks: [] }, cred, priors).inodes;
-          normalized.forEach((inode, index) => {
-            const { entry } = pending[index]!;
-            const from = entry.path;
-            Object.assign(entry, this.fileEntry(inode, entry.content, { inode: priors.get(inode.path), gen: this._gen }));
-            if (inode.path !== from) {
-              // A link appeared above it since its name was placed.
-              group.moveInode(from, entry);
-              const named = groupNames.get(from);
-              groupNames.delete(from);
-              if (named !== undefined) groupNames.set(inode.path, named);
-              const at = groupInodes.indexOf(from);
-              if (at >= 0) groupInodes[at] = inode.path;
-            }
-          });
-        });
-      }
-      // The files this commit publishes, placed again in its turn.
-      recheck(placedHere.file, groupNames.values());
-      const plan = group.build();
-      const leases = groupLeases;
-      const inodes = groupInodes;
-      const names = groupNames;
-      const publishedChunks = groupPublishedChunks;
-      const paths = groupPaths;
-      const stagedBytes = groupStagedBytes;
-      group = this.newPlan();
-      groupLeases = [];
-      groupInodes = [];
-      groupNames = new Map();
-      groupPublishedChunks = 0;
-      groupPaths = 0;
-      groupStagedBytes = 0;
-      try {
-        if (inodes.length === 0) {
-          // No file has completed, so the plan publishes nothing: these are
-          // the staged chunks of a file still in flight, and the bytes stay
-          // charged to it until its publication commits.
-          this.assertTransactionFits(plan.metrics);
-          ownFiles(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
-          this._stagedStreamBytes += plan.metrics.blobBytes;
-          this._peakStagedStreamBytes = Math.max(this._peakStagedStreamBytes, this._stagedStreamBytes);
-          if (activeFile) activeFile.stagedBytes += plan.metrics.blobBytes;
-          return;
-        }
-        this.assertTransactionFits(plan.metrics);
-        // Re-check the mutation guard here rather than only where each file
-        // was accepted: a group commits after the records that follow it, so
-        // this is the check that is contemporaneous with the write.
-        const result = ownFiles(() => asCaller(() => {
-          this.assertMutationsAllowed(inodes);
-          return this._writeBatchOnce(
-            { plan, deletedInodes: [] },
-            { source: 'content-publish', limitMode: 'bounded' },
-          );
-        }));
-        let activeStaged = 0;
-        for (const staged of plan.staged) {
-          if (staged.content === activeFile?.staging) activeStaged += staged.piece.data.byteLength;
-        }
-        if (activeFile) activeFile.stagedBytes += activeStaged;
-        this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes + activeStaged - stagedBytes);
-        for (const entry of plan.inodes) {
-          if (entry.content.type === 'staged') ownedStaging.delete(entry.content.content);
-        }
-        progress.committedGroupSequence++;
-        progress.committedPathCount += paths;
-        progress.committedOps += paths;
-        progress.inodes += result.inodes;
-        progress.chunks += publishedChunks;
-        for (const entry of plan.inodes) {
-          const named = names.get(entry.path);
-          if (named === undefined || entry.isDir) continue;
-          progress.receipts.push({
-            path: named,
-            ino: entry.ino!,
-            mode: entry.mode,
-            size: entry.size,
-            mtimeMs: entry.mtime,
-            ctimeMs: entry.ctime!,
-            uid: entry.uid,
-            gid: entry.gid,
-            dev: this.deviceId,
-          });
-        }
-      } finally {
-        for (const lease of leases) lease.release();
-      }
-    };
-
-    let directoryBatches: BatchInodeEntry[][] = [];
-    const commitDirectoryBatch = (): boolean => {
-      const inodes = directoryBatches.shift() ?? pendingDirectories;
-      if (inodes === pendingDirectories) pendingDirectories = [];
-      if (inodes.length === 0) return false;
-      options.admit?.();
-      recheck(placedHere.directory, inodes.map((inode) => inode.path));
-      const result = asCaller(() => (
-        this.writeBatch({ inodes, chunks: [] }, cred)
-      ));
-      progress.committedGroupSequence++;
-      progress.committedPathCount += inodes.length;
-      progress.committedOps += inodes.length;
-      progress.inodes += result.inodes;
-      return true;
-    };
-    const flushDirectories = (): void => {
-      if (leading) throw new Error('internal: the leading directories commit only through endLeading');
-      while (commitDirectoryBatch());
-    };
-
-    // A removal observes everything the stream wrote before it.
-    const commitDelete = (path: string): void => {
-      flushGroup();
-      flushDirectories();
-      options.admit?.();
-      recheck(placedHere.delete, [path]);
-      const affected = Math.max(1, this.collectSubtreeInodes([path]).length);
-      asCaller(() => {
-        this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] }, cred);
-      });
-      progress.committedGroupSequence++;
-      progress.committedPathCount += affected;
-      progress.committedOps++;
-    };
-
-    // The wave's leading removals and directories (an encoder sends them
-    // before its first file) are held until the first file or the end, and
-    // checked together before any of them commits: a directory record over
-    // a symbolic link they do not remove refuses the wave with nothing
-    // committed (linkReplacedByDirectory). Then the removals commit, then
-    // the directories, in batches the plan's accounting bounds.
-    let leading = true;
-    let leadingDeletes: string[] = [];
-    // Once checked: the removals to commit, then the directories (held aside until the removals are in).
-    let deletesToCommit: string[] = [];
-    let directoriesToBatch: BatchInodeEntry[] | null = null;
-    /** Commit the leading phase's next group: whether one was there. */
-    const commitLeadingStep = (): boolean => {
-      const path = deletesToCommit.shift();
-      if (path !== undefined) {
-        commitDelete(path);
-        return true;
-      }
-      if (directoriesToBatch !== null) {
-        let batch: BatchInodeEntry[] = [];
-        for (const inode of directoriesToBatch) {
-          if (this.newPlan().wouldExceedInodes(batch.length + 1) !== null) {
-            directoryBatches.push(batch);
-            batch = [];
-          }
-          batch.push(inode);
-        }
-        if (batch.length > 0) directoryBatches.push(batch);
-        directoriesToBatch = null;
-      }
-      return commitDirectoryBatch();
-    };
-    /**
-     * The one way the leading phase ends, whatever ends it (a file, a call,
-     * a routed record, the batch's end): checked, then committed a group a
-     * turn when the caller gives turns.
-     */
-    const endLeading = async (): Promise<void> => {
-      phase = 'publish';
-      asWriter(queueLeading);
-      while (asWriter(commitLeadingStep)) {
-        if (options.turn !== undefined && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await unlessCut(options.turn());
-      }
-    };
-    const queueLeading = (): void => {
-      if (!leading) return;
-      leading = false;
-      const deletes = leadingDeletes;
-      leadingDeletes = [];
-      asCaller(() => this.inodes.lookingUp(() => {
-        const keys = [...pendingDirectories.map((inode) => this.storageKey(inode.path, cred)), ...deletes.map((path) => this.storageKey(path, cred))];
-        this.readAlong(keys);
-        const placed = new Map<string, string>();
-        const placedAt = (path: string): string => {
-          const key = this.storageKey(path, cred);
-          return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
-        };
-        const linked = this.linkReplacedByDirectory(
-          pendingDirectories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred, placed)),
-          deletes.map(placedAt),
-        );
-        if (linked !== null) throw linkedDirectoryRefusal(linked);
-      }));
-      // Held aside while the removals commit (commitDelete flushes what is
-      // pending), then batched as the plan's accounting bounds (commitLeadingStep).
-      directoriesToBatch = pendingDirectories;
-      pendingDirectories = [];
-      deletesToCommit = deletes;
-    };
-
-    const stagePiece = (file: NonNullable<typeof activeFile>, piece: Piece): void => {
-      if (file.held !== null) {
-        file.held.push(piece);
-        return;
-      }
-      if (file.staging === null) {
-        file.staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-        ownedStaging.add(file.staging);
-      }
-      if (group.wouldExceedPieces(piece.data.byteLength, 1) !== null) flushGroup();
-      group.addStagedPiece(file.staging, piece, file.inode.path);
-    };
-
-    // Give back every lease this stream holds: commit its group, and stage
-    // the file it holds whole so far, whose pieces then commit with it.
-    const releaseHeldCredit = (): void => {
-      const file = activeFile;
-      if (file !== null && file.held !== null && file.held.length > 0) {
-        const pieces = file.held;
-        file.held = null;
-        groupLeases.push(...file.heldLeases);
-        file.heldLeases = [];
-        for (const piece of pieces) stagePiece(file, piece);
-      }
-      if (!group.empty) flushGroup();
-      // Data calls gathered and not yet made hold their whole size: made now,
-      // they give it back (a wave waiting with them held could be what every
-      // other wave's wait needs).
-      if (pendingCalls.length > 0) flushCalls();
-    };
-
-    // A stream waits for credit only once it holds none: a lease it kept
-    // while waiting could be the one its wait needs (two streams over the
-    // small-request reserve each waited on the other's held chunks, for good).
-    const awaitCredit = async <T>(
-      tryAcquire: () => T | null,
-      acquire: () => Promise<T>,
-    ): Promise<T> => {
-      const granted = tryAcquire();
-      if (granted !== null) return granted;
-      releaseHeldCredit();
-      const waitToken = {};
-      const waitStartedAt = performance.now();
-      this._creditWaitStarts.set(waitToken, waitStartedAt);
-      try {
-        return tryAcquire() ?? await acquire();
-      } finally {
-        this._creditWaitStarts.delete(waitToken);
-        this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
-      }
-    };
-
-    const acquireCredit = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
-      const writeLease = await awaitCredit(
-        () => this.writeStreamCredits.tryAcquire(byteLength),
-        () => this.writeStreamCredits.acquire(byteLength, signal),
-      );
-      let supervisorLease: CreditLease;
-      try {
-        supervisorLease = await awaitCredit(
-          () => tryAcquireSupervisorAllocation(byteLength),
-          () => acquireSupervisorAllocation(byteLength, signal),
-        );
-      } catch (error) {
-        writeLease.release();
-        throw error;
-      }
-
-      let released = false;
-      return {
-        bytes: byteLength,
-        release: () => {
-          if (released) return;
-          released = true;
-          writeLease.release();
-          supervisorLease.release();
-        },
-      };
-    };
-
-    const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
-      // A mounted file's chunk: covered by what its record reserved when admitted.
-      const covered = routed.file?.credit ?? callFile?.credit;
-      if (covered !== undefined) {
-        covered.left -= byteLength;
-        return { bytes: byteLength, release: () => {} };
-      }
-      if (group.wouldExceedPieces(byteLength, 1) !== null) flushGroup();
-      return acquireCredit(byteLength, signal);
-    };
-
-    // A sequenced writer's wave (WaveSequence): its ops are numbered from
-    // `first`, and one the writer's cursor has passed is answered, never
-    // applied again.
-    const sequence = options.sequence === undefined ? null : { spec: options.sequence, cursor: 0 };
-    /** The number of the op being applied: a refusal now is its answer. */
-    let applying: number | null = null;
-    /** A re-sent data call the cursor has passed: its chunks are drained, not applied. */
-    let skipping: string | null = null;
-    const advanced = (seq: number): void => {
-      sequence!.cursor = seq;
-      progress.sequence = { cursor: seq };
-      applying = null;
-    };
-    /**
-     * The wave's calls not yet committed: consecutive ones commit together,
-     * in one transaction with their cursor's moves (flushCalls), at the next
-     * record that is no call, or once the group is full. Each is applied by
-     * the namespace's own operation, in order, and answered with its path's
-     * revision right before it and the session's after (WaveMutation); a
-     * data call with its file's stat.
-     */
-    type PendingCall = {
-      index: number;
-      seq: number | null;
-      path: string;
-      paths: number;
-      apply: () => VfsStat | null | void;
-      receipt: boolean;
-    };
-    const pendingCalls: PendingCall[] = [];
-    let pendingCallBytes = 0;
-    /** Apply `calls` in one transaction; the index of the one that threw, and its error, or null. */
-    const applyCalls = (calls: readonly PendingCall[]): { at: number; error: unknown } | { befores: number[]; results: (VfsStat | null | void)[] } => {
-      const befores: number[] = [];
-      const results: (VfsStat | null | void)[] = [];
-      let failed: { at: number; error: unknown } | null = null;
-      try {
-        asWriter(() => this.publishedTransaction(() => {
-          for (const [at, call] of calls.entries()) {
-            befores.push(this.revision(call.path, cred));
-            try {
-              results.push(asCaller(call.apply));
-            } catch (error) {
-              failed = { at, error };
-              throw error;
-            }
-            if (sequence !== null && call.seq !== null) this.advanceSequence(sequence.spec.writer, call.seq);
-          }
-        }, (error) => error));
-      } catch (error) {
-        return failed ?? { at: 0, error };
-      }
-      return { befores, results };
-    };
-    const flushCalls = (): void => {
-      if (pendingCalls.length === 0) return;
-      // The op being decoded now (a routed one settling what came before it) stays the one being applied.
-      const current = applying;
-      const calls = pendingCalls.splice(0);
-      pendingCallBytes = 0;
-      phase = 'publish';
-      options.admit?.();
-      let applied = applyCalls(calls);
-      let refused: { call: PendingCall; error: unknown } | null = null;
-      if ('error' in applied) {
-        // Rolled back whole: the calls before the one refused commit
-        // together again (they did, before it), and its refusal is its answer.
-        const at = applied.at;
-        refused = { call: calls[at]!, error: applied.error };
-        applied = at === 0 ? { befores: [], results: [] } : applyCalls(calls.slice(0, at));
-        if ('error' in applied) {
-          applying = calls[applied.at]!.seq;
-          throw applied.error;
-        }
-      }
-      const after = this._revision;
-      // Read as the wave's writer: its receipts recall none of what it holds.
-      const { results, befores } = applied;
-      asWriter(() => results.forEach((result, at) => {
-        const call = calls[at]!;
-        progress.committedGroupSequence++;
-        progress.committedPathCount += call.paths;
-        progress.committedOps++;
-        (progress.mutations ??= []).push({ index: call.index, before: befores[at]!, after });
-        if (call.receipt && result) {
-          // The revision its file was published at, as its path reports it.
-          const handle: unknown = Reflect.get(result, 'handle');
-          progress.receipts.push({
-            path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
-            uid: result.uid, gid: result.gid, dev: this.deviceId, revision: this.revision(call.path, cred),
-            ...(typeof handle === 'number' ? { handle } : {}),
-          });
-        }
-        if (call.seq !== null) advanced(call.seq);
-      }));
-      if (refused !== null) {
-        applying = refused.call.seq;
-        throw refused.error;
-      }
-      applying = current;
-    };
-    /**
-     * Queue the call at the wave's current place, made at `path` by `apply`.
-     * `alone`: it may change where later names resolve (a removal, a link,
-     * a rename, an attribute change), so it commits now, after the ones
-     * before it.
-     */
-    const queueCall = (path: string, apply: PendingCall['apply'], options: { bytes?: number; paths?: number; receipt?: boolean; alone?: boolean } = {}): void => {
-      flushGroup();
-      flushDirectories();
-      pendingCalls.push({ index: recordIndex, seq: applying, path, paths: options.paths ?? 1, apply, receipt: options.receipt === true });
-      applying = null;
-      pendingCallBytes += options.bytes ?? 0;
-      if (options.alone === true || pendingCalls.length >= CALL_GROUP_OPS || pendingCallBytes >= CALL_GROUP_BYTES) flushCalls();
-    };
-
-    try {
-      if (sequence !== null) {
-        const opened = this.openSequence(sequence.spec);
-        sequence.cursor = opened.cursor;
-        progress.sequence = { cursor: opened.cursor };
-        // A re-send of a wave whose op was refused: answered as it was, nothing after that op applied.
-        if (opened.refused !== null && opened.refused.seq >= sequence.spec.first) {
-          progress.sequence.refused = opened.refused;
-          stream.cancel().catch(() => {});
-          return {
-            ok: false,
-            ...progress,
-            error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: opened.refused.message, errno: opened.refused.errno },
-          };
-        }
-      }
-      const decoded = await unlessCut(decodeWriteBatchStream(stream, {
-        signal: options.signal,
-        retainChunk,
-      }));
-      recordIterator = decoded.records[Symbol.asyncIterator]();
-      let turnAt = 0;
-      while (true) {
-        if (options.turn !== undefined && progress.committedGroupSequence !== turnAt) {
-          turnAt = progress.committedGroupSequence;
-          await unlessCut(options.turn());
-        }
-        phase = 'decode';
-        const waitStartedAt = performance.now();
-        let next: IteratorResult<W7DecodedRecord>;
-        try {
-          next = await unlessCut(recordIterator.next(), (late) => { if (late.done !== true && late.value.type === 'file-chunk') late.value.retention.release(); });
-        } finally {
-          decodeDrainWaitMs += performance.now() - waitStartedAt;
-        }
-        if (next.done) {
-          recordIteratorFinished = true;
-          throw new Error('w7-frame: stream ended without batch-end');
-        }
-        const record = next.value;
-        // A record that lands in another holder's delegation waits for it to
-        // be given up first, here between records, where the stream may wait:
-        // its group's commit would otherwise be refused.
-        if (this.exclusiveMutationLeases.size > 0 || this.readLeases.size > 0) {
-          for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, holds, pipeline, options.signal);
-        }
-        // A record that is no call: the calls before it commit first.
-        const partOfCall = record.type === 'call' || (record.type === 'file-begin' && record.inode.call !== undefined)
-          || (callFile !== null && (record.type === 'file-chunk' || record.type === 'file-end'));
-        if (!partOfCall) flushCalls();
-        if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end') recordIndex++;
-        if (sequence !== null && record.type !== 'batch-end') {
-          if (record.type === 'file-chunk' || record.type === 'file-end') {
-            if (skipping !== null) {
-              if (record.type === 'file-chunk') record.retention.release();
-              else skipping = null;
-              continue;
-            }
-          } else {
-            // Numbered: a process's calls, renames, truncates and attribute changes; an upsert has no answer to keep.
-            if (record.type === 'delete' || record.type === 'directory' || (record.type === 'file-begin' && record.inode.call === undefined)) {
-              throw vfsError('EINVAL', record.type === 'delete' ? record.path : record.inode.path, 'a sequenced wave carries calls, renames, truncates and attribute changes, not upserts');
-            }
-            // Each op's number is its place in the wave (recordIndex counts ops, from 0).
-            const seq = sequence.spec.first + recordIndex;
-            if (seq <= sequence.cursor) {
-              if (record.type === 'file-begin') skipping = record.streamContentId;
-              // An open the cursor passed is answered again as it was (its
-              // reply was lost): its description's descriptor and file.
-              else if (record.type === 'call' && record.call.call === 'open' && record.call.description !== undefined) {
-                const { path, description } = record.call;
-                const receipt = asWriter(() => this.reopened(described, path, description, cred));
-                if (receipt !== null) progress.receipts.push(receipt);
-              }
-              continue;
-            }
-            applying = seq;
-          }
-        }
-        if (router !== null && !landsHere(record) && await this.routeRecord(record, router, cred, {
-          get file() { return routed.file; },
-          set file(file) { routed.file = file; },
-          index: recordIndex,
-          waveId,
-          routes,
-          holds,
-          view: viewEpoch,
-          placeSync,
-          described,
-          placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
-          signal: options.signal,
-          reach: options.mountReach,
-          // Right before each call to the backend: the wave is still admitted, and not cancelled.
-          guard: () => {
-            options.signal?.throwIfAborted();
-            options.admit?.();
-          },
-          // Whatever the wave wrote here before the record commits first.
-          settleBefore: async () => {
-            flushCalls();
-            await endLeading();
-            flushDirectories();
-            flushGroup();
-            options.admit?.();
-          },
-          reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, options.signal)),
-          setPhase: (next) => { phase = next; },
-          owner: options.mutationOwner,
-          committed: (receipt) => {
-            progress.committedGroupSequence++;
-            progress.committedPathCount++;
-            progress.committedOps++;
-            if (receipt !== null) progress.receipts.push(receipt);
-            // On a mount: the cursor moves once the backend has it, in a transaction of its own.
-            if (sequence !== null && applying !== null) {
-              const seq = applying;
-              this.transactionSync(() => this.advanceSequence(sequence.spec.writer, seq));
-              advanced(seq);
-            }
-          },
-        })) continue;
-        // Only removals and directories are held in the leading phase: anything
-        // else that lands here ends it first (a routed record ends it in settleBefore).
-        if (leading && record.type !== 'delete' && record.type !== 'directory') await endLeading();
-        // A call's bytes are gathered whole, and the call made at its end.
-        if (record.type === 'file-begin' && record.inode.call !== undefined) {
-          phase = 'validation';
-          this.validateInodeContentShape(record.inode);
-          if (record.inode.size > DATA_CALL_MAX) {
-            throw vfsError('EINVAL', record.inode.path, `a data call carries at most ${DATA_CALL_MAX} bytes; this one is ${record.inode.size}`);
-          }
-          // What is ahead of it commits first, giving its credit back, so the
-          // reservation below never waits on credit this wave holds.
-          flushGroup();
-          flushDirectories();
-          const lease = record.inode.size === 0 ? null : await acquireCredit(record.inode.size, options.signal);
-          if (lease !== null) callLeases.add(lease);
-          callFile = {
-            path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
-            ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
-            ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
-            ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
-            ...(record.inode.description === undefined ? {} : { description: record.inode.description }),
-            parts: [],
-            credit: { left: record.inode.size, lease },
-          };
-          continue;
-        }
-        if (callFile !== null && record.type === 'file-chunk') {
-          // Copied out, and the chunk's credit given back.
-          callFile.parts.push(record.data.slice());
-          record.retention.release();
-          continue;
-        }
-        if (callFile !== null && record.type === 'file-end') {
-          const file = callFile;
-          callFile = null;
-          phase = 'publish';
-          const bytes = concatBytes(file.parts);
-          file.parts = [];
-          // Its bytes stay charged until the call is made.
-          const lease = file.credit.lease;
-          queueCall(file.path, () => {
-            try {
-              return this.applyDataCall(file, bytes, cred, described);
-            } finally {
-              if (lease !== null && callLeases.delete(lease)) lease.release();
-            }
-          }, { bytes: bytes.byteLength, receipt: true });
-          continue;
-        }
-        // A name a delegation's holder made is the caller's, as a create of
-        // its own would make it (creationAttrs): its owner, and a setgid
-        // directory's group. The holder made it so; this keeps it so.
-        if ((record.type === 'directory' || record.type === 'file-begin') && delegatedWave && !this.inodes.get(record.inode.path)) {
-          const attrs = this.creationAttrs(record.inode.path, record.inode.mode, cred, record.type === 'directory');
-          Object.assign(record.inode, { uid: cred.uid, gid: attrs.gid, mode: attrs.mode });
-        }
-        // Each record is applied in one synchronous turn, by the stream's
-        // caller: as the delegations it holds, whose lookups recall none of them.
-        const ended = asWriter((): boolean => {
-          switch (record.type) {
-            case 'delete': {
-              phase = 'publish';
-              if (leading) leadingDeletes.push(record.path);
-              else commitDelete(record.path);
-              break;
-            }
-            case 'directory': {
-              phase = 'validation';
-              this.validateFileChunks(record.inode, []);
-              phase = 'publish';
-              // Records commit in their order: files the stream wrote before
-              // this directory commit before it.
-              if (groupInodes.length > 0) flushGroup();
-              // Directory inodes carry no payload: rows are the only bound in
-              // reach, priced by the plan's own accounting (each row, the
-              // parent it dates, and a snapshot's before-images of both), so
-              // the strict batch the flush commits always fits. The leading
-              // ones are bounded as they commit (endLeading).
-              if (!leading && this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
-              pendingDirectories.push(record.inode);
-              break;
-            }
-            case 'file-begin': {
-              phase = 'validation';
-              this.validateInodeContentShape(record.inode);
-              phase = 'publish';
-              // Authorising a file reads its parent from the committed inode
-              // tree, so pending directories become visible first.
-              flushDirectories();
-              phase = 'validation';
-              // The file lands where its name resolves (links followed, as a
-              // batch places it), and that is the path its lease is checked on.
-              // Close the group before the file that would overflow it, so a
-              // file either fits whole or begins a group of its own; one too
-              // large for any group stages across several.
-              if (group.wouldExceedFile(record.inode.size) !== null) flushGroup();
-              const whole = group.wouldExceedFile(record.inode.size) === null;
-              if (placement.gen !== this._gen) placement = { gen: this._gen, placed: new Map() };
-              let placedInode: BatchInodeEntry;
-              let placedPrior: KnownPrior | null = null;
-              if (whole) {
-                // Held whole until its group commits, and authorised there.
-                const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
-                asCaller(() => this.assertMutationsAllowed([path]));
-                placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
-              } else {
-                // Too large for one group: its chunks commit as they arrive, so it
-                // is authorised before the first of them.
-                const priors = new Map<string, INode | undefined>();
-                placedInode = asCaller(() => {
-                  const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
-                  this.assertMutationsAllowed([placed!.path]);
-                  return placed!;
-                });
-                placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
-              }
-              phase = 'stage';
-              activeFile = {
-                named: record.inode.path,
-                inode: placedInode,
-                cutter: new ContentCutter(),
-                held: whole ? [] : null,
-                heldLeases: [],
-                staging: null,
-                stagedBytes: 0,
-                raw: record.inode,
-                prior: placedPrior,
-              };
-              break;
-            }
-            case 'file-chunk': {
-              // The decoder yields a file's chunks in order, each its size,
-              // between its file-begin and file-end (decodeWriteBatchStream).
-              decodedRecordLease = record.retention;
-              const file = activeFile!;
-              phase = 'stage';
-              if (file.inode.size <= CHUNK_SIZE) {
-                // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
-                file.held!.push({ data: record.data, hash: new Uint8Array(0) });
-              } else {
-                for (const data of file.cutter.push(record.data)) stagePiece(file, { data, hash: chunkHash(data) });
-              }
-              if (file.held !== null) file.heldLeases.push(record.retention);
-              else groupLeases.push(record.retention);
-              decodedRecordLease = null;
-              break;
-            }
-            case 'file-end': {
-              const file = activeFile!;
-              phase = 'publish';
-              let content: InodeContent;
-              if (file.inode.size === 0) content = { type: 'none' };
-              else if (file.inode.size <= CHUNK_SIZE) {
-                const parts = file.held!;
-                const data = parts.length === 1 ? parts[0]!.data : concatBytes(parts.map((part) => part.data));
-                content = { type: 'small', piece: { data, hash: chunkHash(data) } };
-              } else {
-                for (const data of file.cutter.finish()) stagePiece(file, { data, hash: chunkHash(data) });
-                if (file.held !== null) {
-                  const digest = new ManifestDigest();
-                  for (const piece of file.held) digest.add(piece.hash);
-                  content = { type: 'large', pieces: file.held, size: file.inode.size, digest: digest.digest(file.inode.size) };
-                } else {
-                  content = { type: 'staged', content: file.staging! };
-                }
-              }
-              const overflows = file.held !== null
-                ? group.wouldExceedFile(file.inode.size)
-                : group.wouldExceedInode();
-              if (overflows !== null) flushGroup();
-              // Every file of the group, staged ones included, is authorised
-              // (again) in the turn its group commits; until then its entry
-              // holds the group's place and accounting, and claims no prior.
-              const entry = asCaller(() => (
-                this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })
-              ));
-              group.addInode(entry);
-              unauthorized.push({ raw: file.raw, entry });
-              groupLeases.push(...file.heldLeases);
-              groupInodes.push(entry.path);
-              groupNames.set(entry.path, file.named);
-              groupPublishedChunks += record.chunkCount;
-              groupStagedBytes += file.stagedBytes;
-              groupPaths++;
-              activeFile = null;
-              break;
-            }
-            case 'rename':
-            case 'truncate':
-            case 'setattr': {
-              // Like a delete, it observes everything the stream wrote before it.
-              phase = 'publish';
-              queueCall(record.type === 'rename' ? record.from : record.path, () => {
-                if (record.type === 'rename') this.rename(record.from, record.to, cred);
-                else if (record.type === 'truncate') this.truncate(record.path, record.size, cred);
-                else if ('mode' in record.attrs) this.chmod(record.path, record.attrs.mode, cred);
-                else if ('uid' in record.attrs) this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
-                else this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
-              }, { paths: record.type === 'rename' ? 2 : 1, alone: true });
-              break;
-            }
-            case 'call': {
-              // A call observes everything the stream wrote before it.
-              phase = 'publish';
-              const call = record.call;
-              if (call.call === 'close' && applying !== null) closing.set(applying, call.description);
-              // A mkdir commits with the calls beside it; any other may change
-              // where later names resolve, and commits now.
-              queueCall(call.path, () => {
-                if (call.call === 'mkdir') {
-                  // mkdir(2): a name that is there, whatever it is, is EEXIST
-                  // (the engine's mkdir keeps an existing directory as made);
-                  // `existing: 'ok'` takes a directory there (followed, as mkdir -p does).
-                  const there = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
-                  if (there !== undefined) {
-                    const directory = call.existing === 'ok' && (there.kind === 'directory' || (there.kind === 'symlink' && this.isDirectory(call.path, cred)));
-                    if (!directory) throw vfsError('EEXIST', call.path);
-                  } else {
-                    this.mkdir(call.path, { mode: call.mode, ino: call.ino }, withUmask(cred, call.umask));
-                  }
-                }
-                else if (call.call === 'unlink') this.unlink(call.path, cred);
-                else if (call.call === 'rmdir') this.rmdir(call.path, cred);
-                else if (call.call === 'ftruncate') {
-                  // Through its description when it names one: authorized at its open.
-                  if (call.description !== undefined) this.describedBy(described, call.description, call.path, cred)?.truncate(call.size);
-                  else {
-                    const at = this.describedFile(call.path, call.ino, cred);
-                    if (at !== null) this.truncate(at, call.size, cred);
-                  }
-                }
-                else if (call.call === 'rm') {
-                  // fs.rm: a name not there is no refusal when forced.
-                  try {
-                    if (call.recursive) this.removeRecursive(call.path, cred);
-                    else this.unlink(call.path, cred);
-                  } catch (error) {
-                    if (!(call.force && errnoOf(error) === 'ENOENT')) throw error;
-                  }
-                }
-                else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
-                else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
-                else if (call.call === 'open') return this.openToWrite(call, cred, described);
-                // Closing a description already gone (a mount's open keeps none) closes nothing.
-                else if (call.call === 'close') this.closeDescribed(described, call.description);
-                else this.symlink(call.target, call.path, cred, call.ino);
-              }, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
-              break;
-            }
-            case 'batch-end':
-              phase = 'publish';
-              flushDirectories();
-              flushGroup();
-              return true;
-          }
-          return false;
-        });
-        if (ended) {
-          if (recordIterator.return) await recordIterator.return();
-          recordIteratorFinished = true;
-          this._decodeDrainStarts.delete(decodeDrainToken);
-          this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
-          decodeDrainFinished = true;
-          return { ok: true, ...progress };
-        }
-      }
-    } catch (caught) {
-      let error = caught;
-      // The calls decoded before a stream that failed (cut, malformed) commit
-      // as they would have: a re-send then carries only what came after them.
-      if (pendingCalls.length > 0) {
-        try { flushCalls(); } catch (refusal) { error = refusal; }
-      }
-      const errno = errnoOf(error);
-      // A close its binding carried out, whatever it then reported (lastClose:
-      // what storing its writes failed with, an errno or none): its answer is
-      // final, kept with the forgetting of its description, so no path
-      // leaves a closed description to adopt again.
-      const closeOf = applying === null ? undefined : closing.get(applying);
-      const closed = closeOf !== undefined && described.descriptions?.node(closeOf) === undefined ? closeOf : undefined;
-      // The op being applied was refused: its answer, kept for a re-send; nothing after it applies.
-      if (sequence !== null && applying !== null && (closed !== undefined || (errno !== undefined && SYSCALL_VERDICTS.has(errno as VfsErrorCode)))) {
-        const refused = { seq: applying, errno: errno ?? 'EIO', message: this.errorMessage(error) };
-        try {
-          this.refuseInSequence(sequence.spec.writer, refused, closed === undefined || described.pid === null ? undefined : { pid: described.pid, id: closed });
-          progress.sequence = { cursor: refused.seq, refused };
-        } catch {
-          // Not kept: the op is unanswered, and a re-send applies it again.
-        }
-      }
-      return {
-        ok: false,
-        ...progress,
-        error: {
-          code: 'ERR_WRITE_BATCH_STREAM',
-          phase,
-          message: this.errorMessage(error),
-          ...(errno === undefined ? {} : { errno }),
-        },
-      };
-    } finally {
-      decodedRecordLease?.release();
-      for (const lease of groupLeases) lease.release();
-      for (const lease of activeFile?.heldLeases ?? []) lease.release();
-      groupLeases = [];
-      // Data calls the wave did not make: what they held goes back.
-      for (const lease of callLeases) lease.release();
-      callLeases.clear();
-      // A routed file the wave did not finish: what it held goes back.
-      if (routed.file !== null) {
-        for (const chunk of routed.file.held) chunk.release();
-        routed.file.credit.lease?.release();
-        routed.file = null;
-      }
-      if (!recordIteratorFinished && recordIterator?.return) {
-        try { await unlessCut(recordIterator.return()); } catch { /* preserve the primary stream result */ }
-      }
-      if (!decodeDrainFinished) {
-        this._decodeDrainStarts.delete(decodeDrainToken);
-        this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
-      }
-      // Staged bytes belonging to work that never reached a commit: the
-      // file in flight, plus any completed file still pending in the group.
-      const abandonedStagedBytes = (activeFile?.stagedBytes ?? 0) + groupStagedBytes;
-      this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes - abandonedStagedBytes);
-      for (const staging of ownedStaging) if (staging.id !== 0) this.abandonStaging(staging);
-      this.runContentMaintenanceSafely(2);
-    }
   }
 
   private _writeBatchWithRetry(
@@ -12197,7 +10955,7 @@ export class SqliteVFS {
 
     const normalizedInodes = new Map<string, NormalizedBatchInodeEntry>();
     for (const entry of payload.inodes) {
-      this.validateInodeContentShape(entry);
+      validateInodeShape(entry);
       const kind = inodeKind(entry);
       normalizedInodes.set(entry.path, {
         ...entry,
@@ -12226,7 +10984,7 @@ export class SqliteVFS {
         }
       } else {
         const fileChunks = chunksByPath.get(entry.path) ?? [];
-        this.validateFileChunks(entry, fileChunks);
+        validateFileChunks(entry, fileChunks);
         // Refuse a file no transaction can hold before cutting and hashing it.
         this.assertTransactionFits(builder.metricsWithFile(entry.size));
         content = fileContent(joinChunks(fileChunks));
@@ -12248,56 +11006,6 @@ export class SqliteVFS {
       });
     }
     return { plan: builder.build(), deletedInodes };
-  }
-
-  private validateFileChunks(inode: BatchInodeEntry, chunks: readonly BatchChunkEntry[]): void {
-    this.validateInodeContentShape(inode);
-    if (inode.chunkCount !== chunks.length) {
-      throw vfsError('EINVAL', inode.path, `expected ${inode.chunkCount} chunks, got ${chunks.length}`);
-    }
-    let total = 0;
-    const ordered = [...chunks].sort((a, b) => a.chunkId - b.chunkId);
-    for (let index = 0; index < ordered.length; index++) {
-      const chunk = ordered[index];
-      if (chunk.chunkId !== index) {
-        throw vfsError('EINVAL', inode.path, `expected chunk ${index}, got ${chunk.chunkId}`);
-      }
-      const expected = Math.min(CHUNK_SIZE, inode.size - (index * CHUNK_SIZE));
-      if (chunk.data.byteLength !== expected) {
-        throw vfsError('EINVAL', inode.path, `chunk ${index} has ${chunk.data.byteLength} bytes; expected ${expected}`);
-      }
-      total += chunk.data.byteLength;
-    }
-    if (total !== inode.size) {
-      throw vfsError('EINVAL', inode.path, `chunk bytes ${total} do not match size ${inode.size}`);
-    }
-  }
-
-  private validateInodeContentShape(inode: BatchInodeEntry): void {
-    const kind = inodeKind(inode);
-    const expectedParent = this.parentPath(inode.path);
-    if (inode.parentPath !== expectedParent) {
-      throw vfsError('EINVAL', inode.path, `parentPath ${inode.parentPath} does not match ${expectedParent}`);
-    }
-    if (inode.isDir !== (kind === 'directory')) {
-      throw vfsError('EINVAL', inode.path, `inode kind ${kind} conflicts with isDir=${inode.isDir}`);
-    }
-    if (!Number.isSafeInteger(inode.size) || inode.size < 0) {
-      throw vfsError('EINVAL', inode.path, `invalid size ${inode.size}`);
-    }
-    if (!Number.isSafeInteger(inode.chunkCount) || inode.chunkCount < 0) {
-      throw vfsError('EINVAL', inode.path, `invalid chunk count ${inode.chunkCount}`);
-    }
-    if (kind === 'directory' && inode.size !== 0) {
-      throw vfsError('EINVAL', inode.path, 'directory size must be zero');
-    }
-    const expectedChunkCount = kind === 'directory' ? 0 : w7ChunkCount(inode.size);
-    if (inode.chunkCount !== expectedChunkCount) {
-      throw vfsError(
-        'EINVAL',
-        `${inode.path}: expected ${expectedChunkCount} chunks for ${inode.size} bytes, got ${inode.chunkCount}`,
-      );
-    }
   }
 
   private assertTransactionFits(metrics: TransactionPlanMetrics): void {
@@ -12431,7 +11139,7 @@ export class SqliteVFS {
     if (inodeCount > 0 || plan.deletes.length > 0) {
       // One clock tick for the whole batch; stamp every touched path.
       this.bumpRevision([...plan.affectedPaths], structural);
-      // A wave watching for its own publication (consumeStream's ownFiles):
+      // A wave watching for its own publication (waveFiles' ownFiles):
       // whether it reshaped anything a name resolves through, a directory or
       // link made, replaced or removed.
       const watch = this.publishWatch;
@@ -12519,7 +11227,7 @@ export class SqliteVFS {
           seen.add(current);
           toCreate.push({
             path: current,
-            parentPath: this.parentPath(current),
+            parentPath: parentKey(current),
             isDir: true,
             size: 0,
             mtime,
@@ -12751,14 +11459,6 @@ export class SqliteVFS {
   }
 }
 
-function inodeKind(inode: Pick<BatchInodeEntry, 'kind' | 'isDir'>): VfsInodeKind {
-  const kind = inode.kind ?? (inode.isDir ? 'directory' : 'file');
-  if (kind !== 'file' && kind !== 'directory' && kind !== 'symlink') {
-    throw vfsError('EINVAL', `invalid inode kind ${String(kind)}`);
-  }
-  return kind;
-}
-
 function inodeKindCode(kind: VfsInodeKind): number {
   if (kind === 'file') return INODE_KIND_FILE;
   if (kind === 'directory') return INODE_KIND_DIRECTORY;
@@ -12824,24 +11524,6 @@ function subtreeWhere(
     ? { sql: `${column} > ?`, params: [after] }
     : { sql: `${column} > ? AND ${column} < ?`, params: [after, below] };
   return options.withRoot ? { sql: `(${column} = ? OR (${under.sql}))`, params: [root, ...under.params] } : under;
-}
-
-/** An error's errno (an `E…` code), if it carries one. */
-function errnoOf(error: unknown): string | undefined {
-  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
-  return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined;
-}
-
-/**
- * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which
- * a layer that reports the error for its own call keeps (the runtime bridge,
- * toVfsError). A `detail` given is the reason about the name `what` and is
- * appended to the message; without one, `what` is the whole reason. Name a
- * storage key only in `what`, never in the reason: the caller's layer names
- * the caller's own path.
- */
-function vfsError(code: string, what: string, detail: string = what): Error & { code: string; detail: string } {
-  return Object.assign(new Error(detail === what ? `${code}: ${what}` : `${code}: ${what}: ${detail}`), { code, detail });
 }
 
 /**
@@ -12999,36 +11681,7 @@ class GcQueue {
   }
 }
 
-/** A routed file arriving: where it was named and placed, and its chunks held until its call. */
-interface RoutedFile {
-  named: string;
-  placed: string;
-  link: boolean;
-  mode: number;
-  size: number;
-  held: { data: Uint8Array; release(): void }[];
-  index: number;
-  /** What its record reserved when admitted (its whole size), and how much of it its chunks have not drawn yet. */
-  credit: { left: number; lease: CreditLease | null };
-  /** A process's data call (W7Call), made by the namespace's call of that name. */
-  call?: W7DataCall;
-  /** A 'write' call's offset. */
-  offset?: number;
-  /** A writeFile's or appendFile's umask (W7Call umask). */
-  umask?: number;
-}
 
-function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) length += part.byteLength;
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.byteLength;
-  }
-  return out;
-}
 
 /**
  * A file's bytes from its positional wire chunks. Chunks that are adjacent

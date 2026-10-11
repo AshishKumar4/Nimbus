@@ -1,4 +1,5 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
+import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
@@ -60,6 +61,7 @@ export class SqliteRuntimeFsBridge {
     scope;
     namespace;
     bufferedWriteBytes;
+    waves;
     synchronous = this;
     vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
@@ -67,11 +69,14 @@ export class SqliteRuntimeFsBridge {
     constructor(vfs, rawVfs, scope = createSqliteDescriptorScope(), namespace, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
-    bufferedWriteBytes = BUFFERED_WRITE_BYTES) {
+    bufferedWriteBytes = BUFFERED_WRITE_BYTES, 
+    /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
+    waves = new WaveIngest(null)) {
         this.rawVfs = rawVfs;
         this.scope = scope;
         this.namespace = namespace;
         this.bufferedWriteBytes = bufferedWriteBytes;
+        this.waves = waves;
         this.vfs = vfs;
         this.mounted = namespace?.sync;
     }
@@ -758,10 +763,10 @@ export class SqliteRuntimeFsBridge {
     }
     /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
     writeBatch(payload, options) {
-        return this.vfs.writeBatchPlaced(payload, options);
+        return this.waves.writeBatch(this.vfs, payload, options);
     }
     writeStream(stream, options) {
-        return this.vfs.writeStream(stream, { ...options, descriptions: this.waveDescriptions });
+        return this.waves.writeStream(this.vfs, stream, { ...options, descriptions: this.waveDescriptions });
     }
     /**
      * The open descriptions a process's waves name (WaveDescriptions): each one

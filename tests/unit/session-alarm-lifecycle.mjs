@@ -279,8 +279,9 @@ function makeDestroyHost(storage) {
 // ── [5c] an alarm dispatch in flight during destroy leaves no alarm behind ──
 // The alarm handler is running (a resident-launch turn) when the session is
 // destroyed. When it returns, the dispatcher must not write its reasons map
-// back or re-arm setAlarm after destroy's deleteAll + deleteAlarm — nor may a
-// schedule requested before the destroy and queued behind the dispatch.
+// back or re-arm setAlarm after destroy's deleteAll + deleteAlarm — nor may
+// the handler's own arm after the destroy. A schedule made before the destroy
+// waits behind no handler: it lands, and the destroy wipes it with the rest.
 {
   const storage = makeStorage();
   const host = makeDestroyHost(storage);
@@ -311,8 +312,8 @@ function makeDestroyHost(storage) {
   assert.equal(storage.alarm, null, 'the in-flight dispatch re-armed the destroyed session');
   assert.equal(storage.map.has(TIMER_REASONS_KEY), false,
     `the in-flight dispatch wrote its reasons back: ${JSON.stringify(storage.map.get(TIMER_REASONS_KEY))}`);
-  assert.equal(await queued, false, 'a schedule queued before the destroy reported an arm');
-  assert.equal(storage.alarm, null, 'a schedule queued before the destroy re-armed it');
+  assert.equal(await queued, true, 'a schedule made before the destroy did not land');
+  assert.equal(storage.alarm, null, 'a schedule made before the destroy re-armed it');
 
   // The recreated session id schedules normally.
   assert.equal(await timers(host, host.ctx).schedule('log-janitor', now + 60_000), true);

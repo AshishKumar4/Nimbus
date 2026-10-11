@@ -402,7 +402,7 @@ export interface RuntimeFsBridge {
      * later one; it throws to refuse them (a fenced write wave its writer has
      * since re-sent: SupervisorDeliveries.admitWave).
      */
-    writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
+    writeStream(stream: ReadableStream<Uint8Array>, options?: import('./wave-contracts.js').WriteStreamOptions): Promise<import('./wave-contracts.js').WriteBatchStreamResult>;
     /**
      * An exclusive-mutation lease on the subtree at `path`. With `delegate`,
      * a delegation: the process decides the subtree's operations itself and

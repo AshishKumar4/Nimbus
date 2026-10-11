@@ -13,7 +13,7 @@
 
 import { deflateSync } from 'node:zlib';
 
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';

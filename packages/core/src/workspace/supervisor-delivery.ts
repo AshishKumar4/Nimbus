@@ -39,7 +39,7 @@ import {
   type SupervisorDeliveredOpName,
   type SupervisorJoinedReadOpName,
 } from './supervisor-ops.js';
-import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
+import type { WaveMountReach } from '../runtime/wave-contracts.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 
 export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };

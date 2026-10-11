@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -45,7 +46,7 @@ kernel.mkdir('home/user/proj', { recursive: true });
 kernel.chown('home/user', 1000, 1000);
 kernel.chown('home/user/proj', 1000, 1000);
 // Its namespace places the wave's names (the wave router), as a session's does.
-new ProcessFiles(engine);
+const files = new ProcessFiles(engine);
 // Within one batch's 1024 paths (W7_MAX_PATHS_PER_BATCH).
 const wave = installWave(50);
 
@@ -75,7 +76,7 @@ const tick = () => {
 setTimeout(tick, 0);
 const started = performance.now();
 // The session's turn (NimbusSession.waveTurn) lets the isolate's other work run; here, a timer.
-const result = await engine.as(USER).writeStream(encodeWriteBatchStream(wave), { turn: () => new Promise((resolve) => setTimeout(resolve, 0)) });
+const result = await files.waves.writeStream(engine.as(USER), encodeWriteBatchStream(wave), { turn: () => new Promise((resolve) => setTimeout(resolve, 0)) });
 const applyMs = performance.now() - started;
 running = false;
 // The turn the apply ended in counts too.
@@ -97,6 +98,8 @@ assert.ok(singlePathLookups < records / 10, `${singlePathLookups} single-path in
 // ended its leading phase through the turn-aware driver; a removal-only or
 // directory-only wave committed every leading group inside its batch-end, in
 // one turn (an rm -rf node_modules of hundreds of groups held the isolate).
+// Each directory batch owes its turn; removals, which commit one by one, owe
+// one per call group's worth (CALL_GROUP_OPS paths) of what they remove.
 for (const kind of ['deletes', 'directories']) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
@@ -105,15 +108,19 @@ for (const kind of ['deletes', 'directories']) {
   kernel.chown('home/user', 1000, 1000);
   kernel.chown('home/user/proj', 1000, 1000);
   kernel.chown('home/user/proj/old', 1000, 1000);
-  new ProcessFiles(engine);
+  const files = new ProcessFiles(engine);
   // Within one batch's 1,024 paths (W7_MAX_PATHS_PER_BATCH).
-  const N = kind === 'deletes' ? 60 : 24;
+  const N = 24;
   const payload = { inodes: [], chunks: [], deletePaths: [] };
   for (let i = 0; i < N; i++) {
     if (kind === 'deletes') {
-      kernel.writeFile(`home/user/proj/old/f${i}`, 'x');
-      kernel.chown(`home/user/proj/old/f${i}`, 1000, 1000);
-      payload.deletePaths.push(`home/user/proj/old/f${i}`);
+      kernel.mkdir(`home/user/proj/old/d${i}`);
+      kernel.chown(`home/user/proj/old/d${i}`, 1000, 1000);
+      for (let j = 0; j < 40; j++) {
+        kernel.writeFile(`home/user/proj/old/d${i}/f${j}`, 'x');
+        kernel.chown(`home/user/proj/old/d${i}/f${j}`, 1000, 1000);
+      }
+      payload.deletePaths.push(`home/user/proj/old/d${i}`);
     } else {
       for (let j = 0; j < 40; j++) payload.inodes.push({ path: `home/user/proj/d${i}/e${j}`, parentPath: `home/user/proj/d${i}`, kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
       payload.inodes.push({ path: `home/user/proj/d${i}`, parentPath: 'home/user/proj', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
@@ -121,16 +128,79 @@ for (const kind of ['deletes', 'directories']) {
   }
   payload.inodes.sort((a, b) => a.path.localeCompare(b.path));
   let turns = 0;
-  const result = await engine.as(USER).writeStream(encodeWriteBatchStream(payload), {
+  const result = await files.waves.writeStream(engine.as(USER), encodeWriteBatchStream(payload), {
     turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
   });
   assert.equal(result.ok, true, JSON.stringify(result.error));
   const groups = result.committedGroupSequence;
   console.log(JSON.stringify({ kind, groups, turns }));
   assert.ok(groups > 1, `${kind}: one group only (${groups}); the case proves nothing`);
-  assert.ok(turns >= groups - 1, `${kind}: ${turns} turns in ${groups} committed groups`);
+  if (kind === 'deletes') assert.ok(turns >= 1 && turns < groups, `${kind}: ${turns} turns in ${groups} removals of ${N * 41} paths`);
+  else assert.ok(turns >= groups - 1, `${kind}: ${turns} turns in ${groups} committed groups`);
   if (kind === 'deletes') assert.equal(kernel.readdir('home/user/proj/old').length, 0);
   else assert.equal(kernel.readdir(`home/user/proj/d${N - 1}`).length, 40);
+}
+
+// ── A process's calls that commit one by one owe a turn per call group's worth, not one each ──
+// Red before: every unlink, rmdir, rename and symlink a program made committed
+// alone and then waited a turn (a storage sync) of its own: 3,000 unlinkSync
+// calls took 90 s against 2.4 s for as many mkdirSync calls, which group.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/proj/calls', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  kernel.chown('home/user/proj', 1000, 1000);
+  kernel.chown('home/user/proj/calls', 1000, 1000);
+  const files = new ProcessFiles(engine);
+  const N = 600;
+  for (let i = 0; i < N; i++) {
+    kernel.writeFile(`home/user/proj/calls/f${i}`, 'x');
+    kernel.chown(`home/user/proj/calls/f${i}`, 1000, 1000);
+  }
+  const ops = Array.from({ length: N }, (_, i) => ({ type: 'call', call: { call: 'unlink', path: `home/user/proj/calls/f${i}` } }));
+  let turns = 0;
+  const result = await files.waves.writeStream(engine.as(USER), encodeWriteBatchStream({ inodes: [], chunks: [], ops }), {
+    turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  console.log(JSON.stringify({ kind: 'calls', groups: result.committedGroupSequence, turns }));
+  assert.equal(result.committedOps, N);
+  assert.equal(kernel.readdir('home/user/proj/calls').length, 0);
+  assert.ok(turns >= 1 && turns <= Math.ceil(N / 512), `${turns} turns for ${N} unlink calls`);
+}
+
+// ── Files a wave writes to a mount owe their turn by the bytes they wrote ──
+// Each routed file commits on its own (its mount's call), at its file-end:
+// five of 300 KiB are past a call group's bytes (CALL_GROUP_BYTES), and owe
+// a turn as a group of that size here does.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  const files = new ProcessFiles(engine);
+  const mounted = new MemoryVFS();
+  files.vfs.mount('/mnt', mounted);
+  const size = 300 * 1024;
+  const inodes = [];
+  const chunks = [];
+  for (let i = 0; i < 5; i++) {
+    const path = `mnt/f${i}`;
+    const data = new Uint8Array(size).fill(i);
+    inodes.push({ path, parentPath: 'mnt', kind: 'file', isDir: false, size, mtime: 1, mode: 0o644, chunkCount: Math.ceil(size / 65536) });
+    for (let c = 0; c * 65536 < size; c++) chunks.push({ path, chunkId: c, data: data.subarray(c * 65536, Math.min(size, (c + 1) * 65536)) });
+  }
+  let turns = 0;
+  const result = await files.waves.writeStream(engine.as(CRED_KERNEL), encodeWriteBatchStream({ inodes, chunks }), {
+    turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  console.log(JSON.stringify({ kind: 'routed', groups: result.committedGroupSequence, turns }));
+  assert.equal(mounted.readFile('/f4').byteLength, size);
+  assert.ok(turns >= 1, `${turns} turns for ${5 * size} bytes written to a mount`);
 }
 
 console.log('wave-apply-turns: ok');

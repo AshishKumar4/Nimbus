@@ -31,6 +31,7 @@ import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts'
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -40,6 +41,7 @@ const REPO = 'home/user/repo';
 function setup() {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const kernel = raw.as(CRED_KERNEL);
   kernel.mkdir(`${REPO}/.git`, { recursive: true });
   kernel.mkdir('home/user/real-objects/ab', { recursive: true });
@@ -47,7 +49,7 @@ function setup() {
   kernel.symlink('../../real-objects', `${REPO}/.git/objects`);
   kernel.writeFile(`${REPO}/stale.txt`, 'stale');
   kernel.mkdir(`${REPO}/gone/deep`, { recursive: true });
-  return { raw, kernel };
+  return { raw, waves, kernel };
 }
 
 /** Every path under home/user, with its type and (for a file or link) what it holds. */
@@ -84,9 +86,9 @@ function wave() {
 
 // ── (1) a stream: refused, nothing committed ───────────────────────────────
 {
-  const { kernel } = setup();
+  const { waves, kernel } = setup();
   const before = snapshot(kernel);
-  const result = await kernel.writeStream(encodeWriteBatchStream(wave()));
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream(wave()));
   assert.equal(result.ok, false, 'a directory record over a link the wave does not remove is refused');
   assert.match(result.error.message, /^ENOTDIR: home\/user\/repo\/\.git\/objects: a directory record never replaces a symbolic link/);
   assert.equal(result.committedPathCount, 0, 'nothing committed');
@@ -96,10 +98,10 @@ function wave() {
 
 // ── (2) the link removed by a wave before: replaced ────────────────────────
 {
-  const { kernel } = setup();
-  const removed = await kernel.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], deletePaths: [`${REPO}/.git/objects`] }));
+  const { waves, kernel } = setup();
+  const removed = await waves.writeStream(kernel, encodeWriteBatchStream({ inodes: [], chunks: [], deletePaths: [`${REPO}/.git/objects`] }));
   assert.equal(removed.ok, true, removed.error?.message);
-  const result = await kernel.writeStream(encodeWriteBatchStream(wave()));
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream(wave()));
   assert.equal(result.ok, true, result.error?.message);
   assert.equal(kernel.lstat(`${REPO}/.git/objects`).type, 'directory', 'the link the wave removed is replaced by the directory');
   assert.equal(new TextDecoder().decode(kernel.readFile(`${REPO}/.git/objects/ab/x`)), 'new object');
@@ -125,7 +127,7 @@ function wave() {
 // directories with a file each: ~602 owned paths, under W7's 1024, over a
 // transaction's 256 rows).
 {
-  const { kernel } = setup();
+  const { waves, kernel } = setup();
   const inodes = [];
   const chunks = [];
   for (let i = 0; i < 300; i++) {
@@ -135,7 +137,7 @@ function wave() {
     chunks.push(f.chunk);
   }
   inodes.unshift(dir(`${REPO}/many`));
-  const result = await kernel.writeStream(encodeWriteBatchStream({ deletePaths: [`${REPO}/stale.txt`], inodes, chunks }));
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream({ deletePaths: [`${REPO}/stale.txt`], inodes, chunks }));
   assert.equal(result.ok, true, result.error?.message);
   assert.equal(kernel.readdir(`${REPO}/many`).length, 300);
   assert.equal(new TextDecoder().decode(kernel.readFile(`${REPO}/many/d299/f`)), 'file 299');
@@ -145,9 +147,9 @@ function wave() {
 
 // ── (4) the wave writer, as git add used it ────────────────────────────────
 {
-  const { kernel } = setup();
+  const { waves, kernel } = setup();
   const before = snapshot(kernel);
-  const writer = createWaveWriter({ supervisor: { writeBatchStream: (stream) => kernel.writeStream(stream) }, root: `${REPO}/.git`, mtimeMs: 1 });
+  const writer = createWaveWriter({ supervisor: { writeBatchStream: (stream) => waves.writeStream(kernel, stream) }, root: `${REPO}/.git`, mtimeMs: 1 });
   await assert.rejects(async () => {
     await writer.file(`${REPO}/.git/objects/ab/x`, 0o444, enc.encode('new object'));
     await writer.flush();

@@ -27,13 +27,21 @@ const MESSAGE_BYTES = 64 * 1024;
  * authority may carry.
  */
 export function anonymizeUrl(url: string): string {
-  const scheme = url.indexOf('://');
-  if (scheme < 0) return url;
-  const start = scheme + 3;
-  const slash = url.indexOf('/', start);
-  const end = slash < 0 ? url.length : slash;
-  const at = url.lastIndexOf('@', end - 1);
-  return at < start ? url : url.slice(0, start) + url.slice(at + 1);
+  const parts = originalUrlParts(url);
+  if (!parts) return url;
+  return parts.scheme + parts.authority.slice(parts.authority.lastIndexOf('@') + 1) + parts.rest;
+}
+
+/** Git's URL grammar by original spans: never fold host case, remove default ports or rewrite escapes. */
+function originalUrlParts(url: string): { scheme: string; authority: string; rest: string } | null {
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url)?.[0];
+  if (!scheme) return null;
+  let end = url.length;
+  for (const delimiter of ['/', '?', '#']) {
+    const found = url.indexOf(delimiter, scheme.length);
+    if (found >= 0) end = Math.min(end, found);
+  }
+  return { scheme, authority: url.slice(scheme.length, end), rest: url.slice(end) };
 }
 
 /** The credentials a request offered: the user name (git's prompt names it), and whether a password (or token) came with it. */
@@ -77,12 +85,10 @@ function percentEncode(text: string): string {
  * name (if known) and the host of `url`.
  */
 function credentialDescription(url: string, username: string): string {
-  const scheme = url.indexOf('://');
-  if (scheme < 0) return url;
-  const start = scheme + 3;
-  const slash = url.indexOf('/', start);
-  const host = anonymizeUrl(url.slice(0, slash < 0 ? url.length : slash)).slice(start);
-  return url.slice(0, start) + (username ? percentEncode(username) + '@' : '') + host;
+  const parts = originalUrlParts(url);
+  if (!parts) return anonymizeUrl(url);
+  const host = parts.authority.slice(parts.authority.lastIndexOf('@') + 1);
+  return parts.scheme + (username ? percentEncode(username) + '@' : '') + host;
 }
 
 /**
@@ -101,11 +107,63 @@ function redactSecrets(text: string, secrets: readonly string[]): string {
   return out;
 }
 
-/** A URL's scheme is transport syntax, not secret-bearing input (a password "p" must not redact "http"). */
-function redactDestination(url: string, secrets: readonly string[]): string {
-  const scheme = url.indexOf('://');
-  const prefix = scheme < 0 ? 0 : scheme + 3;
-  return url.slice(0, prefix) + redactSecrets(url.slice(prefix), secrets);
+/** Decode a data span to bytes and retain the original character range of every byte. */
+function redactUrlSpan(text: string, secrets: readonly Uint8Array[]): string {
+  const encoder = new TextEncoder();
+  const bytes: number[] = [], starts: number[] = [], ends: number[] = [];
+  const hex = (code: number): number => code >= 48 && code <= 57 ? code - 48
+    : code >= 65 && code <= 70 ? code - 55 : code >= 97 && code <= 102 ? code - 87 : -1;
+  for (let at = 0; at < text.length;) {
+    const begin = at;
+    const high = hex(text.charCodeAt(at + 1)), low = hex(text.charCodeAt(at + 2));
+    if (text[at] === '%' && high >= 0 && low >= 0) {
+      at += 3;
+      bytes.push(high * 16 + low); starts.push(begin); ends.push(at);
+    } else {
+      const character = String.fromCodePoint(text.codePointAt(at)!);
+      at += character.length;
+      for (const byte of encoder.encode(character)) { bytes.push(byte); starts.push(begin); ends.push(at); }
+    }
+  }
+  const matches: Array<{ start: number; end: number }> = [];
+  for (const secret of secrets) {
+    if (secret.length === 0) continue;
+    for (let at = 0; at <= bytes.length - secret.length; at++) {
+      let size = 0;
+      while (size < secret.length && bytes[at + size] === secret[size]) size++;
+      if (size === secret.length) matches.push({ start: starts[at], end: ends[at + size - 1] });
+    }
+  }
+  matches.sort((a, b) => a.start - b.start || a.end - b.end);
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const match of matches) {
+    const last = ranges.at(-1);
+    if (last && match.start <= last.end) last.end = Math.max(last.end, match.end);
+    else ranges.push({ ...match });
+  }
+  let output = '', copied = 0;
+  for (const range of ranges) { output += text.slice(copied, range.start) + '<redacted>'; copied = range.end; }
+  return output + text.slice(copied);
+}
+
+/** Mask original data spans; path slashes, query separators and authority syntax never enter a match. */
+function redactDestination(url: string, secrets: readonly string[], credentialPrompt = false): string {
+  const parts = originalUrlParts(url);
+  if (!parts) return '<invalid remote URL>';
+  const encoder = new TextEncoder();
+  const secretBytes = secrets.filter((secret) => secret.length > 0).map((secret) => encoder.encode(secret));
+  const mask = (data: string): string => redactUrlSpan(data, secretBytes);
+  const at = parts.authority.lastIndexOf('@');
+  const host = parts.authority.slice(at + 1);
+  const username = at < 0 ? '' : parts.authority.slice(0, at).split(':', 1)[0];
+  const authority = credentialPrompt && at >= 0 ? mask(username) + '@' + host : host;
+  const hash = parts.rest.indexOf('#');
+  const withoutHash = hash < 0 ? parts.rest : parts.rest.slice(0, hash);
+  const query = withoutHash.indexOf('?');
+  const path = query < 0 ? withoutHash : withoutHash.slice(0, query);
+  const queryData = query < 0 ? '' : '?' + withoutHash.slice(query + 1).split(/([&=])/).map((token, index) => index % 2 ? token : mask(token)).join('');
+  const fragment = hash < 0 ? '' : '#' + mask(parts.rest.slice(hash + 1));
+  return parts.scheme + authority + path.split('/').map(mask).join('/') + queryData + fragment;
 }
 
 /**
@@ -116,13 +174,13 @@ function redactDestination(url: string, secrets: readonly string[]): string {
  */
 export function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets: readonly string[] = []): string {
   // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
-  const shown = redactDestination(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
+  const shown = redactDestination(url.endsWith('/') ? url : url + '/', secrets);
   if (failure.kind === 'transport') return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
   // A 401 asks for what was not offered (credential_fill), and there is no terminal to ask at.
   if (failure.status === 401 && !credentials.password) {
     const what = credentials.username ? 'Password' : 'Username';
     const prompt = credentialDescription(url, credentials.username);
-    const safePrompt = redactDestination(prompt, secrets);
+    const safePrompt = redactDestination(prompt, secrets, true);
     return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
   const remote = redactCredentials(failure.message ?? '', secrets).trim();

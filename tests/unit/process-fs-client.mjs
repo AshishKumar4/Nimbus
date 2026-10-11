@@ -23,6 +23,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { DECIDED_BACKLOG_OPS, failuresError, processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
@@ -343,6 +344,7 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
 for (const reported of ['EIO', undefined]) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const kernel = engine.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
@@ -376,7 +378,7 @@ for (const reported of ['EIO', undefined]) {
   const c = processFsClient({
     session: {
       openWriter: async () => `w${++epochs}`,
-      writeBatchStream: (stream, fence) => user.writeStream(stream, { sequence: { writer: `${PID}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid: PID }, descriptions }),
+      writeBatchStream: (stream, fence) => waves.writeStream(user, stream, { sequence: { writer: `${PID}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid: PID }, descriptions }),
     },
     retry: RETRY,
   });

@@ -36,4 +36,16 @@ processes.markExit(parent,0);
 await new Promise(r => setTimeout(r,30));
 assert.equal(stopped,true,'a parent that exits without reading cannot leave an output writer blocked forever');
 assert.equal((await broker.wait(third.childPid,0)).done,true);
-console.log('cp-byte-output-bound: writer waits for room, ordered bytes, close releases wait');
+// The parent closes its read end of a running child's stdout (a consumer
+// destroyed the stream): the writer held for room is released with EPIPE,
+// and what was queued there goes.
+stopped = false;
+const parent2 = processes.spawn('parent', [], '/').pid;
+const fourth = await broker.spawn({ parentPid: parent2, command: 'producer', args: [], env: {}, cwd: '/', stdio: ['ignore','pipe','ignore'] });
+await new Promise(r => setTimeout(r, 30));
+assert.equal(stopped, false, 'the writer is held for room');
+broker.closeOutput(fourth.childPid, 1);
+await new Promise(r => setTimeout(r, 30));
+assert.equal(stopped, true, "closing the parent's read end releases its blocked writer with EPIPE");
+assert.deepEqual((await broker.readOutput(fourth.childPid, 1, 0, 0)).chunks, [], 'what was queued there went');
+console.log('cp-byte-output-bound: writer waits for room, ordered bytes, close releases wait, a closed read end refuses writes');

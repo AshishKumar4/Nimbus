@@ -155,7 +155,7 @@ export class PacedWork {
         if (this.closed)
             return Promise.reject(this.closed);
         return new Promise((resume, reject) => {
-            const waiter = { resume, reject, chunkEnded, notBefore };
+            const waiter = { resume, reject, chunkEnded, notBefore, since: Date.now() };
             this.waiters.push(waiter);
             if (this.host.requestTurn) {
                 void this.requestTurn(notBefore).catch((error) => {
@@ -225,6 +225,12 @@ export class PacedWork {
     /** Whether any launch is suspended waiting for a turn. */
     get hasPending() {
         return this.waiters.length > 0;
+    }
+    /** The launches suspended waiting for a turn, and how long the oldest has waited. */
+    state(now = Date.now()) {
+        // Suspended in order; a pump keeps the order of those it leaves.
+        const oldest = this.waiters[0];
+        return { waiting: this.waiters.length, oldestMs: oldest === undefined ? null : now - oldest.since };
     }
 }
 /**

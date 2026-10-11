@@ -1,4 +1,5 @@
-import { isPendingChunkError, type SqliteVFS, type WaveMountReach, type WaveSequence } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { WaveMountReach, WaveSequence } from '../runtime/wave-contracts.js';
 import type { ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { withRecall } from '../vfs/recall.js';
@@ -312,7 +313,6 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   wsClose: { method: '_rpcWsClose', args: [0,1,2,'pid'] },
   fsReadBatch: { method: '_rpcFsReadBatch', args: [0,'pid'] },
   writeBatch: { method: '_rpcWriteBatch', args: [0,'pid'] },
-  putRegistryEntries: { method: '_rpcPutRegistryEntries', args: [0] },
   prefetch: { method: '_rpcPrefetch', args: [0,1] },
   registerPort: { method: '_rpcRegisterPort', args: ['pid',0] },
   allocatePort: { method: '_rpcAllocatePort', args: ['pid'] },
@@ -333,6 +333,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cacheResult: { method: '_rpcCacheResult', args: [0, 1, 'pid', 'run'] },
   cpReadOutput: { method: '_rpcCpReadOutput', args: [0,1,2,3,4,'pid'] },
   cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0] },
+  cpCloseOutput: { method: '_rpcCpCloseOutput', args: [0,1] },
   cpKill: { method: '_rpcCpKill', args: [0,1] },
   cpWait: { method: '_rpcCpWait', args: [0,1,2,'pid',3] },
   cpBlocked: { method: '_rpcCpBlocked', args: ['pid',0] },

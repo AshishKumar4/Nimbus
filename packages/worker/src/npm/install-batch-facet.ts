@@ -21,7 +21,7 @@
 
 import type { FacetPackageSpec } from './install-facet.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';

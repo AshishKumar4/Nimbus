@@ -4,6 +4,7 @@
  * The npm resolver phase runs inside a IsolatePool isolate so the
  * supervisor DO heap stays flat while large packuments are decoded. The
  * per-packument task body lives in resolve-one-facet.ts; this module holds
- * the types exchanged between supervisor and facet over RPC.
+ * the types exchanged between supervisor and facet over RPC besides the
+ * registry records (npm/registry-record.ts).
  */
 export {};

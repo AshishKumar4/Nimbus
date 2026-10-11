@@ -15,7 +15,8 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveVersion } from '../../packages/core/src/_shared/npm-semver.ts';
-import { kernelInstaller, makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -49,7 +50,7 @@ function resolveFromRegistry(name, spec) {
   };
   return {
     pkg, deps: dependencies, peerDeps: {}, optionalDeps: {},
-    cacheWrites: [cacheRowForPackage(pkg)],
+    cacheWrites: [registryRecord(pkg, Date.now())],
     messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }

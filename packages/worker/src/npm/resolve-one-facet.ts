@@ -53,7 +53,8 @@
 
 import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
-import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
+import type { FacetRegistryEvent } from './resolve-facet.js';
+import { registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
 import type { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
@@ -87,7 +88,7 @@ declare function STAGED_ARTIFACT_APPLY(
 /**
  * Argument shape: ONE package's resolution work.
  *
- * cachedHit (optional): a FacetCachedEntry the supervisor already has
+ * cachedHit (optional): a registry record the supervisor already has
  * for this name. The task uses it to short-circuit the fetch when
  * it satisfies the requested range. If null/missing, the task asks the
  * supervisor for the packument.
@@ -100,7 +101,7 @@ export interface ResolveOneSpec {
    * versions) so the per-task RPC payload stays small. The task picks
    * the best version that satisfies range.
    */
-  cachedEntries: FacetCachedEntry[];
+  cachedEntries: RegistryCacheEntry[];
   /** X.5-G G1: this spec came from an optionalDependencies edge, so
    *  platform-native bindings silent-skip rather than failing the parent. */
   isOptional: boolean;
@@ -127,7 +128,7 @@ export interface ResolveOneResult {
    * the resolved version + up to 5 recent versions seen in the
    * packument. Empty for cache-hit-only resolutions.
    */
-  cacheWrites: any[];
+  cacheWrites: RegistryCacheEntry[];
   /** [npm] log lines, forwarded by the supervisor. */
   messages: string[];
   /** Registry telemetry events to emitRegistryEvent. */
@@ -190,8 +191,7 @@ export interface ResolveOneResult {
  * submitMany invocation `fn(item, env)` lines up.
  *
  * `env` is the loader-isolate env supplied by Fanout.
- * `env.SUPERVISOR` is the supervisor-rpc binding (putRegistryEntries,
- * getPackument).
+ * `env.SUPERVISOR` is the supervisor-rpc binding (getPackument).
  */
 export const resolveOnePackumentInFacet = async function resolveOnePackumentInFacet(
   spec: ResolveOneSpec,
@@ -220,7 +220,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
 ): Promise<ResolveOneResult> {
   const messages: string[] = [];
   const events: FacetRegistryEvent[] = [];
-  const cacheWrites: any[] = [];
+  const cacheWrites: RegistryCacheEntry[] = [];
   const request = PARSE_REGISTRY_REQUEST(spec.name, spec.range);
   // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
   // (spliced from supervisor RPC return.events) and the L4 path
@@ -381,32 +381,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   })();
 
   if (cached) {
-    let deps: Record<string, string> = {}, peers: Record<string, string> = {}, exp: unknown = null, bin: Record<string, string> = {};
-    let platform: Record<string, unknown> = {}, optionalDeps: Record<string, string> = {};
-    try { deps = JSON.parse(cached.depsJson); } catch {}
-    try { peers = cached.peerDepsJson ? JSON.parse(cached.peerDepsJson) : {}; } catch {}
-    try { exp = JSON.parse(cached.exportsJson); } catch {}
-    try { bin = JSON.parse(cached.binJson); } catch {}
-    try { platform = cached.platformJson ? JSON.parse(cached.platformJson) : {}; } catch {}
-    try { optionalDeps = cached.optionalDepsJson ? JSON.parse(cached.optionalDepsJson) : {}; } catch {}
-    const pkgFromCache: ResolvedPackage = {
-      name: cached.name,
-      version: cached.version,
-      tarballUrl: cached.tarballUrl,
-      integrity: cached.integrity,
-      dependencies: deps,
-      peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
-      // Platform constraints + optionalDependencies round-trip so the
-      // ABI policy makes the same decisions on warm-cache hits.
-      optionalDependencies: Object.keys(optionalDeps).length > 0 ? optionalDeps : undefined,
-      os:   Array.isArray(platform.os)   ? platform.os   : undefined,
-      cpu:  Array.isArray(platform.cpu)  ? platform.cpu  : undefined,
-      libc: Array.isArray(platform.libc) ? platform.libc : undefined,
-      exports: exp,
-      main: cached.main,
-      module: cached.moduleField,
-      bin,
-    };
+    // Platform constraints + optionalDependencies round-trip so the ABI
+    // policy makes the same decisions on warm-cache hits.
+    const pkgFromCache = resolvedFromRecord(cached);
     adviseStagedBindingVersion(pkgFromCache);
     const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
     if (nativeReject) return nativeReject;
@@ -625,21 +602,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   if (nativeReject) return nativeReject;
 
   // 5. Stage cache writes.
-  cacheWrites.push({
-    name: pkg.name,
-    version: pkg.version,
-    tarballUrl: pkg.tarballUrl,
-    integrity: pkg.integrity,
-    depsJson: JSON.stringify(pkg.dependencies),
-    peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
-    exportsJson: JSON.stringify(pkg.exports ?? {}),
-    main: pkg.main,
-    moduleField: pkg.module,
-    binJson: JSON.stringify(pkg.bin),
-    platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
-    optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
-    fetchedAt: Date.now(),
-  });
+  cacheWrites.push(registryRecord(pkg, Date.now()));
   // Top-5 sibling versions.
   const sorted = Object.keys(data.versions)
     .map((v) => ({ v, p: PARSE_SEMVER(v) }))
@@ -651,22 +614,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const otherData = readProperty(data.versions, otherVer);
     if (!otherData) continue;
     try {
-      const otherPkg = versionToResolved(otherData);
-      cacheWrites.push({
-        name: otherPkg.name,
-        version: otherPkg.version,
-        tarballUrl: otherPkg.tarballUrl,
-        integrity: otherPkg.integrity,
-        depsJson: JSON.stringify(otherPkg.dependencies),
-        peerDepsJson: JSON.stringify(otherPkg.peerDependencies ?? {}),
-        exportsJson: JSON.stringify(otherPkg.exports ?? {}),
-        main: otherPkg.main,
-        moduleField: otherPkg.module,
-        binJson: JSON.stringify(otherPkg.bin),
-        platformJson: JSON.stringify({ os: otherPkg.os, cpu: otherPkg.cpu, libc: otherPkg.libc }),
-        optionalDepsJson: JSON.stringify(otherPkg.optionalDependencies ?? {}),
-        fetchedAt: Date.now(),
-      });
+      cacheWrites.push(registryRecord(versionToResolved(otherData), Date.now()));
     } catch { /* skip malformed */ }
   }
 

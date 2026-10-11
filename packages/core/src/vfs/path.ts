@@ -62,6 +62,11 @@ export function pathsOverlap(left: string, right: string): boolean {
 }
 
 /** Return the canonical VFS parent key, or an empty string for root-level paths. */
+/** The directory a storage key (already normalized) is under: '' at the root. */
+export function parentKey(key: string): string {
+  return key.includes('/') ? key.substring(0, key.lastIndexOf('/')) : '';
+}
+
 export function parentVfsPath(path: string): string {
   const clean = normalizeVfsPath(path);
   const idx = clean.lastIndexOf('/');

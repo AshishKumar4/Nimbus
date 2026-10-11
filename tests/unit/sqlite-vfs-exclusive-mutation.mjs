@@ -3,12 +3,14 @@
 import assert from 'node:assert/strict';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+const waves = new WaveIngest(null);
 const vfs = rawVfs.as(CRED_KERNEL);
 vfs.mkdir('workspace');
 const leadingParentLease = rawVfs.acquireExclusiveMutation('/workspace/new/nested/repo', {
@@ -44,7 +46,7 @@ await bridge.unlink('/outside-delete.txt');
 assert.equal(vfs.exists('outside-delete.txt'), false, 'outside unlink reported failure after commit');
 
 const data = new TextEncoder().encode('owned');
-const owned = await vfs.writeStream(encodeWriteBatchStream({
+const owned = await waves.writeStream(vfs, encodeWriteBatchStream({
   inodes: [{
     path: 'repo/owned.txt',
     parentPath: 'repo',
@@ -60,7 +62,7 @@ const owned = await vfs.writeStream(encodeWriteBatchStream({
 assert.equal(owned.ok, true);
 assert.equal(vfs.readFileString('repo/owned.txt'), 'owned');
 
-const escaped = await vfs.writeStream(encodeWriteBatchStream({
+const escaped = await waves.writeStream(vfs, encodeWriteBatchStream({
   inodes: [{
     path: 'escape.txt',
     parentPath: '',
@@ -158,7 +160,7 @@ const gatedStream = new ReadableStream({
     }
   },
 }, { highWaterMark: 0 });
-const lateWrite = vfs.writeStream(gatedStream);
+const lateWrite = waves.writeStream(vfs, gatedStream);
 await suffixRequested;
 const lateLease = rawVfs.acquireExclusiveMutation('/late');
 releaseSuffix();

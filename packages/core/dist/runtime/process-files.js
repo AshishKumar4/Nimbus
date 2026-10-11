@@ -14,8 +14,10 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
-import { isPendingChunkError, linkedSignal, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { linkedSignal } from './wave-contracts.js';
 import { namespaceWaveRouter } from './wave-router.js';
+import { WaveIngest } from './wave-ingest.js';
 import { Hydrator } from './hydration.js';
 import { Delegations } from './delegations.js';
 import { withRecall } from '../vfs/recall.js';
@@ -294,6 +296,13 @@ export class ProcessFiles {
     delegations;
     /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
     bufferedWriteBytes;
+    /**
+     * Every wave's ingestion, whoever streams it (a process's binding, or a
+     * command holding the engine): its records placed by this namespace's
+     * mutation lookup, those it places on a mount applied there by its own
+     * operations (wave-router.ts).
+     */
+    waves;
     constructor(engine, options = {}) {
         this.engine = engine;
         this.hydrator = options.hydration === undefined ? null : new Hydrator(engine, options.hydration);
@@ -316,11 +325,7 @@ export class ProcessFiles {
         this.vfs.mount('/dev', new DevVFS());
         // A read lease vouches for what is the engine's, which a mount or an unmount moves.
         this.vfs.watchMounts(() => engine.breakReadLeases());
-        // Every wave's records, whoever streams it (a process's binding, or a
-        // command holding the engine), are placed by this namespace's mutation
-        // lookup, and those it places on a mount are applied there by its own
-        // operations (wave-router.ts).
-        engine.setWaveRouter(namespaceWaveRouter(this.vfs, immutableCredential));
+        this.waves = new WaveIngest(namespaceWaveRouter(this.vfs, immutableCredential));
     }
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
@@ -502,6 +507,10 @@ export class ProcessFiles {
         if (this.outputHeld)
             this.continuing.add(pid);
     }
+    /** Process `pid` has ended (exited, killed, its host lost): see Delegations.endReads. */
+    processEnded(pid) {
+        this.delegations.endReads(pid);
+    }
     async releaseProcess(pid) {
         this.retired.add(pid);
         this.listings.delete(pid);
@@ -605,7 +614,7 @@ export class ProcessFiles {
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
         const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
+        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes, this.waves);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);

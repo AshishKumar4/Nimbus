@@ -17,6 +17,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { RecallRequired, SqliteVFS, withRecall } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
@@ -200,10 +201,11 @@ function open() {
 //    records, and then applies whole ──
 {
   const { raw, kernel } = open();
+  const waves = new WaveIngest(null);
   const holder = delegate(raw, 'work/d');
   holder.decide('work/d/held', 'the holder\'s');
   const data = new TextEncoder().encode('from a wave');
-  const result = await kernel.writeStream(encodeWriteBatchStream({
+  const result = await waves.writeStream(kernel, encodeWriteBatchStream({
     inodes: [{ path: 'work/d/w', parentPath: 'work/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
     chunks: [{ path: 'work/d/w', chunkId: 0, data }],
   }));
@@ -234,6 +236,7 @@ function open() {
 //    else is given them; what it did not use goes back when it ends ──
 {
   const { raw, kernel } = open();
+  const waves = new WaveIngest(null);
   const before = raw.ledger.view().reserved;
   const lease = raw.acquireExclusiveMutation('work/d', { delegation: { reads: true, inos: 16, bytes: 1 << 20, recall: async () => {} } });
   assert.equal(lease.inos.end - lease.inos.first, 16);
@@ -244,7 +247,7 @@ function open() {
     const data = new TextEncoder().encode(text);
     return { type: 'file', inode: { path, parentPath: path.slice(0, path.lastIndexOf('/')), kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1, ino }, data };
   };
-  const wave = (...ops) => holder.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
+  const wave = (...ops) => waves.writeStream(holder, encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
   const first = lease.inos.first;
   let result = await wave(
     { type: 'directory', inode: { path: 'work/d/sub', parentPath: 'work/d', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0, ino: first } },
