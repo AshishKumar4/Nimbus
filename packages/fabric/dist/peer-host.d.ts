@@ -62,6 +62,7 @@ export type HostedReply<T> = T | {
     hostLost: string;
 };
 export declare const HOSTED_WATCH_HEADER = "x-nimbus-hosted-watch";
+export declare const HOSTED_RESIDENCY_HEADER = "x-nimbus-hosted-residency";
 export declare const HOSTED_FAILURE_HEADER = "x-nimbus-hosted-failure";
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
@@ -82,6 +83,7 @@ export declare const HOSTED_WEBSOCKET_CAPABILITY_HEADER = "x-nimbus-hosted-webso
  */
 export declare function isHostedWebSocket(request: Request): boolean;
 export declare function isHostedWatch(request: Request): boolean;
+export declare function isHostedResidency(request: Request): boolean;
 /** The embedder's boot-spec authority. */
 export interface PeerHostOptions {
     /**
@@ -119,6 +121,8 @@ export declare class PeerHost {
         found: boolean;
         incarnation: string;
         facet: string | null;
+        coordinator: string | null;
+        residencies: number;
     }>;
     /** Open once and answer. Observation and release are independently owned calls. */
     host(boot: unknown, opts: unknown): Promise<HostedReply<{
@@ -173,6 +177,9 @@ export declare class PeerHost {
     }>;
     /** One abortable observation bridges coordinator activity to this actor. */
     watch(request: Request): Promise<Response>;
+    /** The coordinator retains its endpoint unaccepted; only the peer receives events. */
+    reside(request: Request): Promise<Response>;
+    private socket;
     private authorized;
     private gone;
     private answer;

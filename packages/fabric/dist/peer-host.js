@@ -64,6 +64,7 @@ const HostProcessOptsSchema = z.object({
     startArgs: z.unknown().optional(),
 });
 export const HOSTED_WATCH_HEADER = 'x-nimbus-hosted-watch';
+export const HOSTED_RESIDENCY_HEADER = 'x-nimbus-hosted-residency';
 export const HOSTED_FAILURE_HEADER = 'x-nimbus-hosted-failure';
 class LostHostedProcess extends Error {
 }
@@ -88,6 +89,7 @@ export function isHostedWebSocket(request) {
     return Boolean(request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER));
 }
 export function isHostedWatch(request) { return request.headers.has(HOSTED_WATCH_HEADER); }
+export function isHostedResidency(request) { return request.headers.has(HOSTED_RESIDENCY_HEADER); }
 /**
  * How long a boot-payload or routed-HTTP leg waits for its process's host
  * record. Normally zero: the coordinator issues `hostProcess` first and it
@@ -173,7 +175,8 @@ export class PeerHost {
         const record = this.records.get(workerKey);
         const stored = await this.ctx.storage.get(HOSTING_KEY_PREFIX + workerKey);
         const facet = record && !record.closed ? (await record.facet).name : null;
-        return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet };
+        return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet,
+            coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0 };
     }
     /** Open once and answer. Observation and release are independently owned calls. */
     async host(boot, opts) {
@@ -204,12 +207,17 @@ export class PeerHost {
             webSocketCapability: hostOpts.webSocketCapability,
             closed: false,
             watchers: new Map(),
+            residencies: new Map(),
             release: () => {
                 record.closed = true;
                 return releasing ??= (async () => {
                     for (const [socket, release] of record.watchers) {
                         release();
                         socket.close(1000, 'process released');
+                    }
+                    for (const [socket, release] of record.residencies) {
+                        release();
+                        socket.close();
                     }
                     const facet = await opened.promise.catch(() => null);
                     await facet?.release();
@@ -258,6 +266,10 @@ export class PeerHost {
                 for (const [socket, release] of record.watchers) {
                     release();
                     socket.close(1011, 'process host lost');
+                }
+                for (const [socket, release] of record.residencies) {
+                    release();
+                    socket.close();
                 }
             });
             await located;
@@ -390,17 +402,6 @@ export class PeerHost {
             const record = await this.awaitRecord(key);
             const facet = await record.facet;
             const lease = facet.acquireActivity(request.signal);
-            let held;
-            let released = false;
-            const release = () => {
-                if (released)
-                    return;
-                released = true;
-                request.signal.removeEventListener('abort', ended);
-                record.watchers.delete(held);
-                lease.release();
-            };
-            const ended = () => { release(); held?.close(); };
             try {
                 await lease.ready;
                 request.signal.throwIfAborted();
@@ -408,21 +409,52 @@ export class PeerHost {
                     throw new LostHostedProcess(errorText(record.failure));
                 if (record.closed)
                     throw new Error('Nimbus: the hosted process is no longer running');
-                const [client, server] = Object.values(new WebSocketPair());
-                held = server;
-                record.watchers.set(server, release);
-                server.addEventListener('close', ended);
-                server.addEventListener('error', ended);
-                server.accept();
-                request.signal.addEventListener('abort', ended, { once: true });
-                return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
+                return this.socket(request, record.watchers, lease.release);
             }
             catch (error) {
-                release();
+                lease.release();
                 throw error;
             }
         });
         return result instanceof Response ? result : this.gone(capability, result.hostLost);
+    }
+    /** The coordinator retains its endpoint unaccepted; only the peer receives events. */
+    async reside(request) {
+        const key = request.headers.get(HOSTED_RESIDENCY_HEADER) ?? '';
+        const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+        if (!capability || !await this.authorized(key, capability))
+            return new Response('Not found', { status: 404 });
+        const result = await this.answer(key, async () => {
+            const record = await this.awaitRecord(key);
+            await record.facet;
+            request.signal.throwIfAborted();
+            return this.socket(request, record.residencies, () => { }, () => {
+                if (record.closed || record.residencies.size)
+                    return;
+                this.ctx.waitUntil(this.cancel(key).catch((error) => console.error('Nimbus: coordinator residency teardown failed', error)));
+            });
+        });
+        return result instanceof Response ? result : this.gone(capability, result.hostLost);
+    }
+    socket(request, sockets, releaseOwner, afterEnd) {
+        const [client, server] = Object.values(new WebSocketPair());
+        let released = false;
+        const release = () => {
+            if (released)
+                return;
+            released = true;
+            request.signal.removeEventListener('abort', ended);
+            sockets.delete(server);
+            releaseOwner();
+        };
+        const ended = () => { if (released)
+            return; release(); server.close(); afterEnd?.(); };
+        sockets.set(server, release);
+        server.addEventListener('close', ended);
+        server.addEventListener('error', ended);
+        server.accept();
+        request.signal.addEventListener('abort', ended, { once: true });
+        return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
     }
     async authorized(key, capability) {
         const record = this.records.get(key);

@@ -67,14 +67,14 @@
  */
 import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, hostResponse } from './host-activity.js';
+import { hostActivity, hostResponse, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import { ProcessHostLost, } from './process-fabric.js';
-import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, HOSTED_WATCH_HEADER, HOSTED_FAILURE_HEADER, headerPairs, isolateToken, } from './peer-host.js';
+import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, HOSTED_WATCH_HEADER, HOSTED_RESIDENCY_HEADER, HOSTED_FAILURE_HEADER, headerPairs, isolateToken, } from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
@@ -100,6 +100,7 @@ class FacetProcessHost {
     disk;
     network;
     supervise;
+    assertDurableStorage() { }
     /**
      * The process shares its session's Durable Object, so the session's own
      * store is reachable by copy-on-write — and its storage budget is the same
@@ -251,6 +252,9 @@ class PeerProcessHost {
     ctx;
     network;
     supervise;
+    assertDurableStorage() {
+        throw new Error('Nimbus: a durable spawn must be facet-hosted on its own coordinator; NIMBUS_PROCESS_HOST=peer cannot own retained application storage');
+    }
     /**
      * A peer buys independent CPU and its own storage budget, and pays for both
      * with the image path: nothing crosses a Durable Object boundary by
@@ -266,6 +270,7 @@ class PeerProcessHost {
     coordDoId;
     /** pid → the isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
+    residencies = new Map();
     reconciliation;
     closed = false;
     constructor(ctx, env, network, supervise) {
@@ -304,8 +309,7 @@ class PeerProcessHost {
             // Durable Object — its `app-slot-<n>` row and retained SQLite live in
             // that DO's storage. A sibling host would own storage the coordinator's
             // durable-slot book and removeDurableApp cannot reach.
-            throw new Error('Nimbus: a durable spawn must be facet-hosted on its own coordinator; '
-                + 'the peer substrate cannot serve one');
+            this.assertDurableStorage();
         }
         await this.reconcile();
         const placement = await this._place(params.pid);
@@ -315,6 +319,8 @@ class PeerProcessHost {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const loss = new HostLoss();
         let stopObserving = () => { };
+        const residency = { abort: new AbortController(), socket: null };
+        this.residencies.set(params.workerKey, residency);
         try {
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
@@ -334,6 +340,17 @@ class PeerProcessHost {
             }));
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
+            const response = await this.withPeer(placement.peerName, (stub) => stub.fetch(new Request('https://nimbus-process.invalid/', {
+                signal: residency.abort.signal,
+                headers: { Upgrade: 'websocket', [HOSTED_RESIDENCY_HEADER]: params.workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: webSocketCapability },
+            })).then((response) => peerFetchAnswer(response, webSocketCapability)));
+            residency.abort.signal.throwIfAborted();
+            if (response.status !== 101 || !response.webSocket || response.headers.get(HOST_INCARNATION_HEADER) !== opened.incarnation) {
+                throw new Error('Nimbus: the hosting peer did not establish coordinator residency');
+            }
+            residency.socket = response.webSocket;
+            if (this.closed)
+                throw new Error('Nimbus: the process host is closed');
             const observation = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal), (error) => loss.lose(error), opened.incarnation);
             stopObserving = observation.close;
             const starting = hostActivity(this.ctx).acquire();
@@ -351,6 +368,8 @@ class PeerProcessHost {
                     released = true;
                     stopObserving();
                     loss.release();
+                    residency.abort.abort();
+                    this.residencies.delete(params.workerKey);
                     this.tokensInUse.delete(params.pid);
                     await this._cancel(params.workerKey, placement.peerName);
                     await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
@@ -362,6 +381,8 @@ class PeerProcessHost {
         catch (error) {
             stopObserving();
             loss.release();
+            residency.abort.abort();
+            this.residencies.delete(params.workerKey);
             this.tokensInUse.delete(params.pid);
             // Awaited, not fired off: a spawn that rejects must mean nothing was
             // left running, which is what a throw from `processes().spawn` means on
@@ -387,6 +408,9 @@ class PeerProcessHost {
     async close() {
         this.closed = true;
         hostActivity(this.ctx).close();
+        for (const residency of this.residencies.values())
+            residency.abort.abort();
+        this.residencies.clear();
         await this.clearPlacements();
     }
     /**

@@ -3,7 +3,7 @@ import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import { isHostedWatch, isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
+import { isHostedWatch, isHostedWebSocket, isHostedResidency } from '@nimbus-sh/fabric/peer-host.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
@@ -415,6 +415,8 @@ export async function composeHostedRuntime(options) {
         supervisorOp: (envelope) => owner.supervisorOp(envelope),
         /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
         hostedFetch: (request) => {
+            if (isHostedResidency(request))
+                return owner.peerHost.reside(request);
             if (isHostedWatch(request))
                 return owner.peerHost.watch(request);
             if (isHostedWebSocket(request))

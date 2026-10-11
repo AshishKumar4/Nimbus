@@ -542,6 +542,7 @@ export interface ProcessHost {
      * resources are still held; they are released as it returns.
      */
     runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+    assertDurableStorage(): void;
     open(params: ProcessHostParams): Promise<HostedProcess>;
 }
 /**
