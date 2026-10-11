@@ -69,6 +69,27 @@ export function runtimeStatOf(stat) {
         mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : 0,
     };
 }
+const LOOKUP_REFUSALS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENXIO', 'EACCES']);
+/**
+ * Wrap an opt-in route call: found routes gain their traversal, and a lookup
+ * refusal (a code in `at`'s words) answers as `{ links, refusal }` instead of
+ * rejecting. Recall requests and backend faults still reject.
+ */
+function lookupReport(trace, run) {
+    const found = (route) => ({ ...route, links: trace.links });
+    const refused = (error) => {
+        if (!isVfsError(error) || !LOOKUP_REFUSALS.has(error.code))
+            throw error;
+        return { links: trace.links, refusal: { code: error.code, at: trace.at } };
+    };
+    try {
+        const out = run();
+        return isPromise(out) ? out.then(found, refused) : found(out);
+    }
+    catch (error) {
+        return refused(error);
+    }
+}
 const mountKeys = new WeakMap();
 let mountsKeyed = 0;
 /** A mount's own number, for as long as it lives: two mounts at one point are two. */
@@ -816,32 +837,42 @@ export class CompositeVFS {
     mountOf(path) {
         return this.locate(normalizePath(path)).mount.point;
     }
-    /**
-     * Where an operation on `path` lands for this view's principal: the mount
-     * it is on, that backend as this principal sees it, and the path the
-     * backend is handed, so an embedder can call a backend's own extras. The
-     * lookup is every operation's: root links on the way are followed (the
-     * last only with `follow`), and `..` inside a mount whose backend resolves
-     * its own paths is lexical. A mount absent for this principal (any mount
-     * on the path, rule 1) answers a null source, with its absentReason.
-     * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
-     * `creating`: the lookup of a write that makes its parents (writeFile's
-     * `parents`): directories missing on the way are allowed, a file among
-     * them is still ENOTDIR, and a link to where nothing is yet leads there.
-     */
     async route(path, options) {
-        return awaited({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, false, options?.creating === true), (at) => {
-            const gone = this.absentOn(at);
-            if (gone !== null)
-                return { point: gone.point, source: null, path: relativeTo(gone.point, at), absentReason: this.absentReason(gone) };
-            const { mount } = this.locate(at);
-            const source = this.backend(mount);
-            if (source === null)
-                return { point: mount.point, source, path: relativeTo(mount.point, at), absentReason: this.absentReason(mount) };
-            // A path the namespace does not show (under a directory above a mount
-            // that its holder does not hold as one) is refused as an operation on it is.
-            return andThen(this.reachable(at, false), () => ({ point: mount.point, source, path: relativeTo(mount.point, at) }));
-        }));
+        const trace = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
+        const run = () => awaited({ syscall: 'route', path }, () => {
+            // A recalled lookup starts over: keep only the traversal that answers.
+            if (trace !== undefined) {
+                trace.links.length = 0;
+                trace.at = normalizePath(path);
+            }
+            return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (at) => {
+                const gone = this.absentOn(at);
+                if (gone !== null) {
+                    if (trace !== undefined) {
+                        trace.at = gone.point;
+                        throw this.absent(gone, at);
+                    }
+                    return { point: gone.point, source: null, path: relativeTo(gone.point, at), absentReason: this.absentReason(gone) };
+                }
+                const { mount } = this.locate(at);
+                const source = this.backend(mount);
+                if (source === null) {
+                    if (trace !== undefined) {
+                        trace.at = mount.point;
+                        throw this.absent(mount, at);
+                    }
+                    return { point: mount.point, source, path: relativeTo(mount.point, at), absentReason: this.absentReason(mount) };
+                }
+                // A path the namespace does not show (under a directory above a mount
+                // that its holder does not hold as one) is refused as an operation on it is.
+                return andThen(this.reachable(at, false), (value) => {
+                    if (trace !== undefined)
+                        trace.at = at;
+                    return { point: mount.point, source, path: relativeTo(mount.point, at) };
+                });
+            });
+        });
+        return trace === undefined ? run() : lookupReport(trace, run);
     }
     /**
      * The file at `path` as an open(2) holds it: where this view's lookup
@@ -940,21 +971,22 @@ export class CompositeVFS {
                 return this.call('open', () => access.call(backend, path, mode));
         }
     };
-    /**
-     * Where a mutation of `path` lands: the namespace path its lookup resolves
-     * (links on the way followed, the last only with `follow`), the mount
-     * point it is on ('/' for the root), and whether that mount is read-only.
-     * The lookup is the mutations' own (onMutation's), so a writer that asks
-     * before it writes lands where the operation would. Rejects as that
-     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
-     * the lookup stays on synchronous backends. `creating`: as route's.
-     */
     mutationRoute(path, options) {
-        return reported({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, false, options?.creating === true), (at) => {
-            this.present(at);
-            const { mount } = this.locate(at);
-            return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
-        }));
+        const trace = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
+        const run = () => reported({ syscall: 'route', path }, () => {
+            if (trace !== undefined) {
+                trace.links.length = 0;
+                trace.at = normalizePath(path);
+            }
+            return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (at) => {
+                if (trace !== undefined)
+                    trace.at = this.absentOn(at)?.point ?? at;
+                this.present(at);
+                const { mount } = this.locate(at);
+                return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
+            });
+        });
+        return trace === undefined ? run() : lookupReport(trace, run);
     }
     /**
      * Whether `path` is a directory above a live mount point (not the root):
@@ -1324,7 +1356,7 @@ export class CompositeVFS {
      * that backend. ELOOP past MAX_LINK_HOPS.
      */
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
-    resolve(input, follow, sync, creating = false) {
+    resolve(input, follow, sync, creating = false, trace) {
         // Linux lookup, component by component. Every component that is not the
         // last (a trailing "" or "." counts as following) must exist and be a
         // directory once links are followed: ENOENT or ENOTDIR otherwise, before
@@ -1353,6 +1385,8 @@ export class CompositeVFS {
                     }
                     resolved.push(component);
                     const prefix = `/${resolved.join('/')}`;
+                    if (trace !== undefined)
+                        trace.at = prefix;
                     const final = i === lastIndex;
                     const at = i;
                     if (this.isStructural(prefix)) {
@@ -1405,6 +1439,7 @@ export class CompositeVFS {
                         if (stat !== null && stat.type === 'symlink' && canLink) {
                             if (hops >= MAX_LINK_HOPS)
                                 throw new Refusal('ELOOP', input);
+                            trace?.links.push(prefix);
                             return andThen(ops.readlink(route.rel), (target) => walk([
                                 ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
                                 ...target.split('/'),

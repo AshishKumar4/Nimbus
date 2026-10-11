@@ -122,6 +122,31 @@ export interface MountOptions {
      */
     resolvesPaths?: boolean;
 }
+/** Options shared by `route` and `mutationRoute`. */
+export interface VfsRouteOptions {
+    readonly follow?: boolean;
+    readonly creating?: boolean;
+    /** Report the lookup's dependencies and stop point instead of rejecting a lookup refusal. */
+    readonly report?: boolean;
+}
+/** Namespace link paths a lookup read on the way, in traversal order (the link itself, not its target). */
+export interface VfsTraversal {
+    readonly links: readonly string[];
+}
+export type VfsLookupRefusalCode = 'ENOENT' | 'ENOTDIR' | 'ELOOP' | 'ENXIO' | 'EACCES';
+export interface VfsRouteRefusal extends VfsTraversal {
+    readonly refusal: {
+        readonly code: VfsLookupRefusalCode;
+        readonly at: string;
+    };
+}
+export interface VfsMutationRoute {
+    readonly path: string;
+    readonly point: string;
+    readonly readOnly: boolean;
+}
+export type VfsRouteReport = (VfsRoute & VfsTraversal) | VfsRouteRefusal;
+export type VfsMutationRouteReport = (VfsMutationRoute & VfsTraversal) | VfsRouteRefusal;
 /** Where a path lands in a principal's namespace (CompositeVFS.route). */
 export interface VfsRoute {
     /** The mount point ('/' for the root). */
@@ -374,10 +399,13 @@ export declare class CompositeVFS implements VFS {
      * `parents`): directories missing on the way are allowed, a file among
      * them is still ENOTDIR, and a link to where nothing is yet leads there.
      */
-    route(path: string, options?: {
-        follow?: boolean;
-        creating?: boolean;
+    route(path: string, options: VfsRouteOptions & {
+        report: true;
+    }): Promise<VfsRouteReport>;
+    route(path: string, options?: VfsRouteOptions & {
+        report?: false;
     }): Promise<VfsRoute>;
+    route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
     /**
      * The file at `path` as an open(2) holds it: where this view's lookup
      * lands now (links followed, the last only with `follow`), on the backend
@@ -406,14 +434,13 @@ export declare class CompositeVFS implements VFS {
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
      * the lookup stays on synchronous backends. `creating`: as route's.
      */
-    mutationRoute(path: string, options?: {
-        follow?: boolean;
-        creating?: boolean;
-    }): Awaitable<{
-        readonly path: string;
-        readonly point: string;
-        readonly readOnly: boolean;
-    }>;
+    mutationRoute(path: string, options: VfsRouteOptions & {
+        report: true;
+    }): Awaitable<VfsMutationRouteReport>;
+    mutationRoute(path: string, options?: VfsRouteOptions & {
+        report?: false;
+    }): Awaitable<VfsMutationRoute>;
+    mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport>;
     /**
      * Whether `path` is a directory above a live mount point (not the root):
      * one the namespace keeps a directory for its mounts, so removing it is
