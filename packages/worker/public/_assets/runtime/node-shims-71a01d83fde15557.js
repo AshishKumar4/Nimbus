@@ -12138,6 +12138,7 @@ const __childProcessMod = (() => {
         const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
+        child.exitCode = 1;
         _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
