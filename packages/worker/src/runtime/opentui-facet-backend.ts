@@ -12,8 +12,8 @@
  *
  * SOURCE OF TRUTH: the backend implementation is
  * runtime/opentui-wasm-backend.ts (OpenTUIWasmBackend, Stage B, audited). The
- * string below is its facet-runnable mirror (type annotations stripped, private
- * fields kept). Keep the two in sync by hand; the bundle-wiring test
+ * string below is compiled from that module and its dependencies at build time,
+ * with type annotations stripped and private fields kept. The bundle-wiring test
  * (tests/unit/opentui-bundle-wiring.mjs) evaluates THIS string and drives a full
  * 279-symbol render through it, so any behavioral drift from the TS class fails
  * loudly.
@@ -23,13 +23,7 @@
  */
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
-import {
-  OpenTUIWasmBackend,
-  OPENTUI_FFI_TYPES,
-  ARENA_ALIGN,
-  toOffset,
-  viewBytes,
-} from '@nimbus-sh/core/runtime/opentui-wasm-backend.js';
+import { OPENTUI_BACKEND_CLASS_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 
 /** Module-map specifier for the staged OpenTUI wasm32-wasi reactor Module. */
 export const OPENTUI_WASM_MODULE_NAME = 'opentui.wasm';
@@ -38,35 +32,11 @@ export const OPENTUI_WASM_MODULE_NAME = 'opentui.wasm';
 export const OPENTUI_BACKEND_GLOBAL = '__nimbusOpenTUIBackend';
 
 /**
- * The backend class body, facet-runnable. SINGLE-SOURCED from OpenTUIWasmBackend
- * (opentui-wasm-backend.ts) via `.toString()`: the class and its module-scope
- * helpers are serialized from the real implementation, so the facet runs
- * byte-equivalent logic and cannot drift. The parity test
- * (tests/unit/opentui-facet-backend-parity.mjs) evaluates this string and drives
- * the full backend contract through it. Mirrors npm-resolve-preamble (policy fns
- * embedded via fn.toString() + a parity test).
- *
- * esbuild (`keepNames`, via wrangler) wraps every named function/class as
- * `__name(fn, "fn")`, so `.toString()` of the BUNDLED class/helpers references
- * `__name` by bare identifier — a binding that does NOT cross the facet isolate
- * boundary. We re-declare it (and `__defProp` it depends on) at the top of the
- * injected source, exactly as loader-pool's ESBUILD_RUNTIME_SHIM does for the
- * resolver/git facets. (Parity tests load un-bundled TS source, so they never
- * surface this — only the deployed, esbuild-bundled worker does.)
+ * The backend and its dependencies are compiled together at build time.
+ * Host minification cannot rename bindings inside the emitted expression.
+ * The parity test evaluates these actual bytes against the module's backend.
  */
-const OPENTUI_BACKEND_CLASS_SRC = [
-  'const __defProp = Object.defineProperty;',
-  'const __name = (target, value) => __defProp(target, "name", { value, configurable: true });',
-  `const FFI_TYPE_SET = new Set(${JSON.stringify(OPENTUI_FFI_TYPES)});`,
-  `const ARENA_ALIGN = ${ARENA_ALIGN};`,
-  `const toOffset = ${toOffset.toString()};`,
-  `const viewBytes = ${viewBytes.toString()};`,
-  // esbuild emits `var OpenTUIWasmBackend = class _OpenTUIWasmBackend {…}`, so
-  // `.toString()` is a class EXPRESSION bound to the internal name — injected
-  // bare it would not define `OpenTUIWasmBackend`. Bind it explicitly so the
-  // boot code's `OpenTUIWasmBackend.create(...)` resolves.
-  `const OpenTUIWasmBackend = ${OpenTUIWasmBackend.toString()};`,
-].join('\n');
+const OPENTUI_BACKEND_CLASS_SRC = `const { OpenTUIWasmBackend } = ${OPENTUI_BACKEND_CLASS_SOURCE};`;
 
 /**
  * The facet-runnable backend definition: the WASI preamble + the backend class.

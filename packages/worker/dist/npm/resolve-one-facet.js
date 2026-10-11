@@ -12,7 +12,7 @@
  * sibling DOs). The isolate is short-lived; task body has its own ~128 MiB
  * envelope. Parallelism = layer width.
  *
- * Stability invariants (cloudflare-parallel serialises via fn.toString)
+ * Guest environment (the build compiles this task with its dependencies)
  * ───────────────────────────────────────────────────────────────────
  *   - No `this` references.
  *   - No closure capture other than args + preamble names.
@@ -51,7 +51,7 @@
  *      events, packumentBytesDecoded, packumentSource, error?}.
  */
 /**
- * Per-package fanout task body. Serialised via fn.toString() and
+ * Per-package fanout task body. Compiled at build time and
  * dispatched by Fanout.submitMany — see installer.ts
  * resolveTreeViaFanout.
  *

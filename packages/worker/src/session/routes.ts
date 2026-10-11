@@ -25,6 +25,7 @@
  */
 
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
+import { FANOUT_BENCH_TASK, SERIAL_BENCH_TASK } from '../loaders/compiled-bodies.generated.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
@@ -1799,17 +1800,7 @@ async function handleFanoutTestEndpoint(
     const results = await pool.submitMany<
       { id: number; sleepMs: number },
       { id: number; startMs: number; endMs: number; loaderEnvKeys: string[] }
-    >(tasks, async (item: { id: number; sleepMs: number }, env: any) => {
-      const startMs = Date.now();
-      // Identify which env we're running in. SUPERVISOR is the
-      // RPC stub auto-injected by IsolatePool; its presence
-      // tells us we're inside a loader isolate (not the supervisor).
-      const loaderEnvKeys = Object.keys(env || {}).sort();
-      // Sleep entirely inside the isolate — no external network.
-      await new Promise((r) => setTimeout(r, item.sleepMs));
-      const endMs = Date.now();
-      return { id: item.id, startMs, endMs, loaderEnvKeys };
-    });
+    >(tasks, FANOUT_BENCH_TASK);
     const t1 = performance.now();
 
     // Aggregate per-peer ledger from the response shape. Each task's
@@ -1860,10 +1851,7 @@ async function handleFanoutTestEndpoint(
     try {
       for (let i = 0; i < n; i++) {
         await pool.submit(
-          async (item: { id: number; sleepMs: number }) => {
-            await new Promise((r) => setTimeout(r, item.sleepMs));
-            return item.id;
-          },
+          SERIAL_BENCH_TASK,
           { id: i, sleepMs },
         );
       }

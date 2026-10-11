@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import { type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
@@ -111,8 +112,9 @@ export declare function _rpcWriteFile(self: RpcHost, path: string, content: stri
  * may write it.
  */
 export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
-export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
-export declare function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
+export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+export declare function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+export declare function _rpcReadlink(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
 export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number>;
 export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<{

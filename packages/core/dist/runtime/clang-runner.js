@@ -26,6 +26,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
+import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { withHostView } from './process-files.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
@@ -554,33 +555,8 @@ async function loadClangToolchain(args) {
     };
 }
 async function dispatchClangFacet(target, args, signal) {
-    const facetFn = async function clangFacetCall(inArgs, facetEnv) {
-        const wasm = Reflect.get(globalThis, '__NIMBUS_WASM');
-        const primaryMod = wasm?.['primary.wasm'];
-        if (!primaryMod) {
-            return {
-                exitCode: 127, stdout: '', stderr: '',
-                error: 'clang-runner: __NIMBUS_WASM missing primary.wasm',
-            };
-        }
-        const fn = Reflect.get(globalThis, '__clangRun');
-        if (typeof fn !== 'function') {
-            return {
-                exitCode: 127, stdout: '', stderr: '',
-                error: 'clang-runner preamble missing: __clangRun not in scope',
-            };
-        }
-        return await fn({
-            primaryName: inArgs.primaryName,
-            argv: inArgs.argv,
-            cred: inArgs.cred,
-            primaryMod,
-            supervisor: facetEnv?.SUPERVISOR,
-            processPid: inArgs.processPid,
-        });
-    };
     try {
-        const result = await target.facet.submit(facetFn, {
+        const result = await target.facet.submit(CLANG_CALL_TASK, {
             primaryName: target.primaryName,
             argv: args.argv,
             cred: args.cred,

@@ -340,10 +340,10 @@ export class NimbusWorkspace {
      * ended, leave the process table when the result is returned.
      */
     exec(command, options = {}) {
-        const { shellId, ...call } = options;
+        const { shellId, detach, ...call } = options;
         if (shellId === undefined)
             return this.runProcess(command, call, null);
-        return this.withNamedShell(shellId, {}, (named) => this.runProcess(command, call, named));
+        return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named));
     }
     async runProcess(command, options, named) {
         const cwd = options.cwd ?? named?.cwd ?? this.shell.getCwd();

@@ -47,6 +47,8 @@ export interface WorkspaceExecOptions extends RunOptions {
      * digit. Omitted, the call runs in a shell of its own.
      */
     readonly shellId?: string;
+    /** Release a named shell without ending this process or saving its later state. */
+    readonly detach?: AbortSignal;
 }
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */

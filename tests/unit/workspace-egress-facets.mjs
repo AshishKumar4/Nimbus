@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // Under a workspace egress, everything Nimbus loads or binds for the
 // workspace takes it, and nothing more is loaded without it:
 //
@@ -109,7 +110,7 @@ function recordingEgress() {
     configs.length = 0;
     loaderIds.length = 0;
     const pool = new IsolatePool(env, ctx, { tag: 'egress-test', concurrency: 1, omitSupervisor: true, network: poolNetwork });
-    await pool.submit(async () => 1).catch(() => undefined);
+    await pool.submit(facetTaskSource("async () => 1")).catch(() => undefined);
     const resolved = await Promise.all(configs.map((make) => make()));
     assert.ok(resolved.length > 0, `${label}: the pool loaded nothing`);
     for (const config of resolved) {

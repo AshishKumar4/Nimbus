@@ -1,119 +1,36 @@
 #!/usr/bin/env bun
-// cpython-facet-entry-invariants — every facet entry that drives the CPython VM
-// carries the same three requirements, and they are DISCOVERED, not listed.
-//
-// This migration rediscovered five requirements by hitting each one, all of
-// which ruby-runner already satisfied. The first version of this check listed
-// the file it knew about; the very next entry point added — the REPL's — was in
-// a different file and shipped without the supervisor, which cost twelve red
-// probes. A hand-listed set of files rots exactly the way DEPLOYABLE_CONFIGS,
-// LONG_RUNNING_BIN_NAMES and the facet this-guard's TARGETS all rotted here.
-//
-// So the entries are found the way facet-fn-no-module-imports finds them: by
-// following `.submit(fn, …)` to the function it names. A third entry point will
-// arrive as a failing test rather than as a broken prompt.
+// Execute every compiled CPython entry against its real guest seam: publishing
+// the supervisor must precede adoption, and both must precede entering the VM.
+import assert from 'node:assert/strict';
+import * as core from '../../packages/core/src/runtime/compiled-bodies.generated.ts';
+import * as worker from '../../packages/worker/src/loaders/compiled-bodies.generated.ts';
 
-import assert from 'node:assert';
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-// Both halves: the runners live in @nimbus-sh/core now, and the workerd-only
-// resident-process spawn stayed behind. A discovery pass that looked in one
-// would pass vacuously over the other.
-const RUNTIME_DIRS = ['core', 'worker'].map((pkg) => join(
-  dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', pkg, 'src', 'runtime'));
-
-/** Brace-matched body of the function declared at `from`, parameters skipped. */
-function bodyAt(src, from) {
-  let i = src.indexOf('(', from);
-  if (i < 0) return null;
-  for (let parens = 0; i < src.length; i++) {
-    if (src[i] === '(') parens++;
-    else if (src[i] === ')' && --parens === 0) { i++; break; }
+const entries = Object.entries({ ...core, ...worker }).filter(([, task]) => task?.kind === 'nimbus-facet-task' && /__cpython(?:Run|ReplRun)/.test(task.source));
+assert.ok(entries.length >= 2, 'discover the one-shot and REPL compiled entries');
+const keys = ['__cpythonRun', '__cpythonReplRun', '__wasiAdoptSupervisor', '__nimbusPySupervisor'];
+const before = keys.map((key) => Object.getOwnPropertyDescriptor(globalThis, key));
+try {
+  for (const [name, task] of entries) {
+    const supervisor = {};
+    const seen = [];
+    delete globalThis.__nimbusPySupervisor;
+    globalThis.__wasiAdoptSupervisor = (got) => {
+      assert.equal(got, supervisor, name);
+      assert.equal(globalThis.__nimbusPySupervisor, supervisor, `${name}: publish before adoption`);
+      seen.push('adopt');
+    };
+    globalThis.__cpythonRun = globalThis.__cpythonReplRun = async () => {
+      assert.deepEqual(seen, ['adopt'], `${name}: adopt before entering Python`);
+      seen.push('run');
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    };
+    const run = new Function(`return (${task.source});`)();
+    const result = await run(new Request('https://python.test/', { method: 'POST', body: JSON.stringify({ userCode: 'pass' }) }), { SUPERVISOR: supervisor });
+    assert.deepEqual(seen, ['adopt', 'run'], name);
+    assert.equal((result instanceof Response ? await result.json() : result).stdout, 'ok');
+    assert.doesNotMatch(task.source, /__wasiDrainPersist|__wasiRevalidateFS/, `${name}: no obsolete persist queue`);
   }
-  let depth = 0;
-  for (let j = src.indexOf('{', i); j >= 0 && j < src.length; j++) {
-    if (src[j] === '{') depth++;
-    else if (src[j] === '}' && --depth === 0) return src.slice(i, j);
-  }
-  return null;
+} finally {
+  keys.forEach((key, index) => { if (before[index]) Object.defineProperty(globalThis, key, before[index]); else delete globalThis[key]; });
 }
-
-function functionBody(src, name) {
-  const declared = new RegExp(`function\\s+${name}\\s*[(<]`).exec(src);
-  if (declared) return bodyAt(src, declared.index);
-  const assigned = new RegExp(
-    `(?:const|let|var)\\s+${name}\\s*(?::[^=]+)?=\\s*(?:async\\s+)?(?:function\\b|\\()`).exec(src);
-  if (assigned) return bodyAt(src, assigned.index);
-  return null;
-}
-
-/**
- * Each requirement, and the failure it produces when absent. Every one of these
- * was a real defect in this migration, not a hypothetical.
- */
-const REQUIREMENTS = [
-  {
-    name: 'publishes the supervisor before adopting it',
-    test: (body) => /Reflect\.set\(globalThis,\s*'__nimbusPySupervisor'/.test(body),
-    // __wasiInitFS clears the adoption on purpose, and the boot re-adopts from
-    // globalThis afterwards. Adopting only here leaves a guest with no
-    // filesystem at all once the boot has run initFS.
-    why: 'the boot would re-adopt nothing and every open would answer EBADF',
-  },
-  {
-    name: 'adopts the supervisor',
-    test: (body) => /adopt\?\.\(supervisor\)/.test(body)
-      || /if \(typeof adopt === 'function'\) Reflect\.apply\(adopt, undefined, \[supervisor \?\? null\]\)/.test(body),
-    why: 'every file syscall answers EBADF with no supervisor',
-  },
-  {
-    // Writes reach the authority as the syscall returns; a flush step would be
-    // flushing nothing, and a reader who finds one will assume a queue exists.
-    name: 'carries no persist queue',
-    test: (body) => !/__wasiDrainPersist|__wasiRevalidateFS/.test(body),
-    why: 'there is no queue to drain, so the call could only ever be a stale ritual',
-  },
-  {
-    name: 'takes the facet env as its second parameter',
-    test: (body, header) => /facetEnv/.test(header),
-    why: 'the SUPERVISOR stub arrives there and nowhere else',
-  },
-];
-
-const entries = [];
-for (const dir of RUNTIME_DIRS)
-for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
-  const src = readFileSync(join(dir, file), 'utf8');
-  for (const m of src.matchAll(/\.submit\w*\(\s*([A-Za-z_$][\w$]*)/g)) {
-    const name = m[1];
-    const body = functionBody(src, name);
-    if (!body) continue;
-    // Only the entries that drive THIS runtime's VM. Ruby and clang have their
-    // own conventions and are covered by their own tests.
-    if (!/__cpython\w*/.test(body)) continue;
-    const headerAt = src.search(new RegExp(`function\\s+${name}\\s*\\(`));
-    const header = headerAt >= 0 ? src.slice(headerAt, src.indexOf(')', headerAt) + 1) : '';
-    entries.push({ file, name, body, header });
-  }
-}
-
-// Discovery that finds nothing passes vacuously, which is the failure mode this
-// whole style of test is prone to. There are at least two entries: the one-shot
-// runner and the REPL.
-assert.ok(entries.length >= 2,
-  `discovery found ${entries.length} CPython facet entries — it has stopped finding them`);
-console.log(`  discovered ${entries.length}: ${entries.map((e) => `${e.file}::${e.name}`).join(', ')}`);
-
-const findings = [];
-for (const entry of entries) {
-  for (const req of REQUIREMENTS) {
-    if (!req.test(entry.body, entry.header)) {
-      findings.push(`${entry.file} :: ${entry.name}() ${req.name} — without it, ${req.why}`);
-    }
-  }
-}
-assert.deepEqual(findings, [], `a CPython facet entry is missing an invariant:\n  ${findings.join('\n  ')}`);
-console.log(`  ok  all ${entries.length} CPython facet entries carry every invariant`);
-console.log('cpython-facet-entry-invariants: all cases passed');
+console.log(`cpython-facet-entry-invariants: ${entries.length} guest entries`);

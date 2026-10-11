@@ -740,6 +740,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcStat(path, pid, cred) { return _rpc._rpcStat(this, path, pid, cred); }
     async _rpcLstat(path, pid, cred) { return _rpc._rpcLstat(this, path, pid, cred); }
+    async _rpcReadlink(path, pid, cred) { return _rpc._rpcReadlink(this, path, pid, cred); }
     async _rpcChmod(path, mode, pid, cred) {
         return _rpc._rpcChmod(this, path, mode, pid, cred);
     }
@@ -879,6 +880,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return encodeExecStream(await _programmatic.rpcExecStream(this, command, options));
     }
     async _rpcStartProcess(command, options) { return _programmatic.rpcStartProcess(this, command, options); }
+    async _rpcDetachExec(detachId) { return _programmatic.rpcDetachExec(this, detachId); }
     async _rpcRunCode(code, options) {
         return _programmatic.rpcRunCode(this, code, options);
     }

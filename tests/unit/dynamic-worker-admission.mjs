@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // Waiting for room on the Dynamic Worker ledger (Kinu ask 13).
 //
 // A Durable Object may have DO_DYNAMIC_WORKER_LIMIT distinct Dynamic Workers
@@ -318,7 +319,7 @@ function wait(ctx, key, options, log) {
   });
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   const started = Date.now();
-  const result = pool.submit((value) => value, 'payload');
+  const result = pool.submit(facetTaskSource("(value) => value"), 'payload');
   const RELEASE_AT = 1000;
   await sleep(RELEASE_AT);
   counted.delete('resident-0');
@@ -345,7 +346,7 @@ function wait(ctx, key, options, log) {
     },
   };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
-  await assert.rejects(pool.submit((value) => value, 'payload'), /loader.get refused the retry/);
+  await assert.rejects(pool.submit(facetTaskSource("(value) => value"), 'payload'), /loader.get refused the retry/);
   assert.equal(gets, 2, 'the refused call was let in again, and its setup threw');
   assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'and the hold it was let in on is given back');
   pool.dispose();
