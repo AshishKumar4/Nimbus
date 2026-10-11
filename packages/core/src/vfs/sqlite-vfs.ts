@@ -9188,7 +9188,8 @@ export class SqliteVFS {
       /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
       reserve: (bytes: number) => Promise<CreditLease | null>;
       setPhase: (phase: WriteBatchStreamFailurePhase) => void;
-      committed: (receipt: WriteStreamReceipt | null) => void;
+      /** The record applied on its mount, with the bytes it wrote there. */
+      committed: (receipt: WriteStreamReceipt | null, bytes: number) => void;
       /** The exclusive-mutation lease the wave writes under (WriteStreamOptions.mutationOwner), presented to the namespace's guard. */
       owner?: string;
     },
@@ -9243,7 +9244,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'directory': {
@@ -9254,7 +9255,7 @@ export class SqliteVFS {
         reached();
         // A directory has no receipt, here as in a group.
         await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'call': {
@@ -9274,7 +9275,7 @@ export class SqliteVFS {
         // Made under the umask the process made it with, as on this filesystem (W7Call umask).
         const stat = await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner));
         // An open's answer is the file's stat (its description writes it by number).
-        at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null);
+        at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null, 0);
         return true;
       }
       case 'rename': {
@@ -9293,7 +9294,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'truncate':
@@ -9306,7 +9307,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'file-begin': {
@@ -9359,7 +9360,7 @@ export class SqliteVFS {
             : file.link
             ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
             : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, at.owner));
-          at.committed(stat === null ? null : { path: file.named, ...stat });
+          at.committed(stat === null ? null : { path: file.named, ...stat }, bytes.byteLength);
         } finally {
           at.file = null;
           for (const chunk of file.held) chunk.release();
@@ -10440,11 +10441,11 @@ export class SqliteVFS {
           reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, options.signal)),
           setPhase: (next) => { phase = next; },
           owner: options.mutationOwner,
-          committed: (receipt) => {
+          committed: (receipt, bytes) => {
             progress.committedGroupSequence++;
             progress.committedPathCount++;
             progress.committedOps++;
-            owe(1, record.type === 'file-begin' ? record.inode.size : 0);
+            owe(1, bytes);
             if (receipt !== null) progress.receipts.push(receipt);
             // On a mount: the cursor moves once the backend has it, in a transaction of its own.
             if (sequence !== null && applying !== null) {
