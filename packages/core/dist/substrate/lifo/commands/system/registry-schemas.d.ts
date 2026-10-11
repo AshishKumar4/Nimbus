@@ -8,6 +8,11 @@ export declare const RegistryVersionInfoSchema: z.ZodObject<{
     scripts: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     dependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     devDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    optionalDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    peerDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    peerDependenciesMeta: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+        optional: z.ZodOptional<z.ZodBoolean>;
+    }, z.core.$loose>>>;
     dist: z.ZodObject<{
         tarball: z.ZodString;
         shasum: z.ZodOptional<z.ZodString>;
@@ -25,6 +30,11 @@ export declare const RegistryPackumentSchema: z.ZodObject<{
         scripts: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         dependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         devDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        optionalDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        peerDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        peerDependenciesMeta: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+            optional: z.ZodOptional<z.ZodBoolean>;
+        }, z.core.$loose>>>;
         dist: z.ZodObject<{
             tarball: z.ZodString;
             shasum: z.ZodOptional<z.ZodString>;
