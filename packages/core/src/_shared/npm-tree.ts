@@ -73,8 +73,8 @@ export type TreeResolution<P extends TreePackage> =
 
 /** What the plan is built from. */
 export interface TreeHost<P extends TreePackage> {
-  /** Resolve a layer of edges, together; an answer per edge, in order. */
-  resolve(edges: readonly TreeEdge[]): Promise<ReadonlyArray<TreeResolution<P>>>;
+  /** Resolve a layer of edges, together, each for its placement (`at`); an answer per edge, in order. */
+  resolve(layer: ReadonlyArray<{ readonly edge: TreeEdge; readonly at: string }>): Promise<ReadonlyArray<TreeResolution<P>>>;
   /** The packages already at `placements`, before this install; null where there is none. */
   installed(placements: readonly string[]): Promise<ReadonlyArray<P | null>>;
   /** A peer met by a copy outside its range, as npm warns of one. */
@@ -211,7 +211,7 @@ export async function planTree<P extends TreePackage>(roots: readonly TreeRoot[]
     queue = next;
     if (layer.length === 0) continue;
 
-    const answers = await host.resolve(layer.map(({ edge }) => edge));
+    const answers = await host.resolve(layer);
     layer.forEach(({ edge, at }, i) => {
       pending.delete(at);
       settled.add(at);

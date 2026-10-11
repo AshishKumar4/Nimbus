@@ -269,8 +269,12 @@ interface TreeInstall {
 	globalBinDir?: string;
 }
 
-/** A package the shell's plan knows: its registry version (to fetch), or its manifest on disk (kept). */
-type ShellPackage = TreePackage & Partial<Pick<RegistryVersionInfo, 'dist' | 'bin'>>;
+/**
+ * A package the shell's plan knows, by the name it is installed under (an
+ * alias's, not the registry's): its registry version (`info`, to fetch), or
+ * its manifest on disk (kept).
+ */
+type ShellPackage = TreePackage & { readonly info?: RegistryVersionInfo };
 
 /**
  * A retired copy: the package that was at `<dir>/<name>`, moved aside to
@@ -371,12 +375,13 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 
 	// ── Plan ──
 	const plan = await planTree<ShellPackage>(roots, {
-		async resolve(edges) {
+		async resolve(layer) {
 			const answers: Array<TreeResolution<ShellPackage>> = [];
-			for (const edge of edges) {
+			for (const { edge } of layer) {
 				await stdout.write(`  ${edge.name}${edge.range ? '@' + edge.range : ''}...\n`);
 				try {
-					answers.push({ package: await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal) });
+					const info = await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal);
+					answers.push({ package: { ...info, name: edge.name, info } });
 				} catch (e) {
 					answers.push({ failed: describe(e) });
 				}
@@ -419,7 +424,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 			try {
 				// writeTarballStream throws when the archive carried no manifest
 				// and writes package.json last, so a return is a complete package.
-				await fetchAndStreamPackage(network, pkg.dist!.tarball, pkg.dist!.integrity, stagedAt(i), vfs, signal, stderr);
+				await fetchAndStreamPackage(network, pkg.info!.dist.tarball, pkg.info!.dist.integrity, stagedAt(i), vfs, signal, stderr);
 			} catch (e) {
 				if (!plan.skip(at, describe(e))) return await fail(edge.name, describe(e));
 				await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${describe(e)}\n`);
@@ -493,7 +498,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 		}
 		if (install.globalBinDir) {
 			for (const i of order) {
-				if (planned[i].edge.from === '') await linkGlobalBins(planned[i].pkg, join(targetBase, planned[i].at), install.globalBinDir, install);
+				if (planned[i].edge.from === '') await linkGlobalBins(planned[i].pkg.info!, join(targetBase, planned[i].at), install.globalBinDir, install);
 			}
 		}
 		return { installed: order.map((i) => `${planned[i].pkg.name}@${planned[i].pkg.version}`), failed: [] };
@@ -503,7 +508,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 }
 
 /** Link a globally installed root's bins into the prefix's bin directory, and register them as commands. */
-async function linkGlobalBins(info: ShellPackage, targetDir: string, globalBinDir: string, install: TreeInstall): Promise<void> {
+async function linkGlobalBins(info: RegistryVersionInfo, targetDir: string, globalBinDir: string, install: TreeInstall): Promise<void> {
 	for (const [binName, binPath] of Object.entries(getBinEntries(info))) {
 		const scriptPath = resolve(targetDir, binPath);
 		registerBinCommand(install.registry, binName, scriptPath, install.kernel);
