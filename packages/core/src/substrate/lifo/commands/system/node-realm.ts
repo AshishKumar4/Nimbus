@@ -308,6 +308,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     payload,
     serve: (call) => performCall(call, services),
     onEvent: (event) => {
+      if (isEgressGuestEvent(event)) { egress?.handle(event); return; }
       if (!isGuestEvent(event)) return;
       switch (event.type) {
         case 'output':
@@ -324,11 +325,6 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
           void fetchForGuest(kernel, event).then((response) => {
             post({ type: 'fetched', id: event.id, response });
           });
-          return;
-        case 'egress':
-        case 'egress-pull':
-        case 'egress-cancel':
-          egress?.handle(event);
           return;
       }
     },

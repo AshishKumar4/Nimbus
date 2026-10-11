@@ -15,6 +15,7 @@
  */
 
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { isWebSocketGuestEvent, isWebSocketHostEvent, RealmWebSockets, type WebSocketGuestEvent, type WebSocketHostEvent } from './realm-websocket.js';
 
 // ── The protocol ────────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ export interface EgressHead {
 
 /** What the realm posts for a request. */
 export type EgressGuestEvent =
+  | WebSocketGuestEvent
   | { readonly type: 'egress'; readonly id: number; readonly request: EgressRequest }
   /** The realm reads the response's body: the next chunk, or its end. */
   | { readonly type: 'egress-pull'; readonly id: number }
@@ -51,6 +53,7 @@ export type EgressGuestEvent =
 
 /** What the host posts back for it. */
 export type EgressHostEvent =
+  | WebSocketHostEvent
   | { readonly type: 'egress-head'; readonly id: number; readonly head: EgressHead }
   | { readonly type: 'egress-chunk'; readonly id: number; readonly chunk: Uint8Array }
   | { readonly type: 'egress-end'; readonly id: number }
@@ -70,6 +73,7 @@ const isEgressHead = (value: unknown): value is EgressHead =>
   && typeof value.url === 'string' && typeof value.redirected === 'boolean' && typeof value.body === 'boolean';
 
 export function isEgressGuestEvent(value: unknown): value is EgressGuestEvent {
+  if (isWebSocketGuestEvent(value)) return true;
   if (!record(value) || !Number.isSafeInteger(value.id)) return false;
   switch (value.type) {
     case 'egress': return isEgressRequest(value.request);
@@ -80,6 +84,7 @@ export function isEgressGuestEvent(value: unknown): value is EgressGuestEvent {
 }
 
 export function isEgressHostEvent(value: unknown): value is EgressHostEvent {
+  if (isWebSocketHostEvent(value)) return true;
   if (!record(value) || typeof value.id !== 'number') return false;
   switch (value.type) {
     case 'egress-head': return isEgressHead(value.head);
@@ -152,11 +157,15 @@ const errorText = (error: unknown): string => (error instanceof Error ? error.me
  */
 export class RealmEgress {
   private readonly open = new Map<number, { readonly abort: AbortController; reader?: ReadableStreamDefaultReader<Uint8Array> }>();
+  private readonly sockets: RealmWebSockets;
 
-  constructor(private readonly network: WorkspaceNetwork, private readonly post: (event: EgressHostEvent) => void) {}
+  constructor(private readonly network: WorkspaceNetwork, private readonly post: (event: EgressHostEvent) => void) {
+    this.sockets = new RealmWebSockets(network, post);
+  }
 
   /** One of the realm's events: a request, a read of a body, or a cancel. */
   handle(event: EgressGuestEvent): void {
+    if (isWebSocketGuestEvent(event)) { this.sockets.handle(event); return; }
     switch (event.type) {
       case 'egress': this.start(event.id, event.request); return;
       case 'egress-pull': this.pull(event.id); return;
@@ -215,6 +224,7 @@ export class RealmEgress {
 
   /** The realm has ended: what it left open is closed. */
   close(): void {
+    this.sockets.close();
     for (const id of [...this.open.keys()]) this.cancel(id);
   }
 }

@@ -23,6 +23,7 @@ import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
+import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import {
   isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
   type GuestEvent, type NodeCall, type RealmResponse,
@@ -56,8 +57,8 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 /**
  * Under an egress, the program's network is its host's: `fetch` (and the
  * http and https modules, which use it) crosses to the host, which sends each
- * request out through the egress (runtime/realm-egress.ts). A WebSocket
- * cannot cross the realm, so it is refused by name. What the program waits
+ * request out through the egress (runtime/realm-egress.ts). WebSocket frames
+ * cross the realm too. What the program waits
  * on from off the box (a response's head, a chunk of a body it is reading)
  * holds the realm, as an active socket holds a Node process.
  */
@@ -165,6 +166,7 @@ async function serve(id: number, port: number, request: VirtualRequest): Promise
 }
 
 events.on('message', (event) => {
+  if (isEgressHostEvent(event)) { offTheBox?.answer(event); return; }
   if (!isHostEvent(event)) return;
   switch (event.type) {
     case 'fetched':
@@ -177,12 +179,6 @@ events.on('message', (event) => {
       return;
     case 'changed':
       changed?.();
-      return;
-    case 'egress-head':
-    case 'egress-chunk':
-    case 'egress-end':
-    case 'egress-error':
-      offTheBox?.answer(event);
       return;
   }
 });
@@ -205,8 +201,7 @@ realm.on('exit', () => {
 });
 
 if (egress) {
-  offTheBox = routeFetchThroughHost(post, holdWhileBusy,
-    "Nimbus: WebSocket is not available to an inline node program when the workspace's network goes through an egress");
+  offTheBox = routeFetchThroughHost(post, holdWhileBusy);
 }
 holdWhileBusy();
 const end = await runNodeProgram(program, {
