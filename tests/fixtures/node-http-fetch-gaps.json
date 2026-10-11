@@ -1,0 +1,18 @@
+{
+  "node": {
+    "connections": [
+      { "socket": "Socket", "responseSocket": null, "reusedSocket": false, "peerPortMatches": true, "connections": 1, "connectionIsSocket": true },
+      { "socket": "Socket", "responseSocket": null, "reusedSocket": true, "peerPortMatches": true, "connections": 1, "connectionIsSocket": true }
+    ],
+    "maxConnections": "undefined",
+    "legacyConnections": "undefined"
+  },
+  "nimbus": {
+    "connections": [
+      { "socket": null, "responseSocket": null, "reusedSocket": false, "peerPortMatches": false, "connections": 0, "connectionIsSocket": false },
+      { "socket": null, "responseSocket": null, "reusedSocket": false, "peerPortMatches": false, "connections": 0, "connectionIsSocket": false }
+    ],
+    "maxConnections": "Infinity",
+    "legacyConnections": "0"
+  }
+}
