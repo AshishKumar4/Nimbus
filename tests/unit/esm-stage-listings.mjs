@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
-// Staging's realpath by directory listing (esm-stage.ts EsmStageFs.entries):
-// a file that is no link is its directory's realpath and its name, so a
-// launch asks one listing and one realpath per directory, not a realpath per
-// file. What it stages must be what a realpath per file stages: a package
-// reached through a linked directory, a linked file, a file in a linked
-// directory.
+// Staging's filesystem questions by directory listing (esm-stage.ts
+// EsmStageFs.entries): what is at a name is its directory's listing's answer,
+// and a file that is no link is its directory's realpath and its name, so a
+// launch asks one listing and one realpath per directory, not a question
+// walked from the root per name: most are of names that are not there (each
+// node_modules up the tree a missing bare specifier is looked for in). What it
+// stages must be what a question per name stages: a package reached through
+// a linked directory, a linked file, a file in a linked directory, a package
+// that is not installed.
 
 import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -14,7 +17,7 @@ import { join } from 'node:path';
 import { readEsModule } from '../../packages/core/src/runtime/native-esm.ts';
 import { stageEsModules } from '../../packages/worker/src/facets/esm-stage.ts';
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), 'esm-stage-realpath-')));
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'esm-stage-listings-')));
 try {
   const FILES = {
     'w/linked/package.json': '{"name":"linked-pkg","type":"module","exports":"./index.js"}',
@@ -22,7 +25,7 @@ try {
     'w/linked/sibling.js': 'export const s = 1;\n',
     'w/linked/real.js': 'export const r = 2;\n',
     'w/package.json': '{"type":"module"}',
-    'w/app/main.js': 'import { x } from "linked-pkg";\nimport { r } from "../linked/alias.js";\nimport { y } from "./same.js";\nimport "./a.js";\nimport "./b.js";\nimport "./c.js";\nconsole.log(x, r, y);\n',
+    'w/app/main.js': 'import { x } from "linked-pkg";\nimport { r } from "../linked/alias.js";\nimport { y } from "./same.js";\nimport "./a.js";\nimport "./b.js";\nimport "./c.js";\nimport "not-installed";\nconsole.log(x, r, y);\n',
     'w/app/same.js': 'export const y = 3;\n',
     'w/app/a.js': 'export const a = 1;\n',
     'w/app/b.js': 'export const b = 1;\n',
@@ -37,9 +40,9 @@ try {
   symlinkSync('../linked', join(root, 'w/node_modules/linked-pkg'));
 
   const local = (path) => join(root, path.replace(/^\/+/, ''));
-  const asked = { realpath: 0, entries: 0 };
+  const asked = { realpath: 0, entries: 0, exists: 0 };
   const files = {
-    exists: async (path) => existsSync(local(path)),
+    exists: async (path) => { asked.exists++; return existsSync(local(path)); },
     isDirectory: async (path) => { try { return statSync(local(path)).isDirectory(); } catch { return false; } },
     readFileString: async (path) => readFileSync(local(path), 'utf8'),
     stat: async (path) => { try { const s = statSync(local(path)); return { size: s.size, type: s.isDirectory() ? 'directory' : 'file' }; } catch { return null; } },
@@ -63,14 +66,17 @@ try {
   const options = { conditions: [], cwd: '/w', isCode: () => true, gate: true };
   const perFile = await stageEsModules({ files, realpath }, cells, options);
   const filesAsked = asked.realpath;
+  const existsAsked = asked.exists;
   asked.realpath = 0;
+  asked.exists = 0;
   const listed = await stageEsModules({ files, realpath, entries }, cells, options);
   const shape = (stage) => JSON.stringify({ table: stage.table, missing: stage.missing, members: stage.members, modules: [...stage.modules].map(([key, m]) => [key, m.text]) });
   assert.equal(shape(listed), shape(perFile), 'the listing stages what a realpath per file stages');
-  assert.deepEqual(perFile.table[0], ['module', 'w/app/main.js', [2, 4, 1, 5, 6, 7]], 'main links the package behind its link, the linked file\'s target and its siblings');
-  assert.equal(perFile.missing.length, 0);
+  assert.deepEqual(perFile.table[0], ['module', 'w/app/main.js', [2, 4, 1, 5, 6, 7, -1]], 'main links the package behind its link, the linked file\'s target and its siblings');
+  assert.deepEqual(perFile.missing.map((m) => m.code), ['ERR_MODULE_NOT_FOUND'], 'the package that is not installed is refused, as Node refuses it');
+  assert.ok(asked.exists < existsAsked, `fewer existence questions by listing (${asked.exists}, against ${existsAsked})`);
   assert.ok(asked.realpath < filesAsked, `fewer realpaths by listing (${asked.realpath} and ${asked.entries} listings, against ${filesAsked})`);
-  console.log(`esm-stage-realpath: listings stage what realpaths do (${asked.realpath} realpaths and ${asked.entries} listings, against ${filesAsked} realpaths)`);
+  console.log(`esm-stage-listings: listings stage what questions per name do (${asked.realpath} realpaths, ${asked.exists} existence questions and ${asked.entries} listings, against ${filesAsked} realpaths and ${existsAsked} existence questions)`);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
