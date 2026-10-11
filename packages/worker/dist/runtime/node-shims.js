@@ -13030,7 +13030,6 @@ function __requireFrom(id, fromDir, parent, required = true) {
   }
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
-  if (resolved.startsWith("node:")) return __requireFrom(resolved, fromDir, parent, required);
   return __loadModule(resolved, resolved, required, parent);
 }
 

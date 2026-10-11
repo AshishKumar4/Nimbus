@@ -18103,8 +18103,8 @@ function __fileExists(path) {
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
 var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
-var DEFAULT_ESM_CONDITIONS = ["import", "node", "module-sync"];
-var DEFAULT_CJS_CONDITIONS = ["require", "node", "module-sync"];
+var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
+var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
 var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
 var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
 function patternKeyCompare(a, b) {
@@ -18450,6 +18450,10 @@ function createRequireResolver(host, options = {}) {
       const main = absolute(pkg.main.startsWith("/") ? pkg.main : path + "/" + pkg.main);
       const found = (yield* loadAsFile(main)) ?? (yield* loadIndex(main)) ?? (yield* loadIndex(path));
       if (found) return found;
+      if (policy.typescriptFallback) {
+        const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
+        if (source) return source;
+      }
       throw Object.assign(
         error(
           "MODULE_NOT_FOUND",
@@ -18463,13 +18467,15 @@ function createRequireResolver(host, options = {}) {
   function* resolveFile(path, state, trailingSlash = false) {
     const normalized = absolute(path);
     const found = (!trailingSlash ? yield* loadAsFile(normalized) : null) ?? (yield* loadAsDirectory(normalized, state));
-    if (found || !policy.typescriptFallback) return found;
-    for (const candidate of typescriptFallbackCandidates(normalized)) {
+    return found ?? (policy.typescriptFallback ? yield* typeScriptFallback(normalized) : null);
+  }
+  function* typeScriptFallback(path) {
+    for (const candidate of typescriptFallbackCandidates(path)) {
       if ((yield* ask.kind(candidate)) === "file") return candidate;
     }
-    if ((yield* ask.kind(normalized)) === "directory") {
+    if ((yield* ask.kind(path)) === "directory") {
       for (const suffix of TYPESCRIPT_INDEX_CANDIDATES) {
-        if ((yield* ask.kind(normalized + suffix)) === "file") return normalized + suffix;
+        if ((yield* ask.kind(path + suffix)) === "file") return path + suffix;
       }
     }
     return null;
@@ -18526,6 +18532,7 @@ function createRequireResolver(host, options = {}) {
     return { name: slash === -1 ? id : id.slice(0, slash), subpath: slash === -1 ? "." : "." + id.slice(slash) };
   }
   function* finalizeTarget(target, pjsonPath) {
+    if (target.protocol !== "file:") throw error("ERR_INVALID_URL_SCHEME", "The URL must be of scheme file", TypeError);
     if (/%2f|%5c/i.test(target.pathname)) {
       throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + target.pathname + '" must not include encoded "/" or "\\" characters', TypeError);
     }
@@ -18580,7 +18587,7 @@ function createRequireResolver(host, options = {}) {
       const scope = yield* nearestPackageScope(dir, state);
       if (scope && scope.pkg.imports !== null && typeof scope.pkg.imports === "object") {
         const target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
-        if (target != null) return target.protocol === "node:" ? target : yield* finalizeTarget(target, scope.packageJsonPath);
+        if (target != null) return yield* finalizeTarget(target, scope.packageJsonPath);
       }
       const where = scope ? " in package " + scope.packageJsonPath : "";
       throw error("ERR_PACKAGE_IMPORT_NOT_DEFINED", 'Package import specifier "' + id + '" is not defined' + where + " imported from " + dir, TypeError);
@@ -20232,7 +20239,6 @@ function __requireFrom(id, fromDir, parent, required = true) {
   }
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
-  if (resolved.startsWith("node:")) return __requireFrom(resolved, fromDir, parent, required);
   return __loadModule(resolved, resolved, required, parent);
 }
 
