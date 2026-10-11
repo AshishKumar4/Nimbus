@@ -146,6 +146,16 @@ export class TestEgress extends WorkerEntrypoint {
 }
 
 export class TestTlsEgress extends TestEgress {
+  override async connect(socket: Socket): Promise<void> {
+    const { localAddress } = await socket.opened as { localAddress?: string };
+    if (localAddress !== `${EGRESS_TEST_HOST}:443`) return super.connect(socket);
+    await readRequestLine(socket.readable);
+    const writer = socket.writable.getWriter();
+    await writer.write(new TextEncoder().encode('plain-egress-ready\n'));
+    await socket.closed.catch(() => {});
+    writer.releaseLock();
+  }
+
   async connectTls(target: { hostname: string; port: number }): Promise<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }> {
     if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
     if (target.hostname !== EGRESS_TEST_HOST || target.port !== 443) throw new Error('unexpected TLS destination');

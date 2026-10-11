@@ -51,6 +51,7 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
   const close = async () => {
     if (stopped) return;
     stopped = true;
+    previous?.destroy();
     await Promise.all([reader?.cancel().catch(() => {}), writer?.abort().catch(() => {})]);
     endedRead = endedWrite = true;
     finish();
