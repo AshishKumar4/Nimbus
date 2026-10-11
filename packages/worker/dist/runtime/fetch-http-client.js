@@ -58,7 +58,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
             if (this.destroyed) return;
             if (next.done) { this.complete = true; this.push(null); return; }
             this.#idle.touch();
-            if (!this.push(Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength))) return;
+            if (!this.push(next.value)) return;
           }
         } catch (error) { this.destroy(error); }
         finally { this.#reading = false; }
@@ -66,10 +66,8 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       void pump();
     }
     _destroy(error, callback) {
-      if (!this.complete) { this.aborted = true; this.emit("aborted"); }
-      const finish = () => callback(this.listenerCount("error") ? error : null);
-      if (this.#reader) this.#reader.cancel(error).then(finish, finish);
-      else finish();
+      if (!this.complete && this.#reader) this.#reader.cancel(error).catch(() => {});
+      NativeIncomingMessage.prototype._destroy.call(this, error, callback);
     }
     setTimeout(msecs, callback) {
       this.#idle.setTimeout(msecs);
@@ -236,7 +234,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     _write(chunk, encoding, callback) {
       if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
-        if (!this.destroyed && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
+        if (!this.destroyed && this.#writer) this.#writer.write(new Uint8Array(chunk)).then(() => { this.#touch(); callback(); }, callback);
         else callback();
       });
     }
@@ -270,7 +268,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         if (this.method !== "GET" && this.method !== "HEAD") {
           if (chunk == null) this.#completeBody = Buffer.alloc(0);
           else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
-          else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
+          else if (chunk instanceof Uint8Array) this.#completeBody = new Uint8Array(chunk);
           this.#contentLength = this.#completeBody?.byteLength;
         }
       }
