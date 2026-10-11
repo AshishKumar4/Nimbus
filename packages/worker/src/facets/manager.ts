@@ -4962,15 +4962,11 @@ async function _buildPrefetchBundle(
       isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
       gate: true,
     });
-    // Staging reads and rewrites its modules' text, not the bundle: that is
-    // what it spends (a pass's bundle weight here cost a launch over lodash-es
-    // a turn of its own).
-    let staged = 0;
-    for (const [key, module] of esm.modules) {
-      emits.delete(key);
-      staged += module.text.length;
-    }
-    if (pacer) await pacer.spend(staged);
+    // Staging reads and rewrites its modules' text, which the map's
+    // serialization spends as it carries each one (buildFacetVfsBundleSource),
+    // as it spent each lowered module's emit: each staged byte is spent once.
+    // A pass's bundle weight here cost a launch over lodash-es a turn of its own.
+    for (const key of esm.modules.keys()) emits.delete(key);
   }
 
   return {
