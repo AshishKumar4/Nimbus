@@ -73,6 +73,8 @@ import {
   type SqliteDescriptorScope,
   walkBeneath,
 } from './sqlite-runtime-fs-bridge.js';
+import { registerDirectoryReadBridge, directoryReadHandleClosed, disposeDirectoryReadScope } from './read-directory-batch.js';
+import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
   const checked = requireVfsCred(cred, 'filesystem binding');
@@ -177,7 +179,10 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle { this.guard(); return this.target.open(path, flags, options); }
   read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
-  close(handleId: number): void { return this.target.close(handleId); }
+  close(handleId: number): void {
+    this.target.close(handleId);
+    directoryReadHandleClosed(this.scope, handleId);
+  }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
   mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): void { this.guard(); return this.target.mkdir(path, options); }
   unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.unlink(path, options); }
@@ -586,6 +591,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.processes.delete(pid);
     this.retireWriter(pid);
     if (!scope || scope.closed) return { lost: [] };
+    disposeDirectoryReadScope(scope);
     const lost: number[] = [];
     for (const [id, opened] of scope.handles) {
       if ((opened.node.pendingBytes?.() ?? 0) > 0) lost.push(id);
@@ -627,6 +633,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    */
   private closeScope(scope: SqliteDescriptorScope): void {
     if (scope.closed) return;
+    disposeDirectoryReadScope(scope);
     const lost = closeDescriptions(scope);
     this.awaitedDescriptors.get(scope)?.opened.clear();
     for (const dispose of scope.subscriptions) dispose();
@@ -652,7 +659,15 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     let awaited = this.awaitedDescriptors.get(scope);
     if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
     const listing = pid === undefined ? () => undefined : (create: boolean) => this.listingOf(pid, create);
-    return new AwaitingProcessBridge(guarded, view, () => this.engine.revision(), cred, awaited, scope, listing, signal);
+    const bridge = new AwaitingProcessBridge(guarded, view, () => this.engine.revision(), cred, awaited, scope, listing, signal);
+    registerDirectoryReadBridge(bridge, scope, async (path) => {
+      const real = await bridge.realpath(path);
+      if (real === '/' || view.composes(real)) return null;
+      const route = await view.route(real, { follow: true });
+      const key = normalizeVfsPath(real);
+      return route.point === '/' && route.source !== null && readLeaseCovers(key, true, SESSION_KERNEL_ROOTS) ? key : null;
+    });
+    return bridge;
   }
 }
 

@@ -66,6 +66,7 @@ import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import {
   isSupervisorAnsweredMethod,
   supervisorAnswer,
@@ -497,6 +498,10 @@ export function supervisorCalls<Base extends Class>(base: Base) {
 
     async fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
       return this._call(this._fsMutation('fsOpen', [path, flags]));
+    }
+
+    async fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult> {
+      return this._call(this._fsMutation('fsReadDirectories', [request]));
     }
 
     async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {

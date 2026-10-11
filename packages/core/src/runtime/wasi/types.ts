@@ -10,6 +10,7 @@ import type { FilesystemSupervisor } from '../vfs-supervisor.js';
  * makes the import in preamble.ts safe.
  */
 import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
+import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 
 /**
  * A WASI errno. Modelled as the exact set Nimbus's syscall layers can return
@@ -142,7 +143,7 @@ export interface WasiInitOptions {
 
 /** What a live stat answers with. */
 export type WasiStatResult = RuntimeVfsStat;
-export type WasiSupervisorStub = FilesystemSupervisor;
+export type WasiSupervisorStub = FilesystemSupervisor & Partial<ReadDirectorySupervisor>;
 
 /**
  * The two hooks the WASI layer has into the green-thread scheduler.
