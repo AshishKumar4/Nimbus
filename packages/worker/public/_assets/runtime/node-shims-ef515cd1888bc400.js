@@ -18541,12 +18541,14 @@ function __resolvePackageSelf(name, fromDir) {
 // The registry's own import.meta cannot serve: its module URLs all live
 // under file:///bundle/, never at the file's own path. dirname and filename
 // name the file, without the URL's query or fragment.
-function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href) {
+// `main`: whether the module is the program's entry, as Node 22's import.meta.main.
+function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href, main = false) {
   return Object.assign(Object.create(null), {
     dirname: __pathMod.dirname(filename),
     filename,
-    url,
+    main,
     resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, url),
+    url,
   });
 }
 
@@ -19382,7 +19384,7 @@ function __nimbusEsmEnter(metaUrl) {
   if (row[0] === "module") {
     const filename = "/" + row[1];
     const url = __nimbusEsmUrl(filename);
-    const scope = { m: __nimbusFileImportMeta(filename, url), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
+    const scope = { m: __nimbusFileImportMeta(filename, url, row[1] === __nimbusEsmEntryKey), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
     // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
     if (row[4] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
     return scope;
@@ -19550,7 +19552,9 @@ function __nimbusEsmLinkError(error) {
 }
 // The program's ES entry, imported: its evaluation is its job, and what
 // escapes it is explained as Node's loader explains it.
+let __nimbusEsmEntryKey = null;
 function __nimbusEsmRunEntry(key) {
+  __nimbusEsmEntryKey = key;
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
   return __nimbusEsmImport(id).then(() => undefined, (e) => {
