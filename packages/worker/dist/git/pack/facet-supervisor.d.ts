@@ -16,7 +16,7 @@ export interface SupervisorStat {
     ino?: number;
 }
 /** The SUPERVISOR binding's calls the facet makes: the session's own (session/supervisor-calls.ts). */
-export type GitFacetSupervisor = Pick<SupervisorRPC, 'stat' | 'lstat' | 'readdir' | 'readFileBytes' | 'fsReadRange' | 'fsReadRangeUncached' | 'readlink' | 'fsWriteRange' | 'fsTruncate' | 'rename' | 'unlink' | 'mkdir' | 'fsOpen' | 'fsWrite' | 'fsFstat' | 'fsClose' | 'chmod' | 'hasLegacySymlinkUnder' | 'stdout' | 'writeBatchStream' | 'openWaveWriter'>;
+export type GitFacetSupervisor = Pick<SupervisorRPC, 'stat' | 'lstat' | 'readdir' | 'readFileBytes' | 'fsReadRange' | 'fsReadRangeUncached' | 'readlink' | 'fsWriteRange' | 'fsTruncate' | 'rename' | 'unlink' | 'mkdir' | 'fsOpen' | 'fsWrite' | 'fsFstat' | 'fsClose' | 'chmod' | 'stdout' | 'writeBatchStream' | 'openWaveWriter'>;
 /** A file larger than this comes back by ranges: an RPC value's structured-clone ceiling. */
 export declare const WHOLE_FILE_RPC_SAFE_BYTES: number;
 export declare const READ_RANGE_BYTES: number;
@@ -37,7 +37,6 @@ export interface SupervisorRpcCounters {
     writeBatchStream: number;
     readlink: number;
     symlink: number;
-    legacySymlinkSubtree: number;
     stdout: number;
     /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
     fileApi: number;

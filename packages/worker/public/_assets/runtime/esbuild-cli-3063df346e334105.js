@@ -703,7 +703,6 @@ return globalThis.Go;
     "writeFileStat",
     "lstat",
     "exists",
-    "hasLegacySymlinkUnder",
     "setUmask",
     "fsAcquired",
     "fsStorageGrant",

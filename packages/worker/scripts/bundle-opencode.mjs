@@ -104,12 +104,10 @@ function resolveTreeSitterWasms(sidecars) {
   };
 }
 
-// The opencode TUI is a client/server split: the bare `opencode` TUI client
-// spawns its API server as `new Worker("./worker.js")` and OpenTUI its
-// syntax-highlight parser as `new Worker("./parser.worker.js")`. Both are
-// staged as their own self-contained ESM bundles (build-node.ts) and ride into
-// the facet module map (FacetManager.opencodeWorkerModuleEntries) so the
-// in-isolate Worker polyfill (opencode-facet-runner.ts) can import them.
+// OpenTUI runs its syntax-highlight parser as `new Worker("./parser.worker.js")`.
+// It is staged as its own self-contained ESM bundle (build-node.ts) and rides
+// into the facet module map so the in-isolate Worker polyfill
+// (opencode-facet-runner.ts) can import it.
 // OpenTUI lays out every TUI frame with yoga-layout (an Emscripten wasm). The
 // runner pre-registers it as a pre-compiled WebAssembly.Module on
 // globalThis.__nimbusYogaModule (request-time WebAssembly.instantiate of bytes
@@ -119,9 +117,8 @@ function resolveYogaWasm(sidecars) {
   return sidecars.includes('yoga.wasm') ? 'yoga.wasm' : null;
 }
 
-// Split-build chunks: index.js + worker.js share chunk-<hash>.js ESM modules
-// (build-node.ts splitting — deduplicating the API-server code that used to be
-// bundled twice and pushed the TUI facet over the Worker memory limit). The
+// Split-build chunks: index.js imports chunk-<hash>.js ESM modules from its
+// lazy command handlers (build-node.ts splitting). The
 // supervisor needs every chunk as a facet module-map entry; staging them as
 // ~250 individual assets would cost that many subrequests per spawn, so they
 // are aggregated into ONE pack asset (name → source JSON) fetched and expanded
@@ -133,16 +130,20 @@ function resolveChunksPack(sidecars) {
   return sidecars.includes(CHUNKS_PACK) ? CHUNKS_PACK : null;
 }
 
-function resolveTuiWorkers(sidecars) {
-  const has = (f) => sidecars.includes(f);
-  if (!has('worker.js') && !has('parser.worker.js')) return null;
-  if (!has('worker.js')) {
-    throw new Error('[bundle-opencode] worker.js missing from dist — the TUI server worker was not built (build-node.ts entrypoints)');
+// The OpenTUI parser is the only worker bundle Nimbus stages. opencode's own
+// API-server worker is not built (build-node.ts entrypoints): a Nimbus TUI
+// attaches to an `opencode serve` facet over HTTP, and importing that worker's
+// chunk graph into a live facet kills the production workerd process. A dist
+// that still carries it is a stale build — fail loud rather than ship a bundle
+// the runner's Worker polyfill would refuse at runtime.
+function resolveParserWorker(sidecars) {
+  if (sidecars.includes('worker.js')) {
+    throw new Error(
+      '[bundle-opencode] worker.js is present in the dist — opencode\'s API-server ' +
+        'worker is no longer built or staged; rebuild with the current build-node.ts',
+    );
   }
-  if (!has('parser.worker.js')) {
-    throw new Error('[bundle-opencode] parser.worker.js missing from dist — the OpenTUI parser worker was not built (build-node.ts entrypoints)');
-  }
-  return { server: 'worker.js', parser: 'parser.worker.js' };
+  return sidecars.includes('parser.worker.js') ? 'parser.worker.js' : null;
 }
 
 async function emitGenerated({
@@ -152,7 +153,7 @@ async function emitGenerated({
   digests,
   buildId,
   treeSitterWasms,
-  tuiWorkers,
+  parserWorker,
   yogaWasm,
   chunksPack,
 }) {
@@ -206,18 +207,14 @@ export const OPENCODE_TREE_SITTER_WASMS: OpencodeTreeSitterWasms | null = ${
   };
 
 /**
- * Staged TUI worker bundle filenames. The opencode TUI client spawns its API
- * server (\`server\`) and OpenTUI its syntax-highlight parser (\`parser\`) via
- * \`new Worker(...)\`; the in-isolate Worker polyfill imports these from the
- * facet module map (FacetManager.opencodeWorkerModuleEntries). Null when the
- * artifact is unstaged or the workers were not built.
+ * Staged OpenTUI parser worker bundle. OpenTUI spawns its syntax-highlight
+ * parser via \`new Worker(...)\`; the in-isolate Worker polyfill imports it from
+ * the facet module map. opencode's own API-server worker is never built — a
+ * Nimbus TUI attaches to an \`opencode serve\` facet over HTTP — and the polyfill
+ * fails loud if anything spawns it. Null when the artifact is unstaged.
  */
-export interface OpencodeTuiWorkers {
-  readonly server: string;
-  readonly parser: string;
-}
-export const OPENCODE_TUI_WORKERS: OpencodeTuiWorkers | null = ${
-    tuiWorkers ? JSON.stringify(tuiWorkers) : 'null'
+export const OPENCODE_TUI_PARSER_WORKER: string | null = ${
+    parserWorker ? JSON.stringify(parserWorker) : 'null'
   };
 
 /**
@@ -232,10 +229,9 @@ export const OPENCODE_YOGA_WASM: string | null = ${
 
 /**
  * Staged chunk-pack filename: one JSON asset mapping every split-build
- * \`chunk-<hash>.js\` module name to its ESM source. index.js and worker.js
- * share these chunks (code-splitting deduplicates the API-server code that,
- * bundled twice, pushed the TUI facet over the Worker memory limit); the
- * supervisor expands the pack into facet module-map entries per spawn. Null
+ * \`chunk-<hash>.js\` module name to its ESM source. index.js imports these
+ * chunks from its lazy command handlers; the supervisor expands the pack into
+ * facet module-map entries per spawn. Null
  * when the artifact is unstaged.
  */
 export const OPENCODE_CHUNKS_PACK: string | null = ${
@@ -274,7 +270,7 @@ async function main() {
         digests: {},
         buildId: '',
         treeSitterWasms: null,
-        tuiWorkers: null,
+        parserWorker: null,
         yogaWasm: null,
         chunksPack: null,
       });
@@ -327,14 +323,14 @@ async function main() {
     console.log(`[bundle-opencode] packed ${chunkNames.length} split chunks into ${CHUNKS_PACK}`);
   }
   // Fail-loud closure check: the pack must contain EXACTLY the chunk set
-  // reachable (statically or dynamically) from index.js + worker.js + the
+  // reachable (statically or dynamically) from index.js + the
   // chunks themselves. A missing chunk is a runtime module-not-found inside
   // the facet; an extra chunk is dead weight shipped into every spawn.
   {
     const packEntry = staged.find((f) => f.name === CHUNKS_PACK);
     if (packEntry) {
       const pack = JSON.parse(packEntry.bytes.toString('utf8'));
-      const entries = staged.filter((f) => f.name === 'index.js' || f.name === 'worker.js')
+      const entries = staged.filter((f) => f.name === 'index.js')
         .map((f) => f.bytes.toString('utf8'));
       const reachable = chunkClosure(entries, (name) => pack[name]);
       const packed = new Set(Object.keys(pack));
@@ -346,7 +342,7 @@ async function main() {
             `missing: ${missing.join(', ') || 'none'}; unreachable: ${extra.join(', ') || 'none'}`,
         );
       }
-      console.log(`[bundle-opencode] chunk closure verified: ${packed.size} chunks reachable from index.js + worker.js`);
+      console.log(`[bundle-opencode] chunk closure verified: ${packed.size} chunks reachable from index.js`);
     }
   }
 
@@ -398,7 +394,7 @@ async function main() {
     digests,
     buildId,
     treeSitterWasms: resolveTreeSitterWasms(sidecars),
-    tuiWorkers: resolveTuiWorkers(sidecars),
+    parserWorker: resolveParserWorker(sidecars),
     yogaWasm: resolveYogaWasm(sidecars),
     chunksPack: resolveChunksPack(sidecars),
   });
