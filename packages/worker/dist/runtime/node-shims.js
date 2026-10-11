@@ -9695,9 +9695,10 @@ async function __nimbusPrepareStdin() {
 // consumer starts (seed): a \`< file\`'s stream, the live channel's pump, or
 // what fd 0 held. Its consumers (process.stdin, each tty.ReadStream, a
 // child's inherited fd 0) are Readables of their own, as Node's are separate
-// handles on fd 0: each chunk goes to one consumer reading now (its read
-// outstanding, not paused), as a read of one fd takes it, and waits here while
-// none is; each sees the end when it reads after it. The live channel's
+// handles on fd 0: each chunk goes to one consumer with a read outstanding
+// (flowing, in readable mode, or a paused one's own read()), as a read of one
+// fd takes it, and waits here while none has; each sees the end when it reads
+// after it. The live channel's
 // packets also carry its signals and resizes, so its pump reads on while no
 // one reads data. A consumer flowing and referenced holds the input open
 // (__nimbusInputHandles), as a reading Node stdin does: pausing, unref'ing,
@@ -9709,7 +9710,6 @@ function __makeStdinSource() {
   const pending = new Set();
   const unreferenced = new WeakSet();
   let seeded = false, ended = false, failure = null, fileReader = null, inputHeld = false;
-  const readingNow = (c) => c.readableFlowing !== false || c._readableState.readableListening;
   function update() {
     let held = false;
     if (liveChildPid) {
@@ -9724,9 +9724,8 @@ function __makeStdinSource() {
   }
   function deliver() {
     for (const c of pending) {
-      if (c.destroyed) { pending.delete(c); continue; }
-      if (!readingNow(c)) continue;
-      if (queue.length > 0) { pending.delete(c); c.push(queue.shift()); }
+      if (c.destroyed) pending.delete(c);
+      else if (queue.length > 0) { pending.delete(c); c.push(queue.shift()); }
       else if (failure !== null) { pending.delete(c); c.destroy(failure); }
       else if (ended) { pending.delete(c); c.push(null); }
     }
