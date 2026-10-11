@@ -49,8 +49,6 @@ export class MemoryVFS implements VFS {
   private readonly root: Entry;
   private clock = 0;
   private inos = 0;
-  /** VFS.fileStore: this one, through any wrapper of it. */
-  readonly fileStore: object = this;
   readonly sync: SyncVFS = this as unknown as SyncVFS;
 
   constructor(private readonly owner: { uid: number; gid: number } = { uid: 0, gid: 0 }) {
@@ -95,6 +93,11 @@ export class MemoryVFS implements VFS {
     if (dir === null) throw fail('ENOENT', call);
     if (dir.type !== 'directory') throw fail('ENOTDIR', call);
     return { dir, name };
+  }
+
+  /** VFS.fileStore: this one, through any wrapper of it. */
+  get fileStore(): object {
+    return this;
   }
 
   private stats(entry: Entry): VfsStat {
