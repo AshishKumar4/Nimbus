@@ -1,9 +1,11 @@
 // Inline node reaches a real WebSocket server only through its host's egress.fetch.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { hostSqlite } from './lib/host-sqlite.mjs';
+import { inlineWebSocketArguments } from './lib/inline-websocket-arguments.mjs';
 
 const require = createRequire(import.meta.url);
 const { WebSocket, WebSocketServer } = createRequire(require.resolve('wrangler/package.json'))('ws');
@@ -13,14 +15,18 @@ const { NimbusWorkspace } = await import(underBun
   : '../../packages/core/dist/workspace/nimbus-workspace.js');
 const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
 await new Promise((resolve) => server.on('listening', resolve));
-server.on('connection', (socket) => socket.on('message', (data, binary) => socket.send(data, { binary })));
+const headers = [];
+server.on('connection', (socket, request) => {
+  headers.push(request.headers['x-review'] ?? null);
+  socket.on('message', (data, binary) => socket.send(data, { binary }));
+});
 const seen = [];
 const egress = {
   async fetch(request) {
     const url = new URL(request.url);
     seen.push([request.method, url.protocol, request.headers.get('upgrade'), request.headers.get('sec-websocket-protocol')]);
     if (url.pathname === '/denied') return new Response('denied by egress', { status: 403 });
-    const socket = new WebSocket('ws://127.0.0.1:' + server.address().port, request.headers.get('sec-websocket-protocol')?.split(',').map((p) => p.trim()) ?? []);
+    const socket = new WebSocket('ws://127.0.0.1:' + server.address().port, request.headers.get('sec-websocket-protocol')?.split(',').map((p) => p.trim()) ?? [], { headers: Object.fromEntries(request.headers) });
     socket.binaryType = 'arraybuffer';
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
     const endpoint = {
@@ -68,6 +74,20 @@ try {
   `);
   assert.equal(refused.exitCode, 0, refused.stderr);
   assert.match(refused.stdout, /refused .*403/);
+  const fixture = readFileSync(new URL('./lib/inline-websocket-arguments.mjs', import.meta.url), 'utf8').replace('export async function', 'async function');
+  const base = 'ws://127.0.0.1:' + server.address().port;
+  const expected = await new Promise((resolve, reject) => {
+    const child = spawn('node', ['--input-type=module', '-e', fixture + `\nconsole.log(JSON.stringify(await inlineWebSocketArguments(${JSON.stringify(base)})));`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    child.stdout.on('data', (part) => { out += part; }); child.stderr.on('data', (part) => { err += part; });
+    const timer = setTimeout(() => child.kill(), 30000);
+    child.on('error', reject);
+    child.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve(JSON.parse(out)) : reject(new Error(err)); });
+  });
+  const actual = await run(fixture + `\nconsole.log(JSON.stringify(await inlineWebSocketArguments('wss://egress.invalid')));`);
+  assert.equal(actual.exitCode, 0, actual.stderr);
+  assert.deepEqual(JSON.parse(actual.stdout), expected, 'every argument form uses Node conversions');
+  assert.deepEqual(headers.slice(-2), ['yes', 'yes'], 'Node WebSocketInit headers reached the egress server');
 } finally {
   await new Promise((resolve) => server.close(resolve));
 }

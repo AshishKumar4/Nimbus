@@ -36,6 +36,7 @@ try {
         socket.write('HEAD /tls-proof HTTP/1.0\r\nHost: egress-test.invalid\r\n\r\n');
       });
       socket.setEncoding('utf8');
+      console.log('TLS refs', socket.unref() === socket, socket.ref() === socket);
       let body = '';
       socket.on('data', (part) => { body += part; });
       socket.on('end', () => console.log('answer', body.trim()));
@@ -48,6 +49,7 @@ try {
     const plain = await run(`
       const net = require('net');
       const socket = net.connect(7, 'egress-test.invalid', () => socket.write(Buffer.from([0, 128, 255])));
+      console.log('TCP refs', socket.unref() === socket, socket.ref() === socket);
       const parts = [];
       socket.on('data', (part) => parts.push(part));
       socket.on('end', () => console.log('tcp', socket instanceof net.Socket, [...Buffer.concat(parts)].join(',')));
@@ -55,6 +57,7 @@ try {
     `);
     assert.equal(plain.status, 0, plain.stdout);
     assert.match(plain.stdout, /tcp true 0,128,255/);
+    assert.match(plain.stdout, /TCP refs true true/);
     const refusedTcp = await run(`
       const socket = require('net').connect(7, 'tcp-refused.invalid', () => {
         socket._handle.socket.opened.then(() => console.log('opened refused TCP'));

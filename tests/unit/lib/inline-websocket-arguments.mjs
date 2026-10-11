@@ -1,0 +1,45 @@
+export async function inlineWebSocketArguments(base) {
+  const events = [];
+  const constructorCases = [
+    ['no URL', []], ['bad URL', ['not a URL']], ['fragment', [base + '/#']],
+    ['duplicate', [base, ['chat', 'CHAT']]], ['invalid protocol', [base, ['bad space']]],
+    ['symbol protocol', [base, Symbol('p')]], ['symbol URL', [Symbol('u')]],
+  ];
+  for (const [name, args] of constructorCases) {
+    try { const socket = new WebSocket(...args); socket.close(); events.push([name, 'accepted']); }
+    catch (error) { events.push([name, error.name]); }
+  }
+  const socket = new WebSocket(base + '/headers', { protocols: ['chat'], headers: { 'x-review': 'yes' } });
+  socket.binaryType = 'arraybuffer';
+  socket.binaryType = 'invalid';
+  events.push(['binaryType invalid', socket.binaryType]);
+  socket.binaryType = { toString() { return 'arraybuffer'; } };
+  events.push(['binaryType object', socket.binaryType]);
+  const values = [7, true, null, undefined, { toString() { return 'custom'; } }, '\ud800', 'text',
+    new Uint8Array([0, 128, 255]), new DataView(new Uint8Array([8, 9, 10]).buffer, 1, 2),
+    new Uint8Array([11, 12]).buffer, new Blob(['blob'])];
+  await new Promise((resolve, reject) => {
+    let index = 0;
+    socket.onerror = (event) => reject(new Error(event.message ?? event.error?.message ?? 'WebSocket failed'));
+    socket.onopen = () => {
+      events.push(['open', socket.protocol]);
+      try { socket.send(Symbol('data')); events.push(['symbol send', 'accepted']); }
+      catch (error) { events.push(['symbol send', error.name]); }
+      try { socket.send(); events.push(['missing send', 'accepted']); }
+      catch (error) { events.push(['missing send', error.name]); }
+      for (const [code, reason] of [[1001, ''], [3000, 'x'.repeat(124)], [Symbol('code'), ''], [3000, Symbol('reason')]]) {
+        try { socket.close(code, reason); events.push(['invalid close', 'accepted']); }
+        catch (error) { events.push(['invalid close', error.name]); }
+      }
+      socket.send(values[index++]);
+    };
+    socket.onmessage = async (event) => {
+      if (typeof event.data === 'string') events.push(['message', event.data]);
+      else events.push(['binary', [...new Uint8Array(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data)]]);
+      if (index < values.length) socket.send(values[index++]);
+      else socket.close('3000', 42);
+    };
+    socket.onclose = (event) => { events.push(['close', event.code, event.reason, event.wasClean]); resolve(); };
+  });
+  return events;
+}
