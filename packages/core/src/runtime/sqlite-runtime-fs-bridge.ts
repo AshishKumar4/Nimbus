@@ -580,18 +580,18 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
+      // A recursive mkdir of a directory already there (`/`, which has no row,
+      // included) changes nothing, so it meets no lease: a sibling's write
+      // makes its parents while another owner holds a subtree beside it. It
+      // stats the name, following links, as coreutils and Node do after
+      // EEXIST: a link to a directory is already there.
+      if (options.recursive && this.stat(path)?.type === 'directory') return;
       const located = this.locateMutation(path, false, 'mkdir', options.mutationOwner);
       if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
       const p = located.path;
-      // `/` has no row (stat answers it with rootStat), but it exists: mkdir of
-      // it is EEXIST, as mkdir(2) says, before any permission check on its
-      // (nonexistent) parent. `mkdir -p` walks through it on every absolute path.
-      // A recursive mkdir then stats the name, following links, as coreutils and
-      // Node do after EEXIST: a link to a directory is already there.
-      if (p === '' || this.vfs.exists(p)) {
-        if (options.recursive && this.stat(path)?.type === 'directory') return;
-        throw fsError('EEXIST', 'mkdir', path);
-      }
+      // `/` exists: mkdir of it is EEXIST, as mkdir(2) says, before any
+      // permission check on its (nonexistent) parent.
+      if (p === '' || this.vfs.exists(p)) throw fsError('EEXIST', 'mkdir', path);
       this.owned(options.mutationOwner).mkdir(p, { recursive: !!options.recursive, mode: options.mode });
     });
   }

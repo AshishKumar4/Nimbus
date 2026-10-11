@@ -1,6 +1,6 @@
 // session-lifecycle/new/destroyed-session-reused — a session id used again
-// after its DELETE comes up whole: its files can be written, and its terminal
-// attaches.
+// after its DELETE comes up whole: its terminal attaches, and its files can
+// be written and read.
 //
 // A destroy closes the session's filesystem and the next use opens a new one.
 // Measured on main 117df4482 (BusyVicuna, b6c57bdf3, verdict
@@ -32,20 +32,20 @@ try {
   const deleted = await deleteSession(sid, 'destroyed-session-reused');
   a.check('the session is deleted', deleted.ok, deleted.body);
 
-  const wrote = await sandbox.files.write('/home/user/after.txt', 'after').then(() => null, (error) => error.message);
-  a.check('a write to the same id after its DELETE succeeds', wrote === null, wrote);
-  const read = await sandbox.files.read('/home/user/after.txt').then((text) => String(text), (error) => `error: ${error.message}`);
-  a.check('and reads back', read === 'after', read);
-  const gone = await sandbox.files.read('/home/user/before.txt').then((text) => text, (error) => `error: ${error.message}`);
-  a.check('what was written before the DELETE is gone', gone === null, String(gone));
-
+  // The id used again: its terminal attaches, which brings the new session up.
   const again = new Terminal(sid);
   const attached = await again.connect().then(() => null, (error) => error.message);
   a.check('its terminal attaches again', attached === null, attached);
   if (attached === null) {
     await again.waitForPrompt(30_000);
-    const ran = await again.run('cat /home/user/after.txt', 15_000);
-    a.check('and sees the new session\'s files', ran.output.includes('after'), ran.output.slice(-300));
+    const wrote = await sandbox.files.write('/home/user/after.txt', 'written-after-delete').then(() => null, (error) => error.message);
+    a.check('a write to the same id after its DELETE succeeds', wrote === null, wrote);
+    const read = await sandbox.files.read('/home/user/after.txt').then((text) => String(text), (error) => `error: ${error.message}`);
+    a.check('and reads back', read === 'written-after-delete', read);
+    const gone = await sandbox.files.read('/home/user/before.txt').then((text) => text, (error) => `error: ${error.message}`);
+    a.check('what was written before the DELETE is gone', gone === null, String(gone));
+    const ran = await again.run('cat /home/user/after.txt; echo EXIT=$?', 15_000);
+    a.check('and the terminal sees the new session\'s files', /^written-after-delete/m.test(ran.output) && ran.output.includes('EXIT=0'), ran.output.slice(-300));
     await again.close();
   }
 } finally {

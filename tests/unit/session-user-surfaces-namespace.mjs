@@ -50,4 +50,28 @@ await rpcDeleteFile(host, '/mnt/data/notes', { recursive: true });
 assert.equal(data.stat('/notes'), null, 'and a directory, recursively');
 console.log('  files.delete removes a mounted path');
 
+// ── A write beside a held subtree makes no change to its parents ───────────
+// While another owner holds /home/user/repo exclusively (a clone), a file
+// written beside it, whose parents are already there, goes ahead: making a
+// directory that exists changes nothing, so it meets no lease. Red before:
+// the surfaces' mkdir -p of /home/user took the mutation guard first, which
+// refuses an ancestor of a held root, EBUSY.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  engine.as(CRED_KERNEL).mkdir('home/user/repo', { recursive: true });
+  const namespace = new ProcessFiles(engine);
+  const lease = engine.acquireExclusiveMutation('home/user/repo');
+  const editor = { files: namespace.namespaceFs(CRED_KERNEL), tree: namespace.namespaceFs(CRED_KERNEL, { landed: true }) };
+  assert.deepEqual(
+    await serveEditorFs(editor, { type: 'fs-write', path: '/home/user/notes.txt', content: 'beside the clone' }),
+    { type: 'fs-write-result', path: '/home/user/notes.txt', ok: true },
+  );
+  namespace.namespaceFs(CRED_KERNEL).mkdir('/home/user', { recursive: true });
+  assert.equal(dec.decode(engine.as(CRED_KERNEL).readFile('home/user/notes.txt')), 'beside the clone');
+  assert.throws(() => namespace.namespaceFs(CRED_KERNEL).mkdir('/home/user/repo/sub', { recursive: true }), (error) => error.code === 'EBUSY', 'inside the held subtree is still refused');
+  engine.releaseExclusiveMutation(lease.owner);
+  console.log('  a write beside a held subtree goes ahead');
+}
+
 console.log('session-user-surfaces-namespace: ok');
