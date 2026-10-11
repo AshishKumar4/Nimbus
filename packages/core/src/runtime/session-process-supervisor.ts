@@ -321,6 +321,15 @@ export class SessionProcessSupervisor implements ProcessOutput {
     this.terminators.set(pid, terminate);
   }
 
+  /** Runtime composition adopts work already in flight, never cancelled work. */
+  setWorkObservation(observe: (pid: number) => ProcessWorkObservation): void {
+    this.observeWork = observe;
+    for (const [pid, pieces] of this.held) for (const work of pieces) {
+      work.observation?.release();
+      work.observation = !work.stopped && !work.signal?.aborted ? observe(pid) : undefined;
+    }
+  }
+
   /**
    * This session runs work on `pid`'s own descriptors (a shell job, a
    * command run in the session): `stop` ends it, given the kill's reason
@@ -335,14 +344,6 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * host was lost: nothing of it here is left to unwind) is released at its
    * end.
    */
-  setWorkObservation(observe: (pid: number) => ProcessWorkObservation): void {
-    this.observeWork = observe;
-    for (const [pid, pieces] of this.held) for (const work of pieces) {
-      work.observation?.release();
-      work.observation = !work.stopped && !work.signal?.aborted ? observe(pid) : undefined;
-    }
-  }
-
   holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork {
     const work = { stop, stopped: false, signal, observation: signal?.aborted ? undefined : this.observeWork?.(pid) };
     const stopObserving = () => work.observation?.release();
