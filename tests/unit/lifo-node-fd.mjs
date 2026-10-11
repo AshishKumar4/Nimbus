@@ -24,12 +24,12 @@ const fs = createFs(synchronousFilesystem({ process: bridge })(), '/t');
 const text = (path) => new TextDecoder().decode(kernel.readFile(path));
 
 const failed = [];
-const check = (name, run) => {
-  try { run(); } catch (error) { failed.push(`${name}: ${String(error?.message ?? error).split('\n').slice(0, 4).join(' | ')}`); }
+const check = async (name, run) => {
+  try { await run(); } catch (error) { failed.push(`${name}: ${String(error?.message ?? error).split('\n').slice(0, 4).join(' | ')}`); }
 };
 const code = (run) => { try { run(); return null; } catch (error) { return error.code; } };
 
-check('a descriptor not open for writing refuses a write (EBADF), and one not open for reading a read', () => {
+await check('a descriptor not open for writing refuses a write (EBADF), and one not open for reading a read', () => {
   kernel.writeFile('t/r', 'abc');
   const ro = fs.openSync('/t/r', 'r');
   assert.equal(code(() => fs.writeSync(ro, 'X')), 'EBADF');
@@ -42,7 +42,7 @@ check('a descriptor not open for writing refuses a write (EBADF), and one not op
   fs.closeSync(only);
 });
 
-check('a positional write leaves the descriptor\'s offset where it was', () => {
+await check('a positional write leaves the descriptor\'s offset where it was', () => {
   const fd = fs.openSync('/t/p', 'w+');
   fs.writeSync(fd, 'aaaa');
   fs.writeSync(fd, 'Z', 0);
@@ -51,7 +51,7 @@ check('a positional write leaves the descriptor\'s offset where it was', () => {
   assert.equal(text('t/p'), 'Zaaab');
 });
 
-check('an O_APPEND write lands at the end as it is then', () => {
+await check('an O_APPEND write lands at the end as it is then', () => {
   kernel.writeFile('t/log', '12');
   const fd = fs.openSync('/t/log', 'a');
   kernel.writeFile('t/log', '12345');
@@ -60,20 +60,20 @@ check('an O_APPEND write lands at the end as it is then', () => {
   assert.equal(text('t/log'), '123456');
 });
 
-check('O_EXCL refuses a name that is there (EEXIST)', () => {
+await check('O_EXCL refuses a name that is there (EEXIST)', () => {
   kernel.writeFile('t/there', 'x');
   assert.equal(code(() => fs.openSync('/t/there', 'wx')), 'EEXIST');
   assert.equal(code(() => fs.openSync('/t/there', 'ax')), 'EEXIST');
   assert.equal(text('t/there'), 'x');
 });
 
-check('O_NOFOLLOW of a link is ELOOP', () => {
+await check('O_NOFOLLOW of a link is ELOOP', () => {
   kernel.writeFile('t/target', 'x');
   kernel.symlink('/t/target', 't/link');
   assert.equal(code(() => fs.openSync('/t/link', fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)), 'ELOOP');
 });
 
-check('a descriptor holds its file across a rename and an unlink', () => {
+await check('a descriptor holds its file across a rename and an unlink', () => {
   kernel.writeFile('t/held', 'held');
   const fd = fs.openSync('/t/held', 'r');
   kernel.rename('t/held', 't/moved');
@@ -82,10 +82,14 @@ check('a descriptor holds its file across a rename and an unlink', () => {
   assert.equal(fs.readSync(fd, buffer, 0, 4, 0), 4);
   assert.equal(buffer.toString(), 'held');
   assert.equal(fs.fstatSync(fd).ino, kernel.stat('t/moved').ino);
+  kernel.unlink('t/moved');
+  buffer.fill(0);
+  assert.equal(fs.readSync(fd, buffer, 0, 4, 0), 4);
+  assert.equal(buffer.toString(), 'held', 'and reads it once it has no name');
   fs.closeSync(fd);
 });
 
-check('ftruncate grows the file with zeros and keeps the offset', () => {
+await check('ftruncate grows the file with zeros and keeps the offset', () => {
   const fd = fs.openSync('/t/grow', 'w+');
   fs.writeSync(fd, 'ab');
   fs.ftruncateSync(fd, 4);
@@ -94,18 +98,19 @@ check('ftruncate grows the file with zeros and keeps the offset', () => {
   assert.deepEqual([...kernel.readFile('t/grow')], [97, 98, 99, 0]);
 });
 
-check('fs and fs/promises share the process\'s descriptors', () => {
-  const fd = fs.openSync('/t/shared', 'w+');
-  fs.writeSync(fd, 'shared');
-  const other = createFs(synchronousFilesystem({ process: bridge })(), '/t');
+await check('fs and fs/promises share the process\'s descriptors', async () => {
+  // Each is its own createFs, as the module map makes them.
+  const promises = createFs(synchronousFilesystem({ process: bridge })(), '/t').promises;
+  const handle = await promises.open('/t/shared', 'w+');
+  await handle.write('shared');
   const buffer = Buffer.alloc(6);
-  assert.equal(other.readSync(fd, buffer, 0, 6, 0), 6);
+  assert.equal(fs.readSync(handle.fd, buffer, 0, 6, 0), 6);
   assert.equal(buffer.toString(), 'shared');
-  fs.closeSync(fd);
-  assert.equal(code(() => other.readSync(fd, buffer, 0, 1, 0)), 'EBADF');
+  fs.closeSync(handle.fd);
+  await assert.rejects(handle.read(buffer, 0, 1, 0), (error) => error.code === 'EBADF');
 });
 
-check('readFileSync of a descriptor reads from its offset', () => {
+await check('readFileSync of a descriptor reads from its offset', () => {
   kernel.writeFile('t/rest', 'head:tail');
   const fd = fs.openSync('/t/rest', 'r');
   fs.readSync(fd, Buffer.alloc(5), 0, 5, null);
@@ -113,12 +118,12 @@ check('readFileSync of a descriptor reads from its offset', () => {
   fs.closeSync(fd);
 });
 
-check('an unknown flag string is refused as Node refuses it', () => {
+await check('an unknown flag string is refused as Node refuses it', () => {
   assert.equal(code(() => fs.openSync('/t/r', 'bogus')), 'ERR_INVALID_ARG_VALUE');
   assert.equal(code(() => fs.openSync('/t/r', 'toString')), 'ERR_INVALID_ARG_VALUE', 'a name every object has is no flag string');
 });
 
-check('a positional write to an O_APPEND descriptor lands at the end and leaves its offset', () => {
+await check('a positional write to an O_APPEND descriptor lands at the end and leaves its offset', () => {
   kernel.writeFile('t/a-plus', 'abc');
   const fd = fs.openSync('/t/a-plus', 'a+');
   fs.writeSync(fd, 'X', 0);
@@ -129,7 +134,7 @@ check('a positional write to an O_APPEND descriptor lands at the end and leaves 
   assert.equal(text('t/a-plus'), 'abcX');
 });
 
-check('ftruncateSync of a negative length truncates to 0, as Node clamps it', () => {
+await check('ftruncateSync of a negative length truncates to 0, as Node clamps it', () => {
   kernel.writeFile('t/clamp', 'abc');
   const fd = fs.openSync('/t/clamp', 'r+');
   fs.ftruncateSync(fd, -1);
@@ -137,7 +142,7 @@ check('ftruncateSync of a negative length truncates to 0, as Node clamps it', ()
   assert.equal(text('t/clamp'), '');
 });
 
-check('a creat of a mode without write, by a user, writes what it made', () => {
+await check('a creat of a mode without write, by a user, writes what it made', () => {
   kernel.mkdir('u', { recursive: true });
   kernel.chown('u', 1000, 1000);
   const user = createFs(synchronousFilesystem({ process: processBridge(rawVfs, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) })(), '/u');
@@ -148,7 +153,7 @@ check('a creat of a mode without write, by a user, writes what it made', () => {
   assert.equal(code(() => user.openSync('/u/ro', 'r+')), 'EACCES', 'its mode governs a later open');
 });
 
-check('a standard stream is no descriptor of the filesystem\'s', () => {
+await check('a standard stream is no descriptor of the filesystem\'s', () => {
   assert.equal(code(() => fs.fstatSync(1)), 'EBADF');
   const fd = fs.openSync('/t/r', 'r');
   assert.ok(fd > 2, `an open answers above the standard streams (${fd})`);

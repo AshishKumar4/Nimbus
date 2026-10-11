@@ -3,7 +3,7 @@ import { normalizeVfsPath } from './path.js';
 import { posixAccess } from './posix-access.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
-import { S_IFMT, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -71,6 +71,10 @@ export function runtimeStatOf(stat) {
     };
 }
 const LOOKUP_REFUSALS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENXIO', 'EACCES']);
+/** Whether `code` is a lookup's refusal (VfsRouteRefusal). */
+function isLookupRefusal(code) {
+    return LOOKUP_REFUSALS.has(code);
+}
 /**
  * Wrap an opt-in route call: found routes gain their traversal, and a lookup
  * refusal (a code in `at`'s words) answers as `{ links, refusal }` instead of
@@ -79,9 +83,12 @@ const LOOKUP_REFUSALS = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENXIO', 'EACCES'
 function lookupReport(trace, run) {
     const found = (route) => ({ ...route, links: trace.links });
     const refused = (error) => {
-        if (!isVfsError(error) || !LOOKUP_REFUSALS.has(error.code))
+        if (!isVfsError(error))
             throw error;
-        return { links: trace.links, refusal: { code: error.code, at: trace.at } };
+        const { code } = error;
+        if (!isLookupRefusal(code))
+            throw error;
+        return { links: trace.links, refusal: { code, at: trace.at } };
     };
     try {
         const out = run();
@@ -107,14 +114,14 @@ function sourceKey(source) {
     return key;
 }
 /**
- * Which file `id` (its stat's) is, at `rel` on `target`: its device and
- * number where the backend gives both (whatever object answered), else its
- * number on that backend object, else its name there.
+ * Which file the number `ino` is, at `rel` on `target`: that number on the
+ * backend object its mount's source gave (a backend's device number is its
+ * own, never another's to compare), else its name there. A source that gives
+ * a new object for the same files each time gives other keys: a path read
+ * through it does not see the writes a description holds.
  */
-function fileKey(target, id) {
-    if (id.ino === undefined)
-        return `${sourceKey(target.source)}:${target.rel}`;
-    return id.dev === undefined ? `${sourceKey(target.source)}#${id.ino}` : `dev${id.dev}#${id.ino}`;
+function fileKey(target, ino) {
+    return ino === undefined ? `${sourceKey(target.source)}:${target.rel}` : `${sourceKey(target.source)}#${ino}`;
 }
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
@@ -924,16 +931,28 @@ export class CompositeVFS {
         });
         return options.sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
     }
-    /** A pinned target's mutation: refused on a read-only mount and by the guard, `admit` right before the backend, observed while `still`. */
-    changingOn(target, run, admit, written, still) {
-        const { mount, name, rel, backend } = target;
+    /**
+     * A pinned target's mutation of the file at `at` (the target's name, or
+     * where a file held open is named now; null once it has none): refused on
+     * a read-only mount and by the guard there, `admit` right before the
+     * backend, observed there while `still`. `held`:
+     * the held file's own refusal (it is not the file at its name now), asked in
+     * the mutation's turn, after the mutations before it, before the guard.
+     */
+    changingOn(target, at, run, admit, written, still, held) {
+        const { mount, backend } = target;
         if (mount.options.readOnly)
-            throw new Refusal('EROFS', name, `${mount.point} is mounted read-only`);
-        const guarded = () => {
-            this.guardMutation([name]);
+            throw new Refusal('EROFS', at?.name ?? target.name, `${mount.point} is mounted read-only`);
+        const admitted = () => {
+            this.guardMutation(at === null ? [] : [at.name]);
             admit?.();
             return run();
         };
+        const guarded = held === undefined ? admitted : () => andThen(held(), admitted);
+        // A file with no name (unlinked, held open) is no name's change: only the view's own check is asked.
+        if (at === null)
+            return guarded();
+        const { name, rel } = at;
         return this.reportWrite({ path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still, ...(written === undefined ? {} : { written }) }, guarded, target.sync);
     }
     /** A name an open found on a backend (pin). */
@@ -967,28 +986,44 @@ export class CompositeVFS {
         create(mode, admit) {
             const { backend, rel } = this.target;
             const empty = new Uint8Array(0);
-            return this.call('open', () => this.host.changingOn(this.target, () => backend.writeFile(rel, empty, mode === undefined ? undefined : { mode }), admit, empty, () => true));
+            return this.call('open', () => this.host.changingOn(this.target, this.target, () => backend.writeFile(rel, empty, mode === undefined ? undefined : { mode }), admit, empty, () => true));
         }
         truncate(size, admit) {
             const { backend, rel } = this.target;
-            return this.call('open', () => this.host.changingOn(this.target, () => need(backend.truncate, this.target.name).call(backend, rel, size), admit, undefined, () => true));
+            return this.call('open', () => this.host.changingOn(this.target, this.target, () => need(backend.truncate, this.target.name).call(backend, rel, size), admit, undefined, () => true));
         }
         key() {
-            return andThen(this.target.backend.stat(this.target.rel), (stat) => (stat === null ? null : fileKey(this.target, stat)));
+            return andThen(this.target.backend.stat(this.target.rel), (stat) => (stat === null ? null : fileKey(this.target, stat.ino)));
         }
         readAll() {
             return this.call('open', () => this.target.backend.readFile(this.target.rel));
         }
-        hold(rights) {
+        hold(rights, ino) {
             const { host, target } = this;
             const { backend, rel } = target;
-            return this.call('open', () => andThen(target.root ? host.mountPointStat(backend) : backend.stat(rel), (stat) => {
+            const decided = (stat) => {
                 if (stat === null)
                     throw new Refusal('ENOENT', target.name);
+                if (host.identifyOn(target.mount, target.name, stat).ino !== ino)
+                    throw new Refusal('ESTALE', target.name, 'the file the open decided on is not the one at its name now');
+                return stat;
+            };
+            return this.call('open', () => andThen(target.root ? host.mountPointStat(backend) : backend.stat(rel), (there) => {
+                const stat = decided(there);
                 const openFile = backend.openFile;
                 if (stat.type !== 'file' || openFile === undefined)
                     return new CompositeVFS.Held(host, target, stat, null);
-                return andThen(openFile.call(backend, rel, rights), (file) => new CompositeVFS.Held(host, target, stat, file));
+                return andThen(openFile.call(backend, rel, rights), (file) => {
+                    const bound = (opened) => new CompositeVFS.Held(host, target, decided(opened), file);
+                    try {
+                        const opened = file.stat();
+                        return isPromise(opened) ? opened.then(bound).catch((error) => { abandon(file); throw error; }) : bound(opened);
+                    }
+                    catch (error) {
+                        abandon(file);
+                        throw error;
+                    }
+                });
             }));
         }
     };
@@ -1001,7 +1036,6 @@ export class CompositeVFS {
         awaits;
         /** Its backend's number for it, when it numbers its files: the file at its name after its own replace of it (replace). */
         ino;
-        dev;
         constructor(host, target, opened, 
         /** The backend's own open file, where it keeps them (VFS.openFile). */
         file) {
@@ -1011,10 +1045,9 @@ export class CompositeVFS {
             this.name = target.name;
             this.awaits = !target.sync;
             this.ino = opened.ino;
-            this.dev = opened.dev;
         }
         get key() {
-            return fileKey(this.target, { ino: this.ino, dev: this.dev });
+            return fileKey(this.target, this.ino);
         }
         call(syscall, run) {
             const call = { syscall, path: this.target.name };
@@ -1033,12 +1066,18 @@ export class CompositeVFS {
         stale() {
             throw new Refusal('ESTALE', this.target.name, 'the name this file was opened at holds another file now, or none');
         }
+        /** Refused (ESTALE) once its name holds another file, or none. */
+        here() {
+            return andThen(this.still(), (still) => (still ? undefined : this.stale()));
+        }
         /** `run` by its name, refused (ESTALE) once the name holds another file, or none. */
         named(run) {
-            return andThen(this.still(), (still) => (still ? run() : this.stale()));
+            return andThen(this.here(), run);
         }
-        changing(syscall, run, admit, written) {
-            return this.call(syscall, () => this.host.changingOn(this.target, run, admit, written, () => this.still()));
+        /** A change through the file the backend holds open: guarded and observed at the name it has now (changingOn), none once unlinked. */
+        changing(syscall, file, run, admit, written) {
+            const { host, target } = this;
+            return this.call(syscall, () => andThen(file.path(), (rel) => host.changingOn(target, rel === null ? null : { name: CompositeVFS.reroot(target.mount.point, rel), rel }, run, admit, written, () => true)));
         }
         stat() {
             const { host, target, file } = this;
@@ -1062,22 +1101,23 @@ export class CompositeVFS {
         write(offset, bytes, admit) {
             const { file, target } = this;
             if (file !== null)
-                return this.changing('write', () => file.write(offset, bytes), admit);
-            return this.call('write', () => this.named(() => this.host.changingOn(target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still())));
+                return this.changing('write', file, () => file.write(offset, bytes), admit);
+            return this.call('write', () => this.host.changingOn(target, target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still(), () => this.here()));
         }
         /** By its name, the file there after it is this one: a backend may write a whole file as a new one (a new number) at its name. */
         replace(bytes, admit) {
             const { file, target } = this;
+            // Written, then cut to its length: a write that fails leaves the file as it was.
             if (file !== null)
-                return this.changing('write', () => andThen(file.truncate(0), () => file.write(0, bytes)), admit, bytes);
+                return this.changing('write', file, () => andThen(file.write(0, bytes), () => file.truncate(bytes.byteLength)), admit, bytes);
             const { backend, rel } = target;
-            return this.call('write', () => this.named(() => andThen(this.host.changingOn(target, () => backend.writeFile(rel, bytes), admit, bytes, () => true), () => (this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined)
-                this.ino = now.ino; })))));
+            return this.call('write', () => andThen(this.host.changingOn(target, target, () => backend.writeFile(rel, bytes), admit, bytes, () => true, () => this.here()), () => (this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined)
+                this.ino = now.ino; }))));
         }
         truncate(size, admit) {
             const { file, target } = this;
             if (file !== null)
-                return this.changing('ftruncate', () => file.truncate(size), admit);
+                return this.changing('ftruncate', file, () => file.truncate(size), admit);
             return this.byName('ftruncate', (backend) => need(backend.truncate, target.name).call(backend, target.rel, size), admit);
         }
         chmod(mode, admit) {
@@ -1092,7 +1132,7 @@ export class CompositeVFS {
         /** A mutation at its name (refused once that holds another file): `run` on its backend. */
         byName(syscall, run, admit) {
             const { target } = this;
-            return this.call(syscall, () => this.named(() => this.host.changingOn(target, () => run(target.backend), admit, undefined, () => this.still())));
+            return this.call(syscall, () => this.host.changingOn(target, target, () => run(target.backend), admit, undefined, () => this.still(), () => this.here()));
         }
         /** A mount point's entries: its backend root's, and the mount points the namespace puts in it while that mount is still there. */
         readdir() {

@@ -2,6 +2,7 @@ import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../v
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
+import { type Awaitable } from '../vfs/vfs.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -24,7 +25,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     bufferedWriteBytes?: number, 
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     waves?: WaveIngest);
-    dispose(): void;
+    dispose(): Awaitable<void>;
     /**
      * Where a path lives, decided only after confinement: the namespace is
      * consulted with the fully resolved path, so a `..` or an absolute path
@@ -81,6 +82,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
+    /** A description that awaits, closed by a caller that cannot wait: its backend's close answers no one (it holds no writes: each landed as made). */
     close(handleId: number): void;
     readdir(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;

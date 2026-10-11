@@ -24,6 +24,8 @@ export interface MountedFileDescription {
     readonly mounted: true;
     /** Its operations are an asynchronous mount's: only a caller that can wait reaches them. */
     readonly awaits: boolean;
+    /** When it was opened, among every description: a process's held writes on one file apply in this order (VFS-PF-001). */
+    readonly order: number;
     readonly ino: number;
     path(): string;
     /** Which file it is (HeldFile.key): what its held writes overlay. */
@@ -96,16 +98,13 @@ export declare function settleHeldAt(scope: DescriptorScope, file: () => Awaitab
 }>): Awaitable<void>;
 /**
  * Closes every description `scope` holds, each whatever another's flush
- * answers, and empties it. The flushes that failed (lastClose's errors) are
- * returned, for the caller to report once the rest of its teardown is done
- * (reportLost): a teardown that stopped at the first one would keep the
+ * answers, and empties it at once. The closes that failed (lastClose's
+ * errors) are answered once every one has (an awaiting description's backend
+ * close awaits), for the caller to report once the rest of its teardown is
+ * done (reportLost): a teardown that stopped at the first one would keep the
  * scope, and everything it revokes, open.
  */
-export declare function closeDescriptions(scope: DescriptorScope): unknown[];
-/** `file`, opened for a scope released meanwhile: closed, unheard (nothing was written through it). */
-export declare function abandon(file: {
-    close(): Awaitable<void>;
-}): void;
+export declare function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]>;
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
 export declare function reportLost(lost: readonly unknown[]): void;
 /** A file as a path read finds it (PinnedName), or as a description holds it (HeldFile): which file, and its content. */
@@ -145,7 +144,8 @@ export declare class Descriptors {
     read(id: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(id: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
     private writeAt;
-    close(id: number): void;
+    /** The last close of a description answers what it failed with (lastClose); an earlier one closes only the descriptor. */
+    close(id: number): Awaitable<void>;
     /**
      * Writes what the description's file has held: a buffered mount handle's
      * writes, the appends SqliteVFS holds (appendThrough). Any other write was

@@ -712,9 +712,12 @@ export declare class SqliteVFS {
     /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll(): void;
     /**
-     * A description of `path`, opened as `cred`. Its writes are its opener's,
-     * wherever they run: `principal` (else the calling view's, else `cred`'s)
-     * is the one its write events name and its held appends are written as.
+     * A description of `path`, opened as `cred`, its access decided by the
+     * open that asks (openAccess, or the creat(2) that made it, which writes
+     * whatever its mode): the lookup asks only search. Its writes are its
+     * opener's, wherever they run: `principal` (else the calling view's, else
+     * `cred`'s) is the one its write events name and its held appends are
+     * written as.
      */
     openDescription(path: string, cred: VfsCred, rights: {
         read: boolean;

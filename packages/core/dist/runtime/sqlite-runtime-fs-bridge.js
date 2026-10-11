@@ -1,9 +1,9 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { andThen, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
+import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -37,7 +37,7 @@ export class SqliteRuntimeFsBridge {
         const lost = closeDescriptions(this.scope);
         this.scope.closed = true;
         this.scope.abort.abort();
-        reportLost(lost);
+        return andThen(lost, reportLost);
     }
     /**
      * Where a path lives, decided only after confinement: the namespace is
@@ -425,8 +425,11 @@ export class SqliteRuntimeFsBridge {
     write(handleId, offset, bytes) {
         return syncValue(this.descriptors.write(handleId, offset, bytes));
     }
+    /** A description that awaits, closed by a caller that cannot wait: its backend's close answers no one (it holds no writes: each landed as made). */
     close(handleId) {
-        this.descriptors.close(handleId);
+        const closed = this.descriptors.close(handleId);
+        if (isPromise(closed))
+            closed.catch(() => { });
     }
     readdir(path, options = {}) {
         return called({ syscall: 'scandir', path }, () => {
@@ -693,7 +696,7 @@ export class SqliteRuntimeFsBridge {
             return node === null ? null : this.keepWaveDescription(id, node, rights);
         },
         // Each write of a wave's description is in its mount before the wave is answered (sync).
-        describe: (id, file, ino, rights) => andThen(file.hold(rights), (held) => {
+        describe: (id, file, ino, rights) => andThen(file.hold(rights, ino), (held) => {
             // Released while its file was found: nothing would close it.
             if (this.scope.closed) {
                 abandon(held);

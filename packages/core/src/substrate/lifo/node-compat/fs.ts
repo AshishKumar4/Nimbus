@@ -129,8 +129,11 @@ const FLAG_STRINGS: Record<string, number> = {
 };
 
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
-function openFlagsOf(flags: string | number | undefined, mode: number | undefined): RuntimeOpenFlags {
-  const bits = flags === undefined ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
+function openFlagsOf(flags: string | number | null | undefined, mode: number | undefined): RuntimeOpenFlags {
+  if (typeof flags === 'number' && (!Number.isInteger(flags) || flags < -0x80000000 || flags > 0x7fffffff)) {
+    throw Object.assign(new RangeError(`The value of "flags" is out of range. It must be an integer. Received ${String(flags)}`), { code: 'ERR_OUT_OF_RANGE' });
+  }
+  const bits = flags === undefined || flags === null ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
   if (bits === undefined) {
     throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${String(flags)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
   }
@@ -345,7 +348,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
 
   // ─── File descriptor sync API ───
 
-  function openSync(path: string | URL, flags?: string | number, mode?: number): number {
+  function openSync(path: string | URL, flags?: string | number | null, mode?: number): number {
     return vfs.open(resolvePath(cwd, path), openFlagsOf(flags, mode)) - 1 + STDIO;
   }
 

@@ -28,11 +28,11 @@ import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
+import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
@@ -519,7 +519,7 @@ export class ProcessFiles {
             // Its descriptors' last closes flush; one whose flush fails is reported
             // once the process is released all the same.
             if (scope)
-                this.closeScope(scope);
+                await this.closeScope(scope);
         }
         finally {
             this.processes.delete(pid);
@@ -534,7 +534,7 @@ export class ProcessFiles {
         const scope = this.processes.get(pid);
         try {
             if (scope)
-                this.closeScope(scope);
+                await this.closeScope(scope);
         }
         finally {
             this.processes.delete(pid);
@@ -600,7 +600,7 @@ export class ProcessFiles {
         scope.subscriptions.clear();
         scope.closed = true;
         scope.abort.abort();
-        reportLost(lost);
+        return andThen(lost, reportLost);
     }
     bridgeFor(scope, cred, signal, pid, landed = false) {
         // The scope is checked again by the namespace right before each mutation

@@ -1527,9 +1527,12 @@ export class SqliteVFS {
     }
     // ── Helpers ───────────────────────────────────────────────────────────
     /**
-     * A description of `path`, opened as `cred`. Its writes are its opener's,
-     * wherever they run: `principal` (else the calling view's, else `cred`'s)
-     * is the one its write events name and its held appends are written as.
+     * A description of `path`, opened as `cred`, its access decided by the
+     * open that asks (openAccess, or the creat(2) that made it, which writes
+     * whatever its mode): the lookup asks only search. Its writes are its
+     * opener's, wherever they run: `principal` (else the calling view's, else
+     * `cred`'s) is the one its write events name and its held appends are
+     * written as.
      */
     openDescription(path, cred, rights, principal, holds, 
     /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
@@ -1544,7 +1547,7 @@ export class SqliteVFS {
             this.activeHolds = holds();
         let resolved;
         try {
-            resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+            resolved = this.checkAccess(path, 0, cred);
         }
         finally {
             this.activeWrite = priorWrite;

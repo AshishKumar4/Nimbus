@@ -181,18 +181,26 @@ export interface PinnedName {
     key(): Awaitable<string | null>;
     /** What is there now, read whole (a file this process holds writes to, as its reads see it). */
     readAll(): Awaitable<Uint8Array>;
-    /** The file there now, held with `rights` for a description: VFS.openFile where the backend keeps open files, else by name. */
+    /**
+     * The file the open decided on (`ino`, its number as this name's stat
+     * answers it), held with `rights` for a description: VFS.openFile where
+     * the backend keeps open files, else by name. ESTALE when the file there
+     * now, or the one the backend opened, is another: the open authorized that
+     * one. Its identity and metadata are what it holds.
+     */
     hold(rights: {
         read: boolean;
         write: boolean;
-    }): Awaitable<HeldFile>;
+    }, ino: number): Awaitable<HeldFile>;
 }
 /**
  * A file a description holds (PinnedName.hold). On a backend that keeps
  * open files (VFS.openFile) its content operations reach that file wherever
  * it is named later; every other operation, and every one on a backend that
  * keeps none, goes by the name it was opened at, refused (ESTALE) once that
- * name holds another file (its backend's inode number changed) or none. A
+ * name holds another file (its backend's inode number changed) or none,
+ * asked in a change's turn among the namespace's observed changes, right
+ * before it (on a backend that awaits, that is a stat, then the change). A
  * backend that numbers no files cannot tell: there, the name is the file.
  * Its mutations are the opener's view's: refused on a read-only mount, asked
  * of the namespace's guard at its name, and observed (observeWrites) only
@@ -473,7 +481,14 @@ export declare class CompositeVFS implements VFS {
         follow: boolean;
         sync: boolean;
     }): Awaitable<PinnedName>;
-    /** A pinned target's mutation: refused on a read-only mount and by the guard, `admit` right before the backend, observed while `still`. */
+    /**
+     * A pinned target's mutation of the file at `at` (the target's name, or
+     * where a file held open is named now; null once it has none): refused on
+     * a read-only mount and by the guard there, `admit` right before the
+     * backend, observed there while `still`. `held`:
+     * the held file's own refusal (it is not the file at its name now), asked in
+     * the mutation's turn, after the mutations before it, before the guard.
+     */
     private changingOn;
     /** A name an open found on a backend (pin). */
     private static readonly Pinned;

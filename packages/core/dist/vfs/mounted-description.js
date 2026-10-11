@@ -116,7 +116,7 @@ export function openMounted(options) {
         if (!isPromise(key))
             settleHeld(options.scope, key);
     };
-    return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true, settle(name)), (stat) => (andThen(name.hold({ read: options.flags.read, write: options.flags.write }), (file) => describeMounted(options, file, stat.ino ?? 0)))));
+    return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true, settle(name)), (stat) => (andThen(name.hold({ read: options.flags.read, write: options.flags.write }, stat.ino ?? 0), (file) => describeMounted(options, file, stat.ino ?? 0)))));
 }
 /** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
 export function describeMounted(context, file, ino) {
@@ -131,12 +131,15 @@ export function describeMounted(context, file, ino) {
  * back; this process reads the file with them applied. Writes made by awaiting, or under O_SYNC, are
  * flushed as each is made, so a write's answer is what the mount did.
  */
+/** Descriptions opened so far: the next one's order (MountedFileDescription.order). */
+let opened = 0;
 class MountedDescription {
     options;
     file;
     ino;
     mounted = true;
     awaits;
+    order = ++opened;
     immediate;
     inPlace = true;
     pending = [];
@@ -219,8 +222,26 @@ class MountedDescription {
             this.failed = error;
         }
     }
+    /** Its file closed whatever the flush answers: the flush's failure, else the close's, is its answer. */
     close() {
-        return andThen(this.flush(), () => this.file.close());
+        let flushed;
+        try {
+            flushed = this.flush();
+        }
+        catch (error) {
+            return this.closeAfter(error);
+        }
+        return isPromise(flushed) ? flushed.then(() => this.file.close(), (error) => this.closeAfter(error)) : this.file.close();
+    }
+    closeAfter(failed) {
+        const rethrow = () => { throw failed; };
+        try {
+            const closed = this.file.close();
+            return isPromise(closed) ? closed.then(rethrow, rethrow) : rethrow();
+        }
+        catch {
+            return rethrow();
+        }
     }
     pendingBytes() { return this.held; }
     applyPending(base) { return apply(this.pending, base); }

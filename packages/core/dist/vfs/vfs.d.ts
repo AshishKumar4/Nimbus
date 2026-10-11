@@ -19,6 +19,10 @@ export type Awaitable<T> = T | Promise<T>;
 export declare function isPromise<T>(value: Awaitable<T>): value is Promise<T>;
 /** `value`, which a synchronous face answers at once: one that would wait is its caller's fault, never a value. */
 export declare function syncValue<T>(value: Awaitable<T>): T;
+/** `file`, opened for no one any more: closed, its answer unheard (nothing was written through it). */
+export declare function abandon(file: {
+    close(): Awaitable<void>;
+}): void;
 /**
  * Apply `next` to a value that may or may not be a promise, staying
  * synchronous when it is not. (Not `then`: a module exporting `then` is a
@@ -61,24 +65,6 @@ export interface VfsCred {
     readonly gid: number;
     readonly groups: readonly number[];
     readonly umask: number;
-}
-export interface VfsOpenFlags {
-    read?: boolean;
-    write?: boolean;
-    append?: boolean;
-    create?: boolean;
-    exclusive?: boolean;
-    truncate?: boolean;
-    directory?: boolean;
-    follow?: boolean;
-}
-/** An open file on a backend with real handles: it stays readable after its name is unlinked. */
-export interface VfsHandle {
-    read(position: number, length: number): Awaitable<Uint8Array>;
-    write(position: number, bytes: Uint8Array): Awaitable<number>;
-    stat(): Awaitable<VfsStat>;
-    truncate(size: number): Awaitable<void>;
-    close(): Awaitable<void>;
 }
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
@@ -137,8 +123,10 @@ export interface VfsViewOptions {
     holds?: () => ReadonlySet<string>;
     landed?: boolean;
 }
-/** A file a backend holds open (VFS.openFile). */
+/** A file a backend holds open (VFS.openFile): it stays this file after its name is renamed or unlinked. */
 export interface VfsOpenFile {
+    /** Its name on the backend now; null once it has none (unlinked). */
+    path(): Awaitable<string | null>;
     stat(): Awaitable<VfsStat>;
     /** At most `length` bytes from `offset`, clamped at its end. */
     read(offset: number, length: number): Awaitable<Uint8Array>;
@@ -209,7 +197,6 @@ export interface VFS {
     writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): Awaitable<VfsCasResult>;
     /** Exactly that version, or a refusal; never the current file in its place. */
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Awaitable<Uint8Array>;
-    open?(path: string, flags: VfsOpenFlags): Awaitable<VfsHandle>;
     /**
      * This backend as another principal (`actor` names it finer than its uid).
      * `options.holds`: the delegations the principal's process holds, asked at

@@ -3,7 +3,7 @@ import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
-import { fsError, isVfsError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
 /**
@@ -71,7 +71,7 @@ const FLAG_STRINGS = {
 };
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
 function openFlagsOf(flags, mode) {
-    const bits = flags === undefined ? O_RDONLY : typeof flags === 'number' ? flags : FLAG_STRINGS[flags];
+    const bits = flags === undefined ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
     if (bits === undefined) {
         throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${String(flags)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
     }
@@ -122,7 +122,7 @@ export function createFs(vfs, cwd, stdin) {
             return run(fd - STDIO + 1);
         }
         catch (error) {
-            if (error.code === 'EBADF')
+            if (errnoCodeOf(error) === 'EBADF')
                 throw fsError('EBADF', syscall);
             throw error;
         }
@@ -300,7 +300,8 @@ export function createFs(vfs, cwd, stdin) {
         return toNodeStat(onDescriptor(fd, 'fstat', (id) => vfs.fstat(id)));
     }
     function ftruncateSync(fd, len) {
-        onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, len ?? 0));
+        // A negative length is 0, as Node clamps it.
+        onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, Math.max(0, len ?? 0)));
     }
     function fsyncSync(fd) {
         onDescriptor(fd, 'fsync', (id) => vfs.fsync(id));

@@ -23,6 +23,17 @@ export function syncValue(value) {
         throw new Error('synchronous filesystem operation returned a promise');
     return value;
 }
+/** `file`, opened for no one any more: closed, its answer unheard (nothing was written through it). */
+export function abandon(file) {
+    try {
+        const closed = file.close();
+        if (isPromise(closed))
+            closed.catch(() => { });
+    }
+    catch {
+        // Nothing was written through it.
+    }
+}
 /**
  * Apply `next` to a value that may or may not be a promise, staying
  * synchronous when it is not. (Not `then`: a module exporting `then` is a
