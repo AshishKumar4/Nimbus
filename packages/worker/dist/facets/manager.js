@@ -1645,8 +1645,6 @@ export class NimbusProcess extends DurableObject {
  */
 /** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
 function esmStageSize(esm) {
-    if (esm === undefined)
-        return null;
     let text = 0;
     let columns = 0;
     for (const staged of esm.modules.values()) {
@@ -4373,7 +4371,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     return {
         bundle,
         ...(emits.size > 0 ? { emits } : {}),
-        ...(esm ? { esm } : {}),
+        ...(esm ? { esm, esmSize: esmStageSize(esm) } : {}),
         ...(codeOnly.size > 0 ? { codeOnly } : {}),
         cursor,
         reachableCount: fileCount,
@@ -7953,7 +7951,7 @@ export class FacetManager {
         const plan = async () => {
             if (this.debugEnabled) {
                 this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
-                    + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(esmStageSize(vfsState.esm))} (${pacer.chunks} turns so far)\n`);
+                    + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(vfsState.esmSize ?? null)} (${pacer.chunks} turns so far)\n`);
             }
             const planStart = Date.now();
             const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
