@@ -87,4 +87,25 @@ for (const reset of [false, true]) {
   await process.release();
   assert.equal(replyResources, 0);
 }
+for (const code of [1000, 1005, 1006, 'error']) {
+  const t = setup(), host = t.open(), process = await host.open(t.params);
+  await process.started;
+  const lease = hostActivity(t.ctx).acquire(); await lease.ready;
+  const peer = [...t.peers.values()][0];
+  const record = [...peer.peerHost.records.values()][0];
+  const server = [...record.watchers.keys()][0];
+  const replies = [], close = server.close.bind(server);
+  server.close = (...args) => { replies.push({ args, owners: record.watchers.size }); close(...args); };
+  // An incoming transport failure can carry a reserved code, or only an error.
+  server.readyState = 3;
+  const event = new Event(code === 'error' ? 'error' : 'close');
+  if (code !== 'error') Object.assign(event, { code, reason: 'remote ended', wasClean: code === 1000 });
+  try {
+    server.dispatchEvent(event);
+    assert.equal(record.watchers.size, 0, 'every close/error releases the peer activity owner');
+    assert.deepEqual(replies, [{ args: [], owners: 0 }], 'cleanup precedes an argument-free reply, never an echoed reserved code');
+    server.dispatchEvent(event);
+    assert.equal(record.watchers.size, 0, 'duplicate close/error is harmless');
+  } finally { lease.release(); await process.release(); }
+}
 console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');
