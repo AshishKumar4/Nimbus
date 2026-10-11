@@ -238,9 +238,9 @@ export class Descriptors {
     private readonly synchronous = false,
   ) {}
 
-  /** A descriptor for `node`, new, at `position`. */
-  issue(node: Description, flags: RuntimeFileHandle['flags'], position = 0): RuntimeFileHandle {
-    const handle: RuntimeFileHandle = { id: this.scope.nextId++, path: node.path(), flags: Object.freeze(flags), position, closed: false };
+  /** A descriptor for `node`, new, at offset 0, opened at `path` (the description's own name for its file unless the opener has it). */
+  issue(node: Description, flags: RuntimeFileHandle['flags'], path = node.path()): RuntimeFileHandle {
+    const handle: RuntimeFileHandle = { id: this.scope.nextId++, path, flags: Object.freeze(flags), position: 0, closed: false };
     this.scope.handles.set(handle.id, { handle, node, refs: 1 });
     return { ...handle };
   }

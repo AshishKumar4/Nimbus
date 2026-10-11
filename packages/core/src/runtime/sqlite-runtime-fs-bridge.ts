@@ -425,7 +425,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         this.owned(owner).truncate(p, 0);
       }
 
-      return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags);
+      return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags, p);
     });
   }
 
