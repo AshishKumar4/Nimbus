@@ -7,6 +7,7 @@ import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importGitFacetWorker } from './lib/git-facet-worker.mjs';
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
@@ -48,6 +49,7 @@ export const git = {
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
   const vfs = rawVfs.as(CRED_KERNEL);
   const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 
@@ -74,7 +76,7 @@ export const git = {
       assert.equal(drainSliceLengths, null, 'overlapping wave drains');
       drainSliceLengths = [];
       try {
-        return await vfs.writeStream(stream);
+        return await waves.writeStream(vfs, stream);
       } finally {
         allDrainSlices.push(...drainSliceLengths);
         drainSliceLengths = null;

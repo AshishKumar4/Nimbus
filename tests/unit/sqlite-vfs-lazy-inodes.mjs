@@ -7,6 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
@@ -86,6 +87,7 @@ function counters(rawVfs) {
 // ── and after a rollback ──────────────────────────────────────────────────
 {
   const { harness, rawVfs, vfs } = openVfs(undefined, { inodeCacheEntries: 8 });
+  const waves = new WaveIngest(null);
   rawVfs.getStats(); // counters are live from here on
   vfs.mkdir('a/b/c', { recursive: true });
   vfs.writeFile('a/one.txt', 'one');
@@ -111,7 +113,7 @@ function counters(rawVfs) {
   vfs.truncate('a/one.txt', 2);
   vfs.writeRange('a/one.txt', 10, encode('tail'));
   const streamed = encode('streamed');
-  const result = await vfs.writeStream(encodeWriteBatchStream({
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({
     inodes: [
       { path: 'a/stream', parentPath: 'a', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 },
       { path: 'a/stream/s.txt', parentPath: 'a/stream', isDir: false, size: streamed.length, mtime: 1, mode: 0o644, chunkCount: 1 },

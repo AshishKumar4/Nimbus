@@ -801,7 +801,6 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcNetTls(action, token, payload, pid, run) { return _rpc._rpcNetTls(this, action, token, payload, pid, run); }
     async _rpcOutbound(action, payload, pid, run) { return _rpc._rpcOutbound(this, action, payload, pid, run); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
-    async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcStdout(pid, data, at, run) { return _rpc._rpcStdout(this, pid, data, at, run); }
     async _rpcStderr(pid, data, at, run) { return _rpc._rpcStderr(this, pid, data, at, run); }
     async _rpcReportExit(pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
@@ -1171,7 +1170,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // Idempotent: guarded by shouldSeedProject() which checks both a
         // sentinel file and the project dir. Safe to call on every boot.
         try {
-            seedProject(this.sqliteFs, { log: (msg) => console.log(msg) });
+            seedProject(this.getFilesystemAuthority(), { log: (msg) => console.log(msg) });
         }
         catch (e) {
             console.error('[nimbus] seedProject failed:', e?.message || e);

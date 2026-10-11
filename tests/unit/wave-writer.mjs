@@ -435,10 +435,12 @@ for (const epochs of [false, true]) {
 // Same path, different bytes in a later wave: the later bytes stay.
 {
   const { SqliteVFS } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
+  const { WaveIngest } = await import('../../packages/core/src/runtime/wave-ingest.ts');
   const { CRED_KERNEL } = await import('../../packages/core/src/runtime/os-contracts.ts');
   const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harness.mjs');
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  const waves = new WaveIngest(null);
   let calls = 0;
   let zombie = null;
   const supervisor = {
@@ -447,10 +449,10 @@ for (const epochs of [false, true]) {
       if (calls === 1) {
         // Delivered only after the writer gave up on it and moved on.
         zombie = new Promise((resolve) => setTimeout(resolve, 3 * quick.stallMs))
-          .then(() => vfs.writeStream(stream));
+          .then(() => waves.writeStream(vfs, stream));
         return new Promise(() => {});
       }
-      return vfs.writeStream(stream);
+      return waves.writeStream(vfs, stream);
     },
   };
   const writer = createWaveWriter({ supervisor, root: 'z', base: 'z', retry: quick });

@@ -33,6 +33,7 @@ import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
+import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
@@ -188,6 +189,8 @@ export interface GitNetworkResult {
   errorCode?: GitNetworkErrorCode;
   /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
   gitFailure?: string;
+  /** The git server could not be reached, or refused: what it did (pack/remote-failure.ts), for git's message. */
+  remoteFailure?: RemoteFailure;
   budget?: GitCloneBudgetDiagnostic;
   /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
   cleanup?: boolean;
@@ -223,6 +226,7 @@ interface FacetInvocationResult {
   fetched?: unknown;
   gitFailure?: unknown;
   graphFilters?: unknown;
+  remoteFailure?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -393,6 +397,7 @@ class GitClonePhaseError extends Error {
   readonly errorCode: GitNetworkErrorCode | undefined;
   /** A write git would have failed: git's lines (GitNetworkResult.gitFailure). */
   readonly gitFailure: string | undefined;
+  readonly remoteFailure: RemoteFailure | undefined;
 
   constructor(
     phase: GitCloneInvocationPhase,
@@ -400,6 +405,7 @@ class GitClonePhaseError extends Error {
     diagnostic: GitNetworkPhaseDiagnostic,
     errorCode?: GitNetworkErrorCode,
     gitFailure?: string,
+    remoteFailure?: RemoteFailure,
   ) {
     super(message);
     this.name = 'GitClonePhaseError';
@@ -408,7 +414,19 @@ class GitClonePhaseError extends Error {
     this.mutated = diagnostic.mutated;
     this.errorCode = errorCode;
     this.gitFailure = gitFailure;
+    this.remoteFailure = remoteFailure;
   }
+}
+
+/** A facet's remoteFailure, checked: what it says it is, or undefined. */
+function parseRemoteFailure(value: unknown): RemoteFailure | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const failure = value as Record<string, unknown>;
+  if (failure.kind === 'transport' && typeof failure.detail === 'string') return { kind: 'transport', detail: failure.detail };
+  if (failure.kind === 'status' && typeof failure.status === 'number' && Number.isInteger(failure.status)) {
+    return { kind: 'status', status: failure.status, ...(typeof failure.message === 'string' ? { message: failure.message } : {}) };
+  }
+  return undefined;
 }
 
 class GitCloneBudgetExceededError extends GitClonePhaseError {
@@ -762,6 +780,7 @@ async function invokeClonePhase(
       invocation.diagnostic,
       undefined,
       typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined,
+      parseRemoteFailure(invocation.result.remoteFailure),
     );
   }
   return invocation;
@@ -1178,6 +1197,7 @@ export async function execGitNetwork(
               prepare.diagnostic,
               undefined,
               typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined,
+              parseRemoteFailure(prepare.result.remoteFailure),
             );
           }
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic, signal);
@@ -1308,6 +1328,7 @@ export async function execGitNetwork(
               ? phaseError.code
               : phaseError.errorCode,
             gitFailure: phaseError.gitFailure,
+            remoteFailure: phaseError.remoteFailure,
             budget: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.budget
               : undefined,
@@ -1419,6 +1440,7 @@ export async function execGitNetwork(
         success: result.success === true,
         error: typeof result.error === 'string' ? result.error : undefined,
         errorPhase: result.success === true ? undefined : 'operation',
+        ...(result.success === true ? {} : { remoteFailure: parseRemoteFailure(result.remoteFailure) }),
         elapsed: Date.now() - start,
         filesWritten: nonNegativeCounter(result.filesWritten),
         bytesWritten: nonNegativeCounter(result.bytesWritten),

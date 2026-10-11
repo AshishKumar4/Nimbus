@@ -46,7 +46,7 @@ kernel.mkdir('home/user/proj', { recursive: true });
 kernel.chown('home/user', 1000, 1000);
 kernel.chown('home/user/proj', 1000, 1000);
 // Its namespace places the wave's names (the wave router), as a session's does.
-new ProcessFiles(engine);
+const files = new ProcessFiles(engine);
 // Within one batch's 1024 paths (W7_MAX_PATHS_PER_BATCH).
 const wave = installWave(50);
 
@@ -76,7 +76,7 @@ const tick = () => {
 setTimeout(tick, 0);
 const started = performance.now();
 // The session's turn (NimbusSession.waveTurn) lets the isolate's other work run; here, a timer.
-const result = await engine.as(USER).writeStream(encodeWriteBatchStream(wave), { turn: () => new Promise((resolve) => setTimeout(resolve, 0)) });
+const result = await files.waves.writeStream(engine.as(USER), encodeWriteBatchStream(wave), { turn: () => new Promise((resolve) => setTimeout(resolve, 0)) });
 const applyMs = performance.now() - started;
 running = false;
 // The turn the apply ended in counts too.
@@ -108,7 +108,7 @@ for (const kind of ['deletes', 'directories']) {
   kernel.chown('home/user', 1000, 1000);
   kernel.chown('home/user/proj', 1000, 1000);
   kernel.chown('home/user/proj/old', 1000, 1000);
-  new ProcessFiles(engine);
+  const files = new ProcessFiles(engine);
   // Within one batch's 1,024 paths (W7_MAX_PATHS_PER_BATCH).
   const N = 24;
   const payload = { inodes: [], chunks: [], deletePaths: [] };
@@ -128,7 +128,7 @@ for (const kind of ['deletes', 'directories']) {
   }
   payload.inodes.sort((a, b) => a.path.localeCompare(b.path));
   let turns = 0;
-  const result = await engine.as(USER).writeStream(encodeWriteBatchStream(payload), {
+  const result = await files.waves.writeStream(engine.as(USER), encodeWriteBatchStream(payload), {
     turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
   });
   assert.equal(result.ok, true, JSON.stringify(result.error));
@@ -153,7 +153,7 @@ for (const kind of ['deletes', 'directories']) {
   kernel.chown('home/user', 1000, 1000);
   kernel.chown('home/user/proj', 1000, 1000);
   kernel.chown('home/user/proj/calls', 1000, 1000);
-  new ProcessFiles(engine);
+  const files = new ProcessFiles(engine);
   const N = 600;
   for (let i = 0; i < N; i++) {
     kernel.writeFile(`home/user/proj/calls/f${i}`, 'x');
@@ -161,7 +161,7 @@ for (const kind of ['deletes', 'directories']) {
   }
   const ops = Array.from({ length: N }, (_, i) => ({ type: 'call', call: { call: 'unlink', path: `home/user/proj/calls/f${i}` } }));
   let turns = 0;
-  const result = await engine.as(USER).writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }), {
+  const result = await files.waves.writeStream(engine.as(USER), encodeWriteBatchStream({ inodes: [], chunks: [], ops }), {
     turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
   });
   assert.equal(result.ok, true, JSON.stringify(result.error));
@@ -194,7 +194,7 @@ for (const kind of ['deletes', 'directories']) {
     for (let c = 0; c * 65536 < size; c++) chunks.push({ path, chunkId: c, data: data.subarray(c * 65536, Math.min(size, (c + 1) * 65536)) });
   }
   let turns = 0;
-  const result = await engine.as(CRED_KERNEL).writeStream(encodeWriteBatchStream({ inodes, chunks }), {
+  const result = await files.waves.writeStream(engine.as(CRED_KERNEL), encodeWriteBatchStream({ inodes, chunks }), {
     turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
   });
   assert.equal(result.ok, true, JSON.stringify(result.error));

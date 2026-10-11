@@ -1252,6 +1252,8 @@ export declare class FacetManager {
      * journal recovery rides the first pump.
      */
     private readonly launchPump;
+    /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+    private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
     private _pairedServeFacet;
@@ -1787,6 +1789,18 @@ export declare class FacetManager {
         /** The bin it runs: learned a server when it runs on as one (_promote). */
         server?: ServerIdentity;
     }): Promise<FacetExecResult>;
+    /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+    launchState(now?: number): {
+        launches: Array<{
+            pid: number;
+            stage: string;
+            ms: number;
+        }>;
+        pacer: {
+            waiting: number;
+            oldestMs: number | null;
+        };
+    };
     /**
      * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
      * on as a resident, the same process: the resident replays the run up to

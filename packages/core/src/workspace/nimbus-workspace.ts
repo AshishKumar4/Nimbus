@@ -355,7 +355,7 @@ export class NimbusWorkspace {
     // Its processes bind to this filesystem, so a reap releases them here,
     // and their output waits for what they wrote to be published: the one
     // place the table and the filesystem meet.
-    processes.setRelease((pid) => filesystem.releaseProcess(pid));
+    processes.setRelease((pid) => filesystem.releaseProcess(pid), (pid) => filesystem.processEnded(pid));
     filesystem.holdOutput(processes);
 
     const env = { ...defaultEnv(home), ...options.env };
@@ -1037,7 +1037,7 @@ export function seedBaseFilesystem(target: SqliteVFS | ProcessFiles, home: strin
 
 /**
  * The base seed on a namespace: each step placed by the namespace's
- * dispatcher (SqliteVFS.placesHere, as a wave's records are). One placed on
+ * dispatcher (WaveIngest.placesHere, as a wave's records are). One placed on
  * the session's filesystem is the engine's, as the session's own seed makes
  * it; any other is the call a program would make on the namespace.
  */
@@ -1053,7 +1053,7 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
     // record there is. A step is placed as its call looks its name up: every
     // one follows a link at it but a lone mkdir (mkdir -p stats it first).
     const follow = call.op !== 'mkdir' || call.recursive === true;
-    if (filesystem.engine.placesHere([call.path], cred, { aboveMounts: true, follow })) {
+    if (filesystem.waves.placesHere(engine[call.as], [call.path], { aboveMounts: true, follow })) {
       answer = engineStep(engine[call.as], call);
     } else {
       const view = mounted[call.as];

@@ -1,4 +1,6 @@
 import { type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import type { WriteStreamOptions } from './wave-contracts.js';
+import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
@@ -37,6 +39,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     private readonly bufferedWriteBytes;
+    /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
+    private readonly waves;
     readonly synchronous: RuntimeSynchronousFs;
     private readonly vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
@@ -44,7 +48,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, namespace?: CompositeVFS | undefined, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
-    bufferedWriteBytes?: number);
+    bufferedWriteBytes?: number, 
+    /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
+    waves?: WaveIngest);
     dispose(): void;
     /**
      * Where a path lives, decided only after confinement: the namespace is
@@ -154,7 +160,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         inodes: number;
         chunks: number;
     }>;
-    writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]): Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
+    writeStream(stream: ReadableStream<Uint8Array>, options?: WriteStreamOptions): Promise<import("./wave-contracts.js").WriteBatchStreamResult>;
     /**
      * The open descriptions a process's waves name (WaveDescriptions): each one
      * this binding's descriptor, so the process reads, stats and closes it as

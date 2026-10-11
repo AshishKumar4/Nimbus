@@ -130,11 +130,11 @@ function assertBounded(stats) {
 // Streamed oversized files are staged across bounded transactions and exposed
 // by one pointer publication, with typed committed progress.
 {
-  const { harness, rawVfs, vfs } = openVfs();
+  const { harness, rawVfs, waves, vfs } = openVfs();
   const data = new Uint8Array(MAX_TX_BLOB_BYTES * 2 + 1).fill(19);
   const entries = chunks('stream.bin', data);
   const firstTransaction = harness.transactionCount + 1;
-  const result = await vfs.writeStream(encodeWriteBatchStream({
+  const result = await waves.writeStream(vfs, encodeWriteBatchStream({
     inodes: [fileInode('stream.bin', data.length)],
     chunks: entries,
   }));

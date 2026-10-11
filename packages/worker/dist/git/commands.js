@@ -10,12 +10,16 @@
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
+import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters } from './network-facet.js';
 import { createGitFs } from './git-fs.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { exitCodeForAbortSignal, SESSION_DESTROYED } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, } from './clone-job.js';
+import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
+import { GitGlobalsError, parseConfigParameter, withConfigOverrides } from './config-params.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -208,10 +212,18 @@ function getDir(ctx) {
  */
 export function parseGitGlobals(args, cwd) {
     let dir = cwd;
+    const config = new Map();
     let i = 0;
     for (; i < args.length; i++) {
         const arg = args[i];
-        if (arg === '-C') {
+        if (arg === '-c') {
+            const text = args[++i];
+            if (text === undefined)
+                throw new GitGlobalsError(`-c expects a configuration string\n${GIT_USAGE}\n`, 129);
+            const [key, value] = parseConfigParameter(text);
+            config.set(key, [...(config.get(key) ?? []), value]);
+        }
+        else if (arg === '-C') {
             const path = args[++i];
             if (path === undefined)
                 throw new Error("option '-C' requires a value");
@@ -227,14 +239,15 @@ export function parseGitGlobals(args, cwd) {
             // no pager to disable
         }
         else if (arg.startsWith('-') && arg !== '--version' && arg !== '-v' && arg !== '--help' && arg !== '-h') {
-            throw new Error(`unknown option '${arg}'\nusage: git [-C <path>] [--no-pager] <command> [<args>]`);
+            throw new Error(`unknown option '${arg}'\n${GIT_USAGE}`);
         }
         else {
             break;
         }
     }
-    return { sub: args[i], subArgs: args.slice(i + 1), dir };
+    return { sub: args[i], subArgs: args.slice(i + 1), dir, config };
 }
+const GIT_USAGE = 'usage: git [-C <path>] [-c <name>=<value>] [--no-pager] <command> [<args>]';
 function getFlag(args, flag) {
     const idx = args.indexOf(flag);
     if (idx >= 0)
@@ -2749,6 +2762,57 @@ prefetch) {
  * script-eval graph.
  */
 /**
+ * One effective destination for precheck, transport and diagnostics. Remote
+ * URLs are multi-valued: git uses their first value, not config's scalar
+ * last-value rule. An empty value resets the list; -c appends after files.
+ * Push prefers pushurl, falling back to url only when it has none.
+ */
+async function knownRemote(ctx, git, fs, dir, remote, operation) {
+    if (remote.includes('://'))
+        return remote;
+    for (const field of operation === 'push' ? ['pushurl', 'url'] : ['url']) {
+        let first;
+        for (const value of await git.getConfigAll({ fs, dir, path: `remote.${remote}.${field}` })) {
+            if (value === '')
+                first = undefined;
+            else if (typeof value === 'string' && first === undefined)
+                first = value;
+        }
+        if (first !== undefined)
+            return first;
+    }
+    await ctx.stderr.write(noSuchRemoteText(remote));
+    return undefined;
+}
+/**
+ * A network command that failed. When the git server could not be reached,
+ * or refused (pack/remote-failure.ts), git's message about the repository
+ * at `url`, and git's 128; else what failed, and 1.
+ */
+function remoteCredentials(ctx, url) {
+    return selectRemoteCredentials(url, { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' });
+}
+async function networkFailure(ctx, what, result, url) {
+    if (result.gitFailure !== undefined) {
+        await ctx.stderr.write(result.gitFailure);
+        return 128;
+    }
+    if (result.remoteFailure !== undefined && url !== undefined) {
+        // The credentials offered, the session's or the URL's own; the secrets among them never printed.
+        const inUrl = urlCredentials(url);
+        const { username, password } = remoteCredentials(ctx, url);
+        // And the Basic authorization they were sent as, which a server may echo.
+        const secrets = [ctx.env.GIT_PASSWORD, ctx.env.GIT_TOKEN, inUrl.password,
+            password ? base64Utf8(`${username}:${password}`) : '',
+            inUrl.password ? base64Utf8(`${inUrl.username}:${inUrl.password}`) : '']
+            .filter((secret) => Boolean(secret));
+        await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets));
+        return 128;
+    }
+    await ctx.stderr.write(`\n[git] ${what} failed: ${result.error}\n`);
+    return 1;
+}
+/**
  * `path` in the namespace as `view` sees it, every link resolved: the
  * nearest name above it that is there, resolved, and the rest as given.
  */
@@ -2782,7 +2846,11 @@ async function firstMissing(view, path) {
 export async function runGitCommand(ctx, vfs, doCtx, doEnv, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
 network = ISOLATE_NETWORK, 
-/** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
+/**
+ * The session's filesystem authority: a host bridge on the namespace, for
+ * the cleanup of a clone on a mount, and the namespace's ingestion of the
+ * waves a repository's objects go in.
+ */
 filesystem, 
 /** The session's process table: a background clone runs as a process of its own. */
 processes) {
@@ -2791,6 +2859,10 @@ processes) {
         globals = parseGitGlobals(ctx.args, getDir(ctx));
     }
     catch (e) {
+        if (e instanceof GitGlobalsError) {
+            await ctx.stderr.write(e.lines);
+            return e.code;
+        }
         ctx.stderr.write(`git: ${e?.message}\n`);
         return 129;
     }
@@ -2825,7 +2897,8 @@ processes) {
     // This command's filesystem, once made: what its worktree work cost is kept by it.
     let commandFs = null;
     try {
-        git = await getGit();
+        // `-c`'s settings over the files', for this command.
+        git = withConfigOverrides(await getGit(), globals.config);
     }
     catch (e) {
         ctx.stderr.write(`git: failed to load git module: ${e?.message}\n`);
@@ -2869,7 +2942,7 @@ processes) {
                 remote: remote.name,
                 url: remote.url,
                 oids,
-                auth: { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' },
+                auth: remoteCredentials(ctx, remote.url),
             }, network);
             return true;
         };
@@ -2878,7 +2951,8 @@ processes) {
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
         commandEngines.set(fs, {
             key: async (path) => await engineKey(ctx.vfs, vfs, path),
-            writeStream: (stream) => vfs.as(ctx.cred).writeStream(stream),
+            // Without the session's namespace (a bare engine), nothing is placed elsewhere.
+            writeStream: (stream) => (filesystem?.waves ?? new WaveIngest(null)).writeStream(vfs.as(ctx.cred), stream),
         });
         // Where a network command writes a repository: its engine key, or on a
         // mount its path in the namespace (every link resolved), which the
@@ -2920,11 +2994,24 @@ processes) {
                         ctx.stdout.write(`Reinitialized existing Git repository in ${gitDir}/\n`);
                     return 0;
                 }
-                if (initArgs.branch !== undefined && !isValidRefName(`refs/heads/${initArgs.branch}`)) {
-                    ctx.stderr.write(`fatal: invalid initial branch name: '${initArgs.branch}'\n`);
+                // -b, or init.defaultBranch (from `-c`, read over the files'), or git's master.
+                let initialBranch = initArgs.branch;
+                if (initialBranch === undefined) {
+                    let configured;
+                    try {
+                        configured = await git.getConfig({ fs, dir: initDir, path: 'init.defaultBranch' });
+                    }
+                    catch {
+                        configured = undefined;
+                    }
+                    if (typeof configured === 'string')
+                        initialBranch = configured;
+                }
+                if (initialBranch !== undefined && !isValidRefName(`refs/heads/${initialBranch}`)) {
+                    ctx.stderr.write(`fatal: invalid initial branch name: '${initialBranch}'\n`);
                     return 128;
                 }
-                await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initArgs.branch === undefined ? {} : { defaultBranch: initArgs.branch }) });
+                await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initialBranch === undefined ? {} : { defaultBranch: initialBranch }) });
                 if (!initArgs.quiet)
                     ctx.stdout.write(`Initialized empty Git repository in ${gitDir}/\n`);
                 return 0;
@@ -3011,10 +3098,7 @@ processes) {
                                 historyBudgetUnits: Number(ctx.env.NIMBUS_GIT_HISTORY_BUDGET_UNITS) || undefined,
                                 pieceTimeoutMs: Number(ctx.env.NIMBUS_GIT_PIECE_TIMEOUT_MS) || undefined,
                                 historyConcurrency: Number(ctx.env.NIMBUS_GIT_HISTORY_CONCURRENCY) || undefined,
-                                auth: {
-                                    username: ctx.env.GIT_USERNAME || '',
-                                    password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                                },
+                                auth: remoteCredentials(ctx, url),
                             }, network);
                         }
                         catch (error) {
@@ -3031,9 +3115,7 @@ processes) {
                         // A write git would have failed: git's words, and git's 128 (it dies); else what failed.
                         // A stopped clone ends as its signal says, silently, as git's does.
                         const code = result.cancelled !== undefined ? exitCodeForAbortSignal(signal)
-                            : result.gitFailure !== undefined ? 128 : 1;
-                        if (result.cancelled === undefined)
-                            ctx.stderr.write(result.gitFailure ?? `\n[git] clone failed: ${result.error}\n`);
+                            : await networkFailure(ctx, 'clone', result, url);
                         // A destroy's wipe takes its junk and its record (or, if the wipe
                         // fails, the next start's recovery does): it writes nothing more.
                         if (result.cancelled?.reason === SESSION_DESTROYED)
@@ -3371,6 +3453,9 @@ processes) {
                 const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
                     !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
                 const remote = rest[0] || 'origin';
+                const fetchUrl = await knownRemote(ctx, git, fs, dir, remote, 'fetch');
+                if (fetchUrl === undefined)
+                    return 128;
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
                     return 1;
@@ -3379,6 +3464,7 @@ processes) {
                     ctx.stdout.write(`Fetching from ${remote}...\n`);
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'fetch',
+                    url: fetchUrl,
                     pid: ctx.pid,
                     signal: ctx.signal,
                     dir: target,
@@ -3387,10 +3473,7 @@ processes) {
                     quiet,
                     depth: deepen?.depth,
                     relative: deepen?.relative,
-                    auth: {
-                        username: ctx.env.GIT_USERNAME || '',
-                        password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                    },
+                    auth: remoteCredentials(ctx, fetchUrl),
                 }, network);
                 if (result.success) {
                     if (!quiet)
@@ -3400,10 +3483,7 @@ processes) {
                 else if (result.cancelled !== undefined) {
                     return exitCodeForAbortSignal(ctx.signal);
                 }
-                else {
-                    ctx.stderr.write(`\n[git] fetch failed: ${result.error}\n`);
-                    return 1;
-                }
+                return await networkFailure(ctx, 'fetch', result, fetchUrl);
             }
             case 'pull': {
                 // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
@@ -3413,6 +3493,10 @@ processes) {
                 const { quiet, rest } = takeQuiet(subArgs);
                 const remote = rest[0] || 'origin';
                 const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
+                // Its fetch, git's child, fails (128); pull says 1.
+                const pullUrl = await knownRemote(ctx, git, fs, dir, remote, 'fetch');
+                if (pullUrl === undefined)
+                    return 1;
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
                     return 1;
@@ -3427,6 +3511,7 @@ processes) {
                 const started = Date.now();
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'fetch',
+                    url: pullUrl,
                     pid: ctx.pid,
                     signal: ctx.signal,
                     dir: target,
@@ -3434,15 +3519,13 @@ processes) {
                     remote,
                     ref: branch,
                     quiet,
-                    auth: {
-                        username: ctx.env.GIT_USERNAME || '',
-                        password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                    },
+                    auth: remoteCredentials(ctx, pullUrl),
                 }, network);
                 if (result.cancelled !== undefined)
                     return exitCodeForAbortSignal(ctx.signal);
                 if (!result.success) {
-                    ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
+                    // git's pull runs its fetch as a child: its message, and pull's own 1.
+                    await networkFailure(ctx, 'pull', result, pullUrl);
                     return 1;
                 }
                 const merged = await mergeCommand(ctx, git, fs, repoVfs, dir, `${remote}/${branch}`, true, partial);
@@ -3456,6 +3539,9 @@ processes) {
                 const { quiet, rest } = takeQuiet(subArgs);
                 const remote = rest[0] || 'origin';
                 const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
+                const pushUrl = await knownRemote(ctx, git, fs, dir, remote, 'push');
+                if (pushUrl === undefined)
+                    return 128;
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
                     return 1;
@@ -3464,6 +3550,7 @@ processes) {
                     ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'push',
+                    url: pushUrl,
                     pid: ctx.pid,
                     signal: ctx.signal,
                     dir: target,
@@ -3471,10 +3558,7 @@ processes) {
                     remote,
                     ref: branch,
                     quiet,
-                    auth: {
-                        username: ctx.env.GIT_USERNAME || '',
-                        password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                    },
+                    auth: remoteCredentials(ctx, pushUrl),
                 }, network);
                 if (result.success) {
                     if (!quiet)
@@ -3484,10 +3568,7 @@ processes) {
                 else if (result.cancelled !== undefined) {
                     return exitCodeForAbortSignal(ctx.signal);
                 }
-                else {
-                    ctx.stderr.write(`\n[git] push failed: ${result.error}\n`);
-                    return 1;
-                }
+                return await networkFailure(ctx, 'push', result, pushUrl);
             }
             case 'merge': {
                 const theirs = subArgs.find(a => !a.startsWith('-'));
@@ -3507,18 +3588,21 @@ processes) {
                 const value = subArgs[subArgs.indexOf(key || '') + 1];
                 if (key && value) {
                     const [section, ...rest] = key.split('.');
+                    // Set: git says nothing.
                     await git.setConfig({ fs, dir, path: key, value });
-                    ctx.stdout.write(`${key}=${value}\n`);
                 }
                 else if (key) {
+                    // A key not set is git's exit 1, and nothing printed.
+                    let val;
                     try {
-                        const val = await git.getConfig({ fs, dir, path: key });
-                        ctx.stdout.write(`${val}\n`);
+                        val = await git.getConfig({ fs, dir, path: key });
                     }
                     catch {
-                        ctx.stderr.write(`config: key '${key}' not set\n`);
-                        return 1;
+                        val = undefined;
                     }
+                    if (val === undefined)
+                        return 1;
+                    ctx.stdout.write(`${val === null ? '' : val}\n`);
                 }
                 else {
                     ctx.stderr.write('usage: git config <key> [value]\n');

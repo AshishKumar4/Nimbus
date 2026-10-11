@@ -13,10 +13,12 @@ import assert from 'node:assert/strict';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(harness.sql, harness.ctx);
+const waves = new WaveIngest(null);
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const kernel = raw.as(CRED_KERNEL);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
@@ -41,7 +43,7 @@ inodes.push({ path: 'home/user/repo/link', parentPath: 'home/user/repo', kind: '
 chunks.push({ path: 'home/user/repo/link', chunkId: 0, data: target });
 
 const selectsBefore = harness.statements.filter((statement) => statement.sql.startsWith('SELECT path, parent_path')).length;
-const result = await vfs.writeStream(encodeWriteBatchStream({ inodes, chunks }));
+const result = await waves.writeStream(vfs, encodeWriteBatchStream({ inodes, chunks }));
 const inodeSelects = harness.statements.filter((statement) => statement.sql.startsWith('SELECT path, parent_path')).length - selectsBefore;
 assert.equal(result.ok, true, result.error?.message);
 
@@ -81,7 +83,7 @@ console.log('sqlite vfs write stream receipts: ok');
       many.push({ path: `home/user/flat/f${index}`, parentPath: 'home/user/flat', kind: 'file', isDir: false, size: data.byteLength, mtime: 1, mode: 0o644, chunkCount: 1 });
       manyChunks.push({ path: `home/user/flat/f${index}`, chunkId: 0, data });
     }
-    const flat = await vfs.writeStream(encodeWriteBatchStream({ inodes: many, chunks: manyChunks }));
+    const flat = await waves.writeStream(vfs, encodeWriteBatchStream({ inodes: many, chunks: manyChunks }));
     assert.equal(flat.ok, true, flat.error?.message);
     assert.ok(checks.count < 100, `${checks.count} access checks placed 500 files in one directory`);
   } finally {

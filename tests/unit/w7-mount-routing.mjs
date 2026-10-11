@@ -4,7 +4,7 @@
  * same names for a single operation: on a mount, a record is that mount's
  * (by the namespace's own operation), never SQLite's under the mount point.
  *
- * Every wave reaches SqliteVFS.writeStream: a process's binding (npm's batch
+ * Every wave reaches the namespace's WaveIngest: a process's binding (npm's batch
  * facet, git's network facet, a WaveWriter in any facet, a delegation's
  * holder) through the writeBatchStream op, and in-session commands (git's
  * object writer, npm's bin links) holding the engine. Red before:
@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
-import { ROUTED_FILE_MAX, SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ROUTED_FILE_MAX } from '../../packages/core/src/runtime/wave-contracts.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
@@ -181,7 +182,7 @@ function wave(...parts) {
 // ── A command holding the engine routes the same way ───────────────────
 {
   const s = session();
-  const result = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/from-engine', 'engine'))));
+  const result = await s.files.waves.writeStream(s.engine.as(CRED_SESSION_USER), encodeWriteBatchStream(wave(file('shared/from-engine', 'engine'))));
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(s.inMount(s.shared, '/from-engine'), 'engine');
   assert.deepEqual(s.sqliteNames('shared'), []);
@@ -246,7 +247,7 @@ function scripted(overrides) {
   const s = session();
   let admits = 0;
   // Overtaken right before the file's call: nothing of it is written, nor anything after it.
-  const result = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/late', new Uint8Array(150_000).fill(9)), file('shared/after', 'a'))), {
+  const result = await s.files.waves.writeStream(s.engine.as(CRED_SESSION_USER), encodeWriteBatchStream(wave(file('shared/late', new Uint8Array(150_000).fill(9)), file('shared/after', 'a'))), {
     admit: () => { if (++admits >= 2) throw Object.assign(new Error('ESTALE: overtaken'), { code: 'ESTALE' }); },
   });
   assert.equal(result.ok, false);
@@ -383,7 +384,7 @@ function scripted(overrides) {
   const home = new MemoryVFS();
   engine.as(CRED_KERNEL).mkdir('home/user', { recursive: true });
   files.vfs.mount('/home/user', home);
-  const seeded = seedProject(engine);
+  const seeded = seedProject(files);
   assert.equal(seeded.seeded, false);
   assert.equal(engine.as(CRED_KERNEL).exists('home/user/example-app'), false, 'the starter project was written beneath a mount');
 }
@@ -416,7 +417,7 @@ function scripted(overrides) {
   const files = new ProcessFiles(engine);
   seedBaseFilesystem(engine);
   files.vfs.mount('/home/user/example-app/src', new MemoryVFS());
-  const seeded = seedProject(engine);
+  const seeded = seedProject(files);
   assert.equal(seeded.seeded, false, 'a project with a name on a mount was seeded');
   assert.equal(engine.as(CRED_KERNEL).exists('home/user/example-app/src'), false, 'the seed wrote SQLite beneath a mount');
 }
@@ -570,12 +571,12 @@ function scripted(overrides) {
   s.shared.writeFile('/peer', enc.encode('old'));
   const first = deliveries.admitWave(7, writer, 1, 1);
   const payload = { ...wave(file('ro/x', 'x')), deletePaths: ['shared/peer'] };
-  const one = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(payload), { admit: first.check, mountReach: first.reach });
+  const one = await s.files.waves.writeStream(s.engine.as(CRED_SESSION_USER), encodeWriteBatchStream(payload), { admit: first.check, mountReach: first.reach });
   assert.equal(one.ok, false);
   // A peer makes the name again; the re-send must not remove it.
   s.shared.writeFile('/peer', enc.encode('new'));
   const second = deliveries.admitWave(7, writer, 1, 2);
-  const two = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(payload), { admit: second.check, mountReach: second.reach });
+  const two = await s.files.waves.writeStream(s.engine.as(CRED_SESSION_USER), encodeWriteBatchStream(payload), { admit: second.check, mountReach: second.reach });
   assert.equal(two.ok, false);
   assert.match(two.error.message, /outcome unknown/);
   assert.equal(s.inMount(s.shared, '/peer'), 'new', 'the re-send removed what a peer made since');
@@ -583,7 +584,7 @@ function scripted(overrides) {
   const third = deliveries.admitWave(7, writer, 2, 1);
   void third;
   const fourth = deliveries.admitWave(7, writer, 2, 2);
-  const applied = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/fresh', 'f'))), { admit: fourth.check, mountReach: fourth.reach });
+  const applied = await s.files.waves.writeStream(s.engine.as(CRED_SESSION_USER), encodeWriteBatchStream(wave(file('shared/fresh', 'f'))), { admit: fourth.check, mountReach: fourth.reach });
   assert.equal(applied.ok, true, JSON.stringify(applied));
   assert.equal(s.inMount(s.shared, '/fresh'), 'f');
 }
@@ -654,7 +655,7 @@ const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
 // gathered calls held memory no credit covered; any size was gathered whole.
 {
   const s = session();
-  const { DATA_CALL_MAX } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
+  const { DATA_CALL_MAX } = await import('../../packages/core/src/runtime/wave-contracts.ts');
   const credits = s.engine.writeStreamCredits;
   let peak = 0;
   const bytes = new Uint8Array(3 * 1024 * 1024).fill(7);

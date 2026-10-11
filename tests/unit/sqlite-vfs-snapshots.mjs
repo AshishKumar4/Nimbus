@@ -13,6 +13,7 @@ import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function open(harness = createSqliteVfsTestHarness()) {
@@ -231,9 +232,10 @@ for (const op of ['restore', 'drop']) {
   const bytes = await collect(encodeWriteBatchStream(payload));
   for (const quiesce of [false, true]) {
     const { raw, vfs } = open();
+    const waves = new WaveIngest(null);
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
-    const writing = vfs.writeStream(paused(bytes, gate));
+    const writing = waves.writeStream(vfs, paused(bytes, gate));
     await new Promise((resolve) => setTimeout(resolve, 20));
     const snapping = quiesce ? raw.snapshot('s', { quiesce: true }) : raw.snapshot('s');
     release();

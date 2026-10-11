@@ -10,7 +10,7 @@
  * namespace. Configuration is cf-git's reading of .git/config, and for
  * core.excludesFile the global files git reads as well.
  */
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
 import { type SparseMatcher } from '../pack/sparse.js';
@@ -70,9 +70,9 @@ export interface ObjectWriter {
     flush(): Promise<void>;
 }
 /**
- * git_config_bool's spellings, of a value as cf-git reads it: a key with no
- * `=` is 'true' there (git's true), and an explicit empty value is ''
- * (git's false).
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
  */
 export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {

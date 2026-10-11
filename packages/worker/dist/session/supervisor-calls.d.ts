@@ -54,7 +54,7 @@ import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
-import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
@@ -382,23 +382,6 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * binding was made with: a delegation the process took at run time.
      */
     writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<WriteBatchStreamResult>;
-    /**
-     * Bulk-write npm registry cache entries (resolved packument metadata)
-     * in ONE RPC. Used by the resolver-facet to flush a wave of resolved
-     * packages back to the supervisor without per-entry round-trips.
-     *
-     * `entries` is an array of RegistryCacheEntry from src/npm-cache.ts:
-     *   { name, version, tarballUrl, integrity, depsJson, exportsJson,
-     *     main, moduleField, binJson, fetchedAt }
-     *
-     * Returns { written, failed } — partial writes are tolerated; cache
-     * is best-effort (resolver correctness depends on the returned
-     * ResolvedPackage[], not on cache hits).
-     */
-    putRegistryEntries(entries: any[]): Promise<{
-        written: number;
-        failed: number;
-    }>;
     /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns

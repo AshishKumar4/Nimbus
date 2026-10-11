@@ -20,6 +20,7 @@
  */
 
 import type { SqliteVFS } from './sqlite-vfs.js';
+import type { WaveIngest } from '../runtime/wave-ingest.js';
 import { w7ChunkCount, w7Chunks, type BatchChunkEntry, type BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
 import { enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
@@ -961,15 +962,21 @@ function seedPaths(): string[] {
   return [...paths];
 }
 
-export function shouldSeedProject(vfs: SqliteVFS): boolean {
-  const view = vfs.as(CRED_KERNEL);
+/** The session's filesystem and the namespace's placement of what it writes there (ProcessFiles). */
+export interface SeedFilesystem {
+  readonly engine: SqliteVFS;
+  readonly waves: WaveIngest;
+}
+
+export function shouldSeedProject(filesystem: SeedFilesystem): boolean {
+  const view = filesystem.engine.as(CRED_KERNEL);
   try {
     // The session's own filesystem only: no name of the project lands on a
     // mount (each placed by the namespace's dispatcher), and none is read
     // from beneath one.
-    if (!vfs.placesHere(seedPaths())) return false;
+    if (!filesystem.waves.placesHere(view, seedPaths())) return false;
     // Read as exists reads them: a link at either name followed.
-    if (!vfs.placesHere([SEED_SENTINEL_PATH, SEED_PROJECT_DIR], CRED_KERNEL, { follow: true })) return false;
+    if (!filesystem.waves.placesHere(view, [SEED_SENTINEL_PATH, SEED_PROJECT_DIR], { follow: true })) return false;
     if (view.exists(SEED_SENTINEL_PATH)) return false;
     if (view.exists(SEED_PROJECT_DIR)) return false;
     return true;
@@ -999,13 +1006,13 @@ export function hasSeededProject(vfs: SqliteVFS): boolean {
  * we start clean next boot.
  */
 export function seedProject(
-  vfs: SqliteVFS,
+  filesystem: SeedFilesystem,
   opts?: { log?: (msg: string) => void },
 ): { seeded: boolean; files: number; reason?: string } {
   const log = opts?.log;
-  const view = vfs.as(CRED_KERNEL);
+  const view = filesystem.engine.as(CRED_KERNEL);
 
-  if (!shouldSeedProject(vfs)) {
+  if (!shouldSeedProject(filesystem)) {
     return { seeded: false, files: 0, reason: 'already-seeded-or-present' };
   }
 
@@ -1067,7 +1074,7 @@ export function seedProject(
   try {
     // Phase 1: all project files + directories in ONE transactionSync, in
     // the turn their placement on the session's filesystem was checked.
-    if (!vfs.placesHere(inodes.map((inode) => inode.path).concat(SEED_SENTINEL_PATH))) return { seeded: false, files: 0, reason: 'not-on-the-session-filesystem' };
+    if (!filesystem.waves.placesHere(view, inodes.map((inode) => inode.path).concat(SEED_SENTINEL_PATH))) return { seeded: false, files: 0, reason: 'not-on-the-session-filesystem' };
     const result = view.writeBatch({ inodes, chunks });
     fileCount = SEED_FILES.length;
     log?.(`[seed] wrote ${SEED_FILES.length} files + ${dirSet.size} dirs (${result.inodes} inodes, ${result.chunks} chunks)`);
@@ -1081,7 +1088,7 @@ export function seedProject(
       `# Seeded at: ${new Date(mtime).toISOString()}\n` +
       `# Files: ${SEED_FILES.length}\n`,
     );
-    if (!vfs.placesHere([SEED_SENTINEL_PATH])) return { seeded: false, files: fileCount, reason: 'not-on-the-session-filesystem' };
+    if (!filesystem.waves.placesHere(view, [SEED_SENTINEL_PATH])) return { seeded: false, files: fileCount, reason: 'not-on-the-session-filesystem' };
     view.writeBatch({
       inodes: [{
         path: SEED_SENTINEL_PATH,
