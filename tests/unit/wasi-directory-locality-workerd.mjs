@@ -11,7 +11,8 @@ try {
     assert.equal(made.status, 0, made.stdout);
     assert.equal((await terminal.run('nimbus install git', 120000)).status, 0);
     const statusOf = async () => {
-      const run = await terminal.run('NIMBUS_WASI_FS_STATS=1 git -C tree status --porcelain', 120000);
+      // Real git (its environment's marker), not the built-in git the front door would route status to.
+      const run = await terminal.run('NIMBUS_GIT_WASI=1 NIMBUS_WASI_FS_STATS=1 git -C tree status --porcelain', 120000);
       assert.equal(run.status, 0, run.stdout);
       const line = run.stdout.split('\n').find((value) => value.includes('[wasi-fs] git '));
       assert.ok(line, run.stdout);

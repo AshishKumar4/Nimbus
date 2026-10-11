@@ -34,7 +34,7 @@ import type { Command, CommandContext, CommandOutputStream } from '../substrate/
 import type { FacetHost } from './facet-host.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import type { GitFacetArgs, GitFacetResult } from './git-facet-task.js';
-import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
+import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
 import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath } from '../vfs/path.js';
@@ -122,6 +122,7 @@ export function makeGitRunnerFactory(deps: {
       }
       env.GIT_CONFIG_SYSTEM = `/${normalizeVfsPath(systemConfig)}`;
       env.HOME ??= '/home/user';
+      env[GIT_WASI_ENV] = '1';
 
       const warm = idle.pop() ?? `git-${incarnation}-${++named}`;
       const facet = deps.facets.open({

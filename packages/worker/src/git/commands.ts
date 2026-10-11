@@ -11,7 +11,7 @@
 
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { GIT_WASI_ENV, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
@@ -26,6 +26,7 @@ import {
 import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 import { GitGlobalsError, parseConfigParameter, withConfigOverrides, type ConfigOverrides } from './config-params.js';
+import { gitBackend } from './routing.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2658,11 +2659,20 @@ export async function runGitCommand(
   filesystem?: { openHost(cred: VfsCred): { fs: { synchronous?: CleanupBridge }; dispose(): Promise<void> }; readonly waves: WaveIngest },
   /** The session's process table: a background clone runs as a process of its own. */
   processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>,
+  /**
+   * This invocation, run by real git (`nimbus install git`) instead: what
+   * this implementation lacks is real git's (routing.ts), and so is every
+   * git real git starts (its environment says GIT_WASI_ENV).
+   */
+  realGit?: () => Promise<number>,
 ): Promise<number> {
+  if (realGit !== undefined && ctx.env[GIT_WASI_ENV] === '1') return realGit();
   let globals: ParsedGitGlobals;
   try {
     globals = parseGitGlobals(ctx.args, getDir(ctx));
   } catch (e: any) {
+    // A leading option this implementation does not take is real git's, where it is installed.
+    if (realGit !== undefined) return realGit();
     if (e instanceof GitGlobalsError) {
       await ctx.stderr.write(e.lines);
       return e.code;
@@ -2671,6 +2681,7 @@ export async function runGitCommand(
     return 129;
   }
   const { sub, subArgs } = globals;
+  if (realGit !== undefined && gitBackend(sub, subArgs) === 'wasi') return realGit();
   // The directory as git's getcwd() sees it, every link resolved: a
   // worktree reached through a link (a mount's link into SQLite, say) is
   // the directory it names, whose top is not itself a link.

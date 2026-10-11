@@ -28,7 +28,7 @@ import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { createNpmInstallPort } from '../session/npm-install-port.js';
 import { createRuntimeCommandHintResolver } from '../runtime/package-manager.js';
 import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../session/programmatic.js';
-import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtimes.js';
+import { listInstalledRuntimes, type RunnerFactory } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
@@ -124,10 +124,14 @@ registry.register('chsh', makeChshCommand({
 // exhausting the supervisor DO's CPU budget on large repos. The command
 // module (+ its ~106 KB network-facet dependency) is loaded lazily on the
 // first `git` invocation so it stays out of the cold script-eval graph.
-registry.register('git', async (ctx: any) => {
+// The one `git`: with real git installed (below), the same command, routing
+// what it lacks there (git/routing.ts).
+const runGit = async (ctx: CommandContext, realGit?: Command): Promise<number> => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
-});
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes,
+    realGit === undefined ? undefined : () => realGit(ctx));
+};
+registry.registerBuiltin('git', (ctx) => runGit(ctx));
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
 //
@@ -138,14 +142,16 @@ registry.register('git', async (ctx: any) => {
 // 3. Rehydrate any previously-installed runtimes from VFS so their
 //    bins reappear in the registry after DO eviction or WS reconnect.
 // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
-// The image cache is incarnation-local; fsmonitor issued-token provenance
-// is durable host metadata so a wake can keep the VFS revision token.
-let gitFactory: Promise<ReturnType<typeof import('@nimbus-sh/core/runtime/git-runner.js')['makeGitRunnerFactory']>> | null = null;
+// Its `git` is the built-in one above with real git behind it; uninstalled,
+// the built-in answers alone again. The image cache is incarnation-local;
+// fsmonitor issued-token provenance is durable host metadata so a wake can
+// keep the VFS revision token.
+let gitFactory: Promise<RunnerFactory> | null = null;
 workspace.runtimes.registerRunner(
   GIT_RUNNER,
   (manifest, installRoot, binName, binKind) => {
     let handler: Promise<Command> | null = null;
-    return async (ctx: CommandContext) => {
+    const realGit: Command = async (ctx) => {
       gitFactory ??= (async () => {
         const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
         const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
@@ -159,6 +165,7 @@ workspace.runtimes.registerRunner(
         .catch((error) => { handler = null; throw error; });
       return (await handler)(ctx);
     };
+    return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
   },
 );
 workspace.runtimes.registerRunner(

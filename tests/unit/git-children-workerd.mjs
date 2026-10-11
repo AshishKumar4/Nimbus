@@ -36,6 +36,8 @@ try {
     return r;
   };
   try {
+    // Every git here is real git (the marker real git gives its own children).
+    await run('export NIMBUS_GIT_WASI=1');
     await run(`mkdir -p repo && cd repo && git init -q -b main && printf 'a\\n' > a.txt && git add a.txt && ${ID} git commit -q -m first; cd ~`);
 
     await run(`cd repo && mkdir -p .git/hooks && printf '#!/bin/sh\\ngit log --format=hook-saw:%%s -1 > .git/hook.out\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit; cd ~`);
