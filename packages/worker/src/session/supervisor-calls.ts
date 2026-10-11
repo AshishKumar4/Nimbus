@@ -157,7 +157,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       const run = this._runId();
       if (props?.bindingKind === 'infrastructure') {
         if (run !== undefined) throw new Error('infrastructure supervisor cannot carry a process run');
-        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
           throw new Error('infrastructure supervisor refuses guest-originated operations');
         }
       } else if (run === undefined) throw new Error('process supervisor binding requires a run');
@@ -1041,6 +1041,11 @@ export function supervisorCalls<Base extends Class>(base: Base) {
 
     async cpDrainOutput(childPid: number): Promise<{ stdout: Uint8Array; stderr: Uint8Array; stdoutClosed: boolean; stderrClosed: boolean }> {
       return this._call(this._op('cpDrainOutput', [childPid]));
+    }
+
+    /** The parent closes its read end of the child's fd 1 or 2: the child's writes there fail, EPIPE. */
+    async cpCloseOutput(childPid: number, fd: 1 | 2): Promise<void> {
+      return this._call(this._op('cpCloseOutput', [childPid, fd]));
     }
 
     async cpKill(childPid: number, signal: string): Promise<boolean> {

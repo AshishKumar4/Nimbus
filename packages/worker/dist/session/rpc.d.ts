@@ -437,6 +437,7 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
 }>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
+export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
 /**
  * Process `pid` says whether its only remaining work is waiting on its

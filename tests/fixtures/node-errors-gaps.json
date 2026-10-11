@@ -1,0 +1,19 @@
+{
+ "write after destroy": {
+  "why": "workerd's NodeError (node-internal:internal_errors) is a class named for its code, sets an own enumerable name, and captures its stack without [code]; Node's is the base class's constructor and name, with `Name [CODE]: message` as its stack's first line. A possible workerd fix; the shims cannot reach the class.",
+  "platform": {
+   "ctor": "ERR_STREAM_DESTROYED",
+   "header": "Error: Cannot call write after a stream was destroyed",
+   "keys": [
+    "code",
+    "name"
+   ],
+   "ownName": true,
+   "inspect": [
+    "ERR_STREAM_DESTROYED [Error]: Cannot call write after a stream was destroyed",
+    "  code: 'ERR_STREAM_DESTROYED'",
+    "}"
+   ]
+  }
+ }
+}

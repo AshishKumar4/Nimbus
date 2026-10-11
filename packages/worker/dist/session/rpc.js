@@ -1309,6 +1309,9 @@ export async function _rpcCpDrainOutput(self, childPid) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.drainOutput(childPid);
 }
+export async function _rpcCpCloseOutput(self, childPid, fd) {
+    self._ensureFacetProcessManager().closeOutput(childPid, fd);
+}
 export async function _rpcCpKill(self, childPid, signal) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.kill(childPid, signal);

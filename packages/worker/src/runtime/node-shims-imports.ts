@@ -38,7 +38,7 @@
 
 const STATIC_BUILTINS = [
   'async_hooks', 'buffer', 'crypto', 'diagnostics_channel', 'events', 'inspector', 'inspector/promises', 'net', 'path',
-  'perf_hooks', 'repl', 'string_decoder', 'tls', 'url', 'util', 'vm', 'zlib',
+  'perf_hooks', 'repl', 'stream', 'string_decoder', 'tls', 'url', 'util', 'vm', 'zlib',
 ] as const;
 
 export const NODE_SHIMS_IMPORTS = [
