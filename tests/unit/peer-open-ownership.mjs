@@ -5,7 +5,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 import { peerPlacement } from '../../packages/fabric/src/process-host.ts';
-import { HOSTED_RESIDENCY_HEADER, HOSTED_WEBSOCKET_CAPABILITY_HEADER } from '../../packages/fabric/src/peer-host.ts';
+import { HOSTED_RESIDENCY_HEADER, HOSTED_WEBSOCKET_CAPABILITY_HEADER, isHostedResidency } from '../../packages/fabric/src/peer-host.ts';
 
 adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
 const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: ['nodejs_compat'], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
@@ -50,6 +50,27 @@ for (const reset of [false, true]) {
   assert.equal(t.world.boots.length, 0, 'no guest code executes after the placement was released');
   const peer = [...t.peers.values()][0];
   assert.equal(await peer.ctx.storage.get('hosting-cancelled:' + t.params.workerKey), true);
+}
+
+{
+  const t = setup(), host = t.open(), entered = Promise.withResolvers(), deliver = Promise.withResolvers();
+  const get = host.ns.get.bind(host.ns);
+  host.ns.get = (name) => {
+    const stub = get(name), fetch = stub.fetch.bind(stub);
+    return { ...stub, async fetch(request) {
+      if (isHostedResidency(request)) { entered.resolve(); await deliver.promise; request.signal.throwIfAborted(); }
+      return fetch(request);
+    } };
+  };
+  const opening = host.open(t.params); void opening.catch(() => {});
+  await entered.promise;
+  await host.close();
+  deliver.resolve();
+  await assert.rejects(opening, /abort/i, 'release while the residency upgrade is pending cannot publish a live handle');
+  await turns();
+  assert.equal(t.world.liveFacets().length, 0);
+  assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
+  assert.equal((await t.ctx.storage.list({ prefix: 'process-peer:' })).size, 0);
 }
 
 {

@@ -96,6 +96,18 @@ try {
       await sleep(50);
     }
     a.check('coordinator reset releases residency during active work without a cancel call', !peerAfterReset.found && peerAfterReset.residencies === 0, JSON.stringify(peerAfterReset));
+
+    const fifth = await mintSession(); sessions.push(fifth);
+    const released = await server(fifth);
+    const releasing = await probe(fifth, 'inspect', released.pid);
+    const killed = await released.terminal.run(`kill ${released.pid}`, 15000);
+    let peerAfterRelease;
+    for (let i = 0; i < 40; i++) {
+      peerAfterRelease = await probe(fifth, 'placement-state', undefined, releasing.placement);
+      if (!peerAfterRelease.found && peerAfterRelease.residencies === 0) break;
+      await sleep(50);
+    }
+    a.check('explicit process release ends its passive residency and hosting record', killed.exitCode === 0 && !peerAfterRelease.found && peerAfterRelease.residencies === 0, JSON.stringify(peerAfterRelease));
   }
 } finally {
   for (const terminal of terminals) await terminal.close().catch(() => {});
