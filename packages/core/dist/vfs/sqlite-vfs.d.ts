@@ -221,6 +221,8 @@ export interface CredentialedVfs {
     readFileString(path: string): string;
     stat(path: string): VfsStat;
     lstat(path: string): VfsStat;
+    /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
+    statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
     /**
      * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
      * Only now/omit needs no more than write permission or ownership; an
@@ -1236,6 +1238,10 @@ export declare class SqliteVFS {
     private resolvePath;
     /** resolvePath's walk. */
     private walkPath;
+    /** A walk's answer, kept as lastResolution when it found something on the live tree. */
+    private walked;
+    /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
+    private remember;
     /**
      * Walk a plain SQLite path once, checking ancestor search permission. A
      * link that needs following, or a name claimed by the namespace, returns
@@ -1779,6 +1785,8 @@ export declare class SqliteVFS {
     private abandonStaging;
     private readFileString;
     private stat;
+    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
+    private statIfPresent;
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     private statOf;
     /**

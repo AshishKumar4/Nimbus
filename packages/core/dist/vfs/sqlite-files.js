@@ -101,8 +101,10 @@ export class SqliteFiles {
         if (path.replace(/\/+/g, '') === '') {
             return { dev: this.engine.deviceId, ino: ROOT_INODE, type: 'directory', size: 0, mtimeMs: 0, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0, revision: `${this.view.epoch}:0` };
         }
+        // A name that is not there is an answer: no error is made for it.
         try {
-            return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);
+            const stat = this.view.statIfPresent(path, options?.follow !== false);
+            return stat === null ? null : statOf(stat, this.view.epoch);
         }
         catch (error) {
             const converted = toVfsError(error, options?.follow === false ? 'lstat' : 'stat', path);
