@@ -76,7 +76,7 @@ import {
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { type FacetCachedEntry } from './resolve-facet.js';
+import { recordEdges, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import {
   type ResolveOneSpec,
   type ResolveOneResult,
@@ -706,7 +706,7 @@ export class NpmInstaller {
     // edge is refused at this depth rather than nested without end.
     const MAX_NEST_DEPTH = 16;
     let queue: ResolveEdge[] = Object.entries(specs).map(([name, range]) => ({ name, range, from: '', kind: 'dep' }));
-    const cacheWritesPending: any[] = [];
+    const cacheWritesPending: RegistryCacheEntry[] = [];
     let totalPackumentBytes = 0;
     let totalPackumentsDecoded = 0;
     let layerN = 0;
@@ -816,26 +816,10 @@ export class NpmInstaller {
       // stays small. Bounded to 16 versions per name — enough to cover
       // ~2 majors of typical packages, well under any RPC arg size cap.
       const tasks = layer.map(({ edge: { name, range }, placement }) => {
-        const cachedRows = this.cache.getRegistryVersions(name).slice(0, 16);
-        const cachedEntries: FacetCachedEntry[] = cachedRows.map((e) => ({
-          name: e.name,
-          version: e.version,
-          tarballUrl: e.tarballUrl,
-          integrity: e.integrity,
-          depsJson: e.depsJson,
-          peerDepsJson: e.peerDepsJson,
-          exportsJson: e.exportsJson,
-          main: e.main,
-          moduleField: e.moduleField,
-          binJson: e.binJson,
-          platformJson: e.platformJson,
-          optionalDepsJson: e.optionalDepsJson,
-          fetchedAt: e.fetchedAt,
-        }));
         const taskSpec: ResolveOneSpec = {
           name,
           range,
-          cachedEntries,
+          cachedEntries: this.cache.getRegistryVersions(name).slice(0, 16),
           isOptional: optionalNames.has(name),
           fetchTimeoutMs: 15_000,
           retries: 3,
@@ -1579,14 +1563,13 @@ export class NpmInstaller {
     for (const [placement, entry] of lockfile) {
       const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
       if (!cached) return false;
-      const optional = safeJsonParse<Record<string, string>>(cached.optionalDepsJson || '{}', {});
-      const deps = safeJsonParse<Record<string, string>>(cached.depsJson || '{}', {});
-      for (const depName of Object.keys(deps)) {
+      const edges = recordEdges(cached);
+      const optional = edges.optionalDependencies ?? {};
+      for (const depName of Object.keys(edges.dependencies)) {
         if (Object.hasOwn(optional, depName)) continue;
         if (!visiblePlacements(placement, depName).some((p) => lockfile.has(p))) return false;
       }
-      const peers = safeJsonParse<Record<string, string>>(cached.peerDepsJson || '{}', {});
-      for (const peerName of Object.keys(peers)) {
+      for (const peerName of Object.keys(edges.peerDependencies ?? {})) {
         if (!visiblePlacements(placement, peerName).some((p) => lockfile.has(p))) return false;
       }
     }
@@ -1608,10 +1591,11 @@ export class NpmInstaller {
       if (entry === undefined || reached.has(placement)) continue;
       reached.set(placement, entry);
       const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+      const recorded = cached ? recordEdges(cached) : { dependencies: safeJsonParse<Record<string, string>>(entry.depsJson, {}) };
       const edges = new Set([
-        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.depsJson ?? entry.depsJson, {})),
-        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.optionalDepsJson || '{}', {})),
-        ...Object.keys(safeJsonParse<Record<string, string>>(cached?.peerDepsJson || '{}', {})),
+        ...Object.keys(recorded.dependencies),
+        ...Object.keys(recorded.optionalDependencies ?? {}),
+        ...Object.keys(recorded.peerDependencies ?? {}),
       ]);
       for (const name of edges) {
         const found = visiblePlacements(placement, name).find((candidate) => lockfile.has(candidate));
@@ -1809,19 +1793,10 @@ export class NpmInstaller {
     const nested = new Map<string, ResolvedPackage>();
     for (const [placement, entry] of lockfile) {
       const name = entry.name;
-      // Reconstruct from the registry cache; on a miss, a minimal entry.
+      // Reconstruct from the registry cache, as a warm resolve does; on a
+      // miss, a minimal entry.
       const cached = this.cache.getRegistryEntry(name, entry.resolvedVer);
-      (placement === name ? resolved : nested).set(placement, cached ? {
-        name: cached.name,
-        version: cached.version,
-        tarballUrl: cached.tarballUrl,
-        integrity: cached.integrity,
-        dependencies: safeJsonParse(cached.depsJson, {}),
-        exports: safeJsonParse(cached.exportsJson, null),
-        main: cached.main,
-        module: cached.moduleField,
-        bin: safeJsonParse(cached.binJson, {}),
-      } : {
+      (placement === name ? resolved : nested).set(placement, cached ? resolvedFromRecord(cached) : {
         name,
         version: entry.resolvedVer,
         tarballUrl: '',

@@ -16,8 +16,7 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets; rpcPutRegistryEntries
- * uses self.ctx.storage.sql). The InitHost-style escape applies because
+ * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
@@ -31,7 +30,6 @@ import type { ProcessExitNotice, ProcessExitNoticeSource } from '@nimbus-sh/core
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
-import { NpmCache } from '../npm/cache.js';
 import { failureOf as errorFromCacheFailure } from '../runtime/stop-replay-body.js';
 import type { ReplayFailure } from '../runtime/stop-replay-contracts.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
@@ -1045,22 +1043,6 @@ export async function _rpcWriteBatchStream(self: RpcHost,
     return self.supervisorOp({
       op: 'writeBatchStream', stream, mutationOwner, pid,
     }) as Promise<WriteBatchStreamResult>;
-}
-
-  /**
-   * Bulk-write npm registry cache entries in ONE RPC. Used by the
-   * resolver-facet to flush a wave of resolved packages back to the
-   * supervisor without per-entry round-trips.
-   *
-   * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
-   * Returns { written, failed } so the facet can surface partial-write
-   * warnings to the install log.
-   */
-export async function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): Promise<{ written: number; failed: number }> {
-    self.ensureSqliteFs();
-    const npmCache = new NpmCache(self.ctx.storage.sql);
-    if (!Array.isArray(entries)) return { written: 0, failed: 0 };
-    return npmCache.putRegistryEntries(entries);
 }
 
 /**
