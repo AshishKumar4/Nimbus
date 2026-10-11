@@ -1,4 +1,6 @@
-import parseArgv from 'yargs-parser';
+// Only tokenization is used: the official browser export has the same grammar
+// without Node's module-scope createRequire(import.meta.url) or config I/O.
+import parseArgv from 'yargs-parser/browser';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 /** OpenCode's default command is a TUI, even when its first operand names a project. */
