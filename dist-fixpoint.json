@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6002ec7f404de5f530982591c53895215085dd2ee83dd3a67cd4d65e52c928c9",
+  "fingerprint": "cdad5e4fd3cbc386c7bcb2cdb71ced65ddf3ca90e7137d174d221d3b0cf808f6",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1186,9 +1186,9 @@
     "packages/core/dist/vfs/events.d.ts": "da21a8e1b43d47ebf6ba5cef2c45634dd88b3cfe44b06ef688d01eec78e133ac",
     "packages/core/dist/vfs/events.d.ts.map": "648a1ea02954a27581f27ff5c37e4c67448744a9a4b89a037df350a8f52024d6",
     "packages/core/dist/vfs/events.js": "2fe7a29caf66915294f9864c93da322d2dc8458912c0fb7f1d82663c464a323e",
-    "packages/core/dist/vfs/memory.d.ts": "f51e5e62bcd0651767deb095bbd817ca26b6376bb0b0964e3e1eab8802eac184",
-    "packages/core/dist/vfs/memory.d.ts.map": "c1fa41383f862fbe91c9c4a68027e378f6127e2e20c06c9d96ffc3f7dce3e0cc",
-    "packages/core/dist/vfs/memory.js": "d33ee5d7e805d9fa3e3c0d59359d58091f232d9fce757c2a37ceb2382e6e2908",
+    "packages/core/dist/vfs/memory.d.ts": "7f5783e758d3964c8e6da8fab88e7346da151a7c03a9b4d10377e807fe782410",
+    "packages/core/dist/vfs/memory.d.ts.map": "fa28db8a36814a1fd517ce70a9fd39537e62e29aff5142154be5f66d1fc31a02",
+    "packages/core/dist/vfs/memory.js": "fc91e0bba54b9dcbdab5c99e69e9cf9d5be323771bb99a153f56256d10c57ce3",
     "packages/core/dist/vfs/mounted-description.d.ts": "e721bad40665ace49d663d1e43260f776e3a140bba81365d9e801440dff77bdd",
     "packages/core/dist/vfs/mounted-description.d.ts.map": "e5227ed53405c146b610fa501b4b24b5a8659adeac8dd7d6d71434e6ce867ffc",
     "packages/core/dist/vfs/mounted-description.js": "dfe67533f9e84332da893a23a90d0a81b0b6ff6faff5f5dad2a15b57e51bc686",
@@ -1624,7 +1624,7 @@
     "packages/core/src/vfs/dev-vfs.ts": "e6d6f4ed7a13daa5f7d7f951e2620a86aa6d268b76bef85bdb5087bcd2efba7a",
     "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
     "packages/core/src/vfs/events.ts": "a82e23482840ed5aba75366596b287701f4b94e566532ca7188eb66b84a7fbaf",
-    "packages/core/src/vfs/memory.ts": "5e730c95b14de426715f82d140b0bcc7656213746de3847330a19f1678ed8511",
+    "packages/core/src/vfs/memory.ts": "9e9e05d2c7dfbd0c1b5f6a08ff6cf8976c334b8dddf3f2311cc2a9fd0de859ce",
     "packages/core/src/vfs/mounted-description.ts": "1b8342b3ba43c5e03d97c35c43022439605578cc4e03b556a2512c527dec8276",
     "packages/core/src/vfs/move.ts": "6e591c2f3e7b4f4e529ee52e0f849ccb7ba7218bffdcd9e491977f375a840679",
     "packages/core/src/vfs/path-revisions.ts": "6caf8c2a9185400c4c516609d369d40015e0cd69542afe75461c7695695637b1",

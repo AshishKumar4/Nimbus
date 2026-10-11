@@ -14,8 +14,6 @@ export declare class MemoryVFS implements VFS {
     private readonly root;
     private clock;
     private inos;
-    /** VFS.fileStore: this one, through any wrapper of it. */
-    readonly fileStore: object;
     readonly sync: SyncVFS;
     constructor(owner?: {
         uid: number;
@@ -26,6 +24,8 @@ export declare class MemoryVFS implements VFS {
     /** The entry at `path`, following symlinks except a final one when `follow` is false; `call` names a failure. */
     private find;
     private parentOf;
+    /** VFS.fileStore: this one, through any wrapper of it. */
+    get fileStore(): object;
     private stats;
     private file;
     stat(path: string, options?: {
