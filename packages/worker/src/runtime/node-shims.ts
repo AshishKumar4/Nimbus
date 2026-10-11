@@ -12163,6 +12163,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // An ES module an import loaded is the ES loader's; require.cache has it
   // once a require() loads it (require(esm)), as Node's has.
   const cached = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
+  // An adopted ES module still evaluating: a require() of it is a cycle.
+  if (cached !== undefined && adopted && required && !cached.loaded) __nimbusEsmRequire(esmId, true, parent);
   if (cached !== undefined) {
     __nimbusUpdateChildren(parent, cached, true);
     if (required) __NodeModule._cache[cacheKey] ??= cached;
@@ -12438,7 +12440,7 @@ function __nimbusEsmId(kind, key) {
 const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
 const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
-  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined };
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined, requirer: undefined };
 }
 // What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
 const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
@@ -12593,9 +12595,14 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
   const filename = "/" + __nimbusEsm.table[id][1];
-  if (record.state === __ESM_BEGAN) {
+  // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
+  if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
     if (__nimbusEsmSuspends(record)) throw __nimbusRequireAsync(parent, filename);
-    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle. A cycle involving require(esm) is not allowed to maintain invariants mandated by the ECMAScript specification. Try making at least part of the dependency in the graph lazily loaded.");
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : "") + " A cycle involving require(esm) is not allowed to maintain invariants mandated by the ECMAScript specification. Try making at least part of the dependency in the graph lazily loaded.");
+  }
+  // Evaluating, for a require(): Node's CommonJS loader's, naming the require that began it.
+  if (record.state === __ESM_ADOPTED && record.namespace === null) {
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (record.requirer ? " (from " + record.requirer + ")" : ""));
   }
   // A require() refuses a graph with top-level await before any of it runs, as Node's does.
   if (required && record.state !== __ESM_ADOPTED) {
@@ -12608,6 +12615,8 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop;
   if (record.state !== __ESM_ADOPTED) {
     record.state = __ESM_ADOPTED;
+    // Who began it, for a cycle's refusal: a require()'s module, or none for an import.
+    record.requirer = required ? parent?.filename ?? "" : undefined;
     __nimbusEsmAdoptions++;
     // NIMBUS_DIAG_ESM=1: each adoption named on stderr, to count them in a workload.
     if (__processMod.env.NIMBUS_DIAG_ESM === "1") {
@@ -12642,15 +12651,16 @@ async function __nimbusEsmImport(id) {
   const row = __nimbusEsm.table[id];
   if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
   try {
-    const evaluation = import(__NIMBUS_BUNDLE_URL + row[2]);
     // The program's own work while its graph loads, until its evaluation
     // begins (its first meta instance) or it settles: a host whose loading
     // reads keeps the process, as Node's loader keeps it while it reads;
-    // a top-level await that never settles does not.
-    __nimbusTrackOp(new Promise((loaded) => {
-      __nimbusEsmLoading.push(loaded);
-      __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
-    }));
+    // a top-level await that never settles does not. Armed before the
+    // import(), which may link and begin evaluating within the call.
+    let loaded;
+    __nimbusTrackOp(new Promise((resolve) => { loaded = resolve; }));
+    __nimbusEsmLoading.push(loaded);
+    const evaluation = import(__NIMBUS_BUNDLE_URL + row[2]);
+    __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
     return await evaluation;
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()

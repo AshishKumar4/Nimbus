@@ -123,9 +123,11 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }: {
+  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
+    /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
+    typeScript?: boolean;
     conditions: readonly string[];
     /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
     scope?: ModuleScope;
@@ -200,7 +202,7 @@ export async function stageEsModules(
     readText,
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,
-  }, { conditions, cwd: () => cwd });
+  }, { conditions, cwd: () => cwd, stripTypes: typeScript });
   const exportNames = async (path: string) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
   const notStaged = (path: string) => Object.assign(
     new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED },

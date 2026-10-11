@@ -4951,6 +4951,7 @@ async function _buildPrefetchBundle(
       cwd,
       scope: moduleScope,
       stripsTypes: stripTypes !== null && stripTypes !== 'javascript',
+      typeScript: stripTypes !== 'javascript',
       isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
       gate: true,
     });
