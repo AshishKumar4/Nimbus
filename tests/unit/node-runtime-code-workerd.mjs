@@ -315,6 +315,7 @@ const FILES = {
     'const input = new (require("tty").ReadStream)(0);',
     'input.resume();',
     'setTimeout(() => input.destroy(), 50);',
+    'setTimeout(() => { const n = (v) => typeof v === "number" ? v : v && typeof v.size === "number" ? v.size : v === undefined ? "u" : typeof v; console.log("DIAG " + JSON.stringify({ data: process.stdin.listenerCount("data"), readable: process.stdin.listenerCount("readable"), handles: n(globalThis.__nimbusInputHandles), flowing: process.stdin.readableFlowing, destroyed: input.destroyed, readers: typeof __nimbusTtyStdinReaders, timers: n(globalThis.__nimbusPendingTimers), ops: n(globalThis.__nimbusPendingOps), sockets: n(globalThis.__nimbusOpenSockets), pstdin: process.stdin === globalThis.__nimbusProcessStdin })); }, 300);',
     'process.on("exit", () => console.log("RELEASED " + (Date.now() - t0 < 3000)));',
   ].join('\n'),
   'url.js': [
