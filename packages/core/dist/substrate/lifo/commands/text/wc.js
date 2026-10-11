@@ -22,11 +22,20 @@ function charWidth(cp) {
     return 1;
 }
 class Counter {
+    bytesOnly;
     c = { lines: 0, words: 0, chars: 0, bytes: 0, width: 0 };
     inWord = false;
     pos = 0;
     carry = new Uint8Array(0);
+    /** `bytesOnly`: only the byte count is asked for, which needs no character read (GNU's wc -c reads none). */
+    constructor(bytesOnly = false) {
+        this.bytesOnly = bytesOnly;
+    }
     feed(chunk, final = false) {
+        if (this.bytesOnly) {
+            this.c.bytes += chunk.length;
+            return;
+        }
         const data = this.carry.length === 0 ? chunk : (() => { const d = new Uint8Array(this.carry.length + chunk.length); d.set(this.carry); d.set(chunk, this.carry.length); return d; })();
         this.c.bytes += chunk.length;
         let i = 0;
@@ -147,8 +156,9 @@ const command = async (ctx) => {
     const operands = files.length === 0 ? [undefined] : files;
     const results = [];
     let status = 0;
+    const bytesOnly = !want.lines && !want.words && !want.chars && !want.width;
     for (const file of operands) {
-        const counter = new Counter();
+        const counter = new Counter(bytesOnly);
         try {
             for await (const chunk of inputChunks(ctx, file))
                 counter.feed(chunk);
