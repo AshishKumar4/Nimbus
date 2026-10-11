@@ -44,18 +44,9 @@ export interface OfferedCredentials {
 
 /** The user name and password a URL's authority carries ('' for none). */
 export function urlCredentials(url: string): { username: string; password: string } {
-  const scheme = url.indexOf('://');
-  if (scheme < 0) return { username: '', password: '' };
-  const start = scheme + 3;
-  const slash = url.indexOf('/', start);
-  const end = slash < 0 ? url.length : slash;
-  const at = url.lastIndexOf('@', end - 1);
-  if (at < start) return { username: '', password: '' };
-  const info = url.slice(start, at);
-  const colon = info.indexOf(':');
-  return colon < 0
-    ? { username: unescapeUserinfo(info), password: '' }
-    : { username: unescapeUserinfo(info.slice(0, colon)), password: unescapeUserinfo(info.slice(colon + 1)) };
+  if (!URL.canParse(url)) return { username: '', password: '' };
+  const parsed = new URL(url);
+  return { username: unescapeUserinfo(parsed.username), password: unescapeUserinfo(parsed.password) };
 }
 
 /** A URL's credentials form one pair and take precedence over the caller's pair, as git's transport does. */

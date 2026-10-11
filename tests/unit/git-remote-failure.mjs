@@ -25,7 +25,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { anonymizeUrl, remoteFailureText } from '../../packages/worker/src/git/pack/remote-failure.ts';
+import { anonymizeUrl, remoteFailureText, selectRemoteCredentials } from '../../packages/worker/src/git/pack/remote-failure.ts';
 import { createFacetSession, hostGitEnv } from './lib/facet-session.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-remote-failure-'));
@@ -49,6 +49,8 @@ assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 403, mes
   "remote: use https://h/r or <redacted>\nfatal: unable to access 'https://h/r/': The requested URL returned error: 403\n", 'credentials a server echoes are not printed');
 assert.equal(remoteFailureText('http://127.0.0.1/auth.git', { kind: 'status', status: 401 }, { username: 'u', password: true }, ['p']),
   "fatal: Authentication failed for 'http://127.0.0.1/auth.git/'\n", 'a single-letter secret does not redact the protocol spelling');
+assert.deepEqual(selectRemoteCredentials('https://h?query=x@y', { username: 'caller', password: 'pass' }),
+  { username: 'caller', password: 'pass' }, 'query data is not URL userinfo');
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 /** A server answering each repository's discovery with a failure. */
