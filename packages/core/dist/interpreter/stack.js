@@ -4,7 +4,7 @@
  * lazily. Nothing allocates a stack, or writes a statement position, until an
  * error is made. Native wrappers delimit these activations in V8's stack.
  */
-import { Error, SafeWeakMap, charCodeAt, newSafeList, reflectGetOwnPropertyDescriptor, objectGetPrototypeOf, } from './intrinsics.js';
+import { Error, SafeWeakMap, charCodeAt, globalObject, newSafeList, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf, } from './intrinsics.js';
 // Suffix slots, filled with own properties by frameTemplate/withElement.
 export const STACK_SLOTS = 9;
 const INFO = 0, FN = 1, RECEIVER = 2, CONSTRUCTOR = 3, PARENT = 4, ASYNC_PARENT = 5, ASYNC_AT = 6, RESUMED = 7, AT = 8;
@@ -30,7 +30,11 @@ export function pushStack(env) {
     active = env;
     return previous;
 }
-export function popStack(previous) { active = previous; }
+export function popStack(previous) {
+    if (active !== null)
+        active[active.length - STACK_SLOTS + PARENT] = null;
+    active = previous;
+}
 /** Called only immediately before invoking a callee, after its arguments. */
 export function callPosition(position) {
     if (active !== null)
@@ -95,6 +99,28 @@ function dataName(value, key) {
     }
     return undefined;
 }
+function methodName(receiver, fn, name) {
+    if (!object(receiver) || typeof fn !== 'function')
+        return null;
+    if (name !== '' && dataName(receiver, name) === fn)
+        return name;
+    let found = null;
+    for (let o = receiver; o !== null; o = objectGetPrototypeOf(o)) {
+        const keys = reflectOwnKeys(o);
+        for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            if (typeof key !== 'string')
+                continue;
+            const descriptor = reflectGetOwnPropertyDescriptor(o, key);
+            if (descriptor !== undefined && descriptor.value === fn) {
+                if (found !== null && found !== key)
+                    return null;
+                found = key;
+            }
+        }
+    }
+    return found;
+}
 function snapshot(position, above) {
     const frames = newSafeList();
     let env = active;
@@ -116,12 +142,14 @@ function snapshot(position, above) {
             const named = dataName(fn, 'name');
             const name = typeof named === 'string' && named !== '' ? named : info.name;
             const constructor = env[at + CONSTRUCTOR] === true;
-            const method = info.shape === 'method' ? name : null;
-            const ctor = typeof receiver === 'function' ? receiver : dataName(receiver, 'constructor');
+            const isMethod = !constructor && receiver !== undefined && receiver !== null && receiver !== globalObject
+                && info.shape !== 'arrow' && info.shape !== 'asyncArrow' && (info.unit.isProxy === null || !info.unit.isProxy(receiver));
+            const method = isMethod ? methodName(receiver, fn, name) : null;
+            const ctor = isMethod ? (typeof receiver === 'function' ? receiver : dataName(receiver, 'constructor')) : undefined;
             const typeName = dataName(ctor, 'name');
             frames[frames.length] = {
                 unit: info.unit, name: name === '' ? null : name, method,
-                type: method !== null ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,
+                type: isMethod ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,
                 line: loc[0], column: loc[1], enclosingLine: enclosing[0], enclosingColumn: enclosing[1],
                 constructor, async, top: info.shape === 'module', fn: strict ? undefined : fn, receiver: strict ? undefined : receiver,
             };

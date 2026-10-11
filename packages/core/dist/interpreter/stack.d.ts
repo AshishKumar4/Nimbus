@@ -4,6 +4,7 @@ export interface StackUnit {
     readonly source: string;
     readonly esModule: boolean;
     readonly capture: ((error: object, frames: readonly InterpretedFrame[]) => void) | null;
+    readonly isProxy: ((value: unknown) => boolean) | null;
 }
 export interface StackInfo {
     readonly unit: StackUnit;

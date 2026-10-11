@@ -474,6 +474,7 @@ export const COMMONJS_CELL_IMPORTS = [
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
+const __nimbusStackIsProxy = __nimbusRegistryRequire("node:util").types.isProxy;
 // A bridged filesystem links only after its runner has installed the shims.
 function __nimbusReadBundleFile(path, encoding) {
   return __nimbusRegistryRequire("node:fs").readFileSync(path, encoding);
@@ -728,7 +729,7 @@ class __NimbusInterpretedCallSite {
   #file;
   constructor(frame) {
     this.#frame = frame;
-    this.#file = frame.unit.esModule ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
+    this.#file = frame.unit.esModule && !frame.unit.file.startsWith("data:") && !frame.unit.file.startsWith("file:") ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
     const module = {
       name: this.#file, path: frame.unit.file, file: this.#file, frameFile: this.#file,
       head: 0, tail: 0, esModule: frame.unit.esModule, hashbang: false, columns: null, source: frame.unit.source,
@@ -762,7 +763,10 @@ class __NimbusInterpretedCallSite {
     const location = this.#file + ":" + frame.line + ":" + frame.column;
     let name = frame.name;
     if (frame.constructor) name = "new " + (name ?? "<anonymous>");
-    else if (frame.type !== null) name = frame.type + "." + (name ?? "<anonymous>");
+    else if (frame.type !== null) {
+      name = frame.type + "." + (name ?? "<anonymous>");
+      if (frame.method !== null && frame.method !== frame.name) name += " [as " + frame.method + "]";
+    }
     const text = name === null ? location : name + " (" + location + ")";
     return (frame.async ? "async " : "") + text;
   }
@@ -1029,6 +1033,7 @@ function __nimbusRuntimeInterpreter() {
       primordials: __nimbusLaunchPrimordials,
       moduleHelpers: ${ESM_MODULE_HELPERS},
       stackCapture: __nimbusRecordInterpretedStack,
+      stackIsProxy: __nimbusStackIsProxy,
     });
   }
   return __nimbusInterpreter;
