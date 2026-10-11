@@ -30,10 +30,10 @@ const check = async (name, run) => {
   try {
     await run();
   } catch (error) {
-    failed.push(`${name}: ${String(error?.message ?? error).split('\n')[0]}`);
+    failed.push(`${name}: ${String(error?.message ?? error).split('\n').slice(0, 6).join(' | ')}`);
   }
 };
-const refused = (code) => (error) => error.code === code;
+const refused = (code) => ({ code });
 
 /** Each backend method the asynchronous mount was asked, in order. */
 const calls = [];

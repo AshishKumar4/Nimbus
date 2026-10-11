@@ -497,12 +497,9 @@ class Pinned implements PinnedFiles {
     return fn.bind(this.backend) as NonNullable<VFS[K]>;
   }
 
-  /** A mutation by an optional operation: refused as ENOTSUP before the namespace hears of it. */
+  /** A mutation by an optional operation: the guard refuses it first, as the namespace's own; then ENOTSUP when the backend has none. */
   private changingBy<K extends 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes'>(syscall: string, name: K, run: (fn: NonNullable<VFS[K]>) => Awaitable<void>): Awaitable<void> {
-    return this.call(syscall, () => {
-      const fn = this.optional(name);
-      return this.mutate(syscall, () => run(fn));
-    });
+    return this.changing(syscall, () => run(this.optional(name)));
   }
 
   stat(path: string, options?: { follow?: boolean }): Awaitable<VfsStat | null> { return this.call('stat', () => this.backend.stat(path, options)); }
