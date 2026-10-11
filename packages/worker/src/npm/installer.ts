@@ -665,24 +665,20 @@ export class NpmInstaller {
    * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
    * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
    *
-   * Resolution is per edge, not per name: the first version of a name goes
-   * to root; a later edge the nearest visible placement does not satisfy
-   * nests a copy under its dependent, never higher (placement.ts; live case
-   * in tests/unit/npm-install-nested-conflict.mjs).
+   * The walk is the install engine's plan (core _shared/npm-tree.ts): per
+   * edge, not per name, each package placed by the rule npm's arborist
+   * places it by (npm-placement.ts; live case in
+   * tests/unit/npm-install-nested-conflict.mjs), what the lockfile says is
+   * installed kept where it meets an edge, and a placement required when a
+   * path of required edges reaches it, its failure then failing the install;
+   * an optional one that fails is skipped with what it takes along.
    *
-   * The supervisor still owns:
-   *   - placement (`placed` / `pending` / `settled`, by placement path),
-   *   - required peers (an optional peer installs only when the project
-   *     lists it, as npm does),
-   *   - X.5-G G1 optional-native silent-skip,
+   * The supervisor answers the plan's layers and owns:
+   *   - X.5-G G1 optional-native skip (a binding the ABI policy cannot run,
+   *     left out where it is optional),
    *   - W6 swap / warn / reject decisions (top-level enforcement; the
-   *     per-package task ALSO checks these for transitive correctness).
-   *     A package is required iff it is reachable from a required root
-   *     (every selected spec except optionalDependencies roots) through
-   *     a chain of required edges (`dependencies` minus the package's
-   *     own optionalDependencies, required peers); W6 refusals are
-   *     classified against the closure computed over the resolved
-   *     graph at end of walk.
+   *     per-package task ALSO checks these for transitive correctness);
+   *     a refusal fails a required placement,
    *   - cache flushing (one batched putRegistryEntries at end).
    *
    * The per-package task (resolveOnePackumentInFacet) owns ONLY the
