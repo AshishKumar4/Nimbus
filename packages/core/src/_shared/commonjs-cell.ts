@@ -133,7 +133,8 @@ import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 import { applySourceEdits, COMMONJS_WRAPPER_NAMES, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
 import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 import { ESM_MODULE_HELPERS } from '../runtime/esm-interop.js';
-import { moduleImporterUrl } from './module-importer.js';
+import { runtimeCodeKeySource, runtimeCodeSourceCharge } from './runtime-code-identity.js';
+import { COMMONJS_CELL_HELPERS_SOURCE } from '../runtime/compiled-bodies.generated.js';
 
 export type { RuntimeFunctionKind } from './runtime-function-source.js';
 
@@ -362,54 +363,10 @@ export type RuntimeCodeEntry =
   /** A wasm image compiled from bytes the launch did not carry, as base64 (RUNTIME_WASM_MAX_BYTES). */
   | { kind: 'wasm'; bytes: string };
 
-/**
- * What of a file's path decides the module its text becomes: its directory
- * (the parent its relative imports and `import.meta.resolve` resolve
- * against) and its extension (how it is lowered: TypeScript, JSX, ESM or
- * CommonJS). Its name does not, so a file written under a fresh name each run
- * — Vite's `vite.config.ts.timestamp-<now>.mjs` — is the same module each time.
- * Self-contained: the guest embeds its source to compute the same key.
- */
-export function runtimeModuleScope(path: string): [dir: string, ext: string] {
-  // Inline JS modules all have an opaque import base. Their text identifies
-  // compiled code; URL/fragment identity belongs to the evaluated namespace
-  // and import.meta, not to another compiled copy of the same source.
-  if (path.startsWith('data:')) return ['data:', '.mjs'];
-  const p = path.replace(/^\/+/, '');
-  const slash = p.lastIndexOf('/');
-  const base = p.slice(slash + 1);
-  const dot = base.lastIndexOf('.');
-  return [slash < 0 ? '' : p.slice(0, slash), dot > 0 ? base.slice(dot) : ''];
-}
-
-/**
- * What a runtime-code key hashes: a constructor's arguments, or a file's
- * text with its runtimeModuleScope. The guest embeds this source and hashes
- * the same string (its sync node:crypto), so both sides name the same module.
- */
-function runtimeCodeKeySource(entry: RuntimeCodeEntry): string {
-  if (entry.kind === 'module') return JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text]);
-  if (entry.kind === 'expression') return JSON.stringify(['expression', entry.code]);
-  if (entry.kind === 'wasm') return JSON.stringify(['wasm', entry.bytes]);
-  return JSON.stringify([entry.kind, entry.params, entry.body]);
-}
-
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export function runtimeCodeKey(entry: RuntimeCodeEntry): string {
   const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES,
- * given its runtimeCodeKeySource: everything it holds, and 512 for its key,
- * its bookkeeping and the module it becomes, without which a flood of tiny
- * pieces is nearly free by text and not at all by heap. A module keeps its
- * path beside its text, and a data: URL's path is the whole module again, so
- * it is charged for both. The guest ledger embeds this source.
- */
-function runtimeCodeSourceCharge(source: string, entry: RuntimeCodeEntry): number {
-  return source.length + (entry.kind === 'module' ? entry.path.length : 0) + 512;
 }
 
 /** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */
@@ -566,7 +523,11 @@ const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], 
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
 // The URL import() in the module at a path resolves against (moduleImporterUrl).
-const __nimbusModuleImporterUrl = ${moduleImporterUrl.toString()};
+const {
+  moduleImporterUrl: __nimbusModuleImporterUrl,
+  runtimeCodeKeySource: __nimbusRuntimeCodeKeySource,
+  runtimeCodeSourceCharge: __nimbusRuntimeCodeSourceCharge,
+} = ${COMMONJS_CELL_HELPERS_SOURCE};
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
 // null when the launch's map has no such cell. A cell that does not compile
@@ -959,9 +920,6 @@ function __nimbusNotifyRuntimeCode() {
   });
 }
 // The supervisor's key source and charge (runtimeCodeKeySource, runtimeCodeSourceCharge).
-${runtimeModuleScope.toString()}
-const __nimbusRuntimeCodeKeySource = ${runtimeCodeKeySource.toString()};
-const __nimbusRuntimeCodeSourceCharge = ${runtimeCodeSourceCharge.toString()};
 function __nimbusRuntimeCodeKey(entry) {
   const __source = __nimbusRuntimeCodeKeySource(entry);
   return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };

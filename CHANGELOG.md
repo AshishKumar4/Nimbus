@@ -5,6 +5,30 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: low-level `Facet.submit`, `IsolatePool` and `Fanout` calls now
+  accept `FacetTaskSource` values, not functions or closures. Compile the
+  task and its dependencies at build time, then pass its expression to
+  `facetTaskSource` from `@nimbus-sh/core/runtime/facet-task.js`. The old
+  `FacetFn`, `FacetTaskFn` and `serializeFunction` exports are removed.
+  Nimbus's tasks and embedded helpers use one build-time compiler and survive
+  host identifier minification; no runtime function-source serialization remains.
+  Guest entry helpers now live in core `runtime/facet-tasks.js` and worker
+  `runtime/repl-facet-tasks.js`; the former runner/REPL exports are not re-exported.
+  `runtimeModuleScope` moves from `_shared/commonjs-cell.js` to
+  `_shared/runtime-code-identity.js`, where the host/guest identity helpers are compiled together.
+  The obsolete `_shared/esbuild-facet-shim.js` and its `ESBUILD_NAME_*_SHIM`
+  exports are removed; compiled bodies carry their own lexical bindings.
+- Fixed: published core bundles npm's CommonJS dependencies with explicit ESM
+  builtin imports, so a neutral ESM bundle can start under workerd without
+  eager dynamic `require` failures.
+- Added: SDK `files.readlink`, plus optional `ino` and `revision` on `stat`
+  and `lstat`, through the shared session contract on every transport.
+- Added: `exec`/`execStream` accept a local `detach` signal. Detaching releases
+  a named shell to its next call without killing the current command or
+  saving its later cwd/environment. Its output remains readable and its exit
+  still reports actual completion. The wire `detachId` identifies an invocation
+  independently of its inherited `execId` attribution tag.
+
 - Changed: the programmatic session wire contract and result schemas now live
   in `@nimbus-sh/core/runtime/session-protocol.js`, shared by SDK, HTTP, hosted
   sessions and Durable Objects. Existing SDK option/result type names remain

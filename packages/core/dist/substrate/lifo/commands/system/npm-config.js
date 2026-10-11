@@ -15,13 +15,7 @@
  * working directory (npm's process's, in npm), and a workspace root's project
  * config above the local prefix is not looked for.
  */
-import npmDefinitions from '@npmcli/config/lib/definitions/index.js';
-import envReplace from '@npmcli/config/lib/env-replace.js';
-import parseField from '@npmcli/config/lib/parse-field.js';
-import typeDefs from '@npmcli/config/lib/type-defs.js';
-import typeDescription from '@npmcli/config/lib/type-description.js';
-import ini from 'ini';
-import nopt from 'nopt';
+import { npmDefinitions, envReplace, parseField, typeDefs, typeDescription, ini, nopt } from '../../../../_shared/npm-libs.js';
 import { dirname, resolve } from '../../utils/path.js';
 const { definitions, shorthands } = npmDefinitions;
 // npm's definitions in nopt's terms (@npmcli/config's constructor).

@@ -41,6 +41,7 @@
  * program that wrote a file and then raised still wrote the file.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { CPYTHON_RUN_TASK } from './compiled-bodies.generated.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -161,28 +162,6 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
 }
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
-}
-/**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
- */
-async function cpythonRunFacetFn(args, facetEnv) {
-    const run = Reflect.get(globalThis, '__cpythonRun');
-    if (typeof run !== 'function') {
-        return {
-            stdout: '', stderr: '', exitCode: 127,
-            error: 'cpython preamble missing: __cpythonRun not in scope',
-        };
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where the boot re-adopts it after the mount: adopting only here
-    // would be undone by __wasiInitFS, which clears it on purpose.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-    adopt?.(supervisor);
-    return run(args);
 }
 export function makeCPythonRunnerFactory(deps) {
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
@@ -375,7 +354,7 @@ export function makeCPythonRunnerFactory(deps) {
                     preamble: buildCPythonPreamble(),
                     wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
                 });
-                const result = await facet.submit(cpythonRunFacetFn, facetArgs, {
+                const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
                     signal: stdio.signal,
                 });
                 exitCode = result.error ? result.exitCode || 1 : result.exitCode;

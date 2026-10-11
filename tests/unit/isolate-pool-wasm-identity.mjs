@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // isolate-pool-wasm-identity — a warm loader slot answers only for the wasm
 // bytes it was built from. Two images of one length whose first and last
 // bytes agree are still two programs (clang's ./a and ./b differed at one
@@ -33,7 +34,7 @@ async function loaderId(constructorWasm, perCallWasm) {
     wasmModules: constructorWasm,
   });
   const response = await pool.submitRequest(
-    async () => new Response('ok'),
+    facetTaskSource("async () => new Response('ok')"),
     new Request('https://facet.internal/run'),
     perCallWasm ? { wasmModules: perCallWasm } : undefined,
   );

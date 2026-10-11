@@ -18,7 +18,7 @@
  * dispatch.
  */
 import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { type FacetTaskFn } from './isolate-pool.js';
+import { type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { type HostRoute } from './composition.js';
 import type { WorkerLoader } from './vendor/types.js';
 /** The bindings a fan-out needs off the coordinator DO's env. The host
@@ -208,10 +208,10 @@ export declare class Fanout {
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as IsolatePool.submit. The function is serialized via
-     * the vendored serializeFunction (same as IsolatePool#prepare).
+     * as IsolatePool.submit. The precompiled task expression is forwarded
+     * unchanged on either route (same as IsolatePool#prepare).
      */
-    submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskFn<A, R>): Promise<R[]>;
+    submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskSource<A, R>): Promise<R[]>;
     /** The topology a task count would take against the headroom right now. */
     topologyFor(taskCount: number): FanoutTopology | 'empty';
     /**

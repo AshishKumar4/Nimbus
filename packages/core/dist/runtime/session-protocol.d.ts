@@ -56,8 +56,12 @@ export declare const SessionFileStatSchema: z.ZodObject<{
     ctime: z.ZodOptional<z.ZodNumber>;
     mtime: z.ZodNumber;
     mode: z.ZodNumber;
+    ino: z.ZodOptional<z.ZodNumber>;
+    revision: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>;
 export type SessionFileStat = z.infer<typeof SessionFileStatSchema>;
+/** Runtime stat uses zero for unknown metadata; the session wire exposes that as absent. */
+export declare function sessionFileStatOf(stat: SessionFileStat | null): SessionFileStat | null;
 export declare const SessionDirectoryEntrySchema: z.ZodObject<{
     name: z.ZodString;
     type: z.ZodString;
@@ -249,6 +253,9 @@ declare const SessionResultSchemas: {
         }, z.core.$strip>>;
         startedAt: z.ZodNumber;
     }, z.core.$strip>;
+    detachExec: z.ZodObject<{
+        detached: z.ZodBoolean;
+    }, z.core.$strip>;
     runCode: z.ZodObject<{
         command: z.ZodString;
         exitCode: z.ZodNumber;
@@ -267,6 +274,8 @@ declare const SessionResultSchemas: {
         ctime: z.ZodOptional<z.ZodNumber>;
         mtime: z.ZodNumber;
         mode: z.ZodNumber;
+        ino: z.ZodOptional<z.ZodNumber>;
+        revision: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strip>>;
     lstat: z.ZodNullable<z.ZodObject<{
         type: z.ZodString;
@@ -274,7 +283,10 @@ declare const SessionResultSchemas: {
         ctime: z.ZodOptional<z.ZodNumber>;
         mtime: z.ZodNumber;
         mode: z.ZodNumber;
+        ino: z.ZodOptional<z.ZodNumber>;
+        revision: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strip>>;
+    readlink: z.ZodNullable<z.ZodString>;
     readdir: z.ZodArray<z.ZodObject<{
         name: z.ZodString;
         type: z.ZodString;
@@ -513,6 +525,10 @@ export interface SessionExecOptions extends SessionReadyOptions {
     cred?: VfsCred;
     /** A caller's tag, inherited by descendant processes and reported by ports/apps. */
     execId?: string;
+    /** Invocation identity for _rpcDetachExec, separate from inherited execId attribution. */
+    detachId?: string;
+    /** Colocated only: release a named shell without killing the command; its stream and exit remain live. */
+    detach?: AbortSignal;
     /** startProcess only; spontaneous failures follow this restart policy. */
     restart?: SessionRestartPolicy;
 }
@@ -551,12 +567,14 @@ export interface SessionRpc {
     _rpcReady(options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
     _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcStartProcess(command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
+    _rpcDetachExec(detachId: string): Promise<SessionResult<'detachExec'>>;
     _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<SessionResult<'runCode'>>;
     _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFile'>>;
     _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFileBytes'>>;
     _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'writeFile'>>;
     _rpcStat(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'stat'>>;
     _rpcLstat(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'lstat'>>;
+    _rpcReadlink(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readlink'>>;
     _rpcReaddir(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readdir'>>;
     _rpcRename(from: string, to: string, pid?: undefined, cred?: VfsCred): Promise<void>;
     _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;

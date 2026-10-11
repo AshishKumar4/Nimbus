@@ -42,6 +42,7 @@
  */
 
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { CPYTHON_RUN_TASK } from './compiled-bodies.generated.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
@@ -199,33 +200,6 @@ export interface CPythonFacetResult {
   stderr: string;
   exitCode: number;
   error?: string;
-}
-
-/**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
- */
-async function cpythonRunFacetFn(
-  args: Record<string, unknown>,
-  facetEnv: { SUPERVISOR?: unknown } | undefined,
-): Promise<CPythonFacetResult> {
-  const run = Reflect.get(globalThis, '__cpythonRun') as
-    ((a: unknown) => Promise<CPythonFacetResult>) | undefined;
-  if (typeof run !== 'function') {
-    return {
-      stdout: '', stderr: '', exitCode: 127,
-      error: 'cpython preamble missing: __cpythonRun not in scope',
-    };
-  }
-  const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
-    ((s: unknown) => void) | undefined;
-  const supervisor = facetEnv && facetEnv.SUPERVISOR;
-  // Published where the boot re-adopts it after the mount: adopting only here
-  // would be undone by __wasiInitFS, which clears it on purpose.
-  if (supervisor) Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-  adopt?.(supervisor);
-  return run(args);
 }
 
 
@@ -458,7 +432,7 @@ export function makeCPythonRunnerFactory(deps: {
         wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
       });
 
-        const result = await facet.submit(cpythonRunFacetFn, facetArgs, {
+        const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
           signal: stdio.signal,
         });
         exitCode = result.error ? result.exitCode || 1 : result.exitCode;

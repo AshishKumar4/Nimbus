@@ -28,6 +28,7 @@ function makeBinding(calls) {
       case '_rpcReadFileBytes': case '_rpcFsReadRange': return new Uint8Array([1]);
       case '_rpcWriteFile': return 1;
       case '_rpcStat': case '_rpcLstat': return STAT;
+      case '_rpcReadlink': return '../target';
       case '_rpcReaddir': return [];
       case '_rpcExists': return true;
       default: return undefined;
@@ -40,6 +41,7 @@ function makeBinding(calls) {
     _rpcWriteFile: record('_rpcWriteFile'),
     _rpcStat: record('_rpcStat'),
     _rpcLstat: record('_rpcLstat'),
+    _rpcReadlink: record('_rpcReadlink'),
     _rpcRename: record('_rpcRename'),
     _rpcChmod: record('_rpcChmod'),
     _rpcFsReadRange: record('_rpcFsReadRange'),
@@ -62,6 +64,7 @@ function makeBinding(calls) {
   assert.equal(await mine.write('/a', 'x'), undefined, 'a colocated public write hides the raw revision');
   await mine.stat('/a');
   await mine.lstat('/a');
+  assert.equal(await mine.readlink('/a'), '../target');
   await mine.rename('/a', '/b');
   await mine.chmod('/b', 0o600);
   await mine.readRange('/b', 0, 1);
@@ -76,6 +79,7 @@ function makeBinding(calls) {
     ['_rpcWriteFile', '/a', 'x', undefined, AGENT],
     ['_rpcStat', '/a', undefined, AGENT],
     ['_rpcLstat', '/a', undefined, AGENT],
+    ['_rpcReadlink', '/a', undefined, AGENT],
     ['_rpcRename', '/a', '/b', undefined, AGENT],
     ['_rpcChmod', '/b', 0o600, undefined, AGENT],
     ['_rpcFsReadRange', '/b', 0, 1, undefined, AGENT],
@@ -161,6 +165,7 @@ function makeBinding(calls) {
 
   for (const [op, args] of [
     ['readFile', ['/a', { cred: AGENT }]],
+    ['readlink', ['/a', { cred: AGENT }]],
     ['writeFile', ['/a', 'x', { cred: AGENT }]],
     ['deleteFile', ['/a', { recursive: true, cred: AGENT }]],
   ]) {
