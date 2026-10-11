@@ -148,7 +148,6 @@ export const SUPERVISOR_OP_ROUTES = {
     wsClose: { method: '_rpcWsClose', args: [0, 1, 2, 'pid'] },
     fsReadBatch: { method: '_rpcFsReadBatch', args: [0, 'pid'] },
     writeBatch: { method: '_rpcWriteBatch', args: [0, 'pid'] },
-    putRegistryEntries: { method: '_rpcPutRegistryEntries', args: [0] },
     prefetch: { method: '_rpcPrefetch', args: [0, 1] },
     registerPort: { method: '_rpcRegisterPort', args: ['pid', 0] },
     allocatePort: { method: '_rpcAllocatePort', args: ['pid'] },

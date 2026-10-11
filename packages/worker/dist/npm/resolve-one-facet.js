@@ -50,6 +50,7 @@
  *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
  *      events, packumentBytesDecoded, packumentSource, error?}.
  */
+import { registryRecord, resolvedFromRecord } from './registry-record.js';
 /**
  * Per-package fanout task body. Compiled at build time and
  * dispatched by Fanout.submitMany — see installer.ts
@@ -59,8 +60,7 @@
  * submitMany invocation `fn(item, env)` lines up.
  *
  * `env` is the loader-isolate env supplied by Fanout.
- * `env.SUPERVISOR` is the supervisor-rpc binding (putRegistryEntries,
- * getPackument).
+ * `env.SUPERVISOR` is the supervisor-rpc binding (getPackument).
  */
 export const resolveOnePackumentInFacet = async function resolveOnePackumentInFacet(spec, env) {
     const messages = [];
@@ -221,50 +221,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         return candidates.find((e) => e.version === picked) || null;
     })();
     if (cached) {
-        let deps = {}, peers = {}, exp = null, bin = {};
-        let platform = {}, optionalDeps = {};
-        try {
-            deps = JSON.parse(cached.depsJson);
-        }
-        catch { }
-        try {
-            peers = cached.peerDepsJson ? JSON.parse(cached.peerDepsJson) : {};
-        }
-        catch { }
-        try {
-            exp = JSON.parse(cached.exportsJson);
-        }
-        catch { }
-        try {
-            bin = JSON.parse(cached.binJson);
-        }
-        catch { }
-        try {
-            platform = cached.platformJson ? JSON.parse(cached.platformJson) : {};
-        }
-        catch { }
-        try {
-            optionalDeps = cached.optionalDepsJson ? JSON.parse(cached.optionalDepsJson) : {};
-        }
-        catch { }
-        const pkgFromCache = {
-            name: cached.name,
-            version: cached.version,
-            tarballUrl: cached.tarballUrl,
-            integrity: cached.integrity,
-            dependencies: deps,
-            peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
-            // Platform constraints + optionalDependencies round-trip so the
-            // ABI policy makes the same decisions on warm-cache hits.
-            optionalDependencies: Object.keys(optionalDeps).length > 0 ? optionalDeps : undefined,
-            os: Array.isArray(platform.os) ? platform.os : undefined,
-            cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
-            libc: Array.isArray(platform.libc) ? platform.libc : undefined,
-            exports: exp,
-            main: cached.main,
-            module: cached.moduleField,
-            bin,
-        };
+        // Platform constraints + optionalDependencies round-trip so the ABI
+        // policy makes the same decisions on warm-cache hits.
+        const pkgFromCache = resolvedFromRecord(cached);
         adviseStagedBindingVersion(pkgFromCache);
         const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
         if (nativeReject)
@@ -475,21 +434,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (nativeReject)
         return nativeReject;
     // 5. Stage cache writes.
-    cacheWrites.push({
-        name: pkg.name,
-        version: pkg.version,
-        tarballUrl: pkg.tarballUrl,
-        integrity: pkg.integrity,
-        depsJson: JSON.stringify(pkg.dependencies),
-        peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
-        exportsJson: JSON.stringify(pkg.exports ?? {}),
-        main: pkg.main,
-        moduleField: pkg.module,
-        binJson: JSON.stringify(pkg.bin),
-        platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
-        optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
-        fetchedAt: Date.now(),
-    });
+    cacheWrites.push(registryRecord(pkg, Date.now()));
     // Top-5 sibling versions.
     const sorted = Object.keys(data.versions)
         .map((v) => ({ v, p: PARSE_SEMVER(v) }))
@@ -503,22 +448,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         if (!otherData)
             continue;
         try {
-            const otherPkg = versionToResolved(otherData);
-            cacheWrites.push({
-                name: otherPkg.name,
-                version: otherPkg.version,
-                tarballUrl: otherPkg.tarballUrl,
-                integrity: otherPkg.integrity,
-                depsJson: JSON.stringify(otherPkg.dependencies),
-                peerDepsJson: JSON.stringify(otherPkg.peerDependencies ?? {}),
-                exportsJson: JSON.stringify(otherPkg.exports ?? {}),
-                main: otherPkg.main,
-                moduleField: otherPkg.module,
-                binJson: JSON.stringify(otherPkg.bin),
-                platformJson: JSON.stringify({ os: otherPkg.os, cpu: otherPkg.cpu, libc: otherPkg.libc }),
-                optionalDepsJson: JSON.stringify(otherPkg.optionalDependencies ?? {}),
-                fetchedAt: Date.now(),
-            });
+            cacheWrites.push(registryRecord(versionToResolved(otherData), Date.now()));
         }
         catch { /* skip malformed */ }
     }

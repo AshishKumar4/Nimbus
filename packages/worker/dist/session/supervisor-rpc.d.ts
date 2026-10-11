@@ -104,10 +104,6 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     openWaveWriter(first?: boolean): Promise<string | null>;
     retireWaveWriter(writer: string): Promise<void>;
     writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: import("@nimbus-sh/platform/wave-writer.js").WaveFence, owner?: string): Promise<import("@nimbus-sh/core/vfs/sqlite-vfs.js").WriteBatchStreamResult>;
-    putRegistryEntries(entries: any[]): Promise<{
-        written: number;
-        failed: number;
-    }>;
     getCachedTarball(integrity: string): Promise<{
         bytes: Uint8Array | null;
         events: import("@nimbus-sh/core/_shared/cache-stats.js").CacheStatEvent[];
