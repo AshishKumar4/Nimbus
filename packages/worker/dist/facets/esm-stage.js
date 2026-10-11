@@ -64,7 +64,7 @@ function refusal(error) {
  * key), resolving under the program's `conditions`. `isCode(key)` is whether
  * the launch carries the cell at a key as code.
  */
-export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }) {
+export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }) {
     const started = Date.now();
     const table = [];
     const members = {
@@ -138,7 +138,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         readText,
         isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
         cjsResolve: requireResolve,
-    }, { conditions, cwd: () => cwd });
+    }, { conditions, cwd: () => cwd, stripTypes: typeScript });
     const exportNames = async (path) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
     const notStaged = (path) => Object.assign(new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED });
     /** The row an import with `attributes` of what `resolution` names loads. */

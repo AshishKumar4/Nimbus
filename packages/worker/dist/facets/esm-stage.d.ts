@@ -69,9 +69,11 @@ export interface EsmStageFs {
 export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string, {
     readonly code: string;
     readonly sites: ImportSites;
-}>, { conditions, cwd, isCode, gate, scope, stripsTypes }: {
+}>, { conditions, cwd, isCode, gate, scope, stripsTypes, typeScript }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
+    /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
+    typeScript?: boolean;
     conditions: readonly string[];
     /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
     scope?: ModuleScope;
