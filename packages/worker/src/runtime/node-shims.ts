@@ -76,7 +76,7 @@ import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -7216,7 +7216,7 @@ function __nimbusNodeLib() {
     signals: __osMod.constants.signals,
     insideNodeModules: __nimbusInsideNodeModules,
     errorSourcePositions: __nimbusErrorSourcePositions,
-    tokenizer: (code, options) => __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").tokenizer(code, options),
+    tokenizer: (code, options) => __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").tokenizer(code, options),
     sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
     colorDepth: () => __nimbusColorDepth(),
     customPromisifyArgs: __nimbusCustomPromisifyArgs,
@@ -12791,7 +12791,7 @@ function __nimbusEsmPending(id) {
 }
 // A module of the graph that does not compile: the error's arrow is its.
 function __nimbusEsmCompileError(error, id) {
-  const { fatalLocation } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
+  const { fatalLocation } = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
   for (const at of __nimbusEsmPending(id)) {
     const name = __nimbusEsmName(at);
     const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + name, "utf8");
@@ -13474,7 +13474,7 @@ function __nimbusEnrichCommonJsError(e, source, filename) {
   let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
   if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
     const text = source();
-    moduleSyntax = text !== null && __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").fatalLocation(text, "module", -1) === null;
+    moduleSyntax = text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
   }
   if (!moduleSyntax) return;
   const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \\"type\\": \\"module\\" in the nearest package.json file or use the .mjs extension.");

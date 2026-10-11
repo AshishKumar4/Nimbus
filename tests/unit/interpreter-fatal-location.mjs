@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { fatalLocation } from '../../packages/core/src/interpreter/index.ts';
+import { fatalLocation } from '../../packages/core/src/interpreter/parser.ts';
 
 const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 

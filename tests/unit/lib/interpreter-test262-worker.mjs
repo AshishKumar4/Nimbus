@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 
-import { PRIMORDIALS_FILE } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
+import { PARSER_FILE, PRIMORDIALS_FILE } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
 import { MODULE_HELPERS_FILE, ROUTE_FUNCTION_CONSTRUCTORS } from './interpreter-build.mjs';
 
 // Test code's rejections and late errors land on this process; each test's
@@ -21,6 +21,7 @@ const [, , listFile, rootDir, primordialsFile, interpreterFile, opsFile] = proce
 const tests = JSON.parse(readFileSync(listFile, 'utf8'));
 const wrap = (file) => new vm.Script(`(function (module, exports, require) {${readFileSync(file, 'utf8')}\n})`, { filename: file });
 const primordialsScript = wrap(primordialsFile);
+const parserScript = wrap(join(dirname(interpreterFile), PARSER_FILE));
 const interpreterScript = wrap(interpreterFile);
 const opsScript = wrap(opsFile);
 const helpersScript = wrap(join(dirname(interpreterFile), MODULE_HELPERS_FILE));
@@ -53,7 +54,8 @@ function realm(interpreted, printed) {
   if (interpreted) {
     // The primordials first, as a launch loads them before any program code.
     const primordials = load(primordialsScript, context);
-    const { createInterpreter } = load(interpreterScript, context, { [`./${PRIMORDIALS_FILE}`]: primordials });
+    const parser = load(parserScript, context, { [`./${PRIMORDIALS_FILE}`]: primordials });
+    const { createInterpreter } = load(interpreterScript, context, { [`./${PRIMORDIALS_FILE}`]: primordials, [`./${PARSER_FILE}`]: parser });
     interp = createInterpreter(load(opsScript, context), {
       dynamicImport: () => Promise.reject(new Error('no module loader')),
       primordials: primordials.LAUNCH_PRIMORDIALS,

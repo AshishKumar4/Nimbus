@@ -13,29 +13,31 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PRIMORDIALS_FILE, bundleInterpreter } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
+import { PARSER_FILE, PRIMORDIALS_FILE, bundleInterpreter } from '../../../packages/worker/scripts/interpreter-bundle.mjs';
 
 /** The module helpers' file, beside the interpreter: what a launch's runtime compiles for it. */
 export const MODULE_HELPERS_FILE = 'interpreter-module-helpers.js';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
-/** Build the interpreter, its primordials and its host module into a fresh directory under TMPDIR. */
+/** Build the interpreter, its primordials, its parser and its host module into a fresh directory under TMPDIR. */
 export async function buildInterpreterFiles() {
-  const { primordials, interpreter, ops } = await bundleInterpreter({ start: join(REPO, 'packages/worker') });
+  const { primordials, parserModule, interpreter, ops } = await bundleInterpreter({ start: join(REPO, 'packages/worker') });
   const dir = mkdtempSync(join(tmpdir(), 'nimbus-interpreter-'));
   // A package.json of its own: `.js` files here are CommonJS, whatever encloses TMPDIR.
   writeFileSync(join(dir, 'package.json'), '{"type":"commonjs"}');
   const primordialsFile = join(dir, PRIMORDIALS_FILE);
+  const parserFile = join(dir, PARSER_FILE);
   const interpreterFile = join(dir, 'interpreter.js');
   const opsFile = join(dir, 'interpreter-ops.js');
   writeFileSync(primordialsFile, primordials);
+  writeFileSync(parserFile, parserModule);
   writeFileSync(interpreterFile, interpreter);
   writeFileSync(opsFile, ops);
   // Imported here, not above: node loads this module too, and the helpers' module is TypeScript.
   const { ESM_MODULE_HELPERS } = await import('../../../packages/core/src/runtime/esm-interop.ts');
   writeFileSync(join(dir, MODULE_HELPERS_FILE), `module.exports = ${ESM_MODULE_HELPERS};\n`);
-  return { dir, primordialsFile, interpreterFile, opsFile };
+  return { dir, primordialsFile, parserFile, interpreterFile, opsFile };
 }
 
 /**
