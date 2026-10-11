@@ -74,7 +74,7 @@ export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
 export declare const CLEANUP_SLICE_ENTRIES = 2000;
 export declare function writeCloneJob(storage: CloneJobStorage, record: CloneJobRecord): Promise<void>;
 export declare function setCloneJobPhase(storage: CloneJobStorage, record: CloneJobRecord, phase: CloneJobRecord['phase']): Promise<void>;
-export declare function deleteCloneJob(storage: CloneJobStorage, dir: string): Promise<void>;
+export declare function deleteCloneJob(storage: CloneJobStorage, record: CloneJobRecord): Promise<void>;
 export declare function listCloneJobs(storage: CloneJobStorage): Promise<CloneJobRecord[]>;
 /** What a cleanup works through: the session's filesystem, as the record's credential (and the clone's lease, while it holds one). */
 export interface CleanupFs {

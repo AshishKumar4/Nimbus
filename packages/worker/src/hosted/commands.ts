@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalDisposition, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
@@ -69,7 +69,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
     setUmask: (mask) => self.processes.setUmask(pid, mask),
     runAs: runAsProcess,
     accountWork: (worker: number) => self.processes.beginWork(worker),
-    holdWork: (worker: number, stop: () => void) => self.processes.holdWork(worker, stop),
+    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => self.processes.holdWork(worker, stop),
   });
   // `kill` is the shell's builtin; the session's own processes (resident
   // servers, the vite shim), numbered in this table's pid space, are reached
@@ -126,7 +126,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
@@ -882,7 +882,7 @@ const shellEntrypointExecutor = {
     // this session's work behind the child's pid: a kill stops it.
     const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
     const stop = new AbortController();
-    const stopped = self.processes.holdWork(childProcess.pid, () => stop.abort());
+    const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason));
     let exitCode = 1;
     try {
       const identity = commandIdentityFor(childProcess.pid);
@@ -974,7 +974,7 @@ const shellExecuteTracked = async (
   // closed what it opened: a kill stops it, and only then is what it bound
   // released.
   const stop = new AbortController();
-  const stopped = self.processes.holdWork(pid, () => stop.abort());
+  const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
   let exitCode = 1;
   try {
     const result = await scriptShell.execute(cmd, {
