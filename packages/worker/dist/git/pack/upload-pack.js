@@ -11,7 +11,7 @@
 import { retrying } from '@nimbus-sh/platform/retry.js';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
 import { PackFormatError } from './format.js';
-import { plainTextMessage, urlCredentials } from './remote-failure.js';
+import { plainTextMessage, selectRemoteCredentials } from './remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 export class UploadPackError extends Error {
     status;
@@ -39,10 +39,10 @@ function pktLine(text) {
  * the options'.
  */
 function remote(options) {
+    const auth = selectRemoteCredentials(options.url, options.auth);
     const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
     if (parsed === null || (parsed.username === '' && parsed.password === ''))
-        return { url: withoutSlash(options.url), auth: options.auth };
-    const auth = urlCredentials(parsed.href);
+        return { url: withoutSlash(options.url), auth };
     parsed.username = '';
     parsed.password = '';
     return { url: withoutSlash(parsed.href), auth };

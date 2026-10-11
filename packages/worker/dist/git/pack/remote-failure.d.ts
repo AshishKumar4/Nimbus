@@ -38,6 +38,8 @@ export declare function urlCredentials(url: string): {
     username: string;
     password: string;
 };
+/** A URL's credentials form one pair and take precedence over the caller's pair, as git's transport does. */
+export declare function selectRemoteCredentials(url: string, supplied?: ReturnType<typeof urlCredentials>): ReturnType<typeof urlCredentials>;
 /**
  * `text` (what a server sent, to be printed) with the credentials it may
  * echo taken out: each URL's user name and password, and every secret

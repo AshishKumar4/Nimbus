@@ -16,7 +16,7 @@ import { createGitFs } from './git-fs.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { exitCodeForAbortSignal, SESSION_DESTROYED } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, } from './clone-job.js';
-import { noSuchRemoteText, remoteFailureText, urlCredentials } from './pack/remote-failure.js';
+import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 import { GitGlobalsError, parseConfigParameter, withConfigOverrides } from './config-params.js';
 import { packsSeam } from './pack/store.js';
@@ -2788,6 +2788,9 @@ async function knownRemote(ctx, git, fs, dir, remote, operation) {
  * or refused (pack/remote-failure.ts), git's message about the repository
  * at `url`, and git's 128; else what failed, and 1.
  */
+function remoteCredentials(ctx, url) {
+    return selectRemoteCredentials(url, { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' });
+}
 async function networkFailure(ctx, what, result, url) {
     if (result.gitFailure !== undefined) {
         await ctx.stderr.write(result.gitFailure);
@@ -2796,8 +2799,7 @@ async function networkFailure(ctx, what, result, url) {
     if (result.remoteFailure !== undefined && url !== undefined) {
         // The credentials offered, the session's or the URL's own; the secrets among them never printed.
         const inUrl = urlCredentials(url);
-        const password = ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || inUrl.password;
-        const username = ctx.env.GIT_USERNAME || inUrl.username;
+        const { username, password } = remoteCredentials(ctx, url);
         // And the Basic authorization they were sent as, which a server may echo.
         const secrets = [ctx.env.GIT_PASSWORD, ctx.env.GIT_TOKEN, inUrl.password,
             password ? base64Utf8(`${username}:${password}`) : '',
@@ -2935,7 +2937,7 @@ processes) {
                 remote: remote.name,
                 url: remote.url,
                 oids,
-                auth: { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' },
+                auth: remoteCredentials(ctx, remote.url),
             }, network);
             return true;
         };
@@ -3090,10 +3092,7 @@ processes) {
                                 historyBudgetUnits: Number(ctx.env.NIMBUS_GIT_HISTORY_BUDGET_UNITS) || undefined,
                                 pieceTimeoutMs: Number(ctx.env.NIMBUS_GIT_PIECE_TIMEOUT_MS) || undefined,
                                 historyConcurrency: Number(ctx.env.NIMBUS_GIT_HISTORY_CONCURRENCY) || undefined,
-                                auth: {
-                                    username: ctx.env.GIT_USERNAME || '',
-                                    password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                                },
+                                auth: remoteCredentials(ctx, url),
                             }, network);
                         }
                         catch (error) {
@@ -3468,10 +3467,7 @@ processes) {
                     quiet,
                     depth: deepen?.depth,
                     relative: deepen?.relative,
-                    auth: {
-                        username: ctx.env.GIT_USERNAME || '',
-                        password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                    },
+                    auth: remoteCredentials(ctx, fetchUrl),
                 }, network);
                 if (result.success) {
                     if (!quiet)
@@ -3517,10 +3513,7 @@ processes) {
                     remote,
                     ref: branch,
                     quiet,
-                    auth: {
-                        username: ctx.env.GIT_USERNAME || '',
-                        password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                    },
+                    auth: remoteCredentials(ctx, pullUrl),
                 }, network);
                 if (result.cancelled !== undefined)
                     return exitCodeForAbortSignal(ctx.signal);
@@ -3559,10 +3552,7 @@ processes) {
                     remote,
                     ref: branch,
                     quiet,
-                    auth: {
-                        username: ctx.env.GIT_USERNAME || '',
-                        password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                    },
+                    auth: remoteCredentials(ctx, pushUrl),
                 }, network);
                 if (result.success) {
                     if (!quiet)
@@ -3606,7 +3596,7 @@ processes) {
                     }
                     if (val === undefined)
                         return 1;
-                    ctx.stdout.write(`${val}\n`);
+                    ctx.stdout.write(`${val === null ? '' : val}\n`);
                 }
                 else {
                     ctx.stderr.write('usage: git config <key> [value]\n');

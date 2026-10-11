@@ -100,7 +100,12 @@ function credentialDescription(url: string, username: string): string {
  * offered (a password, a token) wherever it appears.
  */
 export function redactCredentials(text: string, secrets: readonly string[]): string {
-  let out = text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@]+@/g, '$1');
+  return redactSecrets(text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@]+@/g, '$1'), secrets);
+}
+
+/** Exact known secrets, wherever they appear; a credential prompt may still name a non-secret user. */
+function redactSecrets(text: string, secrets: readonly string[]): string {
+  let out = text;
   for (const secret of secrets) if (secret.length > 0) out = out.split(secret).join('<redacted>');
   return out;
 }
@@ -119,7 +124,7 @@ export function remoteFailureText(url: string, failure: RemoteFailure, credentia
   if (failure.status === 401 && !credentials.password) {
     const what = credentials.username ? 'Password' : 'Username';
     const prompt = credentialDescription(url, credentials.username);
-    const safePrompt = secrets.reduce((text, secret) => secret ? text.split(secret).join('<redacted>') : text, prompt);
+    const safePrompt = redactSecrets(prompt, secrets);
     return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
   const remote = redactCredentials(failure.message ?? '', secrets).trim();

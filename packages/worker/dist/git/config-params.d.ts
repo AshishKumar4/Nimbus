@@ -10,15 +10,15 @@ export declare class GitGlobalsError extends Error {
     readonly code: number;
     constructor(lines: string, code: number);
 }
-/** `-c`'s settings: each key (section and variable name in lower case), its values in order. */
-export type ConfigOverrides = Map<string, string[]>;
+/** `-c`'s settings in order; null is a name-only value (boolean true, raw config value absent). */
+export type ConfigOverrides = Map<string, Array<string | null>>;
 /**
  * One `-c` text: the key before the first '=' (a missing '=' is a
  * boolean's true), its section and variable name in lower case, its
  * subsection as written. An invalid one is git's error, then "unable to
  * parse command-line config" (128).
  */
-export declare function parseConfigParameter(text: string): [key: string, value: string];
+export declare function parseConfigParameter(text: string): [key: string, value: string | null];
 /** The config reads of cf-git (isomorphic-git's getConfig and getConfigAll). */
 interface ConfigReader {
     getConfig(args: {

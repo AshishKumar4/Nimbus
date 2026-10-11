@@ -27,7 +27,7 @@ const ALPHA = /^[A-Za-z]$/;
 export function parseConfigParameter(text) {
     const eq = text.indexOf('=');
     const key = eq < 0 ? text : text.slice(0, eq);
-    const value = eq < 0 ? 'true' : text.slice(eq + 1);
+    const value = eq < 0 ? null : text.slice(eq + 1);
     const refuse = (error) => {
         throw new GitGlobalsError(`error: ${error}\nfatal: unable to parse command-line config\n`, 128);
     };
