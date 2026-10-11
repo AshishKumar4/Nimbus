@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { DevVFS } from '../../packages/core/src/vfs/dev-vfs.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -173,6 +174,26 @@ const routed = (route) => ({ point: route.point, path: route.path });
   assert.deepEqual(backend.readdir('/new').map((entry) => entry.name), ['b']);
   assert.equal(dec.decode(backend.readFile('/new/b/data/f')), 'x');
   console.log('  a tree copied into itself through two mounts copies the tree as it was');
+}
+
+// ── A device's after-image is what it holds, not what it was written ──────
+// The bytes a write was given stand after it only where its backend stores
+// what it is written (VFS.storesWrites) and what it wrote is a regular file.
+// FilthySwordtail's review of 566978d8e: writing /dev/null reported the
+// written bytes as its after-image, while the device stores nothing.
+{
+  const vfs = new CompositeVFS(new MemoryVFS());
+  vfs.mount('/dev', new DevVFS());
+  const afters = [];
+  const stop = vfs.observeWrites((event) => { afters.push(event.after === undefined ? 'unknown' : event.after === null ? null : dec.decode(event.after.read())); }, {
+    wants: () => ({ before: false, after: true }),
+  });
+  await vfs.writeFile('/dev/null', enc.encode('discarded'));
+  assert.notEqual(afters[0], 'discarded', `/dev/null's after-image is not the bytes it was written: ${JSON.stringify(afters)}`);
+  await vfs.writeFile('/stored.txt', enc.encode('kept'));
+  assert.equal(afters[1], 'kept', 'a stored file\'s after-image is its bytes');
+  stop();
+  console.log('  a device\'s after-image is what it holds, not what it was written');
 }
 
 console.log('composite-route-create-observe: ok');
