@@ -10,7 +10,7 @@
  *                        nonce, boundary, outbound, promote }.
  *   arm(canStop, whyNot) before the entry: records the run's draws when it can
  *                        stop, replays the stopped run's.
- *   write / acked        each streamed chunk of output on its way out.
+ *   write / ackedRun     each streamed chunk of output on its way out, and the ones a call took.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
  *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
