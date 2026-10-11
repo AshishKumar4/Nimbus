@@ -53,6 +53,8 @@ export class SessionProcessSupervisor {
     endWaiters = new Map();
     /** Releases an ended process's filesystem binding; see setRelease. */
     release = null;
+    /** Tells that filesystem the process has ended, at its end; see setRelease. */
+    ended = null;
     /** Each ended pid's release, begun at its end: what a prune reports and waits for before it forgets the entry. */
     releases = new Map();
     /** Who waits for a pid's release to run (released), until it begins. */
@@ -373,6 +375,8 @@ export class SessionProcessSupervisor {
     exit(pid, exitCode) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         this.table.exit(pid, exitCode);
+        if (wasRunning)
+            this.ended?.(pid);
         this.releaseEnded(pid);
         this.publishEnd(pid, wasRunning);
         this.terminators.delete(pid);
@@ -387,6 +391,8 @@ export class SessionProcessSupervisor {
     kill(pid, exitCode, reason) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         const killed = this.table.kill(pid, exitCode);
+        if (wasRunning)
+            this.ended?.(pid);
         this.releaseEnded(pid);
         this.publishEnd(pid, wasRunning);
         this.terminate(pid, reason);
@@ -427,9 +433,12 @@ export class SessionProcessSupervisor {
      * host: every end marks this table), so nothing it held outlives it to be
      * found by the next caller, a destroy among them. A prune reports how it
      * went (a descriptor's buffered bytes it lost) and forgets the entry.
+     * `ended` is told at the end itself, before any held work has stopped:
+     * what the process can no longer use (its read lease) goes then.
      */
-    setRelease(release) {
+    setRelease(release, ended) {
         this.release = release;
+        this.ended = ended ?? null;
     }
     /**
      * Remove `pid` and every process under it that has ended, now, as a parent
