@@ -126,7 +126,7 @@ const RUNNER_V2 = 'export default { fetch: () => new Response("v2") };';
   assert.equal(gen2.asked.fallback.length, 1, 'the image-store fallback is');
   assert.deepEqual(gen2.asked.fallback[0].resident, { runtime: 'python', argv: ['python', 'app.py'] });
   const [config] = [...gen2.world.configs.values()];
-  assert.equal(config.mainModule, 'worker.js', 'the interpreter runner boots from the default main module');
+  assert.match(config.modules[config.mainModule], /from "\.\/worker\.js"/, 'the host adapter imports the default interpreter main');
   assert.match(config.modules['worker.js'], /fallback/);
 
   const rows = [...session.storage.keys()].filter((k) => k.startsWith('resident-launch:'));

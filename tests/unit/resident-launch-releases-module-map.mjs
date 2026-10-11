@@ -39,7 +39,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
-import { generatedModuleSet, moduleMapText, storedBootModules } from './lib/module-map-bundle.mjs';
+import { generatedModuleSet, moduleMapText, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -148,7 +148,7 @@ assert.ok(moduleMapText(config.modules).includes('module.exports = 1;'), 'the re
 
 const images = fs.readdir(FACET_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name));
 assert.ok(images.length > 0, 'the launch wrote its map to the image store');
-assert.deepEqual(await storedBootModules(world, fs), config.modules,
+assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
   'the complete map is reconstructed from process images and shared assets, not the launch frame');
 
 console.log(
