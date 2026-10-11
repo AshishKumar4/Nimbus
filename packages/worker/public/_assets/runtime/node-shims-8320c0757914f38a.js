@@ -15508,22 +15508,23 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       this.#reader = response.body?.getReader();
     }
     _read() {
+      if (!this._consuming) { this._readableState.readingMore = false; this._consuming = true; }
       if (this.#reading) return;
       if (!this.#reader) { this.complete = true; this.push(null); return; }
       this.#reading = true;
-      const pump = async () => {
-        try {
-          while (!this.destroyed) {
-            const next = await this.#reader.read();
-            if (this.destroyed) return;
-            if (next.done) { this.complete = true; this.push(null); return; }
-            this.#idle.touch();
-            if (!this.push(next.value)) return;
-          }
-        } catch (error) { this.destroy(error); }
-        finally { this.#reading = false; }
-      };
-      void pump();
+      void this.#pump();
+    }
+    async #pump() {
+      try {
+        while (!this.destroyed) {
+          const next = await this.#reader.read();
+          if (this.destroyed) return;
+          if (next.done) { this.complete = true; this.push(null); return; }
+          this.#idle.touch();
+          if (!this.push(next.value)) return;
+        }
+      } catch (error) { this.destroy(error); }
+      finally { this.#reading = false; }
     }
     _destroy(error, callback) {
       if (!this.complete && this.#reader) this.#reader.cancel(error).catch(() => {});
@@ -15673,7 +15674,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           // OutgoingMessage deliberately disables Writable autoDestroy for this lifetime.
           if (this.destroyed) return;
           this.destroyed = true;
-          clearTimeout(this.#timer);
+          if (this.#timer !== undefined) clearTimeout(this.#timer);
           this.#writer = undefined;
           queueMicrotask(() => this.emit("close"));
         });
@@ -15776,7 +15777,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       return Writable.prototype.destroy.call(this, error);
     }
     _destroy(error, callback) {
-      clearTimeout(this.#timer);
+      if (this.#timer !== undefined) clearTimeout(this.#timer);
       this.#prepared = undefined;
       this.#completeBody = undefined;
       this.#controller.abort(error);
@@ -15793,7 +15794,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     }
     clearTimeout(callback) { return this.setTimeout(0, callback); }
     #touch() {
-      clearTimeout(this.#timer);
+      if (this.#timer !== undefined) { clearTimeout(this.#timer); this.#timer = undefined; }
       if (!this.timeout || !this.#started || this.destroyed) return;
       this.#timer = setTimeout(() => { this.emit("timeout"); this.#incoming?.emit("timeout"); this.destroy(abortError()); }, this.timeout);
     }
