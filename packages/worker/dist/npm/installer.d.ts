@@ -201,6 +201,11 @@ export declare class NpmInstaller {
      */
     private applyW6Registry;
     /**
+     * A lockfile entry's registry record, read once however often the
+     * checks, the walk and the reconstruction of one install ask for it.
+     */
+    private lockRecords;
+    /**
      * Check if a lockfile is still valid against current package.json specs.
      */
     private isLockfileValid;

@@ -10,12 +10,22 @@
 function parsed(json, fallback) {
     if (!json)
         return fallback;
+    // Most of a record's maps are empty: no parse for those.
+    if (json === '{}')
+        return {};
     try {
         return JSON.parse(json);
     }
     catch {
         return fallback;
     }
+}
+/** A JSON-encoded name → range map; undefined when it names none. */
+function ranges(json) {
+    if (!json || json === '{}')
+        return undefined;
+    const map = parsed(json, {});
+    return Object.keys(map).length > 0 ? map : undefined;
 }
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
 export function registryRecord(pkg, fetchedAt) {
@@ -35,25 +45,27 @@ export function registryRecord(pkg, fetchedAt) {
         fetchedAt,
     };
 }
-/** A record's edges: its dependencies, required peers and optional dependencies. */
+/** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
 export function recordEdges(record) {
-    const peers = parsed(record.peerDepsJson, {});
-    const optional = parsed(record.optionalDepsJson, {});
     return {
         dependencies: parsed(record.depsJson, {}),
-        peerDependencies: Object.keys(peers).length > 0 ? peers : undefined,
-        optionalDependencies: Object.keys(optional).length > 0 ? optional : undefined,
+        peerDependencies: ranges(record.peerDepsJson),
+        optionalDependencies: ranges(record.optionalDepsJson),
     };
 }
+const NO_PLATFORM = Object.freeze({});
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record) {
-    const platform = parsed(record.platformJson, {});
+    const platform = record.platformJson === '{}' ? NO_PLATFORM
+        : parsed(record.platformJson, NO_PLATFORM);
     return {
         name: record.name,
         version: record.version,
         tarballUrl: record.tarballUrl,
         integrity: record.integrity,
-        ...recordEdges(record),
+        dependencies: parsed(record.depsJson, {}),
+        peerDependencies: ranges(record.peerDepsJson),
+        optionalDependencies: ranges(record.optionalDepsJson),
         os: Array.isArray(platform.os) ? platform.os : undefined,
         cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
         libc: Array.isArray(platform.libc) ? platform.libc : undefined,

@@ -50,7 +50,7 @@ export interface RegistryCacheEntry {
 }
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
 export declare function registryRecord(pkg: ResolvedPackage, fetchedAt: number): RegistryCacheEntry;
-/** A record's edges: its dependencies, required peers and optional dependencies. */
+/** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
 export declare function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, 'dependencies' | 'peerDependencies' | 'optionalDependencies'>;
 /** The package a record describes, as a cold resolve of its version answers it. */
 export declare function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage;

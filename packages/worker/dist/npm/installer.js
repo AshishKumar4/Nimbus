@@ -200,6 +200,7 @@ export class NpmInstaller {
         let resolved;
         let nested;
         let usedLockfile = false;
+        const recordOf = this.lockRecords();
         if (packageLock !== null) {
             ({ resolved, nested } = packageLock);
             recordRefusals(packageLock.rejected);
@@ -210,9 +211,9 @@ export class NpmInstaller {
             log(`Lockfile ${packageLock.lockName}: ${resolved.size + nested.size} packages to place.`);
             phases['lock-check'] = Date.now() - phaseStart;
         }
-        else if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs)) {
+        else if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs, recordOf)) {
             log(`Lockfile valid (${lockfile.size} packages). Skipping resolution.`);
-            ({ resolved, nested } = this.lockfileToResolved(this.reachableFromSpecs(lockfile, specs)));
+            ({ resolved, nested } = this.lockfileToResolved(this.reachableFromSpecs(lockfile, specs, recordOf), recordOf));
             usedLockfile = true;
             phases['lock-check'] = Date.now() - phaseStart;
         }
@@ -1334,9 +1335,25 @@ export class NpmInstaller {
     }
     // ── Lockfile ──────────────────────────────────────────────────────────
     /**
+     * A lockfile entry's registry record, read once however often the
+     * checks, the walk and the reconstruction of one install ask for it.
+     */
+    lockRecords() {
+        const read = new Map();
+        return (entry) => {
+            const key = `${entry.name}@${entry.resolvedVer}`;
+            let record = read.get(key);
+            if (record === undefined) {
+                record = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+                read.set(key, record);
+            }
+            return record;
+        };
+    }
+    /**
      * Check if a lockfile is still valid against current package.json specs.
      */
-    isLockfileValid(lockfile, specs) {
+    isLockfileValid(lockfile, specs, recordOf) {
         // Every spec must be in the lockfile at a version that still
         // satisfies the declared range — a package.json edit must never be
         // answered by yesterday's pin.
@@ -1368,7 +1385,7 @@ export class NpmInstaller {
         // it and is always correct).
         // An edge is met by any placement Node's walk from the entry finds.
         for (const [placement, entry] of lockfile) {
-            const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+            const cached = recordOf(entry);
             if (!cached)
                 return false;
             const edges = recordEdges(cached);
@@ -1392,7 +1409,7 @@ export class NpmInstaller {
      * by the placement nearest its dependent. A valid lockfile has every
      * entry's registry record (isLockfileValid).
      */
-    reachableFromSpecs(lockfile, specs) {
+    reachableFromSpecs(lockfile, specs, recordOf) {
         const reached = new Map();
         const pending = Object.keys(specs).filter((name) => lockfile.has(name));
         for (let i = 0; i < pending.length; i++) {
@@ -1401,7 +1418,7 @@ export class NpmInstaller {
             if (entry === undefined || reached.has(placement))
                 continue;
             reached.set(placement, entry);
-            const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+            const cached = recordOf(entry);
             const recorded = cached ? recordEdges(cached) : { dependencies: safeJsonParse(entry.depsJson, {}) };
             const edges = new Set([
                 ...Object.keys(recorded.dependencies),
@@ -1600,14 +1617,14 @@ export class NpmInstaller {
         return { resolved, nested, unresolved, rejected, lockName };
     }
     /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
-    lockfileToResolved(lockfile) {
+    lockfileToResolved(lockfile, recordOf) {
         const resolved = new Map();
         const nested = new Map();
         for (const [placement, entry] of lockfile) {
             const name = entry.name;
             // Reconstruct from the registry cache, as a warm resolve does; on a
             // miss, a minimal entry.
-            const cached = this.cache.getRegistryEntry(name, entry.resolvedVer);
+            const cached = recordOf(entry);
             (placement === name ? resolved : nested).set(placement, cached ? resolvedFromRecord(cached) : {
                 name,
                 version: entry.resolvedVer,
