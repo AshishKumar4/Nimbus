@@ -10,6 +10,7 @@
  * reason whose deadline has passed.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 
 /**
@@ -74,6 +75,13 @@ export interface TimerHost {
   _timerFiring?: Map<string, number>;
   _timerFiringSince?: number;
 }
+
+/**
+ * The epoch of the dispatch whose handlers are running, in their async
+ * context: an arm they make once a reset voided it writes nothing, as the
+ * dispatch itself does not (see {@link Timers.reset}).
+ */
+const dispatchEpoch = new AsyncLocalStorage<{ host: TimerHost; epoch: number }>();
 
 /**
  * What one timer handler may return: nothing, or a deadline this reason
@@ -143,7 +151,8 @@ export class Timers {
    */
   schedule(reason: string, whenMs: number): Promise<boolean> {
     const { host, ctx } = this;
-    const epoch = host._timerEpoch ?? 0;
+    const inDispatch = dispatchEpoch.getStore();
+    const epoch = inDispatch?.host === host ? inDispatch.epoch : host._timerEpoch ?? 0;
     // Serialize every read-modify-write of the reasons map through one
     // per-instance chain: two schedulers firing back-to-back from one activity
     // hook would otherwise interleave their get→put cycles and silently drop
@@ -240,9 +249,7 @@ export class Timers {
     alarmInfo?: TimerAlarmInfo,
   ): Promise<void> {
     const { host, ctx } = this;
-    const epoch = host._timerEpoch ?? 0;
-    const current = (): boolean => (host._timerEpoch ?? 0) === epoch;
-    return dispatchBody(host, ctx, current, handlers, onLegacyAlarm, alarmInfo);
+    return dispatchBody(host, ctx, host._timerEpoch ?? 0, handlers, onLegacyAlarm, alarmInfo);
   }
 
   /** The reasons a running dispatch fired, and how long it has run; null while none runs. */
@@ -260,20 +267,20 @@ function link<T>(host: TimerHost, step: () => Promise<T>): Promise<T> {
 }
 
 /**
- * One dispatch. `current` answers whether the epoch it was requested in still
- * stands: once a reset voids it, no further handler runs and nothing is
- * written or armed — the reset's caller is wiping this state, and a write
- * after the wipe would outlive it. The map is read, and written back, on the
- * chain; the handlers run between, off it.
+ * One dispatch, requested in `epoch`: once a reset voids it, no further
+ * handler runs and nothing is written or armed — the reset's caller is wiping
+ * this state, and a write after the wipe would outlive it. The map is read,
+ * and written back, on the chain; the handlers run between, off it.
  */
 async function dispatchBody(
   host: TimerHost,
   ctx: TimerContext,
-  current: () => boolean,
+  epoch: number,
   handlers: TimerHandlers,
   onLegacyAlarm?: () => void,
   alarmInfo?: TimerAlarmInfo,
 ): Promise<void> {
+  const current = (): boolean => (host._timerEpoch ?? 0) === epoch;
   const now = Date.now();
   const fired = new Map<string, number>();
   const rearms = new Map<string, number>();
@@ -289,7 +296,7 @@ async function dispatchBody(
     host._timerFiring = fired;
     host._timerFiringSince = now;
     if (Object.keys(existing ?? {}).length === 0) {
-      onLegacyAlarm?.();
+      dispatchEpoch.run({ host, epoch }, () => onLegacyAlarm?.());
     } else {
       for (const reason of [...fired.keys()]) {
         if (!current()) return;
@@ -297,7 +304,7 @@ async function dispatchBody(
         // Unknown reasons silently dropped (forward-compat).
         if (!handler) continue;
         try {
-          const result = await handler(now, alarmInfo);
+          const result = await dispatchEpoch.run({ host, epoch }, () => handler(now, alarmInfo));
           if (result && typeof result.rearmAt === 'number') rearms.set(reason, result.rearmAt);
         } catch (e) {
           console.warn(`[nimbus/W1] dispatch ${reason} threw:`, errorText(e));
