@@ -32,8 +32,8 @@ import { readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeld } from './descriptors.js';
+import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -555,7 +555,7 @@ export class ProcessFiles {
             return { lost: [] };
         const lost = [];
         for (const [id, opened] of scope.handles) {
-            if ((opened.node.pendingBytes?.() ?? 0) > 0)
+            if (opened.node.mounted && opened.node.pendingBytes() > 0)
                 lost.push(id);
             // Dropped unflushed; a description another process still holds stays open.
             opened.refs--;
@@ -606,11 +606,15 @@ export class ProcessFiles {
         // The scope is checked again by the namespace right before each mutation
         // reaches a backend, after the lookups it awaited: a write still
         // resolving when the process is released or killed, or its lease is
-        // disposed, does not land.
+        // disposed, does not land. The writes the process's descriptions hold
+        // are settled there first (settleHeld): the mutation is ordered after them.
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
-        const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
+        const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => {
+            assertScopeLive(scope, signal);
+            settleHeld(scope);
+        }, undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes, this.waves);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
@@ -1003,6 +1007,9 @@ class AwaitingProcessBridge {
     open(path, flags, options) {
         return this.either([path], () => this.bridge.open(path, flags, options), async () => {
             const opened = openFlags(flags);
+            const flagged = flagsRefusal(opened);
+            if (flagged !== null)
+                throw syscallError(flagged, 'open', typeof path === 'string' ? path : path.path);
             const mutates = opened.write || opened.create || opened.truncate || opened.append;
             const name = await this.path(path, openFollows(opened));
             const files = this.owned(mutates ? options : undefined);

@@ -1518,8 +1518,13 @@ export class CompositeVFS implements VFS {
   mutationRoute(path: string, options?: VfsRouteOptions & { report?: false }): Awaitable<VfsMutationRoute>;
   mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport>;
   mutationRoute(path: string, options?: VfsRouteOptions): Awaitable<VfsMutationRoute | VfsMutationRouteReport> {
-    const trace: LookupTrace | undefined = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
-    const run = (): Awaitable<VfsMutationRoute> => reported({ syscall: 'route', path }, () => {
+    if (options?.report !== true) return this.mutationRouteOf(path, options, undefined);
+    const trace: LookupTrace = { links: [], at: normalizePath(path) };
+    return lookupReport(trace, () => this.mutationRouteOf(path, options, trace));
+  }
+
+  private mutationRouteOf(path: string, options: VfsRouteOptions | undefined, trace: LookupTrace | undefined): Awaitable<VfsMutationRoute> {
+    return reported({ syscall: 'route', path }, () => {
       if (trace !== undefined) { trace.links.length = 0; trace.at = normalizePath(path); }
       return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (at) => {
         if (trace !== undefined) trace.at = this.absentOn(at)?.point ?? at;
@@ -1528,7 +1533,6 @@ export class CompositeVFS implements VFS {
         return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
       });
     });
-    return trace === undefined ? run() : lookupReport(trace, run);
   }
 
   /**

@@ -10,7 +10,7 @@
  * code.
  */
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
     private readonly view;
@@ -33,6 +33,11 @@ export declare class SqliteFiles implements VFS {
     readFile(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
     access(path: string, mode: number): void;
+    /** The engine's own description of the file (its access the open's): its inode, whatever name it has later. */
+    openFile(path: string, rights: {
+        read: boolean;
+        write: boolean;
+    }): VfsOpenFile;
     writeFile(path: string, data: Uint8Array, options?: {
         mode?: number;
     }): void;

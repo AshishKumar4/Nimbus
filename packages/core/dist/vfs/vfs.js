@@ -15,7 +15,13 @@
  */
 import { isVfsError, syscallError } from './vfs-error.js';
 export function isPromise(value) {
-    return typeof value?.then === 'function';
+    return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function';
+}
+/** `value`, which a synchronous face answers at once: one that would wait is its caller's fault, never a value. */
+export function syncValue(value) {
+    if (isPromise(value))
+        throw new Error('synchronous filesystem operation returned a promise');
+    return value;
 }
 /**
  * Apply `next` to a value that may or may not be a promise, staying

@@ -158,17 +158,66 @@ export interface VfsRoute {
     /** Why the source is absent (MountOptions.absentReason), when it is. */
     readonly absentReason?: string;
 }
-/** A pinned file's backend operations (CompositeVFS.pin), handed the backend's own path. */
-export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile' | 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
-/** A file as an open holds it (CompositeVFS.pin): its operations, the path they take, the namespace's name for it, and its identity. */
-export interface PinnedFile {
-    readonly files: PinnedFiles;
-    readonly path: string;
+/**
+ * The name an open found (CompositeVFS.pin), for the open's decisions: each
+ * operation is on that one name, where the open's lookup landed it, whatever
+ * is mounted or linked there later.
+ */
+export interface PinnedName {
+    /** The namespace's name for it. */
     readonly name: string;
-    /** Which file it is (its mount, and the path there): the same for every pin of it, whatever name reached it. */
-    readonly key: string;
     /** Its backend answers only by awaiting. */
     readonly awaits: boolean;
+    /** The name itself, a link not followed. */
+    lstat(): Awaitable<VfsStat | null>;
+    /** What it leads to: a link the backend resolves itself (MountOptions.resolvesPaths) followed by that backend. */
+    stat(): Awaitable<VfsStat | null>;
+    /** The backend's own refusal of an open asking `mode` (VFS.access); a backend of one identity refuses none. */
+    access(mode: number): Awaitable<void>;
+    /** An empty file made at it (creat(2)): `admit` runs right before the backend is asked. */
+    create(mode: number | undefined, admit?: () => void): Awaitable<void>;
+    truncate(size: number, admit?: () => void): Awaitable<void>;
+    /** Which file is there now (HeldFile.key), or null when nothing is: the key held writes to it are kept under. */
+    key(): Awaitable<string | null>;
+    /** What is there now, read whole (a file this process holds writes to, as its reads see it). */
+    readAll(): Awaitable<Uint8Array>;
+    /** The file there now, held with `rights` for a description: VFS.openFile where the backend keeps open files, else by name. */
+    hold(rights: {
+        read: boolean;
+        write: boolean;
+    }): Awaitable<HeldFile>;
+}
+/**
+ * A file a description holds (PinnedName.hold). On a backend that keeps
+ * open files (VFS.openFile) its content operations reach that file wherever
+ * it is named later; every other operation, and every one on a backend that
+ * keeps none, goes by the name it was opened at, refused (ESTALE) once that
+ * name holds another file (its backend's inode number changed) or none. A
+ * backend that numbers no files cannot tell: there, the name is the file.
+ * Its mutations are the opener's view's: refused on a read-only mount, asked
+ * of the namespace's guard at its name, and observed (observeWrites) only
+ * while the namespace shows that file at that name.
+ */
+export interface HeldFile {
+    /** The namespace's name for it, when it was opened. */
+    readonly name: string;
+    /** Its backend answers only by awaiting. */
+    readonly awaits: boolean;
+    /** Which file it is: the same for every hold of it, through any name or view of its backend. */
+    readonly key: string;
+    stat(): Awaitable<VfsStat>;
+    read(offset: number, length: number): Awaitable<Uint8Array>;
+    readAll(): Awaitable<Uint8Array>;
+    /** In place; ENOTSUP where it cannot be written so. `admit` runs right before the backend is asked, after every await. */
+    write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<void>;
+    /** Its whole content, `bytes`. */
+    replace(bytes: Uint8Array, admit?: () => void): Awaitable<void>;
+    truncate(size: number, admit?: () => void): Awaitable<void>;
+    chmod(mode: number, admit?: () => void): Awaitable<void>;
+    chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+    utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+    readdir(): Awaitable<VfsDirent[]>;
+    close(): Awaitable<void>;
 }
 export interface MountInfo {
     readonly point: string;
@@ -409,24 +458,29 @@ export declare class CompositeVFS implements VFS {
     }): Promise<VfsRoute>;
     route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
     /**
-     * The file at `path` as an open(2) holds it: where this view's lookup
-     * lands now (links followed, the last only with `follow`), on the backend
-     * there as this principal sees it, whatever is mounted, unmounted or
-     * linked at the name later. Every operation of the open and of its
-     * description goes there (Pinned): its stat keeps that mount's identity,
-     * its mutations stay this view's (a read-only mount refuses them, the
-     * guard is asked at the name), and the namespace's observers hear of them
-     * while that mount is still the one at its point. A directory the
-     * namespace makes above a mount point is the namespace's own, by its name;
-     * a mount point is its backend's root. `sync`: through the backends'
-     * synchronous faces only.
+     * The name `path` leads to now, for an open (PinnedName): links on the
+     * way followed, the last only with `follow`. The open's decisions, and the
+     * description it keeps (PinnedName.hold), go to the backend that lookup
+     * landed on, as this view's principal sees it, whatever is mounted,
+     * unmounted or linked at the name later. A directory the namespace makes
+     * above mount points is the namespace's own, by its name; a mount point
+     * is its backend's root. Inside a backend that resolves its own paths
+     * (MountOptions.resolvesPaths) the name is held as given: a link of the
+     * backend's repointed later is the backend's to follow. `sync`: through the
+     * backends' synchronous faces only.
      */
     pin(path: string, options: {
         follow: boolean;
         sync: boolean;
-    }): Awaitable<PinnedFile>;
-    /** One pinned file's operations (pin): on what it captured, named as the namespace named it. */
+    }): Awaitable<PinnedName>;
+    /** A pinned target's mutation: refused on a read-only mount and by the guard, `admit` right before the backend, observed while `still`. */
+    private changingOn;
+    /** A name an open found on a backend (pin). */
     private static readonly Pinned;
+    /** A file a description holds (HeldFile), on the backend its pin captured. */
+    private static readonly Held;
+    /** A directory the namespace makes above mount points, pinned (pin): the namespace's own, by its name. */
+    private static readonly NamespaceName;
     /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
      * (links on the way followed, the last only with `follow`), the mount
@@ -533,6 +587,12 @@ export declare class CompositeVFS implements VFS {
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
     private backend;
+    /** What `mount`'s source gives this view's principal now (the backend itself, before a principal's view of it). */
+    private sourceOf;
+    /** `found` as this view's principal sees it (its `as`), one view per backend. */
+    private backendView;
+    /** `files`' synchronous face, or EAGAIN for a caller that cannot wait (an asynchronous mount). */
+    private synchronousFace;
     /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */
     private absentOn;
     private absent;

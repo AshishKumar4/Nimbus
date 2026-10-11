@@ -1,9 +1,9 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
-import { BUFFERED_WRITE_BYTES, describeMounted, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
+import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { isPromise, readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
+import { andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -31,7 +31,7 @@ export class SqliteRuntimeFsBridge {
         this.waves = waves;
         this.vfs = vfs;
         this.mounted = namespace?.sync;
-        this.descriptors = new Descriptors(scope, () => rawVfs.revision());
+        this.descriptors = new Descriptors(scope, () => rawVfs.revision(), true);
     }
     dispose() {
         const lost = closeDescriptions(this.scope);
@@ -166,7 +166,7 @@ export class SqliteRuntimeFsBridge {
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
     processView(located, follow) {
         // The synchronous face pins through synchronous faces only: every answer is a value.
-        return processView(this.scope, () => located.namespace.pin(located.path, { follow, sync: true }));
+        return syncValue(processView(this.scope, () => located.namespace.pin(located.path, { follow, sync: true })));
     }
     writeFile(path, bytes, options = {}) {
         return called({ syscall: 'write', path }, () => {
@@ -352,6 +352,9 @@ export class SqliteRuntimeFsBridge {
     open(path, flags, options = {}) {
         return called({ syscall: 'open', path }, () => {
             const normalizedFlags = openFlags(flags);
+            const flagged = flagsRefusal(normalizedFlags);
+            if (flagged !== null)
+                throw fsError(flagged, 'open', path);
             const mutates = normalizedFlags.write || normalizedFlags.create ||
                 normalizedFlags.truncate || normalizedFlags.append;
             const owner = mutates ? options.mutationOwner : undefined;
@@ -364,42 +367,39 @@ export class SqliteRuntimeFsBridge {
                 throw fsError('ELOOP', 'open', path);
             if (located.mount) {
                 const namespace = located.namespace;
-                const node = openMounted({
+                // The synchronous face looks up through synchronous faces only (an asynchronous mount refused above): its answer is a value.
+                return this.descriptors.issue(syncValue(openMounted({
                     name: located.path, flags: normalizedFlags, mode: flags.mode,
                     refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
                     sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-                });
-                // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.
-                if (isPromise(node))
-                    throw new Error('internal: a mounted open on the synchronous face awaited');
-                return this.descriptors.issue(node, normalizedFlags);
+                })), normalizedFlags);
             }
             const p = located.path;
             if (p === '')
                 return this.openRoot(path, normalizedFlags);
-            // O_CREAT|O_EXCL of a name that is there, a link included, is EEXIST,
-            // before O_NOFOLLOW's ELOOP: Linux's order, and the mounted open's.
+            // open(2)'s rule, in Linux's order, as a mount's open decides it (openOnMount).
             if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p)))
                 throw fsError('EEXIST', 'open', path);
-            // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
-            // open on the link itself, and what it points at is exactly what the
-            // caller declined to open.
+            // There is no descriptor to open on the link itself: what it points at is exactly what the caller declined to open.
             if (!normalizedFlags.followSymlinks && this.vfs.isSymlink(p))
-                throw fsError('ELOOP', 'open', path);
+                throw fsError(normalizedFlags.directory ? 'ENOTDIR' : 'ELOOP', 'open', path);
             this.assertExpectedRevision(p, normalizedFlags.expectedRevision);
             const exists = this.vfs.exists(p);
-            if (normalizedFlags.directory && (!exists || !this.vfs.isDirectory(p)))
-                throw fsError('ENOTDIR', 'open', path);
             if (!exists && !normalizedFlags.create)
                 throw fsError('ENOENT', 'open', path);
-            // A directory opens for reading whatever rights were asked for: a WASI
-            // guest requests a capability set, not an access mode, and a directory
-            // simply never grants fd_write (the write itself answers EISDIR). What
-            // refuses here is content the open would change.
-            if (exists && this.vfs.isDirectory(p) && (normalizedFlags.truncate || normalizedFlags.append))
+            const directory = exists && this.vfs.isDirectory(p);
+            if (directory && normalizedFlags.create)
+                throw fsError('EISDIR', 'open', path);
+            if (normalizedFlags.directory && !directory)
+                throw fsError('ENOTDIR', 'open', path);
+            // A directory opens whatever rights were asked for: a WASI guest
+            // requests a capability set, not an access mode, and a directory simply
+            // never grants fd_write (the write itself answers EISDIR). What refuses
+            // here is content the open would change.
+            if (directory && (normalizedFlags.truncate || normalizedFlags.append))
                 throw fsError('EISDIR', 'open', path);
             if (exists)
-                this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write && !this.vfs.isDirectory(p) ? 2 : 0));
+                this.vfs.access(p, openAccess(normalizedFlags, directory));
             if (!exists) {
                 this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
             }
@@ -409,23 +409,14 @@ export class SqliteRuntimeFsBridge {
             return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags);
         });
     }
-    /**
-     * Descriptor `id`, for this synchronous face: a description on an
-     * asynchronous mount refuses, as its mount does. Every other answers in
-     * the caller's turn, so its operations' answers are values.
-     */
-    now(id) {
-        const node = this.descriptors.description(id);
-        if (node.awaits)
-            throw awaitsRefusal(node.path());
-    }
+    // A description on an asynchronous mount refuses this synchronous face's
+    // operations, as its mount does (Descriptors' synchronous); every other
+    // answers in the caller's turn, so their answers are values.
     read(handleId, offset, length) {
-        this.now(handleId);
-        return this.descriptors.read(handleId, offset, length);
+        return syncValue(this.descriptors.read(handleId, offset, length));
     }
     write(handleId, offset, bytes) {
-        this.now(handleId);
-        return this.descriptors.write(handleId, offset, bytes);
+        return syncValue(this.descriptors.write(handleId, offset, bytes));
     }
     close(handleId) {
         this.descriptors.close(handleId);
@@ -578,10 +569,8 @@ export class SqliteRuntimeFsBridge {
         });
     }
     fsync(handleId) {
-        if (handleId === undefined)
-            return;
-        this.now(handleId);
-        void this.descriptors.fsync(handleId);
+        if (handleId !== undefined)
+            syncValue(this.descriptors.fsync(handleId));
     }
     /**
      * Every per-path revision here is the caller's: `p` is its own name for a
@@ -697,17 +686,26 @@ export class SqliteRuntimeFsBridge {
             return node === null ? null : this.keepWaveDescription(id, node, rights);
         },
         // Each write of a wave's description is in its mount before the wave is answered (sync).
-        describe: (id, file, ino, rights) => this.keepWaveDescription(id, describeMounted({
-            scope: this.scope, refuse: (code, syscall) => fsError(code, syscall, file.name), sync: true, bufferedWriteBytes: this.bufferedWriteBytes,
-        }, file, ino), rights),
+        describe: (id, file, ino, rights) => andThen(file.hold(rights), (held) => {
+            // Released while its file was found: nothing would close it.
+            if (this.scope.closed) {
+                const closed = held.close();
+                if (isPromise(closed))
+                    closed.catch(() => { });
+                throw fsError('EBADF', 'open', file.name);
+            }
+            return this.keepWaveDescription(id, describeMounted({
+                scope: this.scope, refuse: (code, syscall) => fsError(code, syscall, file.name), sync: true, bufferedWriteBytes: this.bufferedWriteBytes,
+            }, held, ino), rights);
+        }),
         node: (id) => {
             const node = this.waveDescription(id);
             // The engine's, on this filesystem: a mount's is the binding's alone (mounted).
-            return node === undefined || node.mounted ? undefined : node;
+            return node?.mounted ? undefined : node;
         },
         mounted: (id) => {
             const node = this.waveDescription(id);
-            return node?.mounted && node.append !== undefined ? node : undefined;
+            return node?.mounted ? node : undefined;
         },
         handle: (id) => {
             const handleId = this.scope.waveDescriptions.get(id);
@@ -776,8 +774,7 @@ export class SqliteRuntimeFsBridge {
         if ('root' in path)
             return path.root + '/' + path.path;
         const directory = path.directory;
-        this.now(directory);
-        if (this.descriptors.description(directory).stat().type !== 'directory')
+        if (syncValue(this.descriptors.description(directory).stat()).type !== 'directory')
             throw fsError('ENOTDIR', 'path', path.path);
         if (path.path.startsWith('/'))
             return path.path;
@@ -923,7 +920,9 @@ export class SqliteRuntimeFsBridge {
         return located.path;
     }
     openRoot(path, flags) {
-        if (flags.truncate || flags.append)
+        if (flags.create && flags.exclusive)
+            throw fsError('EEXIST', 'open', path);
+        if (flags.create || flags.truncate || flags.append)
             throw fsError('EISDIR', 'open', path);
         const deny = () => { throw fsError('EPERM', 'fd', ''); };
         const node = {
@@ -972,15 +971,15 @@ export class SqliteRuntimeFsBridge {
     }
     /** The absolute path a descriptor was opened at. */
     descriptorPath(handleId) { return '/' + normalizeVfsPath(this.descriptors.path(handleId)); }
-    fstat(handleId) { this.now(handleId); return this.descriptors.fstat(handleId); }
+    fstat(handleId) { return syncValue(this.descriptors.fstat(handleId)); }
     dup(handleId) { return this.descriptors.dup(handleId); }
-    seek(handleId, offset, whence) { this.now(handleId); return this.descriptors.seek(handleId, offset, whence); }
+    seek(handleId, offset, whence) { return syncValue(this.descriptors.seek(handleId, offset, whence)); }
     setStatus(handleId, status) { this.descriptors.setStatus(handleId, status); }
-    readdirHandle(handleId) { this.now(handleId); return this.descriptors.readdir(handleId); }
-    ftruncate(handleId, size) { this.now(handleId); void this.descriptors.ftruncate(handleId, size); }
-    fchmod(handleId, mode) { this.now(handleId); void this.descriptors.fchmod(handleId, mode); }
-    fchown(handleId, uid, gid) { this.now(handleId); void this.descriptors.fchown(handleId, uid, gid); }
-    futimes(handleId, atime, mtime) { this.now(handleId); void this.descriptors.futimes(handleId, atime, mtime); }
+    readdirHandle(handleId) { return syncValue(this.descriptors.readdir(handleId)); }
+    ftruncate(handleId, size) { syncValue(this.descriptors.ftruncate(handleId, size)); }
+    fchmod(handleId, mode) { syncValue(this.descriptors.fchmod(handleId, mode)); }
+    fchown(handleId, uid, gid) { syncValue(this.descriptors.fchown(handleId, uid, gid)); }
+    futimes(handleId, atime, mtime) { syncValue(this.descriptors.futimes(handleId, atime, mtime)); }
 }
 /** A `..` component in a path's spelling. */
 const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;

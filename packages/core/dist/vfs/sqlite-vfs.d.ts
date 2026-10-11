@@ -2088,8 +2088,6 @@ export declare class SqliteVFS {
      * undefined when none is open under `id`.
      */
     private described;
-    /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
-    private isDescribed;
     /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
     private describedBy;
     /**

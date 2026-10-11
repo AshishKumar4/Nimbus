@@ -22,6 +22,7 @@ export class MemoryVFS {
     storesWrites = true;
     root;
     clock = 0;
+    inos = 0;
     sync = this;
     constructor(owner = { uid: 0, gid: 0 }) {
         this.owner = owner;
@@ -29,7 +30,7 @@ export class MemoryVFS {
     }
     entry(type, mode) {
         const fields = {
-            data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
+            ino: ++this.inos, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
         };
         return type === 'directory' ? { type, ...fields, children: new Map() } : { type, ...fields, children: null };
     }
@@ -71,6 +72,7 @@ export class MemoryVFS {
     }
     stats(entry) {
         return {
+            ino: entry.ino,
             type: entry.type,
             size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
             mtimeMs: entry.mtimeMs,
@@ -119,15 +121,30 @@ export class MemoryVFS {
         const call = { syscall: 'open', path };
         if (this.find(path, call) === null)
             this.writeFile(path, EMPTY);
-        const entry = this.file(path, call);
+        this.writeAt(this.file(path, call), offset, bytes);
+    }
+    truncate(path, size) {
+        this.truncateTo(this.file(path, { syscall: 'open', path }), size);
+    }
+    /** The entry itself: renamed or unlinked, it is still what its holder reads and writes. */
+    openFile(path) {
+        const entry = this.file(path, { syscall: 'open', path });
+        return {
+            stat: () => this.stats(entry),
+            read: (offset, length) => entry.data.slice(offset, offset + length),
+            write: (offset, bytes) => this.writeAt(entry, offset, bytes),
+            truncate: (size) => this.truncateTo(entry, size),
+            close: () => { },
+        };
+    }
+    writeAt(entry, offset, bytes) {
         const next = new Uint8Array(Math.max(entry.data.length, offset + bytes.length));
         next.set(entry.data);
         next.set(bytes, offset);
         entry.data = next;
         this.touch(entry);
     }
-    truncate(path, size) {
-        const entry = this.file(path, { syscall: 'open', path });
+    truncateTo(entry, size) {
         const next = new Uint8Array(size);
         next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
         entry.data = next;
