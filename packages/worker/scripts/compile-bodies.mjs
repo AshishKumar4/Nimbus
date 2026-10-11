@@ -7,6 +7,12 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const core = 'packages/core/src/runtime';
 const worker = 'packages/worker/src';
 const fabric = 'packages/fabric/src';
+/** @type {Array<{
+ * path: string;
+ * taskImport?: string;
+ * tasks: Array<[name: string, entry: string, exported: string]>;
+ * bodies: Array<[name: string, entry: string | null, names: string[], contents?: string]>;
+ * }>} */
 const outputs = [
   {
     path: `${core}/compiled-bodies.generated.ts`,
@@ -43,9 +49,9 @@ const outputs = [
     ],
     bodies: [
       ['NPM_INSTALL_HELPERS_SOURCE', null, [], [
-        "export { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';",
+        "export { retryDelayMs, retrying } from './packages/platform/src/retry.ts';",
         "export { retryingRegistryFetch } from './packages/worker/src/npm/registry-retry.ts';",
-        "export { sriDigestAlgorithms, sriEntries, strongestSriEntry, sriDigestOf, sriDigestsEqual } from '@nimbus-sh/core/_shared/tarball-integrity.js';",
+        "export { sriDigestAlgorithms, sriEntries, strongestSriEntry, sriDigestOf, sriDigestsEqual } from './packages/core/src/_shared/tarball-integrity.ts';",
       ].join('\n')],
       ['NPM_ABI_POLICY_SOURCE', '../facets/wasm-swap-registry.js', ['policyLookupSwap', 'policyLookupReject', 'policyNativePlatformReject', 'policyNativeBinAdvisory', 'policyLookupStagedArtifact', 'policyApplyStagedArtifact', 'policyIsOptionalNativeBinding']],
       ['RESIDENCY_MISS_REPORT_SOURCE', '../runtime/residency-miss-report.js', ['residencyMissReport']],

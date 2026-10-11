@@ -165,6 +165,7 @@ function makeBinding(calls) {
 
   for (const [op, args] of [
     ['readFile', ['/a', { cred: AGENT }]],
+    ['readlink', ['/a', { cred: AGENT }]],
     ['writeFile', ['/a', 'x', { cred: AGENT }]],
     ['deleteFile', ['/a', { recursive: true, cred: AGENT }]],
   ]) {
