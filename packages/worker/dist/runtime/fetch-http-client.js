@@ -7,6 +7,9 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
   const NativeClientRequest = http.ClientRequest;
   const NativeIncomingMessage = http.IncomingMessage;
   const Writable = Object.getPrototypeOf(http.OutgoingMessage.prototype).constructor;
+  const hostOptions = ["hostname", "host"];
+  const unavailableOptions = [["createConnection", "function"], ["lookup", "function"], ["socketPath", "string"], ["maxHeaderSize", "number"]];
+  const booleanOptions = ["insecureHTTPParser", "joinDuplicateHeaders"];
   const fail = (code, message, Base = Error) => nodeError(Base, code, message);
   const reset = (message) => Object.assign(new Error(message), { code: "ECONNRESET" });
   const abortError = (cause) => Object.assign(new Error("The operation was aborted", { cause }), { code: "ABORT_ERR", name: "AbortError" });
@@ -107,19 +110,19 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.protocol !== expected) throw fail("ERR_INVALID_PROTOCOL", 'Protocol "' + this.protocol + '" not supported. Expected "' + expected + '"', TypeError);
       const defaultPort = options.defaultPort || this.agent?.defaultPort || 80;
       this.port = String(options.port || defaultPort);
-      for (const name of ["hostname", "host"]) if (options[name] != null && typeof options[name] !== "string") throw invalidArgType("options." + name, ["string", "undefined", "null"], options[name]);
+      for (const name of hostOptions) if (options[name] != null && typeof options[name] !== "string") throw invalidArgType("options." + name, ["string", "undefined", "null"], options[name]);
       this.host = options.hostname || options.host || "localhost";
       if (options.method != null && typeof options.method !== "string") throw invalidArgType("options.method", "string", options.method);
       this.method = options.method ? options.method.toUpperCase() : "GET";
       if (!/^[!#$%&'*+.^_\u0060|~0-9A-Za-z-]+$/.test(this.method)) throw fail("ERR_INVALID_HTTP_TOKEN", 'Method must be a valid HTTP token ["' + options.method + '"]', TypeError);
       this.path = options.path || "/";
       checkPath(this.path);
-      for (const [name, type] of [["createConnection", "function"], ["lookup", "function"], ["socketPath", "string"], ["maxHeaderSize", "number"]]) {
+      for (const [name, type] of unavailableOptions) {
         if (options[name] === undefined) continue;
         if (typeof options[name] !== type) throw invalidArgType("options." + name, type, options[name]);
         throw fail("ERR_OPTION_NOT_IMPLEMENTED", "The options." + name + " option is not implemented");
       }
-      for (const name of ["insecureHTTPParser", "joinDuplicateHeaders"]) if (options[name] !== undefined && typeof options[name] !== "boolean") throw invalidArgType("options." + name, "boolean", options[name]);
+      for (const name of booleanOptions) if (options[name] !== undefined && typeof options[name] !== "boolean") throw invalidArgType("options." + name, "boolean", options[name]);
       this.joinDuplicateHeaders = options.joinDuplicateHeaders;
       const headers = options.headers;
       if (Array.isArray(headers)) {
