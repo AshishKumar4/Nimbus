@@ -3626,12 +3626,26 @@ export class SqliteVFS {
   private walked(
     key: string, inode: INode | undefined, name: string, cred: VfsCred, tree: InodeLookup,
   ): { path: string; inode: INode | undefined; name: string } {
-    if (inode !== undefined && tree === this.inodes) {
+    if (inode !== undefined && tree === this.inodes) this.remember(cred, name, key, inode);
+    return { path: key, inode, name };
+  }
+
+  /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
+  private remember(cred: VfsCred, name: string, key: string, inode: INode): void {
+    const last = this.lastResolution;
+    if (last === null) {
       this.lastResolution = {
         epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name, key, inode, leafIsLink: inode.kind === 'symlink',
       };
+      return;
     }
-    return { path: key, inode, name };
+    last.epoch = this.resolutionEpoch;
+    last.tableEpoch = this.inodes.epoch;
+    last.cred = cred;
+    last.name = name;
+    last.key = key;
+    last.inode = inode;
+    last.leafIsLink = inode.kind === 'symlink';
   }
 
   /**
@@ -3690,12 +3704,7 @@ export class SqliteVFS {
         if (!this.accessInode(inode, 0o1, cred)) throw vfsKeyError('EACCES', prefix);
       }
     }
-    if (found !== undefined && tree === this.inodes) {
-      this.lastResolution = {
-        epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name: current,
-        key: this.keyOfName(current, root), inode: found, leafIsLink: found.kind === 'symlink',
-      };
-    }
+    if (found !== undefined && tree === this.inodes) this.remember(cred, current, this.keyOfName(current, root), found);
     return { name: current, end: 'found' };
   }
 
