@@ -1,5 +1,6 @@
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
+import { posixAccess } from './posix-access.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { S_IFMT, isCharacterDevice } from './vfs.js';
@@ -1385,13 +1386,11 @@ export class CompositeVFS {
     /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
     permits(stat, want) {
         const cred = this.viewer.cred;
+        // Root searches every directory (posixAccess's root rule is a file's exec);
+        // an entry its backend keeps no mode for is not judged.
         if (cred === null || cred.uid === 0 || stat.mode === undefined)
             return true;
-        const mode = stat.mode;
-        const bits = cred.uid === stat.uid
-            ? (mode >> 6) & 7
-            : cred.gid === stat.gid || (cred.groups ?? []).includes(stat.gid ?? -1) ? (mode >> 3) & 7 : mode & 7;
-        return (bits & want) === want;
+        return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1 }, want, { uid: cred.uid, gid: cred.gid, groups: cred.groups ?? [] });
     }
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     walkMiss(error, _path) {
