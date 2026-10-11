@@ -1,5 +1,3 @@
-/** REPL entries compiled without the host's interpreter/bootstrap modules. */
-import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 /**
  * Facet-side, request-shaped: serialized with fn.toString() into the
  * pool's fetch entrypoint, so it captures nothing and names no import —
@@ -10,7 +8,7 @@ import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
  * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
  * interpreter at its suspension point.
  */
-export async function pythonReplStepRequestFn(request: Request, facetEnv: FacetBindings): Promise<Response> {
+export async function pythonReplStepRequestFn(request, facetEnv) {
     const args = await request.json();
     if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
         throw new Error('Python REPL request must contain userCode');
@@ -34,21 +32,6 @@ export async function pythonReplStepRequestFn(request: Request, facetEnv: FacetB
         Reflect.apply(adopt, undefined, [supervisor ?? null]);
     return Response.json(await run(args));
 }
-/** What one prompt step hands the facet: the driver and where the prompt starts. */
-export interface RubyReplStep {
-    userCode: string;
-    home: string;
-    cwd: string;
-    binName: string;
-    supervisorPid: number;
-}
-export interface RubyReplFacetResult {
-    stdout: string;
-    stderr: string;
-    exitCode: number;
-    error?: string;
-    control?: Record<string, string>;
-}
 /**
  * Facet-side function. Self-contained — serialized via fn.toString();
  * no closure captures, no class refs, no bare 'this' word.
@@ -58,10 +41,8 @@ export interface RubyReplFacetResult {
  * directory, over the caller's filesystem (the pool's SUPERVISOR), as the
  * one-shot runner's entry does.
  */
-export function rubyReplStepFacetFn(args: RubyReplStep, facetEnv: {
-    SUPERVISOR?: unknown;
-}): Promise<RubyReplFacetResult> {
-    const g: any = globalThis as any;
+export function rubyReplStepFacetFn(args, facetEnv) {
+    const g = globalThis;
     return (async function () {
         const fn = g.__rubyRun;
         if (typeof fn !== 'function') {
@@ -70,7 +51,7 @@ export function rubyReplStepFacetFn(args: RubyReplStep, facetEnv: {
                 error: 'ruby-repl preamble missing: __rubyRun not in scope',
             };
         }
-        const adopt = g.__wasiAdoptSupervisor as ((s: unknown) => void) | undefined;
+        const adopt = g.__wasiAdoptSupervisor;
         const supervisor = facetEnv && facetEnv.SUPERVISOR;
         // Published where __rubyRun re-adopts it after the mount; adopting only
         // here would be undone by __wasiInitFS.

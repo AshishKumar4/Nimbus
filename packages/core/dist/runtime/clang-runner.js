@@ -657,28 +657,3 @@ globalThis.__clangRun = async function __clangRun(args) {
 // ── END: clang-runner preamble ────────────────────────────────────────
 `;
 export const CLANG_RUNNER_PREAMBLE = `${WASI_INSTANCE_PREAMBLE_SRC}\n${CLANG_RUNNER_PREAMBLE_TAIL}`;
-export const clangFacetCall = async function clangFacetCall(inArgs, facetEnv) {
-    const wasm = Reflect.get(globalThis, '__NIMBUS_WASM');
-    const primaryMod = wasm?.['primary.wasm'];
-    if (!primaryMod) {
-        return {
-            exitCode: 127, stdout: '', stderr: '',
-            error: 'clang-runner: __NIMBUS_WASM missing primary.wasm',
-        };
-    }
-    const fn = Reflect.get(globalThis, '__clangRun');
-    if (typeof fn !== 'function') {
-        return {
-            exitCode: 127, stdout: '', stderr: '',
-            error: 'clang-runner preamble missing: __clangRun not in scope',
-        };
-    }
-    return await fn({
-        primaryName: inArgs.primaryName,
-        argv: inArgs.argv,
-        cred: inArgs.cred,
-        primaryMod,
-        supervisor: facetEnv?.SUPERVISOR,
-        processPid: inArgs.processPid,
-    });
-};

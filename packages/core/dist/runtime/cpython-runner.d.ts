@@ -68,14 +68,6 @@ export interface CPythonFacetResult {
     error?: string;
 }
 /**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
- */
-export declare function cpythonRunFacetFn(args: Record<string, unknown>, facetEnv: {
-    SUPERVISOR?: unknown;
-} | undefined): Promise<CPythonFacetResult>;
-/**
  * Start a program that outlives the invocation, and report where it went.
  *
  * A separate dependency rather than a branch, because a resident process is a

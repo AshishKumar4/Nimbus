@@ -163,28 +163,6 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
-/**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
- */
-export async function cpythonRunFacetFn(args, facetEnv) {
-    const run = Reflect.get(globalThis, '__cpythonRun');
-    if (typeof run !== 'function') {
-        return {
-            stdout: '', stderr: '', exitCode: 127,
-            error: 'cpython preamble missing: __cpythonRun not in scope',
-        };
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where the boot re-adopts it after the mount: adopting only here
-    // would be undone by __wasiInitFS, which clears it on purpose.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-    adopt?.(supervisor);
-    return run(args);
-}
 export function makeCPythonRunnerFactory(deps) {
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => {

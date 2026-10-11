@@ -187,55 +187,6 @@ class RubyReplAdapter {
     }
 }
 /**
- * Facet-side function. Self-contained — serialized via fn.toString();
- * no closure captures, no class refs, no bare 'this' word.
- *
- * Calls globalThis.__rubyRun (installed by RUBY_RUNNER_PREAMBLE_TAIL)
- * with the user code wrapped by the driver above, in the caller's working
- * directory, over the caller's filesystem (the pool's SUPERVISOR), as the
- * one-shot runner's entry does.
- */
-export function rubyReplStepFacetFn(args, facetEnv) {
-    const g = globalThis;
-    return (async function () {
-        const fn = g.__rubyRun;
-        if (typeof fn !== 'function') {
-            return {
-                stdout: '', stderr: '', exitCode: 127,
-                error: 'ruby-repl preamble missing: __rubyRun not in scope',
-            };
-        }
-        const adopt = g.__wasiAdoptSupervisor;
-        const supervisor = facetEnv && facetEnv.SUPERVISOR;
-        // Published where __rubyRun re-adopts it after the mount; adopting only
-        // here would be undone by __wasiInitFS.
-        if (supervisor)
-            Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
-        adopt?.(supervisor);
-        // The prompt starts in the shell's cwd once per VM; a later line keeps
-        // whatever directory the program's own Dir.chdir left.
-        const started = Reflect.get(globalThis, '__nimbusRubyPromptStarted') === true;
-        Reflect.set(globalThis, '__nimbusRubyPromptStarted', true);
-        const r = await fn({
-            userCode: args.userCode,
-            rbArgv: ['ruby', '-e', args.userCode],
-            userEnv: { HOME: args.home },
-            progName: 'ruby',
-            binName: args.binName,
-            cwd: started ? undefined : args.cwd,
-            supervisorPid: args.supervisorPid,
-            outputControls: [{ key: 'incomplete', prefix: '__NIMBUS_INCOMPLETE__' }],
-        });
-        return {
-            stdout: r.stdout || '',
-            stderr: r.stderr || '',
-            exitCode: typeof r.exitCode === 'number' ? r.exitCode : 0,
-            error: r.error,
-            control: r.control,
-        };
-    })();
-}
-/**
  * Top-level wrapper: builds a Ruby REPL adapter, drives a ReplSession
  * to completion, returns the exit code. Called from the ruby factory's
  * wrapper in init.ts when `ruby` is invoked with no args.

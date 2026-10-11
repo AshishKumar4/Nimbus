@@ -264,40 +264,6 @@ export function pythonReplStep(deps, pythonHome, userCode) {
         ...(deps.start ? { enter: enterWorkingDirectory(deps.start.binName, deps.start.cwd) } : {}),
     };
 }
-/**
- * Facet-side, request-shaped: serialized with fn.toString() into the
- * pool's fetch entrypoint, so it captures nothing and names no import —
- * __cpythonReplRun is put on globalThis by the preamble, and unlike
- * __cpythonRun it keeps its interpreter between calls. The request body
- * is the step payload the adapter JSON-encodes; the response is the
- * step result. Request transport because it is the pool's only
- * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
- * interpreter at its suspension point.
- */
-export async function pythonReplStepRequestFn(request, facetEnv) {
-    const args = await request.json();
-    if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
-        throw new Error('Python REPL request must contain userCode');
-    }
-    const run = Reflect.get(globalThis, '__cpythonReplRun');
-    if (typeof run !== 'function') {
-        return Response.json({
-            stdout: '', stderr: '', exitCode: 127,
-            error: 'cpython preamble missing: __cpythonReplRun not in scope',
-        });
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where the boot re-adopts it after the mount, because
-    // __wasiInitFS clears the adoption on purpose. Omitting this here — while
-    // cpython-runner's entry had it — is what made the prompt start with no
-    // filesystem it could read.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-    if (typeof adopt === 'function')
-        Reflect.apply(adopt, undefined, [supervisor ?? null]);
-    return Response.json(await run(args));
-}
 export async function runPythonRepl(deps) {
     const adapter = new PythonReplAdapter(deps);
     const session = new ReplSession(adapter, deps.terminal, deps.shell);

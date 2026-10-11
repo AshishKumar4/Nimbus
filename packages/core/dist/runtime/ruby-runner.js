@@ -1347,27 +1347,3 @@ async function __rubyRunOnce(args) {
 
 // ── END: ruby-runner preamble ──────────────────────────────────────
 `;
-export const rubyFacetCall = async function rubyFacetCall(inArgs, facetEnv) {
-    const fn = Reflect.get(globalThis, '__rubyRun');
-    if (typeof fn !== 'function') {
-        return { exitCode: 127, stdout: '', stderr: '',
-            error: 'ruby-runner preamble missing: __rubyRun not in scope' };
-    }
-    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where __rubyRun re-adopts it after the mount; adopting only
-    // here would be undone by __wasiInitFS.
-    if (supervisor)
-        Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
-    adopt?.(supervisor);
-    return fn({
-        userCode: inArgs.userCode,
-        rbArgv: inArgs.rbArgv,
-        userEnv: inArgs.userEnv,
-        progName: inArgs.progName,
-        binName: inArgs.binName,
-        cwd: inArgs.cwd,
-        cred: inArgs.cred,
-        supervisorPid: inArgs.supervisorPid,
-    });
-};
