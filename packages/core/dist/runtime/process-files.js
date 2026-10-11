@@ -112,6 +112,11 @@ class GuardedProcessBridge {
         this.guard();
         return this.reading(() => this.target.readRange(path, offset, length, options));
     }
+    /** Session-local routing question, not a supervisor RPC method: concrete-only, like the target's. */
+    hasRangedRead(path) {
+        this.guard();
+        return this.target.hasRangedRead(path);
+    }
     writeRange(path, offset, bytes, options) {
         this.guard();
         return this.target.writeRange(path, offset, bytes, options);
@@ -587,7 +592,7 @@ export class ProcessFiles {
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
         const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
+        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, this.vfs, this.bufferedWriteBytes);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);
@@ -837,6 +842,14 @@ class AwaitingProcessBridge {
     }
     readRange(path, offset, length, options) {
         return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => await readRangeOrWhole(this.namespace, await this.path(path), offset, length)));
+    }
+    /** Session-local routing question, not a supervisor RPC method: concrete-only, like the target's. */
+    hasRangedRead(path) {
+        // Descriptor-relative paths stay on the piece path: only the bridge's
+        // routed lookup can see their backend, and it reports through the same
+        // method when they reach it.
+        const routed = this.bridge;
+        return this.either([path], () => routed.hasRangedRead?.(path) ?? true, async () => true);
     }
     writeFile(path, bytes, options) {
         return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
@@ -1359,19 +1372,52 @@ export class ProcessView {
     async readFileUncached(path) {
         return new Uint8Array(await this.readArrayBufferUncached(path));
     }
-    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
+     *
+     * A whole image, never a mix of two writes: the stat identity the read
+     * starts from (device, inode, size, revision) is re-checked after every
+     * piece, and a change fails loudly rather than assembling bytes from both
+     * sides of it. A backend with no ranged read answers ENOTSUP on the
+     * first piece; the read then takes one whole-file read instead of one
+     * per 64 KiB piece (each of which would otherwise re-read the whole file
+     * through readRangeOrWhole).
+     */
     async readArrayBufferUncached(path) {
         const stat = await this.stat(path);
         if (stat === null)
             throw syscallError('ENOENT', 'open', path);
+        const unchanged = async () => {
+            const now = await this.stat(path);
+            return now !== null && now.size === stat.size && now.revision === stat.revision
+                && now.dev === stat.dev && now.ino === stat.ino;
+        };
+        // A backend with no ranged read degrades each piece to a whole-file
+        // read (readRangeOrWhole), so reading piece-by-piece would cost one full
+        // read per 64 KiB: take one whole-file read instead. The bridge reports
+        // the routed backend's capability without reading anything; a bridge
+        // that predates the method is assumed ranged, the common case.
+        const ranged = await this.fs.hasRangedRead?.(path) ?? true;
+        if (!ranged) {
+            const whole = await this.call('open', path, () => this.fs.readFile(path));
+            if (whole === null)
+                throw syscallError('ENOENT', 'open', path);
+            if (!await unchanged())
+                throw syscallError('ESTALE', 'read', path, { detail: 'changed during the read' });
+            const out = new ArrayBuffer(whole.byteLength);
+            new Uint8Array(out).set(whole);
+            return out;
+        }
         const buffer = new ArrayBuffer(stat.size);
         const result = new Uint8Array(buffer);
         for (let offset = 0; offset < result.length;) {
-            const bytes = await this.readRangeUncached(path, offset, Math.min(65536, result.length - offset));
+            let bytes;
+            bytes = await this.readRangeUncached(path, offset, Math.min(65536, result.length - offset));
             if (bytes.length === 0)
                 throw syscallError('ESTALE', 'read', path, { detail: 'changed during the read' });
             result.set(bytes, offset);
             offset += bytes.length;
+            if (!await unchanged())
+                throw syscallError('ESTALE', 'read', path, { detail: 'changed during the read' });
         }
         return buffer;
     }

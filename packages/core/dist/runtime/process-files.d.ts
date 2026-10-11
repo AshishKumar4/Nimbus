@@ -269,7 +269,16 @@ export declare class ProcessView implements VFS {
     touch(path: string): Promise<void>;
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
     readFileUncached(path: string): Promise<Uint8Array>;
-    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
+     *
+     * A whole image, never a mix of two writes: the stat identity the read
+     * starts from (device, inode, size, revision) is re-checked after every
+     * piece, and a change fails loudly rather than assembling bytes from both
+     * sides of it. A backend with no ranged read answers ENOTSUP on the
+     * first piece; the read then takes one whole-file read instead of one
+     * per 64 KiB piece (each of which would otherwise re-read the whole file
+     * through readRangeOrWhole).
+     */
     readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`

@@ -301,6 +301,25 @@ export class SqliteRuntimeFsBridge {
         located.mount.writeFile(located.path, data);
         return this.rawVfs.revision();
     }
+    /**
+     * Whether a ranged read of `path` reaches a backend that offers one:
+     * SQLite always does; a mount does exactly when its backend defines
+     * readRange. No bytes are read, so the answer costs nothing.
+     */
+    hasRangedRead(path) {
+        if (!this.namespace)
+            return true;
+        const spelled = typeof path === 'string' ? path : path.path;
+        const route = this.namespace.locate(spelled);
+        const source = route.mount.source;
+        const backend = typeof source === 'function' ? null : source;
+        // The mount backend itself, not the composite's routing view (whose
+        // readRange always exists and degrades per piece): absent readRange on
+        // the backend is the ENOTSUP the piece path would meet.
+        if (backend === null)
+            return true;
+        return typeof backend.readRange === 'function';
+    }
     readRange(path, offset, length, options = {}) {
         return called({ syscall: 'read', path }, () => {
             if ((options.expectedEpoch === undefined) !== (options.expectedRevision === undefined)) {

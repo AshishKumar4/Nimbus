@@ -91,6 +91,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): number;
     writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number>;
     private writeFileFromSource;
+    /**
+     * Whether a ranged read of `path` reaches a backend that offers one:
+     * SQLite always does; a mount does exactly when its backend defines
+     * readRange. No bytes are read, so the answer costs nothing.
+     */
+    hasRangedRead(path: RuntimeFsPath): boolean;
     readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null;
     writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
         createParents?: boolean;
