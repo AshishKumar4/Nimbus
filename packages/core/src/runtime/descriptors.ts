@@ -47,8 +47,8 @@ export interface MountedFileDescription {
   close(): Awaitable<void>;
   /**
    * A description whose mount cannot write in place holds its writes until a
-   * flush (fsync, the last close, the process's release, or a later change
-   * of the same file the process makes, settleHeld): `pendingBytes` is what a
+   * flush (fsync, the last close, the process's release, or a cut of its
+   * file the process makes, settleHeld): `pendingBytes` is what a
    * process killed now would lose, and `applyPending` lays them over `file`,
    * as the flush will.
    */
@@ -124,16 +124,40 @@ function lastClose(node: Description): Awaitable<void> {
   }
 }
 
+/** This process's descriptions of the file `key` names (MountedFileDescription.key) that hold writes, in open order. */
+function holding(scope: DescriptorScope, key: string | null): MountedFileDescription[] {
+  const mine: MountedFileDescription[] = [];
+  if (key === null) return mine;
+  for (const { node } of scope.handles.values()) {
+    if (node.mounted && scope.held.has(node) && node.key() === key && !mine.includes(node)) mine.push(node);
+  }
+  return mine;
+}
+
 /**
- * Every write this process holds, settled: before the process changes
- * anything else (its namespace's check, ProcessFiles), so a later truncate,
- * rename or write of the same file is ordered after them, as the page cache
- * orders them. A description holds writes only where its mount answers at
- * once, so this is done in the caller's turn. One that fails keeps its
- * failure for its next fsync or close, and the change goes on.
+ * This process's held writes on the file `key` names, written, in open
+ * order: before the process cuts that file (a truncate, an O_TRUNC open, a
+ * whole-file write), so the cut is ordered after them, as the page cache
+ * orders them (VFS-PF-001), and nothing brings back what it cut. A
+ * description holds writes only where its mount answers at once, so this is
+ * done in the caller's turn. One that fails keeps its failure for its next
+ * fsync or close, and the cut goes on.
  */
-export function settleHeld(scope: DescriptorScope): void {
-  for (const node of scope.held) node.settle();
+export function settleHeld(scope: DescriptorScope, key: string | null): void {
+  if (scope.held.size === 0) return;
+  for (const node of holding(scope, key)) node.settle();
+}
+
+/** settleHeld of the file `file` finds (a path's, CompositeVFS.pin), looked up only while the process holds writes; a lookup that fails settles nothing (the cut's own lookup says why). */
+export function settleHeldAt(scope: DescriptorScope, file: () => Awaitable<{ key(): Awaitable<string | null> }>): Awaitable<void> {
+  if (scope.held.size === 0) return;
+  const settle = (found: { key(): Awaitable<string | null> }): Awaitable<void> => andThen(found.key(), (key) => settleHeld(scope, key));
+  try {
+    const settled = andThen(file(), settle);
+    return isPromise(settled) ? settled.catch(() => {}) : settled;
+  } catch {
+    // The cut's own lookup refuses as it refuses.
+  }
 }
 
 /**
@@ -197,9 +221,8 @@ interface Viewed {
  */
 export function processView(scope: DescriptorScope, file: () => Awaitable<Viewed>): Awaitable<Uint8Array | undefined> {
   if (scope.held.size === 0) return undefined;
-  const holding = [...scope.held];
   return andThen(file(), (viewed) => andThen(viewed.key(), (key) => {
-    const mine = holding.filter((node) => node.key() === key);
+    const mine = holding(scope, key);
     if (mine.length === 0) return undefined;
     return andThen(viewed.readAll(), (base) => mine.reduce((view, node) => node.applyPending(view), base));
   }));

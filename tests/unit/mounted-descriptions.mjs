@@ -536,7 +536,7 @@ const refusingRanges = (vfs) => new Proxy(vfs, {
   },
 });
 
-await check('held writes are written before any later change of their file, which nothing brings back', async () => {
+await check('held writes are written before their process cuts their file, and nothing brings back what it cut', async () => {
   for (const [how, cut] of [
     ['an ftruncate through another descriptor', (proc) => { const other = proc.open('/t/x', { read: true, write: true }); proc.ftruncate(other.id, 0); proc.close(other.id); }],
     ['an ftruncate through the same descriptor', (proc, fd) => proc.ftruncate(fd.id, 0)],

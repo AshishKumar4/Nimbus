@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
-import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, type Description } from './descriptors.js';
+import { abandon, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
@@ -172,6 +172,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
+  /** Before a cut of a mounted file (a truncate, a whole-file write): the writes this process holds on it, written (settleHeldAt). */
+  private settleAt(located: { namespace: CompositeVFS; path: string }): void {
+    syncValue(settleHeldAt(this.scope, () => located.namespace.pin(located.path, { follow: true, sync: true })));
+  }
+
   /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
   private processView(located: { namespace: CompositeVFS; path: string }, follow: boolean): Uint8Array | undefined {
     // The synchronous face pins through synchronous faces only: every answer is a value.
@@ -188,6 +193,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
         if (options.createParents === true) mountParents(located.mount, located.path);
+        this.settleAt(located);
         located.mount.writeFile(located.path, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
         return this.rawVfs.revision();
       }
@@ -217,6 +223,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // whole file in one write: nothing reaches it until the source is read,
     // and a source that fails changes nothing.
     const data = await readDeclaredSource(source, size, () => fsError('EINVAL', 'write', path));
+    this.settleAt(located);
     located.mount.writeFile(located.path, data);
     return this.rawVfs.revision();
   }
@@ -291,7 +298,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   ): VfsMutationReceipt {
     return called({ syscall: 'truncate', path }, () => {
       const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate', options.mutationOwner);
-      if (located.mount) { mountOp(located.mount.truncate, 'truncate', path)(located.path, size); return this.mountReceipt(); }
+      if (located.mount) {
+        this.settleAt(located);
+        mountOp(located.mount.truncate, 'truncate', path)(located.path, size);
+        return this.mountReceipt();
+      }
       const p = located.path;
       if (!this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
       if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'truncate', path);
