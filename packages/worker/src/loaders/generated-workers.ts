@@ -9,7 +9,6 @@
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)
- *   - @nimbus-sh/core src/_shared/read-lease-cover.ts (what a read lease vouches for, for the node shims)
  *
  * Consumed by fabric/isolate-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -59,9 +58,3 @@ export const NODE_SHIM_RESOLUTION_PREAMBLE: string = "var { DEFAULT_CJS_CONDITIO
 
 /** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */
 export const RELATIVE_WASM_PATHS_PREAMBLE: string = "var { relativeWasmPaths } = (() => {\nfunction relativeWasmPaths(source, filename) {\n  const literals = /[\"'`]((?:\\.{1,2}\\/)*[\\w@.-]+(?:\\/[\\w@.-]+)*\\.wasm)[\"'`]/g;\n  const dir = filename.replace(/^\\/+/, \"\").split(\"/\").slice(0, -1);\n  const paths =   new Set();\n  for (const match of source.matchAll(literals)) {\n    const segments = [...dir];\n    for (const segment of match[1].split(\"/\")) {\n      if (segment === \"..\") segments.pop();\n      else if (segment !== \".\") segments.push(segment);\n    }\n    paths.add(segments.join(\"/\"));\n  }\n  return [...paths];\n}\nreturn { relativeWasmPaths };\n})();\n";
-
-/**
- * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);
- * the node shims splice it into their fs scope.
- */
-export const READ_LEASE_COVER_PREAMBLE: string = "var { SESSION_KERNEL_ROOTS, readLeaseCovers } = (() => {\nvar SESSION_KERNEL_ROOTS = [\".nimbus\", \"var/lib/nimbus\"];\nfunction readLeaseCovers(key, listing, roots) {\n  for (const root of roots) {\n    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;\n    if (listing && (key === \"\" || root.startsWith(key) && root.charCodeAt(key.length) === 47)) return false;\n  }\n  return true;\n}\nreturn { SESSION_KERNEL_ROOTS, readLeaseCovers };\n})();\n";

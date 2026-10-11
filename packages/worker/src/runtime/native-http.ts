@@ -235,7 +235,7 @@ Object.defineProperty(builtins, "http", {
       try { acquired = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
       // A local client and handler use the very same process filesystem view.
       // External deliveries still acquire before the handler sees the request.
-      if (!sameProcess) await __nimbusInboundBarrier(acquired);
+      if (!sameProcess) await __nimbusInboundBarrier(acquired, true);
       const headers = new Headers(request.headers);
       headers.delete("X-Nimbus-Vfs-Acquired");
       const controller = new AbortController();
