@@ -23,6 +23,7 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.js';
 import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
@@ -61,38 +62,6 @@ function errorMessage(error) {
     if (error instanceof Error)
         return error.message;
     return String(error);
-}
-/** The step the classic submit transport carries: args object in, slice out.
- *  Serialized verbatim into the facet — every name it touches must be
- *  reachable there (globals or its own literals). */
-export async function bashFacetStep(args, bindings) {
-    const step = Reflect.get(globalThis, '__bashStep');
-    return typeof step === 'function' ? step(args, bindings.SUPERVISOR) : {
-        state: 'error',
-        exitCode: 127,
-        stdout: '',
-        stderr: '',
-        error: 'bash-runner preamble missing (__bashStep not in scope)',
-    };
-}
-/**
- * The same step reached through a Request, for hosts whose facet can carry
- * a fetch signal. Serialized verbatim like `bashFacetStep` — no closure
- * references — and the dispatch inside is the same `__bashStep` call; only
- * the transport wrapper differs (JSON in, Response out).
- */
-export async function bashRequestStep(request, bindings) {
-    const step = Reflect.get(globalThis, '__bashStep');
-    if (typeof step !== 'function') {
-        return Response.json({
-            state: 'error',
-            exitCode: 127,
-            stdout: '',
-            stderr: '',
-            error: 'bash-runner preamble missing (__bashStep not in scope)',
-        });
-    }
-    return Response.json(await step(await request.json(), bindings.SUPERVISOR));
 }
 export async function createBashFacetSession(deps) {
     deps.signal?.throwIfAborted();
@@ -154,7 +123,7 @@ export async function createBashFacetSession(deps) {
             // No deadline: a process runs until it exits or is killed.
             try {
                 if (facet.submitRequest) {
-                    const response = await facet.submitRequest(bashRequestStep, new Request('https://bash-facet.invalid/step', {
+                    const response = await facet.submitRequest(BASH_REQUEST_TASK, new Request('https://bash-facet.invalid/step', {
                         method: 'POST',
                         headers: { 'content-type': 'application/json' },
                         body: JSON.stringify(args),
@@ -163,7 +132,7 @@ export async function createBashFacetSession(deps) {
                     raw = await response.json();
                 }
                 else {
-                    raw = await facet.submit(bashFacetStep, args, { signal });
+                    raw = await facet.submit(BASH_STEP_TASK, args, { signal });
                 }
             }
             catch (error) {

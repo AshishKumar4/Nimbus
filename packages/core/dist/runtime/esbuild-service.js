@@ -9,6 +9,7 @@
  * grows to fit the working set and cannot shrink. build()'s VFS resolver
  * plugin always runs here, over this service's view.
  */
+import { ESBUILD_FACET_RUNTIME_SOURCE, TRANSFORM_FACET_RUNTIME_SOURCE } from './compiled-bodies.generated.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
@@ -253,7 +254,7 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
  * `engine` is null only before esbuild is loaded, which a rewrite-only
  * request does not wait for.
  */
-async function runTransformRequest(engine, code, options, runtime) {
+export async function runTransformRequest(engine, code, options, runtime) {
     const parent = options?.dynamicImportParent;
     if (options?.stripTypes) {
         if (runtime.stripTypeScript === undefined)
@@ -398,7 +399,7 @@ export async function buildWithEsbuild(esbuildApi, options, plugin) {
 }
 /** Source the esbuild facet evaluates next to esbuild: its build helpers. */
 export function generateEsbuildFacetRuntimeSource() {
-    return [isBuildFailure.toString(), serializableMessage.toString(), buildWithEsbuild.toString()].join('\n');
+    return `const { buildWithEsbuild } = ${ESBUILD_FACET_RUNTIME_SOURCE};`;
 }
 /**
  * Source the transform facet evaluates next to its engine: one transform
@@ -406,7 +407,7 @@ export function generateEsbuildFacetRuntimeSource() {
  * (oxc-transform.ts's in the facet).
  */
 export function generateTransformFacetRuntimeSource() {
-    return [transformWithEsbuild.toString(), runTransformRequest.toString()].join('\n');
+    return `const { runTransformRequest } = ${TRANSFORM_FACET_RUNTIME_SOURCE};`;
 }
 /** The namespace a build resolves workspace files into. */
 const VFS_NAMESPACE = 'nimbus-vfs';

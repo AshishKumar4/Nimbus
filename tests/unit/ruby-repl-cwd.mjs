@@ -34,7 +34,8 @@ plugin({
     }));
   },
 });
-const { rubyReplStepFacetFn } = await import('../../packages/worker/src/runtime/ruby-repl.ts');
+const { RUBY_REPL_TASK } = await import('../../packages/worker/src/loaders/compiled-bodies.generated.ts');
+const rubyReplStepFacetFn = new Function(`return (${RUBY_REPL_TASK.source});`)();
 
 if (spawnSync('ruby', ['--version'], { encoding: 'utf8' }).status !== 0) {
   console.log('ruby-repl-cwd: SKIPPED (no host ruby)');

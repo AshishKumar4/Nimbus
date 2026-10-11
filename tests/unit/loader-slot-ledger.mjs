@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // Dynamic Worker accounting against the documented per-DO model.
 //
 // A Durable Object may have DO_DYNAMIC_WORKER_LIMIT distinct Dynamic Workers
@@ -64,7 +65,7 @@ assert.equal(
     },
   };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, concurrency: 2 });
-  await pool.map((value) => value, ['a', 'b', 'c', 'd']);
+  await pool.map(facetTaskSource("(value) => value"), ['a', 'b', 'c', 'd']);
 
   const afterMap = loaderLedgerStats(ctx);
   assert.equal(midFlight, 2, 'both slots were distinct workers in flight at once');
@@ -103,7 +104,7 @@ assert.equal(
   };
   const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   await assert.rejects(
-    pool.submit((value) => value, 'payload'),
+    pool.submit(facetTaskSource("(value) => value"), 'payload'),
     (error) => {
       assert.ok(error.message.startsWith(CAP_MESSAGE), error.message);
       assert.ok(error.message.includes('nimbus-process:resident-7'), 'the failure names the worker holding a slot');

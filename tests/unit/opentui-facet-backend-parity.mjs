@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 // Parity test for the facet-injected OpenTUI backend. OPENTUI_BACKEND_FACET_SRC
-// is single-sourced from the TS OpenTUIWasmBackend via .toString() (plus its
+// is compiled from the TS OpenTUIWasmBackend together with its
 // module-scope helpers); this test evaluates that facet source — exactly as the
 // opencode runner injects it into the worker — constructs the backend over the
 // staged Stage A artifact, and drives the backend contract through it. If the
 // serialized form ever fails to reproduce the TS class's behavior (a broken
-// .toString(), a missing helper, a renamed dependency), this fails loudly.
+// missing helper or renamed dependency), this fails loudly.
 // Mirrors tests/unit/package-abi-policy.mjs (preamble-vs-source parity).
 
 import assert from 'node:assert/strict';
@@ -13,9 +13,10 @@ import { writeFileSync, rmSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 
 import {
-  OPENTUI_BACKEND_FACET_SRC,
+  OPENTUI_BACKEND_FACET_SRC as DIRECT_FACET_SOURCE,
 } from '../../packages/worker/src/runtime/opentui-facet-backend.ts';
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
 import { ZIG_FFI_SYMBOLS } from './lib/opentui-zig-symbols.mjs';
@@ -28,18 +29,15 @@ const module = new WebAssembly.Module(
   readFileSync(path.join(workerRoot, 'public', OPENTUI_WASM_ENTRY.slice(1))),
 );
 
-// Evaluate the facet source the way the runner does: the WASI preamble + the
-// serialized backend class become module locals. Export the class + WASI host
-// helpers so we can construct exactly as generateOpenTUIBackendBootCode() does.
-// Bundled-shape guards. This test loads UN-bundled TS, but in the deployed
-// worker esbuild (keepNames) compiles the serialized helpers/class to reference
-// `__name` and emits the class as `var X = class _X {…}` (so `.toString()` is a
-// bare class expression). The injected source must therefore (a) declare the
-// `__name`/`__defProp` helpers and (b) bind the class to `OpenTUIWasmBackend`
-// explicitly — otherwise the facet dies with `__name is not defined` /
-// `OpenTUIWasmBackend is not defined` only once deployed. Guard both here.
-assert.match(OPENTUI_BACKEND_FACET_SRC, /\bconst __name =/, 'facet src must declare the esbuild __name helper');
-assert.match(OPENTUI_BACKEND_FACET_SRC, /\bconst OpenTUIWasmBackend =/, 'facet src must bind the class to OpenTUIWasmBackend explicitly (esbuild renames the class expression)');
+// Minify the actual host export before evaluating the bytes the guest gets.
+// The full backend/wasm checks below then detect missing lexical dependencies
+// behaviorally, independent of how the compiler names any class or helper.
+const host = await build({
+  stdin: { contents: "export { OPENTUI_BACKEND_FACET_SRC } from './src/runtime/opentui-facet-backend.ts';", resolveDir: workerRoot, loader: 'ts' },
+  bundle: true, minify: true, format: 'esm', platform: 'neutral', write: false, logLevel: 'silent',
+});
+const { OPENTUI_BACKEND_FACET_SRC } = await import(`data:text/javascript;base64,${Buffer.from(host.outputFiles[0].text).toString('base64')}`);
+assert.equal(OPENTUI_BACKEND_FACET_SRC, DIRECT_FACET_SOURCE, 'host minification leaves the compiled guest bytes unchanged');
 
 const facetModuleSrc = `${OPENTUI_BACKEND_FACET_SRC}
 export { OpenTUIWasmBackend, __wasiMakeImports, __wasiInitFS };`;
@@ -138,5 +136,5 @@ assert.ok(ansi.includes('hello facet'), 'facet backend span feed missing the dra
 lib.close();
 console.log(`  [4] facet backend span-feed render produced ${ansi.length} ANSI bytes with the drawn text`);
 
-console.log('opentui-facet-backend-parity OK: the .toString()-serialized facet backend ' +
+console.log('opentui-facet-backend-parity OK: the minified host\'s compiled facet backend ' +
   'matches the TS OpenTUIWasmBackend behavior (dlopen, arena, liveView, callbacks, render)');

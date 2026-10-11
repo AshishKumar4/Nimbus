@@ -95,15 +95,6 @@ export type RuntimeCodeEntry = {
     kind: 'wasm';
     bytes: string;
 };
-/**
- * What of a file's path decides the module its text becomes: its directory
- * (the parent its relative imports and `import.meta.resolve` resolve
- * against) and its extension (how it is lowered: TypeScript, JSX, ESM or
- * CommonJS). Its name does not, so a file written under a fresh name each run
- * — Vite's `vite.config.ts.timestamp-<now>.mjs` — is the same module each time.
- * Self-contained: the guest embeds its source to compute the same key.
- */
-export declare function runtimeModuleScope(path: string): [dir: string, ext: string];
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export declare function runtimeCodeKey(entry: RuntimeCodeEntry): string;
 /** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */
