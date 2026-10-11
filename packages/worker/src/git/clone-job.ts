@@ -86,13 +86,23 @@ export async function writeCloneJob(storage: CloneJobStorage, record: CloneJobRe
   await storage.put(key(record.dir), record);
 }
 
-export async function setCloneJobPhase(storage: CloneJobStorage, record: CloneJobRecord, phase: CloneJobRecord['phase']): Promise<void> {
-  record.phase = phase;
-  await storage.put(key(record.dir), record);
+/**
+ * Whether the destination's record is `record`'s job's. A record is its
+ * job's alone: a job changes and deletes only its own, so one cut short
+ * (its session destroyed and made again, say) never touches the record of
+ * another clone of the same destination.
+ */
+async function owns(storage: CloneJobStorage, record: CloneJobRecord): Promise<boolean> {
+  return (await storage.get<CloneJobRecord>(key(record.dir)))?.jobId === record.jobId;
 }
 
-export async function deleteCloneJob(storage: CloneJobStorage, dir: string): Promise<void> {
-  await storage.delete(key(dir));
+export async function setCloneJobPhase(storage: CloneJobStorage, record: CloneJobRecord, phase: CloneJobRecord['phase']): Promise<void> {
+  record.phase = phase;
+  if (await owns(storage, record)) await storage.put(key(record.dir), record);
+}
+
+export async function deleteCloneJob(storage: CloneJobStorage, record: CloneJobRecord): Promise<void> {
+  if (await owns(storage, record)) await storage.delete(key(record.dir));
 }
 
 export async function listCloneJobs(storage: CloneJobStorage): Promise<CloneJobRecord[]> {
@@ -152,7 +162,7 @@ export async function cleanUpClone(
   const { dir } = record;
   const job = markerJob(fs, dir);
   if (job !== null && job !== record.jobId) {
-    await deleteCloneJob(storage, dir);
+    await deleteCloneJob(storage, record);
     return { outcome: 'not-ours', removed: 0, slices: 0 };
   }
   let removed = 0;
@@ -180,7 +190,7 @@ export async function cleanUpClone(
     removed += removeIfEmpty(fs, dir + '/.git');
     if (!record.rootExisted) removed += removeIfEmpty(fs, dir);
   }
-  await deleteCloneJob(storage, dir);
+  await deleteCloneJob(storage, record);
   return { outcome: record.phase === 'transport' ? 'removed' : 'kept-repo', removed, slices };
 }
 

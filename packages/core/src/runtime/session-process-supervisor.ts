@@ -78,6 +78,8 @@ export interface ProcessTerminalDescriptor {
 
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
+  /** Why no process is admitted any more (closeAdmission); null while they are. */
+  private refusal: Error | null = null;
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
 
@@ -121,10 +123,19 @@ export class SessionProcessSupervisor implements ProcessOutput {
 
   /** Allocate a PID and register a new process. */
   spawn(command: string, argv: string[], cwd: string, opts: ProcessSpawnOptions = {}): ProcessEntry {
+    if (this.refusal !== null) throw this.refusal;
     const entry = this.table.spawn(command, argv, cwd, opts);
     if (opts.longRunning) this.table.setLongRunning(entry.pid);
     if (opts.attachedTty) this.table.setAttachedTty(entry.pid);
     return entry;
+  }
+
+  /**
+   * Admit no process from now on: each spawn throws `reason`. A destroy's,
+   * before it takes the processes it stops, so none starts behind it.
+   */
+  closeAdmission(reason: Error): void {
+    this.refusal = reason;
   }
 
   /** Mark an existing entry as long-running. Idempotent. */

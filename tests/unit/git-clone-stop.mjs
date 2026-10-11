@@ -46,8 +46,8 @@ const until = async (what, done) => {
  * owner) and then runs until its caller lets it go. `assets` serves the
  * staged git module the facet is loaded with.
  */
-async function cloneSession(assets = stagedAssets) {
-  const box = await programmaticHost();
+async function cloneSession(assets = stagedAssets, commands = {}) {
+  const box = await programmaticHost({ commands });
   const { ws, host } = box;
   // What a facet writes, it writes as its process's credential: the session user's here.
   const user = ws.processes.cred(ws.shellProcessPid);
@@ -118,6 +118,36 @@ async function cloneSession(assets = stagedAssets) {
     console.log('  a destroy during a cold clone\'s module load completes, the clone ended on its stop');
   } finally {
     load();
+    box.close();
+  }
+}
+
+// ── A destroy admits nothing: a clone asked for while it waits for work
+//    still unwinding is refused, and none runs ──
+{
+  let release = () => {};
+  const unwinding = new Promise((resolve) => { release = resolve; });
+  // A command whose stop it takes its time over.
+  const linger = async () => { await unwinding; return 0; };
+  const { box, ws, host, facet, records } = await cloneSession(stagedAssets, { linger });
+  try {
+    const held = ws.exec('linger');
+    await until('the command runs', () => ws.processes.getAll().some((entry) => entry.command === 'linger' && entry.state === 'running'));
+    const destroying = rpcDestroy(host, { reason: 'test' });
+    await until('the destroy has stopped it', () => !ws.processes.getAll().some((entry) => entry.command === 'linger' && entry.state === 'running'));
+    const asked = await Promise.race([
+      ws.exec('git clone https://example.invalid/r.git /home/user/r').then(() => 'ran', (error) => error.code),
+      new Promise((resolve) => setTimeout(() => resolve('admitted'), 1000)),
+    ]);
+    assert.equal(asked, 'ESHUTDOWN', 'the clone is refused');
+    release();
+    assert.equal((await destroying).ok, true);
+    await held;
+    assert.equal(facet.prepared, 0, 'no clone ran');
+    assert.deepEqual(records(), []);
+    console.log('  a destroy admits nothing: a clone asked for while it waits is refused');
+  } finally {
+    release();
     box.close();
   }
 }

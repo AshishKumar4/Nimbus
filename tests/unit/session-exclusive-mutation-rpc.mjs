@@ -124,7 +124,7 @@ for (const delivered of [false, true]) {
         },
       };
     },
-    processes: { getAll: () => [], flushLogs() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],
@@ -157,7 +157,7 @@ for (const delivered of [false, true]) {
         releases++;
       },
     },
-    processes: { getAll: () => [], flushLogs() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],
@@ -186,7 +186,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -227,7 +227,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -264,7 +264,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -323,7 +323,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };

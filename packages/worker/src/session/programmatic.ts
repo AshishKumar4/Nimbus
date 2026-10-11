@@ -78,6 +78,8 @@ interface ProgrammaticCirrusServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
+  /** The destroy running (rpcDestroy), until it is answered. */
+  destroying?: Promise<SessionDestroyResult> | null;
   _w1SessionDestroyed: boolean;
   /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
   _w1JanitorAt: number | null;
@@ -1182,19 +1184,31 @@ export async function rpcDeleteFile(
   });
 }
 
-export async function rpcDestroy(
+/** One destroy at a time: one asked for while another runs is answered by it. */
+export function rpcDestroy(
   self: ProgrammaticHost,
   options: SessionDestroyOptions = {},
+): Promise<SessionDestroyResult> {
+  return self.destroying ??= destroySession(self, options).finally(() => { self.destroying = null; });
+}
+
+async function destroySession(
+  self: ProgrammaticHost,
+  options: SessionDestroyOptions,
 ): Promise<SessionDestroyResult> {
   self.ensureSqliteFs();
   const guardedVfs = self.sqliteFs!;
   // A lease that stopping the session's processes does not end refuses the
   // destroy before anything is stopped: a refused destroy leaves the session
   // as it was. What their work holds goes as it stops (a delegation with its
-  // process, a clone's lease with its clone). Past this, it completes.
+  // process, a clone's lease with its clone).
   if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
     throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
   }
+  // Past this it completes, and nothing starts meanwhile: the table it stops
+  // admits no process, and a request that would ready the session waits for
+  // the one it makes again (rpcDestroy, ensureRuntimeReady).
+  self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
   const reason = typeof options.reason === 'string' && options.reason.trim()
     ? options.reason.trim().slice(0, 200)
     : null;
