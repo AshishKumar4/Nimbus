@@ -206,9 +206,7 @@ function sequenced(bridge, pid, key, first) {
   const held = new Set();
   await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'one'), undefined, held);
   assert.equal(held.size, 1, 'the first call held nothing for its end');
-  const second = mock(() => writer.writeFile('/home/user/d/a.txt', 'two'));
-  await withRecall(second, undefined, held);
-  assert.equal(second.mock.calls.length, 1, 'the writer retried its own second call for a recall');
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'two'), undefined, held);
   let done = false;
   const ending = Promise.all(held).then(() => { done = true; });
   await sleep(10);
@@ -217,6 +215,8 @@ function sequenced(bridge, pid, key, first) {
   reader.recalled(readLease.owner, 'revoke');
   await ending;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'two');
+  const { reads } = s.files.delegations.stats();
+  assert.deepEqual([reads.answered, reads.expired], [1, 0], 'the later call needed another recall');
 }
 
 // ── Held writes acked together publish at the generations they committed: no write of their own ──
