@@ -149,13 +149,14 @@ export class Host extends DurableObject {
       resetCases.push({cause,resetError,remote,losses});
     }
     const streamCases=[];
-    for(const ending of ['eof','cancel','error']){
+    for(const ending of ['eof','cancel','partial-cancel','error']){
       const activity=new HostActivity();let watches=0,output,sourceCancelled=false,settled=false;
       const target=activity.observe(async()=>new Response(new ReadableStream({start(){watches++;},cancel(){watches--;}}),{headers:{'x-nimbus-host-incarnation':'stream'}}),()=>{});
       const ctx={waitUntil:task=>this.ctx.waitUntil(task.finally(()=>{settled=true;}))};
       const response=await hostResponse(ctx,target,new Request('https://stream.invalid/'),async()=>new Response(new ReadableStream({start(controller){output=controller;},cancel(){sourceCancelled=true;}}),{headers:{'Content-Length':'3'}}));
       const atHeaders=watches,reader=response.body.getReader();
       if(ending==='cancel')await reader.cancel();
+      else if(ending==='partial-cancel'){output.enqueue(new Uint8Array([1]));await reader.read();await reader.cancel();}
       else{
         output.enqueue(new Uint8Array([1,2,3]));await reader.read();
         if(ending==='eof'){output.close();await reader.read();}
@@ -226,7 +227,7 @@ try{
     assert.equal(test.atHeaders,1,JSON.stringify(test));
     assert.equal(test.after,0,JSON.stringify(test));
     assert.equal(test.settled,true,JSON.stringify(test));
-    if(test.ending==='cancel')assert.equal(test.sourceCancelled,true,JSON.stringify(test));
+    if(test.ending.includes('cancel'))assert.equal(test.sourceCancelled,true,JSON.stringify(test));
     assert.equal(test.length,'3','native ownership preserves declared length');
   }
   for(const test of result.passiveCases){

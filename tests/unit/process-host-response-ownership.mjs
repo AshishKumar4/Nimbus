@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './lib/workerd-fixed-length-stream.mjs';
 import { createFacetWorld, createFacetCtx, createPeerNamespace } from './facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { hostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
@@ -8,11 +9,11 @@ adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 const turns = async () => { for (let i = 0; i < 32; i++) await Promise.resolve(); };
 const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
 
-for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'error']) {
+for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'partial-cancel', 'error']) {
   let output, cancelled = false, watching = 0;
   const world = createFacetWorld(() => ({
     startProcess: async () => ({}),
-    handleHttpRequest: async () => new Response(new ReadableStream({ start(controller) { output = controller; }, cancel() { cancelled = true; } })),
+    handleHttpRequest: async () => new Response(new ReadableStream({ start(controller) { output = controller; }, cancel() { cancelled = true; } }), { headers: { 'Content-Length': '3' } }),
   }), { resolveConfig: false });
   const ctx = createFacetCtx(world, mode + ending), env = { LOADER: world.loader };
   if (mode === 'peer') env.NIMBUS_SESSION = createPeerNamespace(world, env).ns;
@@ -27,7 +28,8 @@ for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'er
     response = await process.handleHttpRequest(new Request('https://app.invalid/'));
     assert.equal(watching, 1, 'the coordinator owns stream work after response headers');
     const reader = response.body.getReader();
-    if (ending === 'cancel') {
+    if (ending.includes('cancel')) {
+      if (ending === 'partial-cancel') { output.enqueue(new Uint8Array([1])); assert.deepEqual((await reader.read()).value, new Uint8Array([1])); }
       await reader.cancel(); await turns();
       assert.equal(cancelled, true, 'consumer cancellation reaches the source');
     } else {
