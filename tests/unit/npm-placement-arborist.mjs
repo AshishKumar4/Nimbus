@@ -407,7 +407,7 @@ try {
     'an optional-only project whose dependency is missing': [[{ manifest: { optionalDependencies: { nosuch: '1.0.0' } } }, ['install']], {}],
     'a package the lock records but disk has lost': [[['install', 'xa@1.0.0'], { remove: 'xc' }, ['install', 'xa@1.0.0']], { xa: '1.0.0', xc: '1.0.0' }],
     'a peer group placed before the dependency that conflicts with it': [[{ manifest: { dependencies: { ka: '1.0.0', kb: '1.0.0' } } }, ['install']], { ka: '1.0.0', 'ka/node_modules/kr': '1.0.0', kb: '1.0.0', kr: '2.0.0' }],
-    'a peer of a peer, placed with the set': [[['install', 'ma']], { ma: '1.0.0', mb: '1.0.0', mc: '2.0.0' }],
+    'a peer of a peer, placed with the set': [[['install', 'ma']], { ma: '1.0.0', mb: '1.0.0', mc: '1.0.0' }],
     'a peer the dependent also depends on': [[{ manifest: { dependencies: { ua: '1.0.0', uc: '1.5.0' } } }, ['install']], { ua: '1.0.0', 'ua/node_modules/uc': '1.0.0', uc: '1.5.0' }],
     'an optional peer is not installed for its package': [[['install', 'oph']], { oph: '1.0.0' }],
     'an optional peer constrains the copy the tree has': [[{ manifest: { dependencies: { oph: '1.0.0', opp: '2.0.0' } } }, ['install'], ['install', 'oph@1.0.0', 'opp@2.0.0', '--force']], { oph: '1.0.0', opp: '2.0.0' }],

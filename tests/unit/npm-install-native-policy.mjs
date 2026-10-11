@@ -49,12 +49,10 @@ function resolvedResult(name, version, overrides = {}) {
   };
 }
 
+// A refusal carries the package refused, as the resolver task answers it:
+// its manifest still shapes the tree.
 function rejectedResult(from, reason, suggest) {
-  return {
-    pkg: null,
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-    error: { type: 'w6-reject', from, reason, suggest },
-  };
+  return { ...resolvedResult(from, '1.0.0'), error: { type: 'w6-reject', from, reason, suggest } };
 }
 
 // A table-listed package resolves like any other and reports the policy
