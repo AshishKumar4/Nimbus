@@ -119,8 +119,9 @@ console.log('host-activity: idle, shared active watches, abort, wake validation 
   assert.equal(first.exitCode, 0, first.stderr);
   t.change();
   const next = await box.workspace.exec('echo wrong > /home/user/after-lost-host');
-  assert.notEqual(next.exitCode, 0, 'the shell refuses work from a lost incarnation');
-  assert.match(next.stderr, /host.*restarted|restarted.*process/i);
-  assert.equal(await box.fs.exists('/home/user/after-lost-host'), false, 'redirection cannot run before host validation');
+  assert.equal(next.exitCode, 0, 'a lost resident does not refuse unrelated shell work');
+  assert.equal(await box.fs.exists('/home/user/after-lost-host'), true, 'unrelated redirection remains usable');
+  await turns();
+  assert.equal(t.failures.length, 1, 'the loss is still reported to the process that owns the observation');
   t.remove(); await box.workspace.close();
 }
