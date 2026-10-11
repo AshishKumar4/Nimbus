@@ -28,8 +28,6 @@ import { join } from 'node:path';
 import { anonymizeUrl, remoteFailureText, selectRemoteCredentials } from '../../packages/worker/src/git/pack/remote-failure.ts';
 import { createFacetSession, hostGitEnv } from './lib/facet-session.mjs';
 
-const work = mkdtempSync(join(tmpdir(), 'nimbus-remote-failure-'));
-
 // ── the lines on their own ──
 assert.equal(anonymizeUrl('https://u:p@host:8080/a/b.git'), 'https://host:8080/a/b.git');
 assert.equal(anonymizeUrl('https://host/a@b.git'), 'https://host/a@b.git', 'an @ in the path is not a user');
@@ -59,6 +57,8 @@ for (const password of ['/', ':', '@', '://']) {
 assert.equal(remoteFailureText('https://u@h:8443/repo.git', { kind: 'status', status: 401 }, { username: 'u', password: false }, ['@', '/', ':']),
   "fatal: could not read Password for 'https://u@h:8443': terminal prompts disabled\n", 'credential-prompt delimiters remain intact');
 console.log('  ok  remoteFailureText: each kind in git\'s words');
+
+const work = mkdtempSync(join(tmpdir(), 'nimbus-remote-failure-'));
 
 /** A server answering each repository's discovery with a failure. */
 const server = createServer((req, res) => {
