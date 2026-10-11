@@ -239,7 +239,7 @@ export function mountWriter(writer, api, dir, onReceipts) {
             const stat = index ? await writeLockedIndex(api, at, bytes) : await writeEntry(api, at, path, mode, bytes);
             onReceipts?.([{
                     path: at.replace(/^\/+/, ''),
-                    ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, uid: stat.uid, gid: stat.gid, dev: stat.dev,
+                    ino: stat.ino, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime, uid: stat.uid, gid: stat.gid, dev: stat.dev,
                 }]);
         },
         symlink: (path, target) => writer.symlink(path, target),

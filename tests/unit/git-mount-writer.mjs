@@ -9,8 +9,8 @@
 //     closed, renamed over the index; one there already is git's "Unable to
 //     create '….lock': File exists." with its advice; a write that fails
 //     removes our own lock, and is "fatal: unable to write new index file";
-//   - mountWriter: the index of any size goes that way; a file within a
-//     wave's limit goes in the wave;
+//   - mountWriter: the index of any size goes that way, its receipt the
+//     session's fstat; a file within a wave's limit goes in the wave;
 //   - withinDeadline: a write that crosses the phase's deadline still
 //     reaches its close (and a lock's removal), while nothing else starts.
 
@@ -62,7 +62,7 @@ function fakeApi(fail = () => undefined, files = new Map()) {
     },
     async fsFstat(id) {
       calls.push(['fsFstat', id]);
-      return { ino: id, mode: files.get(open.get(id)).mode, size: files.get(open.get(id)).bytes.byteLength, mtimeMs: 1, ctimeMs: 1, uid: 0, gid: 0, dev: 9 };
+      return { ino: id, type: 'file', mode: files.get(open.get(id)).mode, size: files.get(open.get(id)).bytes.byteLength, mtime: 1, ctime: 2, atime: 1, nlink: 1, revision: 1, uid: 0, gid: 0, dev: 9 };
     },
     async fsClose(id) { calls.push(['fsClose', id]); open.delete(id); },
     async rename(from, to) {
@@ -128,14 +128,17 @@ const big = new Uint8Array(3 * 1024 * 1024 + 7).fill(7);
 {
   const api = fakeApi();
   const waved = [];
+  const receipts = [];
   const writer = mountWriter({
     async file(path, mode, bytes) { waved.push(path); },
     async symlink() {}, async directory() {}, async remove() {}, async setPin() {}, async flush() {},
-  }, api, '/mnt/r');
+  }, api, '/mnt/r', (written) => receipts.push(...written));
   await writer.file('.git/index', 0o644, enc.encode('DIRC small'));
   await writer.file('src/a.txt', 0o644, enc.encode('small'));
   assert.deepEqual(waved, ['src/a.txt'], 'a small file goes in the wave');
   assert.deepEqual([...api.files.keys()], ['/mnt/r/.git/index'], 'a small index by its lock');
+  // The receipt is the session's fstat (times in ms, as RuntimeVfsStat has them): an index entry's stat cache.
+  assert.deepEqual(receipts, [{ path: 'mnt/r/.git/index', ino: 1, size: 10, mtimeMs: 1, ctimeMs: 2, uid: 0, gid: 0, dev: 9 }]);
   console.log('  ok  mountWriter: the index of any size by its lock, a small file in the wave');
 }
 

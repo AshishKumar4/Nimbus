@@ -136,10 +136,7 @@ export const ROOT_DIRECTORY_MODE = 0o40755;
 export const ROOT_INODE = 1;
 
 // CHUNK_SIZE / LRU_MAX_ENTRIES / BATCH_SIZE are imported from ./constants.js
-// (single source of truth). Facet-isolate code-strings duplicate the literal
-// 65_536 by necessity — see the inline `CHUNK_SIZE = 65536` in
-// generateGitNetworkFacetCode (worker git/network-facet.ts) and the
-// parallel preamble (worker loaders/generated-workers.ts).
+// (single source of truth).
 
 /**
  * The Node `process` global as far as this file probes it. workerd provides
@@ -4508,9 +4505,15 @@ export class SqliteVFS {
     return next;
   }
 
-  /** Whether a holder's exclusive mutation is active: a lease taken for work, not a commit held for its publication. */
-  hasExclusiveMutation(): boolean {
-    for (const lease of this.exclusiveMutationLeases.values()) if (lease.held === undefined) return true;
+  /**
+   * Whether a holder's exclusive mutation is active: a lease taken for work,
+   * not a commit held for its publication. `delegations: false` leaves out
+   * the subtrees delegated to processes, which go when their holders end.
+   */
+  hasExclusiveMutation({ delegations = true }: { delegations?: boolean } = {}): boolean {
+    for (const lease of this.exclusiveMutationLeases.values()) {
+      if (lease.held === undefined && (delegations || lease.delegation === null)) return true;
+    }
     return false;
   }
 

@@ -272,8 +272,8 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   for (const entry of [parent, a, b]) assert.equal(processes.get(entry.pid), undefined, `pid ${entry.pid} is forgotten`);
   // One failure is reported as itself.
   const solo = processes.spawn('node c.js', [], '/');
-  processes.exit(solo.pid, 0);
   processes.setRelease(async () => { throw new Error('only one'); });
+  processes.exit(solo.pid, 0);
   await assert.rejects(processes.reapTree(solo.pid), { message: 'only one' });
   assert.equal(processes.get(solo.pid), undefined);
 }

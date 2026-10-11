@@ -111,7 +111,7 @@ export async function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: strin
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
-  'terminal' | 'shell' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'
+  'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'
 >;
 
 function queueExitNotice(self: Pick<NimbusSession, 'terminal' | 'shell' | 'processes'>, notice: ProcessExitNotice): boolean {
@@ -1190,7 +1190,10 @@ export async function _rpcReportExit(
       return;
     }
     try { self.processes.closeInput(pid); } catch {}
-    self.supervisorForgetBridge?.(pid);
+    // Its receipts go, and what it bound is released ahead of its output,
+    // so what its last closes flush goes out with it.
+    self.supervisorDeliveries?.forget(pid);
+    self.processes.programEnded(pid);
     await self.processes.releaseOutput(pid, () => {
       closeRelayedSockets(self, pid);
       reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules);
@@ -1292,9 +1295,12 @@ export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, cod
    * has useful context, then runs the same dump machinery.
    */
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
+    // Its receipts go however its exit was recorded. What it bound in the
+    // filesystem is the table's to release (SessionProcessSupervisor.holdWork):
+    // once whatever of it the session runs has unwound.
+    self.supervisorDeliveries?.forget(pid);
     if (self.processes.getExit(pid)) return;
     try { self.processes.closeInput(pid); } catch {}
-    self.supervisorForgetBridge?.(pid);
     void self.processes.releaseOutput(pid, () => {
       closeRelayedSockets(self, pid);
       reportExternalExit(self, pid, code, reason);
