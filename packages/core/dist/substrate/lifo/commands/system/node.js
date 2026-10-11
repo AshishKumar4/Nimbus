@@ -1,7 +1,8 @@
-import { resolve, dirname, join, extname } from '../../utils/path.js';
+import { resolve, dirname, extname } from '../../utils/path.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
-import { declaredPackageType, isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-format.js';
+import { isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-format.js';
+import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
@@ -11,13 +12,12 @@ import { runNodeInRealm } from './node-realm.js';
 const NODE_VERSION = 'v20.0.0';
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
 async function mainPackageType(filename, vfs) {
-    for (let dir = dirname(filename);; dir = dirname(dir)) {
-        const pkgPath = join(dir, 'package.json');
-        if (await vfs.exists(pkgPath))
-            return declaredPackageType(await vfs.readFileString(pkgPath));
-        if (dirname(dir) === dir)
-            return null;
-    }
+    return packageScopeType({
+        exists: (path) => vfs.exists('/' + path),
+        isDirectory: async (path) => (await vfs.stat('/' + path))?.type === 'directory',
+        readFileString: (path) => vfs.readFileString('/' + path),
+        stat: (path) => vfs.stat('/' + path),
+    }, dirname(filename));
 }
 /** A failed script read carries an error code, not one error class. */
 function scriptReadDiagnostic(error) {

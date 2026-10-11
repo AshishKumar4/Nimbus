@@ -189,7 +189,7 @@ export function createCjsLoader(context, scope, options = {}) {
             return name.startsWith('#') ? 'node:' + found.builtin : name;
         if (!found.path)
             return null;
-        classified.set(found.path, found);
+        classified.set(found.path, found.packageType);
         return found.path;
     }
     function wrapperArguments(filename, module, moduleScope) {
@@ -220,7 +220,7 @@ export function createCjsLoader(context, scope, options = {}) {
         }
         const clean = stripShebang(source);
         const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => classified.has(filename)
-            ? classified.get(filename).packageType : resolver.packageScopeSync(dirname(filename))?.type ?? null);
+            ? classified.get(filename) : resolver.packageScopeSync(dirname(filename))?.type ?? null);
         if (esm) {
             if (!native)
                 throw new Error('Native ES modules require a lifo native module loader');
