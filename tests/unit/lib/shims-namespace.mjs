@@ -25,9 +25,8 @@
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
-import { RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_ESM_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 import { generateNodeDnsModule, generateNodeLibModule, generateNodeLibRestModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
-import { generateNodeEsmModule } from '../../../packages/worker/src/runtime/node-esm-module.ts';
 import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
 const SEED = `
@@ -150,13 +149,11 @@ function __nimbusRuntimeModule(path) {
 
 // The launch map's runtime modules the shims require (manager.ts
 // runtimeModules), as the map's require gives them, each once per factory:
-// Node's library, and the modules it requires as a program first needs them;
-// the native ES module host's functions.
+// Node's library, and the modules it requires as a program first needs them.
 const NODE_LIB_MODULES = {
   [RUNTIME_NODE_LIB_MODULE]: generateNodeLibModule,
   [RUNTIME_NODE_LIB_REST_MODULE]: generateNodeLibRestModule,
   [RUNTIME_NODE_DNS_MODULE]: generateNodeDnsModule,
-  [RUNTIME_NODE_ESM_MODULE]: generateNodeEsmModule,
 };
 globalThis.__nimbusTestNodeLib = (loaded, name) => {
   if (!Object.hasOwn(NODE_LIB_MODULES, name)) throw new Error("a standalone shims factory's map has no " + name);

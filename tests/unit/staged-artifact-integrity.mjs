@@ -39,7 +39,6 @@ import { fetchOpencodeWasmBytes } from '../../packages/worker/src/runtime/openco
 import {
   NODE_LIB_ENTRY,
   NODE_LIB_REST_ENTRY,
-  NODE_ESM_ENTRY,
   NODE_DNS_ENTRY,
   NODE_REGISTRY_ENTRY,
   NODE_SHIMS_ENTRY,
@@ -211,7 +210,6 @@ try {
     ['js-parser', JS_PARSER_ENTRY, 'parser'],
     ['node-lib', NODE_LIB_ENTRY, 'nodeLib'],
     ['node-lib-rest', NODE_LIB_REST_ENTRY, 'nodeLibRest'],
-    ['node-esm', NODE_ESM_ENTRY, 'nodeEsm'],
     ['node-dns', NODE_DNS_ENTRY, 'nodeDns'],
     ['node-registry', NODE_REGISTRY_ENTRY, 'registry'],
   ];
