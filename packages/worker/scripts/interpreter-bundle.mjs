@@ -70,11 +70,14 @@ function asCommonJs(esm, label) {
       const request = JSON.stringify(node.source.value);
       if (node.source.value === `./${PRIMORDIALS_FILE}` && node.specifiers.length === 1 && only.type === 'ImportNamespaceSpecifier') {
         edits.push({ start: node.start, end: node.end, text: `const ${only.local.name} = require(${request});` });
-      } else if (label === 'interpreter' && node.source.value === `./${PARSER_FILE}` && node.specifiers.length > 0
-        && node.specifiers.every((s) => s.type === 'ImportSpecifier' && s.imported.type === 'Identifier')) {
+      } else if (label === 'interpreter' && node.source.value === `./${PARSER_FILE}`) {
         // Read once, as the parser's exports are a plain object it never changes.
-        const fields = node.specifiers.map((s) => `${s.imported.name}: ${s.local.name}`);
-        imports.push(...node.specifiers.map((s) => s.imported.name));
+        const fields = [];
+        for (const s of node.specifiers) {
+          if (s.type !== 'ImportSpecifier' || s.imported.type !== 'Identifier') throw new Error(`[interpreter-bundle] the interpreter imports the parser by a ${s.type}`);
+          fields.push(`${s.imported.name}: ${s.local.name}`);
+          imports.push(s.imported.name);
+        }
         edits.push({ start: node.start, end: node.end, text: `const { ${fields.join(', ')} } = require(${request});` });
       } else {
         throw new Error(`[interpreter-bundle] the ${label} imports ${node.source.value} unexpectedly`);
