@@ -29,7 +29,7 @@ import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode 
 import { normalizeVfsPath } from './path.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
-import { S_IFMT } from './vfs.js';
+import { S_IFMT, isCharacterDevice } from './vfs.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -925,7 +925,13 @@ export class CompositeVFS implements VFS {
     }
     const { path, route, ops, follow, kind, oldPath, written } = spec;
     const held: CapturedRef[] = [];
-    const capture = (read: boolean): Awaitable<VfsContentRef | null | false> => this.capture(ops, route.rel, read, follow, held);
+    // Whether what stood before was a regular file (not a device): with a
+    // backend that stores what it is written, the bytes it was given are
+    // then its after-image (VFS.storesWrites).
+    let regular = false;
+    const capture = (read: boolean): Awaitable<VfsContentRef | null | false> => this.capture(ops, route.rel, read, follow, held, (stat) => {
+      regular = stat.type === 'file' && !isCharacterDevice(stat.mode);
+    });
     const release = (): void => { for (const ref of held) ref.release(); };
     const report = (): Awaitable<T> => {
       // A plain mkdir made what was not there (EEXIST otherwise); mkdir -p looks.
@@ -939,8 +945,9 @@ export class CompositeVFS implements VFS {
         return then(run(), (result) => {
           const landed = spec.landed?.(result) ?? [path];
           if (landed.length === 0) { release(); return result; }
+          const stores = written !== undefined && wantsAfter && (ops as VFS).storesWrites === true && (prior === null || regular);
           const after = kind === 'remove' ? null
-            : written !== undefined && wantsAfter ? this.keep(held, 'file', written.slice())
+            : stores ? this.keep(held, 'file', written.slice())
               : capture(wantsAfter);
           return then(after, (now) => {
             const known = (ref: VfsContentRef | null | false): VfsContentRef | null | undefined => (ref === false ? undefined : ref);
@@ -998,10 +1005,13 @@ export class CompositeVFS implements VFS {
    * was not read (not wanted, or the backend would not say). What it reads
    * is held in `held`, let go when the observers are done.
    */
-  private capture(ops: Ops, rel: string, read: boolean, follow: boolean, held: CapturedRef[]): Awaitable<VfsContentRef | null | false> {
+  private capture(
+    ops: Ops, rel: string, read: boolean, follow: boolean, held: CapturedRef[], seen?: (stat: VfsStat) => void,
+  ): Awaitable<VfsContentRef | null | false> {
     const keep = (type: VfsContentRef['type'], bytes: Uint8Array | null): VfsContentRef => this.keep(held, type, bytes);
     return attempt(() => then(this.softStat(ops, rel, follow), (stat): Awaitable<VfsContentRef | null | false> => {
       if (stat === null) return null;
+      seen?.(stat);
       if (stat.type === 'directory') return keep('directory', null);
       if (!read) return false;
       if (stat.type === 'symlink') return then((ops as SyncVFS).readlink!(rel), (target) => keep('symlink', utf8.encode(target)));
