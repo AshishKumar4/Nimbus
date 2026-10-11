@@ -12,7 +12,8 @@
 import { retrying } from '@nimbus-sh/platform/retry.js';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
 import { PackFormatError } from './format.js';
-import { plainTextMessage, type RemoteFailure } from './remote-failure.js';
+import { plainTextMessage, urlCredentials, type RemoteFailure } from './remote-failure.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 
 export interface GitTransportAuth {
   username: string;
@@ -90,7 +91,7 @@ function pktLine(text: string): Uint8Array {
 function remote(options: UploadPackOptions): { url: string; auth: GitTransportAuth | undefined } {
   const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
   if (parsed === null || (parsed.username === '' && parsed.password === '')) return { url: withoutSlash(options.url), auth: options.auth };
-  const auth = { username: unescapeUserinfo(parsed.username), password: unescapeUserinfo(parsed.password) };
+  const auth = urlCredentials(parsed.href);
   parsed.username = '';
   parsed.password = '';
   return { url: withoutSlash(parsed.href), auth };
@@ -100,25 +101,11 @@ function withoutSlash(url: string): string {
   return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
-/** A URL's username or password as written: each run of percent-escapes decoded, a stray `%` kept. */
-function unescapeUserinfo(text: string): string {
-  return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
-    try {
-      return decodeURIComponent(run);
-    } catch {
-      return run;
-    }
-  });
-}
-
 function headers(auth: GitTransportAuth | undefined, extra: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = { 'user-agent': 'git/nimbus', ...extra };
   if (auth && (auth.username || auth.password)) {
     // Basic credentials are UTF-8, as git sends them.
-    const bytes = encoder.encode(auth.username + ':' + auth.password);
-    let binary = '';
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    result.authorization = 'Basic ' + btoa(binary);
+    result.authorization = 'Basic ' + base64Utf8(auth.username + ':' + auth.password);
   }
   return result;
 }

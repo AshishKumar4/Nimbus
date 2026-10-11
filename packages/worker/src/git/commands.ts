@@ -23,6 +23,7 @@ import {
   bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, type CleanupBridge, type CloneJobRecord,
 } from './clone-job.js';
 import { noSuchRemoteText, remoteFailureText, urlCredentials } from './pack/remote-failure.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 import { GitGlobalsError, parseConfigParameter, withConfigOverrides, type ConfigOverrides } from './config-params.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
@@ -2597,7 +2598,9 @@ async function networkFailure(ctx: Ctx, what: string, result: GitNetworkResult, 
     const password = ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || inUrl.password;
     const username = ctx.env.GIT_USERNAME || inUrl.username;
     // And the Basic authorization they were sent as, which a server may echo.
-    const secrets = [ctx.env.GIT_PASSWORD, ctx.env.GIT_TOKEN, inUrl.password, password ? btoa(`${username}:${password}`) : '']
+    const secrets = [ctx.env.GIT_PASSWORD, ctx.env.GIT_TOKEN, inUrl.password,
+      password ? base64Utf8(`${username}:${password}`) : '',
+      inUrl.password ? base64Utf8(`${inUrl.username}:${inUrl.password}`) : '']
       .filter((secret): secret is string => Boolean(secret));
     await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets));
     return 128;
