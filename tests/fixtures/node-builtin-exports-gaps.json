@@ -139,7 +139,6 @@
  },
  "inspector/promises": {
   "missing": [
-   "Network",
    "NetworkResources"
   ],
   "extra": [],
