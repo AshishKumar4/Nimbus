@@ -103,6 +103,27 @@ const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', pa
 const appendFile = (path, text) => ({ type: 'call', call: { call: 'appendFile', path, mode: 0o644, data: enc.encode(text) } });
 const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o755 } });
 
+// ── An epoch open the session shed is made again, under a wave's lost-call
+//    policy: the writes it was for are sent, not failed EIO ("the session
+//    gave this process no writer", before openWaveEpoch) ───────────────────
+{
+  const s = session();
+  const open = s.port.openWriter;
+  let sheds = 1;
+  s.port.openWriter = async (first) => {
+    if (sheds-- > 0) throw new Error('Durable Object is overloaded. Requests queued for too long.');
+    return open(first);
+  };
+  const c = client(s);
+  const answer = c.submit(writeFile('home/user/shed.txt', 'after a shed open'));
+  await c.flush();
+  const settled = await answer;
+  assert.equal(settled?.failed, undefined, `a write under a shed open was failed: ${JSON.stringify(settled)}`);
+  assert.equal(s.text('home/user/shed.txt'), 'after a shed open', 'and it landed');
+  assert.equal(s.calls.epochs, 1, 'under the epoch the second open was given');
+  await c.settle();
+}
+
 // ── A read lease under a frozen clock: trusted while it shows the event before expiry, never after the next one ──
 {
   const s = session();
