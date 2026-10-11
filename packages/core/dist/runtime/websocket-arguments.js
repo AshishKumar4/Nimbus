@@ -1,6 +1,19 @@
-import { toUSVString, types } from 'node:util';
 // Node v22.22.3's undici WebSocket/WebIDL entrypoints. Native WebSocket has
 // no message-transport hook; conversions stay here, separate from the relay.
+const toUSVString = (value) => {
+    const string = `${value}`;
+    return string.toWellFormed();
+};
+const arrayBufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get;
+const isArrayBuffer = (value) => {
+    try {
+        Reflect.apply(arrayBufferLength, value, []);
+        return true;
+    }
+    catch {
+        return false;
+    }
+};
 const object = (value) => value !== null && (typeof value === 'object' || typeof value === 'function');
 const domString = (value) => {
     if (typeof value === 'symbol')
@@ -8,17 +21,31 @@ const domString = (value) => {
     return String(value);
 };
 const protocols = (value) => {
-    if (object(value) && Symbol.iterator in value)
-        return Array.from(value, domString);
+    if (object(value) && Symbol.iterator in value) {
+        const method = value[Symbol.iterator];
+        if (typeof method !== 'function')
+            throw new TypeError('Protocols are not iterable');
+        const iterator = Reflect.apply(method, value, []);
+        if (!iterator || typeof iterator.next !== 'function')
+            throw new TypeError('Protocols are not iterable');
+        const sequence = [];
+        for (;;) {
+            const next = iterator.next();
+            if (next.done)
+                return sequence;
+            sequence.push(domString(next.value));
+        }
+    }
     return [domString(value)];
 };
 export function webSocketConstructor(input, options) {
     const init = object(options) && !(Symbol.iterator in options) ? options : { protocols: options };
     const offered = protocols(init.protocols === undefined ? [] : init.protocols);
     const headers = new Headers(init.headers == null ? undefined : init.headers);
+    const text = toUSVString(input);
     const url = (() => {
         try {
-            return new URL(toUSVString(input));
+            return new URL(text);
         }
         catch (error) {
             throw new DOMException(String(error), 'SyntaxError');
@@ -46,19 +73,18 @@ export function webSocketSend(value) {
         if (value instanceof Blob || ((tag === 'Blob' || tag === 'File')
             && (typeof value.stream === 'function' || typeof value.arrayBuffer === 'function'))) {
             const blob = value;
-            return { data: blob.arrayBuffer().then((buffer) => new Uint8Array(buffer)), length: blob.size };
+            return blob;
         }
-        if (ArrayBuffer.isView(value) || types.isArrayBuffer(value)) {
+        if (ArrayBuffer.isView(value) || isArrayBuffer(value)) {
             const buffer = ArrayBuffer.isView(value) ? value.buffer : value;
             if ('resizable' in buffer && buffer.resizable || 'growable' in buffer && buffer.growable)
                 throw new TypeError('Received a resizable ArrayBuffer');
             const data = ArrayBuffer.isView(value)
                 ? new Uint8Array(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) : new Uint8Array(new Uint8Array(buffer));
-            return { data, length: data.byteLength };
+            return data;
         }
     }
-    const data = toUSVString(value);
-    return { data, length: new TextEncoder().encode(data).byteLength };
+    return toUSVString(value);
 }
 export function webSocketClose(code, reason) {
     let number;

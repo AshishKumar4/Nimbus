@@ -1,4 +1,6 @@
 export async function inlineWebSocketArguments(base) {
+  // Invalid WebIDL inputs are intentional: compare their runtime conversions.
+  const NativeWebSocket = /** @type {any} */ (WebSocket);
   const events = [];
   const constructorCases = [
     ['no URL', []], ['bad URL', ['not a URL']], ['fragment', [base + '/#']],
@@ -7,7 +9,7 @@ export async function inlineWebSocketArguments(base) {
     ['bad iterator', [base, { [Symbol.iterator]: undefined }]],
   ];
   for (const [name, args] of constructorCases) {
-    try { const socket = new WebSocket(...args); socket.close(); events.push([name, 'accepted']); }
+    try { const socket = new NativeWebSocket(...args); socket.close(); events.push([name, 'accepted']); }
     catch (error) { events.push([name, error.name]); }
   }
   for (const [options, code, reason] of [
@@ -15,14 +17,14 @@ export async function inlineWebSocketArguments(base) {
     [7, { valueOf() { return 3000; } }, { toString() { return 'reason'; } }],
     [{}, 3000, undefined], [{ protocols: null, headers: [['X-Review', 'list']] }, 3000, 'done'],
   ]) {
-    const next = new WebSocket(base, options);
+    const next = new NativeWebSocket(base, options);
     await new Promise((resolve, reject) => {
       next.onerror = (event) => reject(new Error(event.message ?? event.error?.message));
       next.onopen = () => { events.push(['constructor', next.protocol]); next.close(code, reason); };
       next.onclose = (event) => { events.push(['converted close', event.code, event.reason]); resolve(); };
     });
   }
-  const socket = new WebSocket(base + '/headers', { protocols: ['chat'], headers: { 'x-review': 'yes' } });
+  const socket = new NativeWebSocket(base + '/headers', { protocols: ['chat'], headers: { 'x-review': 'yes' } });
   socket.binaryType = 'arraybuffer';
   socket.binaryType = 'invalid';
   events.push(['binaryType invalid', socket.binaryType]);

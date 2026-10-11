@@ -40,12 +40,14 @@ try {
       let body = '';
       socket.on('data', (part) => { body += part; });
       socket.on('end', () => console.log('answer', body.trim()));
+      socket.on('close', () => console.log('closed TLS refs', socket.unref() === socket, socket.ref() === socket));
       socket.on('error', (error) => { console.error(error.code + ' ' + error.message); process.exitCode = 1; });
     `;
     const result = await run(source);
     assert.equal(result.status, 0, result.stdout);
     assert.match(result.stdout, /secure true true/);
     assert.match(result.stdout, /TLS refs true true/);
+    assert.match(result.stdout, /closed TLS refs true true/);
     assert.match(result.stdout, /answer via-egress-tls egress-test\.invalid:443 HEAD \/tls-proof HTTP\/1\.0/);
     const plain = await run(`
       const net = require('net');
@@ -54,11 +56,13 @@ try {
       const parts = [];
       socket.on('data', (part) => parts.push(part));
       socket.on('end', () => console.log('tcp', socket instanceof net.Socket, [...Buffer.concat(parts)].join(',')));
+      socket.on('close', () => console.log('closed TCP refs', socket.unref() === socket, socket.ref() === socket));
       socket.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
     `);
     assert.equal(plain.status, 0, plain.stdout);
     assert.match(plain.stdout, /tcp true 0,128,255/);
     assert.match(plain.stdout, /TCP refs true true/);
+    assert.match(plain.stdout, /closed TCP refs true true/);
     const refusedTcp = await run(`
       const socket = require('net').connect(7, 'tcp-refused.invalid', () => {
         socket._handle.socket.opened.then(() => console.log('opened refused TCP'));
@@ -82,7 +86,8 @@ try {
     assert.doesNotMatch(rejected.stdout, /unexpected secureConnect/);
     const timeout = await run(`
       const socket = require('tls').connect({ port: 443, host: 'egress-test.invalid', timeout: 30 });
-      socket.on('timeout', () => { console.log('TLS options timeout'); socket.destroy(); });
+      const deadline = setTimeout(() => { console.log('TLS timeout missing'); socket.destroy(); }, 1000);
+      socket.on('timeout', () => { clearTimeout(deadline); console.log('TLS options timeout'); socket.destroy(); });
       socket.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
     `);
     assert.equal(timeout.status, 0, timeout.stdout);
