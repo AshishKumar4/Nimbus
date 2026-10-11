@@ -3,6 +3,47 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Changed: `npm install` has one engine. The Worker's installer and the
+  shell's own npm (a library workspace with no installer of its own) plan
+  every install with core `_shared/npm-tree.js`, which places packages as
+  npm 10's arborist does. A conflict goes to the highest ancestor it fits.
+  A package's peers are placed with it. A package named on the command
+  line is resolved even where an installed copy meets it (`pkg@latest`, an
+  alias retargeted). Installs are checked against npm 10.9.8 itself, on
+  both hosts.
+- Breaking: a required failure changes nothing, as in npm. An install with
+  a required dependency that cannot be resolved, or that is refused for its
+  platform (EBADPLATFORM), now installs nothing and exits 1; before, it
+  installed everything else. When a required tarball fails partway through
+  a Worker install, the install exits 1 and names what it published and
+  what failed. It removes nothing, leaves package.json unchanged, and
+  records in the lockfile only what is on disk.
+- Breaking: a peer dependency that conflicts with one of the project's own
+  dependencies is npm's ERESOLVE, and the install fails. `--force` and
+  `--legacy-peer-deps` let it through with a warning.
+- Changed: `npm install <pkg>` plans with the project's whole tree, and
+  prunes what the tree no longer needs. It saves where npm saves: `-D`,
+  `-O`, otherwise where the project already declares the package. A bare
+  name keeps its declared range. The saved range is `^version` unless the
+  range given is narrower.
+- Changed: an optional dependency that fails, whether at resolution, by a
+  platform refusal or at download, is left out with every package only it
+  needed. The decision is made per placement, over the whole graph. A
+  dependency that is in both `dependencies` and `devDependencies` takes its
+  `devDependencies` range. The project's own `peerDependencies` install.
+- Changed: `npm install -g` uses npm's global layout, where each package's
+  dependencies sit beneath it.
+- Changed: the shell's own npm publishes under a journal in `node_modules`.
+  If an install is interrupted, the next one undoes it before planning.
+  Ctrl-C before publication changes nothing. Installs into one tree, in
+  either host, run one at a time. A stopped install that is waiting for the
+  tree never starts.
+- Changed: registry cache records belong to the registry package. An
+  alias's records are kept under the package it names, and under the alias
+  name for the version it installed.
+
 ## 2026-10-11: platform 0.8.1, config 0.3.0, core 0.17.0, fabric 0.12.0, worker 0.15.0, loom 0.2.4, sdk 0.13.0, react 0.3.0, cli 0.2.4
 
 - Breaking: W7 wave ingestion lives above the SQLite engine, in the
