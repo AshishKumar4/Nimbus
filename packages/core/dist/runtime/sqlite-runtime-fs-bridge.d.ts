@@ -38,7 +38,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     private readonly bufferedWriteBytes;
     readonly synchronous: RuntimeSynchronousFs;
-    private legacySymlinks;
     private readonly vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
     private readonly mounted;
@@ -46,12 +45,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     bufferedWriteBytes?: number);
-    /**
-     * The legacy registry's key for one of this caller's names. Its entries are
-     * keyed by storage key, so a confined caller's /tmp/x is its own, and an
-     * entry in the shared tmp is not its to see, follow or remove.
-     */
-    private legacyKey;
     dispose(): void;
     /**
      * Where a path lives, decided only after confinement: the namespace is
@@ -64,9 +57,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * for the walk component by component (resolveDataPath): for a walk
      * beneath a root, for a spelling with `..` (that walk takes `..`
      * physically, after the link before it, where the engine's names take it
-     * lexically), where the namespace lays a mount or a directory above one,
-     * and where a name is missing while the legacy registry could hold a link
-     * there.
+     * lexically), and where the namespace lays a mount or a directory above
+     * one.
      */
     private walkOnSqlite;
     /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
@@ -126,8 +118,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     } & RuntimeMutationOwner): void;
     /**
      * Whether anything may be at `located`: a mounted name (its mount
-     * answers), `/` (which has no row), a row, or a link the legacy registry
-     * holds. A walk that met the name absent has looked at all of them.
+     * answers), `/` (which has no row), or a row. A walk that met the name
+     * absent has looked at all of them.
      */
     private mayExist;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;

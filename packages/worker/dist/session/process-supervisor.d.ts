@@ -30,7 +30,6 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         followSymlinks?: boolean;
     } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["stat"]>>>;
     lstat(path: string): Promise<any>;
-    hasLegacySymlinkUnder(path: string): Promise<boolean>;
     utimes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     chmod(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, mode: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     access(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, mode: number): Promise<void>;
