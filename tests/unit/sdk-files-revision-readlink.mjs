@@ -61,7 +61,8 @@ try {
   box.ws.filesystem.vfs.mount('/plain', backend({}));
   box.ws.filesystem.vfs.mount('/stamped', backend({ ino: 123, revision: 23 }));
   const plain = await remote.files.stat('/plain/file');
-  assert.equal(Object.hasOwn(plain, 'ino'), false, 'an unstamped mount reports no invented inode');
+  assert.ok(plain.ino > 0, 'the namespace numbers entries when a backend does not number its own inodes');
+  assert.equal((await remote.files.stat('/plain/file')).ino, plain.ino, 'the namespace inode is stable while the backend stays mounted');
   assert.equal(Object.hasOwn(plain, 'revision'), false, 'an unstamped mount reports no invented revision');
   const stamped = await remote.files.stat('/stamped/file');
   assert.equal(stamped.ino, 123);
