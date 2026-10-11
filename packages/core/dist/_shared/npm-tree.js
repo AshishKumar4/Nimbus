@@ -36,6 +36,7 @@
  */
 import { isExactVersion, isSemverRange, rangeSubset, satisfiesRange, versionAtLeast } from './npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from './npm-spec.js';
+import { LruMap } from './lru-map.js';
 // ── Placements ───────────────────────────────────────────────────────────────
 const NM = '/node_modules/';
 /** `name` under `parent`; `''` is the project itself. */
@@ -95,10 +96,18 @@ export function manifestEdges(manifest, from) {
         byName.set(name, { name, range, from, kind: 'dep', optional: true, explicit: false });
     return [...byName.values()];
 }
-/** Whether `version` meets an edge's `range`: any version, for a range that is not semver (a tag, a URL). */
+/** An edge's semver range (an `npm:` alias's own), or null for one that is not semver (a tag, a URL), by `name\0range`: a spec is parsed once. */
+const semverRanges = new LruMap(4096);
+/** Whether `version` meets an edge's `range`: any version, for a range that is not semver. */
 function meets(version, edge) {
-    const { range } = parseRegistryRequest(edge.name, edge.range);
-    return !isSemverRange(range) || satisfiesRange(version, range);
+    const key = `${edge.name}\0${edge.range}`;
+    let range = semverRanges.get(key);
+    if (range === undefined) {
+        const requested = parseRegistryRequest(edge.name, edge.range).range;
+        range = isSemverRange(requested) ? requested : null;
+        semverRanges.set(key, range);
+    }
+    return range === null || satisfiesRange(version, range);
 }
 /** Whether a parsed package.json is a manifest: a JSON object (an array is not). */
 export function isManifest(value) {
@@ -216,7 +225,8 @@ export function saveNamed(manifest, named, installed) {
 export function requiredFailures(plan) {
     return plan.failures.filter(({ id }) => plan.required.has(id));
 }
-const localeCompare = (a, b) => a.localeCompare(b, 'en');
+/** npm's string order (@isaacs/string-locale-compare's 'en'), one collator for every comparison. */
+const localeCompare = new Intl.Collator('en').compare;
 /** npm's order for a layer: by the dependent's depth, its path, then the name. */
 function npmOrder(a, b) {
     return depthOf(a.from) - depthOf(b.from) || localeCompare(a.from, b.from) || localeCompare(a.name, b.name);

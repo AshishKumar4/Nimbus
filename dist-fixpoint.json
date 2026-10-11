@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9d81b1692514ad416d4848e69bebd98dd5d21280089d1870ff77dcf95bd50152",
+  "fingerprint": "196a494ad73cf7f43ce0399b41ffcc37bda99351d38adb7110cf21af67a9d934",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -149,8 +149,8 @@
     "packages/core/dist/_shared/npm-spec.d.ts.map": "858bb636732766574962bb4d2c6a86854d8785e9ff3adffbce690052cc5414d1",
     "packages/core/dist/_shared/npm-spec.js": "44eaa82850708e620261f454daaceb05fb916f5e00103e094f5e5704e67a7591",
     "packages/core/dist/_shared/npm-tree.d.ts": "972f39d2f888b8bd781dea8c0ce51e2cf323274072764655795966b650f8d8e6",
-    "packages/core/dist/_shared/npm-tree.d.ts.map": "d4be6151956677cd73de997f465d5033e05bcb1eb46dce2725a33ff19f478816",
-    "packages/core/dist/_shared/npm-tree.js": "4b89ac4f1ff64ad89fc81d35b0eec77d917d6aef6f3c9e34cb04aabc643c3371",
+    "packages/core/dist/_shared/npm-tree.d.ts.map": "d9939830e03233f311670767baeafdd8622f89ba5c59af236783ea26c2514255",
+    "packages/core/dist/_shared/npm-tree.js": "ca1f213931c03d67824f14e7d0af02667f46f08aad793d37b2c6e48bae4a0d14",
     "packages/core/dist/_shared/oauth.d.ts": "88de5c439a22aa316b7fefd906feff57ce5d06e8b201638d2be567507d76762e",
     "packages/core/dist/_shared/oauth.d.ts.map": "df5379a220e20408bdf29f69ef8919613d7a8207b9002a99efb4de40e8b2f23b",
     "packages/core/dist/_shared/oauth.js": "a56cf4cf12ea88765b6b220e292580544712dcbc3f12b17363c8d9508a730005",
@@ -1271,7 +1271,7 @@
     "packages/core/src/_shared/npm-libs.ts": "31e8b15eee669602a62c3fe35208e53365757a6bd44f0c4890d94b085039ae82",
     "packages/core/src/_shared/npm-semver.ts": "ba800294482f91e0e34b768076a3b29ec2d63c7d56ba9d6469339ef392d4a996",
     "packages/core/src/_shared/npm-spec.ts": "34f7ecff5ed1050ecce69b23157deb792f69e0e9d28a59de694da43152fa3366",
-    "packages/core/src/_shared/npm-tree.ts": "5e2b8cf81108270ddb2213e40869b62d65c6b7abd1ff3ff5d992fcf602131a2a",
+    "packages/core/src/_shared/npm-tree.ts": "e533da20738a38d334cc096883231845a066d6326e1e7efd238dad7fb10bad2c",
     "packages/core/src/_shared/oauth.ts": "b39e2a63741b37319fa56a96bc83740e973197d323a55d3db4e4d805c8618054",
     "packages/core/src/_shared/process-fs-client-source.generated.ts": "7bf4c15dd15a9b2a85e75bc6025c2756361f3482503b5866d04d98a5753c2542",
     "packages/core/src/_shared/process-fs-client.ts": "b6461a74e7b0aa8653ea15c96293e6bf20cdf927e832f3a59fa39b77e94d0af7",
