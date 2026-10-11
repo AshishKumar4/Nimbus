@@ -548,6 +548,9 @@ function isApiError(value: unknown): value is ApiError {
 
 function remoteError(value: unknown): ApiError {
   if (isApiError(value)) return value;
+  // The session holds what it cannot let go of (a destroy that stopped its
+  // work and still found a lease): the request conflicts with its state.
+  if (value instanceof Error && Reflect.get(value, 'code') === 'EBUSY') return apiError(errorMessage(value), 'EBUSY', 409);
   return apiError(errorMessage(value), 'E_NIMBUS_REMOTE_RPC', 500);
 }
 

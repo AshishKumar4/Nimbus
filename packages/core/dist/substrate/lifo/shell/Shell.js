@@ -347,7 +347,7 @@ export class Shell {
             stdinStream = options?.stdin;
         }
         const identity = this.resolveCommandIdentity(options?.commandContext);
-        const stopped = identity.holdWork?.(identity.pid, () => abortController.abort());
+        const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason));
         try {
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {
                 runExitTrap: options?.runExitTrap === true,
@@ -1060,7 +1060,7 @@ export class Shell {
         this.terminal.write(COMMAND_START);
         let status = null;
         const identity = this.resolveCommandIdentity(undefined);
-        const stopped = identity.holdWork?.(identity.pid, () => lineAbort.abort());
+        const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason));
         try {
             // Saved beside the line, which does not wait for it: a reader's recall
             // the save meets (core README, process model) costs the line nothing.

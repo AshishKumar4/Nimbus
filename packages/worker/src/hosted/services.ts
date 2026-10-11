@@ -328,7 +328,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
         // It runs here, on the child's own descriptors: a kill stops it.
         const stop = new AbortController();
-        const stopped = self.processes.holdWork(pid, () => stop.abort());
+        const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
         try {
           return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stop.signal)).status;
         } finally {
@@ -394,7 +394,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       const endWork = self.processes.beginWork(child.pid);
       // Its program is this session's work behind its pid: a kill stops it.
       const stop = new AbortController();
-      const stopped = self.processes.holdWork(child.pid, () => stop.abort());
+      const stopped = self.processes.holdWork(child.pid, (reason) => stop.abort(reason));
       let exitCode = 1;
       try {
         const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stop.signal);
@@ -446,7 +446,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           // It runs here, on the child's own descriptors, until its shell has
           // closed what it opened: a kill stops it.
           const stop = new AbortController();
-          const stopped = self.processes.holdWork(pid, () => stop.abort());
+          const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
           try {
             const result = await shell.execute(String(commandLine), {
               onStdout: hooks.onStdout,

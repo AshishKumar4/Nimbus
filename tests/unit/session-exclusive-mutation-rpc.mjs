@@ -97,7 +97,8 @@ for (const delivered of [false, true]) {
   await assert.rejects(
     rpcDestroy({
       ensureSqliteFs() {},
-      sqliteFs: { publishedFor: () => null, hasExclusiveMutation: () => true },
+      sqliteFs: { publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => true },
+      processes: { getAll: () => [] },
     }),
     /EBUSY: session has an active exclusive filesystem mutation/,
   );
@@ -112,7 +113,7 @@ for (const delivered of [false, true]) {
       if (this.sqliteFs) return;
       this.sqliteFs = {
         publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
-        acquireGlobalExclusiveMutation() {
+        seizeGlobalExclusiveMutation() {
           guardActive = true;
           return { root: '', owner: 'destroy-owner' };
         },
@@ -123,7 +124,7 @@ for (const delivered of [false, true]) {
         },
       };
     },
-    processes: { getAll: () => [], flushLogs() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],
@@ -147,7 +148,7 @@ for (const delivered of [false, true]) {
     ensureSqliteFs() {},
     sqliteFs: {
       publishedFor: () => null, cancelStreams() {}, hasExclusiveMutation: () => false,
-      acquireGlobalExclusiveMutation() {
+      seizeGlobalExclusiveMutation() {
         guardActive = true;
         return { root: '', owner: 'destroy-owner' };
       },
@@ -156,7 +157,7 @@ for (const delivered of [false, true]) {
         releases++;
       },
     },
-    processes: { getAll: () => [], flushLogs() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],
@@ -185,7 +186,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -226,7 +227,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -263,7 +264,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -322,7 +323,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };

@@ -190,6 +190,8 @@ export async function createFacetSession(work, { realGit = false, asUser = false
     let stderr = '';
     const code = await runGitCommand({
       pid: 7,
+      // Its stop, never given here.
+      signal: new AbortController().signal,
       cred: CRED_SESSION_USER,
       args,
       cwd,

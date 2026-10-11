@@ -108,7 +108,7 @@ export async function registerHostedCommands(self, workspace) {
     // first `git` invocation so it stays out of the cold script-eval graph.
     registry.register('git', async (ctx) => {
         const { runGitCommand } = await import('../git/commands.js');
-        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem);
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
     });
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
@@ -799,7 +799,7 @@ export async function registerHostedCommands(self, workspace) {
             // this session's work behind the child's pid: a kill stops it.
             const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
             const stop = new AbortController();
-            const stopped = self.processes.holdWork(childProcess.pid, () => stop.abort());
+            const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason));
             let exitCode = 1;
             try {
                 const identity = commandIdentityFor(childProcess.pid);
@@ -874,7 +874,7 @@ export async function registerHostedCommands(self, workspace) {
         // closed what it opened: a kill stops it, and only then is what it bound
         // released.
         const stop = new AbortController();
-        const stopped = self.processes.holdWork(pid, () => stop.abort());
+        const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
         let exitCode = 1;
         try {
             const result = await scriptShell.execute(cmd, {
