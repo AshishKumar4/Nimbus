@@ -356,20 +356,21 @@ export function createInterpreter(hostOps, host) {
             if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
+            const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
             const moduleHost = unitHost(host, origin, parentUrl);
             const parsed = moduleProgram(text);
             if (parsed.module) {
                 const program = parsed.program;
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
                 const root = analysis.functionScopeOf(program);
-                const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, path, true)), text, 0, root).modulePlan(program, root);
+                const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, stackFile, true)), text, 0, root).modulePlan(program, root);
                 releaseScopes(root);
                 return moduleCell(plan, runtime.ops, host.moduleHelpers);
             }
             const script = parsed.program;
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
-            const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null, stackUnit(text, path, false)), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null, stackUnit(text, stackFile, false)), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return runtime.makeFunction(fi, ROOT_ENV, undefined);

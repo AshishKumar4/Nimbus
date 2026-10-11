@@ -56,6 +56,7 @@ export const SafeAsyncGeneratorPrototype = primordials.SafeAsyncGeneratorPrototy
 export const LAUNCH_PRIMORDIALS = primordials.LAUNCH_PRIMORDIALS;
 export const BigInt = primordials.BigInt;
 export const Error = primordials.Error;
+export const errorInstance = primordials.errorInstance;
 export const RangeError = primordials.RangeError;
 export const ReferenceError = primordials.ReferenceError;
 export const RegExp = primordials.RegExp;

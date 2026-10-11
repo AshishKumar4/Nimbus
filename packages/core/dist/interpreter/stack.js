@@ -4,7 +4,7 @@
  * lazily. Nothing allocates a stack, or writes a statement position, until an
  * error is made. Native wrappers delimit these activations in V8's stack.
  */
-import { Error, SafeWeakMap, charCodeAt, globalObject, newSafeList, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf, } from './intrinsics.js';
+import { SafeWeakMap, charCodeAt, errorInstance, globalObject, newSafeList, reflectGetOwnPropertyDescriptor, reflectOwnKeys, objectGetPrototypeOf, } from './intrinsics.js';
 // Suffix slots, filled with own properties by frameTemplate/withElement.
 export const STACK_SLOTS = 9;
 const INFO = 0, FN = 1, RECEIVER = 2, CONSTRUCTOR = 3, PARENT = 4, ASYNC_PARENT = 5, ASYNC_AT = 6, RESUMED = 7, AT = 8;
@@ -43,10 +43,14 @@ export function callPosition(position) {
 }
 /** The native async wrapper has returned its promise to the call expression. */
 export function callResult(value) {
-    if (pendingAsync !== null && object(value))
+    if (!object(value)) {
+        pendingAsync = null;
+        return value;
+    }
+    if (pendingAsync !== null)
         promises.set(value, pendingAsync);
     pendingAsync = null;
-    if (value instanceof Error)
+    if (errorInstance(value))
         stampStack(value);
     return value;
 }
