@@ -38,7 +38,7 @@
  * store's caches and its own filters (at most 640 bytes a commit); the
  * assembly, 16 bytes a commit and one window.
  */
-import { ByteLru } from './byte-lru.js';
+import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import { COMMIT_GRAPHS_DIR, COMMIT_GRAPH_CHAIN, GRAPH_RECORDS_DIR, bloomDataHeader, bloomFilter, changedPaths, chunkFileSize, chunkFileStream, cloneGraph, graphName, graphToc, graphTocBytes, isUnfilteredBase, layerCommits, } from './commit-graph.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import { readRange } from './install.js';

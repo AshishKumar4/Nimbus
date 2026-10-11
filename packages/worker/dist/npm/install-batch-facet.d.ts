@@ -95,8 +95,8 @@ export interface InstallBatchResult {
     /**
      * cache-obs-2: per-tier cache events captured during this batch.
      *
-     * Each entry records a single L2/L3/L4 hit-or-miss observed when
-     * fetching a tarball. L2/L3 events flow up from the supervisor RPC
+     * Each entry records a single L1/L2/L3/L4 hit-or-miss observed when
+     * fetching a tarball. L1/L2/L3 events flow up from the supervisor RPC
      * return values (getCachedTarball.events); L4 events are pushed
      * directly by the facet after a successful registry fetch.
      *
