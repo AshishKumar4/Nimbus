@@ -273,11 +273,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
     let publishTarballBytes: (bytes: Uint8Array | null) => void = () => {};
     let sharedBytes: Uint8Array | null = null;
-    const owner = tarballBytesByUrl.get(spec.tarballUrl);
+    // Both fields can come from a lockfile. A delimiter is not injective
+    // over arbitrary strings, and a URL alone cannot vouch for a digest.
+    const tarballKey = JSON.stringify([spec.tarballUrl, spec.integrity]);
+    const owner = tarballBytesByUrl.get(tarballKey);
     if (owner) {
       sharedBytes = await owner;
     } else {
-      tarballBytesByUrl.set(spec.tarballUrl, new Promise((rs) => { publishTarballBytes = rs; }));
+      tarballBytesByUrl.set(tarballKey, new Promise((rs) => { publishTarballBytes = rs; }));
     }
     // [W4] Compressed bytes for R2 write-back, captured by the integrity
     // tee below (null without integrity); published to duplicates on exit.
@@ -350,6 +353,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     };
 
     try {
+      // The shared producer verifies its own placement. This consumer's
+      // expected digest is checked too, before it can publish any entries.
+      // Registry/R2 reads keep their existing verification boundaries.
+      if (sharedBytes !== null) {
+        const expected = spec.integrity ? strongestSriEntry(spec.integrity) : null;
+        if (expected !== null) {
+          const actual = await sriDigestOf(sharedBytes, expected.digestAlgo);
+          if (!sriDigestsEqual(actual, expected.digest)) throw new Error(
+            `integrity mismatch for ${spec.name}@${spec.version}: expected ${expected.algo}-${expected.digest}, got ${expected.algo}-${actual}`,
+          );
+        }
+      }
 
       // Acquisition span, measured from the first cache probe to the moment
       // the tarball body is in hand.
