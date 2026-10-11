@@ -965,6 +965,9 @@ export class NpmInstaller {
       .filter(({ refused }) => refused)
       .map(({ id, edge, reason }) => ({ name: edge.name, reason, required: plan.required.has(id) }));
 
+    // A plan the lockfile answered whole resolved nothing: nothing to flush or report.
+    if (totalLayers === 0) return { plan, resolved, nested, unresolved, rejected };
+
     // End-of-walk: flush all cache writes in one RPC-equivalent call
     // (this.cache is a SQLite handle; one putRegistryEntries call =
     // O(N) prepared statements within a single DO event-loop turn,
