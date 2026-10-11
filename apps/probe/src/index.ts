@@ -362,7 +362,9 @@ async function probeHostLoss(request: Request, env: any, sessionId: string): Pro
         return Response.json(await peer._rpcProbePeer(input.pid, coordinator, input.action));
       } catch (error) {
         if (input.action !== 'host-reset') throw error;
-        const after = await peer._rpcProbePeer(input.pid, coordinator, 'inspect');
+        peer[Symbol.dispose]?.();
+        const fresh = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${coordinator}:proc:${input.pid}:${attempt}`));
+        const after = await fresh._rpcProbePeer(input.pid, coordinator, 'inspect');
         if (after.incarnation === before.incarnation) throw new Error('the hosting actor did not reset');
         return Response.json({ reset: true, before: before.incarnation, after: after.incarnation });
       }
