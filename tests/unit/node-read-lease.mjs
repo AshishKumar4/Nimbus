@@ -3,9 +3,10 @@
 // that arrives by I/O (a response from the network) asks the session nothing
 // while the lease is trusted, and still sees every change another made
 // before it (the change waited for the lease's recall, which the process
-// answered first). A timer asks, and so does an async stat or listing: an
-// answer made with no I/O leaves workerd's clock, which the program reads and
-// the lease's trust is measured on, where it was (perf-regression/own-http,
+// answered first). Every other barrier asks (a timer's, a body's end, one
+// made before a read), and an async stat or listing is never answered from
+// the view: with no I/O, workerd's clock, which the program reads and the
+// lease's trust is measured on, stays where it was (perf-regression/own-http,
 // agentic-cli opencode-tui-render).
 
 import assert from 'node:assert/strict';
@@ -87,6 +88,18 @@ await runScenarios(import.meta.path, {
     for (let i = 0; i < 5; i++) await probe.timer();
     assert.equal(asked(log), before + 5, 'a timer under a trusted lease asked nothing');
     assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'a timer\'s answer did not confirm the lease');
+  },
+
+  async 'a barrier made before a read asks the session under a trusted read lease: only one taken as I/O arrives may skip'() {
+    const { probe, log } = await bootTrusted();
+    // An async listing's barrier comes before its read: a clock that stood
+    // still since the last I/O may say the lease is trusted when the session
+    // has let it lapse and published another's write.
+    for (let i = 0; i < 3; i++) {
+      const before = asked(log);
+      await probe.fs.promises.readdir('/home/user/app');
+      assert.equal(asked(log), before + 1, 'a listing\'s barrier under a trusted lease asked nothing');
+    }
   },
 
   async 'a body read to its end asks the session under a trusted read lease: it may end with no I/O'() {
