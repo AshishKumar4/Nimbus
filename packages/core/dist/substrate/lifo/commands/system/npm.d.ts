@@ -37,6 +37,8 @@ export interface NpmInstallPort {
         globalPrefix?: string;
         /** The running command's pid — authorizes the host's batch writes. */
         pid: number;
+        /** `--save-dev`: what is named is saved to devDependencies. */
+        saveDev?: boolean;
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
         registry: string;
         production?: boolean;
@@ -76,7 +78,7 @@ export declare function registerBinCommand(registry: CommandRegistry, binName: s
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
 export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, 
 /** Its network is the one the npx cache install fetches through. */
-kernel?: Kernel): Command;
-export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): Promise<number>;
+kernel?: Kernel, deps?: NpmCommandDeps): Command;
+export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number>;
 export {};
 //# sourceMappingURL=npm.d.ts.map
