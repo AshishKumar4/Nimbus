@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
-import { generateNodeLibModule, generateNodeDnsModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
+import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { COMMONJS_CELL_RUNTIME_SOURCE } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 import {
   JS_INTERPRETER_ENTRY, JS_INTERPRETER_OPS_ENTRY, JS_INTERPRETER_PRIMORDIALS_ENTRY, JS_PARSER_ENTRY,
@@ -33,6 +33,7 @@ export function nodeFacetSources(shims) {
     interpreterOps: readFileSync(join(PUBLIC, JS_INTERPRETER_OPS_ENTRY), 'utf8'),
     parser: readFileSync(join(PUBLIC, JS_PARSER_ENTRY), 'utf8'),
     nodeLib: generateNodeLibModule(),
+    nodeLibRest: generateNodeLibRestModule(),
     nodeDns: generateNodeDnsModule(),
   };
 }

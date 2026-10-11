@@ -38,6 +38,7 @@ import {
 import { fetchOpencodeWasmBytes } from '../../packages/worker/src/runtime/opencode-artifact.ts';
 import {
   NODE_LIB_ENTRY,
+  NODE_LIB_REST_ENTRY,
   NODE_DNS_ENTRY,
   NODE_REGISTRY_ENTRY,
   NODE_SHIMS_ENTRY,
@@ -208,6 +209,7 @@ try {
     ['js-interpreter-ops', JS_INTERPRETER_OPS_ENTRY, 'interpreterOps'],
     ['js-parser', JS_PARSER_ENTRY, 'parser'],
     ['node-lib', NODE_LIB_ENTRY, 'nodeLib'],
+    ['node-lib-rest', NODE_LIB_REST_ENTRY, 'nodeLibRest'],
     ['node-dns', NODE_DNS_ENTRY, 'nodeDns'],
     ['node-registry', NODE_REGISTRY_ENTRY, 'registry'],
   ];

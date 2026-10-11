@@ -40,6 +40,10 @@ export declare const JS_PARSER_SHA256: string;
 export declare const NODE_LIB_ENTRY: string;
 export declare const NODE_LIB_BUILD_ID: string;
 export declare const NODE_LIB_SHA256: string;
+/** dist/runtime/node-lib-module.js generateNodeLibRestModule() */
+export declare const NODE_LIB_REST_ENTRY: string;
+export declare const NODE_LIB_REST_BUILD_ID: string;
+export declare const NODE_LIB_REST_SHA256: string;
 /** dist/runtime/node-lib-module.js generateNodeDnsModule() */
 export declare const NODE_DNS_ENTRY: string;
 export declare const NODE_DNS_BUILD_ID: string;

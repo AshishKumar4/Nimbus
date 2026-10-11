@@ -58,7 +58,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 const { generateShimsCode } = await import(path.join(ROOT, 'dist/runtime/node-shims.js'));
-const { generateNodeLibModule, generateNodeDnsModule } = await import(path.join(ROOT, 'dist/runtime/node-lib-module.js'));
+const { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } = await import(path.join(ROOT, 'dist/runtime/node-lib-module.js'));
 const { FACET_RESIDENT_STORE_SOURCE } = await import(path.join(ROOT, 'dist/vfs/facet-resident-store.js'));
 const { VFS_WRITE_LEDGER_SOURCE } = await import('@nimbus-sh/core/_shared/vfs-write-ledger.js');
 const { bundleInterpreter, bundleRegistry } = await import('./interpreter-bundle.mjs');
@@ -112,6 +112,7 @@ const SOURCES = [
     from: '@nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs',
   },
   { name: 'NODE_LIB', family: 'node-lib', source: generateNodeLibModule(), from: 'dist/runtime/node-lib-module.js generateNodeLibModule()' },
+  { name: 'NODE_LIB_REST', family: 'node-lib-rest', source: generateNodeLibRestModule(), from: 'dist/runtime/node-lib-module.js generateNodeLibRestModule()' },
   { name: 'NODE_DNS', family: 'node-dns', source: generateNodeDnsModule(), from: 'dist/runtime/node-lib-module.js generateNodeDnsModule()' },
   { name: 'NODE_REGISTRY', family: 'node-registry', source: await bundleRegistry({ start: ROOT }), from: 'core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs' },
 ];
