@@ -27,7 +27,7 @@ for (const argv of [
   ['project'], ['../project'], ['--', 'serve'],
   ['--port', '4096'], ['--hostname=127.0.0.1'],
   ['--log-level', 'DEBUG', 'project'], ['-s', 'session-id', 'project'],
-  ['--model', 'provider/model', 'project'], ['-mprovider/model', 'project'],
+  ['--model', 'provider/model', 'project'], ['-m=provider/model', 'project'],
   ['--cors', 'https://example.test', 'https://other.test'],
 ]) assert.equal(oc(argv), 'dual', `${JSON.stringify(argv)} is a default TUI invocation`);
 

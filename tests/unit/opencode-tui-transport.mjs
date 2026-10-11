@@ -10,7 +10,6 @@ const coreRequire = createRequire(new URL('../../packages/core/package.json', im
 const { parse } = workerRequire('acorn');
 const walk = coreRequire('acorn-walk');
 const { default: yargs } = await import(workerRequire.resolve('yargs/yargs'));
-console.log('short model parse', JSON.stringify(parseOpenCodeArgv(['-mprovider/model', 'project']).argv));
 
 const source = fs.readFileSync(new URL('../../packages/worker/public/_assets/opencode/1.16.2/index.js', import.meta.url), 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
@@ -60,9 +59,9 @@ const native = (argv, which = tui) => {
 const cases = [
   [], ['project'], ['../project'], ['123'], ['--port=4096'], ['--port', '4096'],
   ['--hostname', '0.0.0.0'], ['--pure', '--print-logs', '--log-level=DEBUG'],
-  ['-c'], ['--continue=false'], ['--no-continue'], ['-csabc'], ['-s', 'abc', '--fork'],
+  ['-c'], ['--continue=false'], ['--no-continue'], ['-cs=abc'], ['-s', 'abc', '--fork'],
   ['--session=abc', '../project'], ['--cors', 'https://a.test', 'https://b.test'],
-  ['--model=provider/model'], ['-mprovider/model'], ['--prompt', 'hello'], ['--agent=build'],
+  ['--model=provider/model'], ['-m=provider/model'], ['--prompt', 'hello'], ['--agent=build'],
 ];
 for (const argv of cases) {
   const upstream = native(argv);

@@ -41,6 +41,7 @@ const literal = node => {
   if (node.type === 'ArrayExpression') return node.elements.map(literal);
   if (node.type === 'ObjectExpression') return Object.fromEntries(node.properties.map(p => [p.key.name ?? p.key.value, literal(p.value)]));
   if (node.type === 'UnaryExpression' && node.operator === '-') return -literal(node.argument);
+  if (node.type === 'UnaryExpression' && node.operator === '!') return !literal(node.argument);
   throw new Error(`unsupported models snapshot literal: ${node.type}`);
 };
 let snapshot;
