@@ -201,7 +201,7 @@ export interface VfsRoute {
 }
 
 /** A pinned file's backend operations (CompositeVFS.pin), handed the backend's own path. */
-export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile'> & Pick<VFS, 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
+export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile' | 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
 
 /** A file as an open holds it (CompositeVFS.pin): its operations, the path they take, and the namespace's name for it. */
 export interface PinnedFile {
@@ -470,6 +470,55 @@ function principalKey(principal: Principal): string {
   const { cred, actor } = principal;
   const id = cred === null ? '-' : `${cred.uid}:${cred.gid}:${[...cred.groups].join(',')}:${cred.umask}`;
   return actor === undefined ? id : `${id}@${actor}`;
+}
+
+/** A pinned file's backend operations (CompositeVFS.pin): an operation its backend lacks is ENOTSUP, but access, which only refuses. */
+class Pinned implements PinnedFiles {
+  constructor(
+    private readonly backend: VFS,
+    /** The namespace path it was pinned at: what its errors name. */
+    private readonly name: string,
+    private readonly sync: boolean,
+    private readonly mutate: <T>(syscall: string, run: () => Awaitable<T>, written?: Uint8Array) => Awaitable<T>,
+  ) {}
+
+  private call<T>(syscall: string, run: () => Awaitable<T>): Awaitable<T> {
+    return this.sync ? reported({ syscall, path: this.name }, run) : awaited({ syscall, path: this.name }, run);
+  }
+
+  private changing<T>(syscall: string, run: () => Awaitable<T>, written?: Uint8Array): Awaitable<T> {
+    return this.call(syscall, () => this.mutate(syscall, run, written));
+  }
+
+  /** The backend's optional operation `name`: ENOTSUP, before anything is asked, when it has none. */
+  private optional<K extends 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes'>(name: K): NonNullable<VFS[K]> {
+    const fn = this.backend[name];
+    if (typeof fn !== 'function') throw new Refusal('ENOTSUP', this.name, `this filesystem does not support ${name}`);
+    return fn.bind(this.backend) as NonNullable<VFS[K]>;
+  }
+
+  /** A mutation by an optional operation: refused as ENOTSUP before the namespace hears of it. */
+  private changingBy<K extends 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes'>(syscall: string, name: K, run: (fn: NonNullable<VFS[K]>) => Awaitable<void>): Awaitable<void> {
+    return this.call(syscall, () => {
+      const fn = this.optional(name);
+      return this.mutate(syscall, () => run(fn));
+    });
+  }
+
+  stat(path: string, options?: { follow?: boolean }): Awaitable<VfsStat | null> { return this.call('stat', () => this.backend.stat(path, options)); }
+  readFile(path: string): Awaitable<Uint8Array> { return this.call('open', () => this.backend.readFile(path)); }
+  readdir(path: string): Awaitable<VfsDirent[]> { return this.call('scandir', () => this.backend.readdir(path)); }
+  readRange(path: string, offset: number, length: number): Awaitable<Uint8Array> { return this.call('read', () => this.optional('readRange')(path, offset, length)); }
+  writeFile(path: string, data: Uint8Array, options?: { mode?: number }): Awaitable<void> { return this.changing('open', () => this.backend.writeFile(path, data, options), data); }
+  writeRange(path: string, offset: number, bytes: Uint8Array): Awaitable<void> { return this.changingBy('write', 'writeRange', (fn) => fn(path, offset, bytes)); }
+  truncate(path: string, size: number): Awaitable<void> { return this.changingBy('ftruncate', 'truncate', (fn) => fn(path, size)); }
+  chmod(path: string, mode: number): Awaitable<void> { return this.changingBy('fchmod', 'chmod', (fn) => fn(path, mode)); }
+  chown(path: string, uid: number, gid: number): Awaitable<void> { return this.changingBy('fchown', 'chown', (fn) => fn(path, uid, gid)); }
+  utimes(path: string, atime: number, mtime: number): Awaitable<void> { return this.changingBy('futimes', 'utimes', (fn) => fn(path, atime, mtime)); }
+  access(path: string, mode: number): Awaitable<void> {
+    const access = this.backend.access;
+    if (access !== undefined) return this.call('open', () => access.call(this.backend, path, mode));
+  }
 }
 
 export class CompositeVFS implements VFS {
@@ -1098,31 +1147,15 @@ export class CompositeVFS implements VFS {
     return sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
   }
 
-  /** The backend operations on one pinned file (pin): each named as the namespace names it. */
+  /** The backend operations on one pinned file (pin): its mutations this view's, each named as the namespace names it. */
   private pinned(route: Route, ops: Ops, sync: boolean): PinnedFiles {
-    const backend = ops as VFS;
-    const call = <T>(syscall: string, run: () => Awaitable<T>): Awaitable<T> => (sync ? reported({ syscall, path: route.path }, run) : awaited({ syscall, path: route.path }, run));
-    const mutate = <T>(syscall: string, run: () => Awaitable<T>, written?: Uint8Array): Awaitable<T> => call(syscall, () => {
+    return new Pinned(ops as VFS, route.path, sync, (syscall, run, written) => {
       if (route.mount.options.readOnly) throw new Refusal('EROFS', route.path, `${route.mount.point} is mounted read-only`);
       return this.reportWrite({ path: route.path, route, ops, follow: false, kind: 'write', ...(written === undefined ? {} : { written }) }, () => {
         this.guardMutation([route.path]);
         return run();
       }, sync);
     });
-    const { readRange, writeRange, truncate, chmod, chown, utimes, access } = backend;
-    return {
-      stat: (at, opts) => call('stat', () => backend.stat(at, opts)),
-      readFile: (at) => call('open', () => backend.readFile(at)),
-      readdir: (at) => call('scandir', () => backend.readdir(at)),
-      writeFile: (at, data, opts) => mutate('open', () => backend.writeFile(at, data, opts), data),
-      ...(readRange === undefined ? {} : { readRange: (at: string, offset: number, length: number) => call('read', () => readRange.call(backend, at, offset, length)) }),
-      ...(writeRange === undefined ? {} : { writeRange: (at: string, offset: number, bytes: Uint8Array) => mutate('write', () => writeRange.call(backend, at, offset, bytes)) }),
-      ...(truncate === undefined ? {} : { truncate: (at: string, size: number) => mutate('ftruncate', () => truncate.call(backend, at, size)) }),
-      ...(chmod === undefined ? {} : { chmod: (at: string, mode: number) => mutate('fchmod', () => chmod.call(backend, at, mode)) }),
-      ...(chown === undefined ? {} : { chown: (at: string, uid: number, gid: number) => mutate('fchown', () => chown.call(backend, at, uid, gid)) }),
-      ...(utimes === undefined ? {} : { utimes: (at: string, atime: number, mtime: number) => mutate('futimes', () => utimes.call(backend, at, atime, mtime)) }),
-      ...(access === undefined ? {} : { access: (at: string, mode: number) => call('open', () => access.call(backend, at, mode)) }),
-    };
   }
 
   /**
