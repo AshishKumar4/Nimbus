@@ -26,6 +26,7 @@ import {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { processHostMode } from '@nimbus-sh/worker/loaders/process-host.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
@@ -187,6 +188,25 @@ export class TestTlsEgress extends TestEgress {
 
 /** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
+  #probeIncarnation = crypto.randomUUID();
+
+  async _rpcProbePeer(pid: number, coordinator: string, action: 'inspect' | 'facet-reset' | 'host-reset') {
+    if ((this.env as { NIMBUS_DEBUG?: string }).NIMBUS_DEBUG !== '1') throw new Error('probe diagnostics are disabled');
+    const prefix = `nimbus-process:${coordinator}:${pid}`;
+    const records = (this.peerHost as unknown as { records: Map<string, { closed?: boolean; facet: Promise<{ name: string }> }> }).records;
+    const current = [...records].findLast(([key, value]) => (key === prefix || key.startsWith(prefix + ':run')) && value.closed !== true);
+    const stored = [...await this.ctx.storage.list<{ coordinatorDoId: string; workerKey: string }>({ prefix: 'hosting:' })]
+      .some(([, row]) => row.coordinatorDoId === coordinator && (row.workerKey === prefix || row.workerKey.startsWith(prefix + ':run')));
+    if (!current && !stored) return { found: false, incarnation: this.#probeIncarnation };
+    if (action === 'host-reset') this.ctx.abort('probe: hosting actor reset');
+    if (action === 'facet-reset') {
+      if (!current) throw new Error('the probe process is already absent');
+      const facet = await current[1].facet;
+      (this.ctx as unknown as { facets: { abort(name: string, reason: Error): void } }).facets.abort(facet.name,
+        Object.assign(new Error('Durable Object reset because its code was updated.'), { durableObjectReset: true }));
+    }
+    return { found: true, incarnation: this.#probeIncarnation };
+  }
   /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
   #dataMounted = false;
 
@@ -222,14 +242,14 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/spawn-worker$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss)$/;
 type ProbeEnv = Parameters<typeof nimbus.fetch>[1] & { CF_VERSION_METADATA?: { id: string } };
 
 export default {
   async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
     const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
-    const response = match ? await spawnEmbedderWorker(request, env, match[1]) : await nimbus.fetch(request, env, ctx);
+    const response = match ? await (match[2] === 'host-loss' ? probeHostLoss(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1])) : await nimbus.fetch(request, env, ctx);
     const versionId = env.CF_VERSION_METADATA?.id;
     // Stamp the three readiness replies, including 101; leave encoded asset
     // and port responses intact instead of rebuilding their body metadata.
@@ -314,6 +334,43 @@ async function spawnEmbedderWorker(request: Request, env: any, sessionId: string
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500, headers: { 'Cache-Control': 'no-store' } },
     );
+  }
+}
+
+async function probeHostLoss(request: Request, env: any, sessionId: string): Promise<Response> {
+  try {
+    if (env.NIMBUS_DEBUG !== '1') return new Response('Not found', { status: 404 });
+    const verified = await verifyRequestToken(request, env);
+    if (!verified) return authRequiredResponse();
+    requireScopes(verified, ['sandbox:use']);
+    requireSessionPin(verified, sessionId);
+    const input = await request.json() as { pid?: number; action?: string };
+    if (input.action === 'mode') return Response.json({ mode: processHostMode(env) });
+    if (!Number.isSafeInteger(input.pid) || input.pid! <= 0 || !['inspect', 'state', 'facet-reset', 'host-reset'].includes(input.action ?? '')) return new Response('Bad probe request', { status: 400 });
+    const coordinator = env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`).toString();
+    const owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromString(coordinator));
+    const rows = await owner._rpcListProcesses();
+    const process = rows.find((row: { pid: number }) => row.pid === input.pid);
+    if (!process) return new Response('Unknown process', { status: 404 });
+    if (input.action === 'state') return Response.json(process);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${coordinator}:proc:${input.pid}:${attempt}`));
+      const before = await peer._rpcProbePeer(input.pid, coordinator, 'inspect');
+      if (!before.found) continue;
+      if (input.action === 'inspect') return Response.json(before);
+      try {
+        return Response.json(await peer._rpcProbePeer(input.pid, coordinator, input.action));
+      } catch (error) {
+        if (input.action !== 'host-reset') throw error;
+        const after = await peer._rpcProbePeer(input.pid, coordinator, 'inspect');
+        if (after.incarnation === before.incarnation) throw new Error('the hosting actor did not reset');
+        return Response.json({ reset: true, before: before.incarnation, after: after.incarnation });
+      }
+    }
+    return new Response('Peer process not found', { status: 404 });
+  } catch (error) {
+    if (error instanceof NimbusAuthError) return authErrorResponse(error);
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }
 
