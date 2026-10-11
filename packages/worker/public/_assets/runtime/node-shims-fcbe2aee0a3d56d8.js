@@ -2402,9 +2402,9 @@ async function __nimbusUseRpcResultUnref(promise, use) {
  * The barrier is installed by the fs module, which is evaluated after this
  * point; a facet with no supervisor has none and nothing to be coherent with.
  */
-async function __nimbusInboundBarrier(delivered, untimed = false) {
+async function __nimbusInboundBarrier(delivered, viaIo = false) {
   const acquire = globalThis.__nimbusVfsAcquireBarrier;
-  if (typeof acquire === "function") await acquire(delivered, untimed);
+  if (typeof acquire === "function") await acquire(delivered, viaIo);
 }
 
 /**
@@ -2749,9 +2749,9 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // of the process; a response with no body has nothing to carry.
   const __foreignBodies = new WeakSet();
   let __foreignOpen = 0;
-  const __resumeCoherent = async (pending, own = false, untimed = false) => {
+  const __resumeCoherent = async (pending, own = false, viaIo = false) => {
     const value = await pending;
-    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier(undefined, untimed);
+    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier(undefined, viaIo);
     return value;
   };
   const __barriered = async (input, init) => {
@@ -2777,7 +2777,7 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof release === "function") await release();
     const published = __nimbusNetworkGate();
     if (published !== null) await published;
-    const pending = __resumeCoherent(__dispatch(input, init)).then(async (response) => {
+    const pending = __resumeCoherent(__dispatch(input, init), false, true).then(async (response) => {
       const raw = response && response.webSocket ? __nimbusRawSocket() : null;
       if (raw !== null) await raw;
       if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
@@ -2806,8 +2806,8 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // It is also a second resumption from the network, so it takes the same
   // ACQUIRE: a program that reads a file after parsing a response body is no
   // less entitled to current bytes than one that reads after the headers.
-  // Untimed: a body already received, or one the program made, ends with no
-  // I/O, so a read lease does not answer for it (_acquireBarrier).
+  // Not `viaIo`: a body already received, or one the program made, ends
+  // with no I/O, so a read lease does not answer for it (_acquireBarrier).
   for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
     const __orig = Response.prototype[__name];
     if (typeof __orig !== "function") continue;
@@ -2815,10 +2815,10 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
       Response.prototype[__name] = function(...args) {
         const own = __nimbusOwnHttpResponses.has(this);
         const drained = (value) => { if (__foreignBodies.delete(this)) __foreignOpen--; return value; };
-        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own, true).then(drained));
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).then(drained));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
-        return __nimbusTrackOp(__resumeCoherent(pending, own, true).then(drained));
+        return __nimbusTrackOp(__resumeCoherent(pending, own).then(drained));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -4602,17 +4602,18 @@ const __fsMod = (() => {
    * before a peer overwrote them. Nothing is waited on unless such a report
    * exists.
    */
-  async function _acquireBarrier(supervisor, delivered, untimed = false) {
+  async function _acquireBarrier(supervisor, delivered, viaIo = false) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
     // Under a trusted read lease nothing this process holds has changed: a
     // change waits for the lease's recall, and the recall untrusts it first
-    // (ProcessFsClient.readTrusted). A delivered answer is still applied,
-    // and a store owed a repair still asks. So does an `untimed`
-    // resumption, one with no I/O behind it (a timer's, a body's end): its
-    // turn leaves workerd's clock where it was (a timer fires at the time it
-    // was set for), and that clock is what the program reads and the lease's
-    // trust is measured on; asking is I/O, and real time.
-    if (!delivered && !untimed && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    // (ProcessFsClient.readTrusted). That trust is measured on workerd's
+    // clock, which moves only with I/O (a timer fires at the time it was set
+    // for), so the lease answers only a barrier `viaIo`: one taken where
+    // I/O just arrived, which moved the clock to real time (a response, a
+    // relayed frame, a child's or a terminal's input, a request). Every other
+    // barrier asks (a timer's, a body's end, one made before a read), and so
+    // do a delivered answer, applied, and a store owed a repair.
+    if (viaIo && !delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
@@ -4861,8 +4862,8 @@ const __fsMod = (() => {
    * server 50 reads per request while a peer's refetch of 50 files ran: 500
    * reads over ten resumptions, and under steady load the set never drained.
    */
-  async function _acquireAndRefetch(supervisor, delivered, untimed) {
-    const stale = await _acquireBarrier(supervisor, delivered, untimed);
+  async function _acquireAndRefetch(supervisor, delivered, viaIo) {
+    const stale = await _acquireBarrier(supervisor, delivered, viaIo);
     // Plus what an own-mutation lease dropped since the last resumption:
     // the same debt this function exists to settle, owed by an eviction
     // that had no barrier to report it (see _owedRefetch).
@@ -4938,10 +4939,10 @@ const __fsMod = (() => {
    * delivers (`__nimbusInboundBarrier`, with the answer it delivered) — are
    * handed to the program by code outside this closure.
    */
-  async function _resumptionAcquire(delivered, untimed) {
+  async function _resumptionAcquire(delivered, viaIo) {
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
-    await _acquireAndRefetch(supervisor, delivered, untimed);
+    await _acquireAndRefetch(supervisor, delivered, viaIo);
   }
 
   /**
@@ -4997,7 +4998,7 @@ const __fsMod = (() => {
     // What the callback throws is an uncaught exception, as a timer's is in
     // Node, not the rejection of the chain it runs on.
     const _barriered = (cb, args) => {
-      __nimbusTrackOp(_resumptionAcquire(undefined, true)).then(() => {
+      __nimbusTrackOp(_resumptionAcquire()).then(() => {
         try {
           cb(...args);
         } catch (error) {
@@ -5699,7 +5700,8 @@ const __fsMod = (() => {
       return rpc(supervisor[op](...args));
     }
     const acquired = answer ? answer.acquired : undefined;
-    await _acquireBarrier(supervisor, acquired);
+    // Taken as its answer arrives.
+    await _acquireBarrier(supervisor, acquired, true);
     if (fill) {
       const dated = acquired && acquired.answer;
       if (dated && dated.poison !== true && typeof dated.rev === "number"
@@ -8709,7 +8711,7 @@ function __nimbusRefusal(supervisor, refused) {
         for (const event of events) {
           if (cancelled) return;
           // Its bytes are an inbound delivery, as a frame is.
-          await __nimbusInboundBarrier();
+          await __nimbusInboundBarrier(undefined, true);
           if (event.kind === "message" && event.bytes) {
             if (consumer) consumer.chunk(event.bytes);
             else pending.push(event.bytes);
@@ -8840,7 +8842,7 @@ const __NimbusRelayedWebSocket = (() => {
           // The barrier the whole relay exists for. Every frame is now a
           // supervisor reply, so it can carry the invalidation delta, and
           // user code runs only after the resident set has caught up.
-          await __nimbusInboundBarrier();
+          await __nimbusInboundBarrier(undefined, true);
           this._deliver(event);
         }
       }
@@ -12765,7 +12767,7 @@ const __childProcessMod = (() => {
           (result) => result,
         );
         const chunks = r && Array.isArray(r.chunks) ? r.chunks : [];
-        if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier(r.acquired);
+        if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier(r.acquired, true);
         if (chunks.length > 0) {
           backoff = 100;  // reset — child is producing
           // A child that has output has started: 'spawn' and its pid come
@@ -12887,7 +12889,7 @@ const __childProcessMod = (() => {
           __supervisor.cpWait(child._brokerPid, 1000, __nimbusVfsAcquireArgs(), child._started),
           (result) => result,
         );
-        if (r && (r.done || r.started)) await __nimbusInboundBarrier(r.acquired);
+        if (r && (r.done || r.started)) await __nimbusInboundBarrier(r.acquired, true);
         const settled = _applyWait(child, r);
         _applyNews(r);
         if (settled) break;
@@ -14162,7 +14164,7 @@ function __makeProcessStdin() {
       // costs nothing.
       if (packet && (packet.resize || packet.signal || packet.ended
           || (packet.data && packet.data.byteLength > 0))) {
-        await __nimbusInboundBarrier(packet.acquired);
+        await __nimbusInboundBarrier(packet.acquired, true);
       }
       if (packet && packet.resize) {
         __nimbusTtyColumns = Number(packet.resize.columns) || __nimbusTtyColumns;
@@ -15585,7 +15587,7 @@ Object.defineProperty(builtins, "http", {
       try { acquired = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
       // A local client and handler use the very same process filesystem view.
       // External deliveries still acquire before the handler sees the request.
-      if (!sameProcess) await __nimbusInboundBarrier(acquired);
+      if (!sameProcess) await __nimbusInboundBarrier(acquired, true);
       const headers = new Headers(request.headers);
       headers.delete("X-Nimbus-Vfs-Acquired");
       const controller = new AbortController();
