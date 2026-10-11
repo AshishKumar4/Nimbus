@@ -27,7 +27,7 @@
  */
 
 import { exitCodeForAbortSignal } from '../../shell/signals.js';
-import type { RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
+import type { RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
 import { realmOutcome, startRealm, type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext, CommandOutputStream } from '../types.js';
 import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
@@ -175,6 +175,36 @@ const mkdirArg = (value: unknown): { recursive?: boolean; mode?: number } | unde
   if (value.recursive !== undefined && recursive === undefined) throw refused('mkdir option `recursive` that is not a boolean');
   return { ...(recursive === undefined ? {} : { recursive }), ...(value.mode === undefined ? {} : { mode: modeArg(value.mode) }) };
 };
+const fdArg = (value: unknown): number => {
+  if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0) throw refused('descriptor that is not one');
+  return value;
+};
+/** An offset, or null for the descriptor's own: never a negative one, which the descriptor refuses. */
+const positionArg = (value: unknown): number | null => {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || typeof value !== 'number') throw refused('position that is not a number');
+  return value;
+};
+const sizeArg = (value: unknown): number => {
+  if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0) throw refused('size that is not one');
+  return value;
+};
+const bytesArg = (value: unknown): Uint8Array => {
+  if (!(value instanceof Uint8Array)) throw refused('write of anything but bytes');
+  return value;
+};
+const OPEN_FLAGS = ['read', 'write', 'append', 'create', 'exclusive', 'directory', 'truncate', 'followSymlinks', 'sync'] as const;
+const openFlagsArg = (value: unknown): RuntimeOpenFlags => {
+  if (!record(value)) throw refused('open flags that are not an object');
+  const flags: RuntimeOpenFlags = {};
+  for (const name of OPEN_FLAGS) {
+    const flag = value[name];
+    if (flag === undefined) continue;
+    if (typeof flag !== 'boolean') throw refused(`open flag \`${name}\` that is not a boolean`);
+    flags[name] = flag;
+  }
+  return value.mode === undefined ? flags : { ...flags, mode: modeArg(value.mode) };
+};
 const portArg = (value: unknown): number => {
   if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0 || value > 65535) throw refused('port that is not one');
   return value;
@@ -182,7 +212,7 @@ const portArg = (value: unknown): number => {
 
 /** NodeFilesystem's `method` on `args`, each checked to be of its kind: only these, never one the object inherits. */
 function callFilesystem(fs: NodeFilesystem, method: unknown, args: readonly unknown[]): unknown {
-  const [a, b] = args;
+  const [a, b, c] = args;
   switch (method) {
     case 'readFile': return fs.readFile(pathArg(a));
     case 'readFileString': return fs.readFileString(pathArg(a));
@@ -202,6 +232,13 @@ function callFilesystem(fs: NodeFilesystem, method: unknown, args: readonly unkn
     case 'rename': return fs.rename(pathArg(a), pathArg(b));
     case 'copyFile': return fs.copyFile(pathArg(a), pathArg(b));
     case 'chmod': return fs.chmod(pathArg(a), modeArg(b));
+    case 'open': return fs.open(pathArg(a), openFlagsArg(b));
+    case 'read': return fs.read(fdArg(a), positionArg(b), sizeArg(c));
+    case 'write': return fs.write(fdArg(a), positionArg(b), bytesArg(c));
+    case 'fstat': return fs.fstat(fdArg(a));
+    case 'ftruncate': return fs.ftruncate(fdArg(a), sizeArg(b));
+    case 'fsync': return fs.fsync(fdArg(a));
+    case 'close': return fs.close(fdArg(a));
     default: throw refused(`filesystem method ${JSON.stringify(String(method))}`);
   }
 }

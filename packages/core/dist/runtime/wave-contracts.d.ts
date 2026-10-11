@@ -10,6 +10,9 @@ import { type BatchChunkEntry, type BatchInodeEntry, type VfsInodeKind, type W7A
 import type { CreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import type { VfsOpenDescription, VfsStat } from '../vfs/sqlite-vfs.js';
 import type { VfsCred } from './os-contracts.js';
+import type { MountedFileDescription } from './descriptors.js';
+import type { PinnedName } from '../vfs/composite.js';
+import type { Awaitable } from '../vfs/vfs.js';
 export interface WriteBatchStreamProgress {
     /** 1-based sequence of the last durable publish group; zero means none. */
     committedGroupSequence: number;
@@ -222,6 +225,18 @@ export interface WaveRouter {
      * presents it here.
      */
     apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
+    /**
+     * open(2) of a name the namespace places on a mount (W7Call open), decided
+     * as every open is (openOnMount), `guard` run right before it changes
+     * anything: the name it found (CompositeVFS.pin, presenting `owner`, never
+     * the wave's admission: a description outlives its wave) and its stat.
+     */
+    open(call: Extract<W7PathCall, {
+        call: 'open';
+    }>, cred: VfsCred, guard: () => void, owner?: string): Promise<{
+        file: PinnedName;
+        stat: RoutedStat;
+    }>;
 }
 /**
  * How far an earlier attempt of the same fenced wave may have reached into
@@ -266,11 +281,24 @@ export interface WaveDescriptions {
         read: boolean;
         write: boolean;
     }, path: string, cred: VfsCred): number | null;
-    /** The description `id` names, or undefined (never opened, or closed). */
+    /** The description `id` names on this filesystem, or undefined (never opened, closed, or a mount's). */
     node(id: string): VfsOpenDescription | undefined;
+    /** The description of a file on a mount `id` names (describe), or undefined (never opened, closed, or this filesystem's). */
+    mounted(id: string): MountedFileDescription | undefined;
+    /**
+     * Keep the file at `file`, the name a wave's open of a name on a mount
+     * found (WaveRouter.open), as description `id` (PinnedName.hold), each
+     * write in its mount before it is answered: the session's descriptor of
+     * it, which the process reads, stats and closes as any of its own.
+     */
+    describe(id: string, file: PinnedName, ino: number, rights: {
+        read: boolean;
+        write: boolean;
+    }): Awaitable<number>;
     /** The session's descriptor of `id`, or undefined. */
     handle(id: string): number | undefined;
-    close(id: string): void;
+    /** Closes `id`: its last close's answer (lastClose), which a mount's description's backend may await. */
+    close(id: string): Awaitable<void>;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
@@ -430,10 +458,10 @@ export interface WaveScope {
         results: (VfsStat | null | void)[];
         after: number;
     };
-    /** Whether description `id` is one the wave's calls may name. */
-    isDescribed(id: string): boolean;
     /** An open the cursor passed, answered again as it was. */
     reopened(path: string, id: string): WriteStreamReceipt | null;
+    /** What the session kept of the wave's process's description `id` (vfs_wave_descriptions) is no longer this filesystem's: a mount's description took the id, or closed it. */
+    forgetDescription(id: string): void;
     /** The writer's cursor and any refusal kept for it (WaveSequence), acknowledging `ack`. */
     openSequence(sequence: WaveSequence): {
         cursor: number;

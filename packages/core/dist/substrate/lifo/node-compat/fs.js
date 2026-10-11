@@ -3,7 +3,7 @@ import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
-import { fsError, isVfsError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
 /**
@@ -50,22 +50,51 @@ function resolvePath(cwd, p) {
 const O_RDONLY = 0;
 const O_WRONLY = 1;
 const O_RDWR = 2;
+const O_ACCMODE = 3;
 const O_CREAT = 64;
+const O_EXCL = 128;
 const O_TRUNC = 512;
 const O_APPEND = 1024;
-function parseFlags(flags) {
-    if (typeof flags === 'number')
-        return flags;
-    switch (flags) {
-        case 'r': return O_RDONLY;
-        case 'r+': return O_RDWR;
-        case 'w': return O_WRONLY | O_CREAT | O_TRUNC;
-        case 'w+': return O_RDWR | O_CREAT | O_TRUNC;
-        case 'a': return O_WRONLY | O_CREAT | O_APPEND;
-        case 'a+': return O_RDWR | O_CREAT | O_APPEND;
-        case 'ax': return O_WRONLY | O_CREAT | O_APPEND;
-        default: return O_RDONLY;
+const O_DIRECTORY = 65536;
+const O_NOFOLLOW = 131072;
+const O_SYNC = 1052672;
+/** Node's flag strings (stringToFlags), as bits. */
+const FLAG_STRINGS = {
+    r: O_RDONLY, rs: O_RDONLY | O_SYNC, sr: O_RDONLY | O_SYNC,
+    'r+': O_RDWR, 'rs+': O_RDWR | O_SYNC, 'sr+': O_RDWR | O_SYNC,
+    w: O_TRUNC | O_CREAT | O_WRONLY, wx: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL, xw: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
+    'w+': O_TRUNC | O_CREAT | O_RDWR, 'wx+': O_TRUNC | O_CREAT | O_RDWR | O_EXCL, 'xw+': O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
+    a: O_APPEND | O_CREAT | O_WRONLY, ax: O_APPEND | O_CREAT | O_WRONLY | O_EXCL, xa: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
+    as: O_APPEND | O_CREAT | O_WRONLY | O_SYNC, sa: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
+    'a+': O_APPEND | O_CREAT | O_RDWR, 'ax+': O_APPEND | O_CREAT | O_RDWR | O_EXCL, 'xa+': O_APPEND | O_CREAT | O_RDWR | O_EXCL,
+    'as+': O_APPEND | O_CREAT | O_RDWR | O_SYNC, 'sa+': O_APPEND | O_CREAT | O_RDWR | O_SYNC,
+};
+/** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
+function openFlagsOf(flags, mode) {
+    if (typeof flags === 'number' && (!Number.isInteger(flags) || flags < -0x80000000 || flags > 0x7fffffff)) {
+        throw Object.assign(new RangeError(`The value of "flags" is out of range. It must be an integer. Received ${String(flags)}`), { code: 'ERR_OUT_OF_RANGE' });
     }
+    const bits = flags === undefined || flags === null ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
+    if (bits === undefined) {
+        throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${String(flags)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+    }
+    const access = bits & O_ACCMODE;
+    return {
+        read: access !== O_WRONLY,
+        write: access !== O_RDONLY,
+        append: (bits & O_APPEND) !== 0,
+        create: (bits & O_CREAT) !== 0,
+        exclusive: (bits & O_EXCL) !== 0,
+        truncate: (bits & O_TRUNC) !== 0,
+        directory: (bits & O_DIRECTORY) !== 0,
+        followSymlinks: (bits & O_NOFOLLOW) === 0,
+        ...((bits & O_SYNC) === O_SYNC ? { sync: true } : {}),
+        ...(mode === undefined ? {} : { mode }),
+    };
+}
+/** A position as Node takes it: null or -1 is the descriptor's own offset. */
+function positionOf(position) {
+    return position === undefined || position === null || position === -1 ? null : position;
 }
 /** The paths that name fd 0. */
 const STDIN_PATHS = { '/dev/stdin': true, '/dev/fd/0': true, '/proc/self/fd/0': true };
@@ -82,15 +111,24 @@ export function createFs(vfs, cwd, stdin) {
         stdinRead = true;
         return stdin ? stdin() : new Uint8Array(0);
     };
-    // ─── File descriptor table ───
-    const fdTable = new Map();
-    let nextFd = 10; // start above stdin/stdout/stderr
-    /** The open file `fd` names, for `syscall`; EBADF, as `syscall`'s, when none. */
-    function getFd(fd, syscall) {
-        const entry = fdTable.get(fd);
-        if (!entry || entry.closed)
+    // ─── File descriptors ───
+    // A descriptor is the process's own (NodeFilesystem.open): its file,
+    // offset, rights and O_APPEND are the process's descriptor table's, shared
+    // with fs/promises and anything else the process opens. Node's 0, 1 and 2
+    // are its standard streams, so a descriptor numbers the process's 1 as 3.
+    const STDIO = 3;
+    /** `fd`'s call `syscall` on the process's descriptor: EBADF as Node says it, for no descriptor or one without the right. */
+    function onDescriptor(fd, syscall, run) {
+        if (!Number.isSafeInteger(fd) || fd < STDIO)
             throw fsError('EBADF', syscall);
-        return entry;
+        try {
+            return run(fd - STDIO + 1);
+        }
+        catch (error) {
+            if (errnoCodeOf(error) === 'EBADF')
+                throw fsError('EBADF', syscall);
+            throw error;
+        }
     }
     // ─── Sync API ───
     function readFileSync(path, options) {
@@ -99,8 +137,14 @@ export function createFs(vfs, cwd, stdin) {
             const bytes = readStdin();
             return encoding ? new TextDecoder().decode(bytes) : Buffer.from(bytes);
         }
-        if (typeof path === 'number')
-            return readFileSync(getFd(path, 'read').path, options);
+        if (typeof path === 'number') {
+            // From the descriptor's offset to the end, as Node reads a descriptor.
+            const parts = [];
+            for (let part = readDescriptor(path, null, 65536); part.byteLength > 0; part = readDescriptor(path, null, 65536))
+                parts.push(part);
+            const bytes = Buffer.concat(parts);
+            return encoding ? new TextDecoder().decode(bytes) : bytes;
+        }
         const abs = resolvePath(cwd, path);
         try {
             if (encoding) {
@@ -226,87 +270,47 @@ export function createFs(vfs, cwd, stdin) {
         vfs.writeFile(abs, data.slice(0, newLen));
     }
     // ─── File descriptor sync API ───
-    // The fd table maps fds to paths; readSync/writeSync read and write those
-    // paths through the process's filesystem, which routes them to their mount.
-    function openSync(path, flags, _mode) {
-        const abs = resolvePath(cwd, path);
-        const numFlags = parseFlags(flags ?? 'r');
-        if (numFlags & O_CREAT) {
-            if (!vfs.exists(abs)) {
-                vfs.writeFile(abs, '');
-            }
-        }
-        if (numFlags & O_TRUNC) {
-            vfs.writeFile(abs, '');
-        }
-        if (!vfs.exists(abs)) {
-            throw fsError('ENOENT', 'open', abs);
-        }
-        const fd = nextFd++;
-        fdTable.set(fd, {
-            path: abs,
-            position: (numFlags & O_APPEND) ? vfs.readFile(abs).length : 0,
-            flags: typeof flags === 'string' ? flags : 'r',
-            closed: false,
-        });
-        return fd;
+    function openSync(path, flags, mode) {
+        return vfs.open(resolvePath(cwd, path), openFlagsOf(flags, mode)) - 1 + STDIO;
     }
     function closeSync(fd) {
-        const entry = getFd(fd, 'close');
-        entry.closed = true;
-        fdTable.delete(fd);
+        onDescriptor(fd, 'close', (id) => vfs.close(id));
     }
-    function readSync(fd, buffer, offset, length, position) {
-        const entry = getFd(fd, 'read');
-        const data = vfs.readFile(entry.path);
-        const pos = position !== null ? position : entry.position;
-        const available = Math.max(0, data.length - pos);
-        const bytesToRead = Math.min(length, available);
-        if (bytesToRead === 0)
-            return 0;
-        buffer.set(data.subarray(pos, pos + bytesToRead), offset);
-        if (position === null) {
-            entry.position = pos + bytesToRead;
-        }
-        return bytesToRead;
+    function readDescriptor(fd, position, length) {
+        return onDescriptor(fd, 'read', (id) => vfs.read(id, position, length));
+    }
+    function readSync(fd, buffer, offset = 0, length = buffer.byteLength - offset, position) {
+        const bytes = readDescriptor(fd, positionOf(position), length);
+        buffer.set(bytes, offset);
+        return bytes.byteLength;
     }
     function writeSync(fd, bufferOrString, offsetOrPosition, lengthOrEncoding, position) {
-        const entry = getFd(fd, 'write');
         let data;
-        let pos;
+        let at;
         if (typeof bufferOrString === 'string') {
             data = encode(bufferOrString);
-            pos = typeof offsetOrPosition === 'number' ? offsetOrPosition : entry.position;
+            at = positionOf(offsetOrPosition);
         }
         else {
             const offset = offsetOrPosition ?? 0;
-            const length = (typeof lengthOrEncoding === 'number' ? lengthOrEncoding : bufferOrString.length - offset);
+            const length = typeof lengthOrEncoding === 'number' ? lengthOrEncoding : bufferOrString.length - offset;
             data = bufferOrString.subarray(offset, offset + length);
-            pos = position !== null && position !== undefined ? position : entry.position;
+            at = positionOf(position);
         }
-        const fileData = vfs.readFile(entry.path);
-        const endPos = pos + data.length;
-        const newSize = Math.max(fileData.length, endPos);
-        const newData = new Uint8Array(newSize);
-        newData.set(fileData, 0);
-        newData.set(data, pos);
-        vfs.writeFile(entry.path, newData);
-        entry.position = endPos;
-        return data.length;
+        return onDescriptor(fd, 'write', (id) => vfs.write(id, at, data));
     }
     function fstatSync(fd) {
-        const entry = getFd(fd, 'fstat');
-        return toNodeStat(vfs.stat(entry.path));
+        return toNodeStat(onDescriptor(fd, 'fstat', (id) => vfs.fstat(id)));
     }
     function ftruncateSync(fd, len) {
-        const entry = getFd(fd, 'ftruncate');
-        truncateSync(entry.path, len);
+        // A negative length is 0, as Node clamps it.
+        onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, Math.max(0, len ?? 0)));
     }
-    function fsyncSync(_fd) {
-        // No-op - VFS is always in sync
+    function fsyncSync(fd) {
+        onDescriptor(fd, 'fsync', (id) => vfs.fsync(id));
     }
-    function fdatasyncSync(_fd) {
-        // No-op
+    function fdatasyncSync(fd) {
+        onDescriptor(fd, 'fdatasync', (id) => vfs.fsync(id));
     }
     // ─── Symlink stubs ───
     function symlinkSync(_target, _path, _type) {
@@ -566,8 +570,12 @@ export function createFs(vfs, cwd, stdin) {
         O_WRONLY,
         O_RDWR,
         O_CREAT,
+        O_EXCL,
         O_TRUNC,
         O_APPEND,
+        O_DIRECTORY,
+        O_NOFOLLOW,
+        O_SYNC,
         COPYFILE_EXCL: 1,
         COPYFILE_FICLONE: 2,
         COPYFILE_FICLONE_FORCE: 4,
