@@ -334,6 +334,12 @@ export function runtimeCodeCharge(entry) {
 export const RUNTIME_INTERPRETER_MODULE = 'nimbus/interpreter.js';
 export const RUNTIME_INTERPRETER_OPS_MODULE = 'nimbus/interpreter-ops.js';
 export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primordials.js';
+/**
+ * The parser beside them (core interpreter/parser.ts), which the interpreter
+ * requires as ./parser.js: what a fatal report, Node's format detection and
+ * an assertion's source read without loading the interpreter.
+ */
+export const RUNTIME_PARSER_MODULE = 'nimbus/parser.js';
 /** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
 export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 export const RUNTIME_NODE_DNS_MODULE = 'nimbus/node-dns.js';
@@ -474,6 +480,7 @@ export const COMMONJS_CELL_IMPORTS = [
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
+const { isProxy: __nimbusStackIsProxy, isNativeError: __nimbusStackIsError } = __nimbusRegistryRequire("node:util").types;
 // A bridged filesystem links only after its runner has installed the shims.
 function __nimbusReadBundleFile(path, encoding) {
   return __nimbusRegistryRequire("node:fs").readFileSync(path, encoding);
@@ -647,8 +654,11 @@ function __nimbusSourceLine(module, line, emitted) {
   return source + emitted.slice(at);
 }
 let __nimbusModulesByFile = null;
+const __nimbusInterpretedModules = new Map();
 // The module whose frames read \`file\` (__nimbusFrameFile), or null.
 function __nimbusModuleOfFile(file) {
+  const interpreted = __nimbusInterpretedModules.get(file);
+  if (interpreted !== undefined) return interpreted;
   if (__nimbusModulesByFile === null) {
     __nimbusModulesByFile = new Map();
     const add = (name) => {
@@ -663,6 +673,8 @@ function __nimbusModuleOfFile(file) {
 // A frame in a module of the program: its place in the module's file, as
 // Node's frame names it (a first line's column without the wrapper's head).
 function __nimbusFrameLocation(site) {
+  const interpreted = __nimbusInterpretedLocations.get(site);
+  if (interpreted !== undefined) return interpreted;
   const fileName = site.getFileName();
   const module = __nimbusFrameModule(fileName);
   if (module === null) return null;
@@ -688,6 +700,7 @@ class __NimbusCallSite {
     this.#location = location;
   }
   static of(site) {
+    if (site instanceof __NimbusInterpretedCallSite) return site;
     const location = __nimbusFrameLocation(site);
     if (location === null) return site;
     if (!__NimbusCallSite.delegates) {
@@ -714,6 +727,117 @@ class __NimbusCallSite {
   }
   toString() { return __nimbusFrameText(this.#site, this.#location); }
 }
+// A source activation has the same CallSite interface as V8's, without
+// exposing the interpreter's environment, AST, or implementation function.
+const __nimbusInterpretedLocations = new WeakMap();
+class __NimbusInterpretedCallSite {
+  #frame;
+  #file;
+  constructor(frame) {
+    this.#frame = frame;
+    this.#file = frame.unit.esModule && !frame.unit.file.startsWith("data:") && !frame.unit.file.startsWith("file:") ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
+    const module = {
+      name: this.#file, path: frame.unit.file, file: this.#file, frameFile: this.#file,
+      head: 0, tail: 0, esModule: frame.unit.esModule, hashbang: false, columns: null, source: frame.unit.source,
+    };
+    __nimbusInterpretedModules.set(this.#file, module);
+    __nimbusInterpretedLocations.set(this, {
+      from: this.#file + ":" + frame.line + ":" + frame.column, module, file: this.#file, line: frame.line, column: frame.column,
+    });
+  }
+  getThis() { return this.#frame.receiver; }
+  getTypeName() { return this.#frame.type; }
+  getFunction() { return this.#frame.fn; }
+  getFunctionName() { return this.#frame.name; }
+  getMethodName() { return this.#frame.method; }
+  getFileName() { return this.#file; }
+  getScriptNameOrSourceURL() { return this.#file; }
+  getLineNumber() { return this.#frame.line; }
+  getColumnNumber() { return this.#frame.column; }
+  getEnclosingLineNumber() { return this.#frame.enclosingLine; }
+  getEnclosingColumnNumber() { return this.#frame.enclosingColumn; }
+  getEvalOrigin() { return undefined; }
+  isToplevel() { return this.#frame.top; }
+  isEval() { return false; }
+  isNative() { return false; }
+  isConstructor() { return this.#frame.constructor; }
+  isAsync() { return this.#frame.async; }
+  isPromiseAll() { return false; }
+  getPromiseIndex() { return null; }
+  toString() {
+    const frame = this.#frame;
+    const location = this.#file + ":" + frame.line + ":" + frame.column;
+    let name = frame.name;
+    if (frame.constructor) name = "new " + (name ?? "<anonymous>");
+    else if (frame.type !== null) {
+      name = frame.type + "." + (name ?? "<anonymous>");
+      if (frame.method !== null && frame.method !== frame.name) name += " [as " + frame.method + "]";
+    }
+    const text = name === null ? location : name + " (" + location + ")";
+    return (frame.async ? "async " : "") + text;
+  }
+}
+const __nimbusInterpretedStacks = new WeakMap();
+function __nimbusInterpreterSite(site) {
+  const file = site.getFileName();
+  return typeof file === "string" && (
+    file === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_MODULE)} ||
+    file === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_OPS_MODULE)} ||
+    (file === import.meta.url && site.getFunctionName() === "captureStackTrace")
+  );
+}
+// Stamp at construction/fault time, retaining enough physical frames to
+// interleave native callbacks. This private capture does not consult the
+// program's formatter, captureStackTrace, or stack limit.
+function __nimbusRecordInterpretedStack(error, frames) {
+  const limit = Error.stackTraceLimit;
+  const holder = {};
+  const sites = __nimbusStackSites(holder, Infinity, __nimbusRecordInterpretedStack);
+  __nimbusInterpretedStacks.set(error, { frames, sites, limit });
+}
+function __nimbusProgramSites(error, original) {
+  const stamp = __nimbusInterpretedStacks.get(error);
+  if (stamp === undefined || (original.length !== 0 && !original.some(__nimbusInterpreterSite))) return original.map(__NimbusCallSite.of);
+  const output = [];
+  // Host errors keep their native innermost frames. Their interpreted
+  // callers are captured before the interpreter unwinds the fault's node.
+  for (const site of original) {
+    if (__nimbusInterpreterSite(site)) break;
+    output.push(__NimbusCallSite.of(site));
+  }
+  let next = 0, internal = false;
+  const physical = stamp.sites.length === 0 ? original : stamp.sites;
+  // An error read immediately inside a native callback has not crossed a
+  // call's return/catch yet. The original native prefix and the private
+  // capture then overlap: keep the creation columns, without duplicating
+  // the callback that is still executing while its stack is prepared.
+  const same = (a, b) => a.getFileName() === b.getFileName() && a.getFunctionName() === b.getFunctionName() && a.getLineNumber() === b.getLineNumber();
+  let overlap = 0;
+  for (let count = 1; count <= output.length && count <= physical.length; count++) {
+    let matches = true;
+    for (let i = 0; i < count; i++) if (!same(output[output.length - count + i], __NimbusCallSite.of(physical[i]))) { matches = false; break; }
+    if (matches) overlap = count;
+  }
+  for (let i = overlap; i < physical.length; i++) {
+    const site = physical[i];
+    if (__nimbusInterpreterSite(site)) {
+      internal = true;
+      if (site.getFileName() === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_OPS_MODULE)} && next < stamp.frames.length && stamp.frames[next].async === site.isAsync()) {
+        output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
+        internal = false;
+      }
+      continue;
+    }
+    if (internal && next < stamp.frames.length && !stamp.frames[next].async) {
+      output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
+      internal = false;
+    }
+    output.push(__NimbusCallSite.of(site));
+  }
+  while (next < stamp.frames.length) output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
+  const limit = typeof stamp.limit === "number" ? Math.max(0, Math.floor(stamp.limit)) : 0;
+  return output.slice(0, limit);
+}
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
 // V8's call sites, the program's at their file's places, as Node's bindings
@@ -731,7 +855,13 @@ let __nimbusStackFormatter = null;
 // node:util getCallSites ignores both, but drops every frame with no function
 // name (an arrow, a module's top level), which Node keeps.
 const __nimbusCaptureStackTrace = Error.captureStackTrace;
-const __nimbusSites = (error, sites) => sites.map(__NimbusCallSite.of);
+const __nimbusSites = __nimbusProgramSites;
+Object.defineProperty(Error, "captureStackTrace", {
+  value: function captureStackTrace(holder, above) {
+    Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above ?? captureStackTrace]);
+    if (__nimbusInterpreter !== null) __nimbusInterpreter.captureStack(holder, above);
+  }, writable: true, configurable: true,
+});
 function __nimbusStackSites(holder, count, above) {
   const set = (name, value) => {
     const descriptor = Object.getOwnPropertyDescriptor(Error, name);
@@ -770,8 +900,14 @@ function __nimbusUseStackFormatter(format) {
   let __userPrepare;
   const __apply = Reflect.apply;
   const __prepare = function prepareStackTrace(error, sites) {
+    if (__nimbusInterpreter !== null && __nimbusInterpreter.stackFrames(error) === null && sites.some(__nimbusInterpreterSite)) {
+      __nimbusInterpreter.captureStack(error);
+      const stamp = __nimbusInterpretedStacks.get(error);
+      if (stamp !== undefined) stamp.sites = __nimbusStackSites({}, Infinity, __prepare);
+    }
+    sites = __nimbusProgramSites(error, sites);
     // As Node's prepareStackTraceCallback calls it: a method of Error.
-    if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites.map(__NimbusCallSite.of)]);
+    if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites]);
     let stack;
     try {
       stack = Error.prototype.toString.call(error);
@@ -792,6 +928,7 @@ function __nimbusUseStackFormatter(format) {
 }
 // A frame module's text as the registry compiled it, or null.
 function __nimbusFrameModuleText(module) {
+  if (typeof module.source === "string") return module.source;
   try {
     return __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
   } catch {
@@ -799,11 +936,11 @@ function __nimbusFrameModuleText(module) {
   }
 }
 // Where V8 would report a throw at offset \`offset\` of a module's text, or the
-// syntax error that stops its compile (offset -1): the interpreter's parser
-// (core interpreter fatalLocation), loaded only for a report.
+// syntax error that stops its compile (offset -1): the launch's parser
+// (core interpreter/parser.ts fatalLocation), loaded only for a report.
 function __nimbusFatalLocation(text, goal, offset) {
   try {
-    return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").fatalLocation(text, goal, offset);
+    return __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, goal, offset);
   } catch {
     return null;
   }
@@ -917,6 +1054,9 @@ function __nimbusRuntimeInterpreter() {
       dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
       primordials: __nimbusLaunchPrimordials,
       moduleHelpers: ${ESM_MODULE_HELPERS},
+      stackCapture: __nimbusRecordInterpretedStack,
+      stackIsProxy: __nimbusStackIsProxy,
+      stackIsError: __nimbusStackIsError,
     });
   }
   return __nimbusInterpreter;

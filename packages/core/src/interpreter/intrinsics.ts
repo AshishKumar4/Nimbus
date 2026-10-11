@@ -83,6 +83,7 @@ const ArrayPrototypeWith = method(primordials.ArrayPrototypeWith, 'Array.prototy
 const ArrayPrototypeToSpliced = method(primordials.ArrayPrototypeToSpliced, 'Array.prototype.toSpliced');
 const GeneratorPrototypeNext = method(primordials.GeneratorPrototypeNext, '%GeneratorPrototype%.next');
 const GeneratorPrototypeThrow = method(primordials.GeneratorPrototypeThrow, '%GeneratorPrototype%.throw');
+const GeneratorPrototypeReturn = method(primordials.GeneratorPrototypeReturn, '%GeneratorPrototype%.return');
 const SymbolPrototypeDescription = method(primordials.SymbolPrototypeDescription, 'Symbol.prototype.description');
 const StringPrototypeSlice = primordials.StringPrototypeSlice;
 const StringPrototypeLastIndexOf = primordials.StringPrototypeLastIndexOf;
@@ -132,6 +133,10 @@ export function resume<R>(it: Generator<unknown, R, unknown>, value: unknown): I
 /** Throw into one of the interpreter's own generators. */
 export function resumeThrowing<R>(it: Generator<unknown, R, unknown>, error: unknown): IteratorResult<unknown, R> {
   return reflectApply(GeneratorPrototypeThrow, it, [error]);
+}
+
+export function resumeReturning<R>(it: Generator<unknown, R, unknown>, value: unknown): IteratorResult<unknown, R> {
+  return reflectApply(GeneratorPrototypeReturn, it, [value]);
 }
 
 /**

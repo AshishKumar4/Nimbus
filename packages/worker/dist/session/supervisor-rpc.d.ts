@@ -174,6 +174,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         stdoutClosed: boolean;
         stderrClosed: boolean;
     }>;
+    cpCloseOutput(childPid: number, fd: 1 | 2): Promise<void>;
     cpKill(childPid: number, signal: string): Promise<boolean>;
     cpWait(childPid: number, waitMs: number, acquire?: import("./rpc.js").FsAcquireArgs, knownStarted?: boolean): Promise<{
         done: boolean;

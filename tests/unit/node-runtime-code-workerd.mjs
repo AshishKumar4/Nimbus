@@ -42,6 +42,9 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
@@ -227,6 +230,85 @@ const FILES = {
     'const sink = new Sink();',
     'pipeline(Readable.from(["a", "b"]), sink, (error) => console.log("PIPELINE " + JSON.stringify({ error: error ? error.message : null, got: sink.got, ended: !!sink.ended })));',
   ].join('\n'),
+  // The stream front a program runs on is the platform's node:stream, and its
+  // files' and children's streams are its classes: backpressure, lifecycle
+  // order, pipeline and its errors, stream/promises, stream/consumers,
+  // destroy, fs's read and write streams (a write stream owns what it has
+  // acknowledged; a read stream's close callback comes after its 'close'),
+  // and a child whose stdout a failing pipeline destroys still closes, and one
+  // that keeps writing to a stdout its parent destroyed gets EPIPE, as a
+  // transcript node writes the same.
+  'stream-lifecycle.js': [
+    'const { Readable, Writable, Transform, PassThrough } = require("stream");',
+    'const sp = require("stream/promises");',
+    'const consumers = require("stream/consumers");',
+    'const fs = require("fs");',
+    'const log = [];',
+    'const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));',
+    '(async () => {',
+    '  const w = new Writable({ highWaterMark: 4, write(c, e, cb) { log.push("w:" + c); setTimeout(cb, 1); } });',
+    '  for (const name of ["drain", "finish", "close"]) w.on(name, () => log.push("w-" + name));',
+    '  for (const chunk of ["ab", "cd", "ef"]) log.push("ret:" + w.write(chunk));',
+    '  await new Promise((resolve) => w.once("drain", resolve));',
+    '  w.end("gh", () => log.push("end-cb"));',
+    '  await sp.finished(w);',
+    '  await tick(5);',
+    '  const r = new Readable({ read() {} });',
+    '  r.push("x"); r.push("y"); r.push(null);',
+    '  const seen = [];',
+    '  for await (const c of r) seen.push(String(c));',
+    '  log.push("r:" + seen.join(","));',
+    '  const out = [];',
+    '  await sp.pipeline(Readable.from(["a", "b"]), new Transform({ transform(c, e, cb) { cb(null, String(c).toUpperCase()); }, flush(cb) { this.push("!"); cb(); } }),',
+    '    new Writable({ write(c, e, cb) { out.push(String(c)); cb(); } }));',
+    '  log.push("t:" + out.join(""));',
+    '  log.push("perr:" + await sp.pipeline(new Readable({ read() { this.destroy(new Error("boom")); } }), new PassThrough()).then(() => "none", (e) => e.message));',
+    '  const d = new PassThrough();',
+    '  d.on("error", (e) => log.push("d-error:" + e.message)); d.on("close", () => log.push("d-close"));',
+    '  d.destroy(new Error("x"));',
+    '  await tick(5);',
+    '  log.push("c:" + await consumers.text(Readable.from(["h", "i"])) + ":" + JSON.stringify(await consumers.json(Readable.from([\'{"a":\', "1}"]))) + ":" + (await consumers.buffer(Readable.from([Buffer.from("z")]))).length);',
+    '  fs.writeFileSync("s.txt", "0123456789");',
+    '  const parts = [];',
+    '  for await (const c of fs.createReadStream("s.txt", { highWaterMark: 4, start: 2, end: 7 })) parts.push(String(c));',
+    '  log.push("fs:" + parts.join("|"));',
+    '  const ws = fs.createWriteStream("o.txt");',
+    '  ws.write("p"); ws.end("q");',
+    '  await sp.finished(ws);',
+    '  log.push("fsw:" + fs.readFileSync("o.txt", "utf8"));',
+    '  const reused = new Uint8Array([97]);',
+    '  const own = fs.createWriteStream("own.txt");',
+    '  await new Promise((resolve) => own.write(reused, () => { reused[0] = 98; own.end(resolve); }));',
+    '  log.push("own:" + fs.readFileSync("own.txt", "utf8"));',
+    '  const rs = fs.createReadStream("s.txt");',
+    '  await new Promise((resolve) => { rs.on("close", () => log.push("rs-close")); rs.close((e) => { log.push("rs-cb:" + (e && e.code)); resolve(); }); });',
+    '  const child = require("child_process").spawn("node", ["-e", "process.stdout.write(\\"x\\")"]);',
+    '  const ends = [];',
+    '  await new Promise((resolve) => {',
+    '    sp.pipeline(child.stdout, new Writable({ write(c, e, cb) { cb(new Error("sink")); } })).catch((e) => ends.push("pipe:" + e.message));',
+    '    child.stderr.resume();',
+    '    child.on("close", (code) => { ends.push("close:" + code); resolve(); });',
+    '  });',
+    '  await tick(5);',
+    '  log.push("cp:" + ends.sort().join(","));',
+    '  const writer = require("child_process").spawn("node", ["-e", "process.stdout.on(\\"error\\", (e) => process.exit(e.code === \\"EPIPE\\" ? 42 : 1)); setInterval(() => process.stdout.write(\\"y\\".repeat(1024)), 1);"]);',
+    '  writer.stdout.once("data", () => writer.stdout.destroy());',
+    '  writer.stderr.resume();',
+    '  log.push("epipe:" + await new Promise((resolve) => writer.on("close", (code) => resolve(code))));',
+    '  console.log("STREAMS " + JSON.stringify(log));',
+    '})();',
+  ].join('\n'),
+  // The terminal's classes a program constructs itself: a ReadStream reads
+  // the process's stdin (and, destroyed, leaves it as it was), a WriteStream
+  // writes its stdout or stderr.
+  'tty.js': [
+    'const tty = require("tty");',
+    'const input = new tty.ReadStream(0);',
+    'let got = "";',
+    'input.on("data", (c) => { got += c; });',
+    'input.on("end", () => { input.destroy(); });',
+    'input.on("close", () => { new tty.WriteStream(2).write("TTY-ERR\\n"); new tty.WriteStream(1).write("TTY " + JSON.stringify(got) + " " + process.stdin.listenerCount("data") + "\\n"); });',
+  ].join('\n'),
   'url.js': [
     'const url = require("url");',
     'const pick = (u) => ({ protocol: u.protocol, auth: u.auth, host: u.host, port: u.port, hostname: u.hostname, hash: u.hash, search: u.search, query: u.query, pathname: u.pathname, path: u.path, href: u.href });',
@@ -365,6 +447,19 @@ try {
     assert.match(hostPipeline.stdout, /^PIPELINE \{"error":null,"got":\["a","b"\],"ended":true\}$/m, hostPipeline.stdout);
     assert.equal(/^PIPELINE .*$/m.exec(pipelineRun.stdout)?.[0], /^PIPELINE .*$/m.exec(hostPipeline.stdout)?.[0],
       `pipeline writes into a destination that has no pipe of its own, as node does: ${pipelineRun.stdout}`);
+
+    const streamsRun = await terminal.run(`cd ${W} && node stream-lifecycle.js`);
+    const hostDir = mkdtempSync(join(tmpdir(), 'stream-lifecycle-'));
+    const hostStreams = spawnSync('node', ['-e', FILES['stream-lifecycle.js']], { encoding: 'utf8', cwd: hostDir });
+    rmSync(hostDir, { recursive: true, force: true });
+    assert.equal(hostStreams.status, 0, hostStreams.stderr);
+    assert.match(hostStreams.stdout, /^STREAMS \[.*"fsw:pq","own:a","rs-close","rs-cb:ERR_STREAM_PREMATURE_CLOSE","cp:close:0,pipe:sink","epipe:42"\]$/m, hostStreams.stdout);
+    assert.equal(/^STREAMS .*$/m.exec(streamsRun.stdout)?.[0], /^STREAMS .*$/m.exec(hostStreams.stdout)?.[0],
+      `streams run as node's do: ${streamsRun.stdout}`);
+
+    const ttyRun = await terminal.run(`cd ${W} && echo TTY-IN | node tty.js`);
+    assert.match(ttyRun.stdout, /^TTY "TTY-IN\\n" 0$/m, `a tty.ReadStream reads stdin and lets go of it, a tty.WriteStream writes stdout: ${JSON.stringify(ttyRun)}`);
+    assert.match(`${ttyRun.stdout}${ttyRun.stderr ?? ''}`, /TTY-ERR/, 'and fd 2 its stderr');
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });

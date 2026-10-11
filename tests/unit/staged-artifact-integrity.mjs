@@ -45,6 +45,7 @@ import {
   JS_INTERPRETER_ENTRY,
   JS_INTERPRETER_OPS_ENTRY,
   JS_INTERPRETER_PRIMORDIALS_ENTRY,
+  JS_PARSER_ENTRY,
   VFS_WRITE_LEDGER_ENTRY,
 } from '../../packages/worker/src/node-shims-artifact.generated.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
@@ -205,6 +206,7 @@ try {
     ['js-interpreter-primordials', JS_INTERPRETER_PRIMORDIALS_ENTRY, 'interpreterPrimordials'],
     ['js-interpreter', JS_INTERPRETER_ENTRY, 'interpreter'],
     ['js-interpreter-ops', JS_INTERPRETER_OPS_ENTRY, 'interpreterOps'],
+    ['js-parser', JS_PARSER_ENTRY, 'parser'],
     ['node-lib', NODE_LIB_ENTRY, 'nodeLib'],
     ['node-dns', NODE_DNS_ENTRY, 'nodeDns'],
     ['node-registry', NODE_REGISTRY_ENTRY, 'registry'],

@@ -124,7 +124,7 @@ import {
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
+import { type ExecDiagSink, type ExecTelemetryRecord, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { LearnedServers } from './server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
@@ -1128,7 +1128,12 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
         })
         .then(() => __supervisor[method](__rpcBatchBytes(__batch), __batch.at, __batch.run))
         .then(() => __nimbusStopReplay.ackedRun(__batch.chunks))
-        .catch((e) => __onRpcDrop(__batch.size, e));
+        .catch((e) => {
+          __onRpcDrop(__batch.size, e);
+          // Its reader has gone (a parent closed its end of this child's
+          // pipe): the writes fail, EPIPE, as Node's do (__nimbusWriteLiveOutput).
+          if (e && e.code === "EPIPE") throw e;
+        });
       __batch.task = __task;
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
@@ -1368,7 +1373,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     if (__residencyReport) {
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
-      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport))?.catch(() => {});
     }
     // A run after a stop that ended before printing all the stopped run had
     // printed did not retrace it: what it printed past that is not the
@@ -1777,7 +1782,6 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
 
-    let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
     // (it waits for a change, or for a debugger); nothing else does.
@@ -1815,10 +1819,13 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
       if (attachedTty) {
-        // An attached entry owns the terminal until it returns, so its own
-        // completion is awaited by the exit lifecycle below, never here.
+        // An attached program ends as Node's does, at process.exit or with
+        // no live handle left, not when its entry's evaluation completes: a
+        // CLI whose top level starts its interface and returns runs on (pi's
+        // bin). What the evaluation rejects with is uncaught, as Node's
+        // loader rejects.
         if (__entryResult && typeof __entryResult.then === "function") {
-          __attachedCompletion = __entryResult;
+          __entryResult.then(undefined, (__error) => { __nimbusUncaughtException(__error, true); });
         }
         await __nimbusRunEventLoop(
           __nimbusPendingStartupWork, __nimbusProcessExitPromise, ${RESIDENT_BOOT_SETTLE_MS}, 8,
@@ -1890,19 +1897,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     } else {
       const __residentExitLifecycle = (async () => {
         let finalCode = 0;
-        if (attachedTty && __attachedCompletion) {
-          const __exitMarker = {};
-          const __result = await Promise.race([
-            __attachedCompletion.then(() => null),
-            __nimbusProcessExitPromise.then((code) => {
-              finalCode = Number(code ?? 0);
-              return __exitMarker;
-            }),
-          ]);
-          if (__result !== __exitMarker) {
-            finalCode = Number(__nimbusProcessExitCode ?? 0);
-          }
-        } else if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
+        if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.
@@ -2054,6 +2049,15 @@ function esmStageSize(esm: EsmStage): Record<string, number> {
   return {
     ms: esm.ms, modules: esm.modules.size, rows: esm.table.length, missing: esm.missing.length, text, columns, members,
     table: JSON.stringify({ table: esm.table, missing: esm.missing }).length,
+  };
+}
+
+/** A launch's per-module costs, for its exec telemetry record. */
+function execBreakdown(state: { transforms?: BundleCellTransformStats; esmSize?: Record<string, number> }): Pick<ExecTelemetryRecord, 'transforms' | 'esm'> {
+  const t = state.transforms;
+  return {
+    ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
+    ...(state.esmSize ? { esm: state.esmSize } : {}),
   };
 }
 
@@ -4947,7 +4951,10 @@ async function _buildPrefetchBundle(
       const cell = bundle[key];
       return typeof cell === 'string' ? cell : undefined;
     };
-    esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), held }, cells, {
+    const entries = async (dir: string) => {
+      try { return new Map((await vfs.readdir(dir)).map((entry) => [entry.name, entry.type])); } catch { return null; }
+    };
+    esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
       conditions,
       cwd,
       scope: moduleScope,
@@ -4956,8 +4963,11 @@ async function _buildPrefetchBundle(
       isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
       gate: true,
     });
+    // Staging reads and rewrites its modules' text, which the map's
+    // serialization spends as it carries each one (buildFacetVfsBundleSource),
+    // as it spent each lowered module's emit: each staged byte is spent once.
+    // A pass's bundle weight here cost a launch over lodash-es a turn of its own.
     for (const key of esm.modules.keys()) emits.delete(key);
-    await paceAfterPass();
   }
 
   return {
@@ -7333,6 +7343,7 @@ export class FacetManager {
               fsRpcReads: result.diag?.fsRpcReads ?? 0,
               esmAdoptions: result.diag?.esmAdoptions ?? 0,
               cacheHit: vfsState.cacheHit ?? false,
+              ...execBreakdown(vfsState),
               turns: pacer.chunks,
               exitCode: result.exitCode,
               at: Date.now(),
@@ -9206,6 +9217,7 @@ export class FacetManager {
           fsRpcReads: 0,
           esmAdoptions: 0,
           cacheHit,
+          ...execBreakdown(vfsState),
           turns: pacer.chunks,
           exitCode: 0,
           at: Date.now(),

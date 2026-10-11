@@ -2,6 +2,7 @@ import { reparseFunction } from './reparse.js';
 import { analyzeLazyFunction, releaseScopes, suspendsInFunction, } from './scope.js';
 import { BigInt, Error, ReferenceError, RegExp, SafeMap, SafeSet, SafeWeakMap, SyntaxError, TypeError, append, arraySliceFrom, contains, copyList, createDataProperty, dataDescriptor, everyItem, globalObject, indexWhere, listOf, mapList, newList, newSafeList, objectFreeze, objectHasOwn, promiseReject, reflectApply, reflectDefineProperty, reflectGet, objectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, safeGenerator, skipTrivia, someItem, stringOf, stringSlice, symbolAsyncIterator, symbolIterator, toObject, withElement, withFirst, withLast, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
+import { STACK_SLOTS, awaitStack, callPosition, callResult, errorAt } from './stack.js';
 import { AWAIT, BREAK, CONTINUE, Completion, DELEGATE, FunctionInfo, PrivateName, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance, frameTemplate, isObject, signalOperand, superConstruct, tdzError, up, upN, } from './runtime.js';
 import { arrayIteration, asyncFromSyncIterator, asyncIteratorClose, closeArrayIteration, describe, getIterator, iteratorFrom, iteratorMethod, spreadInto, } from './iteration.js';
 import { asGen, genCode, suspendedBind, suspendedSync, syncCode } from './code.js';
@@ -219,6 +220,7 @@ export class Compiler {
             : node.async ? (node.generator ? 'asyncGenerator' : 'async')
                 : node.generator ? 'generator' : fs.method ? 'method' : 'plain');
         const fi = new FunctionInfo(shape, name, expectedArgumentCount(node.params), fs.strict, source ?? this.sourceOf(node.start, node.end));
+        fi.stack = { unit: this.unit.stack, name, start: node.start + this.base, strict: fs.strict, shape };
         this.functionInfos.set(node, fi);
         const outer = fs.parent;
         if (outer === null)
@@ -239,6 +241,7 @@ export class Compiler {
         const fs = this.analysis.functionScopeOf(node);
         const shape = node.async ? (node.generator ? 'asyncGenerator' : 'async') : node.generator ? 'generator' : 'plain';
         const fi = new FunctionInfo(shape, name, expectedArgumentCount(node.params), fs.strict, source);
+        fi.stack = { unit: this.unit.stack, name, start: node.start + this.base, strict: fs.strict, shape };
         this.compileFunctionInto(fi, fs, node.params, node.body);
         return fi;
     }
@@ -263,10 +266,10 @@ export class Compiler {
                 for (let i = 0; i < params.length; i++)
                     append(slots, this.declaredBinding(params[i]).slot);
                 fi.params = listOf(slots);
-                fi.frame = frameTemplate(fs.size, []);
+                fi.frame = frameTemplate(fs.size + STACK_SLOTS, []);
             }
             else {
-                fi.frame = frameTemplate(fs.size, tdzSlots(fs, true));
+                fi.frame = frameTemplate(fs.size + STACK_SLOTS, tdzSlots(fs, true));
                 fi.bindParams = this.paramBinder(params, fs.argumentsBinding !== null);
             }
             if (body.type !== 'BlockStatement') {
@@ -491,9 +494,10 @@ export class Compiler {
                 const arg = this.expr(node.argument);
                 const as = arg.s;
                 const ag = arg.g;
+                const position = node.argument.start + this.base;
                 if (ag)
-                    return genCode(function* (env) { throw yield* ag(env); });
-                return syncCode((env) => { throw as(env); });
+                    return genCode(function* (env) { const error = yield* ag(env); return errorAt(error, position); });
+                return syncCode((env) => errorAt(as(env), position));
             }
             case 'BreakStatement': {
                 const signal = node.label ? new Completion('break', node.label.name, undefined) : BREAK;
@@ -1353,6 +1357,15 @@ export class Compiler {
         let read = ref.binding ? this.bindingRead(ref.binding, ref.tdz) : this.globalRead(id.name, forTypeof);
         if (ref.withs.length > 0)
             read = this.withRead(ref, id.name, read);
+        if (!ref.binding || ref.tdz || ref.withs.length > 0 || this.unit.imports.has(ref.binding)) {
+            const raw = read, position = id.start + this.base;
+            read = (env) => { try {
+                return raw(env);
+            }
+            catch (error) {
+                return errorAt(error, position);
+            } };
+        }
         return read;
     }
     bindingRead(b, tdz) {
@@ -1901,6 +1914,26 @@ export class Compiler {
         return (env) => toPropertyKey(ops, c(env));
     }
     // ── Expressions ──
+    /** A fault's node is captured by the code, never written while it runs. */
+    located(code, position) {
+        const at = position + this.base;
+        const s = code.s, g = code.g;
+        if (g !== null)
+            return genCode(function* (env) {
+                try {
+                    return yield* g(env);
+                }
+                catch (error) {
+                    return errorAt(error, at);
+                }
+            });
+        return syncCode((env) => { try {
+            return s(env);
+        }
+        catch (error) {
+            return errorAt(error, at);
+        } });
+    }
     expr(node) {
         switch (node.type) {
             case 'Identifier': return syncCode(this.read(node));
@@ -1915,7 +1948,7 @@ export class Compiler {
             case 'BinaryExpression': return this.binary(node);
             case 'AssignmentExpression': return this.assignment(node);
             case 'LogicalExpression': return this.logical(node);
-            case 'MemberExpression': return this.member(node, false);
+            case 'MemberExpression': return this.located(this.member(node, false), node.property.start);
             case 'ConditionalExpression': {
                 const t = this.expr(node.test);
                 const a = this.expr(node.consequent);
@@ -1931,8 +1964,8 @@ export class Compiler {
                 const bg = asGen(b);
                 return genCode(function* (env) { return (yield* tg(env)) ? yield* ag(env) : yield* bg(env); });
             }
-            case 'CallExpression': return this.call(node, false);
-            case 'NewExpression': return this.newExpr(node);
+            case 'CallExpression': return this.located(this.call(node, false), node.callee.type === 'MemberExpression' ? node.callee.property.start : node.callee.start);
+            case 'NewExpression': return this.located(this.newExpr(node), node.start);
             case 'SequenceExpression': {
                 const parts = this.exprs(node.expressions);
                 if (everyItem(parts, (p) => p.g === null)) {
@@ -1955,7 +1988,7 @@ export class Compiler {
             case 'YieldExpression': return this.yieldExpr(node);
             case 'AwaitExpression': return this.awaitExpr(node);
             case 'TemplateLiteral': return this.template(node);
-            case 'TaggedTemplateExpression': return this.tagged(node);
+            case 'TaggedTemplateExpression': return this.located(this.tagged(node), node.tag.start);
             case 'ClassExpression': return this.classCode(node, node.id ? node.id.name : '');
             case 'MetaProperty': return syncCode(this.metaProperty(node));
             case 'ChainExpression': {
@@ -2085,6 +2118,7 @@ export class Compiler {
         const arg = this.expr(node.argument);
         const as = arg.s;
         const ag = arg.g;
+        const position = node.start + this.base;
         if (this.shape === 'asyncGenerator') {
             return genCode(function* (env) {
                 const v = ag ? yield* ag(env) : as(env);
@@ -2093,7 +2127,9 @@ export class Compiler {
             });
         }
         return genCode(function* (env) {
-            return yield (ag ? yield* ag(env) : as(env));
+            const value = ag ? yield* ag(env) : as(env);
+            awaitStack(value, position);
+            return yield value;
         });
     }
     yieldExpr(node) {
@@ -2168,19 +2204,24 @@ export class Compiler {
         const callee = this.callee(node.tag, false);
         const args = this.argumentList(node.quasi.expressions);
         const text = this.textOf(node.tag.start, node.tag.end);
+        const position = node.tag.start + this.base;
         if (callee.g === null && args.g === null) {
             const c = callee.s;
             const a = args.s;
             return syncCode((env) => {
                 const callee = c(env);
-                return callValue(callee[0], callee[1], withFirst(site(), a(env)), text);
+                const list = withFirst(site(), a(env));
+                callPosition(position);
+                return callResult(callValue(callee[0], callee[1], list, text));
             });
         }
         const cg = asGen(callee);
         const ag = asGen(args);
         return genCode(function* (env) {
             const callee = yield* cg(env);
-            return callValue(callee[0], callee[1], withFirst(site(), yield* ag(env)), text);
+            const list = withFirst(site(), yield* ag(env));
+            callPosition(position);
+            return callResult(callValue(callee[0], callee[1], list, text));
         });
     }
     unary(node) {
@@ -2304,6 +2345,7 @@ export class Compiler {
     }
     binary(node) {
         const ops = this.ops;
+        const position = skipTrivia(this.text, node.left.end) + this.base;
         if (node.left.type === 'PrivateIdentifier') {
             const name = this.privateName(node.left);
             const right = this.expr(node.right);
@@ -2402,14 +2444,28 @@ export class Compiler {
             switch (node.operator) {
                 case '===': return syncCode((env) => ls(env) === rs(env));
                 case '!==': return syncCode((env) => ls(env) !== rs(env));
-                default: return syncCode((env) => op(ls(env), rs(env)));
+                default: return syncCode((env) => {
+                    const a = ls(env), b = rs(env);
+                    try {
+                        return op(a, b);
+                    }
+                    catch (error) {
+                        return errorAt(error, position);
+                    }
+                });
             }
         }
         const lg = asGen(l);
         const rg = asGen(r);
         return genCode(function* (env) {
             const a = yield* lg(env);
-            return op(a, yield* rg(env));
+            const b = yield* rg(env);
+            try {
+                return op(a, b);
+            }
+            catch (error) {
+                return errorAt(error, position);
+            }
         });
     }
     logical(node) {
@@ -2580,6 +2636,7 @@ export class Compiler {
         }
         if (node.type === 'CallExpression' && node.callee.type !== 'Super') {
             const callee = node.callee;
+            const position = (callee.type === 'MemberExpression' ? callee.property.start : callee.start) + this.base;
             const optional = node.optional;
             const args = asGen(this.argumentList(node.arguments));
             const text = this.textOf(callee.start, callee.end);
@@ -2596,7 +2653,9 @@ export class Compiler {
                     const fn = privateName ? privateName(env).get(o) : ops.get(o, key ? yield* key(env) : name);
                     if (optional && (fn === null || fn === undefined))
                         return SHORT;
-                    return callValue(fn, o, yield* args(env), text);
+                    const list = yield* args(env);
+                    callPosition(position);
+                    return callResult(callValue(fn, o, list, text));
                 });
             }
             const fnCode = this.chainGen(callee);
@@ -2604,7 +2663,9 @@ export class Compiler {
                 const fn = yield* fnCode(env);
                 if (fn === SHORT || (optional && (fn === null || fn === undefined)))
                     return SHORT;
-                return callValue(fn, undefined, yield* args(env), text);
+                const list = yield* args(env);
+                callPosition(position);
+                return callResult(callValue(fn, undefined, list, text));
             });
         }
         return asGen(this.expr(node));
@@ -2816,6 +2877,7 @@ export class Compiler {
         if (inChain && this.suspends(node))
             return genCode(this.chainGen(node));
         const text = this.textOf(node.callee.start, node.callee.end);
+        const position = (node.callee.type === 'MemberExpression' ? node.callee.property.start : node.callee.start) + this.base;
         const argNodes = node.arguments;
         // A plain `f(a, b)` through a binding: no callee pair, no argument array.
         if (!inChain && node.callee.type === 'Identifier' && argNodes.length <= 3
@@ -2824,24 +2886,25 @@ export class Compiler {
             const read = this.read(node.callee);
             const fns = this.argumentValues(argNodes);
             const check = (f) => {
+                callPosition(position);
                 if (typeof f !== 'function')
                     throw new TypeError(`${text} is not a function`);
                 return f;
             };
             // The callee is read, then the arguments evaluated, then the callee checked.
             switch (fns.length) {
-                case 0: return syncCode((env) => check(read(env))());
+                case 0: return syncCode((env) => callResult(check(read(env))()));
                 case 1: {
                     const x = fns[0];
-                    return syncCode((env) => { const f = read(env); const a = x(env); return check(f)(a); });
+                    return syncCode((env) => { const f = read(env); const a = x(env); return callResult(check(f)(a)); });
                 }
                 case 2: {
                     const x = fns[0], y = fns[1];
-                    return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); return check(f)(a, b); });
+                    return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); return callResult(check(f)(a, b)); });
                 }
                 default: {
                     const x = fns[0], y = fns[1], z = fns[2];
-                    return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); const c = z(env); return check(f)(a, b, c); });
+                    return syncCode((env) => { const f = read(env); const a = x(env); const b = y(env); const c = z(env); return callResult(check(f)(a, b, c)); });
                 }
             }
         }
@@ -2862,7 +2925,9 @@ export class Compiler {
                     return SHORT;
                 if (optional && (fn === null || fn === undefined))
                     return SHORT;
-                return callValue(fn, thisArg, a(env), text);
+                const list = a(env);
+                callPosition(position);
+                return callResult(callValue(fn, thisArg, list, text));
             });
         }
         const cg = asGen(callee);
@@ -2875,7 +2940,9 @@ export class Compiler {
                 return SHORT;
             if (optional && (fn === null || fn === undefined))
                 return SHORT;
-            return callValue(fn, thisArg, yield* ag(env), text);
+            const list = yield* ag(env);
+            callPosition(position);
+            return callResult(callValue(fn, thisArg, list, text));
         });
     }
     /** `o.m(a, b)` with nothing suspending: the method and its receiver without a pair, the arguments without spreads. */
@@ -2888,6 +2955,7 @@ export class Compiler {
         if (someItem(node.arguments, (a) => a.type === 'SpreadElement'))
             return null;
         const ops = this.ops;
+        const position = callee.property.start + this.base;
         const os = this.expr(callee.object).s;
         const key = callee.computed ? this.expr(callee.property).s : null;
         const name = !callee.computed && callee.property.type === 'Identifier' ? callee.property.name : '';
@@ -2898,9 +2966,10 @@ export class Compiler {
             case 0: return syncCode((env) => {
                 const o = os(env);
                 const f = method(o, env);
+                callPosition(position);
                 if (typeof f !== 'function')
                     throw notFunction();
-                return reflectApply(f, o, []);
+                return callResult(reflectApply(f, o, []));
             });
             case 1: {
                 const x = fns[0];
@@ -2908,9 +2977,10 @@ export class Compiler {
                     const o = os(env);
                     const f = method(o, env);
                     const a = x(env);
+                    callPosition(position);
                     if (typeof f !== 'function')
                         throw notFunction();
-                    return reflectApply(f, o, [a]);
+                    return callResult(reflectApply(f, o, [a]));
                 });
             }
             case 2: {
@@ -2920,9 +2990,10 @@ export class Compiler {
                     const f = method(o, env);
                     const a = x(env);
                     const b = y(env);
+                    callPosition(position);
                     if (typeof f !== 'function')
                         throw notFunction();
-                    return reflectApply(f, o, [a, b]);
+                    return callResult(reflectApply(f, o, [a, b]));
                 });
             }
             default: {
@@ -2933,9 +3004,10 @@ export class Compiler {
                     const a = x(env);
                     const b = y(env);
                     const c = z(env);
+                    callPosition(position);
                     if (typeof f !== 'function')
                         throw notFunction();
-                    return reflectApply(f, o, [a, b, c]);
+                    return callResult(reflectApply(f, o, [a, b, c]));
                 });
             }
         }
@@ -2949,11 +3021,13 @@ export class Compiler {
         const funcSlot = fs.funcBinding.slot;
         const newTargetSlot = fs.newTargetBinding.slot;
         const args = this.argumentList(node.arguments);
+        const position = node.start + this.base;
         const bind = (env, list) => {
             const frame = at(env);
             const ctor = frame[funcSlot];
             if (typeof ctor !== 'function')
                 throw new Error('interpreter: super() without its constructor');
+            callPosition(position);
             const instance = superConstruct(ctor, list, frame[newTargetSlot]);
             if (frame[thisSlot] !== TDZ)
                 throw new ReferenceError('Super constructor may only be called once');
@@ -2971,19 +3045,24 @@ export class Compiler {
         const callee = this.expr(node.callee);
         const args = this.argumentList(node.arguments);
         const text = this.textOf(node.callee.start, node.callee.end);
+        const position = node.start + this.base;
         if (callee.g === null && args.g === null) {
             const c = callee.s;
             const a = args.s;
             return syncCode((env) => {
                 const fn = c(env);
-                return constructValue(fn, a(env), text);
+                const list = a(env);
+                callPosition(position);
+                return callResult(constructValue(fn, list, text));
             });
         }
         const cg = asGen(callee);
         const ag = asGen(args);
         return genCode(function* (env) {
             const fn = yield* cg(env);
-            return constructValue(fn, yield* ag(env), text);
+            const list = yield* ag(env);
+            callPosition(position);
+            return callResult(constructValue(fn, list, text));
         });
     }
     arrayExpr(node) {
@@ -3633,7 +3712,7 @@ export class Compiler {
     /** The frame layout of a class's field initializer scope. */
     fieldInfo(fs) {
         const fi = new FunctionInfo('method', '', 0, true, '');
-        fi.frame = frameTemplate(fs.size, []);
+        fi.frame = frameTemplate(fs.size + STACK_SLOTS, []);
         if (fs.thisBinding)
             fi.thisSlot = fs.thisBinding.slot;
         if (fs.homeBinding)
@@ -3643,8 +3722,9 @@ export class Compiler {
     staticBlockInfo(block) {
         const fs = this.analysis.functionScopeOf(block);
         const fi = new FunctionInfo('method', '', 0, true, '');
+        fi.stack = { unit: this.unit.stack, name: '', start: block.start + this.base, strict: true, shape: 'method' };
         const outer = this.enterFunction(fs, 'method');
-        fi.frame = frameTemplate(fs.size, []);
+        fi.frame = frameTemplate(fs.size + STACK_SLOTS, []);
         if (fs.thisBinding)
             fi.thisSlot = fs.thisBinding.slot;
         if (fs.homeBinding)
@@ -3676,7 +3756,8 @@ export class Compiler {
     /** A CommonJS body: a function of the wrapper's parameters. */
     commonJsFunction(program, root, params) {
         const fi = new FunctionInfo('plain', '', params.length, root.strict, this.unit.source);
-        fi.frame = frameTemplate(root.size, []);
+        fi.stack = { unit: this.unit.stack, name: '', start: 0, strict: root.strict, shape: 'plain' };
+        fi.frame = frameTemplate(root.size + STACK_SLOTS, []);
         if (root.thisBinding)
             fi.thisSlot = root.thisBinding.slot;
         if (root.argumentsBinding)
@@ -3774,7 +3855,8 @@ export class Compiler {
         const instantiate = this.scopeEntry(root, true);
         const body = this.moduleStatements(program);
         return {
-            frame: frameTemplate(root.size, linked),
+            stack: { unit: this.unit.stack, name: '', start: 0, strict: true, shape: 'module' },
+            frame: frameTemplate(root.size + STACK_SLOTS, linked),
             exportsSlot: bindingSlot(root, '%exports'),
             requireSlot: bindingSlot(root, '%require'),
             moduleSlot: bindingSlot(root, '%module'),

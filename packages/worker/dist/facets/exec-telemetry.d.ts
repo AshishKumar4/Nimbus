@@ -68,6 +68,20 @@ export interface ExecTelemetryRecord {
     /** Whether the prefetch bundle was served from cache (no VFS walk). */
     cacheHit: boolean;
     /**
+     * What `bundleMs` spent where its cost is per module: the transform pass
+     * (cells stored, transformed, and its wall time) and the staging of ES
+     * modules (esm-stage.ts esmStageSize, its time included). Absent on a
+     * launch that had neither, and on a cache hit.
+     */
+    transforms?: {
+        cells: number;
+        stored: number;
+        transformed: number;
+        hostBytes: number;
+        ms: number;
+    };
+    esm?: Record<string, number>;
+    /**
      * Durable Object turns the bundle build was paged across — the alarm
      * round trips `TurnBudget` took before the process could start. 0 when the
      * whole build fit in the turn that asked for it, which is every cache hit

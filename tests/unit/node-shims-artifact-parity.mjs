@@ -38,6 +38,7 @@ const cases = [
   { name: 'JS_INTERPRETER_PRIMORDIALS', source: 'the primordials bundle of core src', current: interpreter.primordials },
   { name: 'JS_INTERPRETER', source: 'the interpreter bundle of core src', current: interpreter.interpreter },
   { name: 'JS_INTERPRETER_OPS', source: 'HOST_OPS_SOURCE', current: interpreter.ops },
+  { name: 'JS_PARSER', source: 'the parser bundle of core src', current: interpreter.parserModule },
   { name: 'NODE_LIB', source: 'generateNodeLibModule()', current: generateNodeLibModule() },
   { name: 'NODE_DNS', source: 'generateNodeDnsModule()', current: generateNodeDnsModule() },
   { name: 'NODE_REGISTRY', source: 'the registry bundle of core src', current: await bundleRegistry({ start: workerRoot }) },

@@ -9,8 +9,9 @@
  * as the program: values, objects, prototypes and functions are the
  * program's own, never copies or proxies.
  *
- * The code is parsed once (acorn, bundled to reach only the built-ins the
- * launch captured at its start: parser-realm.ts), analyzed once (scope.ts)
+ * The code is parsed once (acorn, the parser module beside the interpreter,
+ * which reaches only the built-ins the launch captured at its start:
+ * parser.ts, parser-realm.ts), analyzed once (scope.ts)
  * and compiled once into closures (compile.ts); calling an interpreted
  * function runs those closures. host-ops.ts supplies the operators and the
  * native function objects interpreted functions are.
@@ -21,7 +22,7 @@
  * an ordinary call of the global eval, which a Worker refuses at request time
  * natively too.
  */
-import { Parser, parse, tokTypes, type FunctionExpression, type Options, type Program } from 'acorn';
+import { parse, type FunctionExpression, type Options, type Program } from 'acorn';
 import {
   type SourceRealm, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
   scriptExpression,
@@ -34,12 +35,12 @@ import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, r
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
 import {
-  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, objectCreate, objectKeys,
-  reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode,
+  reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { type ModuleRequest, programRequests } from './module-requests.js';
-import type { AcornParser } from '../runtime/javascript-ast.js';
+import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from './stack.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
@@ -58,6 +59,10 @@ export interface InterpreterHost {
   readonly primordials: object;
   /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
   readonly moduleHelpers: ModuleHelpers;
+  /** The launch's single stack path; absent in hosts with no Node stack formatter. */
+  readonly stackCapture?: (error: object, frames: readonly InterpretedFrame[]) => void;
+  readonly stackIsProxy?: (value: unknown) => boolean;
+  readonly stackIsError?: (value: unknown) => boolean;
 }
 
 /**
@@ -74,6 +79,8 @@ export interface CodeOrigin {
 }
 
 export interface Interpreter {
+  captureStack(error: object, above?: unknown): void;
+  stackFrames(error: object): readonly InterpretedFrame[] | null;
   /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
   compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
   /**
@@ -181,133 +188,6 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
   return programRequests(program);
 }
 
-interface BlockParser extends AcornParser {
-  strict: boolean;
-  start: number;
-  end: number;
-  lastTokStart: number;
-  lastTokEnd: number;
-  raise(pos: number, message: string): never;
-  raiseRecoverable(pos: number, message: string): never;
-  parseVarId(decl: { id: { type: string; start: number; end: number } }, kind: string): void;
-  startNode(): object;
-  expect(type: unknown): void;
-  enterScope(flags: number): void;
-  exitScope(): void;
-}
-const AcornParserClass = Parser as unknown as new (options: Options, input: string) => BlockParser;
-const FOUND = objectCreate(null);
-
-/**
- * acorn keeping no statement once parsed, at the top level or in a block (a
- * fatal error may come from a multi-MiB bundle, and acorn's tree is 17 to 24
- * times its source): what is held is the chain of open nodes. It stops at the
- * innermost throw whose argument holds `offset`, which finishes before any
- * throw around it.
- */
-class ThrowFinder extends AcornParserClass {
-  offset = -1;
-  found: [number, number] | null = null;
-  // The token a syntax error is at, as V8 marks it: the parser's current or
-  // last token where one starts there (a reserved word is raised past it).
-  raisedToken: [number, number] | null = null;
-  // The binding a declarator just parsed, which V8 marks where its initializer is missing.
-  declared: { start: number; end: number; required: boolean } | null = null;
-
-  parseVarId(decl: { id: { type: string; start: number; end: number } }, kind: string): void {
-    this.declared = null;
-    super.parseVarId(decl, kind);
-    this.declared = { start: decl.id.start, end: decl.id.end, required: kind === 'const' || decl.id.type !== 'Identifier' };
-  }
-
-  raise(pos: number, message: string): never {
-    const declared = this.declared;
-    const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
-      && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
-    this.raisedToken = missingInitializer ? [declared.start, declared.end]
-      : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
-    return super.raise(pos, message);
-  }
-
-  // acorn's is its raise, not a call of it.
-  raiseRecoverable(pos: number, message: string): never {
-    return this.raise(pos, message);
-  }
-
-  parseTopLevel(node: Program): Program {
-    const exports = objectCreate(null);
-    while (this.type !== tokTypes.eof) this.parseStatement(null, true, exports);
-    if (this.inModule) {
-      const names = objectKeys(this.undefinedExports);
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i];
-        const { start, end } = this.undefinedExports[name];
-        this.raisedToken = [start, end];
-        super.raise(start, "Export '" + name + "' is not defined");
-      }
-    }
-    this.next();
-    return this.finishNode(node, 'Program');
-  }
-
-  parseBlock(createNewLexicalScope = true, node = this.startNode(), exitStrict = false): object {
-    reflectSet(node, 'body', []);
-    this.expect(tokTypes.braceL);
-    if (createNewLexicalScope) this.enterScope(0);
-    while (this.type !== tokTypes.braceR) this.parseStatement(null);
-    if (exitStrict) this.strict = false;
-    this.next();
-    if (createNewLexicalScope) this.exitScope();
-    return this.finishNode(node, 'BlockStatement');
-  }
-
-  finishNode<T>(node: T, type: string): T {
-    const finished = super.finishNode(node, type);
-    if (type === 'ThrowStatement') {
-      const argument = reflectGet(finished as object, 'argument') as object;
-      if (this.offset >= (reflectGet(argument, 'start') as number) && this.offset < (reflectGet(finished as object, 'end') as number)) {
-        const start = reflectGet(finished as object, 'start') as number;
-        this.found = [start, start + 1];
-        throw FOUND;
-      }
-    }
-    return finished;
-  }
-}
-
-/**
- * Where V8 would place a fatal error's report in `text`, a module's whole
- * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
- * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
- * frame's offset and not V8's message:
- *   - `offset` given: the innermost `throw` statement whose argument holds
- *     it, as [start, start + 1], V8's location of a throw; null for none;
- *   - `offset` -1: the syntax error that stops the parse, as [start, end]
- *     of the token it stops at; null when the text parses.
- */
-/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
-export function tokenizer(code: string, options: Options): ReturnType<typeof Parser.tokenizer> {
-  return Parser.tokenizer(code, options);
-}
-
-export function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null {
-  const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
-  finder.offset = offset;
-  try {
-    finder.parse();
-  } catch (error) {
-    if (error === FOUND) return finder.found;
-    if (offset !== -1 || !isObject(error)) return null;
-    const token = finder.raisedToken;
-    if (token !== null && token[1] > token[0]) return token;
-    const at = reflectGet(error, 'pos');
-    const end = reflectGet(error, 'raisedAt');
-    if (typeof at !== 'number') return null;
-    return [at, typeof end === 'number' && end > at ? end : at + 1];
-  }
-  return null;
-}
-
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program: Program): boolean {
   return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
@@ -347,8 +227,8 @@ const REALM: SourceRealm = {
   },
 };
 
-function unitContext(runtime: InterpreterRuntime, source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null): UnitContext {
-  return { source, module, host, runtime, imports: new SafeMap(), moduleScope };
+function unitContext(runtime: InterpreterRuntime, source: string, module: boolean, host: UnitHost, moduleScope: FunctionScope | null, stack: StackUnit): UnitContext {
+  return { source, module, host, runtime, imports: new SafeMap(), moduleScope, stack };
 }
 
 /** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
@@ -367,7 +247,17 @@ function unitHost(host: InterpreterHost, origin: CodeOrigin | undefined, parentU
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
   if (host.primordials !== LAUNCH_PRIMORDIALS) throw new Error('interpreter: its built-ins were not captured at the launch start');
   const runtime = new InterpreterRuntime(hostOps);
+  const capture = reflectGetOwnPropertyDescriptor(host, 'stackCapture')?.value;
+  const isProxy = reflectGetOwnPropertyDescriptor(host, 'stackIsProxy')?.value;
+  const isError = reflectGetOwnPropertyDescriptor(host, 'stackIsError')?.value;
+  const stackUnit = (source: string, file: string | null, esModule: boolean): StackUnit => ({
+    source, file, esModule, capture: typeof capture === 'function' ? capture : null,
+    isProxy: typeof isProxy === 'function' ? isProxy : null,
+    isError: typeof isError === 'function' ? isError : null,
+  });
   const interpreter: Interpreter = {
+    captureStack(error, above) { stampStack(error, undefined, above, true); },
+    stackFrames,
     compileFunction(kind, params, body, origin) {
       // A trailing source map is parsed only when the shortened body fails.
       const short = withoutTrailingLineComments(body);
@@ -382,7 +272,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const node = ownFunctionExpression(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null);
+      const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null, stackUnit(text, null, false));
       const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
       releaseScopes(root);
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
@@ -391,20 +281,21 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     compileModule(path, text, origin, javaScript = false, format) {
       if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
+      const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
       const moduleHost = unitHost(host, origin, parentUrl);
       const parsed = moduleProgram(text, format);
       if (parsed.module) {
         const program = parsed.program;
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
-        const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root), text, 0, root).modulePlan(program, root);
+        const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, stackFile, true)), text, 0, root).modulePlan(program, root);
         releaseScopes(root);
         return moduleCell(plan, runtime.ops, host.moduleHelpers);
       }
       const script = parsed.program;
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);
-      const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null, stackUnit(text, stackFile, false)), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
       releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
       return runtime.makeFunction(fi, ROOT_ENV, undefined);
@@ -421,7 +312,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const program = ownProgram(parse(text, SCRIPT_OPTIONS));
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
-      const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null);
+      const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null, stackUnit(text, null, false));
       const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
       releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');

@@ -106,6 +106,20 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     // manifests, and asks them thousands of times.
     const kinds = new Map();
     const reals = new Map();
+    const listings = new Map();
+    const realpath = (path) => once(reals, path, async () => {
+        // A file that is no link is where its directory's realpath puts it:
+        // a listing and a realpath per directory, not a walk per file.
+        const at = path.lastIndexOf('/');
+        if (fs.entries !== undefined && at > 0) {
+            const dir = path.slice(0, at);
+            const name = path.slice(at + 1);
+            const type = (await once(listings, dir, () => fs.entries(dir)))?.get(name);
+            if (type === 'file')
+                return `${await once(reals, dir, () => fs.realpath(dir))}/${name}`;
+        }
+        return fs.realpath(path);
+    });
     const texts = new Map();
     const requires = new Map();
     const readText = (path) => {
@@ -140,7 +154,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                 return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
             });
         },
-        realpath: (path) => once(reals, path, () => fs.realpath(path)),
+        realpath,
         readText,
         isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
         cjsResolve: requireResolve,

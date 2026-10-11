@@ -78,6 +78,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly cpReadStdin: null;
     readonly cpReadOutput: null;
     readonly cpDrainOutput: null;
+    readonly cpCloseOutput: null;
     readonly cpKill: null;
     readonly cpWait: null;
     readonly cpBlocked: null;
