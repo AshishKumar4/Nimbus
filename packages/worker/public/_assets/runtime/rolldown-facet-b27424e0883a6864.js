@@ -15868,71 +15868,117 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
 }
 
 // ../core/src/_shared/exports-resolver.ts
-var DEFAULT_ESM_CONDITIONS = ["import", "module", "browser", "default"];
-function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
-  if (exportsField === void 0 || exportsField === null) return null;
-  if (typeof exportsField === "string") {
-    return subpath === "." ? exportsField : null;
-  }
-  if (Array.isArray(exportsField)) {
-    for (const item of exportsField) {
-      const r3 = resolveExports(item, subpath, conditions);
-      if (r3) return r3;
-    }
-    return null;
-  }
-  if (typeof exportsField !== "object") return null;
-  const keys = Object.keys(exportsField);
-  if (keys.length === 0) return null;
-  const isSubpathMap = keys[0].startsWith(".") || keys[0].startsWith("#");
-  if (isSubpathMap) {
-    if (subpath in exportsField) {
-      const target = exportsField[subpath];
-      if (target === null) return null;
-      return resolveConditionValue(target, conditions);
-    }
-    const wildcardKeys = keys.filter((k2) => k2.includes("*")).sort((a2, b2) => b2.length - a2.length);
-    for (const pattern of wildcardKeys) {
-      const target = exportsField[pattern];
-      const starIdx = pattern.indexOf("*");
-      const prefix = pattern.slice(0, starIdx);
-      const suffix = pattern.slice(starIdx + 1);
-      if (subpath.startsWith(prefix) && (suffix ? subpath.endsWith(suffix) : true) && subpath.length >= prefix.length + suffix.length) {
-        if (target === null) return null;
-        const matched = subpath.slice(
-          prefix.length,
-          suffix ? subpath.length - suffix.length : void 0
-        );
-        const resolved = resolveConditionValue(target, conditions);
-        if (resolved) return resolved.split("*").join(matched);
+var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
+var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
+function patternKeyCompare(a2, b2) {
+  const aStar = a2.indexOf("*");
+  const bStar = b2.indexOf("*");
+  const baseA = aStar === -1 ? a2.length : aStar + 1;
+  const baseB = bStar === -1 ? b2.length : bStar + 1;
+  if (baseA > baseB) return -1;
+  if (baseB > baseA) return 1;
+  if (aStar === -1) return 1;
+  if (bStar === -1) return -1;
+  return b2.length - a2.length;
+}
+function* selectPackageMap(field, name50, conditions, policy) {
+  const active = conditions instanceof Set ? conditions : new Set(conditions);
+  function* target(value, match2) {
+    if (typeof value === "string") return yield* policy.target(value, match2);
+    if (Array.isArray(value)) {
+      if (value.length === 0) return null;
+      let last;
+      for (const item of value) {
+        let result;
+        try {
+          result = yield* target(item, match2);
+        } catch (error2) {
+          if (codeOf(error2) !== "ERR_INVALID_PACKAGE_TARGET") throw error2;
+          last = error2;
+          continue;
+        }
+        if (result === void 0) continue;
+        if (result === null) {
+          last = null;
+          continue;
+        }
+        return result;
       }
+      if (last === void 0 || last === null) return last;
+      throw last;
     }
-    return null;
-  }
-  if (subpath !== ".") return null;
-  return resolveConditionValue(exportsField, conditions);
-}
-function resolveConditionValue(target, conditions) {
-  if (target === null || target === void 0) return null;
-  if (typeof target === "string") return target;
-  if (Array.isArray(target)) {
-    for (const item of target) {
-      const r3 = resolveConditionValue(item, conditions);
-      if (r3) return r3;
+    if (value === null) return null;
+    if (typeof value === "object" && value !== null) {
+      const keys = Object.getOwnPropertyNames(value);
+      if (!policy.permissive && keys.some((key) => /^\d+$/.test(key) && String(Number(key)) === key && Number(key) < 4294967295)) {
+        throw policy.invalidConfig("numeric");
+      }
+      for (const key of keys) {
+        if (key !== "default" && !active.has(key)) continue;
+        const result = yield* target(Reflect.get(value, key), match2);
+        if (result === void 0 || policy.permissive && result === null) continue;
+        return result;
+      }
+      return void 0;
     }
-    return null;
+    if (policy.permissive) return void 0;
+    throw policy.invalidTarget(value, match2);
   }
-  if (typeof target !== "object") return null;
-  for (const key of Object.keys(target)) {
-    if (key !== "default" && !conditions.includes(key)) continue;
-    const r3 = resolveConditionValue(target[key], conditions);
-    if (r3) return r3;
+  if (field === void 0) return void 0;
+  if (field === null) return null;
+  let map;
+  if (!policy.internal) {
+    let sugar = typeof field !== "object" || Array.isArray(field);
+    if (typeof field === "object" && !Array.isArray(field)) {
+      const keys = Object.getOwnPropertyNames(field);
+      sugar = keys.length > 0 && !keys[0].startsWith(".");
+      if (!policy.permissive && keys.some((key) => !key.startsWith(".") !== sugar)) throw policy.invalidConfig("mixed");
+    }
+    map = sugar ? { ".": field } : field;
+  } else {
+    if (typeof field !== "object" || Array.isArray(field)) return void 0;
+    map = field;
   }
-  return null;
+  const match = (key, subpath, pattern) => ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && name50.endsWith("/") });
+  if (Object.prototype.hasOwnProperty.call(map, name50) && (policy.permissive || !name50.includes("*") && !name50.endsWith("/"))) {
+    return yield* target(map[name50], match(name50, "", false));
+  }
+  const candidates = Object.getOwnPropertyNames(map).filter((key) => {
+    const star = key.indexOf("*");
+    if (star === -1 || !policy.permissive && key.lastIndexOf("*") !== star) return false;
+    const trailer = key.slice(star + 1);
+    return name50.startsWith(key.slice(0, star)) && name50.endsWith(trailer) && name50.length >= (policy.permissive ? key.length - 1 : key.length);
+  }).sort(policy.permissive ? (a2, b2) => b2.length - a2.length : patternKeyCompare);
+  for (const key of candidates) {
+    const star = key.indexOf("*");
+    const subpath = name50.slice(star, name50.length - (key.length - star - 1));
+    const result = yield* target(map[key], match(key, subpath, true));
+    if (!policy.permissive || result != null || map[key] === null) return result;
+  }
+  return void 0;
 }
-function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
+var BUILD_BROWSER_PACKAGE_MAP_POLICY = {
+  name: "build-browser-permissive",
+  internal: false,
+  permissive: true,
+  *target(value, match) {
+    return match.pattern ? value.split("*").join(match.subpath) : value;
+  },
+  invalidTarget: () => new Error("Invalid build/browser package target"),
+  invalidConfig: () => new Error("Invalid build/browser package map")
+};
+function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_CONDITIONS, policy = BUILD_BROWSER_PACKAGE_MAP_POLICY) {
+  const steps = selectPackageMap(exportsField, subpath, conditions, {
+    ...policy,
+    internal: subpath.startsWith("#")
+  });
+  const next = steps.next();
+  if (!next.done) throw new Error("The build/browser package-map policy must be synchronous");
+  return next.value ?? null;
+}
+function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_CONDITIONS, policy = BUILD_BROWSER_PACKAGE_MAP_POLICY) {
   if (pkg.exports !== void 0 && pkg.exports !== null) {
-    const entry = resolveExports(pkg.exports, subpath, conditions);
+    const entry = resolveExports(pkg.exports, subpath, conditions, policy);
     if (entry) return entry;
     return null;
   }

@@ -16807,16 +16807,7 @@ __NodeModule.globalPaths = [];
 // Node's lookup path list: every ancestor's node_modules, nearest first,
 // never a node_modules/node_modules.
 __NodeModule._nodeModulePaths = (from) => {
-  const resolved = __pathMod.resolve(String(from));
-  if (resolved === "/") return ["/node_modules"];
-  const paths = [];
-  const parts = resolved.split("/");
-  for (let i = parts.length; i > 0; i--) {
-    if (parts[i - 1] === "node_modules") continue;
-    const dir = parts.slice(0, i).join("/");
-    paths.push((dir || "") + "/node_modules");
-  }
-  return paths;
+  return requireNodeModulePaths(__pathMod.resolve(String(from)));
 };
 // Module._resolveFilename: a builtin's id as asked, a staged binding's name,
 // or the file `request` names from `parent` (or from each of
@@ -16826,7 +16817,7 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
   let dirs = [__nimbusModuleDir(parent)];
   // options.paths' directories, from the working directory, each validated as
   // path.resolve does: a relative request's as it is searched, a bare one's first.
-  const relative = request.startsWith("./") || request.startsWith("../");
+  const relative = request === "." || request === ".." || request.startsWith("./") || request.startsWith("../");
   const absolute = (dir) => {
     if (typeof dir !== "string") throw invalidArgType("paths[0]", "string", dir);
     return __pathMod.resolve(dir);
@@ -16835,9 +16826,10 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
     if (Array.isArray(options.paths)) dirs = relative ? options.paths : options.paths.map(absolute);
     else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
-  for (const dir of dirs) {
-    const resolved = __resolveFrom(request, absolute(dir));
-    if (resolved) return "/" + resolved.replace(/^\/+/, "");
+  const lookup = relative ? dirs : [__nimbusModuleDir(parent)];
+  for (const dir of lookup) {
+    const found = __requireResolver.resolveSync(request, absolute(dir), relative ? undefined : { paths: dirs.map(absolute) });
+    if (found) return found.builtin ? "node:" + found.builtin : found.path;
   }
   throw __nimbusModuleNotFound(request, parent);
 };
@@ -18108,162 +18100,181 @@ function __fileExists(path) {
   if (typeof __nsUnknown === "function" && __nsUnknown(k, true, false) !== null) __fsMod.statSync("/" + k);
   return false;
 }
-// W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
-// directories (it has to — __resolveNodeModule and __resolveImportsField call
-// it to check whether a node_modules/<pkg> directory exists). __resolveFile's
-// empty-extension probe needs the inverse: "is this an actual file?" — so the
-// loop falls through to /index.js when "base" is a directory rather than
-// short-circuiting and returning the directory path (which __loadModule then
-// can't read, throwing "Cannot read module: <dir>"). See W3 retro §S3 for
-// the fastify ret/dist/types failure.
-function __pathIsFile(path) {
-  const k = path.replace(/^\/+/, "");
-  const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
-  return !!st && st.isFile();
+// Resolution is the compiled core generator, over the guest's resident fs.
+// Metadata/refusal handling stays here; selection and probing never do.
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
+var DEFAULT_ESM_CONDITIONS = ["import", "node", "module-sync"];
+var DEFAULT_CJS_CONDITIONS = ["require", "node", "module-sync"];
+var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
+var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
+function patternKeyCompare(a, b) {
+  const aStar = a.indexOf("*");
+  const bStar = b.indexOf("*");
+  const baseA = aStar === -1 ? a.length : aStar + 1;
+  const baseB = bStar === -1 ? b.length : bStar + 1;
+  if (baseA > baseB) return -1;
+  if (baseB > baseA) return 1;
+  if (aStar === -1) return 1;
+  if (bStar === -1) return -1;
+  return b.length - a.length;
 }
-function __resolveFile(base) {
-  // Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):
-  //
-  //   1. LOAD_AS_FILE -- try base, base.js, base.mjs, base.cjs, base.json
-  //      as a regular file. The empty-ext probe uses __pathIsFile (not
-  //      __fileExists) so a directory at "base" does NOT short-circuit
-  //      here; it falls through to the LOAD_AS_DIRECTORY block below.
-  //      See W3.5-plan.md §1 Failure 1.
-  //
-  //   2. LOAD_AS_DIRECTORY -- if "base" resolves to a directory:
-  //      a. If <base>/package.json has a "main" field -- recurse on it.
-  //         (Bug class C, audit 2026-05-11: this branch was missing,
-  //          so require("./mod") where mod/package.json#main="entry.js"
-  //          and no mod/index.js -- "Cannot find module ./mod".)
-  //      b. Else fall through to <base>/index.{js,cjs,mjs,json}.
-  //
-  // Must mirror the install-time pre-bundler at require-resolver.ts:
-  // resolveFile so prefetch + runtime agree on which file a given
-  // require() will load.
-  const fileExts = ["", ".js", ".mjs", ".cjs", ".json"];
-  for (const ext of fileExts) {
-    const cand = base + ext;
-    if (ext === "") {
-      if (__pathIsFile(cand)) return cand;
-      continue;
-    }
-    if (__fileExists(cand)) return cand;
-  }
-  // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
-  const pkgJsonPath = base.replace(/\/+$/, "") + "/package.json";
-  if (__pathIsFile(pkgJsonPath)) {
-    let pkg = null;
-    try { pkg = JSON.parse(__readFileOr(pkgJsonPath, "null")); } catch { /* fall through */ }
-    if (pkg && typeof pkg.main === "string" && pkg.main.length > 0) {
-      const mainStripped = pkg.main.replace(/^\.\/+/, "").replace(/^\/+/, "");
-      // Normalize so a parent-relative main (e.g. web-streams-polyfill's
-      // ponyfill/package.json declaring main "../dist/ponyfill") collapses
-      // its ".." segments instead of probing a literal "dir/../dist" path
-      // that __fileExists never matches.
-      const mainBase = __vfsNormalizePath(base.replace(/\/+$/, "") + "/" + mainStripped).replace(/^\/+/, "");
-      // Recurse: main itself may be a directory (e.g. main: "lib") or
-      // a file without extension. Guard against pkg.main === "." which
-      // would re-enter this same base and stack-overflow.
-      if (mainBase !== base && mainBase !== base.replace(/\/+$/, "")) {
-        const resolved = __resolveFile(mainBase);
-        if (resolved) return resolved;
+function* selectPackageMap(field, name, conditions, policy) {
+  const active = conditions instanceof Set ? conditions : new Set(conditions);
+  function* target(value, match2) {
+    if (typeof value === "string") return yield* policy.target(value, match2);
+    if (Array.isArray(value)) {
+      if (value.length === 0) return null;
+      let last;
+      for (const item of value) {
+        let result;
+        try {
+          result = yield* target(item, match2);
+        } catch (error2) {
+          if (codeOf(error2) !== "ERR_INVALID_PACKAGE_TARGET") throw error2;
+          last = error2;
+          continue;
+        }
+        if (result === void 0) continue;
+        if (result === null) {
+          last = null;
+          continue;
+        }
+        return result;
       }
+      if (last === void 0 || last === null) return last;
+      throw last;
     }
+    if (value === null) return null;
+    if (typeof value === "object" && value !== null) {
+      const keys = Object.getOwnPropertyNames(value);
+      if (!policy.permissive && keys.some((key) => /^\d+$/.test(key) && String(Number(key)) === key && Number(key) < 4294967295)) {
+        throw policy.invalidConfig("numeric");
+      }
+      for (const key of keys) {
+        if (key !== "default" && !active.has(key)) continue;
+        const result = yield* target(Reflect.get(value, key), match2);
+        if (result === void 0 || policy.permissive && result === null) continue;
+        return result;
+      }
+      return void 0;
+    }
+    if (policy.permissive) return void 0;
+    throw policy.invalidTarget(value, match2);
   }
-  const indexExts = ["/index.js", "/index.cjs", "/index.mjs", "/index.json"];
-  for (const ext of indexExts) {
-    const cand = base + ext;
-    if (__fileExists(cand)) return cand;
+  if (field === void 0) return void 0;
+  if (field === null) return null;
+  let map;
+  if (!policy.internal) {
+    let sugar = typeof field !== "object" || Array.isArray(field);
+    if (typeof field === "object" && !Array.isArray(field)) {
+      const keys = Object.getOwnPropertyNames(field);
+      sugar = keys.length > 0 && !keys[0].startsWith(".");
+      if (!policy.permissive && keys.some((key) => !key.startsWith(".") !== sugar)) throw policy.invalidConfig("mixed");
+    }
+    map = sugar ? { ".": field } : field;
+  } else {
+    if (typeof field !== "object" || Array.isArray(field)) return void 0;
+    map = field;
   }
-  // TypeScript sources, probed only once every candidate above has missed, so
-  // the specifiers whose resolution changes are exactly those that resolve to
-  // nothing today. Must agree with the prefetch resolver or a file is shipped
-  // that this cannot find; both come from src/_shared/typescript-specifiers.ts
-  // and tests/unit/typescript-specifier-resolution.mjs compares them.
-  const baseTrim = base.replace(/\/+$/, "");
-  for (const cand of typescriptFallbackCandidates(baseTrim)) {
-    if (__pathIsFile(cand)) return cand;
+  const match = (key, subpath, pattern) => ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && name.endsWith("/") });
+  if (Object.prototype.hasOwnProperty.call(map, name) && (policy.permissive || !name.includes("*") && !name.endsWith("/"))) {
+    return yield* target(map[name], match(name, "", false));
   }
-  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
-    const cand = baseTrim + ext;
-    if (__pathIsFile(cand)) return cand;
+  const candidates = Object.getOwnPropertyNames(map).filter((key) => {
+    const star = key.indexOf("*");
+    if (star === -1 || !policy.permissive && key.lastIndexOf("*") !== star) return false;
+    const trailer = key.slice(star + 1);
+    return name.startsWith(key.slice(0, star)) && name.endsWith(trailer) && name.length >= (policy.permissive ? key.length - 1 : key.length);
+  }).sort(policy.permissive ? (a, b) => b.length - a.length : patternKeyCompare);
+  for (const key of candidates) {
+    const star = key.indexOf("*");
+    const subpath = name.slice(star, name.length - (key.length - star - 1));
+    const result = yield* target(map[key], match(key, subpath, true));
+    if (!policy.permissive || result != null || map[key] === null) return result;
   }
-  return null;
+  return void 0;
 }
-
-// ── Resolution, credential and upgrade rules, compiled from @nimbus-sh/core ──
-// _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
-// resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
-// DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
-// TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
-// (function declarations, so the fetch patch above can call them).
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, TYPESCRIPT_INDEX_CANDIDATES, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, resolveExports, resolvePackageEntry, stripsTypeScript, typescriptFallbackCandidates } = (() => {
-var DEFAULT_ESM_CONDITIONS = ["import", "module", "browser", "default"];
-var DEFAULT_CJS_CONDITIONS = ["require", "node", "default"];
-function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
-  if (exportsField === void 0 || exportsField === null) return null;
-  if (typeof exportsField === "string") {
-    return subpath === "." ? exportsField : null;
+var BUILD_BROWSER_PACKAGE_MAP_POLICY = {
+  name: "build-browser-permissive",
+  internal: false,
+  permissive: true,
+  *target(value, match) {
+    return match.pattern ? value.split("*").join(match.subpath) : value;
+  },
+  invalidTarget: () => new Error("Invalid build/browser package target"),
+  invalidConfig: () => new Error("Invalid build/browser package map")
+};
+function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_CONDITIONS, policy = BUILD_BROWSER_PACKAGE_MAP_POLICY) {
+  const steps = selectPackageMap(exportsField, subpath, conditions, {
+    ...policy,
+    internal: subpath.startsWith("#")
+  });
+  const next = steps.next();
+  if (!next.done) throw new Error("The build/browser package-map policy must be synchronous");
+  return next.value ?? null;
+}
+function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
+  const path = (url) => decodeURIComponent(url.pathname);
+  const pjsonPath = path(packageJsonUrl);
+  const root = new URL(".", packageJsonUrl);
+  const error2 = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+  function invalidTarget(value, match) {
+    const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
+    const related = !internal && text.length > 0 && !text.startsWith("./");
+    const tail = `in the package config ${path(root)}package.json imported from ${base}${related ? '; targets must start with "./"' : ""}`;
+    return error2("ERR_INVALID_PACKAGE_TARGET", match.key === "." ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}` : `Invalid "${internal ? "imports" : "exports"}" target ${JSON.stringify(text)} defined for '${match.key}' ${tail}`);
   }
-  if (Array.isArray(exportsField)) {
-    for (const item of exportsField) {
-      const r = resolveExports(item, subpath, conditions);
-      if (r) return r;
+  const invalidSegments = (text) => text.split(/[\\/]/).some((segment) => {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      decoded = segment;
     }
-    return null;
-  }
-  if (typeof exportsField !== "object") return null;
-  const keys = Object.keys(exportsField);
-  if (keys.length === 0) return null;
-  const isSubpathMap = keys[0].startsWith(".") || keys[0].startsWith("#");
-  if (isSubpathMap) {
-    if (subpath in exportsField) {
-      const target = exportsField[subpath];
-      if (target === null) return null;
-      return resolveConditionValue(target, conditions);
-    }
-    const wildcardKeys = keys.filter((k) => k.includes("*")).sort((a, b) => b.length - a.length);
-    for (const pattern of wildcardKeys) {
-      const target = exportsField[pattern];
-      const starIdx = pattern.indexOf("*");
-      const prefix = pattern.slice(0, starIdx);
-      const suffix = pattern.slice(starIdx + 1);
-      if (subpath.startsWith(prefix) && (suffix ? subpath.endsWith(suffix) : true) && subpath.length >= prefix.length + suffix.length) {
-        if (target === null) return null;
-        const matched = subpath.slice(
-          prefix.length,
-          suffix ? subpath.length - suffix.length : void 0
+    return decoded === "." || decoded === ".." || decoded.toLowerCase() === "node_modules";
+  });
+  return {
+    name: "node-package-map",
+    internal,
+    invalidTarget,
+    invalidConfig(reason) {
+      const baseUrl = new URL("file://");
+      baseUrl.pathname = base;
+      const detail = reason === "numeric" ? '"exports" cannot contain numeric property keys.' : `"exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`;
+      return error2("ERR_INVALID_PACKAGE_CONFIG", `Invalid package config ${pjsonPath} while importing ${baseUrl.href}. ${detail}`);
+    },
+    *target(value, match) {
+      if (!value.startsWith("./")) {
+        if (internal && !value.startsWith("../") && !value.startsWith("/")) {
+          let isUrl = false;
+          try {
+            new URL(value);
+            isUrl = true;
+          } catch {
+          }
+          if (!isUrl) return yield* resolveBare(match.pattern ? value.replace(/\*/g, () => match.subpath) : value);
+        }
+        throw invalidTarget(value, match);
+      }
+      if (invalidSegments(value.slice(2))) throw invalidTarget(value, match);
+      const resolved = new URL(value, packageJsonUrl);
+      if (!resolved.pathname.startsWith(root.pathname)) throw invalidTarget(value, match);
+      if (!match.subpath) return resolved;
+      if (invalidSegments(match.subpath) && !match.isPathMap) {
+        const request = match.pattern ? match.key.replace("*", () => match.subpath) : match.key + match.subpath;
+        throw error2(
+          "ERR_INVALID_MODULE_SPECIFIER",
+          `Invalid module "${request}" request is not a valid match in pattern "${match.key}" for the "${internal ? "imports" : "exports"}" resolution of ${pjsonPath} imported from ${base}`,
+          TypeError
         );
-        const resolved = resolveConditionValue(target, conditions);
-        if (resolved) return resolved.split("*").join(matched);
       }
+      return new URL(resolved.href.replace(/\*/g, () => match.subpath));
     }
-    return null;
-  }
-  if (subpath !== ".") return null;
-  return resolveConditionValue(exportsField, conditions);
+  };
 }
-function resolveConditionValue(target, conditions) {
-  if (target === null || target === void 0) return null;
-  if (typeof target === "string") return target;
-  if (Array.isArray(target)) {
-    for (const item of target) {
-      const r = resolveConditionValue(item, conditions);
-      if (r) return r;
-    }
-    return null;
-  }
-  if (typeof target !== "object") return null;
-  for (const key of Object.keys(target)) {
-    if (key !== "default" && !conditions.includes(key)) continue;
-    const r = resolveConditionValue(target[key], conditions);
-    if (r) return r;
-  }
-  return null;
-}
-function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
+function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_CONDITIONS, policy = BUILD_BROWSER_PACKAGE_MAP_POLICY) {
   if (pkg.exports !== void 0 && pkg.exports !== null) {
-    const entry = resolveExports(pkg.exports, subpath, conditions);
+    const entry = resolveExports(pkg.exports, subpath, conditions, policy);
     if (entry) return entry;
     return null;
   }
@@ -18282,6 +18293,21 @@ function packageSelfReferenceSubpath(pkg, specifier) {
   return `.${specifier.slice(pkg.name.length)}`;
 }
 
+var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function normalizeVfsPath(p) {
+  const text = String(p ?? "");
+  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
+  const segments = text.split("/");
+  const out = [];
+  for (const seg of segments) {
+    if (seg === "..") out.pop();
+    else if (seg !== "." && seg !== "") out.push(seg);
+  }
+  return out.join("/");
+}
+function stripLeadingSlashes(p) {
+  return p.replace(/^\/+/, "");
+}
 function vfsPathExtension(path) {
   const base = path.slice(path.lastIndexOf("/") + 1);
   const dot = base.lastIndexOf(".");
@@ -18311,6 +18337,302 @@ function typescriptFallbackCandidates(base) {
 }
 var TYPESCRIPT_INDEX_CANDIDATES = ["/index.ts", "/index.tsx"];
 
+var METADATA_CANDIDATE_WORK = 256;
+var NODE_REQUIRE_POLICY = { name: "node-commonjs" };
+var NIMBUS_TYPESCRIPT_REQUIRE_POLICY = {
+  name: "nimbus-typescript-source-fallback",
+  typescriptFallback: true
+};
+var codeOf2 = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
+var absolute = (path) => "/" + stripLeadingSlashes(normalizeVfsPath(path));
+var parentDir = (path) => path.slice(0, path.lastIndexOf("/")) || "/";
+var relativeRequest = (id) => id === "." || id === ".." || id.startsWith("./") || id.startsWith("../");
+var fileUrl = (path) => {
+  const url = new URL("file://");
+  url.pathname = path;
+  return url;
+};
+var error = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+function requireNodeModulePaths(fromDir) {
+  const paths = [];
+  for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
+    if (dir.slice(dir.lastIndexOf("/") + 1) !== "node_modules") paths.push((dir === "/" ? "" : dir) + "/node_modules");
+    if (dir === "/") return paths;
+  }
+}
+function createRequireResolver(host, options = {}) {
+  const conditions =   new Set([...DEFAULT_CJS_CONDITIONS, ...options.conditions ?? []]);
+  const policy = options.policy ?? NODE_REQUIRE_POLICY;
+  const ask = {
+    *kind(path) {
+      if (options.progress) yield options.progress(METADATA_CANDIDATE_WORK + path.length);
+      try {
+        const kind = yield host.kind(path);
+        return kind === "file" || kind === "directory" ? kind : null;
+      } catch (err) {
+        if (codeOf2(err) === "ENOENT" || codeOf2(err) === "ENOTDIR") return null;
+        throw err;
+      }
+    },
+    *text(path) {
+      const text = yield host.readText(path);
+      if (typeof text !== "string") return null;
+      if (options.progress) yield options.progress(text.length);
+      return text;
+    },
+    *realpath(path) {
+      const real = yield host.realpath(path);
+      if (typeof real !== "string") throw new Error("The CommonJS host must answer realpath with a path");
+      return absolute(real);
+    }
+  };
+  function* readPackage(path, state, scope = false) {
+    if (state.configs.has(path)) return state.configs.get(path) ?? null;
+    let kind;
+    try {
+      kind = yield* ask.kind(path);
+    } catch (err) {
+      if (scope && codeOf2(err) === "EACCES") return null;
+      throw err;
+    }
+    if (kind !== "file") {
+      state.configs.set(path, null);
+      return null;
+    }
+    const text = yield* ask.text(path);
+    if (text === null) {
+      state.configs.set(path, null);
+      return null;
+    }
+    let pkg;
+    try {
+      pkg = JSON.parse(text);
+    } catch {
+      throw error("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
+    }
+    const config = pkg !== null && typeof pkg === "object" ? pkg : {};
+    state.configs.set(path, config);
+    return config;
+  }
+  function* nearestPackageScope(fromDir, state) {
+    for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
+      if (dir.slice(dir.lastIndexOf("/") + 1) === "node_modules") return null;
+      const packageJsonPath = (dir === "/" ? "" : dir) + "/package.json";
+      const pkg = yield* readPackage(packageJsonPath, state, true);
+      if (pkg) return {
+        dir,
+        packageJsonPath,
+        pkg,
+        type: pkg.type === "module" || pkg.type === "commonjs" ? pkg.type : null
+      };
+      if (dir === "/") return null;
+    }
+  }
+  function* loadAsFile(path) {
+    for (const suffix of ["", ".js", ".json", ".node"]) {
+      const candidate = absolute(path + suffix);
+      if ((yield* ask.kind(candidate)) === "file") return candidate;
+    }
+    return null;
+  }
+  function* loadIndex(path) {
+    for (const suffix of ["/index.js", "/index.json", "/index.node"]) {
+      const candidate = absolute(path + suffix);
+      if ((yield* ask.kind(candidate)) === "file") return candidate;
+    }
+    return null;
+  }
+  function* loadAsDirectory(path, state) {
+    if ((yield* ask.kind(path)) !== "directory") return null;
+    const pkgPath = (path === "/" ? "" : path) + "/package.json";
+    const pkg = yield* readPackage(pkgPath, state);
+    if (typeof pkg?.main === "string" && pkg.main) {
+      const main = absolute(pkg.main.startsWith("/") ? pkg.main : path + "/" + pkg.main);
+      const found = (yield* loadAsFile(main)) ?? (yield* loadIndex(main)) ?? (yield* loadIndex(path));
+      if (found) return found;
+      throw Object.assign(
+        error(
+          "MODULE_NOT_FOUND",
+          "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`
+        ),
+        { path: pkgPath, requestPath: path }
+      );
+    }
+    return yield* loadIndex(path);
+  }
+  function* resolveFile(path, state, trailingSlash = false) {
+    const normalized = absolute(path);
+    const found = (!trailingSlash ? yield* loadAsFile(normalized) : null) ?? (yield* loadAsDirectory(normalized, state));
+    if (found || !policy.typescriptFallback) return found;
+    for (const candidate of typescriptFallbackCandidates(normalized)) {
+      if ((yield* ask.kind(candidate)) === "file") return candidate;
+    }
+    if ((yield* ask.kind(normalized)) === "directory") {
+      for (const suffix of TYPESCRIPT_INDEX_CANDIDATES) {
+        if ((yield* ask.kind(normalized + suffix)) === "file") return normalized + suffix;
+      }
+    }
+    return null;
+  }
+  function exportsNotFound(subpath, pjsonPath) {
+    return error("ERR_PACKAGE_PATH_NOT_EXPORTED", subpath === "." ? 'No "exports" main defined in ' + pjsonPath : "Package subpath '" + subpath + `' is not defined by "exports" in ` + pjsonPath);
+  }
+  function* resolveMap(field, name, pjsonPath, fromDir, internal, state) {
+    const url = fileUrl(pjsonPath);
+    const mapPolicy = createNodePackageMapPolicy(
+      url,
+      fromDir,
+      internal,
+      (target) => resolveBareTarget(target, parentDir(pjsonPath), state)
+    );
+    return yield* selectPackageMap(field, name, conditions, mapPolicy);
+  }
+  function* resolveBareTarget(name, fromDir, state) {
+    if (host.isBuiltin?.(name)) return new URL(name.startsWith("node:") ? name : "node:" + name);
+    const split = packageName(name);
+    if (!split || /^\.|%|\\/.test(split.name)) {
+      throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + name + '" is not a valid package name imported from ' + fromDir, TypeError);
+    }
+    const self = yield* nearestPackageScope(fromDir, state);
+    const selfSubpath = packageSelfReferenceSubpath(self?.pkg, name);
+    if (self && selfSubpath !== null) {
+      const target = yield* resolveMap(self.pkg.exports, selfSubpath, self.packageJsonPath, fromDir, false, state);
+      if (target == null) throw exportsNotFound(selfSubpath, self.packageJsonPath);
+      return target;
+    }
+    for (const folder of requireNodeModulePaths(fromDir)) {
+      const dir = folder + "/" + split.name;
+      if ((yield* ask.kind(dir)) !== "directory") continue;
+      const pjsonPath = dir + "/package.json";
+      const pkg = yield* readPackage(pjsonPath, state);
+      if (pkg?.exports != null) {
+        const target = yield* resolveMap(pkg.exports, split.subpath, pjsonPath, fromDir, false, state);
+        if (target == null) throw exportsNotFound(split.subpath, pjsonPath);
+        return target;
+      }
+      if (split.subpath !== ".") return new URL(split.subpath, fileUrl(pjsonPath));
+      const found = yield* loadAsDirectory(dir, state);
+      if (found) return fileUrl(found);
+      throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+    }
+    throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + split.name + "' imported from " + fromDir);
+  }
+  function packageName(id) {
+    let slash = id.indexOf("/");
+    if (id.startsWith("@")) {
+      if (slash === -1) return null;
+      slash = id.indexOf("/", slash + 1);
+    }
+    return { name: slash === -1 ? id : id.slice(0, slash), subpath: slash === -1 ? "." : "." + id.slice(slash) };
+  }
+  function* finalizeTarget(target, pjsonPath) {
+    if (/%2f|%5c/i.test(target.pathname)) {
+      throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + target.pathname + '" must not include encoded "/" or "\\" characters', TypeError);
+    }
+    const path = decodeURIComponent(target.pathname);
+    if ((yield* ask.kind(path)) !== "file") {
+      throw Object.assign(error("MODULE_NOT_FOUND", "Cannot find module '" + path + "'"), { path: pjsonPath });
+    }
+    return absolute(path);
+  }
+  function* loadPackageSelf(name, fromDir, state) {
+    const scope = yield* nearestPackageScope(fromDir, state);
+    const subpath = packageSelfReferenceSubpath(scope?.pkg, name);
+    if (!scope || subpath === null) return null;
+    const target = yield* resolveMap(scope.pkg.exports, subpath, scope.packageJsonPath, fromDir, false, state);
+    if (target == null) throw exportsNotFound(subpath, scope.packageJsonPath);
+    return yield* finalizeTarget(target, scope.packageJsonPath);
+  }
+  function* loadNodeModules(name, folders, fromDir, state) {
+    const split = packageName(name);
+    for (const folder of folders) {
+      if (split && split.name !== "" && !name.includes("\\")) {
+        const pjsonPath = absolute(folder + "/" + split.name + "/package.json");
+        const pkg = yield* readPackage(pjsonPath, state);
+        if (pkg?.exports != null) {
+          const target = yield* resolveMap(pkg.exports, split.subpath, pjsonPath, fromDir, false, state);
+          if (target == null) throw exportsNotFound(split.subpath, pjsonPath);
+          return yield* finalizeTarget(target, pjsonPath);
+        }
+      }
+      const found = yield* resolveFile(folder + "/" + name, state, name.endsWith("/"));
+      if (found) return found;
+    }
+    return null;
+  }
+  function* resolvePath(id, fromDir, request, state) {
+    const dir = absolute(fromDir);
+    if (id === "") return null;
+    if (host.isBuiltin?.(id)) return new URL(id.startsWith("node:") ? id : "node:" + id);
+    if (id.startsWith("node:")) throw error("ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
+    if (id.startsWith("/")) return yield* resolveFile(id, state, id.endsWith("/"));
+    if (relativeRequest(id)) {
+      for (const origin of request.paths ?? [dir]) {
+        const found = yield* resolveFile(origin + "/" + id, state, id.endsWith("/") || id === "." || id === ".." || id.endsWith("/.") || id.endsWith("/.."));
+        if (found) return found;
+      }
+      return null;
+    }
+    if (id.startsWith("#")) {
+      if (id === "#" || id.startsWith("#/") || id.endsWith("/")) {
+        throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + dir, TypeError);
+      }
+      const scope = yield* nearestPackageScope(dir, state);
+      if (scope && scope.pkg.imports !== null && typeof scope.pkg.imports === "object") {
+        const target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, dir, true, state);
+        if (target != null) return target.protocol === "node:" ? target : yield* finalizeTarget(target, scope.packageJsonPath);
+      }
+      const where = scope ? " in package " + scope.packageJsonPath : "";
+      throw error("ERR_PACKAGE_IMPORT_NOT_DEFINED", 'Package import specifier "' + id + '" is not defined' + where + " imported from " + dir, TypeError);
+    }
+    const self = yield* loadPackageSelf(id, dir, state);
+    if (self) return self;
+    const folders = [...new Set((request.paths ?? [dir]).flatMap(requireNodeModulePaths))];
+    folders.push(...policy.globalFolders ?? []);
+    return yield* loadNodeModules(id, folders, dir, state);
+  }
+  function* resolve(id, fromDir, request = {}) {
+    const state = { configs:   new Map() };
+    const found = yield* resolvePath(id, fromDir, request, state);
+    if (found === null) return null;
+    if (found instanceof URL) return { builtin: found.pathname, scope: null, packageType: null };
+    const path = yield* ask.realpath(found);
+    const scope = yield* nearestPackageScope(parentDir(path), state);
+    return { path, scope, packageType: scope?.type ?? null };
+  }
+  function runSync(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      if (next.value instanceof Promise) throw new Error("resolveSync: the CommonJS host answered asynchronously");
+      next = steps.next(next.value);
+    }
+    return next.value;
+  }
+  async function runAsync(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      let answer;
+      try {
+        answer = await next.value;
+      } catch (err) {
+        next = steps.throw(err);
+        continue;
+      }
+      next = steps.next(answer);
+    }
+    return next.value;
+  }
+  return {
+    resolve: (id, dir, request) => runAsync(resolve(id, dir, request)),
+    resolveSync: (id, dir, request) => runSync(resolve(id, dir, request)),
+    resolveFile: (path) => runAsync(resolveFile(path, { configs:   new Map() }, path.endsWith("/"))),
+    resolveFileSync: (path) => runSync(resolveFile(path, { configs:   new Map() }, path.endsWith("/"))),
+    packageScope: (dir) => runAsync(nearestPackageScope(dir, { configs:   new Map() })),
+    packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs:   new Map() }))
+  };
+}
+var fileTextDecoder = new TextDecoder();
+
 function presentedCredential(value) {
   const trimmed = value.trim();
   return /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, "") : trimmed;
@@ -18319,211 +18641,21 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, TYPESCRIPT_INDEX_CANDIDATES, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, resolveExports, resolvePackageEntry, stripsTypeScript, typescriptFallbackCandidates };
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
 })();
 
-
-/** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
-const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default", ...__nimbusConditions];
-/** The fallback for a map whose entry is only under import: import's conditions, and the program's own. */
-const __NIMBUS_IMPORT_FALLBACK_CONDITIONS = [...DEFAULT_ESM_CONDITIONS, ...__nimbusConditions];
-
-/**
- * Read and parse a package.json from VFS. Returns null on miss/parse-fail.
- */
-function __readPkgJson(pkgDir) {
-  const s = __readFileOr(pkgDir + "/package.json", null);
-  if (!s) return null;
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-/**
- * Resolve a single subpath inside an installed package (pkgDir).
- *   - subpath: '.' for root entry, './foo' for explicit subpath, etc.
- *   - Honours pkg.exports (subpath maps, wildcards, conditions).
- *   - Falls back to module/main for root, raw subpath probing otherwise.
- *   - Final filesystem probe via __resolveFile (extension list).
- *
- * Returns a VFS-relative path to the resolved file, or null.
- */
-function __resolvePkgSubpath(pkgDir, pkg, subpath) {
-  if (!pkg) pkg = __readPkgJson(pkgDir);
-  if (!pkg) {
-    // No package.json — try direct probe
-    if (subpath === ".") return __resolveFile(pkgDir + "/index");
-    return __resolveFile(pkgDir + "/" + subpath.replace(/^\.\/+/, ""));
-  }
-  let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
-  // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
-  // dist/.mjs files were transformed to CJS
-  // by transformEsmInBundle (facets/manager.ts). Without this,
-  // packages like nuxt — whose exports map only contains
-  // {types, import} for the root subpath — return null from the CJS
-  // walk and dead-end with "Cannot find module 'nuxt'" even though
-  // dist/index.mjs is in the bundle and runnable as CJS. We only fall
-  // back when the package actually declares an exports map (so we
-  // don't shadow legit "package not installed" misses).
-  if (entry == null && pkg.exports != null) {
-    entry = resolvePackageEntry(pkg, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
-  }
-  if (entry != null) {
-    // Strip leading ./ from the resolver result
-    const stripped = entry.replace(/^\.\/+/, "");
-    const resolved = __resolveFile(pkgDir + "/" + stripped);
-    if (resolved) return resolved;
-    // W2.6a D2: exports/main yielded a target but the file doesn't exist
-    // in the bundle (capped out, or the package mis-declares its main).
-    // Fall through to the direct-probe path so we get index.js when the
-    // declared entry is missing. Without this fallback, packages whose
-    // exports point at a file evicted by the content cap return null and
-    // the require chain dead-ends with "Cannot find module" — even though
-    // a perfectly good index.js sits next to it.
-  }
-  // Fallback: probe the directory for a usable entry. This catches
-  //   (a) exports map yielded null (forbidden / no condition matched)
-  //   (b) exports map yielded a path whose file isn't on disk
-  //   (c) main yielded a path whose file isn't on disk
-  if (subpath === ".") {
-    // Try main again under the extension-list resolver, then fall through
-    // to /index probing. The shared resolvePackageEntry already prefers
-    // exports → module → main, so re-probing main here only triggers when
-    // entry was null OR entry's file was missing.
-    if (typeof pkg.main === 'string') {
-      const mainStripped = pkg.main.replace(/^\.\/+/, "");
-      const r = __resolveFile(pkgDir + "/" + mainStripped);
-      if (r) return r;
-    }
-    return __resolveFile(pkgDir + "/index");
-  }
-  const rel = subpath.replace(/^\.\/+/, "");
-  return __resolveFile(pkgDir + "/" + rel);
-}
-
-
-/**
- * Resolve a bare specifier (e.g. "react", "@scope/pkg", "pkg/sub/path")
- * by walking up node_modules from fromDir. Returns the resolved file or null.
- */
-function __resolveNodeModule(name, fromDir) {
-  // Split into pkgName + subpath
-  let pkgName, subpath;
-  if (name.startsWith("@")) {
-    const parts = name.split("/");
-    if (parts.length < 2) return null;
-    pkgName = parts.slice(0, 2).join("/");
-    subpath = parts.length > 2 ? "./" + parts.slice(2).join("/") : ".";
-  } else {
-    const slashIdx = name.indexOf("/");
-    if (slashIdx > 0) {
-      pkgName = name.substring(0, slashIdx);
-      subpath = "./" + name.substring(slashIdx + 1);
-    } else {
-      pkgName = name;
-      subpath = ".";
-    }
-  }
-
-  // Walk up directories looking for node_modules/<pkgName>.
-  // Audit §3.7 (P7 fastify case): the prior loop was right, but the
-  // visited-set keyed on dir-with-leading-slash-stripped while node_modules
-  // existence checks used the same form, so iteration COULD terminate early
-  // when hitting "" (empty string) at the root. Explicit termination on
-  // empty string + always-also-check root node_modules covers both.
-  let dir = (fromDir || "").replace(/^\/+/, "");
-  const visited = new Set();
-  while (true) {
-    if (visited.has(dir)) break;
-    visited.add(dir);
-    const nmDir = (dir ? dir + "/" : "") + "node_modules/" + pkgName;
-    if (__fileExists(nmDir)) {
-      const resolved = __resolvePkgSubpath(nmDir, null, subpath);
-      if (resolved) return resolved;
-    }
-    if (!dir) break;
-    const lastSlash = dir.lastIndexOf("/");
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
-  }
-  return null;
-}
-
-/**
- * Node's "package scope" of a directory (readPackageScope): the nearest
- * enclosing package.json, walking up from fromDir. The FIRST package.json
- * found is the scope, even when it lacks the field the caller wants — the
- * imports field and the self-reference rule both belong to the importing
- * module's own package, never to an ancestor past it. The walk never
- * crosses a node_modules directory: a file that sits directly under one
- * belongs to no package, not to the project above it. Returns { dir, pkg }
- * (pkg null when the file is unparseable) or null when no package.json
- * encloses fromDir.
- */
-function __nearestPackageScope(fromDir) {
-  let dir = (fromDir || "").replace(/^\/+/, "");
-  while (true) {
-    if (dir === "node_modules" || dir.endsWith("/node_modules")) return null;
-    const pkgJsonPath = (dir ? dir + "/" : "") + "package.json";
-    if (__fileExists(pkgJsonPath)) {
-      return { dir, pkg: __readPkgJson(dir) };
-    }
-    if (!dir) return null;
-    const lastSlash = dir.lastIndexOf("/");
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
-  }
-}
-
-/**
- * Resolve a #name imports-field specifier from the nearest enclosing
- * package.json. Returns the resolved file or null.
- */
-function __resolveImportsField(name, fromDir) {
-  // First package.json wins, even if no imports field (Node spec: imports
-  // field of the importing module's package).
-  const scope = __nearestPackageScope(fromDir);
-  if (!scope || !scope.pkg || !scope.pkg.imports) return null;
-  const dir = scope.dir;
-  const target = resolveExports(scope.pkg.imports, name, __NIMBUS_CJS_CONDITIONS);
-  if (!target) return null;
-  // Imports targets are relative to the package root (dir)
-  if (target.startsWith("./")) {
-    return __resolveFile((dir ? dir + "/" : "") + target.slice(2));
-  }
-  if (target.startsWith("/")) {
-    return __resolveFile(target.slice(1));
-  }
-  // Bare specifier — re-resolve as a node_module from this dir
-  return __resolveNodeModule(target, dir);
-}
-
-/**
- * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
- * itself (`require('<its-name>')`, `require('<its-name>/sub')`) resolves
- * through that package's own `exports` map — only when the nearest
- * package.json has `exports` AND its `name` matches, and only through
- * `exports` (no main/index probing: a subpath the map does not expose is
- * not exported). Sits between the imports-field branch and the
- * node_modules walk, where Node puts it. Returns the resolved file or null.
- *
- * Conditions are the ones the node_modules walk uses for the same
- * require: the runtime's CJS set first, the ESM set when the map exposes
- * the subpath only under `import` (dynamic import() is lowered onto this
- * require chain, see __resolvePkgSubpath).
- *
- * Tri-state, as in Node: null when the rule does not apply (the caller
- * walks node_modules); { resolved: null } when the enclosing package claims
- * the name but its map does not expose the subpath or the target is
- * missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
- * there and never consults node_modules, so neither does the caller.
- */
-function __resolvePackageSelf(name, fromDir) {
-  const scope = __nearestPackageScope(fromDir);
-  if (!scope || !scope.pkg) return null;
-  const subpath = packageSelfReferenceSubpath(scope.pkg, name);
-  if (subpath === null) return null;
-  let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
-  if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
-  if (entry == null) return { resolved: null };
-  return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\.\/+/, "")) };
-}
+const __requireResolver = createRequireResolver({
+  kind(path) {
+    if (!__fileExists(path)) return null;
+    const st = __fsMod.statSync(path, { throwIfNoEntry: false });
+    return !st ? null : st.isDirectory() ? "directory" : st.isFile() ? "file" : null;
+  },
+  readText(path) { return __readFileOr(path, null); },
+  realpath(path) { return __fsMod.realpathSync(path); },
+  isBuiltin(specifier) {
+    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
+  },
+}, { conditions: __nimbusConditions, policy: NIMBUS_TYPESCRIPT_REQUIRE_POLICY });
 
 /**
  * Load and execute a JS/JSON module from VFS.
@@ -18714,62 +18846,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir) {
-  // An absolute file: URL is a specifier Node accepts: `import(href)` is the
-  // portable way to load a path a resolver just handed back, and it is what
-  // every package that resolves before it imports emits — @nuxt/cli's
-  // loadKit does `import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)`.
-  // A require() of one comes through this one resolver too, so the scheme
-  // has to come off before the specifier is classified: with it on,
-  // the file: URL misses the absolute-path branch below and gets looked up as
-  // if it were the name of a package.
-  if (typeof id === "string" && id.startsWith("file:")) {
-    let filePath;
-    try {
-      const u = new URL(id);
-      // .pathname drops the query a cache-busting importer appends
-      // (`import(href + "?t=" + Date.now())` is the standard HMR spelling),
-      // and the decode is what node:url's fileURLToPath does with it.
-      filePath = decodeURIComponent(u.pathname);
-    } catch { filePath = id.replace(/^file:\/\//, ""); }
-    id = filePath;
-  }
-  // X.5-P: literal "." / ".." are CommonJS aliases for "./" / "../".
-  // Pre-fix they slipped past the startsWith("./")/("../") guards (which
-  // require >= 3 / >= 4 chars respectively) and fell into the bare-spec
-  // branch — querying __resolveNodeModule for a package literally named
-  // "." → "Cannot find module '.'" (verify-90993b3 §3 bucket P:
-  // fastify via ajv/dist/compile/jtd, redis via @redis/client/dist/lib/client).
-  // Normalize so they take the relative-resolve branch (which then probes
-  // index.js / package.json#main via __resolveFile). See
-  if (id === ".") id = "./";
-  else if (id === "..") id = "../";
-  // Relative path
-  if (id.startsWith("./") || id.startsWith("../") || id.startsWith("/")) {
-    let base;
-    if (id.startsWith("/")) {
-      base = id.replace(/^\/+/, "");
-    } else {
-      // VFS paths are stored without leading /. __pathMod.resolve treats
-      // a non-absolute fromDir as relative-to-cwd which would corrupt the
-      // result (audit §3.7-bug). Force-absolutise fromDir before resolving,
-      // then strip the leading / again.
-      const absFromDir = fromDir.startsWith("/") ? fromDir : "/" + fromDir;
-      base = __pathMod.resolve(absFromDir, id).replace(/^\/+/, "");
-    }
-    return __resolveFile(base);
-  }
-  // imports field (#name)
-  if (id.startsWith("#")) {
-    return __resolveImportsField(id, fromDir);
-  }
-  // Bare specifier: the enclosing package's own name resolves through its
-  // exports map (Node's LOAD_PACKAGE_SELF), then node_modules resolution.
-  // Once the enclosing package claims the name, its map is the whole
-  // answer: a subpath it does not expose is not found, never a
-  // node_modules copy's.
-  const self = __resolvePackageSelf(id, fromDir);
-  if (self) return self.resolved;
-  return __resolveNodeModule(id, fromDir);
+  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\/+/, ""));
+  if (!found) return null;
+  return found.builtin ? "node:" + found.builtin : found.path.replace(/^\/+/, "");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -18790,7 +18869,7 @@ function unknownFileExtensionMessage(path) {
   return `Unknown file extension "${dot > 0 ? base.slice(dot) : ""}" for ${path}`;
 }
 function createEsmResolver(host, options = {}) {
-  const conditions =   new Set(["node", "import", "module-sync", ...options.conditions ?? []]);
+  const conditions =   new Set([...DEFAULT_ESM_CONDITIONS, ...options.conditions ?? []]);
   const ask = {
     *kind(path) {
       const kind = yield host.kind(path);
@@ -18856,141 +18935,6 @@ function createEsmResolver(host, options = {}) {
     }
     return { exists: false, pjsonPath: filePath(pjsonUrl), type: "none" };
   }
-  function invalidPackageTarget(key, target, pjsonUrl, internal, base) {
-    const text = typeof target === "object" && target !== null ? JSON.stringify(target, null, "") : `${target}`;
-    const pkgPath = filePath(new URL(".", pjsonUrl));
-    const related = !internal && text.length > 0 && !text.startsWith("./");
-    const tail = `in the package config ${pkgPath}package.json imported from ${base}${related ? '; targets must start with "./"' : ""}`;
-    return nodeError(
-      Error,
-      "ERR_INVALID_PACKAGE_TARGET",
-      key === "." ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}` : `Invalid "${internal ? "imports" : "exports"}" target ${JSON.stringify(text)} defined for '${key}' ${tail}`
-    );
-  }
-  const invalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))?(\\|\/|$)/i;
-  const deprecatedInvalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
-  function* resolveTargetString(target, subpath, match, pjsonUrl, base, pattern, internal, isPathMap) {
-    if (subpath !== "" && !pattern && target[target.length - 1] !== "/") {
-      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-    }
-    if (!target.startsWith("./")) {
-      if (internal && !target.startsWith("../") && !target.startsWith("/")) {
-        let isUrl = false;
-        try {
-          new URL(target);
-          isUrl = true;
-        } catch {
-        }
-        if (!isUrl) {
-          const exportTarget = pattern ? target.replace(/\*/g, () => subpath) : target + subpath;
-          return yield* packageResolve(exportTarget, pjsonUrl.href);
-        }
-      }
-      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-    }
-    if (invalidSegment.test(target.slice(2)) && deprecatedInvalidSegment.test(target.slice(2))) {
-      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-    }
-    const resolved = new URL(target, pjsonUrl);
-    if (!resolved.pathname.startsWith(new URL(".", pjsonUrl).pathname)) {
-      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-    }
-    if (subpath === "") return resolved;
-    if (invalidSegment.test(subpath) && deprecatedInvalidSegment.test(subpath) && !isPathMap) {
-      const request = pattern ? match.replace("*", () => subpath) : match + subpath;
-      throw nodeError(
-        TypeError,
-        "ERR_INVALID_MODULE_SPECIFIER",
-        `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? "imports" : "exports"}" resolution of ${filePath(pjsonUrl)} imported from ${base}`
-      );
-    }
-    if (pattern) return new URL(resolved.href.replace(/\*/g, () => subpath));
-    return new URL(subpath, resolved);
-  }
-  function* resolveTarget(pjsonUrl, target, subpath, key, base, pattern, internal, isPathMap) {
-    if (typeof target === "string") {
-      return yield* resolveTargetString(target, subpath, key, pjsonUrl, base, pattern, internal, isPathMap);
-    }
-    if (Array.isArray(target)) {
-      if (target.length === 0) return null;
-      let lastException;
-      for (const item of target) {
-        let result;
-        try {
-          result = yield* resolveTarget(pjsonUrl, item, subpath, key, base, pattern, internal, isPathMap);
-        } catch (error) {
-          lastException = error;
-          if (codeOf(error) === "ERR_INVALID_PACKAGE_TARGET") continue;
-          throw error;
-        }
-        if (result === void 0) continue;
-        if (result === null) {
-          lastException = null;
-          continue;
-        }
-        return result;
-      }
-      if (lastException === void 0 || lastException === null) return lastException;
-      throw lastException;
-    }
-    if (typeof target === "object" && target !== null) {
-      const keys = Object.getOwnPropertyNames(target);
-      for (const condition of keys) {
-        if (/^\d+$/.test(condition) && String(Number(condition)) === condition && Number(condition) < 4294967295) {
-          throw nodeError(
-            Error,
-            "ERR_INVALID_PACKAGE_CONFIG",
-            `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`
-          );
-        }
-      }
-      for (const condition of keys) {
-        if (condition !== "default" && !conditions.has(condition)) continue;
-        const result = yield* resolveTarget(
-          pjsonUrl,
-          Reflect.get(target, condition),
-          subpath,
-          key,
-          base,
-          pattern,
-          internal,
-          isPathMap
-        );
-        if (result === void 0) continue;
-        return result;
-      }
-      return void 0;
-    }
-    if (target === null) return null;
-    throw invalidPackageTarget(key, target, pjsonUrl, internal, base);
-  }
-  function patternKeyCompare(a, b) {
-    const aStar = a.indexOf("*");
-    const bStar = b.indexOf("*");
-    const baseA = aStar === -1 ? a.length : aStar + 1;
-    const baseB = bStar === -1 ? b.length : bStar + 1;
-    if (baseA > baseB) return -1;
-    if (baseB > baseA) return 1;
-    if (aStar === -1) return 1;
-    if (bStar === -1) return -1;
-    if (a.length > b.length) return -1;
-    if (b.length > a.length) return 1;
-    return 0;
-  }
-  function bestPattern(map, name) {
-    let best = "";
-    let bestSubpath = "";
-    for (const key of Object.getOwnPropertyNames(map)) {
-      const star = key.indexOf("*");
-      if (star === -1 || !name.startsWith(key.slice(0, star))) continue;
-      const trailer = key.slice(star + 1);
-      if (name.length >= key.length && name.endsWith(trailer) && patternKeyCompare(best, key) === 1 && key.lastIndexOf("*") === star) {
-        best = key;
-        bestSubpath = name.slice(star, name.length - trailer.length);
-      }
-    }
-    return best ? { key: best, subpath: bestSubpath } : null;
-  }
   function exportsNotFound(subpath, pjsonUrl, base) {
     const pkgPath = filePath(new URL(".", pjsonUrl));
     return nodeError(
@@ -19000,39 +18944,10 @@ function createEsmResolver(host, options = {}) {
     );
   }
   function* packageExportsResolve(pjsonUrl, subpath, config, base) {
-    let exports = config.exports;
-    const isSugar = (() => {
-      if (typeof exports === "string" || Array.isArray(exports)) return true;
-      if (typeof exports !== "object" || exports === null) return false;
-      let sugar = false;
-      let i = 0;
-      for (const key of Object.getOwnPropertyNames(exports)) {
-        const current = key === "" || key[0] !== ".";
-        if (i++ === 0) sugar = current;
-        else if (sugar !== current) {
-          throw nodeError(
-            Error,
-            "ERR_INVALID_PACKAGE_CONFIG",
-            `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`
-          );
-        }
-      }
-      return sugar;
-    })();
-    if (isSugar) exports = { ".": exports };
-    const map = exports;
-    if (Object.prototype.hasOwnProperty.call(map, subpath) && !subpath.includes("*") && !subpath.endsWith("/")) {
-      const result = yield* resolveTarget(pjsonUrl, map[subpath], "", subpath, base, false, false, false);
-      if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
-      return result;
-    }
-    const best = bestPattern(map, subpath);
-    if (best) {
-      const result = yield* resolveTarget(pjsonUrl, map[best.key], best.subpath, best.key, base, true, false, subpath.endsWith("/"));
-      if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
-      return result;
-    }
-    throw exportsNotFound(subpath, pjsonUrl, base);
+    const policy = createNodePackageMapPolicy(pjsonUrl, base, false, (target) => packageResolve(target, pjsonUrl.href));
+    const result = yield* selectPackageMap(config.exports, subpath, conditions, policy);
+    if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
+    return result;
   }
   function* packageImportsResolve(name, baseUrl) {
     const base = filePath(baseUrl);
@@ -19040,24 +18955,13 @@ function createEsmResolver(host, options = {}) {
       throw nodeError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
     }
     const config = yield* packageScopeConfig(new URL(baseUrl));
-    let pjsonUrl;
-    if (config.exists) {
-      pjsonUrl = fileUrl(config.pjsonPath);
-      const imports = config.imports;
-      if (imports) {
-        if (Object.prototype.hasOwnProperty.call(imports, name) && !name.includes("*")) {
-          const result = yield* resolveTarget(pjsonUrl, imports[name], "", name, base, false, true, false);
-          if (result != null) return result;
-        } else {
-          const best = bestPattern(imports, name);
-          if (best) {
-            const result = yield* resolveTarget(pjsonUrl, imports[best.key], best.subpath, best.key, base, true, true, false);
-            if (result != null) return result;
-          }
-        }
-      }
+    if (config.exists && config.imports) {
+      const pjsonUrl = fileUrl(config.pjsonPath);
+      const policy = createNodePackageMapPolicy(pjsonUrl, base, true, (target) => packageResolve(target, pjsonUrl.href));
+      const result = yield* selectPackageMap(config.imports, name, conditions, policy);
+      if (result != null) return result;
     }
-    const where = pjsonUrl ? ` in package ${filePath(new URL(".", pjsonUrl))}package.json` : "";
+    const where = config.exists ? ` in package ${filePath(new URL(".", fileUrl(config.pjsonPath)))}package.json` : "";
     throw nodeError(TypeError, "ERR_PACKAGE_IMPORT_NOT_DEFINED", `Package import specifier "${name}" is not defined${where} imported from ${base}`);
   }
   function* legacyMainResolve(pjsonUrl, config, base) {
@@ -20328,6 +20232,7 @@ function __requireFrom(id, fromDir, parent, required = true) {
   }
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
+  if (resolved.startsWith("node:")) return __requireFrom(resolved, fromDir, parent, required);
   return __loadModule(resolved, resolved, required, parent);
 }
 

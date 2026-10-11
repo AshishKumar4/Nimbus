@@ -21,6 +21,7 @@
  * self-contained function: nothing inside may refer to this module.
  */
 import { invalidArgType, nodeError } from './node-error.js';
+import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, selectPackageMap } from './exports-resolver.js';
 /** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
 export function unknownFileExtensionMessage(path) {
     const base = path.slice(path.lastIndexOf('/') + 1);
@@ -28,7 +29,7 @@ export function unknownFileExtensionMessage(path) {
     return `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`;
 }
 export function createEsmResolver(host, options = {}) {
-    const conditions = new Set(['node', 'import', 'module-sync', ...(options.conditions ?? [])]);
+    const conditions = new Set([...DEFAULT_ESM_CONDITIONS, ...(options.conditions ?? [])]);
     // The host's questions, each yielded as-is and typed by what it answers.
     const ask = {
         *kind(path) {
@@ -106,140 +107,6 @@ export function createEsmResolver(host, options = {}) {
         }
         return { exists: false, pjsonPath: filePath(pjsonUrl), type: 'none' };
     }
-    function invalidPackageTarget(key, target, pjsonUrl, internal, base) {
-        const text = typeof target === 'object' && target !== null ? JSON.stringify(target, null, '') : `${target}`;
-        const pkgPath = filePath(new URL('.', pjsonUrl));
-        const related = !internal && text.length > 0 && !text.startsWith('./');
-        const tail = `in the package config ${pkgPath}package.json imported from ${base}${related ? '; targets must start with "./"' : ''}`;
-        return nodeError(Error, 'ERR_INVALID_PACKAGE_TARGET', key === '.'
-            ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}`
-            : `Invalid "${internal ? 'imports' : 'exports'}" target ${JSON.stringify(text)} defined for '${key}' ${tail}`);
-    }
-    const invalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))?(\\|\/|$)/i;
-    const deprecatedInvalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
-    function* resolveTargetString(target, subpath, match, pjsonUrl, base, pattern, internal, isPathMap) {
-        if (subpath !== '' && !pattern && target[target.length - 1] !== '/') {
-            throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-        }
-        if (!target.startsWith('./')) {
-            if (internal && !target.startsWith('../') && !target.startsWith('/')) {
-                let isUrl = false;
-                try {
-                    new URL(target);
-                    isUrl = true;
-                }
-                catch { /* a package name */ }
-                if (!isUrl) {
-                    const exportTarget = pattern ? target.replace(/\*/g, () => subpath) : target + subpath;
-                    return yield* packageResolve(exportTarget, pjsonUrl.href);
-                }
-            }
-            throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-        }
-        if (invalidSegment.test(target.slice(2)) && deprecatedInvalidSegment.test(target.slice(2))) {
-            throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-        }
-        const resolved = new URL(target, pjsonUrl);
-        if (!resolved.pathname.startsWith(new URL('.', pjsonUrl).pathname)) {
-            throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
-        }
-        if (subpath === '')
-            return resolved;
-        if (invalidSegment.test(subpath) && deprecatedInvalidSegment.test(subpath) && !isPathMap) {
-            const request = pattern ? match.replace('*', () => subpath) : match + subpath;
-            throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? 'imports' : 'exports'}" resolution of ${filePath(pjsonUrl)} imported from ${base}`);
-        }
-        if (pattern)
-            return new URL(resolved.href.replace(/\*/g, () => subpath));
-        return new URL(subpath, resolved);
-    }
-    function* resolveTarget(pjsonUrl, target, subpath, key, base, pattern, internal, isPathMap) {
-        if (typeof target === 'string') {
-            return yield* resolveTargetString(target, subpath, key, pjsonUrl, base, pattern, internal, isPathMap);
-        }
-        if (Array.isArray(target)) {
-            if (target.length === 0)
-                return null;
-            let lastException;
-            for (const item of target) {
-                let result;
-                try {
-                    result = yield* resolveTarget(pjsonUrl, item, subpath, key, base, pattern, internal, isPathMap);
-                }
-                catch (error) {
-                    lastException = error;
-                    if (codeOf(error) === 'ERR_INVALID_PACKAGE_TARGET')
-                        continue;
-                    throw error;
-                }
-                if (result === undefined)
-                    continue;
-                if (result === null) {
-                    lastException = null;
-                    continue;
-                }
-                return result;
-            }
-            if (lastException === undefined || lastException === null)
-                return lastException;
-            throw lastException;
-        }
-        if (typeof target === 'object' && target !== null) {
-            const keys = Object.getOwnPropertyNames(target);
-            for (const condition of keys) {
-                if (/^\d+$/.test(condition) && String(Number(condition)) === condition && Number(condition) < 4294967295) {
-                    throw nodeError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`);
-                }
-            }
-            for (const condition of keys) {
-                if (condition !== 'default' && !conditions.has(condition))
-                    continue;
-                const result = yield* resolveTarget(pjsonUrl, Reflect.get(target, condition), subpath, key, base, pattern, internal, isPathMap);
-                if (result === undefined)
-                    continue;
-                return result;
-            }
-            return undefined;
-        }
-        if (target === null)
-            return null;
-        throw invalidPackageTarget(key, target, pjsonUrl, internal, base);
-    }
-    function patternKeyCompare(a, b) {
-        const aStar = a.indexOf('*');
-        const bStar = b.indexOf('*');
-        const baseA = aStar === -1 ? a.length : aStar + 1;
-        const baseB = bStar === -1 ? b.length : bStar + 1;
-        if (baseA > baseB)
-            return -1;
-        if (baseB > baseA)
-            return 1;
-        if (aStar === -1)
-            return 1;
-        if (bStar === -1)
-            return -1;
-        if (a.length > b.length)
-            return -1;
-        if (b.length > a.length)
-            return 1;
-        return 0;
-    }
-    /** The best pattern key of `map` for `name`, and what its `*` matched. */
-    function bestPattern(map, name) {
-        let best = '';
-        let bestSubpath = '';
-        for (const key of Object.getOwnPropertyNames(map)) {
-            const star = key.indexOf('*');
-            if (star === -1 || !name.startsWith(key.slice(0, star)))
-                continue;
-            const trailer = key.slice(star + 1);
-            if (name.length >= key.length && name.endsWith(trailer) && patternKeyCompare(best, key) === 1 && key.lastIndexOf('*') === star) {
-                best = key;
-                bestSubpath = name.slice(star, name.length - trailer.length);
-            }
-        }
-        return best ? { key: best, subpath: bestSubpath } : null;
-    }
     function exportsNotFound(subpath, pjsonUrl, base) {
         const pkgPath = filePath(new URL('.', pjsonUrl));
         return nodeError(Error, 'ERR_PACKAGE_PATH_NOT_EXPORTED', subpath === '.'
@@ -247,42 +114,11 @@ export function createEsmResolver(host, options = {}) {
             : `Package subpath '${subpath}' is not defined by "exports" in ${pkgPath}package.json imported from ${base}`);
     }
     function* packageExportsResolve(pjsonUrl, subpath, config, base) {
-        let exports = config.exports;
-        const isSugar = (() => {
-            if (typeof exports === 'string' || Array.isArray(exports))
-                return true;
-            if (typeof exports !== 'object' || exports === null)
-                return false;
-            let sugar = false;
-            let i = 0;
-            for (const key of Object.getOwnPropertyNames(exports)) {
-                const current = key === '' || key[0] !== '.';
-                if (i++ === 0)
-                    sugar = current;
-                else if (sugar !== current) {
-                    throw nodeError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`);
-                }
-            }
-            return sugar;
-        })();
-        if (isSugar)
-            exports = { '.': exports };
-        // An object by now: sugar was wrapped, and anything else is a subpath map.
-        const map = exports;
-        if (Object.prototype.hasOwnProperty.call(map, subpath) && !subpath.includes('*') && !subpath.endsWith('/')) {
-            const result = yield* resolveTarget(pjsonUrl, map[subpath], '', subpath, base, false, false, false);
-            if (result == null)
-                throw exportsNotFound(subpath, pjsonUrl, base);
-            return result;
-        }
-        const best = bestPattern(map, subpath);
-        if (best) {
-            const result = yield* resolveTarget(pjsonUrl, map[best.key], best.subpath, best.key, base, true, false, subpath.endsWith('/'));
-            if (result == null)
-                throw exportsNotFound(subpath, pjsonUrl, base);
-            return result;
-        }
-        throw exportsNotFound(subpath, pjsonUrl, base);
+        const policy = createNodePackageMapPolicy(pjsonUrl, base, false, (target) => packageResolve(target, pjsonUrl.href));
+        const result = yield* selectPackageMap(config.exports, subpath, conditions, policy);
+        if (result == null)
+            throw exportsNotFound(subpath, pjsonUrl, base);
+        return result;
     }
     function* packageImportsResolve(name, baseUrl) {
         const base = filePath(baseUrl);
@@ -290,28 +126,14 @@ export function createEsmResolver(host, options = {}) {
             throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
         }
         const config = yield* packageScopeConfig(new URL(baseUrl));
-        let pjsonUrl;
-        if (config.exists) {
-            pjsonUrl = fileUrl(config.pjsonPath);
-            // readPackageConfig keeps `imports` only when it is an object.
-            const imports = config.imports;
-            if (imports) {
-                if (Object.prototype.hasOwnProperty.call(imports, name) && !name.includes('*')) {
-                    const result = yield* resolveTarget(pjsonUrl, imports[name], '', name, base, false, true, false);
-                    if (result != null)
-                        return result;
-                }
-                else {
-                    const best = bestPattern(imports, name);
-                    if (best) {
-                        const result = yield* resolveTarget(pjsonUrl, imports[best.key], best.subpath, best.key, base, true, true, false);
-                        if (result != null)
-                            return result;
-                    }
-                }
-            }
+        if (config.exists && config.imports) {
+            const pjsonUrl = fileUrl(config.pjsonPath);
+            const policy = createNodePackageMapPolicy(pjsonUrl, base, true, (target) => packageResolve(target, pjsonUrl.href));
+            const result = yield* selectPackageMap(config.imports, name, conditions, policy);
+            if (result != null)
+                return result;
         }
-        const where = pjsonUrl ? ` in package ${filePath(new URL('.', pjsonUrl))}package.json` : '';
+        const where = config.exists ? ` in package ${filePath(new URL('.', fileUrl(config.pjsonPath)))}package.json` : '';
         throw nodeError(TypeError, 'ERR_PACKAGE_IMPORT_NOT_DEFINED', `Package import specifier "${name}" is not defined${where} imported from ${base}`);
     }
     function* legacyMainResolve(pjsonUrl, config, base) {
