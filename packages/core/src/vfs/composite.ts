@@ -29,7 +29,7 @@ import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode 
 import { normalizeVfsPath } from './path.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
-import { S_IFMT, isCharacterDevice } from './vfs.js';
+import { S_IFMT, isCharacterDevice, isPromise, then } from './vfs.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -340,18 +340,9 @@ function relativeTo(point: string, path: string): string {
   return path.length === point.length ? '/' : path.slice(point.length);
 }
 
-function isPromise<T>(value: Awaitable<T>): value is Promise<T> {
-  return typeof (value as { then?: unknown } | null)?.then === 'function';
-}
-
 function syncValue<T>(value: Awaitable<T>): T {
   if (isPromise(value)) throw new Error('synchronous filesystem operation returned a promise');
   return value;
-}
-
-/** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
-function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U> {
-  return isPromise(value) ? value.then(next) : next(value);
 }
 
 /** An rm -r report (VfsRemoval). */
@@ -1308,16 +1299,6 @@ export class CompositeVFS implements VFS {
   // that backend's. Inside a mount whose backend resolves its own paths
   // (MountOptions.resolvesPaths) nothing is looked up: the backend is handed
   // the rest of the path whole.
-
-  /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
-  writesInPlace(path: string): boolean {
-    const route = this.locate(normalizePath(path));
-    try {
-      return typeof (this.ops(route, true) as { writeRange?: unknown }).writeRange === 'function';
-    } catch {
-      return false;
-    }
-  }
 
   /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
   private locate(path: string): Route {

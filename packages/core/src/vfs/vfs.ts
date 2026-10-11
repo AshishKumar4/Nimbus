@@ -20,6 +20,15 @@ import { isVfsError, syscallError, type VfsError } from './vfs-error.js';
 
 export type Awaitable<T> = T | Promise<T>;
 
+export function isPromise<T>(value: Awaitable<T>): value is Promise<T> {
+  return typeof (value as { then?: unknown } | null)?.then === 'function';
+}
+
+/** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
+export function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U> {
+  return isPromise(value) ? value.then(next) : next(value);
+}
+
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;
 

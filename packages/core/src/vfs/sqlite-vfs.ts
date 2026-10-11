@@ -369,21 +369,10 @@ export interface VfsOpenDescription {
    */
   end?(): number;
   /**
-   * A description whose backend cannot write in place buffers its writes
-   * (VFS-PF-001): an append goes at the end as it stands at the flush,
-   * `flush` applies what is pending, and `pendingBytes` is what a process
-   * killed now would lose. Absent: every write is in place.
-   */
-  writeAppend?(bytes: Uint8Array): number;
-  /**
-   * Write what is held for the file (fsync): a buffered mount handle's
-   * pending writes, the appends SqliteVFS holds; throws what writing them
-   * failed with. Absent: nothing is held.
+   * Write what is held for the file (fsync): the appends SqliteVFS holds;
+   * throws what writing them failed with. Absent: nothing is held.
    */
   flush?(): void;
-  pendingBytes?(): number;
-  /** `file` with this description's pending writes applied, as flush applies them. */
-  applyPending?(file: Uint8Array): Uint8Array;
 }
 
 export interface VfsStat {

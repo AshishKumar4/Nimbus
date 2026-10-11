@@ -1,8 +1,10 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js';
+import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
+import { readDeclaredSource, readRangeOrWhole, type Awaitable, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
 
@@ -25,77 +27,6 @@ import type {
   ExclusiveMutationRequest,
 } from './os-contracts.js';
 
-interface OpenDescription {
-  handle: RuntimeFileHandle;
-  node: VfsOpenDescription;
-  refs: number;
-}
-
-export interface SqliteDescriptorScope {
-  nextId: number;
-  handles: Map<number, OpenDescription>;
-  /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
-  waveDescriptions: Map<string, number>;
-  closed: boolean;
-  /** Aborted when the scope closes; cancels in-flight stream commits. */
-  abort: AbortController;
-  subscriptions: Set<() => void>;
-  /** The exclusive leases the process took itself (not delegations), by owner: each one's release, among the subscriptions. */
-  leases: Map<string, () => void>;
-}
-
-export function createSqliteDescriptorScope(): SqliteDescriptorScope {
-  return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
-}
-
-/**
- * A description's last close: a buffered mount handle's flush. A flush that
- * fails loses the writes it held, and says so: close's error for the file,
- * the failure as its cause (EIO where it carries no code: an abort, a dropped
- * call). Node's close reports a deferred write's failure the same way.
- */
-function lastClose(node: VfsOpenDescription): void {
-  try {
-    node.close();
-  } catch (error) {
-    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'EIO';
-    const reason = error instanceof Error ? error.message : String(error);
-    throw fsError(code, 'close', node.path(), undefined, { detail: `its buffered writes are lost (${reason})`, cause: error });
-  }
-}
-
-/**
- * Closes every description `scope` holds, each whatever another's flush
- * answers, and empties it. The flushes that failed (lastClose's errors) are
- * returned, for the caller to report once the rest of its teardown is done
- * (reportLost): a teardown that stopped at the first one would keep the
- * scope, and everything it revokes, open.
- */
-export function closeDescriptions(scope: SqliteDescriptorScope): unknown[] {
-  const lost: unknown[] = [];
-  for (const opened of scope.handles.values()) {
-    if (--opened.refs !== 0) continue;
-    opened.handle.closed = true;
-    try {
-      lastClose(opened.node);
-    } catch (error) {
-      lost.push(error);
-    }
-  }
-  scope.handles.clear();
-  scope.waveDescriptions.clear();
-  return lost;
-}
-
-/** Reports closeDescriptions' failures: the one, or EIO over them all. */
-export function reportLost(lost: readonly unknown[]): void {
-  if (lost.length === 1) throw lost[0];
-  if (lost.length > 1) {
-    throw Object.assign(new AggregateError(lost, `EIO: the buffered writes of ${lost.length} descriptors are lost`), { code: 'EIO' });
-  }
-}
-
-
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   readonly synchronous: RuntimeSynchronousFs = this;
   private readonly vfs: CredentialedVfs;
@@ -103,10 +34,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
   private readonly mounted: SyncVFS | undefined;
 
+  private readonly descriptors: Descriptors;
+
   constructor(
     vfs: CredentialedVfs,
     private readonly rawVfs: SqliteVFS,
-    private readonly scope = createSqliteDescriptorScope(),
+    private readonly scope = createDescriptorScope(),
     private readonly namespace?: CompositeVFS,
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
@@ -116,6 +49,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   ) {
     this.vfs = vfs;
     this.mounted = namespace?.sync;
+    this.descriptors = new Descriptors(scope, () => rawVfs.revision());
   }
 
   dispose(): void {
@@ -155,13 +89,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (DOT_DOT_SEGMENT.test(spelled)) return null;
     const namespace = this.namespace;
     return this.vfs.resolveName(spelled, followSymlinks, namespace && ((name) => namespace.composes('/' + name)));
-  }
-
-  /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
-  private virtualStat(mount: SyncVFS, path: string): RuntimeVfsStat {
-    const stat = mount.stat(path);
-    if (stat === null) throw fsError('ENOENT', 'stat', path);
-    return runtimeStatOf(stat);
   }
 
   /** SQLite stores no row for the namespace root; it is the one directory that always exists. */
@@ -245,24 +172,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  /**
-   * A mounted file as this process sees it while it holds buffered writes to
-   * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
-   * of this process's descriptions of it applied, in open order. Undefined
-   * when it holds none pending: then the mount's own file is the answer.
-   * Another process's pending writes are never in it.
-   */
+  /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
   private processView(mount: SyncVFS, name: string): Uint8Array | undefined {
-    let file: Uint8Array | undefined;
-    const seen = new Set<VfsOpenDescription>();
-    for (const opened of this.scope.handles.values()) {
-      const node = opened.node;
-      if (seen.has(node) || node.applyPending === undefined || node.path() !== name || (node.pendingBytes?.() ?? 0) === 0) continue;
-      seen.add(node);
-      file ??= mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name);
-      file = node.applyPending(file);
-    }
-    return file;
+    return processView(this.scope, () => (mount.stat(name) === null ? null : mount.readFile(name)), name);
   }
 
   writeFile(
@@ -455,7 +367,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeFileHandle {
     return called({ syscall: 'open', path }, () => {
-      const normalizedFlags = normalizeOpenFlags(flags);
+      const normalizedFlags = openFlags(flags);
       const mutates = normalizedFlags.write || normalizedFlags.create ||
         normalizedFlags.truncate || normalizedFlags.append;
       const owner = mutates ? options.mutationOwner : undefined;
@@ -463,7 +375,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open', owner)
         : this.locate(path, normalizedFlags.followSymlinks);
       if (located === null) throw fsError('ELOOP', 'open', path);
-      if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode, flags.sync === true);
+      if (located.mount) {
+        const namespace = this.namespace!;
+        const node = openMounted({
+          files: located.mount, name: located.path, flags: normalizedFlags, cred: this.vfs.cred, mode: flags.mode,
+          refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => namespace.realpath(name),
+          awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+        }) as Description;
+        return this.descriptors.issue(node, normalizedFlags);
+      }
       const p = located.path;
       if (p === '') return this.openRoot(path, normalizedFlags);
       // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
@@ -488,51 +408,27 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         this.owned(owner).truncate(p, 0);
       }
 
-      const stat = this.vfs.stat(p);
-      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
-      const handle: RuntimeFileHandle = {
-        id: this.scope.nextId++,
-        path: p,
-        flags: Object.freeze(normalizedFlags),
-        position: normalizedFlags.append ? stat.size : 0,
-        closed: false,
-      };
-      this.scope.handles.set(handle.id, { handle, node, refs: 1 });
-      return { ...handle };
+      return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags);
     });
   }
 
+  /** `run` on descriptor `id` for this synchronous face: a description on an asynchronous mount refuses, as its mount does. */
+  private now<T>(id: number, run: () => Awaitable<T>): T {
+    const node = this.descriptors.description(id);
+    if (node.awaits) throw awaitsRefusal(node.path());
+    return run() as T;
+  }
+
   read(handleId: number, offset: number | null, length: number): Uint8Array {
-    const handle = this.getHandle(handleId);
-    if (!handle.flags.read) throw fsError('EBADF', 'read', handle.path);
-    const start = offset == null ? handle.position : Math.max(0, offset);
-    const out = this.description(handleId).node.read(start, Math.max(0, length));
-    if (offset == null) handle.position = start + out.byteLength;
-    return out;
+    return this.now(handleId, () => this.descriptors.read(handleId, offset, length));
   }
 
   write(handleId: number, offset: number | null, bytes: Uint8Array): number {
-    const handle = this.getHandle(handleId);
-    if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
-    const node = this.description(handleId).node;
-    if (handle.flags.append && node.writeAppend) {
-      node.writeAppend(bytes);
-      handle.position += bytes.byteLength;
-      return bytes.byteLength;
-    }
-    const start = handle.flags.append
-      ? node.end?.() ?? node.stat().size
-      : offset == null ? handle.position : Math.max(0, offset);
-    node.write(start, bytes);
-    const end = start + bytes.byteLength;
-    if (offset == null || handle.flags.append) handle.position = end;
-    return bytes.byteLength;
+    return this.now(handleId, () => this.descriptors.write(handleId, offset, bytes));
   }
 
   close(handleId: number): void {
-    const opened = this.description(handleId);
-    this.scope.handles.delete(handleId);
-    if (--opened.refs === 0) { opened.handle.closed = true; lastClose(opened.node); }
+    this.descriptors.close(handleId);
   }
 
   readdir(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): RuntimeVfsDirEntry[] {
@@ -663,10 +559,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   fsync(handleId?: number): void {
-    // Writes what the description's file has held: a buffered mount handle's
-    // writes, the appends SqliteVFS holds (appendThrough). Any other write was
-    // in the store before its call returned.
-    if (handleId !== undefined) this.description(handleId).node.flush?.();
+    if (handleId !== undefined) this.now(handleId, () => this.descriptors.fsync(handleId));
   }
 
   /**
@@ -770,10 +663,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     adopt: (id, ino, rights, path, cred) => {
       const node = this.rawVfs.describeInode(ino, path, cred, rights, this.vfs.principal, this.vfs.holds);
       if (node === null) return null;
-      const handle: RuntimeFileHandle = {
-        id: this.scope.nextId++, path, flags: Object.freeze(normalizeOpenFlags({ read: rights.read, write: rights.write })), position: 0, closed: false,
-      };
-      this.scope.handles.set(handle.id, { handle, node, refs: 1 });
+      const handle = this.descriptors.issue(node, openFlags({ read: rights.read, write: rights.write }));
       // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
       const prior = this.scope.waveDescriptions.get(id);
       if (prior !== undefined && this.scope.handles.has(prior)) this.close(prior);
@@ -782,7 +672,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     },
     node: (id) => {
       const handleId = this.scope.waveDescriptions.get(id);
-      return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+      // A wave's description is one this binding adopted: the engine's, on SQLite.
+      return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node as VfsOpenDescription | undefined;
     },
     handle: (id) => {
       const handleId = this.scope.waveDescriptions.get(id);
@@ -837,17 +728,17 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private pathArgument(path: RuntimeFsPath): string {
     if (typeof path === 'string') return path;
     if ('root' in path) return path.root + '/' + path.path;
-    const node = this.description(path.directory).node;
-    if (node.stat().type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
+    const directory = path.directory;
+    if (this.now(directory, () => this.descriptors.description(directory).stat()).type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
     if (path.path.startsWith('/')) return path.path;
-    return node.path() + '/' + path.path;
+    return this.descriptors.path(directory) + '/' + path.path;
   }
 
   private resolveDataPath(path: RuntimeFsPath, followSymlinks: boolean): string | null {
     if (typeof path !== 'string' && path.beneath) {
       // The root is found by name, so every directory above it must grant
       // search (VFS-COMP-006) before anything is looked up beneath it.
-      const root = normalizeVfsPath('root' in path ? path.root : this.description(path.directory).node.path());
+      const root = normalizeVfsPath('root' in path ? path.root : this.descriptors.path(path.directory));
       const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true);
       for (let step = walk.next(); ; ) {
         if (step.done) return step.value;
@@ -987,106 +878,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       read: deny, write: deny, truncate: deny, readdir: () => this.readdir(''),
       chmod: deny, chown: deny, utimes: deny, close: () => {},
     };
-    const handle: RuntimeFileHandle = { id: this.scope.nextId++, path: '', flags: Object.freeze(flags), position: 0, closed: false };
-    this.scope.handles.set(handle.id, { handle, node, refs: 1 });
-    return { ...handle };
-  }
-
-  /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
-  private openMount(mount: SyncVFS, name: string, path: RuntimeFsPath, flags: RuntimeFileHandle['flags'], mode?: number, sync = false): RuntimeFileHandle {
-    const exists = mount.stat(name) !== null;
-    if (flags.exclusive && flags.create && exists) throw fsError('EEXIST', 'open', path);
-    if (!exists && !flags.create) throw fsError('ENOENT', 'open', path);
-    if (!exists) mount.writeFile(name, new Uint8Array(0), mode === undefined ? undefined : { mode });
-    const stat = this.virtualStat(mount, name);
-    if (flags.directory && stat.type !== 'directory') throw fsError('ENOTDIR', 'open', path);
-    if (stat.type === 'directory' && (flags.truncate || flags.append)) throw fsError('EISDIR', 'open', path);
-    if (!modeAllows(stat, (flags.read ? 4 : 0) | (flags.write && stat.type !== 'directory' ? 2 : 0), this.vfs.cred)) {
-      throw fsError('EACCES', 'open', path);
-    }
-    if (flags.truncate) mountOp(mount.truncate, 'open', path)(name, 0);
-    const node: VfsOpenDescription = {
-      ino: stat.ino, path: () => name, stat: () => this.virtualStat(mount, name),
-      read: (offset, length) => readRangeOrWhole(mount, name, offset, length),
-      write: (offset, bytes) => { mountOp(mount.writeRange, 'write', path)(name, offset, bytes); return bytes.length; },
-      truncate: size => mountOp(mount.truncate, 'ftruncate', path)(name, size),
-      readdir: () => mount.readdir(name).map((entry) => ({ name: entry.name, type: entry.type })),
-      chmod: mode => mountOp(mount.chmod, 'fchmod', path)(name, mode),
-      chown: (uid, gid) => mountOp(mount.chown, 'fchown', path)(name, uid, gid),
-      utimes: (atime, mtime) => mountOp(mount.utimes, 'futimes', path)(name, atime, mtime), close: () => {},
-    };
-    if (stat.type === 'file' && !this.namespace!.writesInPlace(name)) this.buffer(node, mount, name, path, sync);
-    const handle: RuntimeFileHandle = {
-      id: this.scope.nextId++, path: name, flags: Object.freeze(flags),
-      position: flags.append ? stat.size : 0, closed: false,
-    };
-    this.scope.handles.set(handle.id, { handle, node, refs: 1 });
-    return { ...handle };
-  }
-
-  /**
-   * A mount that cannot write in place (no writeRange): the handle buffers
-   * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
-   * buffered), and a flush (fsync, the last close, the process's release)
-   * reads the file, applies them in order and writes it back. Opened `sync`
-   * (O_SYNC), each write is flushed before it returns, so its answer is what
-   * the mount did.
-   */
-  private buffer(node: VfsOpenDescription, mount: SyncVFS, name: string, path: RuntimeFsPath, sync: boolean): void {
-    const pending: { offset: number | null; bytes: Uint8Array }[] = [];
-    let held = 0;
-    const take = (offset: number | null, bytes: Uint8Array): number => {
-      if (held + bytes.byteLength > this.bufferedWriteBytes) throw fsError('EFBIG', 'write', path);
-      pending.push({ offset, bytes: bytes.slice() });
-      held += bytes.byteLength;
-      return bytes.byteLength;
-    };
-    // `file` with the pending writes applied in order (an append at the end
-    // as it then is): what a flush writes, and what this process reads.
-    const applyPending = (base: Uint8Array): Uint8Array => {
-      // A copy: a backend may hand out its own buffer, which must not change before the flush.
-      let file = base.slice();
-      for (const write of pending) {
-        const at = write.offset ?? file.byteLength;
-        if (at + write.bytes.byteLength > file.byteLength) {
-          const grown = new Uint8Array(at + write.bytes.byteLength);
-          grown.set(file);
-          file = grown;
-        }
-        file.set(write.bytes, at);
-      }
-      return file;
-    };
-    const flush = (): void => {
-      if (pending.length === 0) return;
-      const file = applyPending(mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name));
-      pending.length = 0;
-      held = 0;
-      mount.writeFile(name, file);
-    };
-    // A read or fstat on the descriptor is this process's view of the file.
-    const mountedRead = node.read;
-    const mountedStat = node.stat;
-    node.read = (offset, length) => {
-      const viewed = this.processView(mount, name);
-      return viewed ? viewed.slice(offset, offset + length) : mountedRead(offset, length);
-    };
-    node.stat = () => {
-      const viewed = this.processView(mount, name);
-      return viewed ? { ...mountedStat(), size: viewed.byteLength } : mountedStat();
-    };
-    // O_SYNC: flushed as it is written, so a refusal is the write's own.
-    const write = (offset: number | null, bytes: Uint8Array): number => {
-      const written = take(offset, bytes);
-      if (sync) flush();
-      return written;
-    };
-    node.applyPending = applyPending;
-    node.write = write;
-    node.writeAppend = (bytes) => write(null, bytes);
-    node.flush = flush;
-    node.pendingBytes = () => held;
-    node.close = flush;
+    return this.descriptors.issue(node, flags);
   }
 
   private ensureParent(path: string): void {
@@ -1126,48 +918,18 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }
   }
 
-  private description(handleId: number): OpenDescription {
-    const description = this.scope.handles.get(handleId);
-    if (!description || this.scope.closed) throw fsError('EBADF', 'fd', String(handleId));
-    return description;
-  }
-
-  private getHandle(handleId: number): RuntimeFileHandle { return this.description(handleId).handle; }
-
   /** The absolute path a descriptor was opened at. */
-  descriptorPath(handleId: number): string { return '/' + normalizeVfsPath(this.description(handleId).node.path()); }
+  descriptorPath(handleId: number): string { return '/' + normalizeVfsPath(this.descriptors.path(handleId)); }
 
-  fstat(handleId: number): RuntimeVfsStat {
-    return { ...this.description(handleId).node.stat(), revision: this.rawVfs.revision() };
-  }
-
-  dup(handleId: number): RuntimeFileHandle {
-    const opened = this.description(handleId);
-    const id = this.scope.nextId++;
-    opened.refs++;
-    this.scope.handles.set(id, opened);
-    return { ...opened.handle, id };
-  }
-
-  seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number {
-    const handle = this.getHandle(handleId);
-    const base = whence === 'set' ? 0 : whence === 'current' ? handle.position : whence === 'end' ? this.fstat(handleId).size : NaN;
-    const position = base + offset;
-    if (!Number.isSafeInteger(position) || position < 0) throw fsError('EINVAL', 'seek', handle.path);
-    handle.position = position;
-    return position;
-  }
-
-  setStatus(handleId: number, status: { append?: boolean }): void {
-    const handle = this.getHandle(handleId);
-    if (status.append !== undefined) handle.flags = Object.freeze({ ...handle.flags, append: status.append });
-  }
-
-  readdirHandle(handleId: number): RuntimeVfsDirEntry[] { return this.description(handleId).node.readdir(); }
-  ftruncate(handleId: number, size: number): void { this.description(handleId).node.truncate(size); }
-  fchmod(handleId: number, mode: number): void { this.description(handleId).node.chmod(mode); }
-  fchown(handleId: number, uid: number, gid: number): void { this.description(handleId).node.chown(uid, gid); }
-  futimes(handleId: number, atime: number, mtime: number): void { this.description(handleId).node.utimes(atime, mtime); }
+  fstat(handleId: number): RuntimeVfsStat { return this.now(handleId, () => this.descriptors.fstat(handleId)); }
+  dup(handleId: number): RuntimeFileHandle { return this.descriptors.dup(handleId); }
+  seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number { return this.now(handleId, () => this.descriptors.seek(handleId, offset, whence)); }
+  setStatus(handleId: number, status: { append?: boolean }): void { this.descriptors.setStatus(handleId, status); }
+  readdirHandle(handleId: number): RuntimeVfsDirEntry[] { return this.now(handleId, () => this.descriptors.readdir(handleId)); }
+  ftruncate(handleId: number, size: number): void { this.now(handleId, () => this.descriptors.ftruncate(handleId, size)); }
+  fchmod(handleId: number, mode: number): void { this.now(handleId, () => this.descriptors.fchmod(handleId, mode)); }
+  fchown(handleId: number, uid: number, gid: number): void { this.now(handleId, () => this.descriptors.fchown(handleId, uid, gid)); }
+  futimes(handleId: number, atime: number, mtime: number): void { this.now(handleId, () => this.descriptors.futimes(handleId, atime, mtime)); }
 }
 
 /** A `..` component in a path's spelling. */
@@ -1178,9 +940,6 @@ type Located =
   | { mount: SyncVFS; path: string; absent?: undefined }
   /** `absent`: the one walk on SQLite ended at an absent name (walkOnSqlite). */
   | { mount?: undefined; path: string; absent?: true };
-
-/** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
-export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
 function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, ...args: [call: string, path: RuntimeFsPath] | [call: FsCall]): F {
@@ -1200,20 +959,6 @@ function removeTree(mount: SyncVFS, path: string): void {
   }
 }
 
-
-function normalizeOpenFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags'] {
-  return {
-    read: !!flags.read || !flags.write,
-    write: !!flags.write,
-    append: !!flags.append,
-    create: !!flags.create,
-    exclusive: !!flags.exclusive,
-    directory: !!flags.directory,
-    truncate: !!flags.truncate,
-    followSymlinks: flags.followSymlinks !== false,
-    expectedRevision: flags.expectedRevision,
-  };
-}
 
 /** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
 interface FsCall {
