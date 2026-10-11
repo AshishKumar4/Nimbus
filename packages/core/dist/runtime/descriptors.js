@@ -7,7 +7,7 @@
  * awaiting when its mount does (`awaits`): the synchronous face refuses
  * that one as it refuses its mount, before anything is done.
  */
-import { then } from '../vfs/vfs.js';
+import { andThen } from '../vfs/vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
 /** An open's flags as its descriptor keeps them: neither access asked is O_RDONLY. */
 export function openFlags(flags) {
@@ -130,7 +130,7 @@ export class Descriptors {
         if (!handle.flags.read)
             throw fsError('EBADF', 'read', handle.path);
         const start = offset == null ? handle.position : Math.max(0, offset);
-        return then(node.read(start, Math.max(0, length)), (out) => {
+        return andThen(node.read(start, Math.max(0, length)), (out) => {
             if (offset == null)
                 handle.position = start + out.byteLength;
             return out;
@@ -141,15 +141,15 @@ export class Descriptors {
         if (!handle.flags.write)
             throw fsError('EBADF', 'write', handle.path);
         if (handle.flags.append && node.append) {
-            return then(node.append(bytes), (end) => {
+            return andThen(node.append(bytes), (end) => {
                 handle.position = end;
                 return bytes.byteLength;
             });
         }
         const start = handle.flags.append
-            ? node.end?.() ?? then(node.stat(), (stat) => stat.size)
+            ? node.end?.() ?? andThen(node.stat(), (stat) => stat.size)
             : offset == null ? handle.position : Math.max(0, offset);
-        return then(start, (at) => then(node.write(at, bytes), () => {
+        return andThen(start, (at) => andThen(node.write(at, bytes), () => {
             if (offset == null || handle.flags.append)
                 handle.position = at + bytes.byteLength;
             return bytes.byteLength;
@@ -178,7 +178,7 @@ export class Descriptors {
     }
     fstat(id) {
         const node = this.opened(id).node;
-        return then(node.stat(), (stat) => (node.mounted ? stat : { ...stat, revision: this.clock() }));
+        return andThen(node.stat(), (stat) => (node.mounted ? stat : { ...stat, revision: this.clock() }));
     }
     dup(id) {
         const opened = this.opened(id);
@@ -189,8 +189,8 @@ export class Descriptors {
     }
     seek(id, offset, whence) {
         const handle = this.opened(id).handle;
-        const base = whence === 'set' ? 0 : whence === 'current' ? handle.position : whence === 'end' ? then(this.fstat(id), (stat) => stat.size) : NaN;
-        return then(base, (from) => {
+        const base = whence === 'set' ? 0 : whence === 'current' ? handle.position : whence === 'end' ? andThen(this.fstat(id), (stat) => stat.size) : NaN;
+        return andThen(base, (from) => {
             const position = from + offset;
             if (!Number.isSafeInteger(position) || position < 0)
                 throw fsError('EINVAL', 'seek', handle.path);
