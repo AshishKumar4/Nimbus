@@ -28,6 +28,8 @@ export interface EsmMissing {
     readonly name: string;
     readonly code: string;
     readonly message: string;
+    /** The URL Node's resolution error carries (a module or directory not found). */
+    readonly url?: string;
 }
 /** What a launch stages for its ES modules. */
 export interface EsmStage {
@@ -62,8 +64,10 @@ export interface EsmStageFs {
 export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string, {
     readonly code: string;
     readonly sites: ImportSites;
-}>, { conditions, isCode, gate }: {
+}>, { conditions, cwd, isCode, gate }: {
     conditions: readonly string[];
+    /** The process's working directory (EsmResolverOptions.cwd). */
+    cwd: string;
     isCode(key: string): boolean;
     /** Whether the registry needs each module gated: workerd (native-esm.ts). */
     gate: boolean;

@@ -79,6 +79,8 @@ export interface EsmResolverOptions {
     conditions?: readonly string[];
     /** False under `--no-experimental-strip-types`: a TypeScript file has no format. */
     stripTypes?: boolean;
+    /** The process's working directory, which a miss's CommonJS hint resolves a relative specifier from. */
+    cwd?: () => string;
 }
 export declare function createEsmResolver(host: EsmResolverHost, options?: EsmResolverOptions): EsmResolver;
 export {};

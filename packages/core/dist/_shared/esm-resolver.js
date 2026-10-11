@@ -457,9 +457,16 @@ export function createEsmResolver(host, options = {}) {
         }
         return { url: resolved.url, path: resolved.path, format: yield* formatOf(new URL(resolved.url), resolved.path) };
     }
-    /** Node's resolveAsCommonJS: the hint an ESM miss carries. */
+    /**
+     * Node's resolveAsCommonJS: the hint an ESM miss carries. Its CommonJS
+     * module has no filename, so Node's require resolves a relative
+     * specifier from the working directory (Module._resolveLookupPaths' ['.'])
+     * and the hint is that file relative to the importer.
+     */
     function* commonJsHint(specifier, parentUrl) {
-        let found = yield* ask.cjsResolve(specifier, filePath(parentUrl));
+        const cwd = options.cwd?.();
+        const from = isRelativeSpecifier(specifier) && cwd !== undefined ? `${cwd.replace(/\/+$/, '')}/[cwd]` : filePath(parentUrl);
+        let found = yield* ask.cjsResolve(specifier, from);
         if (found === null)
             return null;
         if (isRelativeSpecifier(specifier)) {

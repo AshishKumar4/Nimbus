@@ -14,9 +14,10 @@
  * One walk over a host that answers in place (a process's filesystem) or
  * with promises (the session's).
  */
-import { parse } from 'cjs-module-lexer';
+import { createCjsLexer } from './cjs-module-lexer.js';
 /** Extensions require loads as something other than CommonJS source. */
 const NOT_COMMONJS = { '.json': true, '.node': true, '.mjs': true };
+let lexer = null;
 function* walk(path, cache, source) {
     const known = cache.get(path);
     if (known !== undefined)
@@ -25,7 +26,7 @@ function* walk(path, cache, source) {
     let exports = [];
     let reexports = [];
     try {
-        ({ exports, reexports } = parse(typeof text === 'string' ? text : ''));
+        ({ exports, reexports } = (lexer ??= createCjsLexer())(typeof text === 'string' ? text : ''));
     }
     catch {
         // No names but `default`, as Node's.
