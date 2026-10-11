@@ -271,13 +271,12 @@ export declare class ProcessView implements VFS {
     readFileUncached(path: string): Promise<Uint8Array>;
     /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
      *
-     * A whole image, never a mix of two writes: the stat identity the read
-     * starts from (device, inode, size, revision) is re-checked after every
-     * piece, and a change fails loudly rather than assembling bytes from both
-     * sides of it. A backend with no ranged read answers ENOTSUP on the
-     * first piece; the read then takes one whole-file read instead of one
-     * per 64 KiB piece (each of which would otherwise re-read the whole file
-     * through readRangeOrWhole).
+     * One whole-file read through the normal credentialed namespace view, with
+     * the LRU bypassed: the image is read once for a facet's module map, never
+     * re-read from this isolate. One read is also one coherent image on every
+     * backend — no ranges to version against each other, no capability to
+     * probe. A caller mutating the returned buffer cannot disturb the store:
+     * the uncached path hands back its own buffer.
      */
     readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
     /**
