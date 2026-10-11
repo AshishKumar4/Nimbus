@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — workerd/Node differential: CI 35 s wall, 42 s CPU, 1.40 GiB peak (2026-10-11).
 // What nothing caught ends the program as it ends Node 22.22.3's: the same
 // stderr, byte for byte (but for the stack frames, which are the runtime's
 // own beside the program's), and the same exit code (shims' fatal
