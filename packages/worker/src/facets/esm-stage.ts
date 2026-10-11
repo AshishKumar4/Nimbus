@@ -99,6 +99,8 @@ function isNodeBuiltin(specifier: string): boolean {
 export interface EsmStageFs {
   readonly files: BridgeRequireFs;
   realpath(path: string): Promise<string>;
+  /** A directory's entries by name with their types (readdir's), or null: one listing answers for every file in it. */
+  entries?(dir: string): Promise<ReadonlyMap<string, string> | null>;
   /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
   held?(key: string): string | undefined;
 }
@@ -180,6 +182,19 @@ export async function stageEsModules(
   // manifests, and asks them thousands of times.
   const kinds = new Map<string, Promise<'file' | 'directory' | null>>();
   const reals = new Map<string, Promise<string>>();
+  const listings = new Map<string, Promise<ReadonlyMap<string, string> | null>>();
+  const realpath = (path: string): Promise<string> => once(reals, path, async () => {
+    // A file that is no link is where its directory's realpath puts it:
+    // a listing and a realpath per directory, not a walk per file.
+    const at = path.lastIndexOf('/');
+    if (fs.entries !== undefined && at > 0) {
+      const dir = path.slice(0, at);
+      const name = path.slice(at + 1);
+      const type = (await once(listings, dir, () => fs.entries!(dir)))?.get(name);
+      if (type === 'file') return `${await once(reals, dir, () => fs.realpath(dir))}/${name}`;
+    }
+    return fs.realpath(path);
+  });
   const texts = new Map<string, Promise<string | null>>();
   const requires = new Map<string, Promise<string | null>>();
   const readText = (path: string): Promise<string | null> => {
@@ -206,7 +221,7 @@ export async function stageEsModules(
         return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
       });
     },
-    realpath: (path) => once(reals, path, () => fs.realpath(path)),
+    realpath,
     readText,
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,

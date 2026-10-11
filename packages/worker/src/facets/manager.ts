@@ -4950,7 +4950,10 @@ async function _buildPrefetchBundle(
       const cell = bundle[key];
       return typeof cell === 'string' ? cell : undefined;
     };
-    esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), held }, cells, {
+    const entries = async (dir: string) => {
+      try { return new Map((await vfs.readdir(dir)).map((entry) => [entry.name, entry.type])); } catch { return null; }
+    };
+    esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
       conditions,
       cwd,
       scope: moduleScope,
