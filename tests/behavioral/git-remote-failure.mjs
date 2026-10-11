@@ -53,6 +53,12 @@ try {
   a.check('pull exits 1 with "unable to access"', pulled.code === 1 && pulled.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), pulled.out.slice(-400));
   const pushed = await step('push to it', 'git push origin main');
   a.check('push exits 128 with "unable to access"', pushed.code === 128 && pushed.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), pushed.out.slice(-400));
+  const once = await step('command-only fetch URL', 'git -c remote.once.url=https://example.invalid/once.git fetch once');
+  a.check('a command-only remote URL reaches the network facet', once.code === 128 && once.out.includes("fatal: unable to access 'https://example.invalid/once.git/': "), once.out.slice(-500));
+  const pushOnly = await step('pushurl-only remote', 'git config remote.upload.pushurl https://example.invalid/push.git && git push upload main');
+  a.check('a pushurl-only remote is accepted and named in the failure', pushOnly.code === 128 && pushOnly.out.includes("fatal: unable to access 'https://example.invalid/push.git/': "), pushOnly.out.slice(-500));
+  const preferred = await step('push uses its pushurl', 'git config remote.origin.pushurl https://example.invalid/preferred.git && git push origin main');
+  a.check('push transport and diagnostic use pushurl rather than fetch URL', preferred.code === 128 && preferred.out.includes("fatal: unable to access 'https://example.invalid/preferred.git/': "), preferred.out.slice(-500));
   const config = await step('the repository\'s config', 'cat .git/config; git config --get remote.nosuch.url');
   console.log(config.out.slice(-600));
   const nosuch = await step('fetch of a remote not configured', 'git fetch nosuch');

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — native Git/server and real facet differentials; measured 47 s in CI.
 // A git server that cannot be reached, or refuses, against host git doing
 // the same: clone, fetch, pull and push each exit as git does (128; pull,
 // whose fetch is git's child, 1) with git's own message.
@@ -194,6 +195,10 @@ try {
     assert.match(echoed.stderr, /^remote: denied for Basic <redacted>; /m, echoed.stderr);
     assert.doesNotMatch(echoed.stderr, /TOKEN-9|hunter2/, `no credential printed: ${echoed.stderr}`);
     assert.match(echoed.stderr, /clone https:\/\/127\.0\.0\.1\/r\.git with <redacted>/);
+    const unicode = await session.git('/home/user', ['clone', `${base}/echo.git`, '/home/user/echoed-unicode'], { GIT_USERNAME: 'git', GIT_PASSWORD: 'secret-密码' });
+    assert.equal(unicode.code, 128, unicode.stderr);
+    assert.match(unicode.stderr, /^remote: denied for Basic <redacted>; /m, unicode.stderr);
+    assert.equal(unicode.stderr.includes(Buffer.from('git:secret-密码').toString('base64')), false, 'UTF-8 Basic credentials the server echoes are redacted');
     console.log('  ok  credentials a server echoes in its message are not printed');
   }
 

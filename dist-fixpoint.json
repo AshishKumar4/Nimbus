@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d80f40295f831346347dd1365f15a7ae0c2e6ad3aa06f7856342524a1e6ccb47",
+  "fingerprint": "c0667cbb071b03edaa47c609d554ab53682699bbe90e1f07ec8795aede828ec4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2107,7 +2107,7 @@
     "packages/worker/dist/git/clone-job.d.ts.map": "a3e426cb8913860c0cadab6793706545bb1d86dde0d67a002073e26bf8be7bbd",
     "packages/worker/dist/git/clone-job.js": "9baa9d4579e09ef5c432f39a5667321ce6ca2a32d444e0a862e2b07fa5627c05",
     "packages/worker/dist/git/commands.d.ts": "f3b0d1750db6dbfdeb097d6815c1f0c1b4b4f7d307d0678945ae813aecbd356e",
-    "packages/worker/dist/git/commands.d.ts.map": "afc1cf494670145a8efd383825b8b75b478583ec8d3bf814c837182c853b8f29",
+    "packages/worker/dist/git/commands.d.ts.map": "a82958e4870b3510c12d6c97c42606b396f76e00a596ab7078434bdb9feaddfa",
     "packages/worker/dist/git/commands.js": "34a05c66e369b136d6a3982c455675f9d544e03369880002e2219b10e13de762",
     "packages/worker/dist/git/config-params.d.ts": "1adb93ac30a2c0baba34d8c3e87824392f7990715522de758ccc5f3e87a1dc34",
     "packages/worker/dist/git/config-params.d.ts.map": "0957e8fc2d19ea021771c6f8d04ed4a72bc305217b6ac1ad699889d0e6933213",
@@ -2841,7 +2841,7 @@
     "packages/worker/src/facets/ws-terminal.ts": "6dcc7b57bcca477a9e61d8544e3eea2b9628fc0ff6cefda0fd05c76c4f8de4ca",
     "packages/worker/src/git-bundle.generated.ts": "dce3ec2291df52ec1d76a7c24c02ccd897881c52f61095f28e63f45c0dd2cf30",
     "packages/worker/src/git/clone-job.ts": "088b70b9aa889cc5097e2d52223eaded56ee0ddd28af59b33abac57145004c91",
-    "packages/worker/src/git/commands.ts": "756b4ca3e60eacdb1aa5250283d262de235dd4e32c85f96f858af2f9f9ecf34a",
+    "packages/worker/src/git/commands.ts": "ffea11594df75b83912b9cec7b9e5a11a668ebc49562acbb9cdab91c841381d2",
     "packages/worker/src/git/config-params.ts": "aff3c0cf34d5d9b905e98d75f96a5df6892af0c3d233431927f875c443741778",
     "packages/worker/src/git/git-fs.ts": "9671f18334b1fb7273efaf2fea6063a005a890576a3689d31a34512e3727afa1",
     "packages/worker/src/git/network-facet.ts": "a2115433b6916940967183929e79a6810704adf5fa276c690e05ced4e8b79dbc",
@@ -2862,7 +2862,7 @@
     "packages/worker/src/git/pack/plan.ts": "5b26f664e7c48bdbe8276ee8e419a1814ab2d106ffc0aad9d9e2761607b7c86a",
     "packages/worker/src/git/pack/processor.ts": "aaa00029d544a27f29291805a981e2b6fdd8e1ed82232cc7ab83785518d1d00c",
     "packages/worker/src/git/pack/reader.ts": "e126c4307209d774d29a1152884252f1649843b1a44c6fa3b6cf5bcd85fd75ef",
-    "packages/worker/src/git/pack/remote-failure.ts": "615901f752599058545b90d93665053de5e0c7ee2b016686aac80c0bba519c72",
+    "packages/worker/src/git/pack/remote-failure.ts": "acdb3ce92dbdba30cfb71765ffd86f0464193af70759acab26866a42e96b44a8",
     "packages/worker/src/git/pack/sparse.ts": "70ca6c370f669920a4ca51a533bc2414da0bc7b15931c73c2fc9d704c2cd52dd",
     "packages/worker/src/git/pack/store.ts": "54b16d1f17d1a86060683b94a2a86b5295180cb548161c0b608b3fa4e439e00b",
     "packages/worker/src/git/pack/transport.ts": "8d2dae2beeb5b967461935ce76869ba0e04e77d2e43cbe9f862d5b814aaa3cca",
