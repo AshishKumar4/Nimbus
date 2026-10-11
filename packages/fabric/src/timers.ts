@@ -174,7 +174,6 @@ export class Timers {
         // dispatch no longer drops it.
         let written: Promise<unknown> | undefined;
         if (!(reason in map) || whenMs < map[reason] || host._timerFiring?.get(reason) === map[reason]) {
-          host._timerFiring?.delete(reason);
           map[reason] = whenMs;
           written = ctx.storage.put(TIMER_REASONS_KEY, map);
         }
@@ -185,6 +184,7 @@ export class Timers {
         const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
         // Joined: either failing is the one failure, and neither is left unhandled.
         await Promise.all([written, armed]);
+        if (written !== undefined) host._timerFiring?.delete(reason);
         return true;
       } catch (e) {
         console.warn('[nimbus/W1] timers.schedule threw:', errorText(e));
@@ -319,8 +319,8 @@ async function dispatchBody(
     // writing it back — or arming for it — would revive what was ended.
     if (!current()) return;
     await link(host, async () => {
-      if (!current()) return;
       const stored = (await ctx.storage.get(TIMER_REASONS_KEY)) as Record<string, number> | undefined;
+      if (!current()) return;
       const map: Record<string, number> = { ...(stored || {}) };
       for (const reason of fired.keys()) delete map[reason];
       for (const [reason, at] of rearms) {

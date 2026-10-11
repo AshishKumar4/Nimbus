@@ -328,4 +328,52 @@ async function mustComplete(promise, label) {
   assert.equal(ctx.alarms.at(-1), now - 9);
 }
 
+// ── 11. A re-arm of a fired reason whose write fails is retried, not lost ──
+//
+// Its fired deadline stays the one the dispatch drops until a write of the
+// new one lands: the retry replaces it again, and the dispatch keeps that.
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('resident-launch', now - 10);
+  const put = ctx.storage.put;
+  let failures = 1;
+  ctx.storage.put = async (key, value) => {
+    if (failures-- > 0) throw new Error('storage down');
+    return put(key, value);
+  };
+  await mustComplete(
+    timers(host, ctx).dispatch({ 'resident-launch': () => timers(host, ctx).arm('resident-launch', now + 5) }),
+    'a re-arm retried inside its dispatch',
+  );
+  assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now + 5 });
+}
+
+// ── 12. A reset while the dispatch reads the map back writes nothing ───────
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('resident-launch', now - 10);
+  const get = ctx.storage.get;
+  let reads = 0;
+  let releaseRead;
+  ctx.storage.get = async (key) => {
+    if (++reads === 2) await new Promise((resolve) => { releaseRead = resolve; });
+    return get(key);
+  };
+  const dispatched = timers(host, ctx).dispatch({ 'resident-launch': () => ({ rearmAt: now + 1_000 }) });
+  while (releaseRead === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
+  timers(host, ctx).reset();
+  ctx.kv.clear();
+  const alarms = ctx.alarms.length;
+  releaseRead();
+  await mustComplete(dispatched, 'a dispatch reset while it reads the map back');
+  assert.equal(ctx.kv.has(TIMER_REASONS_KEY), false);
+  assert.equal(ctx.alarms.length, alarms);
+}
+
 console.log('fabric-timers-arm-during-dispatch: all assertions passed');
