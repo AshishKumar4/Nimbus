@@ -9,7 +9,11 @@ import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
-import { MAX_NEST_DEPTH, decidePlacement, placementName, visiblePlacements, type PlacementEdge } from '../../../../_shared/npm-placement.js';
+import { placementName } from '../../../../_shared/npm-placement.js';
+import {
+	canonicalTreePath, planTree, projectRoots, requiredFailures, withTreeLock,
+	type TreePackage, type TreeResolution, type TreeRoot,
+} from '../../../../_shared/npm-tree.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
 	RegistryPackumentSchema,
@@ -66,6 +70,8 @@ export interface NpmInstallPort {
     globalPrefix?: string;
     /** The running command's pid — authorizes the host's batch writes. */
     pid: number;
+    /** `--save-dev`: what is named is saved to devDependencies. */
+    saveDev?: boolean;
     /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
     registry: string;
     production?: boolean;
@@ -244,9 +250,9 @@ export function registerBinCommand(registry: CommandRegistry, binName: string, s
 }
 
 
-// ─── Install logic ───
+// ─── Install: the shell's host of the one engine ───
 
-/** What the fallback's install walk needs besides its roots. */
+/** What the shell's install needs besides its roots. */
 interface TreeInstall {
 	/** The `node_modules` the tree lands in. */
 	targetBase: string;
@@ -263,80 +269,8 @@ interface TreeInstall {
 	globalBinDir?: string;
 }
 
-/** An edge of the tree: optional when it is an optionalDependencies entry. */
-type TreeEdge = PlacementEdge & { readonly optional: boolean };
-
-/** A package the plan puts at a placement: the edge that first asked for it, and its manifest. */
-interface PlannedPackage {
-	readonly edge: TreeEdge;
-	readonly at: string;
-	readonly info: RegistryVersionInfo;
-}
-
-/**
- * The edges a manifest asks for from `from`: one per name among its
- * dependencies and optional ones (an optionalDependencies entry overrides
- * a dependencies one, as npm reads them), and the peers it requires.
- */
-function manifestEdges(
-	manifest: Pick<RegistryVersionInfo, 'dependencies' | 'optionalDependencies' | 'peerDependencies' | 'peerDependenciesMeta'>,
-	from: string,
-): TreeEdge[] {
-	const byName = new Map<string, TreeEdge>();
-	for (const [name, range] of Object.entries(manifest.dependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: false });
-	for (const [name, range] of Object.entries(manifest.optionalDependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: true });
-	const edges = [...byName.values()];
-	const optionalPeers = manifest.peerDependenciesMeta ?? {};
-	for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
-		if (optionalPeers[name]?.optional !== true && !byName.has(name)) edges.push({ name, range, from, kind: 'peer', optional: false });
-	}
-	return edges;
-}
-
-/**
- * Installs into one node_modules tree, one at a time: each waits for the one
- * before it (installTreeLocked). Keyed by the tree's namespace (a workspace's
- * kernel) and its canonical path there, so two paths to one tree (a prefix
- * through a symlink) are one queue.
- */
-const installQueues = new WeakMap<object, Map<string, Promise<unknown>>>();
-const NO_KERNEL = {};
-
-/**
- * Where `path` is: its deepest existing ancestor resolved through symlinks
- * (realpath), and the rest of it, which does not exist yet.
- */
-async function canonicalTreePath(vfs: VFS, path: string): Promise<string> {
-	let existing = path;
-	let rest = '';
-	while (existing !== '/' && existing !== '') {
-		try {
-			return (await vfs.realpath(existing)).replace(/\/+$/, '') + rest;
-		} catch {
-			const slash = existing.lastIndexOf('/');
-			rest = existing.slice(slash) + rest;
-			existing = slash > 0 ? existing.slice(0, slash) : '/';
-		}
-	}
-	return rest || '/';
-}
-
-/** `run` once no other install into the tree at `targetBase` in this isolate is running. */
-async function installTreeLocked<T>(vfs: VFS, kernel: Kernel | undefined, targetBase: string, run: () => Promise<T>): Promise<T> {
-	const namespace = kernel ?? NO_KERNEL;
-	const queues = installQueues.get(namespace) ?? new Map<string, Promise<unknown>>();
-	installQueues.set(namespace, queues);
-	const key = await canonicalTreePath(vfs, targetBase);
-	const before = queues.get(key) ?? Promise.resolve();
-	const done = before.then(run, run);
-	const settled = done.then(() => undefined, () => undefined);
-	queues.set(key, settled);
-	try {
-		return await done;
-	} finally {
-		if (queues.get(key) === settled) queues.delete(key);
-	}
-}
+/** A package the shell's plan knows: its registry version (to fetch), or its manifest on disk (kept). */
+type ShellPackage = TreePackage & Partial<Pick<RegistryVersionInfo, 'dist' | 'bin'>>;
 
 /**
  * A retired copy: the package that was at `<dir>/<name>`, moved aside to
@@ -368,29 +302,31 @@ async function retiredCopies(vfs: VFS, dir: string, out: Array<{ retired: string
 	return out;
 }
 
+/** The kernel-less shell's install queues are one namespace. */
+const NO_KERNEL = {};
+
 /**
- * Install `roots` (name and range) and what they depend on under
- * `install.targetBase`, as npm's arborist does it. Its caller holds the
- * node_modules (installTreeLocked) across what it reads and writes besides:
- * the project's package.json.
+ * `run` holding the tree `install` lands in (core _shared/npm-tree.ts
+ * withTreeLock): an install and what its caller reads and writes besides
+ * (the project's package.json).
+ */
+async function lockTree<T>(install: TreeInstall, run: () => Promise<T>): Promise<T> {
+	const canonical = await canonicalTreePath((path) => install.vfs.realpath(path), install.targetBase);
+	return withTreeLock(install.kernel ?? NO_KERNEL, canonical, run);
+}
+
+/**
+ * Install `roots` and what they depend on under `install.targetBase`, as
+ * npm's arborist does it. Its caller holds the tree (lockTree).
  *
  * Recover: a retired copy whose target is missing (an install that crashed
  * after retiring it) is moved back first. One whose target is there is left
  * alone: no install deletes a retired copy it did not make.
  *
- * Plan: the whole ideal tree, before anything on disk changes. One
- * breadth-first walk over every root's edges puts each package where the
- * rule both engines share says (core _shared/npm-placement.ts), reading
- * versions and manifests from the registry. A package already on disk is a
- * copy the walk sees, and one it reuses has its own edges walked again, so a
- * replacement elsewhere in the tree (a root upgraded past a dependent's
- * range) nests the copy that dependent needs.
- *
- * A package is optional when every path to it from a root passes through an
- * optionalDependencies edge (a required path wins). One that fails (its
- * manifest, its download, its integrity, its archive) is skipped with what
- * needs it on the way, as arborist skips an optional dependency's set; any
- * other failure fails the install before it changes anything.
+ * Plan: the one engine's (planTree), reading versions and manifests from the
+ * registry one package at a time and what is installed from node_modules.
+ * A required placement that cannot be filled fails the install before it
+ * changes anything; an optional one is skipped with what it takes along.
  *
  * Reify: every package is fetched, verified and extracted into this run's
  * own staging directory, then published, shallowest first: the package
@@ -401,18 +337,17 @@ async function retiredCopies(vfs: VFS, dir: string, out: Array<{ retired: string
  * only once every package is published. `failed` names what failed; empty,
  * the install is complete.
  */
-async function installTree(roots: ReadonlyArray<readonly [string, string | null]>, install: TreeInstall): Promise<{ installed: number; failed: string[] }> {
+async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Promise<{ installed: string[]; failed: string[] }> {
 	const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
 	const describe = (e: unknown) => e instanceof Error ? e.message : String(e);
-	const fail = async (edge: PlacementEdge, e: unknown): Promise<{ installed: number; failed: string[] }> => {
-		const message = describe(e);
+	const fail = async (name: string, message: string): Promise<{ installed: string[]; failed: string[] }> => {
 		if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
-			await stderr.write(`npm ERR! network error fetching ${edge.name}\n`);
+			await stderr.write(`npm ERR! network error fetching ${name}\n`);
 			await stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
 		} else {
-			await stderr.write(`npm ERR! ${edge.name}: ${message}\n`);
+			await stderr.write(`npm ERR! ${name}: ${message}\n`);
 		}
-		return { installed: 0, failed: [edge.name] };
+		return { installed: [], failed: [name] };
 	};
 
 	// ── Recover ──
@@ -430,159 +365,69 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 			await stderr.write(`npm WARN restored ${target}, retired by an install that did not finish\n`);
 		} catch (e) {
 			await stderr.write(`npm ERR! could not restore ${target}; its copy is kept at ${retired}: ${describe(e)}\n`);
-			return { installed: 0, failed: [target] };
+			return { installed: [], failed: [target] };
 		}
 	}
 
 	// ── Plan ──
-	// Placements on disk (as probed) and planned, by version; their manifests
-	// on disk, for a reused package's edges.
-	const placed = new Map<string, { version: string }>();
-	const onDisk = new Map<string, PackageJson>();
-	const pending = new Set<string>();
-	const probed = new Set<string>();
-	// Placements decided (planned or failed), and those whose edges are walked.
-	const settled = new Set<string>();
-	const walked = new Set<string>();
-	const plan: PlannedPackage[] = [];
-	// What failed, by placement: optional ones are skipped if they turn out optional.
-	const failures = new Map<string, { edge: TreeEdge; error: unknown }>();
-	// Who asks for each planned or failed placement, and by which kind of edge.
-	const askers = new Map<string, Array<{ from: string; optional: boolean }>>();
-	const asked = (at: string, edge: TreeEdge) => {
-		const list = askers.get(at) ?? [];
-		askers.set(at, list);
-		list.push({ from: edge.from, optional: edge.optional });
-	};
-	const probe = async (placement: string): Promise<void> => {
-		if (probed.has(placement) || placed.has(placement) || pending.has(placement)) return;
-		probed.add(placement);
-		try {
-			const pkg = JSON.parse(await vfs.readFileString(join(targetBase, placement, 'package.json')));
-			if (typeof pkg?.version !== 'string') return;
-			placed.set(placement, { version: pkg.version });
-			onDisk.set(placement, pkg);
-		} catch { /* not on disk */ }
-	};
-	let queue: TreeEdge[] = roots.map(([name, range]) => ({ name, range: range ?? '', from: '', kind: 'dep', optional: false }));
-	while (queue.length > 0) {
-		const layer: Array<{ edge: TreeEdge; at: string }> = [];
-		const next: TreeEdge[] = [];
-		for (const edge of queue) {
-			for (const candidate of visiblePlacements(edge.from, edge.name)) await probe(candidate);
-			const decision = decidePlacement(edge, placed, pending);
-			if (decision.kind === 'wait') { next.push(edge); continue; }
-			if (decision.kind === 'met') {
-				if (decision.mismatch) await stderr.write(`npm WARN peer ${edge.name}@${edge.range} from ${edge.from} is met by ${decision.at}@${placed.get(decision.at)!.version}\n`);
-				// Planned or reused from disk, it is part of the tree this edge reaches.
-				asked(decision.at, edge);
-				// A package reused from disk: its edges are the tree's too.
-				const reused = onDisk.get(decision.at);
-				if (reused && !walked.has(decision.at)) {
-					walked.add(decision.at);
-					next.push(...manifestEdges(reused, decision.at));
+	const plan = await planTree<ShellPackage>(roots, {
+		async resolve(edges) {
+			const answers: Array<TreeResolution<ShellPackage>> = [];
+			for (const edge of edges) {
+				await stdout.write(`  ${edge.name}${edge.range ? '@' + edge.range : ''}...\n`);
+				try {
+					answers.push({ package: await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal) });
+				} catch (e) {
+					answers.push({ failed: describe(e) });
 				}
-				continue;
 			}
-			if (settled.has(decision.at)) {
-				asked(decision.at, edge);
-				continue;
-			}
-			if (decision.kind === 'too-deep') {
-				settled.add(decision.at);
-				await stderr.write(`  warn: could not install ${edge.name}: ${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels\n`);
-				continue;
-			}
-			pending.add(decision.at);
-			asked(decision.at, edge);
-			layer.push({ edge, at: decision.at });
-		}
-		for (const { edge, at } of layer) {
-			pending.delete(at);
-			settled.add(at);
-			await stdout.write(`  ${edge.name}${edge.range ? '@' + edge.range : ''}...\n`);
-			let info: RegistryVersionInfo;
+			return answers;
+		},
+		installed: (placements) => Promise.all(placements.map(async (placement): Promise<ShellPackage | null> => {
 			try {
-				info = await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal);
-			} catch (e) {
-				failures.set(at, { edge, error: e });
-				continue;
-			}
-			// What a copy already here was is replaced: its manifest is not the tree's.
-			onDisk.delete(at);
-			placed.set(at, { version: info.version });
-			walked.add(at);
-			plan.push({ edge, at, info });
-			next.push(...manifestEdges(info, at));
-		}
-		queue = next;
-	}
-
-	// Required: reached from a root by a path of required edges, through
-	// planned and reused packages alike; the rest is optional.
-	const required = new Set<string>();
-	let grew = true;
-	while (grew) {
-		grew = false;
-		for (const [at, list] of askers) {
-			if (!required.has(at) && list.some(({ from, optional }) => !optional && (from === '' || required.has(from)))) {
-				required.add(at);
-				grew = true;
-			}
-		}
-	}
-	// What a failure takes with it: the optional packages that need what failed
-	// (by a required edge), and what only they ask for.
-	const skipped = new Set<string>();
-	const skip = (at: string) => {
-		const queued = [at];
-		while (queued.length > 0) {
-			const member = queued.pop()!;
-			if (skipped.has(member)) continue;
-			skipped.add(member);
-			for (const { from, optional } of askers.get(member) ?? []) if (!optional && from !== '' && askers.has(from)) queued.push(from);
-			for (const [other, list] of askers) {
-				if (!skipped.has(other) && !required.has(other) && list.every(({ from }) => skipped.has(from))) queued.push(other);
-			}
-		}
-	};
-	const settle = async (at: string, edge: TreeEdge, error: unknown): Promise<boolean> => {
-		if (required.has(at)) return false;
-		await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${describe(error)}\n`);
-		skip(at);
-		return true;
-	};
-	for (const [at, { edge, error }] of failures) {
-		if (!(await settle(at, edge, error))) return await fail(edge, error);
+				const pkg = JSON.parse(await vfs.readFileString(join(targetBase, placement, 'package.json')));
+				return typeof pkg?.version === 'string' ? { ...pkg, name: placementName(placement) } : null;
+			} catch { return null; }
+		})),
+		peerMismatch: async (edge, at, version) => {
+			await stderr.write(`npm WARN peer ${edge.name}@${edge.range} from ${edge.from} is met by ${at}@${version}\n`);
+		},
+	});
+	const [requiredFailure] = requiredFailures(plan);
+	if (requiredFailure) return await fail(requiredFailure.edge.name, requiredFailure.reason);
+	for (const { at, edge } of plan.failures) {
+		if (plan.skipped.has(at)) await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${plan.reasons.get(at)}\n`);
 	}
 	// A skipped package already on disk goes, as arborist removes a failed
-	// optional set (a reused one, or the copy a skipped one would replace).
+	// optional set (a kept one, or the copy a skipped one would replace).
 	const removals = async () => {
 		const out: string[] = [];
-		for (const at of skipped) if (await vfs.exists(join(targetBase, at))) out.push(at);
+		for (const at of plan.skipped) if (await vfs.exists(join(targetBase, at))) out.push(at);
 		return out;
 	};
-	if (plan.every(({ at }) => skipped.has(at)) && (await removals()).length === 0) return { installed: 0, failed: [] };
+	if (plan.planned.every(({ at }) => plan.skipped.has(at)) && (await removals()).length === 0) return { installed: [], failed: [] };
 
 	// ── Reify ──
 	const run = Math.random().toString(36).slice(2, 10);
 	const staging = join(targetBase, `.nimbus-staging-${run}`);
 	const stagedAt = (i: number) => join(staging, String(i));
+	const { planned } = plan;
 	try {
-		for (let i = 0; i < plan.length; i++) {
-			const { edge, at, info } = plan[i];
-			if (skipped.has(at)) continue;
+		for (let i = 0; i < planned.length; i++) {
+			const { edge, at, pkg } = planned[i];
+			if (plan.skipped.has(at)) continue;
 			try {
 				// writeTarballStream throws when the archive carried no manifest
 				// and writes package.json last, so a return is a complete package.
-				await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, stagedAt(i), vfs, signal, stderr);
+				await fetchAndStreamPackage(network, pkg.dist!.tarball, pkg.dist!.integrity, stagedAt(i), vfs, signal, stderr);
 			} catch (e) {
-				if (!(await settle(at, edge, e))) return await fail(edge, e);
+				if (!plan.skip(at, describe(e))) return await fail(edge.name, describe(e));
+				await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${describe(e)}\n`);
 			}
 		}
-		const order = plan.map((_, i) => i)
-			.filter((i) => !skipped.has(plan[i].at))
-			.sort((x, y) => plan[x].at.split('/node_modules/').length - plan[y].at.split('/node_modules/').length);
+		const order = planned.map((_, i) => i)
+			.filter((i) => !plan.skipped.has(planned[i].at))
+			.sort((x, y) => planned[x].at.split('/node_modules/').length - planned[y].at.split('/node_modules/').length);
 
 		// Each publish (and each removal), its steps recorded before they are made.
 		const published: Array<{ target: string; retired: string; steps: Set<'retire' | 'publish' | 'modules'> }> = [];
@@ -590,12 +435,12 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 			const slash = target.lastIndexOf('/');
 			return `${target.slice(0, slash)}/.${target.slice(slash + 1)}-retired-${run}`;
 		};
-		// The edge whose package the step being made is for, should it fail.
-		let current: PlacementEdge = plan[order[0] ?? 0]?.edge ?? { name: targetBase, range: '', from: '', kind: 'dep' };
+		// The package the step being made is for, should it fail.
+		let current = planned[order[0] ?? 0]?.edge.name ?? targetBase;
 		try {
 			// Deepest first, so a package goes before the one it is nested in.
 			for (const at of (await removals()).sort((x, y) => y.split('/node_modules/').length - x.split('/node_modules/').length)) {
-				current = { name: placementName(at), range: '', from: '', kind: 'dep' };
+				current = placementName(at);
 				const target = join(targetBase, at);
 				const step = { target, retired: retiredFor(target), steps: new Set<'retire' | 'publish' | 'modules'>() };
 				published.push(step);
@@ -603,8 +448,8 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 				await vfs.rename(target, step.retired);
 			}
 			for (const i of order) {
-				current = plan[i].edge;
-				const target = join(targetBase, plan[i].at);
+				current = planned[i].edge.name;
+				const target = join(targetBase, planned[i].at);
 				const slash = target.lastIndexOf('/');
 				const step = { target, retired: retiredFor(target), steps: new Set<'retire' | 'publish' | 'modules'>() };
 				published.push(step);
@@ -637,7 +482,7 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 					await stderr.write(`npm ERR! could not restore ${target}; its previous copy is kept at ${retired}: ${describe(undo)}\n`);
 				}
 			}
-			return await fail(current, e);
+			return await fail(current, describe(e));
 		}
 		// Published: the retired copies this run made are the old tree's.
 		for (const { retired, steps } of published) {
@@ -648,17 +493,17 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 		}
 		if (install.globalBinDir) {
 			for (const i of order) {
-				if (plan[i].edge.from === '') await linkGlobalBins(plan[i].info, join(targetBase, plan[i].at), install.globalBinDir, install);
+				if (planned[i].edge.from === '') await linkGlobalBins(planned[i].pkg, join(targetBase, planned[i].at), install.globalBinDir, install);
 			}
 		}
-		return { installed: order.length, failed: [] };
+		return { installed: order.map((i) => `${planned[i].pkg.name}@${planned[i].pkg.version}`), failed: [] };
 	} finally {
 		try { await vfs.remove(staging, { recursive: true, force: true }); } catch { /* none was made */ }
 	}
 }
 
 /** Link a globally installed root's bins into the prefix's bin directory, and register them as commands. */
-async function linkGlobalBins(info: RegistryVersionInfo, targetDir: string, globalBinDir: string, install: TreeInstall): Promise<void> {
+async function linkGlobalBins(info: ShellPackage, targetDir: string, globalBinDir: string, install: TreeInstall): Promise<void> {
 	for (const [binName, binPath] of Object.entries(getBinEntries(info))) {
 		const scriptPath = resolve(targetDir, binPath);
 		registerBinCommand(install.registry, binName, scriptPath, install.kernel);
@@ -724,119 +569,103 @@ async function npmInstall(
 	// `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
 	const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
 	const globalBinDir = `${globalPrefix}/bin`;
-	const globalModulesDir = `${globalPrefix}/lib/node_modules`;
 
 	const npmRegistry = getRegistry(ctx.env);
 	const startTime = Date.now();
-	let installed = 0;
 
-	// ── Host-batched install path ──────────────────────────────────────
-	// The port owns install, prefix dirs, and bin materialisation. This
-	// command owns the summary and the progress channel — per-invocation,
-	// so two terminals' installs can't interleave lines on one installer.
-	if (deps?.installer) {
-		const npmLog: NpmLogEmitter | null = invocation.loglevel
-			? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) await ctx.stderr.write(`${line}\n`); }
-			: null;
-		try {
-			const result = await deps.installer.install({
-				projectDir: ctx.cwd,
-				packages,
-				global: invocation.global,
-				globalPrefix: invocation.global ? globalPrefix : undefined,
-				pid: ctx.pid,
-				registry: npmRegistry,
-				production: invocation.production,
-				npmLog,
-				onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
-			});
-			await writeInstallSummary(ctx, result.installed, result.failed, {
-				totalFiles: result.totalFiles,
-				fromCacheHits: result.fromCacheHits,
-				linkedBins: result.linkedBins,
-				globalBinDir,
-				startedAt: startTime,
-			});
-			return result.failed.length > 0 ? 1 : 0;
-		} catch (err) {
-			await ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
-			return 1;
-		}
+	// The port owns the install, prefix dirs and bin materialisation: the
+	// host's, else the shell's own (shellInstallPort). This command owns the
+	// summary and the progress channel — per-invocation, so two terminals'
+	// installs can't interleave lines on one installer.
+	const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+	const npmLog: NpmLogEmitter | null = invocation.loglevel
+		? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) await ctx.stderr.write(`${line}\n`); }
+		: null;
+	try {
+		const result = await installer.install({
+			projectDir: ctx.cwd,
+			packages,
+			global: invocation.global,
+			globalPrefix: invocation.global ? globalPrefix : undefined,
+			pid: ctx.pid,
+			registry: npmRegistry,
+			production: invocation.production,
+			saveDev: invocation.saveDev,
+			npmLog,
+			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
+		});
+		await writeInstallSummary(ctx, result.installed, result.failed, {
+			totalFiles: result.totalFiles,
+			fromCacheHits: result.fromCacheHits,
+			linkedBins: result.linkedBins,
+			globalBinDir,
+			startedAt: startTime,
+		});
+		return result.failed.length > 0 ? 1 : 0;
+	} catch (err) {
+		await ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
+		return 1;
 	}
+}
 
-	// ── In-process fallback ────────────────────────────────────────────
-	// Same parse + same summary; the target tree derives from the resolved
-	// prefix so --prefix and npm_config_prefix do what they say.
-	const targetBase = invocation.global ? globalModulesDir : join(ctx.cwd, 'node_modules');
-
-	if (invocation.global) {
-		for (const dir of [globalModulesDir, globalBinDir]) {
-			try { (await ctx.vfs.mkdir(dir, { recursive: true })); } catch { /* exists */ }
-		}
-	}
-
-	const failed: string[] = [];
-	const tree: TreeInstall = {
-		targetBase, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry, signal: ctx.signal,
-		stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-		...(invocation.global ? { globalBinDir } : {}),
-	};
-
-	// The project's package.json is read and written under the node_modules
-	// lock with the tree, so two installs at once add to it one after the
-	// other.
-	const status = await installTreeLocked(ctx.vfs, kernel, targetBase, async (): Promise<number | null> => {
-		// One plan for every root: the project's dependencies (a local install's)
-		// with the packages named on the command line, which win their names.
-		const project = invocation.global ? null : (await readProjectPackageJson(ctx.vfs, ctx.cwd));
-		if (packages.length === 0 && !project) {
-			await ctx.stderr.write('npm ERR! no package.json found\n');
-			return 1;
-		}
-		const named = packages.map(splitPackageSpec);
-		const roots = new Map<string, string | null>(Object.entries({ ...project?.dependencies, ...project?.devDependencies }));
-		for (const { name, range } of named) roots.set(name, range);
-		if (roots.size === 0) {
-			await ctx.stdout.write('up to date, audited 0 packages\n');
-			return 0;
-		}
-		await ctx.stdout.write(packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
-		const result = await installTree([...roots], tree);
-		installed += result.installed;
-		failed.push(...result.failed);
-
-		// What the command line named is saved to package.json, once it installed.
-		if (result.failed.length === 0 && project && named.length > 0) {
-			try {
-				const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd)) ?? project;
-				for (const { name } of named) {
-					let versionStr = 'latest';
-					try {
-						const ipkg = JSON.parse((await ctx.vfs.readFileString(join(targetBase, name, 'package.json'))));
-						// An alias (`mine@npm:real@^1`) saves the package it
-						// installed, as npm does: "mine": "npm:real@^1.1.0".
-						versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
-					} catch { /* ignore */ }
-					const field = invocation.saveDev ? 'devDependencies' : 'dependencies';
-					pkg[field] = { ...pkg[field], [name]: versionStr };
+/**
+ * The shell's own install port: npm's one engine (installTree) over the
+ * command's view, network and streams, for a host that gives the command no
+ * port of its own (a library's shell). A local install plans the project's
+ * roots with the packages named, under the tree's lock, and saves what was
+ * named to package.json once the install is complete.
+ */
+function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): NpmInstallPort {
+	return {
+		async install(spec) {
+			const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
+			const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
+			if (globalBinDir) {
+				for (const dir of [targetBase, globalBinDir]) {
+					try { (await ctx.vfs.mkdir(dir, { recursive: true })); } catch { /* exists */ }
 				}
-				(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
-			} catch (e) {
-				failed.push(...named.map(({ name }) => name));
-				await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
 			}
-		}
-		return null;
-	});
-	if (status !== null) return status;
-
-	// The in-process fallback reports the count it actually installed;
-	// writeInstallSummary's file/bin/cache decorations don't apply here.
-	await writeInstallSummary(ctx,
-		installed > 0 ? new Array<string>(installed).fill('') : [],
-		failed,
-		{ startedAt: startTime },);
-	return failed.length > 0 ? 1 : 0;
+			const tree: TreeInstall = {
+				targetBase, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal: ctx.signal,
+				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
+				...(globalBinDir ? { globalBinDir } : {}),
+			};
+			// The project's package.json is read and written under the tree's
+			// lock, so two installs at once add to it one after the other.
+			return lockTree(tree, async () => {
+				const project = spec.global ? null : (await readProjectPackageJson(ctx.vfs, spec.projectDir));
+				const named = spec.packages.map(splitPackageSpec);
+				const roots = projectRoots(project, named, { production: spec.production === true });
+				if (roots.length === 0) {
+					await ctx.stdout.write('up to date, audited 0 packages\n');
+					return { installed: [], failed: [] };
+				}
+				await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
+				const result = await installTree(roots, tree);
+				if (result.failed.length > 0 || !project || named.length === 0) return result;
+				// What the command line named is saved to package.json, once it installed.
+				try {
+					const pkg = (await readProjectPackageJson(ctx.vfs, spec.projectDir)) ?? project;
+					for (const { name } of named) {
+						let versionStr = 'latest';
+						try {
+							const ipkg = JSON.parse((await ctx.vfs.readFileString(join(targetBase, name, 'package.json'))));
+							// An alias (`mine@npm:real@^1`) saves the package it
+							// installed, as npm does: "mine": "npm:real@^1.1.0".
+							versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
+						} catch { /* ignore */ }
+						const field = spec.saveDev ? 'devDependencies' : 'dependencies';
+						pkg[field] = { ...pkg[field], [name]: versionStr };
+					}
+					(await writeProjectPackageJson(ctx.vfs, spec.projectDir, pkg));
+					return result;
+				} catch (e) {
+					await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
+					return { installed: result.installed, failed: named.map(({ name }) => name) };
+				}
+			});
+		},
+	};
 }
 
 /** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
@@ -1259,7 +1088,9 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
  */
 // ─── npx ───
 
-const NPX_CACHE = '/tmp/.npx-cache/node_modules';
+/** Where npx installs what it runs: a project of its own. */
+const NPX_CACHE_PROJECT = '/tmp/.npx-cache';
+const NPX_CACHE = `${NPX_CACHE_PROJECT}/node_modules`;
 
 async function findBinScript(
 	vfs: VFS,
@@ -1287,6 +1118,7 @@ export function createNpxCommand(
 	shellExecute?: ShellExecuteFn,
 	/** Its network is the one the npx cache install fetches through. */
 	kernel?: Kernel,
+	deps?: NpmCommandDeps,
 ): Command {
 	return async (ctx) => {
 		const rawArgs = ctx.args.slice();
@@ -1355,10 +1187,11 @@ export function createNpxCommand(
 		if (!scriptPath) {
 			const cacheDir = join(NPX_CACHE, parsedName);
 			if (!(await ctx.vfs.exists(join(cacheDir, 'package.json')))) {
-				const result = await installTreeLocked(ctx.vfs, kernel, NPX_CACHE, () => installTree([[parsedName, version]], {
-					targetBase: NPX_CACHE, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: getRegistry(ctx.env),
-					signal: ctx.signal, stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-				}));
+				const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+				const result = await installer.install({
+					projectDir: NPX_CACHE_PROJECT, packages: [explicitPkg || spec], global: false,
+					pid: ctx.pid, registry: getRegistry(ctx.env),
+				});
 				if (result.failed.length > 0) {
 					await ctx.stderr.write(`npx: could not install ${parsedName}\n`);
 					return 1;
@@ -1396,20 +1229,16 @@ export async function npmInstallGlobal(
 	ctx: CommandContext,
 	registry: CommandRegistry,
 	kernel?: Kernel,
+	deps?: NpmCommandDeps,
 ): Promise<number> {
 	const startTime = Date.now();
 	const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
-	const modulesDir = `${prefix}/lib/node_modules`;
-	const binDir = `${prefix}/bin`;
-	try { (await ctx.vfs.mkdir(modulesDir, { recursive: true })); } catch { /* exists */ }
-	try { (await ctx.vfs.mkdir(binDir, { recursive: true })); } catch { /* exists */ }
-
-	const { installed, failed } = await installTreeLocked(ctx.vfs, kernel, modulesDir, () => installTree([[packageName, null]], {
-		targetBase: modulesDir, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: getRegistry(ctx.env),
-		signal: ctx.signal, stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel, globalBinDir: binDir,
-	}));
+	const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+	const { installed, failed } = await installer.install({
+		projectDir: ctx.cwd, packages: [packageName], global: true, globalPrefix: prefix, pid: ctx.pid, registry: getRegistry(ctx.env),
+	});
 	if (failed.length > 0) return 1;
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-	await ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
+	await ctx.stdout.write(`\nadded ${installed.length} package${installed.length !== 1 ? 's' : ''} in ${elapsed}s\n`);
 	return 0;
 }
