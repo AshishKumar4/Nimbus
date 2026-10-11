@@ -263,6 +263,8 @@ for (const reported of ['ENOSPC', 'EIO', undefined]) {
       return 1;
     },
     node: (id) => nodes.get(id),
+    // This filesystem's alone: none of its descriptions is a mount's.
+    mounted: () => undefined,
     handle: (id) => (nodes.has(id) ? 1 : undefined),
     close: (id) => {
       const node = nodes.get(id);

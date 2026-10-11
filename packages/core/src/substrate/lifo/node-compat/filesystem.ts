@@ -1,4 +1,4 @@
-import type { RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
+import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
@@ -21,6 +21,16 @@ export interface NodeFilesystem {
   rename(from: string, to: string): void;
   copyFile(from: string, to: string): void;
   chmod(path: string, mode: number): void;
+  /** open(2): the process's descriptor (its DescriptorScope's), whatever filesystem the file is on. */
+  open(path: string, flags: RuntimeOpenFlags): number;
+  /** read(2), at `position`, or at the descriptor's offset (null), which then moves. */
+  read(fd: number, position: number | null, length: number): Uint8Array;
+  /** write(2), at `position`, or at the descriptor's offset (null), which then moves; an O_APPEND descriptor's at the end. */
+  write(fd: number, position: number | null, data: Uint8Array): number;
+  fstat(fd: number): RuntimeVfsStat;
+  ftruncate(fd: number, size: number): void;
+  fsync(fd: number): void;
+  close(fd: number): void;
   onChange: (() => void) | undefined;
 }
 
@@ -84,6 +94,13 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     rename: (from, to) => fs.rename(from, to),
     copyFile: (from, to) => fs.copyFile(from, to),
     chmod: (path, mode) => fs.chmod(path, mode),
+    open: (path, flags) => fs.open(path, flags).id,
+    read: (fd, position, length) => fs.read(fd, position, length),
+    write: (fd, position, data) => fs.write(fd, position, data),
+    fstat: (fd) => fs.fstat(fd),
+    ftruncate: (fd, size) => fs.ftruncate(fd, size),
+    fsync: (fd) => fs.fsync(fd),
+    close: (fd) => fs.close(fd),
     get onChange() { return listener; },
     set onChange(next) {
       unsubscribe?.();

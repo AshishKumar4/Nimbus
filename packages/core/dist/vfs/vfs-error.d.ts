@@ -3,7 +3,7 @@
  * the message a person reads. Every backend throws it, so no caller matches
  * prose.
  */
-export type VfsErrorCode = 'E2BIG' | 'EPERM' | 'ENOENT' | 'EIO' | 'ENXIO' | 'EAGAIN' | 'EACCES' | 'EBUSY' | 'EEXIST' | 'EXDEV' | 'ENOTDIR' | 'EISDIR' | 'EINVAL' | 'ENOSPC' | 'EROFS' | 'ELOOP' | 'ENAMETOOLONG' | 'ENOTEMPTY' | 'ENOTSUP' | 'ESTALE' | 'EBADF';
+export type VfsErrorCode = 'E2BIG' | 'EPERM' | 'ENOENT' | 'EIO' | 'ENXIO' | 'EAGAIN' | 'EACCES' | 'EBUSY' | 'EEXIST' | 'EXDEV' | 'ENOTDIR' | 'EISDIR' | 'EINVAL' | 'ENOSPC' | 'EROFS' | 'ELOOP' | 'ENAMETOOLONG' | 'ENOTEMPTY' | 'ENOTSUP' | 'ESTALE' | 'EBADF' | 'EFBIG';
 /** Linux errno numbers, negative as libuv reports them. */
 export declare const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>>;
 /**

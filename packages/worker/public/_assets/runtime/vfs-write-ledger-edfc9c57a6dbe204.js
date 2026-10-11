@@ -1036,12 +1036,12 @@ var __nimbusProcessFsModule = (() => {
     ENOTEMPTY: "directory not empty",
     ENOTSUP: "operation not supported on socket",
     ESTALE: "stale file handle",
-    EBADF: "bad file descriptor"
+    EBADF: "bad file descriptor",
+    EFBIG: "file too large"
   };
   var ERRNO_DESCRIPTION = {
     ...VFS_DESCRIPTION,
     EBADF: "bad file descriptor",
-    EFBIG: "file too large",
     ENODATA: "no data available",
     ENOSYS: "function not implemented",
     EMFILE: "too many open files",

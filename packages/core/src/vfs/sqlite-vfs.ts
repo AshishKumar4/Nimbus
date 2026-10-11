@@ -369,21 +369,10 @@ export interface VfsOpenDescription {
    */
   end?(): number;
   /**
-   * A description whose backend cannot write in place buffers its writes
-   * (VFS-PF-001): an append goes at the end as it stands at the flush,
-   * `flush` applies what is pending, and `pendingBytes` is what a process
-   * killed now would lose. Absent: every write is in place.
-   */
-  writeAppend?(bytes: Uint8Array): number;
-  /**
-   * Write what is held for the file (fsync): a buffered mount handle's
-   * pending writes, the appends SqliteVFS holds; throws what writing them
-   * failed with. Absent: nothing is held.
+   * Write what is held for the file (fsync): the appends SqliteVFS holds;
+   * throws what writing them failed with. Absent: nothing is held.
    */
   flush?(): void;
-  pendingBytes?(): number;
-  /** `file` with this description's pending writes applied, as flush applies them. */
-  applyPending?(file: Uint8Array): Uint8Array;
 }
 
 export interface VfsStat {
@@ -2458,9 +2447,12 @@ export class SqliteVFS {
   // ── Helpers ───────────────────────────────────────────────────────────
 
   /**
-   * A description of `path`, opened as `cred`. Its writes are its opener's,
-   * wherever they run: `principal` (else the calling view's, else `cred`'s)
-   * is the one its write events name and its held appends are written as.
+   * A description of `path`, opened as `cred`, its access decided by the
+   * open that asks (openAccess, or the creat(2) that made it, which writes
+   * whatever its mode): the lookup asks only search. Its writes are its
+   * opener's, wherever they run: `principal` (else the calling view's, else
+   * `cred`'s) is the one its write events name and its held appends are
+   * written as.
    */
   openDescription(
     path: string,
@@ -2480,7 +2472,7 @@ export class SqliteVFS {
     if (holds !== undefined) this.activeHolds = holds();
     let resolved: { path: string; inode: INode | undefined };
     try {
-      resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+      resolved = this.checkAccess(path, 0, cred);
     } finally {
       this.activeWrite = priorWrite;
       this.activeHolds = priorHolds;
@@ -8912,8 +8904,11 @@ export class SqliteVFS {
         }
         return { befores, results, after: this._revision };
       },
-      isDescribed: (id) => this.isDescribed(described, id),
       reopened: (path, id) => this.reopened(described, path, id, cred),
+      forgetDescription: (id) => {
+        const { pid } = described;
+        if (pid !== null) this.transactionSync(() => this.forgetDescription(pid, id));
+      },
       openSequence: (sequence) => this.openSequence(sequence),
       advanceSequence: (writer, seq) => this.transactionSync(() => this.advanceSequence(writer, seq)),
       refuseInSequence: (writer, refused, closed) => this.refuseInSequence(writer, refused, closed),
@@ -8971,7 +8966,7 @@ export class SqliteVFS {
       else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
       else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
       else if (call.call === 'open') return this.openToWrite(call, cred, described);
-      // Closing a description already gone (a mount's open keeps none) closes nothing.
+      // A close is the binding's, of any description it keeps, a mount's included; one already gone closes nothing.
       else if (call.call === 'close') this.closeDescribed(described, call.description);
       else this.symlink(call.target, call.path, cred, call.ino);
     }
@@ -9422,13 +9417,6 @@ export class SqliteVFS {
     const rights = Number(kept.rights);
     const handle = by.descriptions.adopt(id, Number(kept.ino), { read: (rights & 4) !== 0, write: (rights & 2) !== 0 }, path, cred);
     return handle === null ? null : by.descriptions.node(id);
-  }
-
-  /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
-  private isDescribed(by: DescribedBy, id: string): boolean {
-    if (by.descriptions === undefined) return false;
-    if (by.descriptions.node(id) !== undefined) return true;
-    return by.pid !== null && [...this.sql.exec('SELECT 1 FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id)].length > 0;
   }
 
   /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */

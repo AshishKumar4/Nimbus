@@ -46,7 +46,8 @@ export interface ReadDirectorySupervisor {
   fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult>;
 }
 
-interface Scope { readonly closed: boolean }
+/** The process's DescriptorScope (descriptors.ts), as far as this account needs it. */
+interface Scope { readonly closed: boolean; readonly subscriptions: Set<() => void> }
 interface Channel { sequence: number }
 interface Tracked { readonly channel: string; claimed: boolean }
 interface Budget {
@@ -61,7 +62,6 @@ interface Binding {
   readonly place: (path: RuntimeFsPath, handle: RuntimeFileHandle) => Awaitable<string | null>;
 }
 const scopes = new WeakMap<Scope, Budget>();
-const endedScopes = new WeakSet<Scope>();
 const bridges = new WeakMap<RuntimeFsBridge, Binding>();
 
 /** Called only by ProcessFiles where each face is bound to its actual descriptor scope. */
@@ -71,17 +71,6 @@ export function registerDirectoryReadBridge(fs: RuntimeFsBridge, scope: Scope, p
 
 /** A normal close also retires a prefetched handle's accounting. */
 export function directoryReadHandleClosed(scope: Scope, id: number): void { scopes.get(scope)?.tracked.delete(id); }
-
-/** The authoritative scope closes descriptions; drop accounting at that same lifetime boundary. */
-export function disposeDirectoryReadScope(scope: Scope): void {
-  endedScopes.add(scope);
-  const budget = scopes.get(scope);
-  if (!budget) return;
-  budget.ended = true;
-  budget.channels.clear();
-  budget.tracked.clear();
-  scopes.delete(scope);
-}
 
 export function hasDirectoryReadBridge(fs: RuntimeFsBridge): boolean { return bridges.has(fs); }
 
@@ -99,10 +88,20 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
   const bound = bridges.get(fs);
   if (!bound) throw refusal('ENOTSUP', 'directory prefetch needs a process descriptor scope');
   const { scope } = bound;
-  if (scope.closed || endedScopes.has(scope)) throw refusal('ESTALE', 'directory descriptor scope ended');
-  const budget: Budget = scopes.get(scope)
-    ?? { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
-  scopes.set(scope, budget);
+  if (scope.closed) throw refusal('ESTALE', 'directory descriptor scope ended');
+  let budget = scopes.get(scope);
+  if (budget === undefined) {
+    const created: Budget = { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
+    scopes.set(scope, created);
+    // The scope closes its descriptions; the account ends on the same release, before the scope is marked closed.
+    scope.subscriptions.add(() => {
+      created.ended = true;
+      created.channels.clear();
+      created.tracked.clear();
+      scopes.delete(scope);
+    });
+    budget = created;
+  }
   const live = (): void => { if (scope.closed || budget.ended) throw refusal('ESTALE', 'directory descriptor scope ended'); };
   const run = async (): Promise<ReadDirectoryBatchResult> => {
     live();

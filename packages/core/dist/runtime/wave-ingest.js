@@ -14,6 +14,25 @@ import { concatBytes } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
 import { CALL_GROUP_BYTES, CALL_GROUP_OPS, DATA_CALL_MAX, ROUTED_FILE_MAX, ROUTED_LINK_TARGET_MAX, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from './wave-contracts.js';
+/** A mounted description's answer, as the engine's is (WriteStreamReceipt): its file's stat now, and an open's descriptor. */
+function receiptOf(path, now, handle) {
+    return {
+        path, ino: now.ino, mode: now.mode, size: now.size, mtimeMs: now.mtime, ctimeMs: now.ctime, uid: now.uid, gid: now.gid, dev: now.dev,
+        ...(handle === undefined ? {} : { handle }),
+    };
+}
+/** A re-sent open of a description the binding keeps on a mount: its answer again, as SqliteVFS.reopened gives one; null once its file is gone. */
+async function reopenedOnMount(path, node, handle) {
+    try {
+        return receiptOf(path, await node.stat(), handle);
+    }
+    catch (error) {
+        const code = errnoCodeOf(error);
+        if (code === 'ENOENT' || code === 'ESTALE')
+            return null;
+        throw error;
+    }
+}
 /** The paths a record lands at: where a delegation's holder is asked to give way first. */
 function recordPaths(record) {
     switch (record.type) {
@@ -219,9 +238,11 @@ export class WaveIngest {
                 case 'batch-end':
                     return true;
                 case 'file-begin':
-                    // A description's write is its file's, wherever that is named now.
-                    if (record.inode.description !== undefined && scope.isDescribed(record.inode.description))
-                        return true;
+                    // A description's write is its file's, wherever that is named now:
+                    // a mount's is routed to it, any other is this filesystem's (EBADF
+                    // for one not open), never placed by its name.
+                    if (record.inode.description !== undefined)
+                        return options.descriptions?.mounted(record.inode.description) === undefined;
                     return record.inode.kind !== 'symlink' && placeSync('file', record.inode.path) === null;
                 case 'directory':
                     return placeSync('directory', record.inode.path) === null;
@@ -558,6 +579,7 @@ export class WaveIngest {
             placeSync,
             placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
             reach: options.mountReach,
+            ...(options.descriptions === undefined ? {} : { descriptions: options.descriptions }),
             // Right before each call to the backend: the wave is still admitted, and not cancelled.
             guard: () => {
                 signal.throwIfAborted();
@@ -662,7 +684,11 @@ export class WaveIngest {
                             // reply was lost): its description's descriptor and file.
                             else if (record.type === 'call' && record.call.call === 'open' && record.call.description !== undefined) {
                                 const { path, description } = record.call;
-                                const receipt = scope.asWriter(() => scope.reopened(path, description));
+                                const mounted = options.descriptions?.mounted(description);
+                                const receipt = mounted === undefined
+                                    ? scope.asWriter(() => scope.reopened(path, description))
+                                    // Its mount's answer, which the wave's cut does not wait for (untilAborted), as every routed one.
+                                    : await untilAborted(reopenedOnMount(path, mounted, options.descriptions?.handle(description)), scope.signal);
                                 if (receipt !== null)
                                     progress.receipts.push(receipt);
                             }
@@ -671,6 +697,9 @@ export class WaveIngest {
                         applying = seq;
                     }
                 }
+                // A close's answer is final whichever filesystem's description it closes (the refusal kept below).
+                if (record.type === 'call' && record.call.call === 'close' && applying !== null)
+                    closing.set(applying, record.call.description);
                 if (router !== null && !landsHere(record) && await this.routeRecord(record, router, scope, routing))
                     continue;
                 // Only removals and directories are held in the leading phase: anything
@@ -790,8 +819,6 @@ export class WaveIngest {
                             // A call observes everything the stream wrote before it.
                             phase = 'publish';
                             const call = record.call;
-                            if (call.call === 'close' && applying !== null)
-                                closing.set(applying, call.description);
                             // A mkdir commits with the calls beside it; any other may change
                             // where later names resolve, and commits now.
                             queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
@@ -832,7 +859,7 @@ export class WaveIngest {
             // final, kept with the forgetting of its description, so no path
             // leaves a closed description to adopt again.
             const closeOf = applying === null ? undefined : closing.get(applying);
-            const closed = closeOf !== undefined && options.descriptions?.node(closeOf) === undefined ? closeOf : undefined;
+            const closed = closeOf !== undefined && options.descriptions?.handle(closeOf) === undefined ? closeOf : undefined;
             // The op being applied was refused: its answer, kept for a re-send; nothing after it applies.
             if (sequence !== null && applying !== null && (closed !== undefined || (errno !== undefined && SYSCALL_VERDICTS.has(errno)))) {
                 const refused = { seq: applying, errno: errno ?? 'EIO', message: error instanceof Error ? error.message : String(error) };
@@ -963,9 +990,33 @@ export class WaveIngest {
             }
             case 'call': {
                 const call = record.call;
-                // A description's call is the description's: its file is this filesystem's (a mount keeps none).
-                if (call.call === 'close' || ('description' in call && call.description !== undefined && scope.isDescribed(call.description)))
-                    return false;
+                // A close is the binding's: of a mount's description, awaited here, its backend's close its answer;
+                // of any other, the engine's (closeDescribed), in its transaction.
+                if (call.call === 'close') {
+                    const { descriptions } = at;
+                    if (descriptions?.mounted(call.description) === undefined)
+                        return false;
+                    at.setPhase('publish');
+                    await at.settleBefore();
+                    reached();
+                    await backend(Promise.resolve(descriptions.close(call.description)));
+                    scope.forgetDescription(call.description);
+                    at.committed(null, 0);
+                    return true;
+                }
+                // A truncate through a description is that description's, never placed by its name: a mount's
+                // file wherever its name leads now; any other is this filesystem's (EBADF for one not open).
+                if (call.call === 'ftruncate' && call.description !== undefined) {
+                    const described = at.descriptions?.mounted(call.description);
+                    if (described === undefined)
+                        return false;
+                    at.setPhase('publish');
+                    await at.settleBefore();
+                    reached();
+                    await backend(Promise.resolve(described.truncate(call.size, at.guard)));
+                    at.committed(null, 0);
+                    return true;
+                }
                 if (call.call !== 'mkdir')
                     at.routes.clear();
                 const placed = await mountOf(call.call === 'mkdir' ? 'directory'
@@ -976,9 +1027,23 @@ export class WaveIngest {
                 await at.settleBefore();
                 reached();
                 // Made under the umask the process made it with, as on this filesystem (W7Call umask).
-                const stat = await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, owner));
-                // An open's answer is the file's stat (its description writes it by number).
-                at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null, 0);
+                const as = withUmask(cred, 'umask' in call ? call.umask : undefined);
+                if (call.call === 'open') {
+                    const { descriptions } = at;
+                    if (call.description !== undefined && descriptions === undefined)
+                        throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
+                    // Its answer is the file's stat; with `description`, the binding keeps the file it found, and its descriptor is in the answer.
+                    const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
+                    const handle = call.description === undefined || descriptions === undefined ? undefined
+                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, { read: call.read === true, write: true })));
+                    // The id is this mount's description's now: what the session kept of an earlier one under it is not adopted again.
+                    if (call.description !== undefined)
+                        scope.forgetDescription(call.description);
+                    at.committed({ path: call.path, ...opened.stat, ...(handle === undefined ? {} : { handle }) }, 0);
+                    return true;
+                }
+                await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, as, at.guard, owner));
+                at.committed(null, 0);
                 return true;
             }
             case 'rename': {
@@ -1017,9 +1082,11 @@ export class WaveIngest {
                 return true;
             }
             case 'file-begin': {
-                if (record.inode.description !== undefined && scope.isDescribed(record.inode.description))
+                // A write or append through a description is that description's (as landsHere decides it): a mount's file wherever its name leads now.
+                const described = record.inode.description === undefined ? undefined : at.descriptions?.mounted(record.inode.description);
+                if (record.inode.description !== undefined && described === undefined)
                     return false;
-                const placed = await mountOf('file', record.inode.path);
+                const placed = described !== undefined ? record.inode.path : await mountOf('file', record.inode.path);
                 if (placed === null)
                     return false;
                 if (record.inode.kind === 'symlink')
@@ -1044,6 +1111,7 @@ export class WaveIngest {
                     ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
                     ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
                     ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
+                    ...(described === undefined ? {} : { described }),
                 };
                 return true;
             }
@@ -1066,6 +1134,12 @@ export class WaveIngest {
                     await at.settleBefore();
                     reached();
                     const bytes = concatBytes(file.held.map((chunk) => chunk.data));
+                    const node = file.described;
+                    if (node !== undefined) {
+                        await backend(Promise.resolve(file.call === 'append' ? node.append(bytes, at.guard) : node.write(file.offset ?? 0, bytes, at.guard)));
+                        at.committed(receiptOf(file.named, await backend(Promise.resolve(node.stat()))), bytes.byteLength);
+                        return true;
+                    }
                     const stat = await backend(router.apply(file.call !== undefined
                         ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
                         : file.link
