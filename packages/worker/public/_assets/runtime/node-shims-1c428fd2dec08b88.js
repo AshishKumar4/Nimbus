@@ -8483,7 +8483,11 @@ const __fsMod = (() => {
         if (chunk.byteLength < want) this.push(null);
       }
       open() {}
-      close(cb) { this.destroy(); if (cb) cb(); }
+      // lib/internal/fs/streams.js: `cb` once it has closed (finished's answer).
+      close(cb) {
+        if (typeof cb === "function") __streamMod.finished(this, cb);
+        this.destroy();
+      }
     };
     return __ReadStreamClass;
   }
@@ -8492,7 +8496,8 @@ const __fsMod = (() => {
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
       constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
-        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
+        // Acknowledged, the caller may reuse its buffer: the stream keeps its own bytes.
+        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(new Uint8Array(chunk)); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
         cb();
       }
@@ -8511,7 +8516,15 @@ const __fsMod = (() => {
         } catch (e) { cb(e); }
       }
       open() {}
-      close(cb) { if (cb) cb(); }
+      // lib/internal/fs/streams.js: ends the stream, `cb` once it has closed.
+      close(cb) {
+        if (cb) {
+          if (this.closed) { queueMicrotask(cb); return; }
+          this.on("close", cb);
+        }
+        if (!this._writableState.autoDestroy) this.on("finish", this.destroy);
+        this.end();
+      }
     };
     return __WriteStreamClass;
   }
@@ -8541,41 +8554,7 @@ const __fsMod = (() => {
     },
     F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
     createReadStream: (p, opts) => new (__getReadStream())(p, opts),
-    createWriteStream: (p, opts) => {
-      // binary-fs: chunks may arrive as Uint8Array OR string. Keep
-      // each chunk in its native shape; on final, if any chunk is
-      // bytes the merged write is bytes; otherwise string-concat
-      // (the hot path for ASCII text streams).
-      const chunks = [];
-      let anyBytes = false;
-      const ws = new __streamMod.Writable({
-        ...__fsStreamLifecycle(opts),
-        write(chunk, enc, cb) {
-          if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
-          else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
-          cb();
-        },
-        final(cb) {
-          if (anyBytes) {
-            // Sum byteLength across mixed chunks; concat to one Uint8Array.
-            let total = 0;
-            for (const c of chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
-            const out = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) {
-              const b = (c instanceof Uint8Array) ? c : _enc.encode(c);
-              out.set(b, off);
-              off += b.byteLength;
-            }
-            writeFileSync(p, out);
-          } else {
-            writeFileSync(p, chunks.join(""));
-          }
-          cb();
-        },
-      });
-      return ws;
-    },
+    createWriteStream: (p, opts) => new (__getWriteStream())(p, opts),
     // fs.watch() — returns a watcher object that emits 'change' events.
     // In the facet context, changes to __vfsBundle/Writes are detected
     // via polling since we don't have the supervisor's event emitter.
@@ -9230,803 +9209,11 @@ const __osMod = {
 const __eventsMod = __nativeBuiltin("events");
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  stream module (real, with backpressure) ────────────────────────
+// ──  stream module: the platform's node:stream ──────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════════
-// ── Node-compatible Streams (Nimbus v2.0) ───────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-
-const __streamMod = (() => {
-  const _enc = new TextEncoder();
-  const _dec = new TextDecoder();
-  const _Decoder = TextDecoder;
-  function _byteBuffer(chunk) {
-    const Buffer = typeof __BufferMod !== 'undefined' ? __BufferMod : globalThis.Buffer;
-    if (!Buffer) throw new Error('Nimbus byte streams require node:buffer');
-    return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-  }
-
-  /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
-  function _destroyedError(method) {
-    return nodeError(Error, 'ERR_STREAM_DESTROYED', 'Cannot call ' + method + ' after a stream was destroyed');
-  }
-
-  /**
-   * Node's errorBuffer: once destroyed, queued writes and end() callbacks
-   * are answered, never left waiting on a stream that will not write them.
-   */
-  function _errorBuffer(state, err) {
-    for (const { chunk, callback } of state.buffer.splice(0)) {
-      state.bufferedLength -= (chunk?.length || 0);
-      state.pending--;
-      if (callback) callback(err ?? _destroyedError('write'));
-    }
-    for (const cb of state.finishCallbacks.splice(0)) cb(err ?? _destroyedError('end'));
-  }
-
-  /** Node's errorOrDestroy for the writable side: autoDestroy closes it. */
-  function _errorOrDestroy(stream, err) {
-    const state = stream._writableState;
-    if (state.destroyed) return;
-    if (state.autoDestroy) stream.destroy(err);
-    else stream.emit('error', err);
-  }
-
-  /**
-   * Destroy either side of a stream, and both of a Duplex, once: 'error' if
-   * given, then 'close' unless the stream was created with emitClose: false.
-   */
-  function _destroyStream(stream, err) {
-    const r = stream._readableState, w = stream._writableState;
-    if ((r && r.destroyed) || (w && w.destroyed)) return stream;
-    if (r) { r.destroyed = true; stream.readable = false; }
-    if (w) {
-      w.destroyed = true;
-      stream.writable = false;
-      if (stream.__nimbusTransformReadCallback) {
-        const pending = stream.__nimbusTransformReadCallback;
-        stream.__nimbusTransformReadCallback = null;
-        queueMicrotask(() => pending(err ?? _destroyedError('write')));
-      }
-      // A write in flight answers the queue when it calls back.
-      if (!w.writing) queueMicrotask(() => _errorBuffer(w));
-    }
-    if (err) stream.emit('error', err);
-    if ((r || w).emitClose) stream.emit('close');
-    return stream;
-  }
-
-  // ── Readable ────────────────────────────────────────────────────────
-  //
-  // Node's read machinery is a PULL: the consumer's demand is what causes
-  // `_read()` to be called. Two consumer idioms create demand implicitly —
-  // attaching a 'data' listener and `.pipe()` — and both put the stream in
-  // flowing mode. Honouring that is not cosmetic: a source whose `_read()`
-  // is never called produces nothing at all, so
-  // `fs.createReadStream(f).on('data', …)` and `.pipe(res)` hang forever
-  // (every static file server, and the doom-web asset serve, are exactly
-  // this shape). `_flow` below is the single pump used by flowing mode,
-  // `read()`, and the async iterator, so a source that pushes
-  // ASYNCHRONOUSLY (a live VFS range read) works through all three.
-  /**
-   * A stream class as Node defines one: constructed with `new`, extended
-   * with `class extends`, and also CALLED on an object that inherits its
-   * prototype (`Writable.call(this, opts)`), which pre-class modules do to
-   * inherit: follow-redirects (axios's http adapter) does exactly that, and a
-   * class constructor refuses to be called. Node's stream constructors are
-   * functions for this reason (lib/internal/streams/writable.js); `init`
-   * does to `this` what constructing does. Called on anything else, it
-   * constructs, as Node's does.
-   */
-  function __legacyConstructor(Class, name, init) {
-    // A function, not a method: only a function is a constructor; the key names it.
-    const Constructor = {
-      [name]: function (...args) {
-        if (new.target) return Reflect.construct(Class, args, new.target);
-        if (this instanceof Constructor) {
-          init(this, ...args);
-          return undefined;
-        }
-        return new Constructor(...args);
-      },
-    }[name];
-    Constructor.prototype = Class.prototype;
-    Object.defineProperty(Class.prototype, 'constructor', { value: Constructor, writable: true, configurable: true, enumerable: false });
-    Object.setPrototypeOf(Constructor, Object.getPrototypeOf(Class));
-    return Constructor;
-  }
-
-  function _initReadable(stream, opts) {
-    stream._readableState = {
-      buffer: [],
-      ended: false,
-      endEmitted: false,
-      flowing: null,
-      // reading — a _read() call is outstanding: no push() and no EOF has
-      // landed since. Keeps the pump from stacking redundant _read calls
-      // while an async source is in flight.
-      reading: false,
-      pumping: false,
-      highWaterMark: opts?.highWaterMark ?? 16384,
-      encoding: opts?.encoding || null,
-      objectMode: opts?.objectMode ?? false,
-      autoDestroy: opts?.autoDestroy !== false,
-      emitClose: opts?.emitClose !== false,
-      destroyed: false,
-      readableLength: 0,
-      // A consumer reads it in readable mode: a 'readable' listener, or an
-      // async iterator, which owns it until it completes. Node's
-      // flushStdio leaves such a stream to its consumer. Kept current as
-      // listeners come and go (_updateReadableListening).
-      readableListening: false,
-      iterating: false,
-    };
-    stream.readable = true;
-    if (opts?.read) stream._read = opts.read.bind(stream);
-  }
-
-  class ReadableClass extends __eventsMod {
-    constructor(opts) {
-      super();
-      _initReadable(this, opts);
-    }
-
-    _read(size) { /* override in subclass */ }
-
-    /** Ask the source for more, unless it already owes us a push or is done. */
-    _maybeRead() {
-      const state = this._readableState;
-      if (state.reading || state.ended || state.destroyed) return;
-      state.reading = true;
-      try { this._read(state.highWaterMark); }
-      catch (err) { state.reading = false; this.destroy(err); }
-    }
-
-    _shift() {
-      const state = this._readableState;
-      const chunk = state.buffer.shift();
-      state.readableLength -= (chunk?.length || 0);
-      if (this.__nimbusTransformReadCallback && state.readableLength < state.highWaterMark) {
-        const pending = this.__nimbusTransformReadCallback;
-        this.__nimbusTransformReadCallback = null;
-        queueMicrotask(() => pending());
-      }
-      return this._decode(chunk);
-    }
-
-    _decode(chunk) {
-      const enc = this._readableState.encoding;
-      if (!enc || enc === 'buffer' || !(chunk instanceof Uint8Array)) return chunk;
-      try { return new _Decoder(enc === 'binary' ? 'latin1' : enc).decode(chunk); }
-      catch { return chunk; }
-    }
-
-    _maybeEmitEnd() {
-      const state = this._readableState;
-      if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-        state.endEmitted = true;
-        this.readable = false;
-        this._emitEnd();
-        return true;
-      }
-      return false;
-    }
-
-    /**
-     * 'end', then Node's autoDestroy (on unless the stream opts out): a
-     * stream done reading, and done writing if it is a Duplex, is destroyed,
-     * so 'close' follows 'end'. Consumers wait on it: node-static ends the
-     * response on its file stream's 'close'.
-     */
-    _emitEnd() {
-      this.emit('end');
-      const ws = this._writableState;
-      if (this._readableState.autoDestroy && (!ws || (ws.autoDestroy && ws.finished))) {
-        queueMicrotask(() => this.destroy());
-      }
-    }
-
-    /**
-     * Drain buffered chunks to 'data' listeners while flowing, then ask the
-     * source for more. Deferred to a microtask so a synchronous `push()`
-     * from inside `_read()` cannot recurse into the stack.
-     */
-    _flow() {
-      const state = this._readableState;
-      if (state.pumping) return;
-      state.pumping = true;
-      queueMicrotask(() => {
-        state.pumping = false;
-        while (state.flowing && state.buffer.length > 0 && !state.destroyed) {
-          this.emit('data', this._shift());
-        }
-        if (this._maybeEmitEnd()) return;
-        if (state.flowing && !state.destroyed) this._maybeRead();
-      });
-    }
-
-    read(size) {
-      const state = this._readableState;
-      if (state.buffer.length === 0) {
-        if (state.ended) return null;
-        this._maybeRead();
-        if (state.buffer.length === 0) return null;
-      }
-      const chunk = this._shift();
-      if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
-        state.endEmitted = true;
-        this.readable = false;
-        queueMicrotask(() => this._emitEnd());
-      }
-      return chunk;
-    }
-
-    push(chunk, encoding) {
-      const state = this._readableState;
-      state.reading = false;
-      if (chunk === null) {
-        state.ended = true;
-        if (state.flowing) this._flow();
-        else if (state.buffer.length === 0 && !state.endEmitted) {
-          state.endEmitted = true;
-          this.readable = false;
-          queueMicrotask(() => this._emitEnd());
-        }
-        return false;
-      }
-      if (typeof chunk === 'string' && !state.objectMode) {
-        chunk = _enc.encode(chunk);
-      }
-      if (!state.objectMode && chunk instanceof Uint8Array) {
-        // The channel carries Uint8Array; Node's byte-mode readable edge
-        // publishes Buffer. Object mode and setEncoding keep their own API.
-        chunk = _byteBuffer(chunk);
-      }
-      state.buffer.push(chunk);
-      state.readableLength += (chunk?.length || 0);
-      if (state.flowing) this._flow();
-      return state.readableLength < state.highWaterMark;
-    }
-
-    // Node switches to flowing mode when a 'data' listener is attached,
-    // unless the consumer explicitly called pause().
-    on(event, listener) {
-      const result = super.on(event, listener);
-      if (event === 'data' && this._readableState.flowing !== false) this.resume();
-      else if (event === 'readable') this._updateReadableListening();
-      return result;
-    }
-    addListener(event, listener) { return this.on(event, listener); }
-    // EventEmitter's off is its removeListener itself, not a call through
-    // the subclass, so both are overridden; once's wrapper removes itself
-    // through removeListener.
-    removeListener(event, listener) {
-      const result = super.removeListener(event, listener);
-      if (event === 'readable') this._updateReadableListening();
-      return result;
-    }
-    off(event, listener) { return this.removeListener(event, listener); }
-    removeAllListeners(...args) {
-      const result = super.removeAllListeners(...args);
-      if (args.length === 0 || args[0] === 'readable') this._updateReadableListening();
-      return result;
-    }
-    _updateReadableListening() {
-      const state = this._readableState;
-      state.readableListening = state.iterating === true || this.listenerCount('readable') > 0;
-    }
-
-    pipe(dest, opts) {
-      this.on('data', (chunk) => {
-        const canContinue = dest.write(chunk);
-        if (!canContinue) {
-          this.pause();
-          dest.once('drain', () => this.resume());
-        }
-      });
-      this.on('end', () => {
-        if (opts?.end !== false) dest.end();
-      });
-      this.resume();
-      return dest;
-    }
-
-    unpipe(dest) {
-      this.removeAllListeners('data');
-      return this;
-    }
-
-    resume() {
-      const state = this._readableState;
-      if (state.flowing !== true) {
-        state.flowing = true;
-        this._flow();
-      }
-      return this;
-    }
-
-    pause() {
-      this._readableState.flowing = false;
-      return this;
-    }
-
-    setEncoding(enc) {
-      this._readableState.encoding = enc;
-      return this;
-    }
-
-    destroy(err) { return _destroyStream(this, err); }
-
-    get readableEnded() { return this._readableState.endEmitted; }
-    get readableLength() { return this._readableState.readableLength; }
-    get readableFlowing() { return this._readableState.flowing; }
-
-    // One chunk per tick: resume, take the next 'data', pause again. Uses
-    // the same pump as flowing mode, so an asynchronous source works here
-    // too (the old implementation called read() once and then waited for a
-    // 'data' event that nothing would ever emit in paused mode).
-    [Symbol.asyncIterator]() {
-      const self = this;
-      const state = self._readableState;
-      // The iterator owns the stream until it completes.
-      state.iterating = true;
-      self._updateReadableListening();
-      const finish = () => {
-        state.iterating = false;
-        self._updateReadableListening();
-      };
-      const iterator = {
-        next() {
-          return new Promise((resolve, reject) => {
-            if (state.buffer.length > 0) {
-              const chunk = self._shift();
-              self._maybeEmitEnd();
-              return resolve({ value: chunk, done: false });
-            }
-            if (state.ended || state.destroyed) { finish(); return resolve({ value: undefined, done: true }); }
-            const cleanup = () => {
-              self.off('data', onData);
-              self.off('end', onEnd);
-              self.off('error', onError);
-            };
-            const onData = (c) => { cleanup(); self.pause(); resolve({ value: c, done: false }); };
-            const onEnd = () => { cleanup(); finish(); resolve({ value: undefined, done: true }); };
-            const onError = (e) => { cleanup(); finish(); reject(e); };
-            self.once('data', onData);
-            self.once('end', onEnd);
-            self.once('error', onError);
-            self.resume();
-          });
-        },
-        return() {
-          finish();
-          self.destroy();
-          return Promise.resolve({ value: undefined, done: true });
-        },
-        [Symbol.asyncIterator]() { return iterator; },
-      };
-      return iterator;
-    }
-  }
-  const Readable = __legacyConstructor(ReadableClass, 'Readable', (stream, opts) => {
-    __eventsMod.call(stream, opts);
-    _initReadable(stream, opts);
-  });
-
-  // ── Readable.from / Readable.fromWeb ────────────────────────────────
-  // Node exposes these statics; libraries that stream a fetch
-  // `response.body` (a web ReadableStream) into a Node pipeline rely on
-  // `Readable.fromWeb` (giget's template download:
-  // `pipeline(response.body, createWriteStream(...))`). A web
-  // ReadableStream has no `.pipe`, so it must be adapted first.
-  Readable.from = function from(iterable, opts) {
-    // Node (lib/internal/streams/from.js): object mode unless the caller says
-    // otherwise, so values arrive as yielded; and a string or Buffer is
-    // emitted whole rather than iterated. http-server streams
-    // `Readable.from(bytes)` of each text file into the response, which
-    // refuses a byte-number chunk.
-    const r = new Readable({ ...opts, objectMode: opts?.objectMode ?? true });
-    if (typeof iterable === 'string' || iterable instanceof Uint8Array) {
-      r._read = function () { this.push(iterable); this.push(null); };
-      return r;
-    }
-    r._read = () => {};
-    (async () => {
-      try {
-        for await (const chunk of iterable) r.push(chunk);
-        r.push(null);
-      } catch (err) { r.destroy(err); }
-    })();
-    return r;
-  };
-  Readable.fromWeb = function fromWeb(webStream, opts) {
-    const r = new Readable({ ...opts });
-    const reader = webStream.getReader();
-    r._read = () => {};
-    (async () => {
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) { r.push(null); break; }
-          r.push(value);
-        }
-      } catch (err) { r.destroy(err); }
-    })();
-    return r;
-  };
-
-  // ── Writable ────────────────────────────────────────────────────────
-  //
-  // Node's order (lib/internal/streams/writable.js): one _write at a time,
-  // the rest queued; end() waits for every write to call back before
-  // _final, 'finish' follows _final's callback, and autoDestroy then closes
-  // the stream (a Duplex once its readable side has ended too). An
-  // asynchronous _write or _transform is therefore complete, and a
-  // Transform's output delivered, before 'finish' and 'close'.
-  function _writableState(opts, highWaterMark) {
-    return {
-      objectMode: opts?.objectMode === true || opts?.writableObjectMode === true,
-      buffer: [],
-      writing: false,
-      // Writes and _final not yet called back.
-      pending: 0,
-      ending: false,
-      finalCalled: false,
-      finished: false,
-      finishCallbacks: [],
-      highWaterMark,
-      needDrain: false,
-      autoDestroy: opts?.autoDestroy !== false,
-      emitClose: opts?.emitClose !== false,
-      destroyed: false,
-      corked: 0,
-      bufferedLength: 0,
-    };
-  }
-
-  function _write(stream, chunk, encoding, callback) {
-    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-    const state = stream._writableState;
-    if (state.ending || state.destroyed) {
-      // A destroyed stream reports nothing further; the write's callback is
-      // still answered.
-      const err = state.ending
-        ? nodeError(Error, 'ERR_STREAM_WRITE_AFTER_END', 'write after end')
-        : _destroyedError('write');
-      if (state.destroyed) { if (callback) queueMicrotask(() => callback(err)); return false; }
-      if (callback) callback(err);
-      _errorOrDestroy(stream, err);
-      return false;
-    }
-    if (typeof chunk === 'string') chunk = _enc.encode(chunk);
-    if (!state.objectMode && chunk instanceof Uint8Array) chunk = _byteBuffer(chunk);
-    state.bufferedLength += (chunk?.length || 0);
-    state.pending++;
-    const request = { chunk, encoding, callback };
-    if (state.writing || state.corked > 0) state.buffer.push(request);
-    else _doWrite(stream, request);
-    if (state.bufferedLength >= state.highWaterMark) {
-      state.needDrain = true;
-      return false;
-    }
-    return true;
-  }
-
-  function _doWrite(stream, { chunk, encoding, callback }) {
-    const state = stream._writableState;
-    state.writing = true;
-    let called = false;
-    stream._write(chunk, encoding, (err) => {
-      if (called) return;
-      called = true;
-      state.writing = false;
-      state.bufferedLength -= (chunk?.length || 0);
-      state.pending--;
-      if (err) {
-        // Node's onwriteError: this callback, then the queue, then 'error'
-        // unless the stream was destroyed.
-        if (callback) callback(err);
-        _errorBuffer(state, err);
-        _errorOrDestroy(stream, err);
-        return;
-      }
-      // The next queued write starts before this one's callback, then
-      // 'drain', as Node's onwrite/afterWrite order them.
-      if (state.buffer.length > 0 && state.corked === 0 && !state.destroyed) _doWrite(stream, state.buffer.shift());
-      if (state.needDrain && state.bufferedLength === 0 && !state.ending) {
-        state.needDrain = false;
-        stream.emit('drain');
-      }
-      if (callback) callback();
-      if (state.destroyed) _errorBuffer(state);
-      else _finishMaybe(stream);
-    });
-  }
-
-  function _end(stream, chunk, encoding, callback) {
-    if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
-    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-    const state = stream._writableState;
-    if (chunk !== undefined && chunk !== null) _write(stream, chunk, encoding);
-    if (state.corked > 0) { state.corked = 1; _uncork(stream); }
-    if (callback) {
-      if (state.finished) queueMicrotask(() => callback());
-      else state.finishCallbacks.push(callback);
-    }
-    if (!state.ending) {
-      state.ending = true;
-      // A stream ended with nothing in flight finishes on a later tick.
-      queueMicrotask(() => _finishMaybe(stream));
-    }
-    return stream;
-  }
-
-  function _uncork(stream) {
-    const state = stream._writableState;
-    if (state.corked > 0) state.corked--;
-    if (state.corked === 0 && !state.writing && state.buffer.length > 0) _doWrite(stream, state.buffer.shift());
-  }
-
-  /** _final, then 'finish', once end() was called and every write called back. */
-  function _finishMaybe(stream) {
-    const state = stream._writableState;
-    if (!state.ending || state.finished || state.writing || state.buffer.length > 0 || state.pending > 0 || state.destroyed) return;
-    if (!state.finalCalled && typeof stream._final === 'function') {
-      state.finalCalled = true;
-      state.pending++;
-      let called = false;
-      const onFinal = (err) => {
-        if (called) return;
-        called = true;
-        state.pending--;
-        if (err) {
-          for (const cb of state.finishCallbacks.splice(0)) cb(err);
-          _errorOrDestroy(stream, err);
-          return;
-        }
-        queueMicrotask(() => _finish(stream));
-      };
-      try { stream._final(onFinal); } catch (err) { onFinal(err); }
-      return;
-    }
-    if (!state.finalCalled) {
-      state.finalCalled = true;
-      _finish(stream);
-    }
-  }
-
-  function _finish(stream) {
-    const state = stream._writableState;
-    if (state.finished || state.destroyed) return;
-    state.finished = true;
-    for (const cb of state.finishCallbacks.splice(0)) cb();
-    stream.emit('finish');
-    // autoDestroy, as Readable's _emitEnd: 'close' follows 'finish', for a
-    // Duplex once its readable side has ended too.
-    const rs = stream._readableState;
-    if (state.autoDestroy && (!rs || (rs.autoDestroy && rs.endEmitted))) queueMicrotask(() => stream.destroy());
-  }
-
-  function _initWritable(stream, opts) {
-    stream._writableState = _writableState(opts, opts?.highWaterMark ?? 16384);
-    stream.writable = true;
-    if (opts?.write) stream._write = opts.write.bind(stream);
-    if (opts?.final) stream._final = opts.final.bind(stream);
-    if (opts?.destroy) stream._destroy = opts.destroy.bind(stream);
-  }
-
-  class WritableClass extends __eventsMod {
-    constructor(opts) {
-      super();
-      _initWritable(this, opts);
-    }
-
-    _write(chunk, encoding, callback) { callback(); }
-
-    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
-    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
-    cork() { this._writableState.corked++; }
-    uncork() { _uncork(this); }
-    destroy(err) { return _destroyStream(this, err); }
-
-    get destroyed() { return this._writableState.destroyed; }
-    set destroyed(value) { this._writableState.destroyed = !!value; }
-    get writableEnded() { return this._writableState.ending; }
-    get writableFinished() { return this._writableState.finished; }
-    get writableLength() { return this._writableState.bufferedLength; }
-    get writableNeedDrain() { return this._writableState.needDrain; }
-    get writableHighWaterMark() { return this._writableState.highWaterMark; }
-  }
-  const Writable = __legacyConstructor(WritableClass, 'Writable', (stream, opts) => {
-    __eventsMod.call(stream, opts);
-    _initWritable(stream, opts);
-  });
-
-  // ── Duplex ──────────────────────────────────────────────────────────
-  function _initDuplexWritable(stream, opts) {
-    stream._writableState = _writableState(opts, opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384);
-    stream.writable = true;
-    if (opts?.write) stream._write = opts.write.bind(stream);
-    if (opts?.final) stream._final = opts.final.bind(stream);
-  }
-  const _initDuplex = (stream, opts) => {
-    __eventsMod.call(stream, opts);
-    _initReadable(stream, opts);
-    _initDuplexWritable(stream, opts);
-  };
-
-  class DuplexClass extends Readable {
-    constructor(opts) {
-      super(opts);
-      _initDuplexWritable(this, opts);
-    }
-    _write(chunk, encoding, callback) { callback(); }
-    write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
-    end(chunk, encoding, callback) { return _end(this, chunk, encoding, callback); }
-    cork() { this._writableState.corked++; }
-    uncork() { _uncork(this); }
-    get writableEnded() { return this._writableState.ending; }
-    get writableFinished() { return this._writableState.finished; }
-    get writableLength() { return this._writableState.bufferedLength; }
-    get writableNeedDrain() { return this._writableState.needDrain; }
-    get writableHighWaterMark() { return this._writableState.highWaterMark; }
-  }
-  const Duplex = __legacyConstructor(DuplexClass, 'Duplex', _initDuplex);
-
-  // ── Transform ───────────────────────────────────────────────────────
-  function _initTransform(stream, opts) {
-    if (opts?.transform) stream._transform = opts.transform.bind(stream);
-    if (opts?.flush) stream._flush = opts.flush.bind(stream);
-  }
-  const _initTransformStream = (stream, opts) => {
-    _initDuplex(stream, opts);
-    _initTransform(stream, opts);
-  };
-
-  class TransformClass extends Duplex {
-    constructor(opts) {
-      super(opts);
-      _initTransform(this, opts);
-    }
-
-    _transform(chunk, encoding, callback) { callback(null, chunk); }
-    _flush(callback) { callback(); }
-
-    _write(chunk, encoding, callback) {
-      this._transform(chunk, encoding, (err, data) => {
-        if (err) return callback(err);
-        if (data !== null && data !== undefined) this.push(data);
-        // A Transform's two sides are one bounded pipe: completing this
-        // write while the readable side is full would drain the broker into
-        // an unbounded local buffer. The consumer's _shift releases it.
-        if (this._readableState.readableLength >= this._readableState.highWaterMark) this.__nimbusTransformReadCallback = callback;
-        else callback();
-      });
-    }
-
-    _final(callback) {
-      this._flush((err, data) => {
-        if (err) return callback(err);
-        if (data !== null && data !== undefined) this.push(data);
-        this.push(null);
-        callback();
-      });
-    }
-  }
-
-  const Transform = __legacyConstructor(TransformClass, 'Transform', _initTransformStream);
-
-  // ── PassThrough ─────────────────────────────────────────────────────
-  class PassThroughClass extends Transform {
-    constructor(opts) { super(opts); }
-    _transform(chunk, encoding, callback) { callback(null, chunk); }
-  }
-  const PassThrough = __legacyConstructor(PassThroughClass, 'PassThrough', _initTransformStream);
-
-  // ── pipeline ────────────────────────────────────────────────────────
-  function pipeline(...args) {
-    const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
-    // pipeline(streams[, callback]), as Node takes it too (axios passes its
-    // response and decompressor so); a copy, since the adapting below
-    // replaces entries.
-    const streams = args.length === 1 && Array.isArray(args[0]) ? [...args[0]] : args;
-    if (streams.length < 2) {
-      if (callback) callback(new Error('pipeline requires at least 2 streams'));
-      return streams[0];
-    }
-    let error = null;
-    // Adapt a non-Node source (a web ReadableStream from fetch, an async
-    // iterable) to a Node Readable so `.pipe` exists, as Node's pipeline
-    // does with Readable.from/fromWeb. Only the source: the streams after it
-    // are written to, and one that is only written to may have no pipe and
-    // still be async-iterable (streamx's Writable: tar-fs's extract), which
-    // a Readable in its place would never write to.
-    const source = streams[0];
-    if (source && typeof source.pipe !== 'function') {
-      if (typeof source.getReader === 'function') streams[0] = Readable.fromWeb(source);
-      else if (source[Symbol.asyncIterator] || source[Symbol.iterator]) streams[0] = Readable.from(source);
-    }
-    for (let i = 0; i < streams.length - 1; i++) {
-      const src = streams[i];
-      const dst = streams[i + 1];
-      src.pipe(dst);
-      src.on('error', (e) => { error = e; dst.destroy(e); });
-    }
-    const last = streams[streams.length - 1];
-    last.on('finish', () => { if (callback) callback(error); });
-    last.on('error', (e) => { if (!error) { error = e; } if (callback) callback(error); });
-    return last;
-  }
-
-  // ── finished ────────────────────────────────────────────────────────
-  function finished(stream, opts, callback) {
-    if (typeof opts === 'function') { callback = opts; opts = {}; }
-    const onFinish = () => { cleanup(); if (callback) callback(null); };
-    const onEnd = () => { cleanup(); if (callback) callback(null); };
-    const onError = (err) => { cleanup(); if (callback) callback(err); };
-    const onClose = () => { cleanup(); if (callback) callback(null); };
-    stream.on('finish', onFinish);
-    stream.on('end', onEnd);
-    stream.on('error', onError);
-    stream.on('close', onClose);
-    function cleanup() {
-      stream.off('finish', onFinish);
-      stream.off('end', onEnd);
-      stream.off('error', onError);
-      stream.off('close', onClose);
-    }
-    return cleanup;
-  }
-
-  // Real Node's `require('stream')` IS the legacy `Stream` constructor
-  // (a function extending EventEmitter), carrying Readable/Writable/etc.
-  // as own properties. Userland relies on this in two ways:
-  //   - `class X extends require('stream')` / `util.inherits(X, stream)`
-  //     (minipass — bundled by degit/create-cloudflare — does
-  //     `class Minipass extends Stream__default['default']`).
-  //   - `require('stream').prototype` for prototype chaining
-  //     (readable-stream@2 _stream_writable.js, send/index.js).
-  // A plain namespace object satisfies neither: it is not a constructor,
-  // so `class extends` throws "Class extends value is not a constructor".
-  // Make the export the Stream constructor itself with the named exports
-  // attached, mirroring Node exactly. Like Node's (lib/internal/streams/
-  // legacy.js) it is a function, not a class: send (express.static) does
-  // `Stream.call(this)`, which a class constructor refuses.
-  function Stream(opts) { __eventsMod.call(this, opts); }
-  Object.setPrototypeOf(Stream.prototype, __eventsMod.prototype);
-  Object.setPrototypeOf(Stream, __eventsMod);
-  Stream.prototype.pipe = function pipe(dest, opts) {
-    const src = this;
-    src.on('data', (chunk) => { dest.write(chunk); });
-    src.on('end', () => { if (!opts || opts.end !== false) dest.end(); });
-    return dest;
-  };
-  // ── stream state introspection (node:stream named helpers) ─────────
-  // Modern libraries (e.g. those bundled by create-cloudflare) call these
-  // off the stream module. They read the public stream state flags.
-  const isErrored = (s) => !!(s && (s.errored || (s._readableState && s._readableState.errored) || (s._writableState && s._writableState.errored)));
-  const isReadable = (s) => !!(s && s.readable && !(s._readableState && s._readableState.endEmitted));
-  const isWritable = (s) => !!(s && s.writable && !(s._writableState && s._writableState.finished));
-  const isDisturbed = (s) => !!(s && (s.readableDidRead || (s._readableState && (s._readableState.dataEmitted || s._readableState.endEmitted))));
-  const addAbortSignal = (signal, stream) => {
-    if (signal && typeof signal.addEventListener === 'function') {
-      signal.addEventListener('abort', () => { stream.destroy(new Error('AbortError')); }, { once: true });
-    }
-    return stream;
-  };
-
-  const __streamMod = Object.assign(Stream, {
-    Readable, Writable, Duplex, Transform, PassThrough,
-    Stream,
-    pipeline, finished,
-    isErrored, isReadable, isWritable, isDisturbed, addAbortSignal,
-    // Aliases for compatibility
-    _Readable: Readable, _Writable: Writable, _Transform: Transform,
-  });
-  return __streamMod;
-})();
-
+// Every stream here is one of its classes: the files', the children's, the
+// terminal's, HTTP's and zlib's alike.
+const __streamMod = __nativeBuiltin("stream");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  node:sqlite module (sql.js-backed) ─────────────────────────────
@@ -12420,8 +11607,7 @@ const __childProcessMod = (() => {
    * text. It used to default to utf8 for the cross-spawn / husky pattern;
    * that pattern reads `String(chunk)` and works on a Buffer, and the
    * default turned every byte above 0x7f into U+FFFD for everyone else.
-   * Flowing-mode resumption and encoding are the Readable base class's job —
-   * see streams.ts.
+   * Flowing-mode resumption and encoding are the Readable base class's job.
    */
   function _makeReadable() {
     return new __streamMod.PassThrough();
@@ -12553,37 +11739,26 @@ const __childProcessMod = (() => {
     };
   }
 
-  // Read the parent's actual stdin (seeded input or the live terminal
-  // pump), not an empty spawn payload. The private relay remains absent
+  // The parent's actual fd 0 (seeded input or the live terminal pump), not
+  // an empty spawn payload: a consumer of its own, as the child's inherited
+  // descriptor is, its bytes as they came. The private relay remains absent
   // from child.stdin, and relinquishes the input when the child exits.
   function _inheritStdin(child) {
-    const input = __processMod.stdin;
+    const relay = new __streamMod.Readable({ read() { __nimbusStdinSource.want(relay); } });
+    __nimbusStdinSource.attach(relay);
     let stopped = false;
-    const cleanup = () => {
-      stopped = true;
-      input.removeListener('data', forward);
-      input.removeListener('end', end);
-      if (input.listenerCount('data') === 0) input.pause();
-    };
-    const end = () => { if (!stopped) void _queueStdinEnd(child); };
-    const forward = (chunk) => {
+    relay.on('end', () => { if (!stopped) void _queueStdinEnd(child); });
+    relay.on('data', (chunk) => {
       if (stopped) return;
-      input.pause();
+      relay.pause();
       const task = _queueStdinWrite(child, _toBytes(chunk)).then(() => {
-        if (!stopped) input.resume();
+        if (!stopped) relay.resume();
       }, (error) => {
         if (!stopped) child.emit('error', error);
       });
       __pendingIO.push(task);
-    };
-    child.once('exit', cleanup);
-    // Attach the byte consumer before starting the stdin pump. Bypass only
-    // stdin's optional text-decoding listener wrapper: an inherited fd
-    // carries its bytes, not the parent's chosen listener encoding.
-    __eventsMod.prototype.on.call(input, 'data', forward);
-    input.once('end', end);
-    input.resume();
-    if (input.readableEnded) end();
+    });
+    child.once('exit', () => { stopped = true; relay.destroy(); });
   }
 
   /** Build a fresh ChildProcess emitter with real streams. */
@@ -12646,12 +11821,17 @@ const __childProcessMod = (() => {
     child._stderrEnded = stdio[2] === 'ignore';
     if (stdio[1] === 'inherit' || stdio[2] === 'inherit') _trackCloseInterest('close');
     // Listen to the underlying streams' 'end' events so 'close' fires
-    // only after actual data has flushed.
+    // only after actual data has flushed; or 'close', for a stream destroyed
+    // before its end (a pipeline's failing sink), as Node counts its pipes'.
     if (child.stdout) {
-      child.stdout.on("end", () => { child._stdoutEnded = true; _maybeFireClose(child); });
+      const done = () => { child._stdoutEnded = true; _maybeFireClose(child); };
+      child.stdout.on("end", done);
+      child.stdout.on("close", () => { if (!child.stdout.readableEnded) _closeChildOutput(child, 1); done(); });
     }
     if (child.stderr) {
-      child.stderr.on("end", () => { child._stderrEnded = true; _maybeFireClose(child); });
+      const done = () => { child._stderrEnded = true; _maybeFireClose(child); };
+      child.stderr.on("end", done);
+      child.stderr.on("close", () => { if (!child.stderr.readableEnded) _closeChildOutput(child, 2); done(); });
     }
 
     child.kill = function(signal) {
@@ -12732,6 +11912,20 @@ const __childProcessMod = (() => {
     if (r && Array.isArray(r.news)) globalThis.__nimbusApplyNews(r.news);
   }
 
+  /**
+   * Its consumer destroyed the child's stdout or stderr before its end (a
+   * pipeline's failing sink): the parent's read end closes, so the child's
+   * writes there fail, EPIPE, as they do to a Node pipe with no reader. Sent
+   * once the broker knows the child; its read loop sends it otherwise.
+   */
+  function _closeChildOutput(child, fd) {
+    if (!HAS_SUPERVISOR || !child._brokerPid || child._exitFired) return;
+    const closed = child._closedOutputs ??= new Set();
+    if (closed.has(fd)) return;
+    closed.add(fd);
+    __nimbusUseRpcResult(__supervisor.cpCloseOutput(child._brokerPid, fd), () => undefined).catch(() => {});
+  }
+
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
     // to 1500ms cap. Reset to 100ms whenever a chunk arrives. Caps
@@ -12741,6 +11935,7 @@ const __childProcessMod = (() => {
     let backoff = 100;
     const BACKOFF_MAX = 1500;
     while (HAS_SUPERVISOR && child._brokerPid && !child._streamsClosed) {
+      if (stream.destroyed) { _closeChildOutput(child, fd); return; }
       try {
         const r = await _childPoll(
           __supervisor.cpReadOutput(child._brokerPid, fd, sinceSeqRef.value, backoff, __nimbusVfsAcquireArgs()),
@@ -12754,6 +11949,9 @@ const __childProcessMod = (() => {
           // before its first byte, as in Node.
           _markSpawned(child);
           for (const c of chunks) {
+            // Ended by the exit-time drain meanwhile: what is left was its.
+            if (stream.writableEnded) return;
+            if (stream.destroyed) { _closeChildOutput(child, fd); return; }
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
             const written = stream.write(__BufferMod.from(c.data));
@@ -12817,11 +12015,12 @@ const __childProcessMod = (() => {
   function _flushStdio(child) {
     queueMicrotask(() => {
       for (const stream of [child.stdout, child.stderr]) {
-        // A stream a consumer owns in readable mode (a 'readable' listener,
-        // an async iterator) is left to it, as Node's flushStdio leaves one
-        // whose readableListening is set: resuming it would hand its next
-        // chunks to no one.
-        if (!stream || stream._readableState?.readableListening) continue;
+        // A stream done with, or one a consumer owns in readable mode (a
+        // 'readable' listener, an async iterator), is left as it is, as
+        // Node's flushStdio leaves one that is no longer readable or whose
+        // readableListening is set: resuming it would hand its next chunks
+        // to no one.
+        if (!stream || !stream.readable || stream._readableState.readableListening) continue;
         try { stream.resume(); } catch {}
       }
     });
@@ -12907,6 +12106,8 @@ const __childProcessMod = (() => {
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
+    // As Node's onexit for a spawn that failed: the streams drain, so they end.
+    _flushStdio(child);
     _maybeFireClose(child);
   }
 
@@ -12939,12 +12140,14 @@ const __childProcessMod = (() => {
         const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
+        child.exitCode = 1;
         _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
+        _flushStdio(child);
         _maybeFireClose(child);
       });
       return child;
@@ -13315,11 +12518,12 @@ const __childProcessMod = (() => {
           );
           // Output means it started: 'spawn' before its first byte.
           if (r && ((r.stdout && r.stdout.byteLength > 0) || (r.stderr && r.stderr.byteLength > 0))) _markSpawned(child);
-          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout) {
-            try { child.stdout.write(__BufferMod.from(r.stdout)); } catch {}
+          // What the pump has not delivered, to a stream still open to it.
+          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout?.writable) {
+            child.stdout.write(__BufferMod.from(r.stdout));
           }
-          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr) {
-            try { child.stderr.write(__BufferMod.from(r.stderr)); } catch {}
+          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr?.writable) {
+            child.stderr.write(__BufferMod.from(r.stderr));
           }
           // Force-close streams so listeners receive 'end'. The 'end'
           // event listeners in _makeChild flip _stdoutEnded/_stderrEnded.
@@ -14062,49 +13266,54 @@ async function __nimbusPrepareStdin() {
     if (__nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended) __nimbusStdinFollower = __nimbusFollowStdin(pid);
   }
 }
-function __makeProcessStdin() {
-  const r = new __streamMod.PassThrough();
-  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
-  r.fd = 0;
-  let seeded = false;
-  let encoding = null;
-  r.isTTY = __nimbusAttachedTty;
-  r.isRaw = false;
-  r.setRawMode = function(mode) {
-    r.isRaw = mode !== false;
-    return r;
-  };
-  r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
-  r.unref = function() { inputReferenced = false; holdInput(false); return r; };
-  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+// fd 0's one source, and its consumers. The source is what the first
+// consumer starts (seed): a `< file`'s stream, the live channel's pump, or
+// what fd 0 held. Its consumers (process.stdin, each tty.ReadStream, a
+// child's inherited fd 0) are Readables of their own, as Node's are separate
+// handles on fd 0: each chunk goes to one consumer with a read outstanding
+// (flowing, in readable mode, or a paused one's own read()), as a read of one
+// fd takes it, and waits here while none has; each sees the end when it reads
+// after it. The live channel's
+// packets also carry its signals and resizes, so its pump reads on while no
+// one reads data. A consumer flowing and referenced holds the input open
+// (__nimbusInputHandles), as a reading Node stdin does: pausing, unref'ing,
+// ending or destroying one lets go of its own hold, and of nothing else.
+function __makeStdinSource() {
   const liveChildPid = __nimbusLiveInputChannel();
-  // The polling infrastructure is unref'd, but a program actively consuming
-  // live stdin owns a referenced input handle, as in Node. Otherwise an
-  // interactive child exits after its prompt, before a keystroke arrives.
-  let inputReferenced = true, inputHeld = false;
-  function holdInput(want) {
-    const held = !!(want && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
+  const queue = [];
+  const consumers = new Set();
+  const pending = new Set();
+  const unreferenced = new WeakSet();
+  let seeded = false, ended = false, failure = null, fileReader = null, inputHeld = false;
+  function update() {
+    let held = false;
+    if (liveChildPid) {
+      for (const c of consumers) {
+        if (c.readableFlowing === true && !unreferenced.has(c) && !c.readableEnded && !c.destroyed) { held = true; break; }
+      }
+    }
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
     if (!held) globalThis.__nimbusHandleReleased?.();
   }
-  __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
-  __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
-  if (liveChildPid) {
-    try {
-      globalThis.__nimbusProcessStdin = r;
-      const pending = Array.isArray(globalThis.__nimbusPendingProcessInput)
-        ? globalThis.__nimbusPendingProcessInput.splice(0)
-        : [];
-      globalThis.__nimbusPendingProcessInputBytes = 0;
-      for (const chunk of pending) r.write(String(chunk));
-      if (globalThis.__nimbusPendingProcessInputEnded) {
-        globalThis.__nimbusPendingProcessInputEnded = false;
-        queueMicrotask(() => r.end());
-      }
-    } catch {}
+  function deliver() {
+    for (const c of pending) {
+      if (c.destroyed) pending.delete(c);
+      else if (queue.length > 0) { pending.delete(c); c.push(queue.shift()); }
+      else if (failure !== null) { pending.delete(c); c.destroy(failure); }
+      else if (ended) { pending.delete(c); c.push(null); }
+    }
+    // A `< file` is read as its consumers read it.
+    if (fileReader !== null) {
+      if (queue.length > 0) fileReader.pause();
+      else if (pending.size > 0) fileReader.resume();
+    }
+    update();
   }
+  function write(chunk) { queue.push(chunk); deliver(); }
+  function end() { ended = true; deliver(); }
+  function fail(error) { failure = error; deliver(); }
   async function pumpLiveStdin() {
     let readFailures = 0;
     // What fd 0's follower took after process.stdin took the channel over
@@ -14165,10 +13374,10 @@ function __makeProcessStdin() {
       // The queue hands back bytes; a Readable given a string would encode
       // it again.
       if (packet && packet.data && packet.data.byteLength > 0) {
-        r.write(__BufferMod.from(packet.data));
+        write(__BufferMod.from(packet.data));
       }
       if (packet && packet.ended) {
-        r.end();
+        end();
         break;
       }
       // Diagnostic hook (runner-installed, NIMBUS_DIAG_EXEC-gated): the pump's
@@ -14188,27 +13397,29 @@ function __makeProcessStdin() {
       let from = file.offset;
       if (__nimbusSyncStdin !== null || __nimbusQueuedStdin !== null || __nimbusStdinTaken) {
         const first = __nimbusStdinRemainder();
-        if (first.length > 0) r.write(first);
+        if (first.length > 0) write(first);
         if (__nimbusQueuedStdin === null || __nimbusQueuedStdin.ended) {
-          queueMicrotask(() => r.end());
+          queueMicrotask(end);
           return;
         }
         from = __nimbusQueuedStdin.from;
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
-      source.on("error", (err) => r.destroy(err));
-      source.pipe(r);
+      fileReader = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
+      fileReader.on("data", write);
+      fileReader.on("end", end);
+      fileReader.on("error", fail);
+      deliver();
       return;
     }
     if (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       // What fd 0 held at the start and synchronous reads left comes first;
       // the pump reads on from there unless that was all of it.
       const first = __nimbusStdinRemainder();
-      if (first.length > 0) r.write(first);
+      if (first.length > 0) write(first);
       if (__nimbusStdinEnded()) {
-        queueMicrotask(() => r.end());
+        queueMicrotask(end);
         return;
       }
       const pump = pumpLiveStdin().catch((e) => {
@@ -14223,7 +13434,7 @@ function __makeProcessStdin() {
         __nimbusReleaseStderr(trace + "\n");
         const exitGate = __nimbusOutputGate();
         try { Promise.resolve(exitGate).then(() => __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\n"), () => undefined)).catch(() => {}); } catch {}
-        try { r.end(); } catch {}
+        end();
       });
       __nimbusLiveStdinPump = pump;
       return;
@@ -14232,22 +13443,41 @@ function __makeProcessStdin() {
       // A Buffer, as Node's stdin chunks are: `s += chunk` and
       // chunk.toString() read text, where a bare Uint8Array reads "104,105".
       const data = __nimbusStdinRemainder();
-      if (data.length > 0) r.write(data);
-      r.end();
+      if (data.length > 0) write(data);
+      end();
     });
   };
-  r.__nimbusStartLivePump = seed;
-  const origResume = typeof r.resume === "function" ? r.resume.bind(r) : null;
-  const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
-  r.resume = function() {
-    seed();
-    holdInput(true);
-    return origResume ? origResume() : r;
+  return {
+    seed,
+    // A consumer of fd 0: `stream`, a Readable whose _read is want's.
+    attach(stream) {
+      consumers.add(stream);
+      const { pause, resume } = stream;
+      stream.pause = function() { const out = Reflect.apply(pause, this, arguments); update(); return out; };
+      stream.resume = function() { seed(); const out = Reflect.apply(resume, this, arguments); deliver(); return out; };
+      stream.ref = function() { unreferenced.delete(stream); update(); return stream; };
+      stream.unref = function() { unreferenced.add(stream); update(); return stream; };
+      stream.on("end", update);
+      stream.on("close", () => { consumers.delete(stream); pending.delete(stream); update(); });
+    },
+    want(stream) { seed(); pending.add(stream); deliver(); },
   };
-  r.pause = function() {
-    holdInput(false);
-    return origPause ? origPause() : r;
+}
+const __nimbusStdinSource = __makeStdinSource();
+function __makeProcessStdin() {
+  const r = new __streamMod.Readable({ read() { __nimbusStdinSource.want(r); } });
+  __nimbusStdinSource.attach(r);
+  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
+  r.fd = 0;
+  let encoding = null;
+  r.isTTY = __nimbusAttachedTty;
+  r.isRaw = false;
+  r.setRawMode = function(mode) {
+    r.isRaw = mode !== false;
+    return r;
   };
+  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  r.__nimbusStartLivePump = __nimbusStdinSource.seed;
   const origOn = r.on.bind(r);
   const calls = Symbol("nimbus.stdin.calls");
   function wrapDataListener(listener) {
@@ -14287,7 +13517,7 @@ function __makeProcessStdin() {
   // ended stdin at once, and every Vite dev server (Astro's included) shut
   // itself down seconds after it started.
   r.on = function(event, listener) {
-    if (event === "data" || event === "readable") seed();
+    if (event === "data" || event === "readable") __nimbusStdinSource.seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
       const ret = origOn(event, wrapped);
@@ -14297,8 +13527,6 @@ function __makeProcessStdin() {
     return origOn(event, listener);
   };
   r.addListener = r.on;
-  const origRead = r.read.bind(r);
-  r.read = function(size) { seed(); return origRead(size); };
   return r;
 }
 
@@ -15301,16 +14529,6 @@ builtins.os = __osMod;
 builtins.constants = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
-// X.5-R: real Node's `require('stream')` re-exports EventEmitter
-// (verified: `require('stream').EventEmitter === require('events').EventEmitter`
-// in Node 20). Older CJS code reads EE off the stream module instead of
-// events — e.g., @redis/client/dist/lib/client/cache.js:301:
-// `class ClientSideCacheProvider extends stream_1.EventEmitter {}` where
-// `stream_1 = require("stream")`. Without this re-export, `stream_1.EventEmitter`
-// is undefined and `class … extends undefined` throws "Class extends value
-// Idempotent guard so a future streams.ts revision that already exposes
-// EventEmitter doesn't get clobbered.
-if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = __bufferModule;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
@@ -16670,12 +15888,23 @@ builtins.dgram = (() => {
 
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
+  // The process's terminal: a ReadStream reads fd 0, as process.stdin does, a
+  // WriteStream writes its stdout (fd 2: its stderr).
   ReadStream: class extends __streamMod.Readable {
-    constructor() { super(); this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
+    constructor(fd) {
+      super();
+      this.fd = fd;
+      this.isTTY = __nimbusAttachedTty;
+      this.isRaw = false;
+      __nimbusStdinSource.attach(this);
+    }
     setRawMode(mode) { this.isRaw = mode !== false; return this; }
+    // A consumer of fd 0 of its own (__makeStdinSource).
+    _read() { __nimbusStdinSource.want(this); }
   },
   WriteStream: class extends __streamMod.Writable {
-    constructor() { super(); this.isTTY = __nimbusAttachedTty; }
+    constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; }
+    _write(chunk, encoding, callback) { (this.fd === 2 ? __processMod.stderr : __processMod.stdout).write(chunk, encoding, callback); }
     get columns() { return __nimbusTtyColumns; }
     get rows() { return __nimbusTtyRows; }
     getColorDepth(env) { return __nimbusColorDepth(env); }
@@ -17278,79 +16507,16 @@ builtins["inspector/promises"] = __nativeBuiltin("inspector/promises");
 builtins["fs/promises"] = __fsMod.promises;
 builtins["readline/promises"] = builtins.readline.promises;
 
-// stream/promises — promise-wrapped versions of pipeline + finished.
-// Surfaced by sv (svelte CLI, the new replacement for create-svelte
-// v6.x) at /tmp/.npx-cache/node_modules/sv/dist/bin.mjs — it imports
-// 'node:stream/promises' for promise-style pipeline composition.
-// signal-exit, gulp's vinyl streams, tar-fs, and many node-only build
-// scripts use this subpath too.
-//
-// Real Node's stream/promises wraps the callback-style pipeline/
-// finished from 'stream' into Promise-returning variants. The
-// __streamMod above already ships pipeline() and finished() in their
-// callback form (src/runtime/streams.ts:339/361); the promise wrapper
-// is a thin shim that returns a Promise resolving on success +
-// rejecting on the callback's err arg.
-builtins["stream/promises"] = (() => {
-  const promisifyOp = (op) => (...args) => new Promise((res, rej) => {
-    // op signature: op(...streamsOrTarget, callback)
-    op(...args, (err, value) => {
-      if (err) rej(err);
-      else res(value);
-    });
-  });
-  return {
-    pipeline: promisifyOp(__streamMod.pipeline),
-    finished: promisifyOp(__streamMod.finished),
-  };
-})();
-
-// stream/consumers — Promise-returning helpers that drain a Readable.
-// Node 16.7+. Used by undici, tar-stream, multiple "consume the whole
-// body" patterns. Each helper takes a readable stream and returns a
-// Promise<Buffer | string | object | array>.
-builtins["stream/consumers"] = (() => {
-  function readAll(stream) {
-    return new Promise((res, rej) => {
-      const chunks = [];
-      stream.on('data', (chunk) => chunks.push(chunk));
-      stream.on('end', () => res(chunks));
-      stream.on('error', rej);
-    });
-  }
-  return {
-    buffer: async (stream) => {
-      const chunks = await readAll(stream);
-      // Concat Buffers / Uint8Arrays / strings.
-      if (chunks.length === 0) return __BufferMod.alloc(0);
-      if (typeof chunks[0] === 'string') {
-        return __BufferMod.from(chunks.join(''));
-      }
-      return __BufferMod.concat(chunks);
-    },
-    text: async (stream) => {
-      const chunks = await readAll(stream);
-      if (chunks.length === 0) return '';
-      if (typeof chunks[0] === 'string') return chunks.join('');
-      return __BufferMod.concat(chunks).toString('utf8');
-    },
-    json: async (stream) => {
-      const chunks = await readAll(stream);
-      const text = typeof chunks[0] === 'string'
-        ? chunks.join('')
-        : __BufferMod.concat(chunks).toString('utf8');
-      return JSON.parse(text);
-    },
-    arrayBuffer: async (stream) => {
-      const chunks = await readAll(stream);
-      const buf = __BufferMod.concat(chunks);
-      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    },
-    blob: async () => {
-      throw new Error('stream/consumers.blob not implemented');
-    },
-  };
-})();
+builtins["stream/promises"] = __streamMod.promises;
+// Taken the first time a program requires it, few do.
+Object.defineProperty(builtins, "stream/consumers", {
+  get() {
+    const consumers = __nativeBuiltin("stream/consumers");
+    Object.defineProperty(builtins, "stream/consumers", { value: consumers, writable: true, enumerable: true, configurable: true });
+    return consumers;
+  },
+  enumerable: true, configurable: true,
+});
 
 // stream/web: Node's names, each the platform's global class, as Node's are.
 builtins["stream/web"] = Object.fromEntries([
