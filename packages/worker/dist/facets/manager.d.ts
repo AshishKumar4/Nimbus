@@ -325,6 +325,8 @@ interface FacetVfsState {
     esm?: EsmStage;
     /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
     esmSize?: Record<string, number>;
+    /** Where its build's time went, by phase, in ms (the walk, enrichment, transforms, fitting, staging, the rest, serialization). */
+    phases?: Record<string, number>;
     /**
      * The files staged only to run whose module is an emit: the map carries the
      * emit and not the file, which no read asked for. A synchronous read of one

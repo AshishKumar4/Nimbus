@@ -81,6 +81,8 @@ export interface ExecTelemetryRecord {
         ms: number;
     };
     esm?: Record<string, number>;
+    /** Where the build's time went, by phase, in ms (FacetVfsState.phases); absent on a cache hit. */
+    phases?: Record<string, number>;
     /**
      * Durable Object turns the bundle build was paged across — the alarm
      * round trips `TurnBudget` took before the process could start. 0 when the
