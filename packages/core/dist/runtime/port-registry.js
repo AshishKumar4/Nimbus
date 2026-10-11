@@ -222,9 +222,12 @@ export class PortRegistry {
             return new Response(null, { status: 101, statusText: response.statusText, headers: response.headers, webSocket: pair[0] });
         }
         catch (error) {
-            open = false;
-            this.clientSockets.delete(client);
-            throw error;
+            try {
+                end(1011, 'socket upgrade failed');
+            }
+            finally {
+                throw error;
+            }
         }
     }
     /**

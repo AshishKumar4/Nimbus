@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e34bbef02e7e97ec087129e8f3060b9c530c1d5a5bacd8a7c54f90696204c678",
+  "fingerprint": "15c8d5afc3e2e448d5e4156902cc5aa68bc8f7ebd9bd57ecfeb4dd47aad9dbc5",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -471,7 +471,7 @@
     "packages/core/dist/runtime/oxc-transform.js": "c148ff468bf032e0f8ecb5bc23243be19f6c00042a8403d8fbe483306d0aa08e",
     "packages/core/dist/runtime/port-registry.d.ts": "b74d7ef3db2fd7396148876d192aacfe751da2430458e27644e3d851840b2bb3",
     "packages/core/dist/runtime/port-registry.d.ts.map": "f96d3a848fb5bdb0a76fc13022d937e76794e4ffb75d9ac002f42f7f724e1f6c",
-    "packages/core/dist/runtime/port-registry.js": "a41d0519fecabf04035c0e5621e63b33c27302799df1998aad0225a06ade926e",
+    "packages/core/dist/runtime/port-registry.js": "e5f8618384f9c04c424e37beae271b690cd3d7300040b7deea91dc03fba0f490",
     "packages/core/dist/runtime/prebundle-slice.d.ts": "a087a3c3a9bcd3420634b8dc9be2c6ca67e0298285bdd65643ceb67d3f3f2e77",
     "packages/core/dist/runtime/prebundle-slice.d.ts.map": "cc98344bea07e1a399c42a81a77f5aa30baa50925259c5aa0df8b8c3ae8ac4d8",
     "packages/core/dist/runtime/prebundle-slice.js": "5457cd8698da19f7081b535c6aca1794b21189cb98f6b911ff5d88e85ccbdced",
@@ -1372,7 +1372,7 @@
     "packages/core/src/runtime/output-gate.ts": "1a71cdfde86871c75d718b1ff0c53f1c51c117048810d8b4fe7a37672571a469",
     "packages/core/src/runtime/oxc-facet/preamble.ts": "3d2373a70f37b0a85851c117485fcea268ac147762c4040ebc99396ac7c25179",
     "packages/core/src/runtime/oxc-transform.ts": "7df20e068b4debe867b2d3936d030373e830c8f6368e08f911cf44beca2c76e1",
-    "packages/core/src/runtime/port-registry.ts": "82b554d3843deca65c023c6943024f8604b39b1a78fc56cb6e693dbc056e8d9c",
+    "packages/core/src/runtime/port-registry.ts": "192eadde66e1cd29b050f0e4ae6f4475985ab460e687df57ddef6a9e7129b971",
     "packages/core/src/runtime/prebundle-slice.ts": "b482b3b3ddb36ba7c1b9587b3d4bc2d887f4af1343c54588b07458b6b95e7f08",
     "packages/core/src/runtime/process-exit-notices.ts": "40d1f7fdfbeace126f7f394c873386186af4c05f3fd69f8d52f3f91af3e364af",
     "packages/core/src/runtime/process-files.ts": "f44a45ef8538e522cb71cf7cbd745e871163112de45018e98aadd4aa6d7c28c7",
