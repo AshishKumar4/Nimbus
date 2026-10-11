@@ -205,7 +205,7 @@ export class NpmInstaller {
             });
             tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
             // The lockfile answered every edge: nothing resolved, nothing failed.
-            usedLockfile = lockfile !== null && tree.plan.failures.length === 0 && [...tree.plan.nodes.values()].every((node) => !node.planned);
+            usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
             log(usedLockfile ? `Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.` : `Resolved ${tree.plan.nodes.size} packages.`);
         }
         phases['resolve'] = Date.now() - phaseStart;
@@ -648,7 +648,9 @@ export class NpmInstaller {
                         const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
                         log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
                         emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
-                        return res.pkg ? { package: res.pkg, refused: res.error.reason } : { failed: res.error.reason };
+                        if (!res.pkg)
+                            return { failed: `the resolver refused ${taskName} without its package: ${res.error.reason}` };
+                        return { package: res.pkg, refused: res.error.reason };
                     }
                     // Resolution failure: a dependency the project asked for and did
                     // not get; the plan skips it, with what needs it, if it is optional.

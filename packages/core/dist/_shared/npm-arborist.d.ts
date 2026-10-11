@@ -19,9 +19,11 @@
  * a peer conflict the project owns is npm's ERESOLVE unless forced, and
  * another's a warning.
  *
- * Then calc-dep-flags marks what the project reaches: what it does not is
- * extraneous, and goes; what only optional edges reach is optional, and
- * what only devDependencies reach is dev. A package that failed to load,
+ * Then calc-dep-flags marks what the project reaches. What it does not is
+ * extraneous, and goes where a tree was installed before (#fixDepFlags'
+ * prune: npm with its lockfile, for which a changed tree is always
+ * suspect); a tree built from nothing keeps what its build left unreached,
+ * as npm installs it. What only optional edges reach is optional. A package that failed to load,
  * or that the host refuses (EBADPLATFORM), fails the install where it is
  * required and is left out with its optional set where it is optional.
  *
@@ -102,6 +104,8 @@ export type TreeNode<P extends TreePackage, I extends TreePackage> = {
 export interface TreePlan<P extends TreePackage, I extends TreePackage> {
     /** The tree, by placement: placed and kept packages alike, the skipped among them. */
     readonly nodes: ReadonlyMap<string, TreeNode<P, I>>;
+    /** Whether the build asked the host to resolve anything. */
+    readonly resolvedAny: boolean;
     readonly failures: readonly TreeFailure[];
     /** Placements (and failure ids) a path of required edges reaches from the project. */
     readonly required: ReadonlySet<string>;

@@ -19,9 +19,11 @@
  * a peer conflict the project owns is npm's ERESOLVE unless forced, and
  * another's a warning.
  *
- * Then calc-dep-flags marks what the project reaches: what it does not is
- * extraneous, and goes; what only optional edges reach is optional, and
- * what only devDependencies reach is dev. A package that failed to load,
+ * Then calc-dep-flags marks what the project reaches. What it does not is
+ * extraneous, and goes where a tree was installed before (#fixDepFlags'
+ * prune: npm with its lockfile, for which a changed tree is always
+ * suspect); a tree built from nothing keeps what its build left unreached,
+ * as npm installs it. What only optional edges reach is optional. A package that failed to load,
  * or that the host refuses (EBADPLATFORM), fails the install where it is
  * required and is left out with its optional set where it is optional.
  *
@@ -966,8 +968,8 @@ export async function planTree(roots, installed, host, options = {}) {
     };
     withFolders(reached);
     withFolders(required);
-    // ── What the project does not reach is extraneous, and goes; a frozen tree is installed as it is ──
-    if (!options.frozen)
+    // ── What the project does not reach is extraneous, and goes from a tree installed before; a frozen tree is installed as it is ──
+    if (!options.frozen && installed.length > 0)
         for (const each of [...tree.nodes()])
             if (each.tree === tree && !reached.has(each))
                 tree.detach(each);
@@ -1028,6 +1030,7 @@ export async function planTree(roots, installed, host, options = {}) {
     const byPlacement = new Map([...tree.nodes()].map((each) => [each.location, each]));
     return {
         nodes,
+        resolvedAny: builder.resolutions.size > 0,
         failures: [...failures.values()],
         required: requiredAt,
         skipped,
