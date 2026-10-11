@@ -270,18 +270,20 @@ export class NimbusSandbox {
         // Register only after the start is acknowledged, so independent HTTP
         // requests cannot deliver detach before the invocation exists. An abort
         // that happened while awaiting start is sent immediately afterwards.
-        let rejectDetach;
-        const failedDetach = new Promise((_resolve, reject) => { rejectDetach = reject; });
-        const leave = () => { this.rpc(stub._rpcDetachExec(detachId)).catch(rejectDetach); };
+        // Detach is a separate control call. Its failure is reported independently
+        // and must never replace the still-running command's actual exit.
+        const leave = () => {
+            this.rpc(stub._rpcDetachExec(detachId)).catch((error) => {
+                console.error(`Nimbus: could not detach invocation '${detachId}'; its command is still running`, error);
+            });
+        };
         const forget = () => detach.removeEventListener('abort', leave);
-        const exit = Promise.race([stream.exit, failedDetach]);
-        exit.catch(() => { });
         stream.exit.then(forget, forget);
         if (detach.aborted)
             leave();
         else
             detach.addEventListener('abort', leave, { once: true });
-        return { output: stream.output, exit };
+        return stream;
     }
     /**
      * Start a command in the background. Returns as soon as the process has a

@@ -373,8 +373,7 @@ export class IsolatePool {
         // standard ESM import binding receives the resulting
         // WebAssembly.Module. We expose them on `globalThis.__NIMBUS_WASM`
         // so the user fn can read them at request time without having to
-        // re-import (the user fn is serialized via fn.toString and doesn't
-        // carry import statements).
+        // re-import (task expressions bind only the guest's supplied modules).
         //
         // Per-call entries (passed via IsolateCallOptions.wasmModules
         // — used by the wasm-runner shell command) are appended to the same

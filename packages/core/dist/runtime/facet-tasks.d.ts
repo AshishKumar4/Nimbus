@@ -1,4 +1,3 @@
-/** Guest entries compiled independently of the host's runtime/bootstrap modules. */
 import type { FacetBindings } from './facet-host.js';
 import type { CPythonFacetResult } from './cpython-runner.js';
 import type { RubyFacetCallArgs } from './ruby-runner.js';
@@ -19,9 +18,8 @@ export declare function bashFacetStep(args: BashStepArgs, bindings: FacetBinding
  */
 export declare function bashRequestStep(request: Request, bindings: FacetBindings): Promise<Response>;
 /**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
+ * Facet-side entry, compiled as a task expression at build time. The
+ * interpreter is installed on globalThis by the facet's preamble.
  */
 export declare function cpythonRunFacetFn(args: Record<string, unknown>, facetEnv: {
     SUPERVISOR?: unknown;
@@ -55,11 +53,8 @@ export declare const wasmFacetCall: (args: {
     /**
      * The import namespace to bind, resolved supervisor-side.
      *
-     * This function is serialized with fn.toString() and evaluated in the
-     * facet isolate, where module imports do not exist — reaching for
-     * WASI_ABI_NAMESPACE here is a ReferenceError at instantiate time that
-     * surfaces as "wasi trap: instantiate failed", with the guest blamed
-     * for a defect in the host. Values the facet needs travel as arguments.
+     * The host has already inspected the binary's ABI, so the namespace
+     * travels with that result rather than being re-derived in the guest.
      */
     wasiNamespace?: string;
     /**

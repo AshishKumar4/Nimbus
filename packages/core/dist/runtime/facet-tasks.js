@@ -1,3 +1,5 @@
+/** Guest entries compiled independently of the host's runtime/bootstrap modules. */
+import { errorText } from '../_shared/error-text.js';
 /** The step the classic submit transport carries: args object in, slice out.
  *  Serialized verbatim into the facet — every name it touches must be
  *  reachable there (globals or its own literals). */
@@ -31,9 +33,8 @@ export async function bashRequestStep(request, bindings) {
     return Response.json(await step(await request.json(), bindings.SUPERVISOR));
 }
 /**
- * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
- * names no import: everything it needs is on globalThis, put there by the
- * preamble.
+ * Facet-side entry, compiled as a task expression at build time. The
+ * interpreter is installed on globalThis by the facet's preamble.
  */
 export async function cpythonRunFacetFn(args, facetEnv) {
     const run = Reflect.get(globalThis, '__cpythonRun');
@@ -102,12 +103,6 @@ export const rubyFacetCall = async function rubyFacetCall(inArgs, facetEnv) {
     });
 };
 export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
-    // This body is serialized into the facet isolate, where the supervisor's
-    // module graph — and so _shared/error-text.js — does not exist. Same
-    // fallback as errorText, spelled out locally.
-    const errText = (err) => typeof err === 'object' && err !== null && 'message' in err && err.message
-        ? String(err.message)
-        : String(err);
     const wasmTable = globalThis.__NIMBUS_WASM || {};
     const mod = wasmTable['user.wasm'];
     if (!mod) {
@@ -227,7 +222,7 @@ export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
                     mode: 'wasi',
                     error: `wasi-threads: could not reserve the shared memory the module declares `
                         + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
-                        + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errText(e)}. `
+                        + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errorText(e)}. `
                         + 'A shared memory reserves its maximum immediately — lower --max-memory.',
                 };
             }
@@ -251,7 +246,7 @@ export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
             return {
                 ok: false,
                 mode: 'wasi',
-                error: `instantiate failed: ${errText(e)}`,
+                error: `instantiate failed: ${errorText(e)}`,
             };
         }
         if (!memRef.mem) {
@@ -306,7 +301,7 @@ export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
         return {
             ok: false,
             mode: 'direct',
-            error: `instantiate failed: ${errText(e)}`,
+            error: `instantiate failed: ${errorText(e)}`,
         };
     }
     const exportNames = Object.keys(inst.exports);
@@ -329,7 +324,7 @@ export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
             ok: false,
             mode: 'direct',
             exports: exportNames,
-            error: `${args.exportName}(${(args.intArgs || []).join(', ')}) threw: ${errText(e)}`,
+            error: `${args.exportName}(${(args.intArgs || []).join(', ')}) threw: ${errorText(e)}`,
         };
     }
     // BigInt (i64) → string; everything else → as-is.

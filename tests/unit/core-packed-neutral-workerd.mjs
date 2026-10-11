@@ -2,7 +2,7 @@
 // @tier slow — bundles the packed published core as neutral ESM and runs a workspace in workerd.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { builtinModules, createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ export default { fetch(request, env) { return env.WORKSPACES.get(env.WORKSPACES.
 `;
   const bundled = await build({
     stdin: { contents: source, loader: 'js', resolveDir: root },
-    bundle: true, format: 'esm', platform: 'neutral', external: ['node:*', 'cloudflare:*'],
+    bundle: true, format: 'esm', platform: 'neutral', external: ['node:*', 'cloudflare:*', ...builtinModules],
     conditions: ['workerd', 'worker', 'import'], mainFields: ['module', 'main'], write: false, logLevel: 'silent',
   });
   writeFileSync(join(root, 'main.js'), bundled.outputFiles[0].text);

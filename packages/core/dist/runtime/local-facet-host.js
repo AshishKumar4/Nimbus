@@ -178,7 +178,6 @@ class RealmFacet {
         this.synchronous = spec.syscalls?.vfs.synchronous;
     }
     submit(fn, args, options) {
-        requireFacetTaskSource(fn);
         const run = this.queue.then(() => this.call(fn, args, options));
         // The chain must survive a rejected call, or one failure poisons the facet.
         this.queue = run.catch(() => undefined);

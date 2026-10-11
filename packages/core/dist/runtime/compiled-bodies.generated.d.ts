@@ -8,4 +8,5 @@ export declare const BASH_REQUEST_TASK: FacetTaskSource<Parameters<typeof import
 export declare const ESBUILD_FACET_RUNTIME_SOURCE: string;
 export declare const TRANSFORM_FACET_RUNTIME_SOURCE: string;
 export declare const OPENTUI_BACKEND_CLASS_SOURCE: string;
+export declare const COMMONJS_CELL_HELPERS_SOURCE: string;
 //# sourceMappingURL=compiled-bodies.generated.d.ts.map
