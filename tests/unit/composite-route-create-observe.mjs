@@ -131,7 +131,7 @@ const routed = (route) => ({ point: route.point, path: route.path });
   const seen = new Set();
   const stop = vfs.observeWrites(() => {}, {
     wants: (path) => {
-      const first = __omp_shell("seen.has(path);")
+      const first = seen.has(path) === false;
       seen.add(path);
       return { before: first, after: true };
     },
