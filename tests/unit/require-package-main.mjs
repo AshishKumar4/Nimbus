@@ -48,6 +48,7 @@ const FILES = {
   [W + '/main-fallback/index.json']: '{"x":1}',
   [W + '/main-broken/package.json']: pkg({ main: 'missing' }),
   [W + '/nearer/package.json']: '{}',
+  [W + '/nearer/plain.js']: 'module.exports = 1;',
   [W + '/typed/package.json']: pkg({ type: 'module' }),
   [W + '/typed/file.js']: 'export default 1;',
   [W + '/typescript.ts']: 'const x: number = 1;',
@@ -129,6 +130,8 @@ const CASES = [
   { id: 'app', paths: [] }, { id: 'tinydate', paths: [] },
   { id: 'tinydate', paths: [W + '/nearer', W] }, { id: './self.cjs', paths: [W + '/nearer', W] },
   { id: '/' + W + '/self.cjs', paths: [] },
+  { id: './self.cjs', paths: [W, null], boundaryOnly: true },
+  { id: 'tinydate', paths: [W, null], boundaryOnly: true },
 ];
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'nimbus-require-main-')));
 const disk = (path) => join(root, path);
@@ -173,7 +176,7 @@ try {
       'const cwd = ' + JSON.stringify(W) + ';',
       'const out = ' + JSON.stringify(CASES) + '.map(({id,from,paths}) => {',
       'const r = createRequire(root + "/" + (from || cwd) + "/main.cjs");',
-      'try { const p = r.resolve(id.startsWith("/") ? root + id : id, paths === undefined ? undefined : { paths: paths.map(p => root + "/" + p) });',
+      'try { const p = r.resolve(id.startsWith("/") ? root + id : id, paths === undefined ? undefined : { paths: paths.map(p => typeof p === "string" ? root + "/" + p : p) });',
       'return { path: p.startsWith(root + "/") ? p.slice(root.length + 1) : p }; } catch(e) { return {code:e.code}; } });',
       'console.log(JSON.stringify(out));',
     ].join('\n'));
@@ -189,24 +192,24 @@ try {
     const guest = factory(FILES, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
       '/' + W, [], {}, '/' + W + '/main.cjs', '/' + W, { conditions });
     for (let i = 0; i < CASES.length; i++) {
-      const { id, from = W, paths } = CASES[i];
+      const { id, from = W, paths, boundaryOnly } = CASES[i];
       const label = JSON.stringify({ id, from, paths, conditions });
-      const request = paths === undefined ? undefined : { paths: paths.map(disk) };
+      const request = boundaryOnly || paths === undefined ? undefined : { paths: paths.map(disk) };
       const coreAnswer = answer(() => {
         const found = sync.resolveSync(diskId(id), disk(from), request);
         return found?.builtin && !id.startsWith('#') ? id : resultPath(found);
       });
-      assert.deepEqual(coreAnswer, expected[i], 'core sync: ' + label);
+      if (!boundaryOnly) assert.deepEqual(coreAnswer, expected[i], 'core sync: ' + label);
       let asyncAnswer;
       try {
         const found = await async_.resolve(diskId(id), disk(from), request);
         asyncAnswer = { path: normalize(found?.builtin && !id.startsWith('#') ? id : resultPath(found)) };
       } catch (e) { asyncAnswer = { code: e.code }; }
-      assert.deepEqual(asyncAnswer, expected[i], 'core async: ' + label);
+      if (!boundaryOnly) assert.deepEqual(asyncAnswer, expected[i], 'core async: ' + label);
       assert.deepEqual(answer(() => lifo.requireFrom('/' + from).resolve(id,
-        paths === undefined ? undefined : { paths: paths.map((p) => '/' + p) })), expected[i], 'lifo: ' + label);
+        paths === undefined ? undefined : { paths: paths.map((p) => typeof p === 'string' ? '/' + p : p) })), expected[i], 'lifo: ' + label);
       const runtime = from === W ? guest : guest('module').createRequire('/' + from + '/main.cjs');
-      assert.deepEqual(answer(() => runtime.resolve(id, paths === undefined ? undefined : { paths: paths.map((p) => '/' + p) })),
+      assert.deepEqual(answer(() => runtime.resolve(id, paths === undefined ? undefined : { paths: paths.map((p) => typeof p === 'string' ? '/' + p : p) })),
         expected[i], 'guest: ' + label);
     }
     const typed = sync.resolveSync('./typed/file.js', disk(W));
@@ -237,10 +240,14 @@ try {
   let reads = 0;
   const counting = { ...virtualFs, readFileString(path) { if (path.endsWith('/package.json')) reads++; return virtualFs.readFileString(path); } };
   const classified = createCjsLoader({ ...context, filesystem: () => counting }, () => ({ console, process }), { policy: NODE_REQUIRE_POLICY });
-  const filename = classified.requireFrom('/' + W).resolve('./self.cjs');
-  const before = reads;
-  classified.load(filename);
-  assert.equal(reads, before, 'lifo loading reuses the classified package scope');
+  for (const id of ['./index.js', './nearer/plain.js']) {
+    const filename = classified.requireFrom('/' + W).resolve(id);
+    const before = reads;
+    classified.load(filename);
+    assert.equal(reads, before, 'lifo loading reuses the classified package scope: ' + id);
+  }
+  const failed = createRequireResolver({ ...host, async kind() { throw Object.assign(new Error('host failure'), { code: 'EIO' }); } });
+  await assert.rejects(failed.resolve('./self.cjs', disk(W)), (e) => e.code === 'EIO', 'async driver delivers host rejection into the generator');
 
   // The launch walker still stages main entries and consulted metadata.
   const vfs = {

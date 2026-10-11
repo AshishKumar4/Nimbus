@@ -340,6 +340,10 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     const scope = yield* nearestPackageScope(parentDir(path), state);
     return { path, scope, packageType: scope?.type ?? null };
   }
+  function* resolveFilePath(path: string): Step<string | null> {
+    const found = yield* resolveFile(path, { configs: new Map() }, path.endsWith('/'));
+    return found === null ? null : yield* ask.realpath(found);
+  }
   function runSync<T>(steps: Step<T>): T {
     let next = steps.next();
     while (!next.done) {
@@ -361,8 +365,8 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
   return {
     resolve: (id: string, dir: string, request?: RequireResolveOptions) => runAsync(resolve(id, dir, request)),
     resolveSync: (id: string, dir: string, request?: RequireResolveOptions) => runSync(resolve(id, dir, request)),
-    resolveFile: (path: string) => runAsync(resolveFile(path, { configs: new Map() }, path.endsWith('/'))),
-    resolveFileSync: (path: string) => runSync(resolveFile(path, { configs: new Map() }, path.endsWith('/'))),
+    resolveFile: (path: string) => runAsync(resolveFilePath(path)),
+    resolveFileSync: (path: string) => runSync(resolveFilePath(path)),
     packageScope: (dir: string) => runAsync(nearestPackageScope(dir, { configs: new Map() })),
     packageScopeSync: (dir: string) => runSync(nearestPackageScope(dir, { configs: new Map() })),
   };
@@ -445,7 +449,7 @@ export interface ResolveSubpathResult {
   packageType?: PackageType;
 }
 /** The launch names reachable files; runtime resolution still reports refusals. */
-function loaderReportsResolutionError(err: unknown): boolean {
+export function isRequireResolutionError(err: unknown): boolean {
   return ['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED',
     'ERR_PACKAGE_IMPORT_NOT_DEFINED', 'ERR_INVALID_MODULE_SPECIFIER', 'ERR_INVALID_PACKAGE_TARGET',
     'ERR_INVALID_PACKAGE_CONFIG', 'ERR_INVALID_URL_SCHEME', 'ERR_UNKNOWN_BUILTIN_MODULE'].includes(String(codeOf(err)));
@@ -460,7 +464,7 @@ export async function resolveRequireEx(
     if (!result?.path) return null;
     return { resolved: stripLeadingSlashes(result.path), scope: result.scope, packageType: result.packageType };
   } catch (err) {
-    if (loaderReportsResolutionError(err)) return null;
+    if (isRequireResolutionError(err)) return null;
     throw err;
   }
 }
@@ -469,7 +473,7 @@ export async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSi
     const path = await requireResolverOverFs(vfs, sink, progress).resolveFile(absolute(base));
     return path === null ? null : stripLeadingSlashes(path);
   } catch (err) {
-    if (loaderReportsResolutionError(err)) return null;
+    if (isRequireResolutionError(err)) return null;
     throw err;
   }
 }

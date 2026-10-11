@@ -168,15 +168,25 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			if (options?.paths !== undefined && !Array.isArray(options.paths)) {
 				throw Object.assign(new TypeError('The property "options.paths" must be an Array'), { code: 'ERR_INVALID_ARG_VALUE' });
 			}
-			const paths = options?.paths?.map((path) => {
+			const origin = (path: string) => {
 				if (typeof path !== 'string') throw invalidArgType('paths[0]', 'string', path);
 				return resolve(context.cwd, path);
-			});
+			};
+			const relative = id === '.' || id === '..' || id.startsWith('./') || id.startsWith('../');
+			if (relative && options?.paths) {
+				for (const from of options.paths) {
+					const path = resolveFilename(id, dir, { paths: [origin(from)] });
+					if (path !== null) return path;
+				}
+				throw moduleNotFound(id);
+			}
+			const paths = options?.paths?.map(origin);
 			const path = resolveFilename(id, dir, { paths });
 			if (path === null) throw moduleNotFound(id);
 			return path;
 		};
 		req.resolve.paths = (id: string) => {
+			if (typeof id !== 'string') throw invalidArgType('request', 'string', id);
 			if (moduleMap[id.startsWith('node:') ? id.slice(5) : id]) return null;
 			return id === '.' || id === '..' || id.startsWith('./') || id.startsWith('../')
 				? [dir] : [...requireNodeModulePaths(dir), ...((options.policy ?? LIFO_REQUIRE_POLICY).globalFolders ?? [])];
