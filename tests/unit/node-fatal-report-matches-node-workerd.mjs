@@ -59,6 +59,12 @@ const FILES = {
   'req.cjs': "const x = 1;\nrequire('./bad.cjs');\n",
   'code3.cjs': 'process.exitCode = 3;\n',
   'code4.cjs': "process.exitCode = '4';\nprocess.on('exit', (c) => console.error('exit', JSON.stringify(c)));\nprocess.exit();\n",
+  'code257.cjs': 'process.exitCode = 257;\n',
+  'codeneg.cjs': 'process.exitCode = -1;\n',
+  'clearcode.cjs': 'process.exitCode = 7; process.exitCode = undefined;\n',
+  'nullcode.cjs': 'process.exitCode = 7; process.exitCode = null;\n',
+  'beforecode.cjs': 'process.on("beforeExit", () => { process.exitCode = 5; });\n',
+  'beforework.cjs': 'let once = false; process.on("beforeExit", () => { if (!once) { once = true; setTimeout(() => { console.error("later"); process.exitCode = 6; }, 0); } });\n',
   'input.js': 'throw new Error("in")\n',
 };
 const COMMANDS = [
@@ -66,6 +72,7 @@ const COMMANDS = [
   'node handler.cjs', 'node exitcode.cjs', 'node handled.cjs', 'node rejhandled.cjs', 'node cause.cjs',
   'node minified.cjs', 'node noname.cjs', 'node tab.cjs', 'node uni.cjs', 'node multi.cjs', 'node fnthrow.cjs',
   'node this.cjs', 'node bad.cjs', 'node req.cjs', 'node code3.cjs', 'node code4.cjs',
+  'node code257.cjs', 'node codeneg.cjs', 'node clearcode.cjs', 'node nullcode.cjs', 'node beforecode.cjs', 'node beforework.cjs',
   `node -e 'throw new Error("ev")'`, 'node - < input.js',
 ];
 

@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { processes, reservedFacetNames, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
+import { facetLimits } from '../../packages/fabric/src/facet-limits.ts';
 
 /** A `ctx.facets` that records each call in order, and opens the reader over a name's store. */
 function makeCtx(id) {
@@ -60,7 +61,10 @@ function envFor(ctx) {
       get: () => ({ getDurableObjectClass: () => class {} }),
       load(code) {
         ctx.loaded.push(code);
-        return { getDurableObjectClass: (name) => name };
+        return { getDurableObjectClass: (name, options) => {
+          assert.deepEqual(options?.limits, facetLimits('process'), 'the journal reader class gets process limits');
+          return name;
+        } };
       },
     },
   };
@@ -103,6 +107,7 @@ function deferred() {
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(numberings, [{ writer: 'w', jid: 3 }], 'the drain was not handed the store\'s journal');
   assert.equal(ctx.loaded.length, 1);
+  assert.deepEqual(ctx.loaded[0].limits, facetLimits('process'), 'the journal reader isolate gets process limits');
   assert.match(ctx.loaded[0].modules['reader.js'], /NimbusFsJournalReader/);
   assert.equal(settled, false, 'the release settled before its drain landed');
   assert.ok(ctx.stored.has(name), 'the store went before its drain landed');
