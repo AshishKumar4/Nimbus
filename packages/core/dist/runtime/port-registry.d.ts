@@ -73,6 +73,8 @@ export declare class PortRegistry {
     private portWaitersByPid;
     /** Where a process's answers leave (setOutput). */
     private output;
+    private clientSocketActivity;
+    private readonly clientSockets;
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -89,6 +91,10 @@ export declare class PortRegistry {
      * hands it is one nothing there sees, which `output` is told. One slot.
      */
     setOutput(output: ProcessOutput | null): void;
+    /** Routed preview sockets, not the embedder's unrelated socket table. */
+    get clientSocketCount(): number;
+    setClientSocketActivity(note: (() => void) | null): void;
+    private clientSocket;
     /**
      * Remember the available facet capabilities for a running process.
      * `deliversAcquire`: the target strips DELIVERED_ACQUIRE_HEADER before user

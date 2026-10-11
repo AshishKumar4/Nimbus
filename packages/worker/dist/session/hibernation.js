@@ -384,11 +384,11 @@ export function ensureHibSchema(host, ctx) {
  * Only traffic delivered through this runtime's client boundaries counts.
  * A host's socket table belongs to its embedder, not to Nimbus, and even an
  * attached runtime terminal cannot renew an alarm forever without traffic.
- * Attach/input/port requests renew this bounded interest; alarms and facet
- * supervisor calls never do.
+ * Attach/input/port requests renew bounded interest. A routed preview socket
+ * remains interest until it closes; alarms and facet RPC never renew it.
  */
 export function residentClientPresent(host, now) {
-    return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
+    return host.portRegistry.clientSocketCount > 0 || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 /** W1: a client reached the session DO (see noteResidentClient). */
 export function noteClientActivity(host, ctx) {

@@ -148,6 +148,8 @@ export class PortRegistry {
     portWaitersByPid = new Map();
     /** Where a process's answers leave (setOutput). */
     output = null;
+    clientSocketActivity = null;
+    clientSockets = new Set();
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -167,6 +169,55 @@ export class PortRegistry {
      */
     setOutput(output) {
         this.output = output;
+    }
+    /** Routed preview sockets, not the embedder's unrelated socket table. */
+    get clientSocketCount() { return this.clientSockets.size; }
+    setClientSocketActivity(note) { this.clientSocketActivity = note; }
+    clientSocket(response, target, pid) {
+        const pair = new WebSocketPair(), relay = pair[1];
+        target.binaryType = relay.binaryType = 'arraybuffer';
+        let open = true;
+        const closeAs = (socket, code, reason) => {
+            if (socket.readyState !== 1)
+                return;
+            if (code === 1005)
+                socket.close();
+            else if (code === 1006 || code === 1015)
+                socket.close(1011, 'socket ended abnormally');
+            else
+                socket.close(code, reason);
+        };
+        const end = (code, reason) => {
+            if (!open)
+                return;
+            open = false;
+            this.clientSockets.delete(client);
+            try {
+                this.clientSocketActivity?.();
+            }
+            finally {
+                try {
+                    closeAs(target, code, reason);
+                }
+                finally {
+                    closeAs(relay, code, reason);
+                }
+            }
+        };
+        const client = { pid, close: () => end(1001, 'process ended') };
+        target.addEventListener('message', (event) => { if (relay.readyState === 1)
+            relay.send(event.data); });
+        relay.addEventListener('message', (event) => { if (target.readyState === 1)
+            target.send(event.data); });
+        target.addEventListener('close', (event) => end(event.code, event.reason));
+        relay.addEventListener('close', (event) => end(event.code, event.reason));
+        target.addEventListener('error', () => end(1011, 'port target socket failed'));
+        relay.addEventListener('error', () => end(1011, 'client socket failed'));
+        target.accept();
+        relay.accept();
+        this.clientSockets.add(client);
+        this.clientSocketActivity?.();
+        return new Response(null, { status: 101, statusText: response.statusText, headers: response.headers, webSocket: pair[0] });
     }
     /**
      * Remember the available facet capabilities for a running process.
@@ -229,6 +280,9 @@ export class PortRegistry {
      * process ended, for a request to one of those ports to be told (ended).
      */
     unregisterByPid(pid, ending) {
+        for (const client of this.clientSockets)
+            if (client.pid === pid)
+                client.close();
         let count = 0;
         for (const [port, entry] of this.ports) {
             if (entry.pid === pid) {
@@ -444,6 +498,8 @@ export class PortRegistry {
                     headers: { 'Content-Type': 'application/json' },
                 });
             }
+            if (response.webSocket && this.clientSocketActivity)
+                return this.clientSocket(response, response.webSocket, entry.pid);
             // A navigation's answer is the document the browser will isolate (or
             // not) by these headers; a redirect is not a document.
             if (request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {

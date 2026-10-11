@@ -448,7 +448,7 @@ export class PeerHost {
             releaseOwner();
         };
         const ended = () => { if (released)
-            return; release(); server.close(); afterEnd?.(); };
+            return; release(); afterEnd?.(); server.close(); };
         sockets.set(server, release);
         server.addEventListener('close', ended);
         server.addEventListener('error', ended);
