@@ -24,11 +24,8 @@ await withColoCache(async colo => {
   const original = packageTarball({ 'package/index.js': 'module.exports = "immutable";' });
   const integrity = await sriOf(original);
   const input = original.slice();
-  const stored = new R2CacheClient(shared, null).putTarball(integrity, input);
-  // The caller still owns its input; mutation while verification is pending
-  // must not change what the cache admits under the verified address.
-  input[0] ^= 0xff;
-  assert.equal(await stored, true);
+  assert.equal(await new R2CacheClient(shared, null).putTarball(integrity, input), true);
+  input[0] ^= 0xff; // The writer still owns its input after the write.
   for (let run = 0; run < 5; run++) {
     const bytes = await new R2CacheClient(shared, null).getTarball(integrity);
     assert.deepEqual(bytes, original, 'a fresh supervisor sees the verified immutable bytes');
@@ -73,6 +70,17 @@ await withColoCache(async () => {
   const integrity = await sriOf(honest);
   assert.equal(await new R2CacheClient(shared, null).putTarball(integrity, wrong), false);
   assert.equal(await new R2CacheClient(shared, null).getTarball(integrity), null, 'rejected bytes never enter the local tier');
+});
+
+await withColoCache(async () => {
+  const shared = bucket();
+  const original = packageTarball({ 'package/index.js': 'module.exports = "snapshot";' });
+  const integrity = await sriOf(original);
+  const input = original.slice();
+  const stored = new R2CacheClient(shared, null).putTarball(integrity, input);
+  input[0] ^= 0xff; // A pending write must not admit a later caller mutation.
+  assert.equal(await stored, true);
+  assert.deepEqual(await new R2CacheClient(shared, null).getTarball(integrity), original);
 });
 
 console.log('npm-tarball-local-cache: ok');
