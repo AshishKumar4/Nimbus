@@ -84,6 +84,16 @@ export interface ResidentNamespace {
     content(key: string): Uint8Array | undefined;
     /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
     fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
+    /**
+     * Pages `first`..`last` (RESIDENT_PAGE_BYTES each) of file `key`, `size`
+     * bytes at revision `revision`: held ones from the store, the rest read
+     * pinned to that revision and held, with how many were read. Null when
+     * the file is no longer at `revision` or a read failed.
+     */
+    pages(key: string, revision: number, size: number, first: number, last: number): Promise<{
+        pages: Uint8Array[];
+        fetched: number;
+    } | null>;
     /** The ACQUIRE barrier. */
     barrier(): Promise<boolean>;
     /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
@@ -159,6 +169,9 @@ export interface ResidentFilesystemStats {
     /** Files fetched into the store, and their bytes. */
     fills: number;
     filledBytes: number;
+    /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
+    pagedReads: number;
+    pagesFetched: number;
     /** ACQUIRE barriers taken. */
     barriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */

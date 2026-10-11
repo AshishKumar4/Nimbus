@@ -18,6 +18,12 @@ export interface GitFacetResult {
     error?: string;
     /** git's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
     fsStats?: ResidentFilesystemStats | null;
+    /** The facet's clock (which moves only across I/O) where the run entered, git was instantiated, and git exited. */
+    clock?: {
+        entered: number;
+        instantiated: number;
+        exited: number;
+    };
 }
 /** Runs in the facet: hands the compiled image and the capability to the preamble's __gitRun. */
 export declare function gitFacetCall(args: GitFacetArgs, facetEnv: FacetBindings): Promise<GitFacetResult>;

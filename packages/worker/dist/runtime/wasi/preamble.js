@@ -179,6 +179,7 @@ function __wasiStartResident(sup, cred) {
         listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+        pages: (key, revision, size, first, last) => (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
         barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
         cursor: () => view?.cursor() ?? null,
         admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),

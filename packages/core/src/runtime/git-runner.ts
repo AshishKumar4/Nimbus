@@ -20,9 +20,12 @@
  * UTF-8: cat-file, archive, a diff of a Latin-1 file).
  *
  * The image is read once per session, uncached (3.7 MB of runtime blob that
- * would otherwise displace the user's working set); facets are opened per
- * invocation, because the supervisor capability a facet holds is bound to the
- * pid it was opened for.
+ * would otherwise displace the user's working set). A git that ran to its
+ * end leaves its facet warm (FacetSpec.warm) for the next one: the image
+ * compiled, and the resident store of what it read, which the next process
+ * of the same credential brings forward by one barrier instead of reading it
+ * all again. One git at a time runs in a warm facet; a git started while
+ * another runs (its child, or one beside it) takes another.
  */
 
 import type { RuntimeManifest } from './runtime-manifest.js';
@@ -49,12 +52,23 @@ const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
  */
 const PASSED_ENV = /^(GIT_|HOME$|USER$|LOGNAME$|TZ$|LANG$|LC_|EMAIL$|NO_COLOR$)/;
 
+/** Warm facets kept idle between runs; past it, a facet a run leaves is let go. */
+const WARM_GIT_FACETS = 2;
+
 export function makeGitRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
   fsmonitorState?: GitFsmonitorState;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
   const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
+  /**
+   * Warm facets no git is running in. A key is never named twice, nor by
+   * another incarnation of the session: a facet one left running is not
+   * this one's to enter.
+   */
+  const idle: string[] = [];
+  const incarnation = crypto.randomUUID();
+  let named = 0;
   return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
     if (binKind === 'fsmonitor') return async (ctx) => {
       if (ctx.args.length !== 2 || ctx.args[0] !== '2') {
@@ -109,12 +123,14 @@ export function makeGitRunnerFactory(deps: {
       env.GIT_CONFIG_SYSTEM = `/${normalizeVfsPath(systemConfig)}`;
       env.HOME ??= '/home/user';
 
+      const warm = idle.pop() ?? `git-${incarnation}-${++named}`;
       const facet = deps.facets.open({
         tag: 'git-runner',
         concurrency: 1,
         syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
         preamble: GIT_RUNNER_PREAMBLE,
         wasmModules: { 'git.wasm': await image },
+        warm,
       });
       const args: GitFacetArgs = {
         argv: ['git', '-C', `/${normalizeVfsPath(cwd)}`, ...argv],
@@ -129,10 +145,12 @@ export function makeGitRunnerFactory(deps: {
       try {
         result = await facet.submit(GIT_CALL_TASK, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
       } catch (error) {
+        // The facet may still be running, or be gone: its key is not used again.
         if (ctx.signal.aborted) return 130;
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
         return 1;
       }
+      if (result.error === undefined && idle.length < WARM_GIT_FACETS) idle.push(warm);
       const returned = Date.now();
       await writeOut(ctx.stdout, result.stdout);
       await writeOut(ctx.stderr, result.stderr);

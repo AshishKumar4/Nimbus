@@ -131,22 +131,13 @@ export const GIT_RUNNER = 'git-runner';
  * NimbusFsImports) and nimbus_proc (the process's children, pipes and
  * credential: the shared WASI layer's runtime/wasi/processes.ts; bash's
  * runner provides its own table under the name, runtime/bash/preamble.ts,
- * bound by BASH_RUNNER). Each build's verify stage checks
- * its images against this list (packages/worker/wasm/python/build-python.sh,
- * packages/worker/wasm/git/build-git.sh). An image importing an extension
- * needs a host that provides it, so a runtime whose build first does takes a
- * new runner key ({@link CPYTHON_RUNNER}); git's first build already names
- * {@link GIT_RUNNER}. Unchanged preview0 toolchains keep their existing keys.
+ * bound by BASH_RUNNER). The git build's verify stage checks its image
+ * against this list (packages/worker/wasm/git/build-git.sh). An image
+ * importing an extension needs a host that provides it, so the runtime names
+ * a runner key no older host registers: git's first build names
+ * {@link GIT_RUNNER}.
  */
 export const WASI_RUNTIME_IMPORT_MODULES = Object.freeze(['nimbus_fs', 'nimbus_proc', 'wasi_snapshot_preview1']);
-/**
- * The runner key a CPython manifest's entrypoints name. @2: the interpreter
- * imports the Nimbus extensions beside preview1 (WASI_RUNTIME_IMPORT_MODULES)
- * for file modes, owners, chmod and its credential (wasm/nimbus-libc), so a
- * deployment whose host predates them never binds it and keeps the stock
- * build, published under `cpython-runner`. This host runs both.
- */
-export const CPYTHON_RUNNER = 'cpython-runner@2';
 export const WASM32_WASI_NIMBUS_ABI = {
     os: NIMBUS_OS_NAME,
     target: NIMBUS_ABI_TARGET,

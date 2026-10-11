@@ -36,6 +36,7 @@
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT } from '../../constants.js';
+import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -97,7 +98,7 @@ function statOf(entry) {
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
     // Every wait on the session is timed where it leaves: the authority's calls
     // and the store's listings, fills and barriers. A facet's clock moves only
     // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -150,6 +151,7 @@ export function residentFilesystem(session, resident, delegation) {
         listTree: (key) => timed(resident.listTree(key)),
         content: (key) => resident.content(key),
         fill: (key, entry) => timed(resident.fill(key, entry)),
+        pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
         barrier: () => timed(resident.barrier()),
         cursor: () => resident.cursor(),
         admit: (answer) => resident.admit(answer),
@@ -185,9 +187,18 @@ export function residentFilesystem(session, resident, delegation) {
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
     const readers = new Set();
-    /** Of those, the directories, and where their listing is, once their fstat named them. */
-    const pendingDirectories = new Map();
+    /** Of those, where each was opened, until its fstat says what it is: a directory, or a file too big to hold whole. */
+    const opened = new Map();
     const directories = new Map();
+    /**
+     * The session's read-only descriptors of files too big to hold whole (a
+     * pack, a deep history's .idx), by the name and file (dev, ino) each
+     * opened: a positional read of one is answered from the store's pages of
+     * that file at the revision the name says it has, read a batch at a time
+     * and kept for the next reader. Once the name leads elsewhere, or a read
+     * cannot be answered, the descriptor reads through the session.
+     */
+    const paged = new Map();
     /** Bytes pinned for the codec's own descriptors (pinContent). */
     const pins = new Map();
     /** A write-through description's reader: the session's read-only descriptor of its file, opened at its first read. */
@@ -233,6 +244,42 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = store.entry(open.key);
         return entry && entry.type === 'directory' && entry.dev === open.dev && entry.ino === open.ino ? open.key : undefined;
     };
+    /**
+     * The directories a walk opens next, after `key`: preorder, names in the
+     * order a descriptor lists them (byCodeUnit), on past `key`'s subtree to
+     * the rest of the walk beneath `within`, as listed so far.
+     */
+    const walkAfter = (key, within, limit) => {
+        const out = [];
+        const subdirectories = (dir) => byCodeUnit((store.children(dir) ?? []).filter((child) => child.type === 'directory'))
+            .map((child) => (dir === '' ? child.name : `${dir}/${child.name}`));
+        const descend = (dir) => {
+            for (const child of subdirectories(dir)) {
+                if (out.length >= limit)
+                    return;
+                out.push(child);
+                descend(child);
+            }
+        };
+        descend(key);
+        for (let at = key; at !== within && out.length < limit; at = parentKey(at)) {
+            const name = at.slice(at.lastIndexOf('/') + 1);
+            for (const sibling of subdirectories(parentKey(at))) {
+                if (out.length >= limit)
+                    break;
+                if (sibling.slice(sibling.lastIndexOf('/') + 1) <= name)
+                    continue;
+                out.push(sibling);
+                descend(sibling);
+            }
+        }
+        return out;
+    };
+    /** Where the walk the last directory open belongs to began: `walkAfter`'s bound. */
+    let walkRoot = null;
+    /** Unlisted directories a walk has missed a name in, and how often; and those whose subtree is past the listing's bound. */
+    const missesIn = new Map();
+    const unlistable = new Set();
     /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. */
     const resolve = (path, follow, content = false) => {
         let root;
@@ -257,7 +304,9 @@ export function residentFilesystem(session, resident, delegation) {
         // A name the store does not know is looked up first, with every name on
         // the way to it as spelled (one round trip however deep); a name that is
         // still not known is not there or past a link, and its directory is
-        // listed (which also says what is absent in it).
+        // listed (which also says what is absent in it). A directory asked about
+        // a second time is being walked: its subtree is listed in one answer,
+        // unless it is past the listing's bound.
         const looked = new Set();
         const attempt = (asked) => {
             const walked = walkOnce(root, name, follow);
@@ -265,6 +314,17 @@ export function residentFilesystem(session, resident, delegation) {
                 return walked;
             if (asked >= MAX_LISTINGS_PER_CALL)
                 return DELEGATE;
+            const parent = parentKey(walked.missing);
+            const misses = (missesIn.get(parent) ?? 0) + 1;
+            missesIn.set(parent, misses);
+            if (misses >= 2 && parent !== '' && !unlistable.has(parent)) {
+                counts.treeListings++;
+                return store.listTree(parent).then((whole) => {
+                    if (!whole)
+                        unlistable.add(parent);
+                    return attempt(asked + 1);
+                });
+            }
             if (!looked.has(walked.missing)) {
                 const spelled = prefixes(root, name).filter((key) => !looked.has(key) && store.entry(key) === undefined);
                 const keys = spelled.includes(walked.missing) ? spelled.slice(spelled.indexOf(walked.missing)) : [walked.missing];
@@ -581,36 +641,47 @@ export function residentFilesystem(session, resident, delegation) {
             throw fsError('ENOENT', 'realpath', path);
         return '/' + key;
     }), () => authority.realpath(path));
+    fs.access = (path, mode) => answer('access', () => after(resolve(path, true), (key) => {
+        if (key === DELEGATE || key === '')
+            return DELEGATE;
+        if (key === null)
+            throw fsError('ELOOP', 'access', path);
+        const entry = entryAt(key);
+        if (entry === undefined)
+            return DELEGATE;
+        if (entry === null)
+            throw fsError('ENOENT', 'access', path);
+        if (!modeAllows(entry, mode, store.cred))
+            throw fsError('EACCES', 'access', path);
+        return undefined;
+    }), () => authority.access(path, mode));
     fs.open = (path, flags) => {
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
         if (directoryPool && readOnly && flags.read === true && flags.directory === true && flags.followSymlinks !== false && flags.expectedRevision === undefined) {
             return answer('open', () => after(resolve(path, true), async (key) => {
                 if (key === DELEGATE || key === null || key === '' || entryAt(key)?.type !== 'directory')
                     return DELEGATE;
+                if (walkRoot === null || (key !== walkRoot && !key.startsWith(walkRoot + '/')))
+                    walkRoot = key;
+                const within = walkRoot;
                 const handle = await directoryPool.open(path, key, async () => {
                     // The existing bounded namespace listing owns these names. Walk
                     // only directories it actually reported; no invented path/prefix.
                     await listingOf(key);
-                    const candidates = [];
-                    const todo = [key];
-                    for (let at = 0; at < todo.length && candidates.length < DIRECTORY_BATCH_LIMIT - 1; at++) {
-                        const parent = todo[at];
-                        for (const child of store.children(parent) ?? []) {
-                            if (child.type !== 'directory')
-                                continue;
-                            const childKey = parent + '/' + child.name;
-                            const suffix = childKey.slice(key.length + 1);
-                            // Carry the caller's confinement/descriptor root to the
-                            // authority; never replace a beneath lookup with an absolute one.
-                            const base = (typeof path === 'string' ? path : path.path).replace(/\/$/, '');
-                            const nested = base === '' ? suffix : `${base}/${suffix}`;
-                            candidates.push(typeof path === 'string' ? nested : { ...path, path: nested });
-                            todo.push(childKey);
-                            if (candidates.length >= DIRECTORY_BATCH_LIMIT - 1)
-                                break;
-                        }
+                    // Carry the caller's confinement/descriptor root to the authority;
+                    // never replace a beneath lookup with an absolute one. A
+                    // descriptor-relative open names only what is beneath its directory.
+                    if (typeof path === 'string')
+                        return walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1).map((next) => '/' + next);
+                    if ('directory' in path) {
+                        const base = path.path.replace(/\/$/, '');
+                        return walkAfter(key, key, DIRECTORY_BATCH_LIMIT - 1)
+                            .map((next) => ({ ...path, path: (base === '' ? '' : base + '/') + next.slice(key.length + 1) }));
                     }
-                    return candidates;
+                    const root = keyOf(path.root);
+                    return walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)
+                        .filter((next) => root === '' || next.startsWith(root + '/'))
+                        .map((next) => ({ ...path, path: root === '' ? next : next.slice(root.length + 1) }));
                 });
                 return handle ?? DELEGATE;
             }), () => openOnSession(path, flags));
@@ -649,7 +720,7 @@ export function residentFilesystem(session, resident, delegation) {
         delegated('open');
         return after(authority.open(path, flags), (handle) => {
             readers.add(handle.id);
-            pendingDirectories.set(handle.id, keyOf(handle.path));
+            opened.set(handle.id, keyOf(handle.path));
             return handle;
         });
     };
@@ -670,11 +741,14 @@ export function residentFilesystem(session, resident, delegation) {
         delegated('fstat');
         return after(authority.fstat(handleId), (stat) => {
             // A directory opened read-only is listed here while its name still leads to it.
-            const key = pendingDirectories.get(handleId);
+            const key = opened.get(handleId);
             if (key !== undefined) {
-                pendingDirectories.delete(handleId);
+                opened.delete(handleId);
                 if (stat.type === 'directory' && stat.dev === store.device)
                     directories.set(handleId, { key, dev: stat.dev, ino: stat.ino });
+                if (stat.type === 'file' && stat.dev === store.device && stat.size > WASI_RESIDENT_FILE_CAP_BYTES) {
+                    paged.set(handleId, { key, dev: stat.dev, ino: stat.ino });
+                }
             }
             return stat;
         });
@@ -719,6 +793,41 @@ export function residentFilesystem(session, resident, delegation) {
                 return holder.readThrough(handleId, offset, length, readThrough(handleId));
             counts.local++;
             return holder.read(handleId, offset, length);
+        }
+        const file = paged.get(handleId);
+        // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
+        if (file !== undefined && offset !== null && length > 0) {
+            return answer('read', () => after(resolve('/' + file.key, false), (resolved) => {
+                // The file as this process has learned of it (a barrier forgets a
+                // name it changed, and the walk learns it again). Once the name leads
+                // to another file, the pages are not this descriptor's bytes.
+                const now = resolved === DELEGATE ? undefined : entryAt(file.key);
+                if (now === undefined || now === null || now.type !== 'file' || now.dev !== file.dev || now.ino !== file.ino) {
+                    paged.delete(handleId);
+                    return DELEGATE;
+                }
+                if (offset >= now.size)
+                    return new Uint8Array(0);
+                const end = Math.min(now.size, offset + length);
+                const first = Math.floor(offset / RESIDENT_PAGE_BYTES);
+                const last = Math.floor((end - 1) / RESIDENT_PAGE_BYTES);
+                return after(store.pages(file.key, now.revision, now.size, first, last), (found) => {
+                    if (found === null) {
+                        paged.delete(handleId);
+                        return DELEGATE;
+                    }
+                    counts.pagedReads++;
+                    counts.pagesFetched += found.fetched;
+                    const out = new Uint8Array(end - offset);
+                    found.pages.forEach((page, i) => {
+                        const start = (first + i) * RESIDENT_PAGE_BYTES;
+                        const from = Math.max(offset, start);
+                        const to = Math.min(end, start + page.byteLength);
+                        out.set(page.subarray(from - start, to - start), from - offset);
+                    });
+                    return out;
+                });
+            }), () => authority.read(handleId, offset, length));
         }
         delegated('read');
         return authority.read(handleId, offset, length);
@@ -766,8 +875,9 @@ export function residentFilesystem(session, resident, delegation) {
             return after(authority.close(reader), report);
         }
         if (readers.delete(handleId)) {
-            pendingDirectories.delete(handleId);
+            opened.delete(handleId);
             directories.delete(handleId);
+            paged.delete(handleId);
             delegated('close');
             return authority.close(handleId);
         }
