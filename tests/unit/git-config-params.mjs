@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -98,6 +98,22 @@ try {
   await both('nothing of it written', host, ours, ['config', '--get', 'user.name'], { stdout: true });
   await both('-c of a subsection, case kept', host, ours, ['-c', 'remote.Up.url=x', 'config', '--get', 'remote.Up.url'], { stdout: true });
   console.log('  ok  -c user.name and user.email: the commit\'s identities, the last -c winning; nothing written');
+
+  // Boolean consumers parse a command override exactly as git does, while
+  // config --get still reports its raw spelling. Change only the file's mode.
+  chmodSync(join(host, 'a.txt'), 0o755);
+  user.chmod('home/user/r/a.txt', 0o755);
+  const modeDifferences = [];
+  for (const value of ['false', 'no', 'off', '0', '', 'true', 'yes', 'on', '1', null]) {
+    const setting = value === null ? 'core.filemode' : `core.filemode=${value}`;
+    const args = ['-c', setting, 'status', '--short'];
+    const h = realGit(host, args), o = await nimbusGit(ours, args);
+    if (h.code !== o.code || h.stdout !== o.stdout || h.stderr !== o.stderr) modeDifferences.push({ setting, expected: h, actual: o });
+    await both(`raw boolean ${setting}`, host, ours, ['-c', setting, 'config', '--get', 'core.filemode'], { stdout: true });
+  }
+  chmodSync(join(host, 'a.txt'), 0o644);
+  user.chmod('home/user/r/a.txt', 0o644);
+  assert.deepEqual(modeDifferences, [], 'core.filemode honors every native Git boolean spelling');
 
   // config <key> <value>: set, nothing printed; read back.
   await both('config set', host, ours, ['config', 'set.me', 'v'], { stdout: true });

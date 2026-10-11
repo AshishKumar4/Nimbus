@@ -47,6 +47,11 @@ assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 503 }, n
   "fatal: unable to access 'https://h/r/': The requested URL returned error: 503\n");
 assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 403, message: 'use https://x:hunter2@h/r or TOKEN-9\n' }, { username: '', password: true }, ['TOKEN-9']),
   "remote: use https://h/r or <redacted>\nfatal: unable to access 'https://h/r/': The requested URL returned error: 403\n", 'credentials a server echoes are not printed');
+for (const failure of [{ kind: 'status', status: 403 }, { kind: 'status', status: 401 }, { kind: 'status', status: 404 }, { kind: 'transport', detail: 'unreachable' }]) {
+  const message = remoteFailureText('https://h/TOKEN-9/r.git?access_token=TOKEN-9', failure, { username: '', password: true }, ['TOKEN-9']);
+  assert.doesNotMatch(message, /TOKEN-9/, 'known secrets in the destination path/query are not printed');
+  assert.match(message, /<redacted>/);
+}
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 /** A server answering each repository's discovery with a failure. */
@@ -107,6 +112,8 @@ const cases = [
   { name: '401', url: `${base}/auth.git` },
   { name: '401 with credentials', url: `http://u:p@127.0.0.1:${server.address().port}/auth.git`, ours: `${base}/auth.git`, env: { GIT_USERNAME: 'u', GIT_PASSWORD: 'p' } },
   { name: '401 with a user name only', url: `http://u@127.0.0.1:${server.address().port}/auth.git`, ours: `${base}/auth.git`, env: { GIT_USERNAME: 'u' } },
+  { name: 'URL user wins over environment user', url: `http://url-user@127.0.0.1:${server.address().port}/auth.git`, env: { GIT_USERNAME: 'environment-user' } },
+  { name: 'URL user with no password does not borrow environment password', url: `http://url-user@127.0.0.1:${server.address().port}/auth.git`, env: { GIT_USERNAME: 'environment-user', GIT_PASSWORD: 'environment-password' } },
 ];
 let n = 0;
 try {
