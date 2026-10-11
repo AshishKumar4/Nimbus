@@ -10611,7 +10611,7 @@ function __nimbusFatalArrow(error, fromPromise) {
 // __nimbusDecorateSyntaxError), or null.
 globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
-  const place = text === null ? null : __nimbusFatalLocation(text, "script", -1);
+  const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
   return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
 };
 // ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
@@ -12151,16 +12151,18 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const normalizedPath = filename.slice(1);
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
-  const cached = __NodeModule._cache[cacheKey];
-  if (cached !== undefined) {
-    __nimbusUpdateChildren(parent, cached, true);
-    return cached.exports;
-  }
   // A staged ES module: its namespace once the registry evaluated it, else
   // the interpreter's evaluation of it, below (an instance of its own, for
   // a query or a fragment, always).
   const esmId = __nimbusEsmId("module", normalizedPath);
-  if (esmId !== -1 && evaluationKey === resolvedPath) {
+  const adopted = esmId !== -1 && evaluationKey === resolvedPath;
+  const cached = __NodeModule._cache[cacheKey];
+  if (cached !== undefined) {
+    __nimbusUpdateChildren(parent, cached, true);
+    const record = adopted ? __nimbusEsmRecords[esmId] : undefined;
+    return required && record?.namespace ? __nimbusEsmRequired(record) : cached.exports;
+  }
+  if (adopted) {
     const namespace = __nimbusEsmRequire(esmId, required);
     if (namespace !== null) return namespace;
   }
@@ -12274,6 +12276,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   }
 
   mod.loaded = true;
+  // An adopted ES module's namespace: its own names, live; a require()'s, Node's shape of it.
+  if (adopted) {
+    const record = __nimbusEsmRecord(esmId);
+    const exports = mod.exports;
+    record.namespace = __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
+    if (required) return __nimbusEsmRequired(record);
+  }
   return mod.exports;
 }
 
@@ -12373,7 +12382,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\\/+/, "") : null;
     } catch { return null; }
   },
-}, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript });
+}, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -12413,12 +12422,12 @@ function __nimbusEsmId(kind, key) {
 // What became of each module: its meta instance evaluated (linked into an
 // evaluation, a "batch"), its body begun, its body done (its namespace
 // registered), its body stopped by Nimbus before it began (its record's
-// error is Nimbus's own, never the program's), or evaluated by the
-// interpreter instead (adopted).
-const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5;
+// error is Nimbus's own, never the program's), evaluated by the interpreter
+// instead (adopted), or its body threw (its record keeps what it threw).
+const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
 const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
-  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined };
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined };
 }
 // What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
 const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
@@ -12445,7 +12454,7 @@ function __nimbusEsmEnter(metaUrl) {
   const row = __nimbusEsm.table[id];
   const record = __nimbusEsmRecord(id);
   if (__nimbusEsmOpenBatch === null) {
-    __nimbusEsmOpenBatch = { running: new Set(), stop: null };
+    __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null };
     __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmResolved, [() => { __nimbusEsmOpenBatch = null; }]);
   }
   record.batch = __nimbusEsmOpenBatch;
@@ -12474,7 +12483,11 @@ function __nimbusEsmCheck(record) {
   const batch = record.batch;
   if (batch.stop === null) {
     for (const began of batch.running) {
-      if (!__nimbusEsmSuspends(began)) { batch.stop = __nimbusEsmStop; break; }
+      if (__nimbusEsmSuspends(began)) continue;
+      batch.stop = __nimbusEsmStop;
+      batch.thrower = began;
+      began.state = __ESM_FAILED;
+      break;
     }
   }
   if (batch.stop !== null) {
@@ -12507,7 +12520,9 @@ function __nimbusEsmSourceText(id) {
 }
 // Whether the registry cannot evaluate the module with Node's semantics:
 // something its graph links to that the registry has not evaluated was
-// evaluated by the interpreter instead, or stopped.
+// evaluated by the interpreter instead, which the registry would evaluate
+// again. (A module Nimbus stopped fails the registry's evaluation with
+// Nimbus's own error, which hands the module to the interpreter then.)
 function __nimbusEsmTainted(id) {
   const seen = new Set();
   const stack = [id];
@@ -12518,7 +12533,7 @@ function __nimbusEsmTainted(id) {
     const record = __nimbusEsmRecords[at];
     if (record !== undefined) {
       if (record.state === __ESM_DONE) continue;
-      if (record.state === __ESM_STOPPED || record.state === __ESM_ADOPTED) return true;
+      if (record.state === __ESM_ADOPTED) return true;
     }
     const row = __nimbusEsm.table[at];
     if (row[0] === "module") for (const target of row[3]) stack.push(target);
@@ -12532,6 +12547,8 @@ function __nimbusEsmTainted(id) {
 function __nimbusEsmRequire(id, required) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE) return required ? __nimbusEsmRequired(record) : record.namespace;
+  // It threw: what it threw, once its evaluation's rejection said.
+  if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
   if (record.state === __ESM_BEGAN) {
     const filename = "/" + __nimbusEsm.table[id][1];
     if (__nimbusEsmSuspends(record)) {
@@ -12576,12 +12593,18 @@ async function __nimbusEsmImport(id) {
   try {
     return await import("/bundle/" + row[2]);
   } catch (error) {
-    // Its evaluation was cancelled (a require() took a module of it), or it
-    // links to a module the launch did not stage: the interpreter's.
+    // Its evaluation was cancelled or stopped short of a module (a require()
+    // took a module of it; an earlier evaluation stopped at a sibling's
+    // throw), or it links to a module the launch did not stage: the
+    // interpreter's.
     if (row[0] === "module" && (error === __nimbusEsmStop || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
       return __nimbusEsmInterpret(id);
     }
-    throw __nimbusEsmLinkError(error);
+    // A module that threw keeps what it threw, for a require() of it.
+    for (const record of __nimbusEsmRecords) {
+      if (record !== undefined && record.state === __ESM_FAILED && record.error === undefined && record.batch?.thrower === record) record.error = { value: error };
+    }
+    throw __nimbusEsmLinkError(error, id);
   }
 }
 // The interpreter's evaluation of staged module \`id\` (an adoption), as import() gives it.
@@ -12617,13 +12640,106 @@ function __nimbusEsmMissingOf(error) {
   const at = /nimbus\\/missing\\/(\\d+)\\.js/.exec(message);
   return at === null ? null : __nimbusEsm.missing[Number(at[1])] ?? null;
 }
-// What a failed evaluation rejects with, as Node's loader words it: a
-// refused specifier's own error, the program's error as it threw it.
-function __nimbusEsmLinkError(error) {
+// What a failed evaluation of \`id\`'s graph rejects with, as Node's loader
+// words it: a refused specifier's own error; a missing export named as the
+// importing module wrote it, with its arrow; a module that does not
+// compile, with its arrow; else the program's error as it threw it.
+function __nimbusEsmLinkError(error, id) {
   const missing = __nimbusEsmMissingOf(error);
-  if (missing === null) return error;
-  const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
-  return missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
+  if (missing !== null) {
+    const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
+    const refused = missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
+    if (missing.url !== undefined) refused.url = missing.url;
+    return refused;
+  }
+  if (!(error instanceof SyntaxError) || __nimbusDecorated.has(error)) return error;
+  try {
+    const exported = /^The requested module '([^']*)' does not provide an export named '([^']*)'$/.exec(error.message);
+    if (exported !== null) __nimbusEsmExportError(error, id, exported[1], exported[2]);
+    else __nimbusEsmCompileError(error, id);
+  } catch {}
+  return error;
+}
+// Where the last \`name\` standing alone as an identifier is in \`text\`, or -1.
+function __nimbusLastIdentifier(text, name) {
+  const part = (c) => c !== undefined && (c === "$" || c === "_" || (c >= "0" && c <= "9") || (c >= "a" && c <= "z") || (c >= "A" && c <= "Z"));
+  for (let at = text.lastIndexOf(name); at !== -1; at = at === 0 ? -1 : text.lastIndexOf(name, at - 1)) {
+    if (!part(text[at - 1]) && !part(text[at + name.length])) return at;
+  }
+  return -1;
+}
+// The unevaluated modules of \`id\`'s graph, in link order.
+function __nimbusEsmPending(id) {
+  const seen = new Set();
+  const order = [];
+  const visit = (at) => {
+    if (at < 0 || seen.has(at)) return;
+    seen.add(at);
+    const row = __nimbusEsm.table[at];
+    if (row[0] !== "module" || __nimbusEsmRecords[at]?.state === __ESM_DONE) return;
+    order.push(at);
+    for (const target of row[3]) visit(target);
+  };
+  visit(id);
+  return order;
+}
+// A module of the graph that does not compile: the error's arrow is its.
+function __nimbusEsmCompileError(error, id) {
+  const { fatalLocation } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
+  for (const at of __nimbusEsmPending(id)) {
+    const name = __nimbusEsm.table[at][2];
+    const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + name, "utf8");
+    if (fatalLocation(text, "module", -1) === null) continue;
+    __nimbusDecorateSyntaxError(error, name);
+    return;
+  }
+}
+// A missing export, as Node words it for the specifier the importing module
+// wrote (a CommonJS module's in Node's words for one), its arrow under the
+// imported name.
+function __nimbusEsmExportError(error, id, requested, name) {
+  for (const at of __nimbusEsmPending(id)) {
+    const module = __nimbusModuleAtPath(__nimbusEsm.table[at][1]);
+    const staged = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
+    const quoted = JSON.stringify(requested);
+    const offset = staged.indexOf(quoted, module.head);
+    // As written: an edit's source text at the place its specifier is.
+    let line = 1;
+    let lineStart = 0;
+    for (let i = staged.indexOf("\\n"); i !== -1 && i < offset; i = staged.indexOf("\\n", i + 1)) { line++; lineStart = i + 1; }
+    let specifier = requested;
+    if (offset !== -1) {
+      const column = offset - lineStart - (line === 1 ? module.head : 0);
+      let delta = 0;
+      for (const [, at, length, text] of __nimbusColumnEdits(module)?.get(line) ?? []) {
+        if (at + delta === column && length === quoted.length) { specifier = text.slice(1, -1); break; }
+        delta += length - text.length;
+      }
+    } else if (!staged.includes("'" + requested + "'") && !staged.includes(JSON.stringify(requested))) {
+      continue;
+    }
+    const target = __nimbusEsm.table[__nimbusEsm.table[at][3].find((t) => t >= 0 && "/bundle/" + __nimbusEsm.table[t][2] === requested) ?? -1];
+    error.message = target !== undefined && target[0] === "commonjs"
+      ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\\nCommonJS modules can always be imported via the default export, for example using:\\n\\nimport pkg from '" + specifier + "';\\nconst { " + name + " } = pkg;\\n"
+      : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
+    // Node's arrow: the imported name, on the declaration's line.
+    const source = __nimbusModuleSourceText(module);
+    const end = offset === -1 ? source.length : __nimbusTextOffset(source, line, 1) + 1;
+    const before = source.slice(0, end);
+    const found = __nimbusLastIdentifier(before, name);
+    let arrow = null;
+    if (found !== -1) {
+      const at = found;
+      const lineOf = before.slice(0, at).split(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
+      const fromLine = lineOf.length;
+      const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
+      const generated = __nimbusTextOffset(text, fromLine, __nimbusGeneratedColumn(module, fromLine, lineOf[lineOf.length - 1].length + 1)) + (fromLine === 1 ? module.head : 0);
+      arrow = __nimbusArrowOf(module, text, generated, generated + name.length);
+    }
+    error.stack = (arrow === null ? "" : arrow) + "SyntaxError: " + error.message;
+    __nimbusDecorated.add(error);
+    return;
+  }
 }
 // The program's ES entry, imported: its evaluation is its job, and what
 // escapes it is explained as Node's loader explains it.

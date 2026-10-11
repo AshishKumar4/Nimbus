@@ -44,6 +44,8 @@ export interface EsmMissing {
   readonly name: string;
   readonly code: string;
   readonly message: string;
+  /** The URL Node's resolution error carries (a module or directory not found). */
+  readonly url?: string;
 }
 
 /** What a launch stages for its ES modules. */
@@ -88,7 +90,8 @@ export interface EsmStageFs {
 function refusal(error: unknown): EsmMissing {
   const failure = error instanceof Error ? error : new Error(String(error));
   const code = Reflect.get(failure, 'code');
-  return { name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message };
+  const url = Reflect.get(failure, 'url');
+  return { name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message, ...(typeof url === 'string' ? { url } : {}) };
 }
 
 /**
@@ -99,8 +102,10 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, isCode, gate }: {
+  { conditions, cwd, isCode, gate }: {
     conditions: readonly string[];
+    /** The process's working directory (EsmResolverOptions.cwd). */
+    cwd: string;
     isCode(key: string): boolean;
     /** Whether the registry needs each module gated: workerd (native-esm.ts). */
     gate: boolean;
@@ -152,7 +157,7 @@ export async function stageEsModules(
     readText,
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,
-  }, { conditions });
+  }, { conditions, cwd: () => cwd });
   const exportNames = async (path: string) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
   const notStaged = (path: string) => Object.assign(
     new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED },

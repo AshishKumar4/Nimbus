@@ -4909,6 +4909,7 @@ async function _buildPrefetchBundle(
     }
     esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path) }, cells, {
       conditions,
+      cwd,
       isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
       gate: true,
     });

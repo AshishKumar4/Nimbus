@@ -15,7 +15,7 @@
  * with promises (the session's).
  */
 
-import { parse } from 'cjs-module-lexer';
+import { createCjsLexer, type CjsLexer } from './cjs-module-lexer.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -33,6 +33,8 @@ type Question = { source: string } | { resolve: string; from: string };
 /** Extensions require loads as something other than CommonJS source. */
 const NOT_COMMONJS: Readonly<Record<string, true>> = { '.json': true, '.node': true, '.mjs': true };
 
+let lexer: CjsLexer | null = null;
+
 function* walk(path: string, cache: Map<string, Set<string>>, source: string | undefined): Generator<Question, Set<string>, unknown> {
   const known = cache.get(path);
   if (known !== undefined) return known;
@@ -40,7 +42,7 @@ function* walk(path: string, cache: Map<string, Set<string>>, source: string | u
   let exports: readonly string[] = [];
   let reexports: readonly string[] = [];
   try {
-    ({ exports, reexports } = parse(typeof text === 'string' ? text : ''));
+    ({ exports, reexports } = (lexer ??= createCjsLexer())(typeof text === 'string' ? text : ''));
   } catch {
     // No names but `default`, as Node's.
   }

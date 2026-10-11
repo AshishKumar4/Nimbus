@@ -118,6 +118,8 @@ const MAP_ROOT = 'file:///bundle/';
  * relative path and a root-absolute one.
  */
 function mapSpecifier(written: string, from: string, target: string): string {
+  // Nimbus's own modules by their one name: what a link error names maps back by it (node-shims).
+  if (target.startsWith('nimbus/')) return '/bundle/' + target;
   const base = MAP_ROOT + from;
   try {
     if (new URL(written, base).href === MAP_ROOT + target) return written;
@@ -179,6 +181,14 @@ export function stageEsModule(text: string, sites: ImportSites, link: EsModuleLi
     const breaks = source.slice(site.start, site.end).match(/\r\n|[\n\r\u2028\u2029]/g) ?? [];
     edits.push({ start: site.start, end: site.end, text: JSON.stringify(specifier).slice(0, -1) + breaks.map((at) => '\\' + at).join('') + '"' });
   });
+  // Import attributes are checked when staged (esm-stage.ts); the registry's
+  // own check would refuse a JSON module, which the map carries as the
+  // module of its value. Each clause is spaces but its line breaks.
+  for (const site of sites.statics) {
+    if (Object.keys(site.attributes).length === 0) continue;
+    const clause = attributesClause(source, site.end);
+    if (clause !== null) edits.push({ start: clause.start, end: clause.end, text: source.slice(clause.start, clause.end).replace(/[^\n\r\u2028\u2029]/g, ' ') });
+  }
   // `import` becomes the binding, and the rest of `import.meta` spaces but
   // its line breaks: the same length, the same lines.
   if (meta !== null) {
@@ -231,6 +241,41 @@ export function bunScopeNames(code: string): string[] {
   });
   for (const id of ids) declared.add(id.name);
   return named.filter((name) => !declared.has(name));
+}
+
+/** Past whitespace and comments from `at`. */
+function skipTrivia(source: string, at: number): number {
+  for (;;) {
+    while (at < source.length && /\s/.test(source[at]!)) at++;
+    if (source.startsWith('//', at)) {
+      while (at < source.length && !/[\n\r\u2028\u2029]/.test(source[at]!)) at++;
+    } else if (source.startsWith('/*', at)) {
+      const close = source.indexOf('*/', at + 2);
+      at = close === -1 ? source.length : close + 2;
+    } else {
+      return at;
+    }
+  }
+}
+
+/** The `with { … }` (or `assert { … }`) clause after a specifier ending at `from`, or null. */
+function attributesClause(source: string, from: number): { start: number; end: number } | null {
+  const start = skipTrivia(source, from);
+  const keyword = source.startsWith('with', start) ? 4 : source.startsWith('assert', start) ? 6 : 0;
+  if (keyword === 0) return null;
+  let at = skipTrivia(source, start + keyword);
+  if (source[at] !== '{') return null;
+  for (at++; at < source.length; at++) {
+    const c = source[at]!;
+    if (c === '}') return { start, end: at + 1 };
+    if (c === '"' || c === "'") {
+      for (at++; at < source.length && source[at] !== c; at++) if (source[at] === '\\') at++;
+    } else if (c === '/') {
+      const next = skipTrivia(source, at);
+      if (next !== at) at = next - 1;
+    }
+  }
+  return null;
 }
 
 /** What ESM_META_MODULE exports a Bun module's CommonJS names as. */
