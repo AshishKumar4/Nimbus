@@ -628,16 +628,21 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __before
 async function __nimbusBeforeExitHasWork() {
   if (__nimbusProgramStopped || !__processMod.listenerCount("beforeExit")) return false;
   const __rawSetTimeout = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+  // Already-returned writes still publish, but are not new Node work.
+  const __nodeHandles = () => Math.max(0, __nimbusLiveHandles() - __nimbusHandleCount("__nimbusAcknowledgedVfsOps"));
   for (;;) {
     __processMod.emit("beforeExit", __processMod.exitCode || 0);
-    let __continued = __nimbusLiveHandles() > 0;
+    let __continued = __nodeHandles() > 0;
     for (let __pass = 0; __pass < 4; __pass++) {
       await new Promise((resolve) => __rawSetTimeout(resolve, 0));
-      __continued ||= __nimbusLiveHandles() > 0;
+      __continued ||= __nodeHandles() > 0;
     }
     if (__nimbusProgramStopped) return false;
-    if (__nimbusLiveHandles() > 0) return true;
-    if (!__continued) return false;
+    if (__continued && __nimbusLiveHandles() > 0) return true;
+    if (!__continued) {
+      await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, Infinity, 0);
+      return false;
+    }
   }
 }
 
@@ -1386,7 +1391,9 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       try {
         await __nimbusDrainVfsWrites(__supervisor);
       } catch (e) {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
+        const message = (e && e.message) || String(e);
+        const stack = (e && e.stack) || message;
+        const trace = stack.includes(message) ? stack : message + "\\n" + stack;
         stderr += trace + "\\n";
         exitCode = 1;
         if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");

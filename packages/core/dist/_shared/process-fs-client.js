@@ -1017,7 +1017,9 @@ export function processFsClient(options) {
         },
         rawSocket() {
             const ask = options.session.published;
-            if (processGone !== null || ask === undefined)
+            if (processGone !== null)
+                return Promise.reject(processGone);
+            if (ask === undefined)
                 return null;
             if (escaped === null) {
                 // Its answer is the session's word on what it holds of the process's,

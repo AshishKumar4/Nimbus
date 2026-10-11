@@ -1985,7 +1985,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       rawSocket() {
         const ask = options.session.published;
-        if (processGone !== null || ask === void 0) return null;
+        if (processGone !== null) return Promise.reject(processGone);
+        if (ask === void 0) return null;
         if (escaped === null) {
           const through = heldWaves;
           escaped = ask.call(options.session, true).then(() => {
