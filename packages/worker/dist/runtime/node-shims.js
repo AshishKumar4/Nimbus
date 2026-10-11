@@ -7,7 +7,7 @@
  *   - os/process: Linux edge environment simulation
  *   - Buffer: Uint8Array wrapper with encoding support
  *   - events: workerd's native node:events
- *   - stream: real Readable/Writable/Transform/Duplex with backpressure
+ *   - stream: the platform's node:stream; every stream here is one of its classes
  *   - crypto, zlib, tls, vm, repl, async_hooks, diagnostics_channel,
  *     inspector, string_decoder, perf_hooks: the platform's own, through the
  *     one native provider (__nativeBuiltin), with Nimbus's adapters over them
@@ -40,7 +40,6 @@
  *     or undefined where a host passes none
  *   - stdout, stderr, exitCode: capture variables
  */
-import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
@@ -67,7 +66,6 @@ import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
-const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
 const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
@@ -6362,7 +6360,11 @@ const __fsMod = (() => {
         if (chunk.byteLength < want) this.push(null);
       }
       open() {}
-      close(cb) { this.destroy(); if (cb) cb(); }
+      // lib/internal/fs/streams.js: \`cb\` once it has closed (finished's answer).
+      close(cb) {
+        if (typeof cb === "function") __streamMod.finished(this, cb);
+        this.destroy();
+      }
     };
     return __ReadStreamClass;
   }
@@ -6371,7 +6373,8 @@ const __fsMod = (() => {
     __WriteStreamClass = class WriteStream extends __streamMod.Writable {
       constructor(path, opts) { super(__fsStreamLifecycle(opts)); this.path = path; this._opts = opts; this._chunks = []; this._anyBytes = false; }
       _write(chunk, enc, cb) {
-        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(chunk); }
+        // Acknowledged, the caller may reuse its buffer: the stream keeps its own bytes.
+        if (chunk instanceof Uint8Array) { this._anyBytes = true; this._chunks.push(new Uint8Array(chunk)); }
         else this._chunks.push(typeof chunk === "string" ? chunk : String(chunk));
         cb();
       }
@@ -6390,7 +6393,15 @@ const __fsMod = (() => {
         } catch (e) { cb(e); }
       }
       open() {}
-      close(cb) { if (cb) cb(); }
+      // lib/internal/fs/streams.js: ends the stream, \`cb\` once it has closed.
+      close(cb) {
+        if (cb) {
+          if (this.closed) { queueMicrotask(cb); return; }
+          this.on("close", cb);
+        }
+        if (!this._writableState.autoDestroy) this.on("finish", this.destroy);
+        this.end();
+      }
     };
     return __WriteStreamClass;
   }
@@ -6420,41 +6431,7 @@ const __fsMod = (() => {
     },
     F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
     createReadStream: (p, opts) => new (__getReadStream())(p, opts),
-    createWriteStream: (p, opts) => {
-      // binary-fs: chunks may arrive as Uint8Array OR string. Keep
-      // each chunk in its native shape; on final, if any chunk is
-      // bytes the merged write is bytes; otherwise string-concat
-      // (the hot path for ASCII text streams).
-      const chunks = [];
-      let anyBytes = false;
-      const ws = new __streamMod.Writable({
-        ...__fsStreamLifecycle(opts),
-        write(chunk, enc, cb) {
-          if (chunk instanceof Uint8Array) { anyBytes = true; chunks.push(chunk); }
-          else chunks.push(typeof chunk === "string" ? chunk : String(chunk));
-          cb();
-        },
-        final(cb) {
-          if (anyBytes) {
-            // Sum byteLength across mixed chunks; concat to one Uint8Array.
-            let total = 0;
-            for (const c of chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
-            const out = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) {
-              const b = (c instanceof Uint8Array) ? c : _enc.encode(c);
-              out.set(b, off);
-              off += b.byteLength;
-            }
-            writeFileSync(p, out);
-          } else {
-            writeFileSync(p, chunks.join(""));
-          }
-          cb();
-        },
-      });
-      return ws;
-    },
+    createWriteStream: (p, opts) => new (__getWriteStream())(p, opts),
     // fs.watch() — returns a watcher object that emits 'change' events.
     // In the facet context, changes to __vfsBundle/Writes are detected
     // via polling since we don't have the supervisor's event emitter.
@@ -7109,9 +7086,11 @@ const __osMod = {
 const __eventsMod = __nativeBuiltin("events");
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  stream module (real, with backpressure) ────────────────────────
+// ──  stream module: the platform's node:stream ──────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-${STREAMS_CODE}
+// Every stream here is one of its classes: the files', the children's, the
+// terminal's, HTTP's and zlib's alike.
+const __streamMod = __nativeBuiltin("stream");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  node:sqlite module (sql.js-backed) ─────────────────────────────
@@ -8054,8 +8033,7 @@ const __childProcessMod = (() => {
    * text. It used to default to utf8 for the cross-spawn / husky pattern;
    * that pattern reads \`String(chunk)\` and works on a Buffer, and the
    * default turned every byte above 0x7f into U+FFFD for everyone else.
-   * Flowing-mode resumption and encoding are the Readable base class's job —
-   * see streams.ts.
+   * Flowing-mode resumption and encoding are the Readable base class's job.
    */
   function _makeReadable() {
     return new __streamMod.PassThrough();
@@ -8187,37 +8165,26 @@ const __childProcessMod = (() => {
     };
   }
 
-  // Read the parent's actual stdin (seeded input or the live terminal
-  // pump), not an empty spawn payload. The private relay remains absent
+  // The parent's actual fd 0 (seeded input or the live terminal pump), not
+  // an empty spawn payload: a consumer of its own, as the child's inherited
+  // descriptor is, its bytes as they came. The private relay remains absent
   // from child.stdin, and relinquishes the input when the child exits.
   function _inheritStdin(child) {
-    const input = __processMod.stdin;
+    const relay = new __streamMod.Readable({ read() { __nimbusStdinSource.want(relay); } });
+    __nimbusStdinSource.attach(relay);
     let stopped = false;
-    const cleanup = () => {
-      stopped = true;
-      input.removeListener('data', forward);
-      input.removeListener('end', end);
-      if (input.listenerCount('data') === 0) input.pause();
-    };
-    const end = () => { if (!stopped) void _queueStdinEnd(child); };
-    const forward = (chunk) => {
+    relay.on('end', () => { if (!stopped) void _queueStdinEnd(child); });
+    relay.on('data', (chunk) => {
       if (stopped) return;
-      input.pause();
+      relay.pause();
       const task = _queueStdinWrite(child, _toBytes(chunk)).then(() => {
-        if (!stopped) input.resume();
+        if (!stopped) relay.resume();
       }, (error) => {
         if (!stopped) child.emit('error', error);
       });
       __pendingIO.push(task);
-    };
-    child.once('exit', cleanup);
-    // Attach the byte consumer before starting the stdin pump. Bypass only
-    // stdin's optional text-decoding listener wrapper: an inherited fd
-    // carries its bytes, not the parent's chosen listener encoding.
-    __eventsMod.prototype.on.call(input, 'data', forward);
-    input.once('end', end);
-    input.resume();
-    if (input.readableEnded) end();
+    });
+    child.once('exit', () => { stopped = true; relay.destroy(); });
   }
 
   /** Build a fresh ChildProcess emitter with real streams. */
@@ -8280,12 +8247,17 @@ const __childProcessMod = (() => {
     child._stderrEnded = stdio[2] === 'ignore';
     if (stdio[1] === 'inherit' || stdio[2] === 'inherit') _trackCloseInterest('close');
     // Listen to the underlying streams' 'end' events so 'close' fires
-    // only after actual data has flushed.
+    // only after actual data has flushed; or 'close', for a stream destroyed
+    // before its end (a pipeline's failing sink), as Node counts its pipes'.
     if (child.stdout) {
-      child.stdout.on("end", () => { child._stdoutEnded = true; _maybeFireClose(child); });
+      const done = () => { child._stdoutEnded = true; _maybeFireClose(child); };
+      child.stdout.on("end", done);
+      child.stdout.on("close", () => { if (!child.stdout.readableEnded) _closeChildOutput(child, 1); done(); });
     }
     if (child.stderr) {
-      child.stderr.on("end", () => { child._stderrEnded = true; _maybeFireClose(child); });
+      const done = () => { child._stderrEnded = true; _maybeFireClose(child); };
+      child.stderr.on("end", done);
+      child.stderr.on("close", () => { if (!child.stderr.readableEnded) _closeChildOutput(child, 2); done(); });
     }
 
     child.kill = function(signal) {
@@ -8366,6 +8338,20 @@ const __childProcessMod = (() => {
     if (r && Array.isArray(r.news)) globalThis.__nimbusApplyNews(r.news);
   }
 
+  /**
+   * Its consumer destroyed the child's stdout or stderr before its end (a
+   * pipeline's failing sink): the parent's read end closes, so the child's
+   * writes there fail, EPIPE, as they do to a Node pipe with no reader. Sent
+   * once the broker knows the child; its read loop sends it otherwise.
+   */
+  function _closeChildOutput(child, fd) {
+    if (!HAS_SUPERVISOR || !child._brokerPid || child._exitFired) return;
+    const closed = child._closedOutputs ??= new Set();
+    if (closed.has(fd)) return;
+    closed.add(fd);
+    __nimbusUseRpcResult(__supervisor.cpCloseOutput(child._brokerPid, fd), () => undefined).catch(() => {});
+  }
+
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
     // to 1500ms cap. Reset to 100ms whenever a chunk arrives. Caps
@@ -8375,6 +8361,7 @@ const __childProcessMod = (() => {
     let backoff = 100;
     const BACKOFF_MAX = 1500;
     while (HAS_SUPERVISOR && child._brokerPid && !child._streamsClosed) {
+      if (stream.destroyed) { _closeChildOutput(child, fd); return; }
       try {
         const r = await _childPoll(
           __supervisor.cpReadOutput(child._brokerPid, fd, sinceSeqRef.value, backoff, __nimbusVfsAcquireArgs()),
@@ -8388,6 +8375,9 @@ const __childProcessMod = (() => {
           // before its first byte, as in Node.
           _markSpawned(child);
           for (const c of chunks) {
+            // Ended by the exit-time drain meanwhile: what is left was its.
+            if (stream.writableEnded) return;
+            if (stream.destroyed) { _closeChildOutput(child, fd); return; }
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
             const written = stream.write(__BufferMod.from(c.data));
@@ -8451,11 +8441,12 @@ const __childProcessMod = (() => {
   function _flushStdio(child) {
     queueMicrotask(() => {
       for (const stream of [child.stdout, child.stderr]) {
-        // A stream a consumer owns in readable mode (a 'readable' listener,
-        // an async iterator) is left to it, as Node's flushStdio leaves one
-        // whose readableListening is set: resuming it would hand its next
-        // chunks to no one.
-        if (!stream || stream._readableState?.readableListening) continue;
+        // A stream done with, or one a consumer owns in readable mode (a
+        // 'readable' listener, an async iterator), is left as it is, as
+        // Node's flushStdio leaves one that is no longer readable or whose
+        // readableListening is set: resuming it would hand its next chunks
+        // to no one.
+        if (!stream || !stream.readable || stream._readableState.readableListening) continue;
         try { stream.resume(); } catch {}
       }
     });
@@ -8541,6 +8532,8 @@ const __childProcessMod = (() => {
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
+    // As Node's onexit for a spawn that failed: the streams drain, so they end.
+    _flushStdio(child);
     _maybeFireClose(child);
   }
 
@@ -8573,12 +8566,14 @@ const __childProcessMod = (() => {
         const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
+        child.exitCode = 1;
         _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
+        _flushStdio(child);
         _maybeFireClose(child);
       });
       return child;
@@ -8949,11 +8944,12 @@ const __childProcessMod = (() => {
           );
           // Output means it started: 'spawn' before its first byte.
           if (r && ((r.stdout && r.stdout.byteLength > 0) || (r.stderr && r.stderr.byteLength > 0))) _markSpawned(child);
-          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout) {
-            try { child.stdout.write(__BufferMod.from(r.stdout)); } catch {}
+          // What the pump has not delivered, to a stream still open to it.
+          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout?.writable) {
+            child.stdout.write(__BufferMod.from(r.stdout));
           }
-          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr) {
-            try { child.stderr.write(__BufferMod.from(r.stderr)); } catch {}
+          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr?.writable) {
+            child.stderr.write(__BufferMod.from(r.stderr));
           }
           // Force-close streams so listeners receive 'end'. The 'end'
           // event listeners in _makeChild flip _stdoutEnded/_stderrEnded.
@@ -9696,49 +9692,54 @@ async function __nimbusPrepareStdin() {
     if (__nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended) __nimbusStdinFollower = __nimbusFollowStdin(pid);
   }
 }
-function __makeProcessStdin() {
-  const r = new __streamMod.PassThrough();
-  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
-  r.fd = 0;
-  let seeded = false;
-  let encoding = null;
-  r.isTTY = __nimbusAttachedTty;
-  r.isRaw = false;
-  r.setRawMode = function(mode) {
-    r.isRaw = mode !== false;
-    return r;
-  };
-  r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
-  r.unref = function() { inputReferenced = false; holdInput(false); return r; };
-  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+// fd 0's one source, and its consumers. The source is what the first
+// consumer starts (seed): a \`< file\`'s stream, the live channel's pump, or
+// what fd 0 held. Its consumers (process.stdin, each tty.ReadStream, a
+// child's inherited fd 0) are Readables of their own, as Node's are separate
+// handles on fd 0: each chunk goes to one consumer with a read outstanding
+// (flowing, in readable mode, or a paused one's own read()), as a read of one
+// fd takes it, and waits here while none has; each sees the end when it reads
+// after it. The live channel's
+// packets also carry its signals and resizes, so its pump reads on while no
+// one reads data. A consumer flowing and referenced holds the input open
+// (__nimbusInputHandles), as a reading Node stdin does: pausing, unref'ing,
+// ending or destroying one lets go of its own hold, and of nothing else.
+function __makeStdinSource() {
   const liveChildPid = __nimbusLiveInputChannel();
-  // The polling infrastructure is unref'd, but a program actively consuming
-  // live stdin owns a referenced input handle, as in Node. Otherwise an
-  // interactive child exits after its prompt, before a keystroke arrives.
-  let inputReferenced = true, inputHeld = false;
-  function holdInput(want) {
-    const held = !!(want && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
+  const queue = [];
+  const consumers = new Set();
+  const pending = new Set();
+  const unreferenced = new WeakSet();
+  let seeded = false, ended = false, failure = null, fileReader = null, inputHeld = false;
+  function update() {
+    let held = false;
+    if (liveChildPid) {
+      for (const c of consumers) {
+        if (c.readableFlowing === true && !unreferenced.has(c) && !c.readableEnded && !c.destroyed) { held = true; break; }
+      }
+    }
     if (held === inputHeld) return;
     inputHeld = held;
     globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
     if (!held) globalThis.__nimbusHandleReleased?.();
   }
-  __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
-  __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
-  if (liveChildPid) {
-    try {
-      globalThis.__nimbusProcessStdin = r;
-      const pending = Array.isArray(globalThis.__nimbusPendingProcessInput)
-        ? globalThis.__nimbusPendingProcessInput.splice(0)
-        : [];
-      globalThis.__nimbusPendingProcessInputBytes = 0;
-      for (const chunk of pending) r.write(String(chunk));
-      if (globalThis.__nimbusPendingProcessInputEnded) {
-        globalThis.__nimbusPendingProcessInputEnded = false;
-        queueMicrotask(() => r.end());
-      }
-    } catch {}
+  function deliver() {
+    for (const c of pending) {
+      if (c.destroyed) pending.delete(c);
+      else if (queue.length > 0) { pending.delete(c); c.push(queue.shift()); }
+      else if (failure !== null) { pending.delete(c); c.destroy(failure); }
+      else if (ended) { pending.delete(c); c.push(null); }
+    }
+    // A \`< file\` is read as its consumers read it.
+    if (fileReader !== null) {
+      if (queue.length > 0) fileReader.pause();
+      else if (pending.size > 0) fileReader.resume();
+    }
+    update();
   }
+  function write(chunk) { queue.push(chunk); deliver(); }
+  function end() { ended = true; deliver(); }
+  function fail(error) { failure = error; deliver(); }
   async function pumpLiveStdin() {
     let readFailures = 0;
     // What fd 0's follower took after process.stdin took the channel over
@@ -9799,10 +9800,10 @@ function __makeProcessStdin() {
       // The queue hands back bytes; a Readable given a string would encode
       // it again.
       if (packet && packet.data && packet.data.byteLength > 0) {
-        r.write(__BufferMod.from(packet.data));
+        write(__BufferMod.from(packet.data));
       }
       if (packet && packet.ended) {
-        r.end();
+        end();
         break;
       }
       // Diagnostic hook (runner-installed, NIMBUS_DIAG_EXEC-gated): the pump's
@@ -9822,27 +9823,29 @@ function __makeProcessStdin() {
       let from = file.offset;
       if (__nimbusSyncStdin !== null || __nimbusQueuedStdin !== null || __nimbusStdinTaken) {
         const first = __nimbusStdinRemainder();
-        if (first.length > 0) r.write(first);
+        if (first.length > 0) write(first);
         if (__nimbusQueuedStdin === null || __nimbusQueuedStdin.ended) {
-          queueMicrotask(() => r.end());
+          queueMicrotask(end);
           return;
         }
         from = __nimbusQueuedStdin.from;
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: ${STDIN_FILE_READ_PIECE_BYTES} });
-      source.on("error", (err) => r.destroy(err));
-      source.pipe(r);
+      fileReader = __fsMod.createReadStream(file.path, { start: from, highWaterMark: ${STDIN_FILE_READ_PIECE_BYTES} });
+      fileReader.on("data", write);
+      fileReader.on("end", end);
+      fileReader.on("error", fail);
+      deliver();
       return;
     }
     if (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       // What fd 0 held at the start and synchronous reads left comes first;
       // the pump reads on from there unless that was all of it.
       const first = __nimbusStdinRemainder();
-      if (first.length > 0) r.write(first);
+      if (first.length > 0) write(first);
       if (__nimbusStdinEnded()) {
-        queueMicrotask(() => r.end());
+        queueMicrotask(end);
         return;
       }
       const pump = pumpLiveStdin().catch((e) => {
@@ -9857,7 +9860,7 @@ function __makeProcessStdin() {
         __nimbusReleaseStderr(trace + "\\n");
         const exitGate = __nimbusOutputGate();
         try { Promise.resolve(exitGate).then(() => __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined)).catch(() => {}); } catch {}
-        try { r.end(); } catch {}
+        end();
       });
       __nimbusLiveStdinPump = pump;
       return;
@@ -9866,22 +9869,41 @@ function __makeProcessStdin() {
       // A Buffer, as Node's stdin chunks are: \`s += chunk\` and
       // chunk.toString() read text, where a bare Uint8Array reads "104,105".
       const data = __nimbusStdinRemainder();
-      if (data.length > 0) r.write(data);
-      r.end();
+      if (data.length > 0) write(data);
+      end();
     });
   };
-  r.__nimbusStartLivePump = seed;
-  const origResume = typeof r.resume === "function" ? r.resume.bind(r) : null;
-  const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
-  r.resume = function() {
-    seed();
-    holdInput(true);
-    return origResume ? origResume() : r;
+  return {
+    seed,
+    // A consumer of fd 0: \`stream\`, a Readable whose _read is want's.
+    attach(stream) {
+      consumers.add(stream);
+      const { pause, resume } = stream;
+      stream.pause = function() { const out = Reflect.apply(pause, this, arguments); update(); return out; };
+      stream.resume = function() { seed(); const out = Reflect.apply(resume, this, arguments); deliver(); return out; };
+      stream.ref = function() { unreferenced.delete(stream); update(); return stream; };
+      stream.unref = function() { unreferenced.add(stream); update(); return stream; };
+      stream.on("end", update);
+      stream.on("close", () => { consumers.delete(stream); pending.delete(stream); update(); });
+    },
+    want(stream) { seed(); pending.add(stream); deliver(); },
   };
-  r.pause = function() {
-    holdInput(false);
-    return origPause ? origPause() : r;
+}
+const __nimbusStdinSource = __makeStdinSource();
+function __makeProcessStdin() {
+  const r = new __streamMod.Readable({ read() { __nimbusStdinSource.want(r); } });
+  __nimbusStdinSource.attach(r);
+  // As in Node: readFileSync(process.stdin.fd) reads fd 0.
+  r.fd = 0;
+  let encoding = null;
+  r.isTTY = __nimbusAttachedTty;
+  r.isRaw = false;
+  r.setRawMode = function(mode) {
+    r.isRaw = mode !== false;
+    return r;
   };
+  r.setEncoding = function(enc) { encoding = enc || null; return r; };
+  r.__nimbusStartLivePump = __nimbusStdinSource.seed;
   const origOn = r.on.bind(r);
   const calls = Symbol("nimbus.stdin.calls");
   function wrapDataListener(listener) {
@@ -9921,7 +9943,7 @@ function __makeProcessStdin() {
   // ended stdin at once, and every Vite dev server (Astro's included) shut
   // itself down seconds after it started.
   r.on = function(event, listener) {
-    if (event === "data" || event === "readable") seed();
+    if (event === "data" || event === "readable") __nimbusStdinSource.seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
       const ret = origOn(event, wrapped);
@@ -9931,8 +9953,6 @@ function __makeProcessStdin() {
     return origOn(event, listener);
   };
   r.addListener = r.on;
-  const origRead = r.read.bind(r);
-  r.read = function(size) { seed(); return origRead(size); };
   return r;
 }
 
@@ -10735,16 +10755,6 @@ builtins.os = __osMod;
 builtins.constants = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
-// X.5-R: real Node's \`require('stream')\` re-exports EventEmitter
-// (verified: \`require('stream').EventEmitter === require('events').EventEmitter\`
-// in Node 20). Older CJS code reads EE off the stream module instead of
-// events — e.g., @redis/client/dist/lib/client/cache.js:301:
-// \`class ClientSideCacheProvider extends stream_1.EventEmitter {}\` where
-// \`stream_1 = require("stream")\`. Without this re-export, \`stream_1.EventEmitter\`
-// is undefined and \`class … extends undefined\` throws "Class extends value
-// Idempotent guard so a future streams.ts revision that already exposes
-// EventEmitter doesn't get clobbered.
-if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = __bufferModule;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
@@ -10896,12 +10906,23 @@ builtins.dgram = (() => {
 
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
+  // The process's terminal: a ReadStream reads fd 0, as process.stdin does, a
+  // WriteStream writes its stdout (fd 2: its stderr).
   ReadStream: class extends __streamMod.Readable {
-    constructor() { super(); this.isTTY = __nimbusAttachedTty; this.isRaw = false; }
+    constructor(fd) {
+      super();
+      this.fd = fd;
+      this.isTTY = __nimbusAttachedTty;
+      this.isRaw = false;
+      __nimbusStdinSource.attach(this);
+    }
     setRawMode(mode) { this.isRaw = mode !== false; return this; }
+    // A consumer of fd 0 of its own (__makeStdinSource).
+    _read() { __nimbusStdinSource.want(this); }
   },
   WriteStream: class extends __streamMod.Writable {
-    constructor() { super(); this.isTTY = __nimbusAttachedTty; }
+    constructor(fd) { super(); this.fd = fd; this.isTTY = __nimbusAttachedTty; }
+    _write(chunk, encoding, callback) { (this.fd === 2 ? __processMod.stderr : __processMod.stdout).write(chunk, encoding, callback); }
     get columns() { return __nimbusTtyColumns; }
     get rows() { return __nimbusTtyRows; }
     getColorDepth(env) { return __nimbusColorDepth(env); }
@@ -11509,79 +11530,16 @@ builtins["inspector/promises"] = __nativeBuiltin("inspector/promises");
 builtins["fs/promises"] = __fsMod.promises;
 builtins["readline/promises"] = builtins.readline.promises;
 
-// stream/promises — promise-wrapped versions of pipeline + finished.
-// Surfaced by sv (svelte CLI, the new replacement for create-svelte
-// v6.x) at /tmp/.npx-cache/node_modules/sv/dist/bin.mjs — it imports
-// 'node:stream/promises' for promise-style pipeline composition.
-// signal-exit, gulp's vinyl streams, tar-fs, and many node-only build
-// scripts use this subpath too.
-//
-// Real Node's stream/promises wraps the callback-style pipeline/
-// finished from 'stream' into Promise-returning variants. The
-// __streamMod above already ships pipeline() and finished() in their
-// callback form (src/runtime/streams.ts:339/361); the promise wrapper
-// is a thin shim that returns a Promise resolving on success +
-// rejecting on the callback's err arg.
-builtins["stream/promises"] = (() => {
-  const promisifyOp = (op) => (...args) => new Promise((res, rej) => {
-    // op signature: op(...streamsOrTarget, callback)
-    op(...args, (err, value) => {
-      if (err) rej(err);
-      else res(value);
-    });
-  });
-  return {
-    pipeline: promisifyOp(__streamMod.pipeline),
-    finished: promisifyOp(__streamMod.finished),
-  };
-})();
-
-// stream/consumers — Promise-returning helpers that drain a Readable.
-// Node 16.7+. Used by undici, tar-stream, multiple "consume the whole
-// body" patterns. Each helper takes a readable stream and returns a
-// Promise<Buffer | string | object | array>.
-builtins["stream/consumers"] = (() => {
-  function readAll(stream) {
-    return new Promise((res, rej) => {
-      const chunks = [];
-      stream.on('data', (chunk) => chunks.push(chunk));
-      stream.on('end', () => res(chunks));
-      stream.on('error', rej);
-    });
-  }
-  return {
-    buffer: async (stream) => {
-      const chunks = await readAll(stream);
-      // Concat Buffers / Uint8Arrays / strings.
-      if (chunks.length === 0) return __BufferMod.alloc(0);
-      if (typeof chunks[0] === 'string') {
-        return __BufferMod.from(chunks.join(''));
-      }
-      return __BufferMod.concat(chunks);
-    },
-    text: async (stream) => {
-      const chunks = await readAll(stream);
-      if (chunks.length === 0) return '';
-      if (typeof chunks[0] === 'string') return chunks.join('');
-      return __BufferMod.concat(chunks).toString('utf8');
-    },
-    json: async (stream) => {
-      const chunks = await readAll(stream);
-      const text = typeof chunks[0] === 'string'
-        ? chunks.join('')
-        : __BufferMod.concat(chunks).toString('utf8');
-      return JSON.parse(text);
-    },
-    arrayBuffer: async (stream) => {
-      const chunks = await readAll(stream);
-      const buf = __BufferMod.concat(chunks);
-      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    },
-    blob: async () => {
-      throw new Error('stream/consumers.blob not implemented');
-    },
-  };
-})();
+builtins["stream/promises"] = __streamMod.promises;
+// Taken the first time a program requires it, few do.
+Object.defineProperty(builtins, "stream/consumers", {
+  get() {
+    const consumers = __nativeBuiltin("stream/consumers");
+    Object.defineProperty(builtins, "stream/consumers", { value: consumers, writable: true, enumerable: true, configurable: true });
+    return consumers;
+  },
+  enumerable: true, configurable: true,
+});
 
 // stream/web: Node's names, each the platform's global class, as Node's are.
 builtins["stream/web"] = Object.fromEntries([

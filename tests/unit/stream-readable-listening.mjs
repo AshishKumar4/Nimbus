@@ -1,15 +1,18 @@
 #!/usr/bin/env bun
-// A guest Readable says whether a consumer owns it in readable mode
-// (`_readableState.readableListening`, as Node's does): a 'readable'
-// listener, or an async iterator that has not completed. A child's
-// stdout/stderr is resumed after 'exit' only when nobody owns it (Node's
-// flushStdio, node-shims _flushStdio). What has to hold:
+// A guest Readable says whether a consumer owns it in readable mode, as
+// Node's flushStdio reads it: still readable, its
+// `_readableState.readableListening` set by a 'readable' listener or an async
+// iterator that has not completed. A child's stdout/stderr is resumed after
+// 'exit' only when nobody owns it (Node's flushStdio, node-shims
+// _flushStdio). What has to hold:
 //
 //   - attaching a 'readable' listener owns it; removing the last one, by
 //     off, removeListener or removeAllListeners, or a once listener firing,
-//     releases it; while one of two remains, it stays owned;
-//   - an async iterator owns it from its creation until it completes: the
-//     stream ends, it errors, or the loop leaves early (return()).
+//     releases it on the next tick, as Node updates it; while one of two
+//     remains, it stays owned;
+//   - an async iterator owns it from its first read (next()), as Node's does,
+//     until it completes: the stream ends, it errors, or the loop leaves
+//     early (return()).
 //
 // Before (857347754), ownership was set and never cleared: a stream whose
 // 'readable' listener had been removed was skipped by the drain, and its
@@ -24,7 +27,7 @@ const factory = new Function('__vfsBundle', '__vfsDirs', '__supervisor', 'cred',
   'let stdout="",stderr="";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + ';return builtins;');
 const { stream } = factory({}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.js', '/home/user', [], '');
-const owned = (s) => s._readableState.readableListening;
+const owned = (s) => s.readable && s._readableState.readableListening;
 const text = (chunk) => (typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -45,16 +48,19 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
       assert.equal(owned(s), true, `${remove} of one of two: still owned`);
       s[remove]('readable', b);
     }
+    await tick();
     assert.equal(owned(s), false, `${remove} of the last: released`);
   }
   const s = new stream.PassThrough();
   s.on('readable', () => {});
   s.removeAllListeners();
+  await tick();
   assert.equal(owned(s), false, 'removeAllListeners() with no event releases it too');
   const once = new stream.PassThrough();
   once.once('readable', () => {});
   assert.equal(owned(once), true, "a once 'readable' listener owns it");
   once.removeAllListeners('readable');
+  await tick();
   assert.equal(owned(once), false);
 }
 
@@ -63,10 +69,11 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   // Completes when the stream ends.
   const s = new stream.PassThrough();
   const iterator = s[Symbol.asyncIterator]();
-  assert.equal(owned(s), true, 'an iterator owns it from its creation');
+  const first = iterator.next();
+  assert.equal(owned(s), true, 'an iterator owns it from its first read');
   s.end('x');
   const seen = [];
-  for (let r = await iterator.next(); !r.done; r = await iterator.next()) seen.push(text(r.value));
+  for (let r = await first; !r.done; r = await iterator.next()) seen.push(text(r.value));
   assert.deepEqual(seen, ['x']);
   assert.equal(owned(s), false, 'and releases it when the stream ends');
 

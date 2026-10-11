@@ -7,7 +7,7 @@
  *   - os/process: Linux edge environment simulation
  *   - Buffer: Uint8Array wrapper with encoding support
  *   - events: workerd's native node:events
- *   - stream: real Readable/Writable/Transform/Duplex with backpressure
+ *   - stream: the platform's node:stream; every stream here is one of its classes
  *   - crypto, zlib, tls, vm, repl, async_hooks, diagnostics_channel,
  *     inspector, string_decoder, perf_hooks: the platform's own, through the
  *     one native provider (__nativeBuiltin), with Nimbus's adapters over them
