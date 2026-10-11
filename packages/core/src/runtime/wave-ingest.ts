@@ -56,6 +56,34 @@ interface RoutedFile {
 
 type Placement = { resolved: string; epoch: number };
 
+/** What a wave applies a routed record with (WaveIngest.routeRecord): its state, one per wave. */
+interface Routing {
+  file: RoutedFile | null;
+  index: number;
+  /** The wave's own name, for the slots its links are staged at. */
+  waveId: string;
+  routes: Map<string, Placement>;
+  /** The view of the namespace the wave's placements are made in (consume's `view`). */
+  view: () => number;
+  /**
+   * Where `named` lands, decided synchronously when it can be (placeSync
+   * in consume): the namespace path on a mount, null when placed here
+   * (and noted), undefined when only the asynchronous lookup decides.
+   */
+  placeSync: (kind: 'directory' | 'file' | 'delete', named: string) => string | null | undefined;
+  /** A name placed on this filesystem: rechecked right before its commit. */
+  placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, epoch: number) => void;
+  reach?: WriteStreamOptions['mountReach'];
+  guard: () => void;
+  settleBefore: () => Promise<void>;
+  /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
+  reserve: (bytes: number) => Promise<CreditLease | null>;
+  setPhase: (phase: WriteBatchStreamFailurePhase) => void;
+  /** The record applied on its mount, with the bytes it wrote there. */
+  committed: (receipt: WriteBatchStreamProgress['receipts'][number] | null, bytes: number) => void;
+}
+
+
 /** The paths a record lands at: where a delegation's holder is asked to give way first. */
 function recordPaths(record: W7DecodedRecord): string[] {
   switch (record.type) {
@@ -586,6 +614,47 @@ export class WaveIngest {
       if (call.alone === true || pendingCalls.length >= CALL_GROUP_OPS || pendingCallBytes >= CALL_GROUP_BYTES) flushCalls();
     };
 
+    // What a routed record is applied with (routeRecord): one per wave.
+    const routing: Routing = {
+      get file() { return routedFile; },
+      set file(file) { routedFile = file; },
+      get index() { return recordIndex; },
+      waveId,
+      routes,
+      view: viewEpoch,
+      placeSync,
+      placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
+      reach: options.mountReach,
+      // Right before each call to the backend: the wave is still admitted, and not cancelled.
+      guard: () => {
+        signal.throwIfAborted();
+        options.admit?.();
+      },
+      // Whatever the wave wrote here before the record commits first.
+      settleBefore: async () => {
+        flushCalls();
+        await endLeading();
+        flushDirectories();
+        files.flush();
+        options.admit?.();
+      },
+      reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, signal)),
+      setPhase: (next) => { phase = next; },
+      committed: (receipt, bytes) => {
+        progress.committedGroupSequence++;
+        progress.committedPathCount++;
+        progress.committedOps++;
+        owe(1, bytes);
+        if (receipt !== null) progress.receipts.push(receipt);
+        // On a mount: the cursor moves once the backend has it, in a transaction of its own.
+        if (sequence !== null && applying !== null) {
+          const seq = applying;
+          scope.advanceSequence(sequence.spec.writer, seq);
+          advanced(seq);
+        }
+      },
+    };
+
     try {
       if (sequence !== null) {
         const opened = scope.openSequence(sequence.spec);
@@ -658,45 +727,7 @@ export class WaveIngest {
             applying = seq;
           }
         }
-        if (router !== null && !landsHere(record) && await this.routeRecord(record, router, scope, {
-          get file() { return routedFile; },
-          set file(file) { routedFile = file; },
-          index: recordIndex,
-          waveId,
-          routes,
-          view: viewEpoch,
-          placeSync,
-          placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
-          reach: options.mountReach,
-          // Right before each call to the backend: the wave is still admitted, and not cancelled.
-          guard: () => {
-            signal.throwIfAborted();
-            options.admit?.();
-          },
-          // Whatever the wave wrote here before the record commits first.
-          settleBefore: async () => {
-            flushCalls();
-            await endLeading();
-            flushDirectories();
-            files.flush();
-            options.admit?.();
-          },
-          reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, signal)),
-          setPhase: (next) => { phase = next; },
-          committed: (receipt, bytes) => {
-            progress.committedGroupSequence++;
-            progress.committedPathCount++;
-            progress.committedOps++;
-            owe(1, bytes);
-            if (receipt !== null) progress.receipts.push(receipt);
-            // On a mount: the cursor moves once the backend has it, in a transaction of its own.
-            if (sequence !== null && applying !== null) {
-              const seq = applying;
-              scope.advanceSequence(sequence.spec.writer, seq);
-              advanced(seq);
-            }
-          },
-        })) continue;
+        if (router !== null && !landsHere(record) && await this.routeRecord(record, router, scope, routing)) continue;
         // Only removals and directories are held in the leading phase: anything
         // else that lands here ends it first (a routed record ends it in settleBefore).
         if (leading && record.type !== 'delete' && record.type !== 'directory') await endLeading();
@@ -894,31 +925,7 @@ export class WaveIngest {
     record: W7DecodedRecord,
     router: WaveRouter,
     scope: WaveScope,
-    at: {
-      file: RoutedFile | null;
-      index: number;
-      /** The wave's own name, for the slots its links are staged at. */
-      waveId: string;
-      routes: Map<string, Placement>;
-      /** The view of the namespace the wave's placements are made in (consume's `view`). */
-      view: () => number;
-      /**
-       * Where `named` lands, decided synchronously when it can be (placeSync
-       * in consume): the namespace path on a mount, null when placed here
-       * (and noted), undefined when only the asynchronous lookup decides.
-       */
-      placeSync: (kind: 'directory' | 'file' | 'delete', named: string) => string | null | undefined;
-      /** A name placed on this filesystem: rechecked right before its commit. */
-      placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, epoch: number) => void;
-      reach?: WriteStreamOptions['mountReach'];
-      guard: () => void;
-      settleBefore: () => Promise<void>;
-      /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
-      reserve: (bytes: number) => Promise<CreditLease | null>;
-      setPhase: (phase: WriteBatchStreamFailurePhase) => void;
-      /** The record applied on its mount, with the bytes it wrote there. */
-      committed: (receipt: WriteBatchStreamProgress['receipts'][number] | null, bytes: number) => void;
-    },
+    at: Routing,
   ): Promise<boolean> {
     const { cred } = scope;
     /** The exclusive-mutation lease the wave writes under, presented to the namespace's guard. */
