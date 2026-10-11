@@ -6,25 +6,35 @@
  * and the writes it stages are the records. The installer checks and
  * reconstructs a lockfile's packages with the same decoder.
  */
-/** `json`'s value; `fallback` for none, or one that does not parse. */
-function parsed(json, fallback) {
+const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isStringMap = (value) => isObject(value) && Object.values(value).every((v) => typeof v === 'string');
+const isStringList = (value) => Array.isArray(value) && value.every((v) => typeof v === 'string');
+const isAnyJson = (value) => true;
+/**
+ * `json`'s value when it has the field's shape (`shape`); `fallback` for
+ * none, one that does not parse, or one of another shape (a malformed row
+ * reads as an empty one, never as a failure).
+ */
+function decoded(json, shape, fallback) {
     if (!json)
         return fallback;
     // Most of a record's maps are empty: no parse for those.
     if (json === '{}')
         return {};
+    let value;
     try {
-        return JSON.parse(json);
+        value = JSON.parse(json);
     }
     catch {
         return fallback;
     }
+    return shape(value) ? value : fallback;
 }
 /** A JSON-encoded name → range map; undefined when it names none. */
 function ranges(json) {
     if (!json || json === '{}')
         return undefined;
-    const map = parsed(json, {});
+    const map = decoded(json, isStringMap, {});
     return Object.keys(map).length > 0 ? map : undefined;
 }
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
@@ -48,7 +58,7 @@ export function registryRecord(pkg, fetchedAt) {
 /** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
 export function recordEdges(record) {
     return {
-        dependencies: parsed(record.depsJson, {}),
+        dependencies: decoded(record.depsJson, isStringMap, {}),
         peerDependencies: ranges(record.peerDepsJson),
         optionalDependencies: ranges(record.optionalDepsJson),
     };
@@ -56,22 +66,21 @@ export function recordEdges(record) {
 const NO_PLATFORM = Object.freeze({});
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record) {
-    const platform = record.platformJson === '{}' ? NO_PLATFORM
-        : parsed(record.platformJson, NO_PLATFORM);
+    const platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
     return {
         name: record.name,
         version: record.version,
         tarballUrl: record.tarballUrl,
         integrity: record.integrity,
-        dependencies: parsed(record.depsJson, {}),
+        dependencies: decoded(record.depsJson, isStringMap, {}),
         peerDependencies: ranges(record.peerDepsJson),
         optionalDependencies: ranges(record.optionalDepsJson),
-        os: Array.isArray(platform.os) ? platform.os : undefined,
-        cpu: Array.isArray(platform.cpu) ? platform.cpu : undefined,
-        libc: Array.isArray(platform.libc) ? platform.libc : undefined,
-        exports: parsed(record.exportsJson, null),
+        os: isStringList(platform.os) ? platform.os : undefined,
+        cpu: isStringList(platform.cpu) ? platform.cpu : undefined,
+        libc: isStringList(platform.libc) ? platform.libc : undefined,
+        exports: decoded(record.exportsJson, isAnyJson, null),
         main: record.main,
         module: record.moduleField,
-        bin: parsed(record.binJson, {}),
+        bin: decoded(record.binJson, isStringMap, {}),
     };
 }
