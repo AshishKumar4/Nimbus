@@ -63,4 +63,28 @@ for (const reset of [false, true]) {
   await process.release();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
 }
+{
+  const t = setup();
+  const ns = t.open().ns;
+  let replyResources = 0;
+  const get = ns.get.bind(ns);
+  ns.get = (name) => {
+    const stub = get(name), send = stub.supervisorOp.bind(stub);
+    stub.supervisorOp = async (envelope) => {
+      const value = await send(envelope);
+      if (value && typeof value === 'object') {
+        replyResources++;
+        Object.defineProperty(value, Symbol.dispose, { configurable: true, value() { replyResources--; } });
+      }
+      return value;
+    };
+    return stub;
+  };
+  const host = processHostFor(t.ctx, { NIMBUS_PROCESS_HOST: 'peer', NIMBUS_SESSION: ns }, () => { throw new Error('no local disk'); });
+  const process = await host.open({ ...t.params, workerKey: 'reply-owner', writerId: crypto.randomUUID() });
+  await process.started; await turns();
+  assert.equal(replyResources, 0, 'bounded peer replies do not retain their incoming native RPC session');
+  await process.release();
+  assert.equal(replyResources, 0);
+}
 console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');
