@@ -8,7 +8,7 @@ import { writeTarballStream, type TarballWriteResult } from '../../../../_shared
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
-import { packageRangeSeparator, parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
+import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { MAX_NEST_DEPTH, decidePlacement, placementName, visiblePlacements, type PlacementEdge } from '../../../../_shared/npm-placement.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
