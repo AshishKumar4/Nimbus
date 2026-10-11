@@ -104,6 +104,28 @@ const REGISTRY = {
   ga: { '1.0.0': { dependencies: { gb: '1.0.0' } } },
   gb: { '1.0.0': {} },
   gz: { '1.0.0': { dependencies: { gb: '1.0.0' } } },
+  // A peer group placed before the dependency of the package that needs it.
+  ka: { '1.0.0': { dependencies: { kr: '1.0.0' } } },
+  kb: { '1.0.0': { peerDependencies: { kr: '2.0.0' } } },
+  kr: { '1.0.0': {}, '2.0.0': {} },
+  // Deep peer groups: a peer of a peer, met by what the set loads.
+  ma: { '1.0.0': { peerDependencies: { mb: '^1.0.0' } } },
+  mb: { '1.0.0': { peerDependencies: { mc: '^1.0.0' } } },
+  mc: { '1.0.0': {}, '2.0.0': {} },
+  // A peer the dependent also depends on, more narrowly.
+  ua: { '1.0.0': { dependencies: { uc: '1.0.0' }, peerDependencies: { uc: '^1.0.0' } } },
+  uc: { '1.0.0': {}, '1.5.0': {} },
+  // An optional peer: never installed for the package, and it constrains the copy the tree has.
+  oph: { '1.0.0': { peerDependencies: { opp: '^1.0.0' }, peerDependenciesMeta: { opp: { optional: true } } } },
+  opp: { '1.0.0': {}, '2.0.0': {} },
+  // A registry failure for one request of a layer: only that request fails.
+  ra1: { '1.0.0': { optionalDependencies: { flaky: '1.0.0' } } },
+  // A dev-only dependency, omitted with --omit=dev.
+  devtool: { '1.0.0': { dependencies: { devdep: '1.0.0' } } },
+  devdep: { '1.0.0': {} },
+  // A dependency reached through a version the tree replaces: pruned with the copy that needed it.
+  rx: { '1.0.0': { dependencies: { ry: '1.0.0' } }, '2.0.0': {} },
+  ry: { '1.0.0': {} },
 };
 // Tarballs whose bytes are not the ones their integrity names (and no
 // tarball's are, so npm's content-addressed cache cannot answer for them);
@@ -384,6 +406,15 @@ try {
     '--save-dev': [[['install', '--save-dev', 'xc@1.0.0']], { xc: '1.0.0' }],
     'an optional-only project whose dependency is missing': [[{ manifest: { optionalDependencies: { nosuch: '1.0.0' } } }, ['install']], {}],
     'a package the lock records but disk has lost': [[['install', 'xa@1.0.0'], { remove: 'xc' }, ['install', 'xa@1.0.0']], { xa: '1.0.0', xc: '1.0.0' }],
+    'a peer group placed before the dependency that conflicts with it': [[{ manifest: { dependencies: { ka: '1.0.0', kb: '1.0.0' } } }, ['install']], { ka: '1.0.0', 'ka/node_modules/kr': '1.0.0', kb: '1.0.0', kr: '2.0.0' }],
+    'a peer of a peer, placed with the set': [[['install', 'ma']], { ma: '1.0.0', mb: '1.0.0', mc: '2.0.0' }],
+    'a peer the dependent also depends on': [[{ manifest: { dependencies: { ua: '1.0.0', uc: '1.5.0' } } }, ['install']], { ua: '1.0.0', 'ua/node_modules/uc': '1.0.0', uc: '1.5.0' }],
+    'an optional peer is not installed for its package': [[['install', 'oph']], { oph: '1.0.0' }],
+    'an optional peer constrains the copy the tree has': [[{ manifest: { dependencies: { oph: '1.0.0', opp: '2.0.0' } } }, ['install'], ['install', 'oph@1.0.0', 'opp@2.0.0', '--force']], { oph: '1.0.0', opp: '2.0.0' }],
+    '--legacy-peer-deps installs no peers': [[['install', '--legacy-peer-deps', 'ph@1.0.0', 'pp@2.0.0']], { ph: '1.0.0', pp: '2.0.0' }],
+    'an optional dependency missing from the registry': [[['install', 'ra1']], { ra1: '1.0.0' }],
+    '--omit=dev': [[{ manifest: { dependencies: { xc: '1.0.0' }, devDependencies: { devtool: '1.0.0' } } }, ['install', '--omit=dev']], { xc: '1.0.0' }],
+    'a replaced copy takes what only it needed': [[['install', 'rx@1.0.0'], ['install', 'rx@2.0.0']], { rx: '2.0.0' }],
   };
   for (const [label, [commands, expected]] of Object.entries(scenarios)) {
     const { npm: oracle, fallback: shell, worker: engine } = await sequence(commands);
