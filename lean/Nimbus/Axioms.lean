@@ -444,8 +444,9 @@ import Nimbus.Refine
 
 #print axioms Nimbus.Runtime.Pipes.hstep_core
 #print axioms Nimbus.Runtime.Pipes.hrun_core
-#print axioms Nimbus.Runtime.Pipes.settles_only_readerless
-#print axioms Nimbus.Runtime.Pipes.settle_value
+#print axioms Nimbus.Runtime.Pipes.sig_only_readerless
+#print axioms Nimbus.Runtime.Pipes.settles_141_only_readerless
+#print axioms Nimbus.Runtime.Pipes.drain_settles
 #print axioms Nimbus.Runtime.Pipes.rs_zero_of_dead
 #print axioms Nimbus.Runtime.Pipes.all_settle
 #print axioms Nimbus.Runtime.Pipes.seq_head
@@ -453,6 +454,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Runtime.Pipes.seq_small_head
 #print axioms Nimbus.Runtime.Pipes.seq_uniq_wc_held
 #print axioms Nimbus.Runtime.Pipes.yes_head_held
+#print axioms Nimbus.Runtime.Pipes.drain_settles_before_the_background_job
 
 /-! ## Nimbus/Runtime/PipesProofs.lean -/
 
@@ -774,6 +776,13 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Ledger.draw_within
 #print axioms Nimbus.Vfs.Ledger.reservation_kept
 #print axioms Nimbus.Vfs.Ledger.admitting_zero_can_be_refused
+
+/-! ## Nimbus/Vfs/HydrationAsync.lean -/
+
+#print axioms Nimbus.Vfs.Hydration.doneId_keeps
+#print axioms Nimbus.Vfs.Hydration.covers_doneId
+#print axioms Nimbus.Vfs.Hydration.covers_async
+#print axioms Nimbus.Vfs.Hydration.removal_by_position_loses_a_chunk
 
 /-! ## Nimbus/Vfs/ProcessFiles.lean -/
 

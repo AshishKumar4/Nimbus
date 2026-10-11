@@ -9,19 +9,25 @@
   The hold is an overlay on the run: the scheduler, the pipes and every other process
   run exactly as without it.
 
+  Settling (amended after ReviewGitParity0924's `seq | { cat; sleep 3 & }`): a pipe
+  releases the hold at the first step after which it holds at most `C` unread (a read
+  drained it; on Linux the blocked write completes then), or loses its last read end
+  (SIGPIPE if more than `C` was unread at that close). The hold settles once every pipe
+  has released it: 141 if any released it by SIGPIPE, else the writer's own status.
+
   Proved:
   - `hstep_core` (a): a step with the rule runs exactly the step without it (same
     process, same answer, same pipes, same bytes read, same EOFs, same other
     statuses); `hrun_core`: so does a whole run.
-  - `settles_only_readerless`: a held status settles only when every pipe it is held on
-    has no read end.
+  - `settles_141_only_readerless` / `sig_only_readerless`: a hold turns to 141 only when
+    one of its pipes lost its last reader with more than `C` unread; `drain_settles`:
+    a drain to at most `C` releases a pipe while its readers live.
   - `all_settle` (c): once no process is alive (every pipeline ends so), no status is
     still held.
-  - `settle_value`: it settles to 141 exactly when some held pipe had more than `C`
-    unread bytes at its last reader's close, else to the writer's own status.
   Traces (`seq_head`, `seq_uniq_wc_held`, `yes_head_held`, `seq_small_head`):
   `seq 1000000 | head -2` is 141 0; `seq | uniq -c | wc -l` stays 0 0 0;
-  `yes | head -2` is 141 0; `seq 1000 | head -1` stays 0 0.
+  `yes | head -2` is 141 0; `seq 1000 | head -1` stays 0 0;
+  `drain_settles_before_the_background_job`.
   With one writer per pipe the settled status is Linux's (the writer completes once
   the unread bytes fall to `C`, else is SIGPIPEd); with several writers another
   writer's bytes can count against it (not modeled as Linux does).
@@ -37,7 +43,10 @@ variable (R : Rules)
 structure Hold where
   pid : Nat
   code : Nat
+  /-- The pipes it is still held on. -/
   pipes : List Nat
+  /-- Some pipe it was held on lost its last reader with more than `C` unread. -/
+  sig : Bool := false
   deriving DecidableEq, Repr
 
 structure HSt where
@@ -54,19 +63,28 @@ def holdOf (s s' : St) (i : Nat) (o : Out) : Option Hold :=
     else
       let ps := (List.range s'.m).filter fun p =>
         decide (0 < (s.procs i).wEnds p) && decide (0 < rs s' p) && decide (s'.C < (s'.pipes p).q)
-      if ps.isEmpty then none else some ⟨i, c, ps⟩
+      if ps.isEmpty then none else some ⟨i, c, ps, false⟩
   | _ => none
 
-/-- A hold settles once every pipe it is on has no read end: 141 if one of them had more
-    than `C` unread bytes when its last reader left (what was discarded then), else the
-    writer's own status. -/
-def resolve (s : St) (h : Hold) : Option Nat :=
-  if h.pipes.all (fun p => rs s p == 0) then
-    some (if h.pipes.any (fun p => decide (s.C < (s.pipes p).drop)) then 141 else h.code)
-  else none
+/-- A pipe releases a hold on it at the first step after which its unread bytes are at
+    most `C` (a read drained it: the blocked write would have completed), or its last
+    read end is gone: then SIGPIPE if more than `C` was unread at that close (what was
+    discarded then). -/
+def pipeSettles (s : St) (p : Nat) : Bool := rs s p == 0 || decide ((s.pipes p).q ≤ s.C)
+
+def pipeSig (s : St) (p : Nat) : Bool := rs s p == 0 && decide (s.C < (s.pipes p).drop)
+
+def advance (s : St) (h : Hold) : Hold :=
+  { h with pipes := h.pipes.filter (!pipeSettles s ·), sig := h.sig || h.pipes.any (pipeSig s) }
+
+/-- A hold settles once every pipe it was on has released it: 141 if any did so by
+    losing its last reader with more than `C` unread, else the writer's own status. -/
+def resolve (h : Hold) : Option Nat :=
+  if h.pipes.isEmpty then some (if h.sig then 141 else h.code) else none
 
 def settleHolds (s : St) (hs : List Hold) : List Hold × List (Nat × Nat) :=
-  (hs.filter (fun h => (resolve s h).isNone), hs.filterMap fun h => (resolve s h).map (h.pid, ·))
+  let hs := hs.map (advance s)
+  (hs.filter (fun h => (resolve h).isNone), hs.filterMap fun h => (resolve h).map (h.pid, ·))
 
 /-- One scheduler step with the rule: the step without it, then holds are taken and
     settled. -/
@@ -119,18 +137,23 @@ theorem hrun_core : ∀ f (H : HSt), (hrun R f H).core = runCore R f H.core := b
 
 /-! ## When it settles -/
 
-theorem settles_only_readerless (s : St) (h : Hold) (v : Nat) (hr : resolve s h = some v) :
-    ∀ p ∈ h.pipes, rs s p = 0 := by
-  intro p hp
-  unfold resolve at hr
-  split at hr
-  · rename_i ha; exact by simpa using List.all_eq_true.mp ha p hp
-  · cases hr
+/-- A pipe marks a hold for SIGPIPE only once it has no read end. -/
+theorem sig_only_readerless (s : St) (p : Nat) (h : pipeSig s p = true) : rs s p = 0 := by
+  simp only [pipeSig, Bool.and_eq_true, beq_iff_eq] at h; exact h.1
 
-theorem settle_value (s : St) (h : Hold) (hall : ∀ p ∈ h.pipes, rs s p = 0) :
-    resolve s h = some (if h.pipes.any (fun p => decide (s.C < (s.pipes p).drop)) then 141 else h.code) := by
-  unfold resolve
-  rw [if_pos (List.all_eq_true.mpr fun p hp => by simp [hall p hp])]
+/-- A hold settles to 141 only if one of its pipes lost its last reader with more than
+    `C` unread; a drain settles it to the writer's own status. -/
+theorem settles_141_only_readerless (s : St) (h : Hold) (hs : h.sig = false)
+    (h141 : (advance s h).sig = true) : ∃ p ∈ h.pipes, rs s p = 0 ∧ s.C < (s.pipes p).drop := by
+  simp only [advance, hs, Bool.false_or, List.any_eq_true] at h141
+  obtain ⟨p, hp, hsig⟩ := h141
+  simp only [pipeSig, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hsig
+  exact ⟨p, hp, hsig⟩
+
+/-- A drain releases a pipe while a reader is still alive. -/
+theorem drain_settles (s : St) (h : Hold) (p : Nat) (hq : (s.pipes p).q ≤ s.C) :
+    p ∉ (advance s h).pipes := by
+  simp [advance, pipeSettles, hq]
 
 theorem rs_zero_of_dead (s : St) (hd : ∀ i < s.n, alive (s.procs i) = false) (p : Nat) : rs s p = 0 :=
   sumTo_eq_zero.mpr fun i hi => by simp [hd i hi]
@@ -144,10 +167,13 @@ theorem all_settle (H : HSt) (i : Nat) (o : Out) (H' : HSt) (nw : List (Nat × N
   · rename_i j o' s' _
     simp only [Option.some.injEq, Prod.mk.injEq] at hs
     obtain ⟨-, -, rfl, -⟩ := hs
-    simp only [settleHolds, List.filter_eq_nil_iff]
-    intro h _
-    have hall : ∀ p ∈ h.pipes, rs s' p = 0 := fun p _ => rs_zero_of_dead s' hd p
-    simp [settle_value s' h hall]
+    simp only [settleHolds, List.filter_eq_nil_iff, List.mem_map]
+    rintro _ ⟨h, _, rfl⟩
+    have : (advance s' h).pipes = [] := by
+      simp only [advance, List.filter_eq_nil_iff]
+      intro p _
+      simp [pipeSettles, rs_zero_of_dead s' hd p]
+    simp [resolve, this]
   · cases hs
 
 /-! ## Traces (capacity 4) -/
@@ -179,6 +205,14 @@ def seqUniqWcBig : Cmd :=
       { mode := .plain, prog := reps 6 [.read 0 2] ++ reps 6 [.write 1 2] ++ [.exit 0], reads := [0], writes := [1] },
       { mode := .plain, prog := reps 7 [.read 1 2] ++ [.exit 0], reads := [1] }] }
 
+/-- `seq 8 | { cat >/dev/null; sleep 3 & }`: the reader drains every byte, forks a
+    background job holding the read end, and exits; the job exits later. -/
+def seqDrainBg : Cmd :=
+  { C := 4, B := 16, m := 1, slots := [
+      { mode := .plain, prog := reps 4 [.write 0 2] ++ [.exit 0], writes := [0] },
+      { mode := .plain, prog := reps 4 [.read 0 2] ++ [.fork 2, .exit 0], reads := [0] },
+      { mode := .plain, prog := [.exit 0], started := false }] }
+
 /-- `yes | head -2`. -/
 def yesHead2 : Cmd :=
   { C := 4, B := 8, m := 1, slots := [
@@ -199,6 +233,16 @@ theorem seq_uniq_wc_held : hstatuses (hrunOk seqUniqWcBig) = [some 0, some 0, so
   decide
 
 theorem yes_head_held : hstatuses (hrunOk yesHead2) = [some 141, some 0] := by
+  decide
+
+/-- The hold on `seq` settles to 0 at the reader's drain (after its second read the pipe
+    holds 4 = C), long before the background job, which still holds the read end, exits. -/
+theorem drain_settles_before_the_background_job :
+    let r := (List.range 7).foldl (fun (acc : HSt × List (List (Nat × Nat))) _ =>
+      match hstep Rules.ok acc.1 with
+      | some (_, _, H', nw) => (H', acc.2 ++ [nw])
+      | none => acc) ({ core := seqDrainBg.init }, [])
+    r.2 = [[], [], [], [], [], [], [(0, 0)]] ∧ hstatuses (hrunOk seqDrainBg) = [some 0, some 0, some 0] := by
   decide
 
 end Nimbus.Runtime.Pipes
