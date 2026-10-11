@@ -163,6 +163,7 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
  * coordinator, while it holds it. Never rename (a migration).
  */
 const HOSTING_KEY_PREFIX = 'hosting:';
+const CANCELLED_HOSTING_KEY_PREFIX = 'hosting-cancelled:';
 
 
 /** What a host keeps of a process it holds: whom to tell, and the proof it hosted it. */
@@ -304,6 +305,7 @@ export class PeerHost {
 
     let facet: ResidentFacet | undefined;
     try {
+      if (await this.ctx.storage.get(CANCELLED_HOSTING_KEY_PREFIX + workerKey)) throw new Error('Nimbus: the peer process was cancelled before opening');
       if (await this.ctx.storage.get(hostingKey)) throw new LostHostedProcess('the peer restarted without its previous process');
       if (record.closed) throw new Error('Nimbus: the peer process was cancelled before opening');
       ownsRow = true;
@@ -449,6 +451,10 @@ export class PeerHost {
    * retire the writer identity behind it.
    */
   async cancel(workerKey: string): Promise<{ cancelled: boolean }> {
+    const pending = this.records.get(workerKey);
+    if (pending) pending.closed = true;
+    // A delayed host RPC must still be refused after this reply and a coordinator reset.
+    await this.ctx.storage.put(CANCELLED_HOSTING_KEY_PREFIX + workerKey, true);
     const record = this.records.get(workerKey);
     if (record) await record.release();
     const key = `${HOSTING_KEY_PREFIX}${workerKey}`;
@@ -542,6 +548,7 @@ export class PeerHost {
       if (existing.closed) throw new Error('Nimbus: the hosted process is no longer running');
       return existing;
     }
+    if (await this.ctx.storage.get(CANCELLED_HOSTING_KEY_PREFIX + workerKey)) throw new Error('Nimbus: the hosted process is no longer running');
     if (await this.ctx.storage.get(`${HOSTING_KEY_PREFIX}${workerKey}`)) throw new LostHostedProcess('the peer restarted without its process');
     const arrived = this.records.get(workerKey);
     if (arrived) return this.awaitRecord(workerKey);

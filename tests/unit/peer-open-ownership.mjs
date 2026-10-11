@@ -1,0 +1,66 @@
+import assert from 'node:assert/strict';
+import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { runColdStart } from '../../packages/fabric/src/generation.ts';
+import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
+
+adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
+const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
+const turns = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+
+function setup(delayed = false) {
+  const world = createFacetWorld(() => ({ async startProcess() { return { ok: true }; }, async handleHttpRequest() { return new Response('ok'); } }), { resolveConfig: false });
+  const { ns, stubs, peers } = createPeerNamespace(world, { LOADER: world.loader });
+  const sent = Promise.withResolvers(), delivered = Promise.withResolvers();
+  const env = { NIMBUS_PROCESS_HOST: 'peer', NIMBUS_SESSION: {
+    idFromName: ns.idFromName, idFromString: ns.idFromString,
+    get(name) {
+      const stub = ns.get(name);
+      return { ...stub, supervisorOp(envelope) {
+        if (delayed && envelope.op === 'hostProcess') { sent.resolve(); return delivered.promise.then(() => stub.supervisorOp(envelope)); }
+        return stub.supervisorOp(envelope);
+      } };
+    },
+  } };
+  const ctx = createFacetCtx(world, 'owner');
+  const open = (context = ctx) => processHostFor(context, env, () => { throw new Error('peer mode does not read the local disk'); });
+  const params = { pid: 11, workerKey: 'nimbus-process:owner:11', writerId: crypto.randomUUID(), startArgs: {}, boot };
+  return { world, ctx, stubs, peers, sent, delivered, open, params };
+}
+
+for (const reset of [false, true]) {
+  const t = setup(true), host = t.open();
+  const pending = host.open(t.params);
+  void pending.catch(() => {});
+  await t.sent.promise;
+  assert.equal((await t.ctx.storage.list({ prefix: 'process-peer:' })).size, 1);
+  if (reset) {
+    const resumed = createFacetCtx(t.world, 'owner', t.ctx.storage.rows);
+    t.open(resumed);
+    await runColdStart(resumed);
+  } else await host.close();
+  assert.equal((await t.ctx.storage.list({ prefix: 'process-peer:' })).size, 0);
+  t.delivered.resolve();
+  const result = await pending.then(value => ({ value }), error => ({ error }));
+  if (result.value) await result.value.release();
+  assert.ok(result.error, 'a cancelled delayed open must fail even after coordinator reset');
+  assert.equal(t.world.boots.length, 0, 'no guest code executes after the placement was released');
+  const peer = [...t.peers.values()][0];
+  assert.equal(await peer.ctx.storage.get('hosting-cancelled:' + t.params.workerKey), true);
+}
+
+{
+  const t = setup(), host = t.open(), process = await host.open(t.params);
+  await process.started; await turns();
+  assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'idle owns no peer RPC stub');
+  const lease = hostActivity(t.ctx).acquire(); await lease.ready;
+  assert.equal(t.stubs.filter(stub => !stub.disposed).length, 1, 'only the active fetch watch owns a stub');
+  lease.release(); await turns();
+  assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
+  assert.equal(await (await process.handleHttpRequest(new Request('http://process/'))).text(), 'ok');
+  assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'a data call does not retain its routing stub');
+  await process.release();
+  assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
+}
+console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');
