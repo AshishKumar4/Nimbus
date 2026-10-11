@@ -91,8 +91,10 @@ SqliteVFS.prototype.rename = function (from, to, ...rest) {
   if (moved?.(String(from), String(to))) {
     moved = null;
     realRename.call(this, from, to, ...rest);
-    this.as(CRED_KERNEL).mkdir(`${from}/lib`, { recursive: true });
-    this.as(CRED_KERNEL).writeFile(`${from}/lib/residue.js`, '');
+    // The residue is the source's: what the rename did not take, as its caller.
+    const [cred] = rest;
+    this.as(cred).mkdir(`${from}/lib`, { recursive: true });
+    this.as(cred).writeFile(`${from}/lib/residue.js`, '');
     throw Object.assign(new Error(`EIO: injected source cleanup ${from}`), { code: 'EIO', renamed: 'all' });
   }
   return realRename.call(this, from, to, ...rest);
