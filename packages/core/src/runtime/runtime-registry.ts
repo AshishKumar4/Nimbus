@@ -501,7 +501,6 @@ export function buildRuntimeHandler(
       /** Node refuses the code before it loads `--import`'s modules (NodeEvalProgram.refusedBeforeImports): none load. */
       refusedBeforeImports?: boolean;
       esModule?: boolean;
-      esModuleMap?: string;
     }): Promise<number> => {
       let result: RuntimeRunResult;
       try {
@@ -525,8 +524,7 @@ export function buildRuntimeHandler(
           ...(captureOutput ? { captureOutput: true } : {}),
           ...(bundleProfile ? { bundleProfile } : {}),
           ...(program.launchesServer ? { launchesServer: true } : {}),
-          ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
-          ...(program.esModuleMap ? { esModuleMap: program.esModuleMap } : {}),
+          ...(program.esModule ? { esModule: true } : {}),
           moduleScope,
         });
       } finally {
@@ -540,17 +538,6 @@ export function buildRuntimeHandler(
       return result.exitCode;
     };
 
-    /**
-     * A program's source as the CommonJS a facet runs (core/_shared/commonjs-cell.ts):
-     * TypeScript, JSX or an ES module (`esm`) compiled by esbuild, its import() calls kept
-     * and routed to the process's ESM loader (dynamic-import-rewrite.ts), its
-     * import.meta the module's own (url, resolve, dirname and filename, read
-     * directly, as an object or destructured: the runner's __nimbusFileImportMeta;
-     * CommonJS output alone would make it {}). An ES module that does not
-     * parse is code that throws its SyntaxError as Node's evaluation does
-     * (module-format.ts esModuleSyntaxError). Null when the transform failed
-     * otherwise, which it has reported.
-     */
     /**
      * A TypeScript entry as Node takes it: its types stripped, and whether
      * Node runs it as an ES module. A file Node refuses is code that throws
@@ -571,38 +558,17 @@ export function buildRuntimeHandler(
       }
     }
 
-    async function lowerToCommonJs(
-      code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean,
-    ): Promise<{ code: string; map: string } | null> {
-      try {
-        const eb = await getEsbuild();
-        // An ES module keeps its runtime's scope (module-format.ts ModuleScope).
-        const { code: lowered, map } = await eb.transform(code, {
-          ...(esm && loader === 'js' ? { esModule: moduleScope } : { loader, format: 'cjs' }), dynamicImportParent: url, moduleMetadata: true,
-        });
-        return { code: lowered, map };
-      } catch (e) {
-        const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;
-        if (syntaxError !== null) return { code: syntaxError, map: '' };
-        ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
-        return null;
-      }
-    }
-    /** The URL Node gives `-e` code and a program read from stdin: `[eval1]` in the working directory. */
-    const evalUrl = () => 'file:///' + normalizeVfsPath((ctx.cwd || '/home/user') + '/[eval1]');
     /**
      * `-e` code or a program read from stdin as the process runs it: an ES
-     * module (`--input-type=module`, or its syntax, module-format.ts) lowered,
-     * which `-p` refuses as Node does (node-eval.ts); else Node's eval code.
+     * module (`--input-type=module`, or its syntax, module-format.ts), which
+     * the launch stages as it stages every ES module and `-p` refuses as Node
+     * does (node-eval.ts); else Node's eval code.
      */
-    async function inputProgram(
+    function inputProgram(
       source: string, what: '[eval]' | '[stdin]',
-    ): Promise<{ code: string; written: string; refusedBeforeImports: boolean; esModule: boolean; esModuleMap?: string } | null> {
+    ): { code: string; written: string; refusedBeforeImports: boolean; esModule: boolean } {
       const esModule = isEsModuleInput(source, inputType);
-      if (esModule && !print) {
-        const lowered = await lowerToCommonJs(source, 'js', evalUrl(), what, true);
-        return lowered === null ? null : { code: lowered.code, written: source, refusedBeforeImports: false, esModule: true, esModuleMap: lowered.map };
-      }
+      if (esModule && !print) return { code: source, written: source, refusedBeforeImports: false, esModule: true };
       if (!spec.nodeCommandLine) return { code: source, written: source, refusedBeforeImports: false, esModule: false };
       const mode: NodeEvalMode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
       const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
@@ -626,15 +592,12 @@ export function buildRuntimeHandler(
     // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
     // the value the process prints when it exits.
     if (line.eval !== undefined) {
-      const program = await inputProgram(line.eval, '[eval]');
-      if (program === null) return 1;
-      const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
+      const { code, written, refusedBeforeImports, esModule } = inputProgram(line.eval, '[eval]');
       const programArgs = args.slice(flagSpan);
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
-        esModuleMap,
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
@@ -683,14 +646,11 @@ export function buildRuntimeHandler(
     if (scriptPath === '-') {
       const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
       // `-p` prints the value of the code it read (eval_stdin.js).
-      const program = await inputProgram(input, '[stdin]');
-      if (program === null) return 1;
-      const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
+      const { code, written, refusedBeforeImports, esModule } = inputProgram(input, '[stdin]');
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
-        esModuleMap,
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',

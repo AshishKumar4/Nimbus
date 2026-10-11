@@ -98,7 +98,7 @@ export function moduleWrapper(source: string, esm: boolean, parentUrl: string, a
 			exportsObject: `${loader.module}.exports`,
 			bind: { metadata: loader.importMeta, parentUrl, metas: module.metas, dynamicImports: module.dynamicImports, loader: loader.importDynamic },
 		})}\n}`
-		: `\n${rewriteDynamicImports(source, parentUrl, false, true, loader.importDynamic)}`;
+		: `\n${rewriteDynamicImports(source, parentUrl, loader.importDynamic)}`;
 	const params = `${WRAPPER_PARAMS}, ${loader.importMeta}, ${loader.importDynamic}, ${loader.require}, ${loader.module}`;
 	return `(${async ? 'async ' : ''}function(${params}) {${body}\n})`;
 }
