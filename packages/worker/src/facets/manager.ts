@@ -5400,6 +5400,10 @@ export class FacetManager {
    * journal recovery rides the first pump.
    */
   private readonly launchPump: PacedWork;
+  /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+  private readonly launching = new Map<number, { stage: 'admission' | 'prepare'; since: number }>();
+  /** Since when a one-shot's spawn has waited for the table's reap of ended processes; null while none does. */
+  private reapingSince: number | null = null;
   private readonly launchTasks = new Set<Promise<void>>();
   private launchesClosed = false;
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -7023,7 +7027,8 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      await this.processes.reap();
+      this.reapingSince ??= Date.now();
+      try { await this.processes.reap(); } finally { this.reapingSince = null; }
       // A child of the command that ran it, so under its credential: the
       // program's syscalls answer under the credential the table holds for
       // its pid. At the top of the table it ran as the session user whoever
@@ -7061,9 +7066,11 @@ export class FacetManager {
     // no more maps at once than may run. Killed or refused while it waits, it
     // never ran.
     let admitted = false;
+    this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
     try {
       return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
         admitted = true;
+        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
         // Paced like a resident launch: a tree too large for one turn costs
@@ -7319,8 +7326,18 @@ export class FacetManager {
       if (isDynamicWorkerDeadlock(err) && !opts.skipSpawn) this._end(entry.pid, { code: 1 });
       throw err;
     } finally {
+      this.launching.delete(entry.pid);
       opts.signal?.removeEventListener('abort', onShellAbort);
     }
+  }
+
+  /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+  launchState(now = Date.now()): { reapingMs: number | null; launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
+    return {
+      reapingMs: this.reapingSince === null ? null : now - this.reapingSince,
+      launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
+      pacer: this.launchPump.state(now),
+    };
   }
 
   /**
@@ -8019,6 +8036,7 @@ export class FacetManager {
           },
           onLoaded: () => {
             pacer.settle();
+            this.launching.delete(entry.pid);
             if (!diagSink) return;
             diagSink.loadMs = Date.now() - __loadStart;
             __runStart = Date.now();
