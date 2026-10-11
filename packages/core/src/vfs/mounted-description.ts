@@ -91,7 +91,7 @@ export interface MountedDescriptionOptions extends MountedOpen {
 
 /** open(2) of a mounted file, and the description its descriptors share. */
 export function openMounted(options: MountedDescriptionOptions): Awaitable<Description> {
-  return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription({ ...options, name: file }, stat)));
+  return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription(options, file, stat)));
 }
 
 type Held = { offset: number | null; bytes: Uint8Array };
@@ -116,11 +116,11 @@ class MountedDescription implements Description {
   private pending: Held[] = [];
   private held = 0;
 
-  constructor(private readonly options: MountedDescriptionOptions, stat: VfsStat) {
+  constructor(private readonly options: MountedDescriptionOptions, name: string, stat: VfsStat) {
     this.ino = stat.ino ?? 0;
     if (options.awaits) this.awaits = true;
     this.files = options.files;
-    this.name = options.name;
+    this.name = name;
     this.immediate = options.sync || options.awaits;
   }
 
@@ -141,13 +141,19 @@ class MountedDescription implements Description {
   }
 
   write(offset: number, bytes: Uint8Array): Awaitable<number> {
-    return andThen(this.inPlaceOr(offset, bytes, () => this.hold(offset, bytes)), () => bytes.byteLength);
+    const written = this.inPlaceAt(offset, bytes);
+    if (written === undefined) return this.hold(offset, bytes);
+    return isPromise(written) ? written.then((end) => (end === undefined ? this.hold(offset, bytes) : bytes.byteLength)) : bytes.byteLength;
   }
 
-  /** At the end as it is then; a held one goes at the end as it stands at the flush. */
+  /** At the end as it is then (answers that end); a held one goes at the end as it stands at the flush. */
   append(bytes: Uint8Array): Awaitable<number> {
-    const held = (): Awaitable<number> => andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));
-    return this.inPlace ? andThen(this.files.stat(this.name), (there) => this.inPlaceOr(there?.size ?? 0, bytes, held)) : held();
+    if (!this.inPlace) return this.heldAppend(bytes);
+    return andThen(this.files.stat(this.name), (there) => {
+      const written = this.inPlaceAt(there?.size ?? 0, bytes);
+      if (written === undefined) return this.heldAppend(bytes);
+      return isPromise(written) ? written.then((end) => end ?? this.heldAppend(bytes)) : written;
+    });
   }
 
   truncate(size: number): Awaitable<void> { return need(this.files.truncate, this.options.refuse, 'ftruncate').call(this.files, this.name, size); }
@@ -191,25 +197,35 @@ class MountedDescription implements Description {
     }, this.name);
   }
 
-  /** In place when the mount can (writeRange); from its first refusal (none, or ENOTSUP), `otherwise`. Answers the end written. */
-  private inPlaceOr(offset: number, bytes: Uint8Array, otherwise: () => Awaitable<number>): Awaitable<number> {
+  private heldAppend(bytes: Uint8Array): Awaitable<number> {
+    return andThen(this.hold(null, bytes), () => andThen(this.stat(), (now) => now.size));
+  }
+
+  /**
+   * `bytes` written in place at `offset` when the mount can (writeRange):
+   * the end written. Undefined from its first refusal (none, or ENOTSUP):
+   * the description holds its writes from then on.
+   */
+  private inPlaceAt(offset: number, bytes: Uint8Array): Awaitable<number | undefined> {
     const writeRange = this.files.writeRange;
     if (!this.inPlace || writeRange === undefined) {
       this.inPlace = false;
-      return otherwise();
+      return undefined;
     }
-    const cannot = (error: unknown): Awaitable<number> => {
-      if (!isVfsError(error, 'ENOTSUP')) throw error;
-      this.inPlace = false;
-      return otherwise();
-    };
     let written: Awaitable<void>;
     try {
       written = writeRange.call(this.files, this.name, offset, bytes);
     } catch (error) {
-      return cannot(error);
+      return this.cannot(error);
     }
-    return isPromise(written) ? written.then(() => offset + bytes.byteLength, cannot) : offset + bytes.byteLength;
+    const end = offset + bytes.byteLength;
+    return isPromise(written) ? written.then(() => end, (error: unknown) => this.cannot(error)) : end;
+  }
+
+  private cannot(error: unknown): undefined {
+    if (!isVfsError(error, 'ENOTSUP')) throw error;
+    this.inPlace = false;
+    return undefined;
   }
 }
 

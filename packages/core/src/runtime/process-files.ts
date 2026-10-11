@@ -1020,7 +1020,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         files: this.owned(mutates ? options : undefined), name, flags: opened, mode: flags.mode,
         refuse: (code, syscall) => syscallError(code as VfsErrorCode, syscall, name), scope: this.scope,
         // The file it opened, by the name the namespace resolved for it: a link on the way repointed later does not move it.
-        realpath: (file) => this.namespace.realpathAsync(file),
+        realpath: async (file) => (await this.namespace.mutationRoute(file, { follow: true })).path,
         awaits: true, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
       });
       this.live();

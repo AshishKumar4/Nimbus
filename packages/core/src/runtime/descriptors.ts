@@ -8,7 +8,7 @@
  * that one as it refuses its mount, before anything is done.
  */
 
-import { andThen, type Awaitable } from '../vfs/vfs.js';
+import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
@@ -172,32 +172,38 @@ export class Descriptors {
     return opened;
   }
 
+  // A descriptor's reads and writes answer in the caller's turn without a
+  // callback where the description does (andThen allocates one per call).
   read(id: number, offset: number | null, length: number): Awaitable<Uint8Array> {
     const { handle, node } = this.opened(id);
     if (!handle.flags.read) throw fsError('EBADF', 'read', handle.path);
     const start = offset == null ? handle.position : Math.max(0, offset);
-    return andThen(node.read(start, Math.max(0, length)), (out) => {
-      if (offset == null) handle.position = start + out.byteLength;
-      return out;
-    });
+    const out = node.read(start, Math.max(0, length));
+    if (offset != null) return out;
+    if (isPromise(out)) return out.then((bytes) => read(handle, start, bytes));
+    return read(handle, start, out);
   }
 
   write(id: number, offset: number | null, bytes: Uint8Array): Awaitable<number> {
     const { handle, node } = this.opened(id);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
     if (handle.flags.append && node.append) {
-      return andThen(node.append(bytes), (end) => {
-        handle.position = end;
-        return bytes.byteLength;
-      });
+      const end = node.append(bytes);
+      if (isPromise(end)) return end.then((at) => moved(handle, at, bytes));
+      return moved(handle, end, bytes);
     }
     const start = handle.flags.append
       ? node.end?.() ?? andThen(node.stat(), (stat) => stat.size)
       : offset == null ? handle.position : Math.max(0, offset);
-    return andThen(start, (at) => andThen(node.write(at, bytes), () => {
-      if (offset == null || handle.flags.append) handle.position = at + bytes.byteLength;
-      return bytes.byteLength;
-    }));
+    if (isPromise(start)) return start.then((at) => this.writeAt(handle, node, at, offset, bytes));
+    return this.writeAt(handle, node, start, offset, bytes);
+  }
+
+  private writeAt(handle: RuntimeFileHandle, node: Description, at: number, offset: number | null, bytes: Uint8Array): Awaitable<number> {
+    const written = node.write(at, bytes);
+    if (offset != null && !handle.flags.append) return isPromise(written) ? written.then(() => bytes.byteLength) : bytes.byteLength;
+    if (isPromise(written)) return written.then(() => moved(handle, at + bytes.byteLength, bytes));
+    return moved(handle, at + bytes.byteLength, bytes);
   }
 
   close(id: number): void {
@@ -261,4 +267,16 @@ export class Descriptors {
   fchmod(id: number, mode: number): Awaitable<void> { return this.opened(id).node.chmod(mode); }
   fchown(id: number, uid: number, gid: number): Awaitable<void> { return this.opened(id).node.chown(uid, gid); }
   futimes(id: number, atime: number, mtime: number): Awaitable<void> { return this.opened(id).node.utimes(atime, mtime); }
+}
+
+/** A read at the descriptor's offset: the offset moved past what it read. */
+function read(handle: RuntimeFileHandle, start: number, bytes: Uint8Array): Uint8Array {
+  handle.position = start + bytes.byteLength;
+  return bytes;
+}
+
+/** A write at the descriptor's offset (or its end): the offset left at `end`. */
+function moved(handle: RuntimeFileHandle, end: number, bytes: Uint8Array): number {
+  handle.position = end;
+  return bytes.byteLength;
 }

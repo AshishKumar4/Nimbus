@@ -4,7 +4,7 @@ import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, o
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import { readDeclaredSource, readRangeOrWhole, type Awaitable, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
+import { andThen, readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
 
@@ -379,7 +379,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         const namespace = this.namespace!;
         const node = openMounted({
           files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
-          refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => namespace.realpath(name),
+          refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => andThen(namespace.mutationRoute(name, { follow: true }), (route) => route.path),
           awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
         }) as Description;
         return this.descriptors.issue(node, normalizedFlags);
@@ -412,19 +412,24 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  /** `run` on descriptor `id` for this synchronous face: a description on an asynchronous mount refuses, as its mount does. */
-  private now<T>(id: number, run: () => Awaitable<T>): T {
+  /**
+   * Descriptor `id`, for this synchronous face: a description on an
+   * asynchronous mount refuses, as its mount does. Every other answers in
+   * the caller's turn, so its operations' answers are values.
+   */
+  private now(id: number): void {
     const node = this.descriptors.description(id);
     if (node.awaits) throw awaitsRefusal(node.path());
-    return run() as T;
   }
 
   read(handleId: number, offset: number | null, length: number): Uint8Array {
-    return this.now(handleId, () => this.descriptors.read(handleId, offset, length));
+    this.now(handleId);
+    return this.descriptors.read(handleId, offset, length) as Uint8Array;
   }
 
   write(handleId: number, offset: number | null, bytes: Uint8Array): number {
-    return this.now(handleId, () => this.descriptors.write(handleId, offset, bytes));
+    this.now(handleId);
+    return this.descriptors.write(handleId, offset, bytes) as number;
   }
 
   close(handleId: number): void {
@@ -559,7 +564,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   fsync(handleId?: number): void {
-    if (handleId !== undefined) this.now(handleId, () => this.descriptors.fsync(handleId));
+    if (handleId === undefined) return;
+    this.now(handleId);
+    void this.descriptors.fsync(handleId);
   }
 
   /**
@@ -729,7 +736,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (typeof path === 'string') return path;
     if ('root' in path) return path.root + '/' + path.path;
     const directory = path.directory;
-    if (this.now(directory, () => this.descriptors.description(directory).stat()).type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
+    this.now(directory);
+    if ((this.descriptors.description(directory).stat() as { type: string }).type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
     if (path.path.startsWith('/')) return path.path;
     return this.descriptors.path(directory) + '/' + path.path;
   }
@@ -921,15 +929,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   /** The absolute path a descriptor was opened at. */
   descriptorPath(handleId: number): string { return '/' + normalizeVfsPath(this.descriptors.path(handleId)); }
 
-  fstat(handleId: number): RuntimeVfsStat { return this.now(handleId, () => this.descriptors.fstat(handleId)); }
+  fstat(handleId: number): RuntimeVfsStat { this.now(handleId); return this.descriptors.fstat(handleId) as RuntimeVfsStat; }
   dup(handleId: number): RuntimeFileHandle { return this.descriptors.dup(handleId); }
-  seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number { return this.now(handleId, () => this.descriptors.seek(handleId, offset, whence)); }
+  seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number { this.now(handleId); return this.descriptors.seek(handleId, offset, whence) as number; }
   setStatus(handleId: number, status: { append?: boolean }): void { this.descriptors.setStatus(handleId, status); }
-  readdirHandle(handleId: number): RuntimeVfsDirEntry[] { return this.now(handleId, () => this.descriptors.readdir(handleId)); }
-  ftruncate(handleId: number, size: number): void { this.now(handleId, () => this.descriptors.ftruncate(handleId, size)); }
-  fchmod(handleId: number, mode: number): void { this.now(handleId, () => this.descriptors.fchmod(handleId, mode)); }
-  fchown(handleId: number, uid: number, gid: number): void { this.now(handleId, () => this.descriptors.fchown(handleId, uid, gid)); }
-  futimes(handleId: number, atime: number, mtime: number): void { this.now(handleId, () => this.descriptors.futimes(handleId, atime, mtime)); }
+  readdirHandle(handleId: number): RuntimeVfsDirEntry[] { this.now(handleId); return this.descriptors.readdir(handleId) as RuntimeVfsDirEntry[]; }
+  ftruncate(handleId: number, size: number): void { this.now(handleId); void this.descriptors.ftruncate(handleId, size); }
+  fchmod(handleId: number, mode: number): void { this.now(handleId); void this.descriptors.fchmod(handleId, mode); }
+  fchown(handleId: number, uid: number, gid: number): void { this.now(handleId); void this.descriptors.fchown(handleId, uid, gid); }
+  futimes(handleId: number, atime: number, mtime: number): void { this.now(handleId); void this.descriptors.futimes(handleId, atime, mtime); }
 }
 
 /** A `..` component in a path's spelling. */
