@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 // fanout-peer-reset-retry — the peer-DO fanout must survive a TRANSIENT
 // Durable Object reset (platform code roll-over / storage cold-start
 // hiccup) by re-dispatching the idempotent shard, instead of failing the
@@ -77,7 +78,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'reset-retry-test', omitSupervisor: true });
-  const results = await pool.submitMany(TASKS, (x) => x);
+  const results = await pool.submitMany(TASKS, facetTaskSource("(x) => x"));
   assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after retry');
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
   console.log(`  case1: recovered across ${calls.size} shards, each retried once`);
@@ -94,7 +95,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'reset-exhaust-test', omitSupervisor: true });
   await assert.rejects(
-    pool.submitMany(TASKS, (x) => x),
+    pool.submitMany(TASKS, facetTaskSource("(x) => x")),
     /starting up Durable Object storage/,
     'exhausted transient retries propagate the real platform message',
   );
@@ -113,7 +114,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'nonretry-test', omitSupervisor: true });
-  await assert.rejects(pool.submitMany(TASKS, (x) => x), /genuine task failure/);
+  await assert.rejects(pool.submitMany(TASKS, facetTaskSource("(x) => x")), /genuine task failure/);
   // However the 8 tasks split across dispatch phases, each one that runs
   // throws exactly once and no shard is retried; a phase that aborts the
   // batch leaves later phases undispatched, hence the range rather than 8.
@@ -133,7 +134,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'overload-retry-test', omitSupervisor: true });
-  const results = await pool.submitMany(TASKS, (x) => x);
+  const results = await pool.submitMany(TASKS, facetTaskSource("(x) => x"));
   assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after the shed');
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
   console.log(`  case4: recovered from overload across ${calls.size} shards`);
@@ -149,7 +150,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
     async fanoutExecute() { throw new Error('internal error'); },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'opaque-test', omitSupervisor: true });
-  const err = await pool.submitMany(TASKS, (x) => x).then(
+  const err = await pool.submitMany(TASKS, facetTaskSource("(x) => x")).then(
     () => { throw new Error('expected submitMany to reject'); },
     (e) => e,
   );
@@ -177,7 +178,7 @@ for (const make of [
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'retryable-test', omitSupervisor: true });
-  assert.deepEqual(await pool.submitMany(TASKS, (x) => x), TASKS.map((t) => t.args));
+  assert.deepEqual(await pool.submitMany(TASKS, facetTaskSource("(x) => x")), TASKS.map((t) => t.args));
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once after ${make().message}`);
 }
 console.log('  case6: retryable-flagged and connection-lost shards re-dispatched');

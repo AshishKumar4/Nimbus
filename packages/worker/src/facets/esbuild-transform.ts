@@ -14,7 +14,6 @@ import {
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import type { WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
-import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -48,7 +47,6 @@ import type { StagedSourceEnv } from '../runtime/staged-source.js';
  * dropped when it ends.
  */
 const ESBUILD_FACET_BODY = [
-  ESBUILD_NAME_GLOBAL_SHIM,
   generateEsbuildFacetRuntimeSource(),
   generateTransformFacetRuntimeSource(),
   'export class EsbuildFacet extends DurableObject {',

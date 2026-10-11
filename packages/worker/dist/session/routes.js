@@ -24,6 +24,7 @@
  * (~30 sites). RoutesHost = any pragmatic deviation, like InitHost in S6.
  */
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
+import { FANOUT_BENCH_TASK, SERIAL_BENCH_TASK } from '../loaders/compiled-bodies.generated.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
@@ -1737,17 +1738,7 @@ async function handleFanoutTestEndpoint(self, url, request) {
         // (millisecond resolution is fine; we're sleeping for ms-scale)
         // to record per-task start/end so the supervisor can compute the
         // distribution after the fact.
-        const results = await pool.submitMany(tasks, async (item, env) => {
-            const startMs = Date.now();
-            // Identify which env we're running in. SUPERVISOR is the
-            // RPC stub auto-injected by IsolatePool; its presence
-            // tells us we're inside a loader isolate (not the supervisor).
-            const loaderEnvKeys = Object.keys(env || {}).sort();
-            // Sleep entirely inside the isolate — no external network.
-            await new Promise((r) => setTimeout(r, item.sleepMs));
-            const endMs = Date.now();
-            return { id: item.id, startMs, endMs, loaderEnvKeys };
-        });
+        const results = await pool.submitMany(tasks, FANOUT_BENCH_TASK);
         const t1 = performance.now();
         // Aggregate per-peer ledger from the response shape. Each task's
         // result includes its loaderEnvKeys; the SUPERVISOR binding's
@@ -1793,10 +1784,7 @@ async function handleFanoutTestEndpoint(self, url, request) {
         const t0 = performance.now();
         try {
             for (let i = 0; i < n; i++) {
-                await pool.submit(async (item) => {
-                    await new Promise((r) => setTimeout(r, item.sleepMs));
-                    return item.id;
-                }, { id: i, sleepMs });
+                await pool.submit(SERIAL_BENCH_TASK, { id: i, sleepMs });
             }
         }
         finally {

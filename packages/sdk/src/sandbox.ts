@@ -107,6 +107,8 @@ export interface NimbusSandboxFiles {
   stat(path: string): Promise<NimbusFileStat | null>;
   /** stat without following a symlink leaf. */
   lstat(path: string): Promise<NimbusFileStat | null>;
+  /** Read a symlink's stored target without following its final component. */
+  readlink(path: string): Promise<string | null>;
   rename(from: string, to: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
   /** Read `length` bytes at `offset` without materializing the whole file. */
@@ -329,6 +331,7 @@ export class NimbusSandbox {
       _rpcReady: (options) => this.remoteRpc('ready', [options]),
       _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
       _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
+      _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
       _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
       // A credential rides the wire as a trailing `{ cred }` options object
       // so the payload names it explicitly; the remote dispatcher decides
@@ -338,6 +341,7 @@ export class NimbusSandbox {
       _rpcWriteFile: (path, content, _pid, cred) => this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)]),
       _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)]),
       _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)]),
+      _rpcReadlink: (path, _pid, cred) => this.remoteRpc('readlink', [path, ...fileWireOptions(cred)]),
       _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)]),
       _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)]),
       _rpcFsReadRange: (path, offset, length, _pid, cred) =>
@@ -436,7 +440,25 @@ export class NimbusSandbox {
    */
   async execStream(command: string, options: NimbusExecOptions = {}): Promise<NimbusExecStream> {
     await this.ready();
-    return decodeExecStream(await this.stub()._rpcExecStream(command, this.execOptions(options)));
+    const stub = this.stub();
+    const wire = this.execOptions(options);
+    const detach = options.detach;
+    if (!detach) return decodeExecStream(await stub._rpcExecStream(command, wire));
+    const detachId = wire.detachId ?? crypto.randomUUID();
+    const stream = decodeExecStream(await stub._rpcExecStream(command, { ...wire, detachId }));
+    // Register only after the start is acknowledged, so independent HTTP
+    // requests cannot deliver detach before the invocation exists. An abort
+    // that happened while awaiting start is sent immediately afterwards.
+    // Detach is a separate control call. Its failure is reported independently
+    // and must never replace the still-running command's actual exit.
+    const leave = () => { this.rpc(stub._rpcDetachExec(detachId)).catch((error: unknown) => {
+      console.error(`Nimbus: could not detach invocation '${detachId}'; its command is still running`, error);
+    }); };
+    const forget = () => detach.removeEventListener('abort', leave);
+    stream.exit.then(forget, forget);
+    if (detach.aborted) leave();
+    else detach.addEventListener('abort', leave, { once: true });
+    return stream;
   }
 
   /**
@@ -504,6 +526,10 @@ export class NimbusSandbox {
       lstat: async (path: string): Promise<NimbusFileStat | null> => {
         await this.ready();
         return this.rpc(this.stub()._rpcLstat(path, undefined, cred));
+      },
+      readlink: async (path: string): Promise<string | null> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcReadlink(path, undefined, cred));
       },
       rename: async (from: string, to: string): Promise<void> => {
         await this.ready();
@@ -783,6 +809,8 @@ export class NimbusSandbox {
   private execOptions(options: NimbusExecOptions): SessionExecOptions {
     const shellId = options.shellId ?? this.options.shellId;
     const normalized: SessionExecOptions = { ...options, ...(shellId === undefined ? {} : { shellId }) };
+    // Signals are local capabilities; a detach crosses the wire by invocation id.
+    delete normalized.detach;
     if (typeof normalized.cwd === 'string') {
       // The session shell only understands absolute paths; a relative cwd
       // forwarded verbatim used to reach it anyway — `pwd` echoed the

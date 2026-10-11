@@ -1,3 +1,4 @@
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import assert from 'node:assert/strict';
 import { FACET_LIMITS, MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS, applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, facetPolicyKey } from '../../packages/fabric/src/facet-limits.ts';
 import { facetLimitViolations } from '../../scripts/deploy-isolation.mjs';
@@ -44,7 +45,7 @@ for (const kind of seen) {
   } } };
   const pool = new IsolatePool(env, ctx, { facetKind: kind, omitSupervisor: true, network: ISOLATE_NETWORK });
   try {
-    const response = await pool.submitRequest(() => new Response('fixture'), new Request('https://unit.example/'));
+    const response = await pool.submitRequest(facetTaskSource("() => new Response('fixture')"), new Request('https://unit.example/'));
     assert.equal((await response.json()).kind, kind);
     assert.deepEqual(loaded.limits, facetLimits(kind), `${kind}: actual Loader factory receives the policy`);
     assert.deepEqual(startLimits, facetLimits(kind), `${kind}: actual entrypoint start receives the same policy`);

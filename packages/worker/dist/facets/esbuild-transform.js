@@ -1,7 +1,6 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EsbuildService, generateEsbuildFacetRuntimeSource, generateTransformFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -30,7 +29,6 @@ import { SharedHelperFacet } from './helper-facet.js';
  * dropped when it ends.
  */
 const ESBUILD_FACET_BODY = [
-    ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildFacetRuntimeSource(),
     generateTransformFacetRuntimeSource(),
     'export class EsbuildFacet extends DurableObject {',

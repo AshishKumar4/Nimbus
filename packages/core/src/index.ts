@@ -63,8 +63,8 @@ export { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type Workspace
 export type {
   Facet,
   FacetBindings,
-  FacetFn,
   FacetHost,
   FacetSpec,
   FacetSubmitOptions,
 } from './runtime/facet-host.js';
+export { facetTaskSource, type FacetTaskSource } from './runtime/facet-task.js';

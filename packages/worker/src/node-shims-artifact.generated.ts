@@ -50,6 +50,6 @@ export const NODE_DNS_BUILD_ID: string = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256: string = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-954023ad9a6ed6a3.js";
-export const NODE_REGISTRY_BUILD_ID: string = "954023ad9a6ed6a3";
-export const NODE_REGISTRY_SHA256: string = "954023ad9a6ed6a3957af881344fe07b3b98f9f5a18baa93749662730af6c6d1";
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-4c12b742190c6fb7.js";
+export const NODE_REGISTRY_BUILD_ID: string = "4c12b742190c6fb7";
+export const NODE_REGISTRY_SHA256: string = "4c12b742190c6fb76c6251acdb392473924435e9ccd48bc97e6821fcfb26983e";

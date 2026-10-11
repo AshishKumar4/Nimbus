@@ -15,3 +15,4 @@ export { RuntimeBlobDigestMismatch, seedRuntimePackage } from './runtime/runtime
 export { RuntimeManager } from './runtime/runtime-manager.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
 export { ISOLATE_NETWORK, workspaceNetwork } from './_shared/workspace-network.js';
+export { facetTaskSource } from './runtime/facet-task.js';
