@@ -183,9 +183,9 @@ function snapshot(position: number | undefined, above: unknown): readonly Interp
       const typeName = dataName(ctor, 'name', info.unit.isProxy);
       frames[frames.length] = {
         unit: info.unit, name: name === '' ? null : name, method,
-        type: hasReceiver ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,
+        type: isMethod ? (typeof typeName === 'string' && typeName !== '' ? typeName : 'Object') : null,
         line: loc[0], column: loc[1], enclosingLine: enclosing[0], enclosingColumn: enclosing[1],
-        constructor, async, top: info.shape === 'module', fn: strict ? undefined : fn, receiver: strict ? undefined : receiver,
+        constructor, async, top: info.shape === 'module' || (!constructor && !hasReceiver), fn: strict ? undefined : fn, receiver: strict ? undefined : receiver,
       };
     }
     const parent = env[at + PARENT] as Env | null;
