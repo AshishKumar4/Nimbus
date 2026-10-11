@@ -281,7 +281,8 @@ export interface WaveDescriptions {
   describe(id: string, file: PinnedName, ino: number, rights: { read: boolean; write: boolean }): Awaitable<number>;
   /** The session's descriptor of `id`, or undefined. */
   handle(id: string): number | undefined;
-  close(id: string): void;
+  /** Closes `id`: its last close's answer (lastClose), which a mount's description's backend may await. */
+  close(id: string): Awaitable<void>;
 }
 
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';

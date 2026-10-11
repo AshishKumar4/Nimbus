@@ -275,6 +275,13 @@ class MountedDescription implements MountedFileDescription {
     }
   }
 
+  discard(): Awaitable<void> {
+    this.pending = [];
+    this.held = 0;
+    this.options.scope.held.delete(this);
+    return this.file.close();
+  }
+
   pendingBytes(): number { return this.held; }
   applyPending(base: Uint8Array): Uint8Array { return apply(this.pending, base); }
 

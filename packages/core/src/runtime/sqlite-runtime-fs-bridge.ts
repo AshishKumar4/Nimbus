@@ -707,7 +707,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const handleId = this.scope.waveDescriptions.get(id);
       if (handleId === undefined) return;
       this.scope.waveDescriptions.delete(id);
-      if (this.scope.handles.has(handleId)) this.close(handleId);
+      if (this.scope.handles.has(handleId)) return this.descriptors.close(handleId);
     },
   };
 

@@ -69,6 +69,11 @@ export class SqliteFiles implements VFS {
     };
   }
 
+  /** VFS.fileStore: the database, through every principal's view of it. */
+  get fileStore(): object {
+    return this.engine;
+  }
+
   /** The engine's credentialed view this speaks for (for the engine's own callers). */
   get credentialed(): CredentialedVfs {
     return this.view;

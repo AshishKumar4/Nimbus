@@ -982,6 +982,87 @@ await check('a re-sent open of a description on an awaiting mount stops with its
   }
 });
 
+await check('a held write overlays its file through a source that wraps the same store anew each time', async () => {
+  const backend = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backend.writeFile('/x', enc.encode('0123'));
+  files.vfs.mount('/fw', () => unranged(backend));
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = proc.open('/fw/x', { read: true, write: true });
+    proc.write(fd.id, 0, enc.encode('ab'));
+    assert.equal(dec.decode(proc.readFile('/fw/x')), 'ab23', 'a path read through another wrapper of its store');
+    proc.close(fd.id);
+    assert.equal(dec.decode(backend.readFile('/x')), 'ab23');
+  } finally {
+    files.vfs.unmount('/fw');
+  }
+});
+
+await check('a change through a file its mount keeps open, queued behind a rename of it, is guarded where the rename put it', async () => {
+  const backend = credentialed();
+  for (const dir of ['/free', '/leased']) { backend.mkdir(dir); backend.chown(dir, 1000, 1000); }
+  backend.rename('/x', '/free/x');
+  let gate = null;
+  let entered;
+  const entering = new Promise((resolve) => { entered = resolve; });
+  files.vfs.mount('/qm', asyncOnly(backend, { deep: true, hide: ['observeWrites'], beforeCall: (method) => (gate !== null && method === 'rename' ? (entered(), gate) : undefined) }));
+  const stop = files.vfs.observeWrites(() => {});
+  let lease = null;
+  try {
+    const proc = files.bind({ pid: ++pid, cred: USER });
+    const fd = await proc.open('/qm/free/x', { read: true, write: true });
+    let release;
+    gate = new Promise((resolve) => { release = resolve; });
+    const renaming = proc.rename('/qm/free/x', '/qm/leased/x');
+    await entering;
+    lease = files.engine.acquireExclusiveMutation('qm/leased');
+    const writing = assert.rejects(async () => proc.write(fd.id, 0, enc.encode('NO')), refused('EBUSY'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await renaming;
+    await writing;
+    assert.equal(dec.decode(backend.readFile('/leased/x')), 'x');
+    await proc.close(fd.id);
+  } finally {
+    if (lease !== null) files.engine.releaseExclusiveMutation(lease.owner);
+    gate = null;
+    stop();
+    files.vfs.unmount('/qm');
+  }
+});
+
+await check('a wave\'s close of a mounted description answers what its backend\'s close failed with', async () => {
+  const failing = (opened, path) => ({ close: async () => { await opened.close(); throw new VfsError('EIO', 'the backend failed its close', path); } });
+  files.vfs.mount('/cw', reopening(credentialed(), failing, false));
+  const wave = waveOf(files.bind({ pid: ++pid, cred: USER }));
+  try {
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'cw/x', mode: 0o644, read: true, description: 'd1' } }]);
+    assert.equal(opened.ok, true, JSON.stringify(opened.error));
+    const closed = await wave([{ type: 'call', call: { call: 'close', path: 'cw/x', description: 'd1' } }]);
+    assert.equal(closed.ok, false);
+    assert.equal(closed.error.errno, 'EIO');
+    const after = await wave([{ type: 'call', call: { call: 'write', path: 'cw/x', description: 'd1', offset: 0, data: enc.encode('NO') } }]);
+    assert.equal(after.error?.errno, 'EBADF', 'and it is closed all the same');
+  } finally {
+    files.vfs.unmount('/cw');
+  }
+});
+
+await check('a killed process\'s descriptions close the files their mount holds open, writing nothing', async () => {
+  let closed = 0;
+  const counted = (opened) => ({ close: () => { closed++; return opened.close(); } });
+  files.vfs.mount('/kf', reopening(credentialed(), counted));
+  try {
+    const procPid = ++pid;
+    const proc = files.bind({ pid: procPid, cred: USER });
+    proc.open('/kf/x', { read: true });
+    files.killProcess(procPid);
+    assert.equal(closed, 1);
+  } finally {
+    files.vfs.unmount('/kf');
+  }
+});
+
 {
   const proc = files.bind({ pid: ++pid, cred: USER });
   proc.writeFile('/home/user/sq.log', '12345');

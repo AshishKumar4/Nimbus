@@ -335,6 +335,11 @@ interface PinTarget {
   readonly sync: boolean;
 }
 
+/** How often a change through a held-open file follows it to another name before it refuses (Held.changing). */
+const MOVES = 8;
+/** A held-open file's change found it renamed in its turn: asked again where it is now. */
+const MOVED: unique symbol = Symbol('moved');
+
 const sourceKeys = new WeakMap<object, number>();
 let sourcesKeyed = 0;
 
@@ -344,7 +349,7 @@ function need<F>(fn: F | undefined, path: string): F {
   return fn;
 }
 
-/** A backend's own number: a dynamic source that gives another backend gives other files. */
+/** A file store's own number: a dynamic source that gives another store gives other files. */
 function sourceKey(source: object): number {
   let key = sourceKeys.get(source);
   if (key === undefined) sourceKeys.set(source, key = ++sourcesKeyed);
@@ -352,14 +357,14 @@ function sourceKey(source: object): number {
 }
 
 /**
- * Which file the number `ino` is, at `rel` on `target`: that number on the
- * backend object its mount's source gave (a backend's device number is its
- * own, never another's to compare), else its name there. A source that gives
- * a new object for the same files each time gives other keys: a path read
- * through it does not see the writes a description holds.
+ * Which file the number `ino` is, at `rel` on `target`: that number in its
+ * backend's store (VFS.fileStore, the same through any view or wrapper of
+ * those files; a backend's device number is its own, never another's to
+ * compare), else its name there.
  */
 function fileKey(target: PinTarget, ino: number | undefined): string {
-  return ino === undefined ? `${sourceKey(target.source)}:${target.rel}` : `${sourceKey(target.source)}#${ino}`;
+  const store = sourceKey(target.source.fileStore ?? target.source);
+  return ino === undefined ? `${store}:${target.rel}` : `${store}#${ino}`;
 }
 
 export interface MountInfo {
@@ -1432,11 +1437,35 @@ export class CompositeVFS implements VFS {
       return andThen(this.here(), run);
     }
 
-    /** A change through the file the backend holds open: guarded and observed at the name it has now (changingOn), none once unlinked. */
+    /**
+     * A change through the file the backend holds open: guarded, captured and
+     * observed at the name it has now (changingOn), none once unlinked. That
+     * name is asked again in the change's turn, after the changes before it,
+     * right before the guard (one renamed while the change waited is changed
+     * where it is then, at most MOVES times), and again before the change is
+     * published (one renamed meanwhile is no change at its old name).
+     */
     private changing<T>(syscall: string, file: VfsOpenFile, run: () => Awaitable<T>, admit: (() => void) | undefined, written?: Uint8Array): Awaitable<T> {
       const { host, target } = this;
-      return this.call(syscall, () => andThen(file.path(), (rel) => host.changingOn(
-        target, rel === null ? null : { name: CompositeVFS.reroot(target.mount.point, rel), rel }, run, admit, written, () => true)));
+      const attempt = (left: number): Awaitable<T> => andThen(file.path(), (rel) => {
+        const stays = (): Awaitable<void> => andThen(file.path(), (now) => {
+          if (now === rel) return;
+          if (left === 0) throw new Refusal('ESTALE', target.name, 'the file kept moving while its change waited');
+          throw MOVED;
+        });
+        const again = (error: unknown): Awaitable<T> => {
+          if (error !== MOVED) throw error;
+          return attempt(left - 1);
+        };
+        try {
+          const placed = rel === null ? null : { name: CompositeVFS.reroot(target.mount.point, rel), rel };
+          const changed = host.changingOn(target, placed, run, admit, written, () => andThen(file.path(), (now) => now === rel), stays);
+          return isPromise(changed) ? changed.catch(again) : changed;
+        } catch (error) {
+          return again(error);
+        }
+      });
+      return this.call(syscall, () => attempt(MOVES));
     }
 
     stat(): Awaitable<VfsStat> {

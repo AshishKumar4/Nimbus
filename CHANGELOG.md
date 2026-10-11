@@ -44,14 +44,17 @@ published independently in the `@nimbus-sh` npm scope.
   `ESTALE` once the name holds another file or none. An open holds the file
   it decided on: one put at its name meanwhile is `ESTALE`.
   `MemoryVFS` numbers its files (`ino`). Held writes are keyed by the file
-  (its number on its backend), not its mount and path, apply in their
+  (its number in its backend's store, the new optional `VFS.fileStore`, the
+  same through any view or wrapper of it), not its mount and path, apply in their
   descriptions' open order, and a process's held writes on a file are
   written before that process cuts it (a truncate, an `O_TRUNC` open, a
   whole-file write), so nothing brings back what it cut; a flush the process
   did not ask for that fails is reported by that descriptor's next `fsync` or
   `close`. A close answers what the backend's close failed with, and
-  `releaseProcess` what every close of its descriptors did; a description
-  whose flush fails still closes its file. A positional write through an
+  `releaseProcess` what every close of its descriptors did, as a wave's
+  `close` of a mounted description does; a description whose flush fails
+  still closes its file, and a killed process's close theirs, writing
+  nothing. A positional write through an
   `O_APPEND` descriptor lands at the end and leaves the offset where it was.
   `SqliteVFS.openDescription` asks only search: the open that asks decided
   the access (a creat(2) of a mode without write writes what it made). `EFBIG`

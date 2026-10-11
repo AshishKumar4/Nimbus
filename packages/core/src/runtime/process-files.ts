@@ -580,10 +580,16 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     const lost: number[] = [];
     for (const [id, opened] of scope.handles) {
       if (opened.node.mounted && opened.node.pendingBytes() > 0) lost.push(id);
-      // Dropped unflushed; a description another process still holds stays open.
-      opened.refs--;
+      // Dropped unflushed; a description another process still holds stays open, and a mount's
+      // file its backend holds open is closed with nothing written (MountedFileDescription.discard).
+      if (--opened.refs === 0 && opened.node.mounted) {
+        const { node } = opened;
+        abandon({ close: () => node.discard() });
+      }
     }
     scope.handles.clear();
+    scope.held.clear();
+    scope.waveDescriptions.clear();
     scope.closed = true;
     scope.abort.abort();
     for (const unsubscribe of scope.subscriptions) unsubscribe();

@@ -47,6 +47,8 @@ export interface MountedFileDescription {
   /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
   settle(): void;
   close(): Awaitable<void>;
+  /** Closes its file without writing what it holds (a killed process's): those bytes are lost. */
+  discard(): Awaitable<void>;
   /**
    * A description whose mount cannot write in place holds its writes until a
    * flush (fsync, the last close, the process's release, or a cut of its

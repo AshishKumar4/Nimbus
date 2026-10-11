@@ -761,6 +761,8 @@ export class WaveIngest {
             applying = seq;
           }
         }
+        // A close's answer is final whichever filesystem's description it closes (the refusal kept below).
+        if (record.type === 'call' && record.call.call === 'close' && applying !== null) closing.set(applying, record.call.description);
         if (router !== null && !landsHere(record) && await this.routeRecord(record, router, scope, routing)) continue;
         // Only removals and directories are held in the leading phase: anything
         // else that lands here ends it first (a routed record ends it in settleBefore).
@@ -871,7 +873,6 @@ export class WaveIngest {
               // A call observes everything the stream wrote before it.
               phase = 'publish';
               const call = record.call;
-              if (call.call === 'close' && applying !== null) closing.set(applying, call.description);
               // A mkdir commits with the calls beside it; any other may change
               // where later names resolve, and commits now.
               queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
@@ -1030,8 +1031,18 @@ export class WaveIngest {
       }
       case 'call': {
         const call = record.call;
-        // A close is the binding's (closeDescribed), of any description.
-        if (call.call === 'close') return false;
+        // A close is the binding's: of a mount's description, awaited here, its backend's close its answer;
+        // of any other, the engine's (closeDescribed), in its transaction.
+        if (call.call === 'close') {
+          const { descriptions } = at;
+          if (descriptions?.mounted(call.description) === undefined) return false;
+          at.setPhase('publish');
+          await at.settleBefore();
+          reached();
+          await backend(Promise.resolve(descriptions.close(call.description)));
+          at.committed(null, 0);
+          return true;
+        }
         // A truncate through a description is that description's, never placed by its name: a mount's
         // file wherever its name leads now; any other is this filesystem's (EBADF for one not open).
         if (call.call === 'ftruncate' && call.description !== undefined) {
