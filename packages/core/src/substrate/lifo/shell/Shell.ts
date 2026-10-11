@@ -456,8 +456,10 @@ export class Shell {
 
     const identity = this.resolveCommandIdentity(options?.commandContext);
     const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
+    const workSignal = stopped?.signal ?? abortController.signal;
     try {
       if (stopped?.ready) await stopped.ready;
+      workSignal.throwIfAborted();
       const exitCode = await this.interpreter.executeLine(
         cmd,
         options?.terminalStdin,
@@ -472,7 +474,7 @@ export class Shell {
           commandContext: options?.commandContext,
           commandIdentity: identity,
           runAs: options?.runAs ?? this.commandIdentity.runAs,
-          signal: abortController.signal,
+          signal: workSignal,
         },
       );
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
@@ -1193,8 +1195,10 @@ export class Shell {
     let status: number | null = null;
     const identity = this.resolveCommandIdentity(undefined);
     const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
+    const workSignal = stopped?.signal ?? lineAbort.signal;
     try {
       if (stopped?.ready) await stopped.ready;
+      workSignal.throwIfAborted();
       // Saved beside the line, which does not wait for it: a reader's recall
       // the save meets (core README, process model) costs the line nothing.
       // A save that fails loses that line's history, not the line.
@@ -1205,7 +1209,7 @@ export class Shell {
         interactive: true,
         commandIdentity: identity,
         runAs: this.commandIdentity.runAs,
-        signal: lineAbort.signal,
+        signal: workSignal,
       });
     } finally {
       stopped?.();

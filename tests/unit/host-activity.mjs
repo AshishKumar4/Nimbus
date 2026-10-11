@@ -67,6 +67,26 @@ function setup() {
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
 {
+  const activity = new HostActivity(), pending = Promise.withResolvers(), processes = new SessionProcessSupervisor();
+  let transport;
+  activity.observe((signal) => { transport = signal; return pending.promise; }, () => assert.fail('owner cancellation is not host loss'));
+  processes.setWorkObservation(() => activity.acquire());
+  const abort = new AbortController();
+  const one = processes.holdWork(100, () => {}, abort.signal);
+  const two = processes.holdWork(101, () => {});
+  const cancelled = one.ready.then(() => 'admitted', () => 'cancelled');
+  await turns(); abort.abort();
+  try {
+    assert.equal(await Promise.race([cancelled, new Promise(resolve => setTimeout(() => resolve('hung'), 100))]), 'cancelled', 'one owner stops without waiting for another owner\'s validation');
+    assert.equal(transport.aborted, false, 'the other owner retains the shared transport');
+  } finally {
+    pending.resolve(new Response(new ReadableStream(), { headers: { [HOST_INCARNATION_HEADER]: 'shared' } }));
+    await two.ready;
+    one(); two();
+  }
+}
+
+{
   const t = setup(), processes = new SessionProcessSupervisor();
   const abort = new AbortController();
   const work = processes.holdWork(100, () => {}, abort.signal);

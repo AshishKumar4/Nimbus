@@ -58,5 +58,16 @@ for (const shell of ['sh', 'bash']) {
 assert.deepEqual(await redirected('find d -name f1 -exec echo hit {} \\; > out2.txt', 'out2.txt'), ['', '', 0, 'hit d/f1\n']);
 assert.deepEqual(await run('sudo -u user echo x | cat -n'), ['     1\tx\n', '', 0]);
 
+const refused = Promise.reject(new Error('host validation refused runAs admission'));
+void refused.catch(() => {});
+ws.processes.setWorkObservation((pid) => ({
+  ready: ws.processes.get(pid)?.argv.includes('ADMISSION_GUARD') ? refused : undefined,
+  release() {},
+}));
+const guarded = await run('sudo -u user echo ADMISSION_GUARD');
+assert.equal(guarded[0], '', 'a runAs child cannot run before host validation');
+assert.notEqual(guarded[2], 0);
+assert.match(guarded[1], /host validation refused/);
+
 await ws.close();
 console.log('run-as-io: a runAs child inherits its starter\'s descriptors, environment and directory');

@@ -242,6 +242,19 @@ try {
     { exitCode: 0, stdout: 'SHELL-SECRET\n', stderr: '' },
   );
 
+  const unvalidated = Promise.reject(new Error('host validation refused child admission'));
+  void unvalidated.catch(() => {});
+  processes.setWorkObservation((pid) => ({
+    ready: processes.get(pid)?.argv[0] === 'cat' ? unvalidated : undefined,
+    release() {},
+  }));
+  for (const command of ['cat', 'sudo']) {
+    const guarded = await spawnAndCollect(userParent.pid, 'readable.txt', command);
+    assert.equal(guarded.stdout, '', command + ' child must await host validation');
+    assert.notEqual(guarded.exitCode, 0);
+    assert.match(guarded.stderr, /host validation refused/);
+  }
+
   async function spawnAndCollect(parentPid, path, command = 'cat') {
     return spawnCommandAndCollect(parentPid, command, command === 'sudo' ? ['cat', path] : [path]);
   }
