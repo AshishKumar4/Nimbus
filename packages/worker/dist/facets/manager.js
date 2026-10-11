@@ -7385,8 +7385,10 @@ export class FacetManager {
      * fails or stops (to wait for stdin) is its launcher's to handle; a
      * lifetime resident's caller watches its lifecycle itself.
      */
-    _watchHost(pid, handle, diesAlone) {
+    _watchHost(pid, handle, diesAlone, controlFailure) {
         handle.done.catch((error) => {
+            if (controlFailure?.(error))
+                return;
             if (error instanceof ProcessHostLost) {
                 this._endByHostLoss(pid, error);
                 return;
@@ -7438,7 +7440,7 @@ export class FacetManager {
      * decides anything about where a program runs.
      */
     async _startResidentProcess(pid, spec) {
-        const { run, ...process } = spec;
+        const { run, controlFailure, ...process } = spec;
         const handle = await this.processFabric.startResidentProcess({
             pid,
             workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}${run !== undefined && run > 1 ? `:run${run}` : ''}`,
@@ -7450,7 +7452,7 @@ export class FacetManager {
             },
             ...process,
         });
-        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true);
+        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true, controlFailure);
         return handle;
     }
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
@@ -8061,11 +8063,13 @@ export class FacetManager {
                     // pid the session has finished reporting on.
                     this._assertLaunchStillOwned(entry.pid);
                     try {
+                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
                         handle = await this._startResidentProcess(entry.pid, {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
                             journaled: true,
+                            ...(stoppable ? { controlFailure: (error) => stopRecordOf(error, launchingNonce, launchingRun) !== null } : {}),
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
