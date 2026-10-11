@@ -12283,18 +12283,6 @@ const __tlsMod = (() => {
     return socket;
   };
   const connect = (...args) => {
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-ff4ec4e75e8dad82.js
-    // Under a workspace egress a TLS socket cannot be made: the egress's
-    // connect carries plain TCP only, and making the session here would go
-    // around it. The refusal names the limit; HTTPS by fetch is unaffected.
-    if (globalThis.__nimbusEgress === true) {
-      const refused = new realNet.Socket();
-      const error = nodeError(Error, 'ERR_NIMBUS_EGRESS_TLS', "Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
-      queueMicrotask(() => refused.destroy(error));
-      return refused;
-    }
-========
->>>>>>>> main:packages/worker/public/_assets/runtime/node-shims-36eced02a0450782.js
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
     const egressed = globalThis.__nimbusEgress === true;
     if (egressed || !proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
@@ -16591,8 +16579,8 @@ Object.defineProperty(builtins, "https", {
 // ERR_NET_SOCKET_NOT_AVAILABLE so callers fail loud.  W8 will route
 // raw outbound TCP through supervisor RPC.
 builtins.net = (() => {
-  if (globalThis.__nimbusEgress === true && typeof __real_net !== 'undefined') {
-    const native = __real_net.default ?? __real_net;
+  if (globalThis.__nimbusEgress === true) {
+    const native = __nativeBuiltin("net");
     return { ...native, get Server() { return builtins.http.Server; },
       createServer: (options, handler) => builtins.http.createServer(typeof options === 'function' ? options : handler) };
   }
