@@ -106,10 +106,13 @@ export async function registerHostedCommands(self, workspace) {
     // exhausting the supervisor DO's CPU budget on large repos. The command
     // module (+ its ~106 KB network-facet dependency) is loaded lazily on the
     // first `git` invocation so it stays out of the cold script-eval graph.
-    registry.register('git', async (ctx) => {
+    // The one `git`: with real git installed (below), the same command, routing
+    // what it lacks there (git/routing.ts).
+    const runGit = async (ctx, realGit) => {
         const { runGitCommand } = await import('../git/commands.js');
-        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
-    });
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes, realGit === undefined ? undefined : () => realGit(ctx));
+    };
+    registry.registerBuiltin('git', (ctx) => runGit(ctx));
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
     // 1. Register the clang-runner factory FIRST so the rehydration step
@@ -119,12 +122,14 @@ export async function registerHostedCommands(self, workspace) {
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
     // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
-    // The image cache is incarnation-local; fsmonitor issued-token provenance
-    // is durable host metadata so a wake can keep the VFS revision token.
+    // Its `git` is the built-in one above with real git behind it; uninstalled,
+    // the built-in answers alone again. The image cache is incarnation-local;
+    // fsmonitor issued-token provenance is durable host metadata so a wake can
+    // keep the VFS revision token.
     let gitFactory = null;
     workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => {
         let handler = null;
-        return async (ctx) => {
+        const realGit = async (ctx) => {
             gitFactory ??= (async () => {
                 const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
                 const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
@@ -138,6 +143,7 @@ export async function registerHostedCommands(self, workspace) {
                 .catch((error) => { handler = null; throw error; });
             return (await handler)(ctx);
         };
+        return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
     });
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');

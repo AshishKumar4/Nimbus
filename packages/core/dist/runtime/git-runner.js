@@ -29,7 +29,7 @@
  */
 import { withHostView } from './process-files.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
-import { CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
+import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { makeGitFsmonitor } from './git-fsmonitor.js';
@@ -110,6 +110,7 @@ export function makeGitRunnerFactory(deps) {
             }
             env.GIT_CONFIG_SYSTEM = `/${normalizeVfsPath(systemConfig)}`;
             env.HOME ??= '/home/user';
+            env[GIT_WASI_ENV] = '1';
             const warm = idle.pop() ?? `git-${incarnation}-${++named}`;
             const facet = deps.facets.open({
                 tag: 'git-runner',

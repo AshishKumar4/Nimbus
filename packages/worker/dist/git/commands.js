@@ -9,6 +9,7 @@
  * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { GIT_WASI_ENV } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import { projectFs } from '../runtime/project-fs.js';
@@ -20,6 +21,7 @@ import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, se
 import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 import { GitGlobalsError, parseConfigParameter, withConfigOverrides } from './config-params.js';
+import { gitBackend } from './routing.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2853,12 +2855,23 @@ network = ISOLATE_NETWORK,
  */
 filesystem, 
 /** The session's process table: a background clone runs as a process of its own. */
-processes) {
+processes, 
+/**
+ * This invocation, run by real git (`nimbus install git`) instead: what
+ * this implementation lacks is real git's (routing.ts), and so is every
+ * git real git starts (its environment says GIT_WASI_ENV).
+ */
+realGit) {
+    if (realGit !== undefined && ctx.env[GIT_WASI_ENV] === '1')
+        return realGit();
     let globals;
     try {
         globals = parseGitGlobals(ctx.args, getDir(ctx));
     }
     catch (e) {
+        // A leading option this implementation does not take is real git's, where it is installed.
+        if (realGit !== undefined)
+            return realGit();
         if (e instanceof GitGlobalsError) {
             await ctx.stderr.write(e.lines);
             return e.code;
@@ -2867,6 +2880,8 @@ processes) {
         return 129;
     }
     const { sub, subArgs } = globals;
+    if (realGit !== undefined && gitBackend(sub, subArgs) === 'wasi')
+        return realGit();
     // The directory as git's getcwd() sees it, every link resolved: a
     // worktree reached through a link (a mount's link into SQLite, say) is
     // the directory it names, whose top is not itself a link.

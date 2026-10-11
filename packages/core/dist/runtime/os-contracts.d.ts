@@ -692,6 +692,12 @@ export declare const BASH_RUNNER = "bash-runner@3";
 /** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
 export declare const GIT_RUNNER = "git-runner";
 /**
+ * Set in real git's environment (the git runner): a `git` it starts (a
+ * hook's, a subcommand's) carries it, and is real git too, wherever a
+ * built-in git routes `git` between itself and real git.
+ */
+export declare const GIT_WASI_ENV = "NIMBUS_GIT_WASI";
+/**
  * The import modules a wasm runtime built in this tree may import: WASI
  * preview1, and the Nimbus extensions this tree's WASI hosts provide —
  * nimbus_fs (a file's mode and owner, chmod: runtime/wasi/types.ts
