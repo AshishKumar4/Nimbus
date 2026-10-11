@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { HostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { testBox } from './lib/test-box.mjs';
 
 const turns = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 function setup() {
@@ -64,3 +65,16 @@ function setup() {
   b.release(); t.remove();
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
+
+{
+  const t = setup(), box = await testBox();
+  box.workspace.processes.setWorkObservation(() => t.activity.acquire());
+  const first = await box.workspace.exec('echo admitted');
+  assert.equal(first.exitCode, 0, first.stderr);
+  t.change();
+  const next = await box.workspace.exec('echo wrong > /home/user/after-lost-host');
+  assert.notEqual(next.exitCode, 0, 'the shell refuses work from a lost incarnation');
+  assert.match(next.stderr, /host.*restarted|restarted.*process/i);
+  assert.equal(await box.fs.exists('/home/user/after-lost-host'), false, 'redirection cannot run before host validation');
+  t.remove(); await box.workspace.close();
+}
