@@ -704,10 +704,10 @@ async function npmInstall(ctx, registry, kernel, deps) {
             await ctx.stderr.write('npm ERR! no package.json found\n');
             return 1;
         }
-        const named = packages.map(parsePackageSpec);
+        const named = packages.map(splitPackageSpec);
         const roots = new Map(Object.entries({ ...project?.dependencies, ...project?.devDependencies }));
-        for (const { name, version } of named)
-            roots.set(name, version);
+        for (const { name, range } of named)
+            roots.set(name, range);
         if (roots.size === 0) {
             await ctx.stdout.write('up to date, audited 0 packages\n');
             return 0;
