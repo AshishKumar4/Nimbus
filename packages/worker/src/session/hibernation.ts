@@ -61,6 +61,7 @@ export type { WsHibernationConfigResult };
 export interface HibHost extends TimerHost {
   processes: SessionProcessSupervisor;
   portRegistry: Pick<PortRegistry, 'clientSocketCount'>;
+  _cirrusHmrWsClients: ReadonlyMap<WebSocket, string> | null;
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
@@ -345,7 +346,7 @@ export function ensureLogJanitor(host: HibHost, ctx: TimerContext): void {
 }
 
 /** The fields the keep-alive rule reads and keeps; both hosts carry them. */
-export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
+export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_cirrusHmrWsClients' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
 export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
@@ -450,7 +451,8 @@ export function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any):
  * remains interest until it closes; alarms and facet RPC never renew it.
  */
 export function residentClientPresent(host: ResidentKeepaliveHost, now: number): boolean {
-  return host.portRegistry.clientSocketCount > 0 || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
+  return host.portRegistry.clientSocketCount > 0 || (host._cirrusHmrWsClients?.size ?? 0) > 0
+    || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 
 /** W1: a client reached the session DO (see noteResidentClient). */

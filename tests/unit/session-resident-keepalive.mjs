@@ -62,6 +62,7 @@ function makeHost() {
   return {
     processes: new SessionProcessSupervisor(),
     portRegistry: { clientSocketCount: 0 },
+    _cirrusHmrWsClients: new Map(),
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,
@@ -70,6 +71,20 @@ function makeHost() {
     _w1LastClientActivityAt: Date.now(),
     _w1SessionDestroyed: false,
   };
+}
+
+{
+  const host = makeHost(), storage = makeStorage(), ctx = { storage };
+  const socket = { readyState: 1 };
+  host.processes.spawn('vite dev', [], '/home/user', { longRunning: true });
+  host._w1LastClientActivityAt = Date.now() - 2 * RESIDENT_KEEPALIVE_DETACHED_MS;
+  host._cirrusHmrWsClients.set(socket, 'hmr-client');
+  ensureResidentKeepalive(host, ctx); await host._timerChain;
+  expire(storage, 'resident-keepalive'); await dispatchAlarm(host, ctx);
+  assert.equal(host._w1KeepaliveArmed, true, 'the runtime-owned built-in HMR table also retains quiet preview interest');
+  host._cirrusHmrWsClients.delete(socket);
+  expire(storage, 'resident-keepalive'); await dispatchAlarm(host, ctx);
+  assert.equal(host._w1KeepaliveArmed, false, 'a closed HMR table is not the embedder\'s unrelated socket interest');
 }
 
 /** Pull a scheduled deadline into the past, as the firing alarm would. */

@@ -213,11 +213,19 @@ export class PortRegistry {
         relay.addEventListener('close', (event) => end(event.code, event.reason));
         target.addEventListener('error', () => end(1011, 'port target socket failed'));
         relay.addEventListener('error', () => end(1011, 'client socket failed'));
-        target.accept();
-        relay.accept();
         this.clientSockets.add(client);
-        this.clientSocketActivity?.();
-        return new Response(null, { status: 101, statusText: response.statusText, headers: response.headers, webSocket: pair[0] });
+        try {
+            target.accept();
+            relay.accept();
+            if (open)
+                this.clientSocketActivity?.();
+            return new Response(null, { status: 101, statusText: response.statusText, headers: response.headers, webSocket: pair[0] });
+        }
+        catch (error) {
+            open = false;
+            this.clientSockets.delete(client);
+            throw error;
+        }
     }
     /**
      * Remember the available facet capabilities for a running process.

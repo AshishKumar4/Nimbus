@@ -167,23 +167,17 @@ export async function hostResponse(ctx, observation, request, dispatch) {
         }
         const declared = request.method === 'HEAD' ? null : response.headers.get('Content-Length');
         const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-        const cancelled = new AbortController();
-        const signal = AbortSignal.any([request.signal, cancelled.signal]);
-        // Native identity pipes notice a disconnected reader on the next write.
-        // The terminal's cancellation algorithm also ends a stalled source now.
+        // Keep native framing; only the terminal pipe owns this activity lease.
         const { readable, writable } = new TransformStream({
-            cancel(reason) { lease.release(); queueMicrotask(() => cancelled.abort(reason)); },
             ...(Number.isSafeInteger(length) ? { expectedLength: length } : {}),
         });
-        const pipes = [];
         let body = response.body;
         if (Number.isSafeInteger(length)) {
             const fixed = new FixedLengthStream(length);
-            pipes.push(body.pipeTo(fixed.writable, { signal }));
+            void body.pipeTo(fixed.writable, { signal: request.signal }).catch(() => { });
             body = fixed.readable;
         }
-        pipes.push(body.pipeTo(writable, { signal }));
-        ctx.waitUntil(Promise.allSettled(pipes).then(lease.release));
+        ctx.waitUntil(body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => { }));
         return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
     }
     catch (error) {

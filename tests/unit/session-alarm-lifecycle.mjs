@@ -48,6 +48,7 @@ function makeHost() {
   return {
     processes: new SessionProcessSupervisor(),
     portRegistry: { clientSocketCount: 0 },
+    _cirrusHmrWsClients: new Map(),
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,

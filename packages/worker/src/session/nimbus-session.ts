@@ -1372,10 +1372,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
 
   async webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void> {
+    if (wsKind(ws).kind === 'cirrus-hmr') noteClientActivity(this, this.ctx);
     return _wsDoClose(this, ws, code, reason, wasClean);
   }
 
   async webSocketError(ws: WebSocket, error?: any): Promise<void> {
+    if (wsKind(ws).kind === 'cirrus-hmr') noteClientActivity(this, this.ctx);
     return _wsDoError(this, ws, error);
   }
 
