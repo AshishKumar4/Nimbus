@@ -4,6 +4,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDirectoryBatch } from '../../packages/core/src/runtime/read-directory-batch.ts';
 import { DIRECTORY_PREFETCH_LIMIT } from '../../packages/core/src/constants.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -48,6 +49,33 @@ try {
   const lostChannel = crypto.randomUUID();
   await readDirectoryBatch(fs, { ...request(), channel: lostChannel, sequence: 2 });
   await assert.rejects(() => readDirectoryBatch(fs, { ...request([`${root}/d88`]), channel: lostChannel, sequence: 1 }), { code: 'ESTALE' }, 'a late abandoned first request cannot allocate after id-free recovery');
+
+  const originalOpen = fs.open.bind(fs);
+  const issued = [];
+  fs.open = async (path, ...args) => {
+    if (path === `${root}/unexpected`) throw new Error('unexpected backend failure');
+    const handle = await originalOpen(path, ...args);
+    issued.push(handle.id);
+    return handle;
+  };
+  try {
+    await assert.rejects(() => readDirectoryBatch(fs, request([`${root}/d2`, `${root}/unexpected`])), /unexpected backend failure/);
+    for (const id of issued) await assert.rejects(async () => fs.fstat(id), { code: 'EBADF' }, 'a failed partial batch closes everything it issued');
+  } finally { fs.open = originalOpen; }
+
+  await fs.mkdir(`${root}/over`);
+  const mounted = new MemoryVFS(CRED_KERNEL);
+  const backend = {
+    stat(path, options) { const stat = mounted.stat(path, options); return stat && { ...stat, dev: engine.deviceId }; },
+    readdir: mounted.readdir.bind(mounted), readFile: mounted.readFile.bind(mounted),
+    writeFile: mounted.writeFile.bind(mounted), mkdir: mounted.mkdir.bind(mounted), unlink: mounted.unlink.bind(mounted),
+  };
+  files.vfs.mount(`${root}/over/mnt`, backend);
+  for (const path of ['/', `${root}/over`, `${root}/over/mnt`]) {
+    const answer = await readDirectoryBatch(fs, request([path]));
+    assert.equal(answer.opened.length, 1, 'the actual required descriptor is retained');
+    assert.equal(answer.opened[0].key, null, 'canonical placement excludes root, composed ancestors and mounts even with the same reported dev');
+  }
 
   // Rewinding creates another descriptor scope: an old channel must not
   // retire numbers the new run might already have reused.
