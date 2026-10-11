@@ -34,18 +34,6 @@ export class HostActivity {
         signal?.addEventListener('abort', release, { once: true });
         return { ready, release };
     }
-    async run(work, signal) {
-        signal?.throwIfAborted();
-        const lease = this.acquire(signal);
-        try {
-            await lease.ready;
-            signal?.throwIfAborted();
-            return await work();
-        }
-        finally {
-            lease.release();
-        }
-    }
     /** End every old lease; a reused session starts with a fresh ownership epoch. */
     close() {
         for (const cancel of this.owners)
@@ -154,8 +142,6 @@ export function hostActivity(host) {
 }
 /** One native fetch endpoint, outside the guest's HTTP handler, on every resident class. */
 export function observeResidentConfig(config, capability) {
-    if (typeof config.mainModule !== 'string' || typeof config.modules !== 'object' || config.modules === null)
-        throw new TypeError('resident worker has no module map');
     const modules = config.modules;
     const entry = HOST_WATCH_MODULE;
     if (Object.hasOwn(modules, entry))

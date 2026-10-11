@@ -45,7 +45,6 @@ import { acquireSupervisorReadAllocation, } from '@nimbus-sh/platform/heavy-allo
 import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/platform/diag-counters.js';
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { registerServingPort } from './serving-port.js';
 import { subtreeListing } from '@nimbus-sh/core/runtime/fs-list-tree.js';
@@ -1345,9 +1344,6 @@ export function _rpcProcessHostProbe(self) {
 export function _rpcHostProcess(self, boot, opts) {
     return self.peerHost.host(boot, opts);
 }
-export function _rpcAwaitHostedOpen(self, workerKey) {
-    return self.peerHost.awaitOpen(workerKey);
-}
 export function _rpcAwaitHostedBoot(self, workerKey) {
     return self.peerHost.awaitBoot(workerKey);
 }
@@ -1356,21 +1352,4 @@ export function _rpcRouteHostedHttp(self, workerKey, wire) {
 }
 export function _rpcCancelHostProcess(self, workerKey) {
     return self.peerHost.cancel(workerKey);
-}
-/**
- * RPC: the actor that hosted `workerKey` for this session reports, from a new
- * incarnation, that the platform reset it under the process. The capability
- * proves it hosted it. True when the process was this session's and is now
- * ended.
- */
-export function _rpcHostLost(self, workerKey, capability) {
-    // An answer either way: the host keeps asking until it gets one, so a
-    // session that cannot act on the report still answers it.
-    try {
-        return self.facetManager?.hostLost(workerKey, capability) ?? false;
-    }
-    catch (error) {
-        console.warn(`[process-host] a report that process ${workerKey} lost its host could not be applied:`, errorText(error));
-        return false;
-    }
 }

@@ -450,10 +450,6 @@ export declare function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, op
     ok: boolean;
     incarnation: string;
 }>>;
-export declare function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{
-    ok: boolean;
-    incarnation: string;
-}>>;
 export declare function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{
     payload: unknown;
 }>>;
@@ -461,12 +457,5 @@ export declare function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: st
 export declare function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{
     cancelled: boolean;
 }>;
-/**
- * RPC: the actor that hosted `workerKey` for this session reports, from a new
- * incarnation, that the platform reset it under the process. The capability
- * proves it hosted it. True when the process was this session's and is now
- * ended.
- */
-export declare function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean;
 export {};
 //# sourceMappingURL=rpc.d.ts.map

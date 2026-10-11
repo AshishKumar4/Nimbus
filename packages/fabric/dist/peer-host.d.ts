@@ -114,22 +114,14 @@ export declare class PeerHost {
     probe(): {
         isolateToken: string;
     };
+    /** A hosting record's current physical actor, without admitting guest work. */
+    inspect(workerKey: string): Promise<{
+        found: boolean;
+        incarnation: string;
+        facet: string | null;
+    }>;
     /** Open once and answer. Observation and release are independently owned calls. */
     host(boot: unknown, opts: unknown): Promise<HostedReply<{
-        ok: boolean;
-        incarnation: string;
-    }>>;
-    /**
-     * Settle once the process is OPEN on this peer, or reject with whatever
-     * stopped it from opening.
-     *
-     * This exists so a host failure surfaces at the same place on both substrates.
-     * Opening a facet of your own DO either throws or does not, before the fabric
-     * has a handle; opening one on a peer is a message, and without this the
-     * coordinator would return a handle for a process that never existed and only
-     * discover it later, through `done`.
-     */
-    awaitOpen(workerKey: string): Promise<HostedReply<{
         ok: boolean;
         incarnation: string;
     }>>;

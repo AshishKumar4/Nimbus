@@ -39,7 +39,7 @@ assert.equal(minted, 2, 'an idle input batch cannot keep a native context alive'
 replies[2].resolve(); await turns();
 assert.equal(disposed, 2);
 
-{
+for (const stop of ['interrupt', 'refused']) {
   const box = await testBox(), waiting = Promise.withResolvers(), entered = Promise.withResolvers();
   const frames = [], requests = [];
   const terminal = new WebSocketTerminal({ readyState: 1, send(value) { frames.push(JSON.parse(value)); }, close() {} });
@@ -60,15 +60,18 @@ assert.equal(disposed, 2);
   try {
     send('echo NEVER_ADMITTED\r', 'blocked'); await entered.promise;
     send('echo $?; echo QUEUED_ADMITTED\r', 'queued'); await turns();
-    send('\x03', 'interrupt'); await turns();
+    if (stop === 'interrupt') send('\x03', 'interrupt');
+    else waiting.reject(new Error('host admission refused'));
+    await turns();
     const finished = await Promise.race([Promise.all(requests).then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 500))]);
     assert.equal(finished, true, 'interrupted admission settles queued submission RPCs');
     await turns(); terminal.flushNow();
     assert.equal(owner.terminalInputPending, 0);
     assert.equal(released, 1, 'the whole input batch releases its FIFO RPC owner');
-    assert.ok(frames.map(frame => frame.data ?? '').join('').includes('130\r\n'), 'the queued command observes the interrupted command status');
+    const status = stop === 'interrupt' ? 130 : 1;
+    assert.ok(frames.map(frame => frame.data ?? '').join('').includes(`${status}\r\n`), 'the queued command observes the failed admission status');
     const completed = frames.filter(frame => frame.type === 'shell-integration' && frame.event === 'end');
-    assert.ok(completed.some(frame => frame.submissionId === 'blocked' && frame.exitCode === 130), JSON.stringify(frames));
+    assert.ok(completed.some(frame => frame.submissionId === 'blocked' && frame.exitCode === status), JSON.stringify(frames));
     assert.ok(completed.some(frame => frame.submissionId === 'queued' && frame.exitCode === 0), JSON.stringify(frames));
   } finally { waiting.resolve(); terminal.close(); await box.workspace.close(); }
 }

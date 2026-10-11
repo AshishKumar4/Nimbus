@@ -290,7 +290,7 @@ export class SessionProcessSupervisor {
         if (signal?.aborted)
             abort();
         const work = {
-            stop: (reason) => { owner.abort(reason); stop(reason); },
+            stop: (reason) => { owner.abort(reason); stop?.(reason); },
             stopped: false, signal: owner.signal,
             observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
         };

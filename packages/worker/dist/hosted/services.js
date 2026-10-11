@@ -280,13 +280,12 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 return 127;
             }
             // It runs here, on the child's own descriptors: a kill stops it.
-            const stop = new AbortController();
-            const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
+            const stopped = self.processes.holdWork(pid);
             try {
                 if (stopped.ready)
                     await stopped.ready;
                 stopped.signal.throwIfAborted();
-                return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stopped.signal)).status;
+                return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks, stopped.signal))).status;
             }
             finally {
                 stopped();
@@ -299,24 +298,24 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
      * terminal: the broker has none to give a child, and a shell that took
      * its stdin for one read nothing from it.
      */
-    const processIo = (pid, env, cwd, stdin, hooks) => ({
+    const processIo = (pid, env, cwd, stdin, hooks, signal) => ({
         pid,
         env,
         cwd,
+        signal,
         stdout: { write: (d) => hooks.onStdout(textBytes(String(d))), writeBytes: (d) => hooks.onStdout(d) },
         stderr: { write: (d) => hooks.onStderr(textBytes(String(d))), writeBytes: (d) => hooks.onStderr(d) },
         stdin,
         isFdTerminal: () => false,
     });
     /** A registry command run as process `io.pid`, on `io`'s descriptors, until `signal` stops it, and how it ended. */
-    const runBuiltin = async (cmd, name, args, io, signal) => {
+    const runBuiltin = async (cmd, name, args, io) => {
         const cred = self.processes.cred(io.pid);
         const ctx = {
             ...io,
             cred,
             args,
             vfs: processView(io.pid, cred),
-            signal,
             setUmask: (mask) => { self.processes.setUmask(io.pid, mask); },
             runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
         };
@@ -354,14 +353,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         const endAwait = self.processes.beginAwait(parent.pid, child.pid);
         const endWork = self.processes.beginWork(child.pid);
         // Its program is this session's work behind its pid: a kill stops it.
-        const stop = new AbortController();
-        const stopped = self.processes.holdWork(child.pid, (reason) => stop.abort(reason), stop.signal);
+        const stopped = self.processes.holdWork(child.pid, undefined, parent.signal);
         let exitCode = 1;
         try {
             if (stopped.ready)
                 await stopped.ready;
             stopped.signal.throwIfAborted();
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stopped.signal);
+            const ended = await runBuiltin(cmd, name, args, { ...parent, pid: child.pid, signal: stopped.signal });
             exitCode = ended.status;
             return ended;
         }

@@ -1,3 +1,4 @@
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
     readonly ready?: Promise<void>;
@@ -21,7 +22,6 @@ export declare class HostActivity {
     private readonly owners;
     observe(open: Observation['open'], lost: Observation['lost'], incarnation?: string): () => void;
     acquire(signal?: AbortSignal): HostActivityLease;
-    run<T>(work: () => T | Promise<T>, signal?: AbortSignal): Promise<T>;
     /** End every old lease; a reused session starts with a fresh ownership epoch. */
     close(): void;
     private stop;
@@ -30,6 +30,6 @@ export declare class HostActivity {
 }
 export declare function hostActivity(host: object): HostActivity;
 /** One native fetch endpoint, outside the guest's HTTP handler, on every resident class. */
-export declare function observeResidentConfig(config: Record<string, unknown>, capability: string): Record<string, unknown>;
+export declare function observeResidentConfig(config: WorkerCode, capability: string): WorkerCode;
 export {};
 //# sourceMappingURL=host-activity.d.ts.map

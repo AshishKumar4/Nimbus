@@ -197,7 +197,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * host was lost: nothing of it here is left to unwind) is released at its
      * end.
      */
-    holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & {
+    holdWork(pid: number, stop?: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & {
         readonly signal: AbortSignal;
     };
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */

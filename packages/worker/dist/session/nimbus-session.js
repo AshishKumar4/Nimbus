@@ -208,6 +208,9 @@ The editor opens this file in Markdown preview mode by default. Use
 \`Ctrl+P\` to open files and \`Ctrl+S\` to save edits.
 `;
 }
+function isTerminalInputDispatcher(stub) {
+    return typeof Reflect.get(stub, '_rpcTerminalInput') === 'function';
+}
 export class NimbusSession extends CloudflareDurableObject {
     #runtimeServices;
     // this.ctx and this.env are provided by the DurableObject base class
@@ -834,26 +837,11 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcHostProcess(boot, opts) {
         return _rpc._rpcHostProcess(this, boot, opts);
     }
-    async _rpcAwaitHostedOpen(workerKey) {
-        return _rpc._rpcAwaitHostedOpen(this, workerKey);
-    }
     async _rpcAwaitHostedBoot(workerKey) {
         return _rpc._rpcAwaitHostedBoot(this, workerKey);
     }
     async _rpcRouteHostedHttp(workerKey, request) {
         return _rpc._rpcRouteHostedHttp(this, workerKey, request);
-    }
-    async _rpcHostLost(workerKey, capability) {
-        // The host asks until it gets an answer; a session that cannot stand up
-        // to act on the report holds no process of that host, and says so.
-        try {
-            this.ensureSqliteFs();
-            this.ensureFacetManager();
-        }
-        catch {
-            return false;
-        }
-        return _rpc._rpcHostLost(this, workerKey, capability);
     }
     async _rpcCancelHostProcess(workerKey) {
         return _rpc._rpcCancelHostProcess(this, workerKey);
@@ -1190,7 +1178,12 @@ export class NimbusSession extends CloudflareDurableObject {
         if (!terminal || terminal.signal.aborted)
             return;
         if (!this.terminalInputDispatcher) {
-            this.terminalInputDispatcher = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
+            const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
+            if (!isTerminalInputDispatcher(stub)) {
+                disposeRpcResource(stub);
+                throw new Error('Nimbus: the session exposes no terminal input RPC');
+            }
+            this.terminalInputDispatcher = stub;
         }
         const stub = this.terminalInputDispatcher;
         this.terminalInputPending++;

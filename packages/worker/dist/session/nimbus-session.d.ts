@@ -426,10 +426,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         isolateToken: string;
     };
     _rpcHostProcess(boot: unknown, opts: unknown): ReturnType<typeof _rpc._rpcHostProcess>;
-    _rpcAwaitHostedOpen(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedOpen>;
     _rpcAwaitHostedBoot(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedBoot>;
     _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): ReturnType<typeof _rpc._rpcRouteHostedHttp>;
-    _rpcHostLost(workerKey: string, capability: string): Promise<boolean>;
     _rpcCancelHostProcess(workerKey: string): Promise<{
         cancelled: boolean;
     }>;

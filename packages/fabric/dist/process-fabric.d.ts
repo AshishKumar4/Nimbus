@@ -78,7 +78,7 @@ import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub } from './vendor/types.js';
+import type { ServiceStub, WorkerCode } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -243,7 +243,7 @@ export interface ResidentDiskReader {
  * re-minted). An absent env stays absent
  * so the worker config can tell "embedder takes the env" from the default.
  */
-export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<Record<string, unknown>>;
+export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<WorkerCode>;
 /**
  * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
  * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
@@ -543,14 +543,6 @@ export interface ProcessHost {
      */
     runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
     open(params: ProcessHostParams): Promise<HostedProcess>;
-    /**
-     * The actor hosting `workerKey` found, in a new incarnation, that it no
-     * longer holds the process (a peer's own alarm, `hostLost` op), and proved
-     * it hosted it with the capability minted for that open. The process is
-     * lost ({@link ProcessHostLost}). False when this host has no such open.
-     * A facet's host is the coordinator itself, so it never hears this.
-     */
-    hostLost?(workerKey: string, capability: string): boolean;
 }
 /**
  * How a caller supplies the substrate a process manager will run programs on.

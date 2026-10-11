@@ -469,7 +469,7 @@ function residentProcessClass(env, disk, supervisor, params, loaderKey, watchCap
     return loader
         .get(facetLoaderKey('process', loaderKey), async () => {
         const config = observeResidentConfig(await residentWorkerConfig(env, disk, supervisor, params.boot), watchCapability);
-        assertModuleMapWithinCodeLimit(configModules(config));
+        assertModuleMapWithinCodeLimit(config.modules);
         return applyFacetLimits('process', config);
     })
         .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
@@ -675,13 +675,13 @@ export function facetJournal(ctx, env, name) {
 export async function residentWorkerConfig(env, disk, supervisor, boot) {
     if (boot.kind === 'code' && boot.code.env !== undefined) {
         const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source)), supervisor);
-        assertModuleMapWithinCodeLimit(configModules(isolated));
+        assertModuleMapWithinCodeLimit(isolated.modules);
         return isolated;
     }
     const config = boot.kind === 'staged'
         ? await stagedBootAssembler()(env, boot.stage)
         : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
-    assertModuleMapWithinCodeLimit(configModules(config));
+    assertModuleMapWithinCodeLimit(config.modules);
     // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
     return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
 }
@@ -703,13 +703,4 @@ function workspaceOutbound(config, supervisor) {
     if (supervisor.egress === undefined || 'globalOutbound' in config)
         return config;
     return { ...config, globalOutbound: supervisor.egress };
-}
-/** The module map a loader config assembled, or empty when it named none. */
-function configModules(config) {
-    const modules = 'modules' in config ? config.modules : undefined;
-    if (typeof modules !== 'object' || modules === null)
-        return {};
-    // Loader configs only ever carry a module map under this key.
-    const map = modules;
-    return map;
 }

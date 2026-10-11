@@ -523,9 +523,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         const endAwait = processes.beginAwait(parent.pid, child.pid);
         const endWork = processes.beginWork(child.pid);
         // Its program is this workspace's work behind its pid: a kill stops it.
-        const stop = new AbortController();
-        const signal = parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal;
-        const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason), signal);
+        const stopped = processes.holdWork(child.pid, undefined, parent.signal);
         let exitCode = 1;
         try {
             if (stopped.ready)

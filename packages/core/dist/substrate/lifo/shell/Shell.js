@@ -8,7 +8,7 @@ import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
-import { signalAbortReason } from './signals.js';
+import { exitCodeForAbortSignal, signalAbortReason } from './signals.js';
 import { complete } from './completer.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
@@ -1087,6 +1087,12 @@ export class Shell {
                 runAs: this.commandIdentity.runAs,
                 signal: workSignal,
             });
+        }
+        catch (error) {
+            status = workSignal.aborted ? exitCodeForAbortSignal(workSignal) : 1;
+            this.interpreter.setLastExitCode(status);
+            if (!workSignal.aborted)
+                this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
         }
         finally {
             stopped?.();

@@ -167,6 +167,11 @@ function describeImageDelivery(delivery) {
  */
 const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
 const PEER_OWNERS_KEY_PREFIX = 'process-peer:';
+/** The committed placement, without contacting or waking its hosting actor. */
+export async function peerPlacement(ctx, pid) {
+    const rows = await ctx.storage.list({ prefix: PEER_OWNERS_KEY_PREFIX });
+    return [...rows.values()].find((row) => row.pid === pid) ?? null;
+}
 /**
  * Peer stubs forward one supervisorOp entrypoint: every method the host-
  * process surface needs is an envelope op, not a private _rpc* method.
@@ -221,7 +226,6 @@ function processPeerStub(value, peerName) {
     const adapter = {
         _rpcProcessHostProbe: async () => peerAnswer(PeerProbeResult, await dispatch({ op: 'processHostProbe', args: [] })),
         _rpcHostProcess: async (boot, opts) => peerAnswer(PeerOpenResult, await dispatch({ op: 'hostProcess', args: [boot, opts] })),
-        _rpcAwaitHostedOpen: async (key) => peerAnswer(PeerOpenResult, await dispatch({ op: 'awaitHostedOpen', args: [key] })),
         _rpcAwaitHostedBoot: async (key) => {
             const result = peerAnswer(PeerBootResult, await dispatch({ op: 'awaitHostedBoot', args: [key] }));
             return { payload: result.payload };
@@ -262,8 +266,6 @@ class PeerProcessHost {
     coordDoId;
     /** pid → the isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
-    /** workerKey → how to end an open process whose host reports its reset (hostLost). */
-    opens = new Map();
     reconciliation;
     closed = false;
     constructor(ctx, env, network, supervise) {
@@ -314,11 +316,10 @@ class PeerProcessHost {
         const loss = new HostLoss();
         let stopObserving = () => { };
         let started;
-        this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
         try {
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
-            await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { workerKey: params.workerKey, peerName: placement.peerName });
+            await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { pid: params.pid, workerKey: params.workerKey, peerName: placement.peerName });
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
             const opened = await this.withPeer(placement.peerName, (stub) => stub._rpcHostProcess(params.boot, {
@@ -343,7 +344,6 @@ class PeerProcessHost {
             stopObserving();
             loss.release();
             this.tokensInUse.delete(params.pid);
-            this.opens.delete(params.workerKey);
             // Awaited, not fired off: a spawn that rejects must mean nothing was
             // left running, which is what a throw from `processes().spawn` means on
             // the other substrate.
@@ -364,7 +364,6 @@ class PeerProcessHost {
                 stopObserving();
                 loss.release();
                 this.tokensInUse.delete(params.pid);
-                this.opens.delete(params.workerKey);
                 await this._cancel(params.workerKey, placement.peerName);
                 await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
             },
@@ -389,13 +388,6 @@ class PeerProcessHost {
         this.closed = true;
         hostActivity(this.ctx).close();
         await this.clearPlacements();
-    }
-    hostLost(workerKey, capability) {
-        const open = this.opens.get(workerKey);
-        if (open === undefined || open.capability !== capability)
-            return false;
-        open.lose(new Error('the host restarted without it'));
-        return true;
     }
     /**
      * Probe successive sibling names until one reports an isolate token distinct

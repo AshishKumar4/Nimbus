@@ -33,11 +33,12 @@
  * the Durable Object classes, which is what lets the pool be unit-tested
  * in a plain Node/Bun process.
  */
+import type { WorkerCode } from './worker-code.js';
 export type EntrypointLoopbackFactory = <Stub = unknown>(options: {
     props: object;
 }) => Stub;
 export type CtxExports = Record<string, EntrypointLoopbackFactory | undefined>;
-export type StagedBootAssembler = (env: unknown, stage: unknown) => Promise<object>;
+export type StagedBootAssembler = (env: unknown, stage: unknown) => Promise<WorkerCode>;
 export interface FabricComposition {
     supervisorEntrypoint: string;
     stagedBootAssembler?: StagedBootAssembler;

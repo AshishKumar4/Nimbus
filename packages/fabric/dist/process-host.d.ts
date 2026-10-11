@@ -80,4 +80,11 @@ export type ProcessHostMode = 'facet' | 'peer';
 export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, 
 /** The workspace's network: every process's binding carries it, and with it its egress. */
 network: () => WorkspaceNetwork, supervise?: Supervise): ProcessHost;
+export interface PeerOwner {
+    pid: number;
+    workerKey: string;
+    peerName: string;
+}
+/** The committed placement, without contacting or waking its hosting actor. */
+export declare function peerPlacement(ctx: Pick<DurableObjectState, 'storage'>, pid: number): Promise<PeerOwner | null>;
 //# sourceMappingURL=process-host.d.ts.map

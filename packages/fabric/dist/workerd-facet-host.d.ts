@@ -16,6 +16,7 @@ import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
     handleHttpRequest?: (request: Request) => Promise<Response>;
@@ -204,6 +205,6 @@ export interface JournalReaderEnv {
  * Without one, the default holds: inherited network plus a SUPERVISOR
  * minted from the composed entrypoint for the coordinator's identity.
  */
-export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<Record<string, unknown>>;
+export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<WorkerCode>;
 export {};
 //# sourceMappingURL=workerd-facet-host.d.ts.map

@@ -238,13 +238,12 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         }
         // Synthesize a CommandContext for the internal shell substrate.
         const ac = new AbortController();
-        const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', opts.stdin ?? staticStdinReader(payload.stdin || ''), hooks);
+        const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', opts.stdin ?? staticStdinReader(payload.stdin || ''), hooks, ac.signal);
         const ctx = {
           ...io,
           cred,
           args: payload.args || [],
           vfs,
-          signal: ac.signal,
           setUmask: (mask: number) => { self.processes.setUmask(payload.processPid, mask); },
           runAs: (targetCred: VfsCred, argv: string[], options?: RunAsOptions) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
           // Reuse the broker's pid and let runtime RPC output reach its
