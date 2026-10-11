@@ -9188,7 +9188,8 @@ export class SqliteVFS {
       /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
       reserve: (bytes: number) => Promise<CreditLease | null>;
       setPhase: (phase: WriteBatchStreamFailurePhase) => void;
-      committed: (receipt: WriteStreamReceipt | null) => void;
+      /** The record applied on its mount, with the bytes it wrote there. */
+      committed: (receipt: WriteStreamReceipt | null, bytes: number) => void;
       /** The exclusive-mutation lease the wave writes under (WriteStreamOptions.mutationOwner), presented to the namespace's guard. */
       owner?: string;
     },
@@ -9243,7 +9244,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'directory': {
@@ -9254,7 +9255,7 @@ export class SqliteVFS {
         reached();
         // A directory has no receipt, here as in a group.
         await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'call': {
@@ -9274,7 +9275,7 @@ export class SqliteVFS {
         // Made under the umask the process made it with, as on this filesystem (W7Call umask).
         const stat = await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner));
         // An open's answer is the file's stat (its description writes it by number).
-        at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null);
+        at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null, 0);
         return true;
       }
       case 'rename': {
@@ -9293,7 +9294,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'truncate':
@@ -9306,7 +9307,7 @@ export class SqliteVFS {
         await at.settleBefore();
         reached();
         await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner));
-        at.committed(null);
+        at.committed(null, 0);
         return true;
       }
       case 'file-begin': {
@@ -9359,7 +9360,7 @@ export class SqliteVFS {
             : file.link
             ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
             : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, at.owner));
-          at.committed(stat === null ? null : { path: file.named, ...stat });
+          at.committed(stat === null ? null : { path: file.named, ...stat }, bytes.byteLength);
         } finally {
           at.file = null;
           for (const chunk of file.held) chunk.release();
@@ -9893,6 +9894,25 @@ export class SqliteVFS {
     // Where each streamed name lands (links followed), while nothing has
     // committed since it was worked out.
     let placement = { gen: -1, placed: new Map<string, string>() };
+    // A turn waits for storage (NimbusSession.waveTurn), so it is owed per
+    // group's worth of committed work, not per commit: after each file group
+    // and directory batch (a transaction's bound apiece), and after a call
+    // group's worth (CALL_GROUP_OPS, CALL_GROUP_BYTES) of the removals, calls
+    // and routed records that commit one by one.
+    let turnOwed = false;
+    let opsSinceTurn = 0;
+    let bytesSinceTurn = 0;
+    const owe = (ops: number, bytes: number): void => {
+      opsSinceTurn += ops;
+      bytesSinceTurn += bytes;
+      if (opsSinceTurn >= CALL_GROUP_OPS || bytesSinceTurn >= CALL_GROUP_BYTES) turnOwed = true;
+    };
+    const takeTurn = async (): Promise<void> => {
+      turnOwed = false;
+      opsSinceTurn = 0;
+      bytesSinceTurn = 0;
+      await unlessCut(options.turn!());
+    };
     // The group's whole files, entered with their names as streamed:
     // authorised together in the turn the group commits.
     let unauthorized: { raw: BatchInodeEntry; entry: StoredInodeEntry }[] = [];
@@ -9979,6 +9999,7 @@ export class SqliteVFS {
         progress.committedOps += paths;
         progress.inodes += result.inodes;
         progress.chunks += publishedChunks;
+        turnOwed = true;
         for (const entry of plan.inodes) {
           const named = names.get(entry.path);
           if (named === undefined || entry.isDir) continue;
@@ -10013,6 +10034,7 @@ export class SqliteVFS {
       progress.committedPathCount += inodes.length;
       progress.committedOps += inodes.length;
       progress.inodes += result.inodes;
+      turnOwed = true;
       return true;
     };
     const flushDirectories = (): void => {
@@ -10033,6 +10055,7 @@ export class SqliteVFS {
       progress.committedGroupSequence++;
       progress.committedPathCount += affected;
       progress.committedOps++;
+      owe(affected, 0);
     };
 
     // The wave's leading removals and directories (an encoder sends them
@@ -10076,7 +10099,7 @@ export class SqliteVFS {
       phase = 'publish';
       asWriter(queueLeading);
       while (asWriter(commitLeadingStep)) {
-        if (options.turn !== undefined && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await unlessCut(options.turn());
+        if (options.turn !== undefined && turnOwed && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await takeTurn();
       }
     };
     const queueLeading = (): void => {
@@ -10255,6 +10278,7 @@ export class SqliteVFS {
       // The op being decoded now (a routed one settling what came before it) stays the one being applied.
       const current = applying;
       const calls = pendingCalls.splice(0);
+      const callBytes = pendingCallBytes;
       pendingCallBytes = 0;
       phase = 'publish';
       options.admit?.();
@@ -10291,6 +10315,7 @@ export class SqliteVFS {
         }
         if (call.seq !== null) advanced(call.seq);
       }));
+      owe(results.length, callBytes);
       if (refused !== null) {
         applying = refused.call.seq;
         throw refused.error;
@@ -10333,12 +10358,8 @@ export class SqliteVFS {
         retainChunk,
       }));
       recordIterator = decoded.records[Symbol.asyncIterator]();
-      let turnAt = 0;
       while (true) {
-        if (options.turn !== undefined && progress.committedGroupSequence !== turnAt) {
-          turnAt = progress.committedGroupSequence;
-          await unlessCut(options.turn());
-        }
+        if (options.turn !== undefined && turnOwed) await takeTurn();
         phase = 'decode';
         const waitStartedAt = performance.now();
         let next: IteratorResult<W7DecodedRecord>;
@@ -10420,10 +10441,11 @@ export class SqliteVFS {
           reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, options.signal)),
           setPhase: (next) => { phase = next; },
           owner: options.mutationOwner,
-          committed: (receipt) => {
+          committed: (receipt, bytes) => {
             progress.committedGroupSequence++;
             progress.committedPathCount++;
             progress.committedOps++;
+            owe(1, bytes);
             if (receipt !== null) progress.receipts.push(receipt);
             // On a mount: the cursor moves once the backend has it, in a transaction of its own.
             if (sequence !== null && applying !== null) {
