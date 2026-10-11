@@ -183,6 +183,7 @@ const INPUTS = {
   cacheResult: ['ticket', { value: null }],
   cpReadOutput: [childPid, fd, sinceSeq, waitMs, { epoch, cursor }],
   cpDrainOutput: [childPid],
+  cpCloseOutput: [childPid, fd],
   cpKill: [childPid, signal],
   cpWait: [childPid, waitMs, { epoch, cursor }, false],
   cpBlocked: [{ blocked: true, frontier: 3, seq: 4 }],

@@ -264,4 +264,14 @@ const supervisorFor = (answer) => ({
   assert.deepEqual(events.map((e) => e[0]), ['spawn', 'exit', 'close']);
 }
 
+// ── no supervisor runs its children: the refusal, then exit and close ──────
+{
+  const { cp } = make(null);
+  const child = cp.spawn('node', ['-e', 'console.log(1)']);
+  const events = watch(child);
+  for (let i = 0; i < 200 && !events.some((e) => e[0] === 'close'); i++) await tick();
+  assert.deepEqual(events.map((e) => e[0] === 'error' ? ['error', e[1]] : e.slice(0, 3)),
+    [['error', 'ERR_CHILD_PROCESS_UNAVAILABLE'], ['exit', 1, null], ['close', 1, null]], "with no supervisor, 'close' still follows the refusal");
+}
+
 console.log('ok - cp-spawn-refused-shim (a refused spawn is error and close with no pid, from either wait; spawn and pid come with the start)');
