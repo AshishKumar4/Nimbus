@@ -311,7 +311,7 @@ function __nimbusReportBlockedState() {
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
 // evaluation is uncaught as it rejects.
-async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
+async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __beforeExit) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
   let __grace = 0;
   if (__evaluating) {
@@ -327,11 +327,13 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  const __startedAt = Date.now();
+  if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  const __limited = Number.isFinite(__deadlineMs);
+  const __startedAt = __limited ? Date.now() : 0;
   for (;;) {
-    const __remaining = Math.max(0, __deadlineMs - (Date.now() - __startedAt));
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
     const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
-    if (__drained.pending || !await __nimbusBeforeExitHasWork()) return __drained;
+    if (__drained.pending || !await __beforeExit()) return __drained;
   }
 }
 
@@ -366,14 +368,14 @@ async function __nimbusHoldsNoHandle() {
 // (a timer firing or cleared, an operation settling, a server closed or
 // unref'd, stdin let go) calls __nimbusHandleReleased, and a release that
 // leaves none is the program's natural end.
-function __nimbusNaturalExit() {
+function __nimbusNaturalExit(__beforeExit) {
   return new Promise((resolve) => {
     let __checking = false;
     const __released = () => {
       if (__checking) return;
       __checking = true;
       __nimbusHoldsNoHandle().then(async (__none) => {
-        if (__none && await __nimbusBeforeExitHasWork()) __none = false;
+        if (__none && __beforeExit && await __beforeExit()) __none = false;
         __checking = false;
         if (!__none) return;
         if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
@@ -988,7 +990,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__thrown instanceof __ProcessExit) throw __thrown;
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
-      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
+      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs, __nimbusBeforeExitHasWork);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
 
@@ -1527,7 +1529,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.
-          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
+          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit(__nimbusBeforeExitHasWork).then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
           finalCode = __nimbusExitAtEnd();
