@@ -1084,26 +1084,61 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
+    // The batch writes still join: queued, its turn in the chain not yet come.
+    let __rpcOpenBatch = null;
+    const __RPC_BATCH_BYTES = 64 * 1024;
     // The relay carries bytes (see "Process output is bytes" in the shims).
     // Each chunk goes with its offset in what this run printed and the run's
     // number: what a replay prints again of the stopped run's output is
     // checked and dropped here, and a chunk the session has not acknowledged
     // when the run stops rides the stop (runtime/stop-replay.ts).
+    //
+    // A write made while the call before it is on its way joins the batch
+    // queued behind that call, while it is the same stream of the same run,
+    // carries on from the batch's last byte, and keeps it within
+    // __RPC_BATCH_BYTES: one call for what a loop prints between two of
+    // them, not one round trip a line. The batch is sealed when its turn
+    // comes, and sent from its first chunk's offset once its last write's
+    // gate is released (gates release in order). Each write is answered as
+    // its batch is, so its callback, drain and __pendingIO mean what they did.
     const __queueRpcWrite = (method, bytes) => {
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
-      __rpcWriteCount++;
       // Released at the filesystem client's gate, taken now: once every
       // change logged ahead of it is answered (ProcessFsClient.effect).
       const __gate = __nimbusOutputGate();
+      const __size = __chunk.b.byteLength;
+      const __open = __rpcOpenBatch;
+      if (__open !== null && __open.method === method && __open.run === __chunk.run
+        && (__chunk.at === undefined || __open.end === __chunk.at) && __open.size + __size <= __RPC_BATCH_BYTES) {
+        __open.chunks.push(__chunk);
+        __open.size += __size;
+        if (__chunk.at !== undefined) __open.end = __chunk.at + __size;
+        if (__gate !== null) __open.gate = __gate;
+        return __open.task;
+      }
+      const __batch = { method, run: __chunk.run, at: __chunk.at, end: __chunk.at === undefined ? undefined : __chunk.at + __size, chunks: [__chunk], size: __size, gate: __gate, task: null };
+      __rpcOpenBatch = __batch;
+      __rpcWriteCount++;
       const __task = __rpcWriteChain
-        .then(() => __gate)
-        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
-        .then(() => __nimbusStopReplay.acked(__chunk))
-        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
+        .then(() => {
+          if (__rpcOpenBatch === __batch) __rpcOpenBatch = null;
+          return __batch.gate;
+        })
+        .then(() => __supervisor[method](__rpcBatchBytes(__batch), __batch.at, __batch.run))
+        .then(() => __nimbusStopReplay.ackedRun(__batch.chunks))
+        .catch((e) => __onRpcDrop(__batch.size, e));
+      __batch.task = __task;
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
       return __task;
+    };
+    const __rpcBatchBytes = (batch) => {
+      if (batch.chunks.length === 1) return batch.chunks[0].b;
+      const out = new Uint8Array(batch.size);
+      let at = 0;
+      for (const chunk of batch.chunks) { out.set(chunk.b, at); at += chunk.b.byteLength; }
+      return out;
     };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
@@ -1129,6 +1164,8 @@ ${RESIDENCY_MISS_REPORT}
     __nimbusFatalStderr = (__text) => {
       stderr += __text;
       if (!__supervisor || captureOutput) return;
+      // Nothing written after it joins a batch sent before it.
+      __rpcOpenBatch = null;
       const __bytes = __nimbusOutEnc.encode(__text);
       // At the output gate, as all of the process's output is.
       const __gate = __nimbusOutputGate();
