@@ -31,9 +31,12 @@
  * same batch threw, as Node's evaluation stops at the first error, or once
  * the batch was cancelled for a require() of a module in it (node-shims).
  *
- * Lines whose specifier changed length are recorded (ColumnMap): a stack
- * frame's column there moves back by them, and the module's file is read
- * back from its text through them, so the map carries the file once.
+ * Every edit is recorded (ColumnMap): a stack frame's column moves back by
+ * the ones that changed a line's length, and the module's text before it was
+ * staged is read back through them all (commonjs-cell.ts
+ * __nimbusModuleSourceText), for its source map's URL and for the
+ * interpreter, which evaluates the module where the registry cannot
+ * (node-shims' adoption).
  */
 
 import { escapedIdentifierNames, type ImportSites } from './dynamic-import-rewrite.js';
@@ -164,15 +167,15 @@ export function stageEsModule(text: string, sites: ImportSites, link: EsModuleLi
   const load = sites.calls.length > 0 ? fresh() : null;
 
   const edits: SourceEdit[] = [];
-  const moved: SourceEdit[] = [];
   sites.statics.forEach((site, index) => {
     const target = link.targets[index];
     if (target === undefined) throw new Error(`no target for specifier ${JSON.stringify(site.specifier)}`);
     const specifier = mapSpecifier(site.specifier, link.name, target);
     if (specifier === site.specifier) return;
-    const edit = { start: site.start, end: site.end, text: JSON.stringify(specifier) };
-    edits.push(edit);
-    if (edit.text.length !== edit.end - edit.start) moved.push(edit);
+    // A literal written over lines (a line continuation) keeps them: the
+    // same continuations before its closing quote.
+    const breaks = source.slice(site.start, site.end).match(/\r\n|[\n\r\u2028\u2029]/g) ?? [];
+    edits.push({ start: site.start, end: site.end, text: JSON.stringify(specifier).slice(0, -1) + breaks.map((at) => '\\' + at).join('') + '"' });
   });
   // `import` becomes the binding, and the rest of `import.meta` spaces but
   // its line breaks: the same length, the same lines.
@@ -194,7 +197,7 @@ export function stageEsModule(text: string, sites: ImportSites, link: EsModuleLi
     at = edit.end;
   }
   body += source.slice(at);
-  return { text: prologue + body + tail, head: prologue.length, tail: tail.length, hashbang, columns: columnMap(source, moved) };
+  return { text: prologue + body + tail, head: prologue.length, tail: tail.length, hashbang, columns: columnMap(source, edits) };
 }
 
 /** What ESM_META_MODULE exports a Bun module's CommonJS names as. */

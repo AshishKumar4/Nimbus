@@ -553,21 +553,20 @@ export async function prefetchForRequire(
     // See `comment-strip.ts` header + the wave's verdict.md.
     const stripped = stripCommentsForImports(code);
 
-    // Every static dependency is staged the same way: the CommonJS
-    // resolution of its specifier, unless the facet provides it, until the
+    // Every static dependency is staged the same way: the resolution of its
+    // specifier its loader makes, unless the facet provides it, until the
     // closure is full. What each grammar adds after is its own:
-    //   - require()/require.resolve(): a manifest it names may carry bins.
+    //   - require()/require.resolve(): the CommonJS resolution; a manifest
+    //     it names may carry bins.
     //   - Immediately-invoked `createRequire(import.meta.url)('./x')` is a
     //     require of './x' from this file's directory (pi-coding-agent's bin).
-    //   - ESM `import`/`export … from` (X.5-C Fix #1): packages whose
-    //     `module` entry is ESM (react-remove-scroll, pathe, ESM nuxt deps)
-    //     need their relative siblings staged, since the process runs the
-    //     module lowered to CommonJS and its require takes a package's
-    //     "require" branch. A module runner that evaluates the same source
-    //     itself (Vite's, under Astro) imports a package with import(), which
-    //     takes the "import" branch: phase 2 resolves it (the same file as
-    //     the require branch adds nothing), behind every deferral the code
-    //     names, tables included (IMPORT_BRANCHES).
+    //   - ESM `import`/`export … from`: Node's ESM resolution (the "import"
+    //     conditions, no extension probing), as the process's registry links
+    //     the module (worker facets/esm-stage.ts). A bare specifier is also
+    //     deferred to phase 2 behind every alternative branch the code names,
+    //     tables included (IMPORT_BRANCHES): a module runner that evaluates
+    //     the same source itself (Vite's, under Astro) may resolve it under
+    //     other conditions.
     const followUps: ReadonlyArray<[RegExp, (specifier: string, staged: ResolveSubpathResult | null) => void]> = [
       [REQUIRE_RE, (specifier, staged) => { if (staged && !policy && namesManifest(specifier)) deferBins(staged.resolved); }],
       [CREATE_REQUIRE_CALL_RE, () => {}],
@@ -582,7 +581,7 @@ export async function prefetchForRequire(
         const specifier = match[2];
         if (isFacetProvided(specifier)) continue;
         if (closureExceeded || declined) break;
-        const staged = await resolveStaticDependency(specifier, fromDir);
+        const staged = grammar === IMPORT_RE ? await resolveStaticImport(specifier, fromDir) : await resolveStaticDependency(specifier, fromDir);
         if (staged) {
           edge(fromFile, staged.resolved);
           await addFile(staged.resolved);
@@ -636,6 +635,12 @@ export async function prefetchForRequire(
       return resolved === null ? null : { resolved };
     }
     return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress, conditions);
+  }
+
+  /** The file a static import or export-from in a module of `fromDir` links to, or null, as the registry links it. */
+  async function resolveStaticImport(specifier: string, fromDir: string): Promise<ResolveSubpathResult | null> {
+    const resolved = await resolveDynamicImport(specifier, fromDir);
+    return resolved === null ? null : { resolved };
   }
 
   /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */

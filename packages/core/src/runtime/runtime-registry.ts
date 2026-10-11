@@ -47,7 +47,7 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
 import { SinkWriter } from '../_shared/byte-stream.js';
-import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
+import { isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
 import type { TypeScriptStripOptions } from './typescript-strip.js';
 import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
@@ -129,13 +129,12 @@ export interface RuntimeRunOpts {
    */
   node?: NodeLaunch;
   /**
-   * The program is an ES module the handler lowered (module-format.ts): its
-   * own require is its static imports, and what escapes its evaluation is
-   * explained as Node's loader explains it.
+   * The program is an ES module (module-format.ts), or TypeScript or JSX the
+   * launch compiles, which may be one: the runner imports the launch's
+   * staged module of it, and what escapes its evaluation is explained as
+   * Node's loader explains it.
    */
   esModule?: boolean;
-  /** Its lowering's EsModuleMap (async-module-lowering.ts), as JSON: where its frames read the source's places. */
-  esModuleMap?: string;
   /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   /**
@@ -762,22 +761,12 @@ export function buildRuntimeHandler(
     // TypeScript by the same table the bundle's ESM pass reads.
     const typescript = stripped === null ? typescriptLoader(resolvedPath) : null;
 
-    // esbuild transform for TypeScript / TSX / JSX (both node and bun)
-    // AND for ESM entry scripts.
+    // An ES module, or TypeScript or JSX the launch compiles, is the launch's
+    // staged module of the entry file (worker facets/manager.ts entryModule):
+    // the program's own module, never a copy of it.
     const esm = stripped === null
-      ? typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType)
+      ? typescript !== null || scriptExt === '.jsx' || isEsModuleFile(resolvedPath, code, () => packageType)
       : stripped.esModule;
-    // What the server-launch analysis reads: JavaScript as written (an ES module's
-    // lowering requires through its own helper), TypeScript and JSX compiled.
-    const written = code;
-    let esModuleMap: string | undefined;
-    if (typescript !== null || scriptExt === '.jsx' || esm) {
-      const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
-      const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath, esm);
-      if (lowered === null) return 1;
-      code = lowered.code;
-      esModuleMap = lowered.map;
-    }
 
     const filename = '/' + resolvedPath;
     const dirname = filename.includes('/')
@@ -785,13 +774,12 @@ export function buildRuntimeHandler(
       : '/';
     return runProgram(code, {
       esModule: esm,
-      ...(esModuleMap ? { esModuleMap } : {}),
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,
       command: command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
       stdin: programStdin,
-      launchesServer: await launches(esm ? written : code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
+      launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
     });
   }
 

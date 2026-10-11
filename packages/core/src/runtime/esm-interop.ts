@@ -39,15 +39,23 @@ export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const ta
   + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
   + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
 
-/** What a default import reads `default` of: the module when it is marked `__esModule`, else `{ default: module }`. */
-export const ESM_INTEROP_HELPER = '(m) => m && m.__esModule ? m : { default: m }';
+/**
+ * Whether a required module is an ES module's: one marked `__esModule`, or a
+ * module namespace the registry made (a null prototype, tagged `Module`),
+ * which the interpreter's static import of a staged ES module gets.
+ */
+const ES_MODULE_TEST = '(m && (m.__esModule || (typeof m === "object" && ({}).constructor.getPrototypeOf(m) === null '
+  + '&& ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === "Module")))';
+
+/** What a default import reads `default` of: an ES module's as it is, else `{ default: module }`. */
+export const ESM_INTEROP_HELPER = `(m) => ${ES_MODULE_TEST} ? m : { default: m }`;
 
 /**
  * A required module as a namespace, as Node and esbuild read a CommonJS
- * module: one marked `__esModule` as it is; any other with its exports as
- * `default`, its other own names read through.
+ * module: an ES module's as it is; any other with its exports as `default`,
+ * its other own names read through.
  */
-export const ESM_NAMESPACE_HELPER = '(m) => { if (m && m.__esModule) return m; const O = ({}).constructor; '
+export const ESM_NAMESPACE_HELPER = `(m) => { if (${ES_MODULE_TEST}) return m; const O = ({}).constructor; `
   + 'const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); '
   + 'if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") '
   + 'O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }';

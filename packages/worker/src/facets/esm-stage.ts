@@ -3,13 +3,14 @@
  * them (core runtime/native-esm.ts): each static specifier resolved as Node's
  * ESM loader resolves it, and the module staged to name what that resolution
  * loads in the map: another staged ES module, the facade of a CommonJS module
- * or a builtin, a JSON module, or nothing at all for a specifier Node's
- * loader refuses, so the whole graph fails to link before any of it runs, as
- * Node's does, and the process names the refusal Node would.
+ * or a builtin, a JSON module, or a module the map does not have for a
+ * specifier Node's loader refuses, so the whole graph fails to link before
+ * any of it runs, as Node's does, and the process names the refusal Node
+ * would (EsmStage.missing).
  *
- * The facades and the meta instances join the map beside the staged modules,
- * and the process reads the launch's table of them (EsmModuleRow) by each
- * meta instance's id.
+ * The facades, JSON modules and meta instances join the map beside the
+ * staged modules, and the process reads the launch's table of them
+ * (EsmModuleRow) by each meta instance's id.
  */
 
 import { commonJsCellModuleName } from '@nimbus-sh/core/_shared/commonjs-cell.js';
@@ -26,29 +27,17 @@ import { resolveRequireEx, type BridgeRequireFs } from '@nimbus-sh/core/runtime/
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 
 /**
- * One row of a launch's ES module table, by its meta instance's id: a staged
- * ES module (the cell at a VFS key), the facade of the CommonJS cell at a
- * key, or the facade of a builtin or of a package the process provides.
+ * One row of a launch's ES module table, by id (a meta instance's query):
+ * a staged ES module (the cell at a VFS key) with the ids of the rows its
+ * static imports load (-1 for a refused one), the facade of the CommonJS
+ * cell at a key, the facade of a builtin or a package the process provides,
+ * or the JSON module of the file at a key. Each names its map module.
  */
 export type EsmModuleRow =
-  | readonly [kind: 'module', key: string]
-  | readonly [kind: 'commonjs', key: string]
-  | readonly [kind: 'builtin', name: string];
-
-/** A non-code member of the map: an ES module's text, or a JSON module's value. */
-export type EsmMapMember = { readonly js: string } | { readonly json: unknown };
-
-/** What a launch stages for its ES modules. */
-export interface EsmStage {
-  /** Each ES module cell's staged module, by its VFS key. */
-  readonly modules: Map<string, StagedEsModule>;
-  /** The map's other members the modules link to: the meta and host modules, facades, JSON modules. */
-  readonly members: Record<string, EsmMapMember>;
-  /** The process's ES module table, by meta id. */
-  readonly table: EsmModuleRow[];
-  /** What each specifier Node's loader refuses fails with, by its missing module's number (EsmMissing). */
-  readonly missing: EsmMissing[];
-}
+  | readonly [kind: 'module', key: string, name: string, targets: readonly number[]]
+  | readonly [kind: 'commonjs', key: string, name: string]
+  | readonly [kind: 'builtin', builtin: string, name: string]
+  | readonly [kind: 'json', key: string, name: string];
 
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
@@ -57,8 +46,28 @@ export interface EsmMissing {
   readonly message: string;
 }
 
+/** What a launch stages for its ES modules. */
+export interface EsmStage {
+  /** Each ES module cell's staged module, by its VFS key. */
+  readonly modules: Map<string, StagedEsModule>;
+  /** The map's other members the modules link to, as ES module text: the meta and host modules, facades, JSON modules. */
+  readonly members: Record<string, string>;
+  /** The process's ES module table, by id. */
+  readonly table: EsmModuleRow[];
+  /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
+  readonly missing: EsmMissing[];
+}
+
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
 export const ESM_MISSING_DIR = 'nimbus/missing/';
+
+/**
+ * The code a refusal carries for a module Node's loader would load but the
+ * launch did not stage (its closure was cut at the map's bound): the
+ * process evaluates the importer's graph with the interpreter instead,
+ * which loads the module as a file outside the map.
+ */
+export const ESM_NOT_STAGED = 'ERR_NIMBUS_NOT_STAGED';
 
 /** Builtins Node names only with their scheme (module.isBuiltin('test') is false). */
 const SCHEME_ONLY_BUILTINS: Readonly<Record<string, true>> = { sea: true, sqlite: true, test: true, 'test/reporters': true };
@@ -75,11 +84,17 @@ export interface EsmStageFs {
   realpath(path: string): Promise<string>;
 }
 
+/** A refusal's error, as the process rebuilds it. */
+function refusal(error: unknown): EsmMissing {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  const code = Reflect.get(failure, 'code');
+  return { name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message };
+}
+
 /**
  * Stage `cells`, the launch's ES modules (their code and import sites, by VFS
  * key), resolving under the program's `conditions`. `isCode(key)` is whether
- * the launch carries the cell at a key; `isEsModule(key)` whether it is one
- * of `cells`.
+ * the launch carries the cell at a key as code.
  */
 export async function stageEsModules(
   fs: EsmStageFs,
@@ -92,34 +107,32 @@ export async function stageEsModules(
   },
 ): Promise<EsmStage> {
   const table: EsmModuleRow[] = [];
-  const members: Record<string, EsmMapMember> = {
-    [ESM_HOST_MODULE]: { js: ESM_HOST_SOURCE },
-    [ESM_META_MODULE]: { js: metaModuleSource(gate) },
+  const members: Record<string, string> = {
+    [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
+    [ESM_META_MODULE]: metaModuleSource(gate),
   };
   const missing: EsmMissing[] = [];
-  // A cell's id is its place among `cells`: the table's first rows.
-  for (const key of cells.keys()) table.push(['module', key]);
-  const facades = new Map<string, string>();
-  const jsonModules = new Map<string, string>();
+  // A cell's id is its place among `cells`: the table's first rows, its targets filled as it is staged.
+  const targetIds: number[][] = [];
+  for (const key of cells.keys()) {
+    const targets: number[] = [];
+    targetIds.push(targets);
+    table.push(['module', key, commonJsCellModuleName(key), targets]);
+  }
+  const ids = new Map<string, number>();
+  for (let id = 0; id < table.length; id++) ids.set(`module:${table[id]![1]}`, id);
   const names = new Map<string, Set<string>>();
-  const facade = (row: EsmModuleRow, source: (id: number) => string): string => {
-    const at = `${row[0]}:${row[1]}`;
-    let name = facades.get(at);
-    if (name === undefined) {
-      const id = table.length;
-      table.push(row);
-      name = `${ESM_FACADE_DIR}${id}.js`;
-      members[name] = { js: source(id) };
-      facades.set(at, name);
+  /** The row of a facade or JSON module, added the first time it is named. */
+  const member = (kind: 'commonjs' | 'builtin' | 'json', key: string, source: (id: number) => string): number => {
+    let id = ids.get(`${kind}:${key}`);
+    if (id === undefined) {
+      id = table.length;
+      const name = `${ESM_FACADE_DIR}${id}.js`;
+      table.push([kind, key, name] as EsmModuleRow);
+      members[name] = source(id);
+      ids.set(`${kind}:${key}`, id);
     }
-    return name;
-  };
-  const refuse = (error: unknown): string => {
-    const name = `${ESM_MISSING_DIR}${missing.length}.js`;
-    const failure = error instanceof Error ? error : new Error(String(error));
-    const code = Reflect.get(failure, 'code');
-    missing.push({ name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message });
-    return name;
+    return id;
   };
   const readText = async (path: string): Promise<string | null> => {
     try { return await fs.files.readFileString(stripLeadingSlashes(path)); } catch { return null; }
@@ -140,36 +153,39 @@ export async function stageEsModules(
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,
   }, { conditions });
-  const exportNames = (path: string) => cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names);
+  const exportNames = async (path: string) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
+  const notStaged = (path: string) => Object.assign(
+    new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED },
+  );
 
-  /** The map module a resolution loads, from an importer, with `attributes`. */
-  const target = async (resolution: EsmResolution, attributes: Readonly<Record<string, string>>): Promise<string> => {
+  /** The row an import with `attributes` of what `resolution` names loads. */
+  const target = async (resolution: EsmResolution, attributes: Readonly<Record<string, string>>): Promise<number> => {
     resolver.validateAttributes(resolution.url, resolution.format, attributes);
     resolver.assertLoadable(resolution);
     if (resolution.format === 'builtin') {
-      const builtin = resolution.builtin ?? resolution.url;
-      const name = builtin.replace(/^node:/, '');
-      return facade(['builtin', name], (id) => builtinFacadeModule(id, NODE_BUILTIN_EXPORTS[name] ?? []));
+      const builtin = (resolution.builtin ?? resolution.url).replace(/^node:/, '');
+      if (!FACET_PROVIDED_PACKAGES.includes(builtin)) {
+        return member('builtin', builtin, (id) => builtinFacadeModule(id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
+      }
+      // A package the process provides loads as the process's own, with the names Node finds in its installed copy.
+      const installed = await requireResolve(builtin, resolution.url.startsWith('file:') ? new URL(resolution.url).pathname : '/');
+      const exported = installed === null ? [] : await exportNames(installed);
+      return member('builtin', builtin, (id) => builtinFacadeModule(id, exported));
     }
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
     const key = stripLeadingSlashes(resolution.path);
-    if (cells.has(key)) return commonJsCellModuleName(key);
+    const staged = ids.get(`module:${key}`);
+    if (staged !== undefined) return staged;
     if (resolution.format === 'json') {
-      const known = jsonModules.get(key);
-      if (known !== undefined) return known;
       const text = await readText(resolution.path);
-      if (text === null) throw new Error(`Nimbus: ${resolution.path} was resolved and cannot be read`);
-      const value: unknown = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
-      const name = `${ESM_FACADE_DIR}json/${jsonModules.size}.json`;
-      members[name] = { json: value };
-      jsonModules.set(key, name);
-      return name;
+      if (text === null) throw notStaged(resolution.path);
+      // JSON.parse's value, as Node's: an object literal would make `__proto__` the prototype.
+      return member('json', key, () => `export default JSON.parse(${JSON.stringify(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)});\n`);
     }
-    // CommonJS by Node's format for it; a module the launch does not carry
-    // loads nothing, and the link fails naming it.
-    if (!isCode(key)) throw Object.assign(new Error(`Cannot find module '${resolution.path}': it was resolved but this launch did not stage it`), { code: 'ERR_MODULE_NOT_FOUND' });
-    const exported = [...await exportNames(resolution.path)];
-    return facade(['commonjs', key], (id) => commonJsFacadeModule(id, exported));
+    // CommonJS by Node's format for it, loaded by require().
+    if (!isCode(key)) throw notStaged(resolution.path);
+    const exported = await exportNames(resolution.path);
+    return member('commonjs', key, (id) => commonJsFacadeModule(id, exported));
   };
 
   const modules = new Map<string, StagedEsModule>();
@@ -178,24 +194,24 @@ export async function stageEsModules(
     const parentUrl = new URL('file://');
     parentUrl.pathname = '/' + key;
     const targets: string[] = [];
+    const rowTargets = targetIds[id]!;
     for (const site of sites.statics) {
-      let name: string;
       try {
-        // A package the process provides loads as the process's own, with the names Node finds in its installed copy.
-        if (FACET_PROVIDED_PACKAGES.includes(site.specifier)) {
-          const installed = await requireResolve(site.specifier, parentUrl.pathname);
-          if (installed === null) throw Object.assign(new Error(`Cannot find package '${site.specifier}' imported from ${parentUrl.pathname}`), { code: 'ERR_MODULE_NOT_FOUND' });
-          const exported = [...await exportNames(installed)];
-          name = facade(['builtin', site.specifier], (id) => builtinFacadeModule(id, exported));
-        } else {
-          name = await target(await resolver.resolve(site.specifier, parentUrl.href), site.attributes);
-        }
+        // A provided package by its bare name is the process's own, never an installed copy.
+        const resolution = FACET_PROVIDED_PACKAGES.includes(site.specifier)
+          ? { url: site.specifier, format: 'builtin' as const, builtin: site.specifier }
+          : await resolver.resolve(site.specifier, parentUrl.href);
+        const row = await target(resolution, site.attributes);
+        rowTargets.push(row);
+        targets.push(table[row]![2]);
       } catch (error) {
-        name = refuse(error);
+        rowTargets.push(-1);
+        targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
+        missing.push(refusal(error));
       }
-      targets.push(name);
     }
-    modules.set(key, stageEsModule(code, sites, { id: id++, name: commonJsCellModuleName(key), targets }));
+    modules.set(key, stageEsModule(code, sites, { id, name: commonJsCellModuleName(key), targets }));
+    id++;
   }
   return { modules, members, table, missing };
 }
