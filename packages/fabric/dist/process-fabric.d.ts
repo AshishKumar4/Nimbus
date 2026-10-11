@@ -321,8 +321,6 @@ export interface ProcessHostParams {
      * the session is told the facet's name when it opens (`opened`), and
      * `drain` is handed the store's journal when the process is released,
      * before the store goes. A drain that throws keeps the store and its name.
-     * HostActivity observes its incarnation only while the actor owns work;
-     * an idle process is checked again before the next work is admitted.
      */
     journal?: {
         opened(facet: string): void;
@@ -356,13 +354,9 @@ export interface HostedProcess {
      * that is already up — the one failure a substrate can suffer that the
      * process itself never reports.
      *
-     * It is not symmetric, and pretending otherwise is what leaks a process. A
-     * facet dies only with the Durable Object that owns it, which takes the
-     * coordinator and this handle with it, so there is nothing to observe and
-     * this never settles; its death shows up at the next use, loudly. A peer can
-     * die on its own, the held host leg says so, and throwing that away would
-     * leave a `boot`-contract process routing to a corpse until someone killed
-     * it by hand.
+     * This is a known loss, not a keepalive. Owned work observes the host while
+     * active; an idle host is validated again before new work is admitted.
+     * Both start contracts and both substrates report through this one signal.
      */
     readonly lost: Promise<never>;
     /** Inbound HTTP for the process's registered ports. */

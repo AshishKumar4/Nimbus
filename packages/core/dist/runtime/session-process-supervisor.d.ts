@@ -177,6 +177,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * once the process reaches a terminal state.
      */
     setTerminator(pid: number, terminate: () => void): void;
+    /** Runtime composition adopts work already in flight, never cancelled work. */
+    setWorkObservation(observe: (pid: number) => ProcessWorkObservation): void;
     /**
      * This session runs work on `pid`'s own descriptors (a shell job, a
      * command run in the session): `stop` ends it, given the kill's reason
@@ -191,7 +193,6 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * host was lost: nothing of it here is left to unwind) is released at its
      * end.
      */
-    setWorkObservation(observe: (pid: number) => ProcessWorkObservation): void;
     holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork;
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     private terminate;

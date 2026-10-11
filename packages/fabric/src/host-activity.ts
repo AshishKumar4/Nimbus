@@ -69,7 +69,7 @@ export class HostActivity {
     if (observation.current) return observation.current.ready;
     const abort = new AbortController();
     const ready = Promise.resolve().then(() => observation.open(abort.signal)).then(async (response) => {
-      if (abort.signal.aborted) { await response.body?.cancel(); return; }
+      if (abort.signal.aborted) { await response.body?.cancel(); throw abort.signal.reason; }
       const incarnation = response.headers.get(HOST_INCARNATION_HEADER);
       if (response.status !== 200 || !incarnation || !response.body) {
         await response.body?.cancel();
@@ -96,9 +96,8 @@ export class HostActivity {
         finally { abort.signal.removeEventListener('abort', cancel); reader.releaseLock(); }
       })();
     }).catch((error) => {
-      const cancelled = abort.signal.aborted;
       this.failed(observation, abort, error);
-      if (!cancelled) throw error;
+      throw error;
     });
     ready.catch(() => {});
     observation.current = { abort, ready };

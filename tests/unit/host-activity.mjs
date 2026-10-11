@@ -76,6 +76,17 @@ console.log('host-activity: idle, shared active watches, abort, wake validation 
   assert.equal(t.calls.length, 0, 'late runtime composition cannot reactivate cancelled work');
   work(); t.remove();
 }
+{
+  const activity = new HostActivity(), response = Promise.withResolvers();
+  activity.observe(() => response.promise, () => assert.fail('closure is not host loss'));
+  let admitted = false;
+  const work = activity.run(() => { admitted = true; });
+  await turns();
+  activity.close();
+  response.resolve(new Response(new ReadableStream(), { headers: { [HOST_INCARNATION_HEADER]: 'late' } }));
+  await assert.rejects(work, /abort/i);
+  assert.equal(admitted, false, 'session close cannot turn cancelled validation into admission');
+}
 
 {
   const t = setup(), box = await testBox();

@@ -456,8 +456,8 @@ class PeerProcessHost {
 /**
  * One open process's host loss: the platform reset or killed the actor it
  * runs in (its facet, or a peer), and the process is over. Fired once, by
- * whichever shows it first: `held` (a leg the host holds for the process's
- * life) failing, or a call to the host failing with a reset's own words
+ * whichever shows it first: an owned host observation failing, or a call to
+ * the host failing with a reset's own words
  * (isHostReset). From then on every leg answers with the one
  * ProcessHostLost: `signal` rejects with it, and a route fails at once.
  *
