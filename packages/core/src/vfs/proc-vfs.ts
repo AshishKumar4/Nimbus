@@ -14,7 +14,10 @@ import { posixAccess } from './posix-access.js';
 export type ProcGenerator = (cred: VfsCred | null) => string;
 
 const enc = new TextEncoder();
-const DIR: VfsStat = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40555, uid: 0, gid: 0 };
+/** A directory's and a file's mode and owner: what their stats say and their access asks. */
+const DIRECTORY = { mode: 0o40555, uid: 0, gid: 0 };
+const FILE = { mode: 0o100444, uid: 0, gid: 0 };
+const DIR: VfsStat = { type: 'directory', size: 0, mtimeMs: 0, ...DIRECTORY };
 
 function key(path: string): string {
   return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
@@ -56,18 +59,19 @@ export class ProcVFS implements VFS {
     const k = key(path);
     if (this.isDir(k)) return DIR;
     if (!this.files.has(k)) return null;
-    return { type: 'file', size: this.generate(path).length, mtimeMs: Date.now(), mode: 0o100444, uid: 0, gid: 0 };
+    return { type: 'file', size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
   }
 
   readFile(path: string): Uint8Array {
     return this.generate(path);
   }
 
-  /** Its files are root's, 0444: a credential asks them by their mode (the embedder's view is not judged). */
+  /** Its files are root's, 0444, its directories 0555: a credential asks them by their mode (the embedder's view is not judged). */
   access(path: string, mode: number): void {
-    const stat = this.stat(path);
-    if (stat === null) throw syscallError('ENOENT', 'open', path);
-    if (this.cred !== null && !posixAccess({ mode: stat.mode ?? 0, uid: stat.uid ?? 0, gid: stat.gid ?? 0 }, mode, this.cred)) throw syscallError('EACCES', 'open', path);
+    const k = key(path);
+    const entry = this.isDir(k) ? DIRECTORY : this.files.has(k) ? FILE : null;
+    if (entry === null) throw syscallError('ENOENT', 'open', path);
+    if (this.cred !== null && !posixAccess(entry, mode, this.cred)) throw syscallError('EACCES', 'open', path);
   }
 
   readRange(path: string, offset: number, length: number): Uint8Array {
