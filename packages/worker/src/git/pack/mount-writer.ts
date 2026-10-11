@@ -19,6 +19,7 @@
  * close, or the removal of what this attempt itself created (its own lock),
  * which clean up what was started.
  */
+import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CloneReceipt, CloneWriter } from './clone.js';
 
 /** sqlite-vfs.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
@@ -26,17 +27,8 @@ export const MOUNT_WAVE_FILE_MAX = 4 * 1024 * 1024;
 /** One write's bytes: well inside what one RPC carries. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 
-/** An open file's stat, as fstat answers it: what its receipt is made of. */
-export interface FileStat {
-  ino: number;
-  mode: number;
-  size: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  uid: number;
-  gid: number;
-  dev: number;
-}
+/** An open file's stat, as the session's fstat answers it (times in ms): what its receipt is made of. */
+export type FileStat = Pick<RuntimeVfsStat, 'ino' | 'mode' | 'size' | 'mtime' | 'ctime' | 'uid' | 'gid' | 'dev'>;
 
 /** The session's file API, as the clone's supervisor binding offers it (its lease presented). */
 export interface FileApi {
@@ -281,7 +273,7 @@ export function mountWriter<W extends StreamingWriter>(writer: W, api: FileApi, 
       const stat = index ? await writeLockedIndex(api, at, bytes) : await writeEntry(api, at, path, mode, bytes);
       onReceipts?.([{
         path: at.replace(/^\/+/, ''),
-        ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, uid: stat.uid, gid: stat.gid, dev: stat.dev,
+        ino: stat.ino, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime, uid: stat.uid, gid: stat.gid, dev: stat.dev,
       }]);
     },
     symlink: (path, target) => writer.symlink(path, target),

@@ -64,6 +64,12 @@ export interface CloneJobStorage {
     }): Promise<Map<string, T>>;
 }
 export declare const CLONE_JOB_PREFIX = "git-clone-job:";
+/**
+ * The clone's job marker, in its git directory from prepare until the clone
+ * is whole: the proof an abort needs that the destination is the clone's,
+ * and what tells every other git command the repository is not yet one.
+ */
+export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
 /** Entries a cleanup removes before it yields the DO. */
 export declare const CLEANUP_SLICE_ENTRIES = 2000;
 export declare function writeCloneJob(storage: CloneJobStorage, record: CloneJobRecord): Promise<void>;

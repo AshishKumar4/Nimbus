@@ -264,12 +264,6 @@ export interface ProcessFsClient {
    * ask the session.
    */
   readTrusted(): boolean;
-  /**
-   * What the read lease the process holds does not vouch for (its terms,
-   * VfsAcquireResult.readLease's `uncovered`), as the answer that last
-   * confirmed it said; none while it holds none.
-   */
-  readUncovered(): readonly string[];
   /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
   readLeaseAsk(): ReadLeaseAsk | null;
   /**
@@ -290,7 +284,6 @@ export interface ProcessFsClient {
 export interface ReadLeaseTerms {
   readonly owner: string;
   readonly trustMs: number;
-  readonly uncovered: readonly string[];
 }
 
 /**
@@ -959,7 +952,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * Untrusted the moment its recall arrives, before the session is told
    * (answerReadRecalls), and while the process has logged since.
    */
-  let readLease: { owner: string; until: number; confirmedAt: number; logged: number; uncovered: readonly string[] } | null = null;
+  let readLease: { owner: string; until: number; confirmedAt: number; logged: number } | null = null;
   /**
    * Read leases recalled or given back: never trusted again. A barrier's
    * answer that confirmed one can arrive after its recall was answered (the
@@ -1297,13 +1290,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return failures.splice(0, failures.length);
     },
     readTrusted() {
-      // A Worker's clock stands still between events: trusted at one, it is
-      // before asked + trust, and the session publishes past this lease
-      // unanswered only after confirmed + trust + margin (confirmed >= asked).
+      // Asked only where I/O just moved the clock to real time (a resumption
+      // that arrived by I/O; never a timer's turn, which leaves it where it
+      // was): trusted there, it is before asked + trust, and the session
+      // publishes past this lease unanswered only after confirmed + trust +
+      // margin (confirmed >= asked).
       return readLease !== null && readLease.logged === logged && now() < readLease.until;
-    },
-    readUncovered() {
-      return readLease?.uncovered ?? NOTHING_UNCOVERED;
     },
     readLeaseAsk() {
       if (session.grants === undefined || runEnded) return null;
@@ -1322,7 +1314,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         void back.finally(() => givingBack.delete(back));
         return;
       }
-      readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1, uncovered: lease.uncovered };
+      readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
       counters.readLeases++;
       void answerReadRecalls(lease.owner);
     },
@@ -1330,7 +1322,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (readLease?.owner !== lease.owner) return;
       readLease.until = ask.at + lease.trustMs;
       readLease.logged = ask.logged;
-      readLease.uncovered = lease.uncovered;
       counters.readConfirms++;
     },
     takeFailuresError() {
@@ -1347,8 +1338,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
   return client;
 }
-
-const NOTHING_UNCOVERED: readonly string[] = Object.freeze([]);
 
 /** Where a drain's wave numbers start: past any a process sends (2^40 waves). */
 const DRAIN_WAVE_BASE = 2 ** 40;

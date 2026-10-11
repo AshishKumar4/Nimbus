@@ -56,15 +56,12 @@ class GuardedProcessBridge {
     pid;
     hydrator;
     delegations;
-    mounted;
     gate;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
     hydrator, 
     /** The session's delegations: a process's own are granted, recalled and released here. */
     delegations, 
-    /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
-    mounted, 
     /** The session's gate on the process's output (ProcessFiles.outputGate). */
     gate) {
         this.target = target;
@@ -73,7 +70,6 @@ class GuardedProcessBridge {
         this.pid = pid;
         this.hydrator = hydrator;
         this.delegations = delegations;
-        this.mounted = mounted;
         this.gate = gate;
     }
     gateLaunch(named) {
@@ -181,7 +177,7 @@ class GuardedProcessBridge {
                 throw error;
             lease = null;
         }
-        return lease === null ? answer : { ...answer, readLease: { ...lease, uncovered: this.mounted() } };
+        return lease === null ? answer : { ...answer, readLease: lease };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
     subscribe(path, listener) {
@@ -405,18 +401,14 @@ export class ProcessFiles {
      * paths in one turn (git, the build services, vite's file shim, agent
      * tools). Mounted paths route to their mount (a mount without a
      * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
-     * exactly as a process's syscalls do. `landed`: its reads read what has
-     * landed (VFS.as), asking no delegation's holder — a listing that runs on
-     * every change (the editor's file tree). One per credential and option for
-     * the session.
+     * exactly as a process's syscalls do. One per credential for the session.
      */
-    namespaceFs(cred, options = {}) {
+    namespaceFs(cred) {
         const identity = immutableCredential(cred);
-        const landed = options.landed === true;
-        const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}${landed ? ':landed' : ''}`;
+        const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}`;
         let fs = this.namespaces.get(key);
         if (!fs) {
-            const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity, undefined, undefined, landed);
+            const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity);
             fs = new NamespaceFs(bridge.synchronous, identity);
             this.namespaces.set(key, fs);
         }
@@ -581,7 +573,7 @@ export class ProcessFiles {
         scope.abort.abort();
         reportLost(lost);
     }
-    bridgeFor(scope, cred, signal, pid, landed = false) {
+    bridgeFor(scope, cred, signal, pid) {
         // The scope is checked again by the namespace right before each mutation
         // reaches a backend, after the lookups it awaited: a write still
         // resolving when the process is released or killed, or its lease is
@@ -589,10 +581,10 @@ export class ProcessFiles {
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
-        const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
+        const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes);
-        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
+        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
+        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);
         if (!awaited) {
@@ -619,9 +611,6 @@ function underKernelMount(path) {
  * (one can answer later, with no mount or unmount): none of what is at or
  * under one is the engine's.
  */
-function mountedKeys(view) {
-    return view.mountPoints().flatMap((point) => (point === '/' ? [] : [point.slice(1)]));
-}
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {
     return view.mounts().some((mount) => isEmbedderMount(mount.point));

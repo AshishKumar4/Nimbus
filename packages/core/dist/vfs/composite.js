@@ -772,10 +772,6 @@ export class CompositeVFS {
             return then(ops.readFile(rel), (bytes) => keep('file', bytes));
         }), () => false);
     }
-    /** Every point something is mounted at, root first, in mount order: whether or not its source answers this principal now. */
-    mountPoints() {
-        return [...this.table.mounts.keys()];
-    }
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts() {
         const out = [];
