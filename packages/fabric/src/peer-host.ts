@@ -394,26 +394,26 @@ export class PeerHost {
    */
   async routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
     return this.answer(workerKey, async () => {
-    const record = await this.awaitRecord(workerKey);
-    if (record.webSocketCapability !== wire.capability) throw new LostHostedProcess('the peer no longer owns this process incarnation');
-    const facet = await record.facet;
-    const headers = new Headers();
-    for (const [k, v] of wire.headers) headers.append(k, v);
-    const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
-    if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
-    const response = await facet.handleHttpRequest(new Request(wire.url, init));
-    let body: ReadableStream | null = null;
-    if (response.body) {
-      const { readable, writable } = new IdentityTransformStream();
-      this.ctx.waitUntil(response.body.pipeTo(writable).catch(() => {}));
-      body = readable;
-    }
-    return {
-      status: response.status,
-      statusText: response.statusText,
-      headers: headerPairs(response.headers),
-      body,
-    };
+      const record = await this.awaitRecord(workerKey);
+      if (record.webSocketCapability !== wire.capability) throw new LostHostedProcess('the peer no longer owns this process incarnation');
+      const facet = await record.facet;
+      const headers = new Headers();
+      for (const [k, v] of wire.headers) headers.append(k, v);
+      const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
+      if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
+      const response = await facet.handleHttpRequest(new Request(wire.url, init));
+      let body: ReadableStream | null = null;
+      if (response.body) {
+        const { readable, writable } = new IdentityTransformStream();
+        this.ctx.waitUntil(response.body.pipeTo(writable).catch(() => {}));
+        body = readable;
+      }
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headerPairs(response.headers),
+        body,
+      };
     });
   }
 

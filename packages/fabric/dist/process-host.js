@@ -313,7 +313,7 @@ class PeerProcessHost {
             await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { workerKey: params.workerKey, peerName: placement.peerName });
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
-            const opened = await placement.stub._rpcHostProcess(params.boot, {
+            const opened = await this.withPeer(placement.peerName, (stub) => stub._rpcHostProcess(params.boot, {
                 coordinatorDoId: supervisor.doId,
                 route: supervisor.route,
                 pid: supervisor.pid,
@@ -324,17 +324,12 @@ class PeerProcessHost {
                 workerKey: params.workerKey,
                 webSocketCapability,
                 startArgs: params.startArgs,
-            });
+            }));
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
-            stopObserving = hostActivity(this.ctx).observe(async (signal) => {
-                const response = await placement.stub.fetch(new Request('https://nimbus-process.invalid/', {
-                    signal, headers: { [HOSTED_WATCH_HEADER]: params.workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: webSocketCapability },
-                }));
-                return peerFetchAnswer(response, webSocketCapability);
-            }, (error) => loss.lose(error), opened.incarnation);
+            stopObserving = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal), (error) => loss.lose(error), opened.incarnation);
             const starting = hostActivity(this.ctx).acquire();
-            started = loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload)).finally(starting.release);
+            started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
             started.catch(() => { });
         }
         catch (error) {
@@ -345,21 +340,16 @@ class PeerProcessHost {
             // Awaited, not fired off: a spawn that rejects must mean nothing was
             // left running, which is what a throw from `processes().spawn` means on
             // the other substrate.
-            try {
-                await this._cancel(params.workerKey, placement.peerName);
-                await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
-            }
-            finally {
-                disposeRpcResource(placement.stub);
-            }
+            await this._cancel(params.workerKey, placement.peerName);
+            await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
             throw error;
         }
         let released = false;
         return {
             started,
             lost: loss.signal,
-            handleHttpRequest: (request) => loss.route(() => routeThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
-            handleWebSocketRequest: (request) => loss.route(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
+            handleHttpRequest: (request) => loss.route(() => this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request))),
+            handleWebSocketRequest: (request) => loss.route(() => this.withPeer(placement.peerName, (stub) => routeWebSocketThroughPeer(stub, params.workerKey, webSocketCapability, request))),
             release: async () => {
                 if (released)
                     return;
@@ -368,13 +358,8 @@ class PeerProcessHost {
                 loss.release();
                 this.tokensInUse.delete(params.pid);
                 this.opens.delete(params.workerKey);
-                try {
-                    await this._cancel(params.workerKey, placement.peerName);
-                    await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
-                }
-                finally {
-                    disposeRpcResource(placement.stub);
-                }
+                await this._cancel(params.workerKey, placement.peerName);
+                await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
             },
             describe: () => `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
                 + `; ${describeImageDelivery(this.imageDelivery)}`,
@@ -417,7 +402,6 @@ class PeerProcessHost {
             const candidate = await this._probePlacement(pid, attempt);
             if (!denied.has(candidate.isolateToken))
                 return candidate;
-            disposeRpcResource(candidate.stub);
         }
         // Every attempt co-located, which happens in single-process topologies. Use
         // the last one anyway: it runs the process correctly, it just shares the
@@ -428,17 +412,8 @@ class PeerProcessHost {
     /** One sibling name, resolved and probed. Leaks nothing on failure. */
     async _probePlacement(pid, attempt) {
         const peerName = `${this.coordDoId}:proc:${pid}:${attempt}`;
-        let resource = null;
-        try {
-            resource = this.ns.get(this.ns.idFromName(peerName));
-            const stub = processPeerStub(resource, peerName);
-            const probe = await this._probe(stub, peerName);
-            return { stub, peerName, isolateToken: probe.isolateToken };
-        }
-        catch (error) {
-            disposeRpcResource(resource);
-            throw error;
-        }
+        const probe = await this._probe(peerName);
+        return { peerName, isolateToken: probe.isolateToken };
     }
     /**
      * First contact with a possibly-cold sibling DO: retry transient platform
@@ -446,10 +421,10 @@ class PeerProcessHost {
      * probe at once, as does any other failure: the spawn then fails fast
      * rather than wait the overload schedule out.
      */
-    async _probe(stub, peerName) {
+    async _probe(peerName) {
         for (let attempt = 0;; attempt++) {
             try {
-                const probe = await stub._rpcProcessHostProbe();
+                const probe = await this.withPeer(peerName, (stub) => stub._rpcProcessHostProbe());
                 if (!probe || typeof probe.isolateToken !== 'string' || probe.isolateToken.length === 0) {
                     throw new Error(`ProcessFabric: peer '${peerName}' returned no isolate token`);
                 }
@@ -465,6 +440,46 @@ class PeerProcessHost {
             }
         }
     }
+    async withPeer(peerName, use) {
+        const stub = this.getPeer(peerName);
+        try {
+            return await use(stub);
+        }
+        finally {
+            disposeRpcResource(stub);
+        }
+    }
+    async watchPeer(peerName, workerKey, capability, signal) {
+        signal.throwIfAborted();
+        let stub = this.getPeer(peerName);
+        const release = () => {
+            if (!stub)
+                return;
+            disposeRpcResource(stub);
+            stub = undefined;
+            signal.removeEventListener('abort', release);
+        };
+        signal.addEventListener('abort', release, { once: true });
+        try {
+            return await peerFetchAnswer(await stub.fetch(new Request('https://nimbus-process.invalid/', {
+                signal, headers: { [HOSTED_WATCH_HEADER]: workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: capability },
+            })), capability);
+        }
+        catch (error) {
+            release();
+            throw error;
+        }
+    }
+    getPeer(peerName) {
+        const resource = this.ns.get(this.ns.idFromName(peerName));
+        try {
+            return processPeerStub(resource, peerName);
+        }
+        catch (error) {
+            disposeRpcResource(resource);
+            throw error;
+        }
+    }
     /**
      * A fresh stub to the hosting peer fires `_rpcCancelHostProcess`, which
      * releases the peer's facet — the exact teardown a local facet gets — and
@@ -474,16 +489,7 @@ class PeerProcessHost {
      * so a kill nobody awaited still completes.
      */
     _cancel(workerKey, peerName) {
-        let stub;
-        try {
-            stub = processPeerStub(this.ns.get(this.ns.idFromName(peerName)), peerName);
-        }
-        catch (error) {
-            return Promise.reject(error);
-        }
-        const cancelled = Promise.resolve(stub._rpcCancelHostProcess(workerKey))
-            .then(() => undefined)
-            .finally(() => disposeRpcResource(stub));
+        const cancelled = this.withPeer(peerName, (stub) => stub._rpcCancelHostProcess(workerKey)).then(() => undefined);
         this.ctx.waitUntil(cancelled);
         return cancelled;
     }

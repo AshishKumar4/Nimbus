@@ -6,7 +6,7 @@ import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 
 adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
-const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
+const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: ['nodejs_compat'], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
 const turns = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 
 function setup(delayed = false) {
