@@ -15872,6 +15872,8 @@ builtins.dgram = (() => {
   return { Socket, createSocket: (opts, cb) => { const s = new Socket(opts); if (typeof cb === "function") s.on("message", cb); return s; } };
 })();
 
+// The tty.ReadStreams reading the process's stdin: the last one gone lets go of it.
+let __nimbusTtyStdinReaders = 0;
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
   // The process's terminal: a ReadStream reads the process's stdin, a
@@ -15887,14 +15889,18 @@ builtins.tty = {
         this._onEnd = () => this.push(null);
         stdin.on("data", this._onData);
         stdin.once("end", this._onEnd);
+        __nimbusTtyStdinReaders++;
       }
       stdin.resume();
     }
-    // Destroyed, it stops reading stdin, which stays as it is for its other readers.
+    // Destroyed, it stops reading stdin. The last of them gone, stdin is
+    // paused, its hold on the input released, unless something else reads it.
     _destroy(error, callback) {
-      if (this._stdin !== undefined) {
-        this._stdin.removeListener("data", this._onData);
-        this._stdin.removeListener("end", this._onEnd);
+      const stdin = this._stdin;
+      if (stdin !== undefined) {
+        stdin.removeListener("data", this._onData);
+        stdin.removeListener("end", this._onEnd);
+        if (--__nimbusTtyStdinReaders === 0 && stdin.listenerCount("data") === 0 && stdin.listenerCount("readable") === 0) stdin.pause();
       }
       callback(error);
     }
