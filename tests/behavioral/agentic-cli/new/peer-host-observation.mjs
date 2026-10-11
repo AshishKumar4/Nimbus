@@ -1,4 +1,5 @@
-import { BASE, mintSession, deleteSession, Terminal, makeAsserter, requestHeaders, sleep, hasOutputLine, termBody, fetchPort, diagMemory } from '../../_driver.mjs';
+import { BASE, mintSession, deleteSession, Terminal, makeAsserter, requestHeaders, sleep, hasOutputLine, termBody, fetchPort } from '../../_driver.mjs';
+import { diagMemory } from '../../heap-correctness/_diag.mjs';
 
 const a = makeAsserter('peer-host-observation');
 const sessions = [], terminals = [];

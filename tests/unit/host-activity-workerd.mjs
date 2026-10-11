@@ -150,9 +150,10 @@ export class Host extends DurableObject {
     }
     const streamCases=[];
     for(const ending of ['eof','cancel','error']){
-      const activity=new HostActivity();let watches=0,output;
+      const activity=new HostActivity();let watches=0,output,sourceCancelled=false,settled=false;
       const target=activity.observe(async()=>new Response(new ReadableStream({start(){watches++;},cancel(){watches--;}}),{headers:{'x-nimbus-host-incarnation':'stream'}}),()=>{});
-      const response=await hostResponse(this.ctx,target,new Request('https://stream.invalid/'),async()=>new Response(new ReadableStream({start(controller){output=controller;}}),{headers:{'Content-Length':'3'}}));
+      const ctx={waitUntil:task=>this.ctx.waitUntil(task.finally(()=>{settled=true;}))};
+      const response=await hostResponse(ctx,target,new Request('https://stream.invalid/'),async()=>new Response(new ReadableStream({start(controller){output=controller;},cancel(){sourceCancelled=true;}}),{headers:{'Content-Length':'3'}}));
       const atHeaders=watches,reader=response.body.getReader();
       if(ending==='cancel')await reader.cancel();
       else{
@@ -161,8 +162,8 @@ export class Host extends DurableObject {
         else{output.error(new Error('source failed'));await reader.read().catch(()=>{});}
       }
       reader.releaseLock();
-      for(let i=0;i<100&&watches;i++)await new Promise(resolve=>setTimeout(resolve,1));
-      streamCases.push({ending,atHeaders,after:watches,length:response.headers.get('Content-Length')});target.close();
+      for(let i=0;i<100&&(watches||!settled);i++)await new Promise(resolve=>setTimeout(resolve,1));
+      streamCases.push({ending,atHeaders,after:watches,sourceCancelled,settled,length:response.headers.get('Content-Length')});target.close();
     }
     const passiveCases=[];
     for(const cause of ['release','coordinator-reset','peer-reset','pending-release']){
@@ -224,6 +225,8 @@ try{
   for(const test of result.streamCases){
     assert.equal(test.atHeaders,1,JSON.stringify(test));
     assert.equal(test.after,0,JSON.stringify(test));
+    assert.equal(test.settled,true,JSON.stringify(test));
+    if(test.ending==='cancel')assert.equal(test.sourceCancelled,true,JSON.stringify(test));
     assert.equal(test.length,'3','native ownership preserves declared length');
   }
   for(const test of result.passiveCases){
