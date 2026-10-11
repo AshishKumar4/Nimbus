@@ -119,6 +119,9 @@ export class SqliteFiles {
     readRange(path, offset, length) {
         return this.run('open', path, () => this.view.readRange(path, offset, length));
     }
+    access(path, mode) {
+        this.run('open', path, () => this.view.access(path, mode));
+    }
     writeFile(path, data, options) {
         this.run('open', path, () => this.view.writeFile(path, data, options));
     }

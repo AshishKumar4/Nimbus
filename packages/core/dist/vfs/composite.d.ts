@@ -133,6 +133,14 @@ export interface VfsRoute {
     /** Why the source is absent (MountOptions.absentReason), when it is. */
     readonly absentReason?: string;
 }
+/** A pinned file's backend operations (CompositeVFS.pin), handed the backend's own path. */
+export type PinnedFiles = Pick<VFS, 'stat' | 'readFile' | 'readdir' | 'writeFile'> & Pick<VFS, 'readRange' | 'writeRange' | 'truncate' | 'chmod' | 'chown' | 'utimes' | 'access'>;
+/** A file as an open holds it (CompositeVFS.pin): its operations, the path they take, and the namespace's name for it. */
+export interface PinnedFile {
+    readonly files: PinnedFiles;
+    readonly path: string;
+    readonly name: string;
+}
 export interface MountInfo {
     readonly point: string;
     readonly source: VfsSource;
@@ -369,6 +377,22 @@ export declare class CompositeVFS implements VFS {
         creating?: boolean;
     }): Promise<VfsRoute>;
     /**
+     * The file at `path` as an open(2) holds it: where this view's lookup
+     * lands now (links followed, the last only with `follow`), on the backend
+     * there as this principal sees it, whatever is mounted, unmounted or
+     * linked at the name later. Each of its mutations is still this view's: a
+     * read-only mount refuses it, the guard is asked at the name it landed at,
+     * and the namespace's write observers hear of it there. A directory the
+     * namespace makes (a mount point, one above) is the namespace's own, by
+     * its name. `sync`: through the backends' synchronous faces only.
+     */
+    pin(path: string, options: {
+        follow: boolean;
+        sync: boolean;
+    }): Awaitable<PinnedFile>;
+    /** The backend operations on one pinned file (pin): each named as the namespace names it. */
+    private pinned;
+    /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
      * (links on the way followed, the last only with `follow`), the mount
      * point it is on ('/' for the root), and whether that mount is read-only.
@@ -376,13 +400,10 @@ export declare class CompositeVFS implements VFS {
      * before it writes lands where the operation would. Rejects as that
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
      * the lookup stays on synchronous backends. `creating`: as route's.
-     * `sync`: through the backends' synchronous faces only, as the `sync`
-     * view looks up (an asynchronous mount refuses).
      */
     mutationRoute(path: string, options?: {
         follow?: boolean;
         creating?: boolean;
-        sync?: boolean;
     }): Awaitable<{
         readonly path: string;
         readonly point: string;

@@ -29,7 +29,7 @@
  * most one per link record in flight (a known leak, by that name pattern).
  */
 import { VFS_DESCRIPTION, VfsError } from '../vfs/vfs-error.js';
-import { openOnMount } from '../vfs/mounted-description.js';
+import { openAccess, openOnMount } from '../vfs/mounted-description.js';
 import { openFlags } from './descriptors.js';
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export const LINK_SLOT_SUFFIX = '.nimbus-wave';
@@ -215,11 +215,18 @@ async function applyRecord(ns, cleanup, record, pinned) {
                 throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
             else if (call.call === 'open') {
                 // open(2) to write, as the namespace's open decides it for every caller.
+                const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
                 return statOf(await openOnMount({
-                    files: ns, name: call.path, mode: call.mode,
-                    flags: openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true }),
+                    files: ns, name: call.path, mode: call.mode, flags,
                     refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
-                }, false, pinned));
+                }, false, {
+                    // The mount's own policy decides who may open it for what (VFS.access).
+                    authorize: async (there) => {
+                        const file = await ns.pin(call.path, { follow: true, sync: false });
+                        await file.files.access?.(file.path, openAccess(flags, there));
+                    },
+                    settled: pinned,
+                }));
             }
             // A description's close: a mount keeps no description (its open made none).
             else if (call.call === 'close')

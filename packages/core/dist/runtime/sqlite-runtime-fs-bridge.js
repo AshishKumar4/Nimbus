@@ -3,7 +3,7 @@ import { BUFFERED_WRITE_BYTES, openMounted } from '../vfs/mounted-description.js
 import { awaitsRefusal, closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { andThen, isPromise, readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
+import { isPromise, readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -55,7 +55,7 @@ export class SqliteRuntimeFsBridge {
         const mounted = this.mounted;
         if (!mounted || !this.namespace.composes('/' + resolved))
             return { path: resolved };
-        return { mount: mounted, path: '/' + resolved };
+        return { mount: mounted, namespace: this.namespace, path: '/' + resolved };
     }
     /**
      * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
@@ -360,10 +360,10 @@ export class SqliteRuntimeFsBridge {
             if (located === null)
                 throw fsError('ELOOP', 'open', path);
             if (located.mount) {
-                const namespace = this.namespace;
+                const namespace = located.namespace;
                 const node = openMounted({
                     files: located.mount, name: located.path, flags: normalizedFlags, mode: flags.mode,
-                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, realpath: (name) => andThen(namespace.mutationRoute(name, { follow: true, sync: true }), (route) => route.path),
+                    refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name) => namespace.pin(name, { follow: true, sync: true }),
                     awaits: false, sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
                 });
                 // The synchronous face looks up through synchronous faces only: an asynchronous mount refused above.
@@ -881,8 +881,10 @@ export class SqliteRuntimeFsBridge {
     reached(located, owner) {
         this.leaseAllows(located.path, owner);
         // The namespace's own guard, which each mount call meets, is presented the lease too.
-        if (located.mount && owner !== undefined)
-            return { ...located, mount: this.namespace.scoped(() => { }, owner).sync };
+        if (located.mount && owner !== undefined) {
+            const namespace = this.namespace.scoped(() => { }, owner);
+            return { ...located, mount: namespace.sync, namespace };
+        }
         return located;
     }
     /**

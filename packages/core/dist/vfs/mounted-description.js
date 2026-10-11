@@ -1,10 +1,11 @@
 /**
  * A file on a mount, opened: open(2) as the namespace decides it for every
  * caller (a process's synchronous and asynchronous faces, a wave's open),
- * and the description its descriptors share. Its operations go through
+ * and the description its descriptors share. The open is decided through
  * `files`, the namespace as the caller sees it: its synchronous face
  * (CompositeVFS.sync), which refuses an asynchronous mount at the first
- * lookup, before anything has changed; or the namespace itself.
+ * lookup, before anything has changed; or the namespace itself. The
+ * description holds the file where that lookup landed (CompositeVFS.pin).
  */
 import { processView } from '../runtime/descriptors.js';
 import { runtimeStatOf } from './composite.js';
@@ -20,13 +21,15 @@ export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
  * ENOTDIR; a directory refuses O_TRUNC and O_APPEND (EISDIR); and only
  * then is the file made, or truncated. Answers the file's stat. Who may
  * open a file for what is the mount's own policy, as for every operation on
- * it: a backend that takes a caller's credential (VFS.as) enforces modes; a
- * backend of one identity has none. `describes`: whether the open keeps a description, whose
- * write rights a directory may carry (a WASI guest asks a capability set);
- * an open that keeps none (a wave's) is an open to write, which a directory
- * refuses. `settled` runs right before the answer, or the change.
+ * it (VFS.access, which `authorize` asks of a file that is there, before
+ * anything changes): a backend that takes a caller's credential enforces
+ * modes; a backend of one identity has none. `describes`: whether the open
+ * keeps a description, whose write rights a directory may carry (a WASI
+ * guest asks a capability set); an open that keeps none (a wave's) is an
+ * open to write, which a directory refuses. `settled` runs right before the
+ * answer, or the change.
  */
-export function openOnMount(open, describes, settled) {
+export function openOnMount(open, describes, hooks) {
     const { files, name, flags, refuse } = open;
     return andThen(files.stat(name, { follow: false }), (named) => {
         if (named !== null && flags.create && flags.exclusive)
@@ -46,7 +49,7 @@ export function openOnMount(open, describes, settled) {
                 if (there.type === 'directory' && (flags.truncate || flags.append || (flags.write && !describes)))
                     throw refuse('EISDIR', 'open');
             }
-            return andThen(settled?.(), () => {
+            return andThen(there === null ? undefined : hooks.authorize(there), () => andThen(hooks.settled?.(), () => {
                 if (there !== null && !flags.truncate)
                     return there;
                 if (there !== null) {
@@ -55,9 +58,13 @@ export function openOnMount(open, describes, settled) {
                     return describes ? andThen(truncated, () => there) : andThen(truncated, () => statAfter(open));
                 }
                 return andThen(files.writeFile(name, new Uint8Array(0), open.mode === undefined ? undefined : { mode: open.mode }), () => statAfter(open));
-            });
+            }));
         });
     });
+}
+/** The access an open asks of a file that is there (VFS.access's mode): a directory's write rights are a capability, not an access. */
+export function openAccess(flags, there) {
+    return (flags.read ? 4 : 0) | (flags.write && there.type !== 'directory' ? 2 : 0);
 }
 function statAfter({ files, name, refuse }) {
     return andThen(files.stat(name), (after) => {
@@ -68,7 +75,11 @@ function statAfter({ files, name, refuse }) {
 }
 /** open(2) of a mounted file, and the description its descriptors share. */
 export function openMounted(options) {
-    return andThen(openOnMount(options, true), (stat) => andThen(options.realpath(options.name), (file) => new MountedDescription(options, file, stat)));
+    // A file that is there is pinned to be asked; one the open makes, once it is made.
+    let pinned;
+    const pin = () => pinned ?? andThen(options.pin(options.name), (file) => (pinned = file));
+    const authorize = (there) => andThen(pin(), (file) => file.files.access?.(file.path, openAccess(options.flags, there)));
+    return andThen(openOnMount(options, true, { authorize }), (stat) => andThen(pin(), (file) => new MountedDescription(options, file, stat)));
 }
 /**
  * The description of `name` on a mount. A write goes in place (writeRange);
@@ -83,24 +94,29 @@ class MountedDescription {
     options;
     ino;
     mounted = true;
+    /** The file's backend operations, where the open's lookup landed (CompositeVFS.pin). */
     files;
+    /** The path they are handed. */
+    at;
+    /** The namespace's name for it: what this process's path reads overlay (processView). */
     name;
     immediate;
     inPlace = true;
     pending = [];
     held = 0;
-    constructor(options, name, stat) {
+    constructor(options, file, stat) {
         this.options = options;
         this.ino = stat.ino ?? 0;
         if (options.awaits)
             this.awaits = true;
-        this.files = options.files;
-        this.name = name;
+        this.files = file.files;
+        this.at = file.path;
+        this.name = file.name;
         this.immediate = options.sync || options.awaits;
     }
     path() { return this.name; }
     stat() {
-        return andThen(this.files.stat(this.name), (there) => {
+        return andThen(this.files.stat(this.at), (there) => {
             if (there === null)
                 throw this.options.refuse('ENOENT', 'fstat');
             const now = runtimeStatOf(there);
@@ -110,7 +126,7 @@ class MountedDescription {
     }
     read(offset, length) {
         const view = this.viewed();
-        return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.name, offset, length);
+        return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.files, this.at, offset, length);
     }
     write(offset, bytes) {
         const written = this.inPlaceAt(offset, bytes);
@@ -122,20 +138,20 @@ class MountedDescription {
     append(bytes) {
         if (!this.inPlace)
             return this.heldAppend(bytes);
-        return andThen(this.files.stat(this.name), (there) => {
+        return andThen(this.files.stat(this.at), (there) => {
             const written = this.inPlaceAt(there?.size ?? 0, bytes);
             if (written === undefined)
                 return this.heldAppend(bytes);
             return isPromise(written) ? written.then((end) => end ?? this.heldAppend(bytes)) : written;
         });
     }
-    truncate(size) { return need(this.files.truncate, this.options.refuse, 'ftruncate').call(this.files, this.name, size); }
+    truncate(size) { return need(this.files.truncate, this.options.refuse, 'ftruncate').call(this.files, this.at, size); }
     readdir() {
-        return andThen(this.files.readdir(this.name), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
+        return andThen(this.files.readdir(this.at), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
     }
-    chmod(mode) { return need(this.files.chmod, this.options.refuse, 'fchmod').call(this.files, this.name, mode); }
-    chown(uid, gid) { return need(this.files.chown, this.options.refuse, 'fchown').call(this.files, this.name, uid, gid); }
-    utimes(atime, mtime) { return need(this.files.utimes, this.options.refuse, 'futimes').call(this.files, this.name, atime, mtime); }
+    chmod(mode) { return need(this.files.chmod, this.options.refuse, 'fchmod').call(this.files, this.at, mode); }
+    chown(uid, gid) { return need(this.files.chown, this.options.refuse, 'fchown').call(this.files, this.at, uid, gid); }
+    utimes(atime, mtime) { return need(this.files.utimes, this.options.refuse, 'futimes').call(this.files, this.at, atime, mtime); }
     /** A flush that fails loses what it held (lastClose says so): taken before it reads. */
     flush() {
         if (this.pending.length === 0)
@@ -143,13 +159,13 @@ class MountedDescription {
         const writes = this.pending;
         this.pending = [];
         this.held = 0;
-        return andThen(this.whole(), (file) => this.files.writeFile(this.name, apply(writes, file)));
+        return andThen(this.whole(), (file) => this.files.writeFile(this.at, apply(writes, file)));
     }
     close() { return this.flush(); }
     pendingBytes() { return this.held; }
     applyPending(file) { return apply(this.pending, file); }
     whole() {
-        return andThen(this.files.stat(this.name), (there) => (there === null ? new Uint8Array(0) : this.files.readFile(this.name)));
+        return andThen(this.files.stat(this.at), (there) => (there === null ? new Uint8Array(0) : this.files.readFile(this.at)));
     }
     hold(offset, bytes) {
         if (this.held + bytes.byteLength > this.options.bufferedWriteBytes)
@@ -158,10 +174,12 @@ class MountedDescription {
         this.held += bytes.byteLength;
         return this.immediate ? andThen(this.flush(), () => bytes.byteLength) : bytes.byteLength;
     }
-    /** This process's view of the file while it holds writes to it, by any of its descriptions (processView). */
+    /**
+     * This process's view of the file while it holds writes to it, by any of
+     * its descriptions (processView): this one's own O_SYNC governs only its
+     * writes.
+     */
     viewed() {
-        if (this.immediate)
-            return undefined;
         return processView(this.options.scope, () => {
             const file = this.whole();
             return isPromise(file) ? null : file;
@@ -183,7 +201,7 @@ class MountedDescription {
         }
         let written;
         try {
-            written = writeRange.call(this.files, this.name, offset, bytes);
+            written = writeRange.call(this.files, this.at, offset, bytes);
         }
         catch (error) {
             return this.cannot(error);

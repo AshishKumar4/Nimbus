@@ -165,6 +165,12 @@ export interface VFS {
     /** Writes `bytes` at `offset`, zero-filling any gap past the end, creating the file. */
     writeRange?(path: string, offset: number, bytes: Uint8Array): Awaitable<void>;
     truncate?(path: string, size: number): Awaitable<void>;
+    /**
+     * Refuses (EACCES) an open of `path` asking `mode` (r=4, w=2, x=1) the
+     * principal may not have, by this backend's own policy. Absent: a backend
+     * of one identity, which refuses no one at open.
+     */
+    access?(path: string, mode: number): Awaitable<void>;
     /** rm -r; nothing returned means the whole operand went. */
     removeRecursive?(path: string): Awaitable<VfsRemoval | void>;
     symlink?(target: string, path: string): Awaitable<void>;
@@ -258,6 +264,7 @@ export interface SyncVFS {
     readRange?(path: string, offset: number, length: number): Uint8Array;
     writeRange?(path: string, offset: number, bytes: Uint8Array): void;
     truncate?(path: string, size: number): void;
+    access?(path: string, mode: number): void;
     removeRecursive?(path: string): VfsRemoval | void;
     symlink?(target: string, path: string): void;
     readlink?(path: string): string;

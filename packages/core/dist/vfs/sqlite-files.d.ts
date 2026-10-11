@@ -32,6 +32,7 @@ export declare class SqliteFiles implements VFS {
     }): VfsStat | null;
     readFile(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
+    access(path: string, mode: number): void;
     writeFile(path: string, data: Uint8Array, options?: {
         mode?: number;
     }): void;

@@ -1,4 +1,5 @@
 import { syscallError } from './vfs-error.js';
+import { posixAccess } from './posix-access.js';
 const enc = new TextEncoder();
 const DIR = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40555, uid: 0, gid: 0 };
 function key(path) {
@@ -46,6 +47,14 @@ export class ProcVFS {
     }
     readFile(path) {
         return this.generate(path);
+    }
+    /** Its files are root's, 0444: a credential asks them by their mode (the embedder's view is not judged). */
+    access(path, mode) {
+        const stat = this.stat(path);
+        if (stat === null)
+            throw syscallError('ENOENT', 'open', path);
+        if (this.cred !== null && !posixAccess({ mode: stat.mode ?? 0, uid: stat.uid ?? 0, gid: stat.gid ?? 0 }, mode, this.cred))
+            throw syscallError('EACCES', 'open', path);
     }
     readRange(path, offset, length) {
         return this.generate(path).slice(offset, offset + length);

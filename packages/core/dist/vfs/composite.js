@@ -835,6 +835,54 @@ export class CompositeVFS {
         }));
     }
     /**
+     * The file at `path` as an open(2) holds it: where this view's lookup
+     * lands now (links followed, the last only with `follow`), on the backend
+     * there as this principal sees it, whatever is mounted, unmounted or
+     * linked at the name later. Each of its mutations is still this view's: a
+     * read-only mount refuses it, the guard is asked at the name it landed at,
+     * and the namespace's write observers hear of it there. A directory the
+     * namespace makes (a mount point, one above) is the namespace's own, by
+     * its name. `sync`: through the backends' synchronous faces only.
+     */
+    pin(path, options) {
+        const { sync } = options;
+        const run = () => andThen(this.resolve(path, options.follow, sync), (at) => {
+            this.present(at);
+            if (this.isStructural(at))
+                return { files: sync ? this.sync : this, path: at, name: at };
+            const route = this.locate(at);
+            return { files: this.pinned(route, this.ops(route, sync), sync), path: route.rel, name: at };
+        });
+        return sync ? reported({ syscall: 'open', path }, run) : awaited({ syscall: 'open', path }, run);
+    }
+    /** The backend operations on one pinned file (pin): each named as the namespace names it. */
+    pinned(route, ops, sync) {
+        const backend = ops;
+        const call = (syscall, run) => (sync ? reported({ syscall, path: route.path }, run) : awaited({ syscall, path: route.path }, run));
+        const mutate = (syscall, run, written) => call(syscall, () => {
+            if (route.mount.options.readOnly)
+                throw new Refusal('EROFS', route.path, `${route.mount.point} is mounted read-only`);
+            return this.reportWrite({ path: route.path, route, ops, follow: false, kind: 'write', ...(written === undefined ? {} : { written }) }, () => {
+                this.guardMutation([route.path]);
+                return run();
+            }, sync);
+        });
+        const { readRange, writeRange, truncate, chmod, chown, utimes, access } = backend;
+        return {
+            stat: (at, opts) => call('stat', () => backend.stat(at, opts)),
+            readFile: (at) => call('open', () => backend.readFile(at)),
+            readdir: (at) => call('scandir', () => backend.readdir(at)),
+            writeFile: (at, data, opts) => mutate('open', () => backend.writeFile(at, data, opts), data),
+            ...(readRange === undefined ? {} : { readRange: (at, offset, length) => call('read', () => readRange.call(backend, at, offset, length)) }),
+            ...(writeRange === undefined ? {} : { writeRange: (at, offset, bytes) => mutate('write', () => writeRange.call(backend, at, offset, bytes)) }),
+            ...(truncate === undefined ? {} : { truncate: (at, size) => mutate('ftruncate', () => truncate.call(backend, at, size)) }),
+            ...(chmod === undefined ? {} : { chmod: (at, mode) => mutate('fchmod', () => chmod.call(backend, at, mode)) }),
+            ...(chown === undefined ? {} : { chown: (at, uid, gid) => mutate('fchown', () => chown.call(backend, at, uid, gid)) }),
+            ...(utimes === undefined ? {} : { utimes: (at, atime, mtime) => mutate('futimes', () => utimes.call(backend, at, atime, mtime)) }),
+            ...(access === undefined ? {} : { access: (at, mode) => call('open', () => access.call(backend, at, mode)) }),
+        };
+    }
+    /**
      * Where a mutation of `path` lands: the namespace path its lookup resolves
      * (links on the way followed, the last only with `follow`), the mount
      * point it is on ('/' for the root), and whether that mount is read-only.
@@ -842,11 +890,9 @@ export class CompositeVFS {
      * before it writes lands where the operation would. Rejects as that
      * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
      * the lookup stays on synchronous backends. `creating`: as route's.
-     * `sync`: through the backends' synchronous faces only, as the `sync`
-     * view looks up (an asynchronous mount refuses).
      */
     mutationRoute(path, options) {
-        return reported({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, options?.sync === true, options?.creating === true), (at) => {
+        return reported({ syscall: 'route', path }, () => andThen(this.resolve(path, options?.follow === true, false, options?.creating === true), (at) => {
             this.present(at);
             const { mount } = this.locate(at);
             return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
