@@ -150,8 +150,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const spelled = this.pathArgument(path);
     if (DOT_DOT_SEGMENT.test(spelled)) return null;
     const namespace = this.namespace;
-    const walked = this.vfs.resolveName(spelled, followSymlinks, namespace && ((name) => namespace.composes('/' + name)));
-    return walked;
+    return this.vfs.resolveName(spelled, followSymlinks, namespace && ((name) => namespace.composes('/' + name)));
   }
 
   /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
