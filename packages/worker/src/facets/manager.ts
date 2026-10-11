@@ -17,6 +17,8 @@
  */
 
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { residencyMissReport } from '../runtime/residency-miss-report.js';
+import { RESIDENCY_MISS_REPORT_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
@@ -800,7 +802,7 @@ function __nimbusDataReadMisses() {
 function __nimbusExecutedModuleMisses() {
   return [...(globalThis.__nimbusModuleMisses || [])];
 }
-const __nimbusResidencyMissText = ${residencyMissReport.toString()};
+const { residencyMissReport: __nimbusResidencyMissText } = ${RESIDENCY_MISS_REPORT_SOURCE};
 function __nimbusResidencyMissReport() {
   return __nimbusResidencyMissText(__nimbusDataReadMisses());
 }
@@ -812,18 +814,6 @@ function __nimbusResidencyMissReport() {
  * platform killed is failed with from the misses it reported as it ran
  * (exec). Empty when there are none. Runs in the guest as its own text.
  */
-export function residencyMissReport(keys: readonly string[]): string {
-  if (keys.length === 0) return '';
-  const named = keys.slice(0, 20);
-  return 'node: ' + keys.length + ' file(s) were read synchronously but their content was '
-    + 'never staged into the process, so every one of those reads failed and the program '
-    + 'carried on without the bytes. Failing rather than reporting a result built on them:\n'
-    + named.map((key) => '  /' + key + '\n').join('')
-    + (keys.length > named.length ? '  ... and ' + (keys.length - named.length) + ' more\n' : '')
-    + 'The files exist and an async read (fs.promises.readFile) returns them now; the next '
-    + 'run of the same command stages them up front.\n';
-}
-
 /**
  * Static `import * as __real_X from 'node:X'` block. Prepended to generated
  * runtime workers so the shims can forward to workerd's real `node:*` builtins.

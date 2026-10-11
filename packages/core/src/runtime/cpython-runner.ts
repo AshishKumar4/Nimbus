@@ -42,6 +42,7 @@
  */
 
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { CPYTHON_RUN_TASK } from './compiled-bodies.generated.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
@@ -206,7 +207,7 @@ export interface CPythonFacetResult {
  * names no import: everything it needs is on globalThis, put there by the
  * preamble.
  */
-async function cpythonRunFacetFn(
+export async function cpythonRunFacetFn(
   args: Record<string, unknown>,
   facetEnv: { SUPERVISOR?: unknown } | undefined,
 ): Promise<CPythonFacetResult> {
@@ -458,7 +459,7 @@ export function makeCPythonRunnerFactory(deps: {
         wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
       });
 
-        const result = await facet.submit(cpythonRunFacetFn, facetArgs, {
+        const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
           signal: stdio.signal,
         });
         exitCode = result.error ? result.exitCode || 1 : result.exitCode;

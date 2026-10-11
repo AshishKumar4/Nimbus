@@ -48,6 +48,7 @@
  */
 
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
+import { WASM_CALL_TASK } from './compiled-bodies.generated.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { stdinBytesOf } from '../shell/stdin-adapter.js';
@@ -382,8 +383,219 @@ export function makeWasmRunner(deps: {
      * `WebAssembly.Exports` types every export as a bare `Function`, which
      * carries no signature of its own.
      */
-    type WasmDirectExport = (...args: number[]) => number | bigint | undefined;
-    const facetFn = async function wasmFacetCall(
+    // PID + log integration. The runtime-registry's contract is
+    // runtime-agnostic at the PID layer; node + bun get this for
+    // free via runFresh → facetMgr.exec which spawns through the
+    // process supervisor. wasm-runner opens a facet directly, so it has to
+    // allocate the PID + log entries by hand.
+    //
+    // A child of the command that ran it, under the credential its view is
+    // bound with: a host answers the facet's syscalls under the credential
+    // the table holds for this pid (the Durable Object host does, through
+    // SupervisorRPC), and the reap of the command's tree takes it. At the top
+    // of the table it ran as the session user whoever started it.
+    const cmdLabel =
+      'wasm-runner ' +
+      (opts.filename || '').replace(/^\/+/, '/') +
+      ' ' +
+      argv.join(' ');
+    const brokerPid = opts.stdinPid;
+    const owned = brokerPid === undefined;
+    const procEntry = owned ? deps.processes.spawn(
+      cmdLabel.trim(),
+      ['wasm-runner', ...argv],
+      opts.cwd || '/home/user',
+      { parentPid: opts.invokerPid, cred },
+    ) : deps.processes.get(brokerPid);
+    if (!procEntry || procEntry.state !== 'running') throw new Error('WASI broker process is not running');
+    const pid = procEntry.pid;
+    const killed = new AbortController();
+    const runSignal = opts.signal ? AbortSignal.any([opts.signal,killed.signal]) : killed.signal;
+    deps.processes.setTerminator(pid, () => killed.abort());
+    const inputPump = !owned ? null : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
+    if (!deps.processes.hasInput(pid)) { deps.processes.openInput(pid); deps.processes.endInput(pid); }
+    const releaseOutput = opts.output
+      ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output!(chunk.stream, chunk.data)) : null;
+    if (releaseOutput) deps.processes.setForeground(pid, true);
+
+    // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
+    // runtime-registry's RuntimeRunOpts carries env on the way in; we
+    // forward to the WASI shim. Direct mode doesn't use env.
+    const wasiEnv: Record<string, string> = isWasi
+      ? { ...(opts.env || {}), ...WASM32_WASI_NIMBUS_ABI.env }
+      : {};
+
+    // ── filesystem WASI: the user's cwd is the session-root preopen ──
+    //
+    // WASI programs see it as fd 3 mapped to '/'. Nothing is walked or copied:
+    // every file the guest touches is read from and written to the authority
+    // through the supervisor, under this process's credential.
+    //
+    // For direct mode there's no FS exposure — wasm runs in pure
+    // compute-only mode, no preopens.
+    let wasiFs: import('@nimbus-sh/core/runtime/wasi-instance.js').WasiFsSnapshot | undefined;
+    const processFs = isWasi ? deps.filesystem.bind({ pid, cred }) : null;
+    if (processFs) {
+      // Session root = cwd of the shell invocation. Falls back to /home/user.
+      const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
+      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
+    }
+
+    /**
+     * What the facet call resolved to, or the supervisor-side dispatch failure
+     * that never reached it — and so names no mode.
+     */
+    type DispatchOutcome = WasmCallResult | { ok: false; mode?: undefined; error: string };
+
+    let outcome: DispatchOutcome;
+    let facet: Facet | null = null;
+    try {
+      // Opened here, not earlier: the host bakes the invoking process's pid
+      // into the facet's supervisor capability, and the pid does not exist
+      // until the process is spawned above. The supervisor derives the write
+      // credential from it, so a facet given the capability without one has a
+      // filesystem that can read but never write.
+      facet = deps.facets.open({
+        tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
+        concurrency: 1,
+        // WASI mode needs the supervisor capability: it is what backs the
+        // filesystem with the live session VFS instead of a spawn-time copy.
+        // Direct (compute-only) mode has no filesystem at all, so it asks for
+        // no capability and the facet boots fast.
+        syscalls: processFs ? { vfs: processFs, pid, processes: deps.processes } : undefined,
+        // WASI mode: ship the WASI shim source as a facet preamble so
+        // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
+        // no preamble (saves a few KB per submit).
+        preamble: isWasi ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
+      });
+
+      const submitArgs = isWasi
+        ? {
+            processPid: pid,
+            liveOutput: true,
+            mode: 'wasi' as const,
+            wasiArgv,
+            wasiEnv,
+            wasiAbi: wasiAbi ?? undefined,
+            wasiNamespace: WASI_ABI_NAMESPACE[wasiAbi ?? 'preview1'],
+            threads,
+            wasiFs,
+          }
+        : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
+      outcome = (await facet.submit(
+        WASM_CALL_TASK,
+        submitArgs,
+        {
+          wasmModules: { 'user.wasm': buf },
+          signal: runSignal,
+        },
+      )) as DispatchOutcome;
+    } catch (e) {
+      // Killed: the program ends as an interrupted one does, with no error of its own.
+      outcome = runSignal.aborted
+        ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) }
+        : { ok: false, error: `dispatch failed: ${errorText(e)}` };
+    } finally {
+      facet?.dispose();
+      inputPump?.stop();
+      if (owned) deps.processes.closeInput(pid);
+      releaseOutput?.();
+      if (releaseOutput) deps.processes.setForeground(pid, false);
+    }
+
+    let exitCode: number;
+    let stdout: string;
+    let stderr: string;
+
+    // The facet's `ok` field encodes "clean exit (code 0, no trap)" — but
+    // for WASI mode, a non-zero proc_exit IS legitimate program output,
+    // not a wasm-runner error. Branch on `mode` first so we surface the
+    // program's exit code unchanged.
+    if (outcome.mode === 'wasi') {
+      // WASI mode: pass through stdout/stderr the wasm wrote via
+      // fd_write. Exit code from proc_exit (or 0 on natural fall-through).
+      // If runStart reported an `error` (wasm trapped, _start missing,
+      // …), append it to stderr but still surface its exitCode (default
+      // 1 from runStart on trap) so callers can distinguish.
+      stdout = outcome.stdout || '';
+      stderr = outcome.stderr || '';
+      if (outcome.error) {
+        stderr = (stderr ? stderr : '') +
+          `wasm-runner: wasi trap: ${outcome.error}\n`;
+      }
+      exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
+      if (opts.env?.NIMBUS_WASI_FS_STATS === '1') stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
+    } else if (!outcome.ok) {
+      // Direct-mode failure or pre-instantiate dispatch failure — shell
+      // sees rc=1 + stderr.
+      exitCode = 1;
+      stdout = '';
+      stderr = `wasm-runner: ${outcome.error}\n`;
+    } else {
+      // Direct mode success: surface the result on stdout. void-return
+      // is success with no output; callers chain `&& echo OK` to detect.
+      stdout =
+        outcome.result === undefined || outcome.result === null
+          ? ''
+          : String(outcome.result) + '\n';
+      stderr = '';
+      exitCode = 0;
+    }
+
+    // Mirror stdout/stderr into the per-PID ring so `logs <pid>`
+    // and the Process tab WS log stream see the output. The
+    // append-then-markExit ordering matches what shellExecuteTracked
+    // does in init.ts:1559+ (Fix 5 contract).
+    if (stdout) {
+      await deps.processes.appendOutputBytes(pid, 'stdout', new TextEncoder().encode(stdout));
+    }
+    if (stderr) {
+      await deps.processes.appendOutputBytes(pid, 'stderr', new TextEncoder().encode(stderr));
+    }
+    try { deps.processes.exit(pid, exitCode); } catch {}
+    try {
+      if (!deps.processes.getExit(pid)) {
+        deps.processes.markExit(pid, exitCode);
+      }
+    } catch {}
+
+    const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
+    return { exitCode, stdout: streamed ? '' : stdout, stderr };
+  };
+}
+
+/**
+ * The `wasm-runner` command, whole.
+ *
+ * Its name, its version, its help and its `--wasi-info` verb belong to the
+ * runner, not to whoever registers it. Two callers restating them — a Durable
+ * Object session and an embedded workspace — is two places for the help text
+ * to drift from the shim it describes.
+ */
+export function wasmRunnerSpec(deps: {
+  filesystem: NimbusFilesystemAuthority;
+  facets: FacetHost;
+  processes: SessionProcessSupervisor;
+}): RuntimeSpec {
+  return {
+    name: 'wasm-runner',
+    version: WASM_RUNNER_VERSION,
+    helpText: WASM_RUNNER_HELP,
+    subcommands: {
+      '--wasi-info': async (ctx): Promise<number> => {
+        ctx.stdout.write(formatWasmRunnerWasiInfo());
+        return 0;
+      },
+    },
+    // The registry skips the read-source / shebang-strip / esbuild-transform
+    // flow: args[0] is a .wasm path, and this runner reads the bytes itself.
+    bypassesScriptRead: true,
+    run: makeWasmRunner(deps),
+  };
+}
+
+type WasmDirectExport = (...args: number[]) => number | bigint | undefined;
+export const wasmFacetCall = async function wasmFacetCall(
       args: {
         mode: 'direct' | 'wasi';
         processPid?: number;
@@ -655,215 +867,4 @@ export function makeWasmRunner(deps: {
       // BigInt (i64) → string; everything else → as-is.
       if (typeof out === 'bigint') return { ok: true, mode: 'direct', result: out.toString(), exports: exportNames };
       return { ok: true, mode: 'direct', result: out, exports: exportNames };
-    };
-
-    // PID + log integration. The runtime-registry's contract is
-    // runtime-agnostic at the PID layer; node + bun get this for
-    // free via runFresh → facetMgr.exec which spawns through the
-    // process supervisor. wasm-runner opens a facet directly, so it has to
-    // allocate the PID + log entries by hand.
-    //
-    // A child of the command that ran it, under the credential its view is
-    // bound with: a host answers the facet's syscalls under the credential
-    // the table holds for this pid (the Durable Object host does, through
-    // SupervisorRPC), and the reap of the command's tree takes it. At the top
-    // of the table it ran as the session user whoever started it.
-    const cmdLabel =
-      'wasm-runner ' +
-      (opts.filename || '').replace(/^\/+/, '/') +
-      ' ' +
-      argv.join(' ');
-    const brokerPid = opts.stdinPid;
-    const owned = brokerPid === undefined;
-    const procEntry = owned ? deps.processes.spawn(
-      cmdLabel.trim(),
-      ['wasm-runner', ...argv],
-      opts.cwd || '/home/user',
-      { parentPid: opts.invokerPid, cred },
-    ) : deps.processes.get(brokerPid);
-    if (!procEntry || procEntry.state !== 'running') throw new Error('WASI broker process is not running');
-    const pid = procEntry.pid;
-    const killed = new AbortController();
-    const runSignal = opts.signal ? AbortSignal.any([opts.signal,killed.signal]) : killed.signal;
-    deps.processes.setTerminator(pid, () => killed.abort());
-    const inputPump = !owned ? null : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
-    if (!deps.processes.hasInput(pid)) { deps.processes.openInput(pid); deps.processes.endInput(pid); }
-    const releaseOutput = opts.output
-      ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output!(chunk.stream, chunk.data)) : null;
-    if (releaseOutput) deps.processes.setForeground(pid, true);
-
-    // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
-    // runtime-registry's RuntimeRunOpts carries env on the way in; we
-    // forward to the WASI shim. Direct mode doesn't use env.
-    const wasiEnv: Record<string, string> = isWasi
-      ? { ...(opts.env || {}), ...WASM32_WASI_NIMBUS_ABI.env }
-      : {};
-
-    // ── filesystem WASI: the user's cwd is the session-root preopen ──
-    //
-    // WASI programs see it as fd 3 mapped to '/'. Nothing is walked or copied:
-    // every file the guest touches is read from and written to the authority
-    // through the supervisor, under this process's credential.
-    //
-    // For direct mode there's no FS exposure — wasm runs in pure
-    // compute-only mode, no preopens.
-    let wasiFs: import('@nimbus-sh/core/runtime/wasi-instance.js').WasiFsSnapshot | undefined;
-    const processFs = isWasi ? deps.filesystem.bind({ pid, cred }) : null;
-    if (processFs) {
-      // Session root = cwd of the shell invocation. Falls back to /home/user.
-      const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
-      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
-    }
-
-    /**
-     * What the facet call resolved to, or the supervisor-side dispatch failure
-     * that never reached it — and so names no mode.
-     */
-    type DispatchOutcome = WasmCallResult | { ok: false; mode?: undefined; error: string };
-
-    let outcome: DispatchOutcome;
-    let facet: Facet | null = null;
-    try {
-      // Opened here, not earlier: the host bakes the invoking process's pid
-      // into the facet's supervisor capability, and the pid does not exist
-      // until the process is spawned above. The supervisor derives the write
-      // credential from it, so a facet given the capability without one has a
-      // filesystem that can read but never write.
-      facet = deps.facets.open({
-        tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
-        concurrency: 1,
-        // WASI mode needs the supervisor capability: it is what backs the
-        // filesystem with the live session VFS instead of a spawn-time copy.
-        // Direct (compute-only) mode has no filesystem at all, so it asks for
-        // no capability and the facet boots fast.
-        syscalls: processFs ? { vfs: processFs, pid, processes: deps.processes } : undefined,
-        // WASI mode: ship the WASI shim source as a facet preamble so
-        // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
-        // no preamble (saves a few KB per submit).
-        preamble: isWasi ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
-      });
-
-      const submitArgs = isWasi
-        ? {
-            processPid: pid,
-            liveOutput: true,
-            mode: 'wasi' as const,
-            wasiArgv,
-            wasiEnv,
-            wasiAbi: wasiAbi ?? undefined,
-            wasiNamespace: WASI_ABI_NAMESPACE[wasiAbi ?? 'preview1'],
-            threads,
-            wasiFs,
-          }
-        : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
-      outcome = (await facet.submit(
-        facetFn,
-        submitArgs,
-        {
-          wasmModules: { 'user.wasm': buf },
-          signal: runSignal,
-        },
-      )) as DispatchOutcome;
-    } catch (e) {
-      // Killed: the program ends as an interrupted one does, with no error of its own.
-      outcome = runSignal.aborted
-        ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) }
-        : { ok: false, error: `dispatch failed: ${errorText(e)}` };
-    } finally {
-      facet?.dispose();
-      inputPump?.stop();
-      if (owned) deps.processes.closeInput(pid);
-      releaseOutput?.();
-      if (releaseOutput) deps.processes.setForeground(pid, false);
-    }
-
-    let exitCode: number;
-    let stdout: string;
-    let stderr: string;
-
-    // The facet's `ok` field encodes "clean exit (code 0, no trap)" — but
-    // for WASI mode, a non-zero proc_exit IS legitimate program output,
-    // not a wasm-runner error. Branch on `mode` first so we surface the
-    // program's exit code unchanged.
-    if (outcome.mode === 'wasi') {
-      // WASI mode: pass through stdout/stderr the wasm wrote via
-      // fd_write. Exit code from proc_exit (or 0 on natural fall-through).
-      // If runStart reported an `error` (wasm trapped, _start missing,
-      // …), append it to stderr but still surface its exitCode (default
-      // 1 from runStart on trap) so callers can distinguish.
-      stdout = outcome.stdout || '';
-      stderr = outcome.stderr || '';
-      if (outcome.error) {
-        stderr = (stderr ? stderr : '') +
-          `wasm-runner: wasi trap: ${outcome.error}\n`;
-      }
-      exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
-      if (opts.env?.NIMBUS_WASI_FS_STATS === '1') stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
-    } else if (!outcome.ok) {
-      // Direct-mode failure or pre-instantiate dispatch failure — shell
-      // sees rc=1 + stderr.
-      exitCode = 1;
-      stdout = '';
-      stderr = `wasm-runner: ${outcome.error}\n`;
-    } else {
-      // Direct mode success: surface the result on stdout. void-return
-      // is success with no output; callers chain `&& echo OK` to detect.
-      stdout =
-        outcome.result === undefined || outcome.result === null
-          ? ''
-          : String(outcome.result) + '\n';
-      stderr = '';
-      exitCode = 0;
-    }
-
-    // Mirror stdout/stderr into the per-PID ring so `logs <pid>`
-    // and the Process tab WS log stream see the output. The
-    // append-then-markExit ordering matches what shellExecuteTracked
-    // does in init.ts:1559+ (Fix 5 contract).
-    if (stdout) {
-      await deps.processes.appendOutputBytes(pid, 'stdout', new TextEncoder().encode(stdout));
-    }
-    if (stderr) {
-      await deps.processes.appendOutputBytes(pid, 'stderr', new TextEncoder().encode(stderr));
-    }
-    try { deps.processes.exit(pid, exitCode); } catch {}
-    try {
-      if (!deps.processes.getExit(pid)) {
-        deps.processes.markExit(pid, exitCode);
-      }
-    } catch {}
-
-    const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
-    return { exitCode, stdout: streamed ? '' : stdout, stderr };
-  };
-}
-
-/**
- * The `wasm-runner` command, whole.
- *
- * Its name, its version, its help and its `--wasi-info` verb belong to the
- * runner, not to whoever registers it. Two callers restating them — a Durable
- * Object session and an embedded workspace — is two places for the help text
- * to drift from the shim it describes.
- */
-export function wasmRunnerSpec(deps: {
-  filesystem: NimbusFilesystemAuthority;
-  facets: FacetHost;
-  processes: SessionProcessSupervisor;
-}): RuntimeSpec {
-  return {
-    name: 'wasm-runner',
-    version: WASM_RUNNER_VERSION,
-    helpText: WASM_RUNNER_HELP,
-    subcommands: {
-      '--wasi-info': async (ctx): Promise<number> => {
-        ctx.stdout.write(formatWasmRunnerWasiInfo());
-        return 0;
-      },
-    },
-    // The registry skips the read-source / shebang-strip / esbuild-transform
-    // flow: args[0] is a .wasm path, and this runner reads the bytes itself.
-    bypassesScriptRead: true,
-    run: makeWasmRunner(deps),
-  };
-}
+};

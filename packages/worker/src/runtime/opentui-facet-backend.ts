@@ -23,13 +23,7 @@
  */
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
-import {
-  OpenTUIWasmBackend,
-  OPENTUI_FFI_TYPES,
-  ARENA_ALIGN,
-  toOffset,
-  viewBytes,
-} from '@nimbus-sh/core/runtime/opentui-wasm-backend.js';
+import { OPENTUI_BACKEND_CLASS_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 
 /** Module-map specifier for the staged OpenTUI wasm32-wasi reactor Module. */
 export const OPENTUI_WASM_MODULE_NAME = 'opentui.wasm';
@@ -54,19 +48,7 @@ export const OPENTUI_BACKEND_GLOBAL = '__nimbusOpenTUIBackend';
  * resolver/git facets. (Parity tests load un-bundled TS source, so they never
  * surface this — only the deployed, esbuild-bundled worker does.)
  */
-const OPENTUI_BACKEND_CLASS_SRC = [
-  'const __defProp = Object.defineProperty;',
-  'const __name = (target, value) => __defProp(target, "name", { value, configurable: true });',
-  `const FFI_TYPE_SET = new Set(${JSON.stringify(OPENTUI_FFI_TYPES)});`,
-  `const ARENA_ALIGN = ${ARENA_ALIGN};`,
-  `const toOffset = ${toOffset.toString()};`,
-  `const viewBytes = ${viewBytes.toString()};`,
-  // esbuild emits `var OpenTUIWasmBackend = class _OpenTUIWasmBackend {…}`, so
-  // `.toString()` is a class EXPRESSION bound to the internal name — injected
-  // bare it would not define `OpenTUIWasmBackend`. Bind it explicitly so the
-  // boot code's `OpenTUIWasmBackend.create(...)` resolves.
-  `const OpenTUIWasmBackend = ${OpenTUIWasmBackend.toString()};`,
-].join('\n');
+const OPENTUI_BACKEND_CLASS_SRC = `const { OpenTUIWasmBackend } = ${OPENTUI_BACKEND_CLASS_SOURCE};`;
 
 /**
  * The facet-runnable backend definition: the WASI preamble + the backend class.

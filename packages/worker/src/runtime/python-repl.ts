@@ -1,4 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -311,7 +312,7 @@ class PythonReplAdapter implements ReplAdapter {
     const pool = this.pool;
     if (!pool) throw new Error('Python REPL is not initialized');
     const response = await pool.submitRequest(
-      pythonReplStepRequestFn,
+      PYTHON_REPL_TASK,
       new Request('https://facet.internal/python-repl-step', {
         method: 'POST',
         body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),

@@ -20,8 +20,8 @@
  * main and bin candidates in the operating system's order), an `init-module`
  * (~/.npm-init.js) is not run, and a git initializer is refused.
  */
-import hostedGitInfo from 'hosted-git-info';
-import npa, { type Result as NpaResult } from 'npm-package-arg';
+import { hostedGitInfo, npa } from '../../../../_shared/npm-libs.js';
+import type { Result as NpaResult } from 'npm-package-arg';
 import semver from 'semver';
 import validateLicense from 'validate-npm-package-license';
 import validateName from 'validate-npm-package-name';

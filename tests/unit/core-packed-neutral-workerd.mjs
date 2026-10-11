@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from 'esbuild';
@@ -45,7 +45,7 @@ export default { fetch(request, env) { return env.WORKSPACES.get(env.WORKSPACES.
   writeFileSync(join(root, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
  services = [(name = "main", worker = (
-  modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26",
+  modules = [(name = "main.js", esModule = embed "main.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat"],
   durableObjectNamespaces = [(className = "Workspace", uniqueKey = "packed-core", enableSql = true)],
   durableObjectStorage = (inMemory = void), bindings = [(name = "WORKSPACES", durableObjectNamespace = "Workspace")]
  ))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]

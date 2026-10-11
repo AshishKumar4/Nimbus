@@ -36,7 +36,7 @@
  */
 
 import type { RpcStub, WorkerEntrypoint } from 'cloudflare:workers';
-import { ESBUILD_NAME_MODULE_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
+import { INNER_DO_ADAPTER_SOURCE } from './compiled-bodies.generated.js';
 
 /**
  * The id string a name gives: deterministic (FNV-style, 64-bit hex), with the
@@ -204,9 +204,8 @@ export function innerWorkerModules(bundle: string, names: readonly string[]): {
   const adapter = [
     "import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';",
     `import * as main from './${MAIN_MODULE}';`,
-    // The functions below are serialized from the bundled worker, which wraps them in __name.
-    ESBUILD_NAME_MODULE_SHIM,
-    `const { ${CLASSES_ENTRYPOINT} } = (${innerDoAdapter.toString()})(${innerDoIdFromName.toString()}, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
+    `const { innerDoAdapter, innerDoIdFromName } = ${INNER_DO_ADAPTER_SOURCE};`,
+    `const { ${CLASSES_ENTRYPOINT} } = innerDoAdapter(innerDoIdFromName, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
     `export { ${CLASSES_ENTRYPOINT} };`,
   ].join('\n');
   return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter }, classesEntrypoint };

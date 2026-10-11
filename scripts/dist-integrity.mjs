@@ -172,6 +172,11 @@ export const BUILD_FIXPOINT = [
     script: 'build',
     why: 'carry the regenerated sources into dist',
   },
+  {
+    cwd: 'packages/fabric',
+    script: 'build',
+    why: 'carry the build-time compiled adapter into dist',
+  },
 ];
 
 /** Everything the build can write. Digested whole, before and after. */

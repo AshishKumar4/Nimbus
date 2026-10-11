@@ -35,6 +35,7 @@ import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { RUBY_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 
@@ -233,7 +234,7 @@ class RubyReplAdapter implements ReplAdapter {
     if (!pool || !wasmBytesAB) throw new Error('Ruby REPL is not initialized');
     const { home, cwd, binName } = this.deps;
     const step: RubyReplStep = { userCode, home, cwd, binName, supervisorPid: this.deps.pid };
-    return await pool.submit(rubyReplStepFacetFn, step, {
+    return await pool.submit(RUBY_REPL_TASK, step, {
       wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
     });
   }

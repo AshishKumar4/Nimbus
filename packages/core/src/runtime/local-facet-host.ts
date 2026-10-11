@@ -36,11 +36,11 @@
 
 import type {
   Facet,
-  FacetFn,
   FacetHost,
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
+import { requireFacetTaskSource, type FacetTaskSource } from './facet-task.js';
 import { requireNetwork, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeFsBridge } from './os-contracts.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
@@ -241,7 +241,7 @@ class RealmFacet implements Facet {
     this.synchronous = spec.syscalls?.vfs.synchronous;
   }
 
-  submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
+  submit<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
     const run = this.queue.then(() => this.call(fn, args, options));
     // The chain must survive a rejected call, or one failure poisons the facet.
     this.queue = run.catch(() => undefined);
@@ -329,7 +329,7 @@ class RealmFacet implements Facet {
     return module;
   }
 
-  private async call<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
+  private async call<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
     if (this.disposed) throw ended(this.spec.tag, 'is disposed');
     const signal = options?.signal;
     signal?.throwIfAborted();
@@ -362,7 +362,7 @@ class RealmFacet implements Facet {
       const { images, sent } = await Promise.race([this.modules(options?.wasmModules), stopping]);
       // Stopped in the turn the modules were ready: not posted.
       if (state.stopped) throw state.stopped;
-      const submit: FacetSubmit = { type: 'submit', id, source: fn.toString(), args, modules: sent };
+      const submit: FacetSubmit = { type: 'submit', id, source: requireFacetTaskSource(fn), args, modules: sent };
       const answered = new Promise<FacetDone | Error>((resolve) => this.waiting.set(id, resolve));
       if (!realm.post(submit)) throw ended(this.spec.tag, 'was submitted arguments that cannot cross to its realm');
       // The call holds this process while it runs.

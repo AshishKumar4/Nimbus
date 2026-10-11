@@ -33,7 +33,8 @@ import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, typ
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { hashSource } from './vendor/serialize.js';
+import { requireFacetTaskSource, type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import {
   beginLoaderFetch,
@@ -65,19 +66,6 @@ function infrastructureSupervisorProps(ctx: DurableObjectState, pid: number, opt
   return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
     ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure' as const, ...egress };
 }
-
-/**
- * A function dispatched into a facet isolate, with the bindings that facet was
- * minted with as its second argument.
- *
- * Declared through a method so the bindings parameter compares BIVARIANTLY: a
- * task body annotates the exact surface it calls (`env.SUPERVISOR` is the
- * embedder's RPC class, which the fabric cannot name), and accepting that
- * narrowing is the whole point of handing the bindings over.
- */
-export type FacetTaskFn<A, R> = {
-  task(args: A, env: FacetBindings): R | Promise<R>;
-}['task'];
 
 /** The one binding a pool needs off whichever env its host hands it. */
 export interface IsolatePoolEnv {
@@ -1029,8 +1017,8 @@ export class IsolatePool {
     throw named;
   }
 
-  #prepare(fn: Function): { fnSource: string; fnHash: string } {
-    const fnSource = serializeFunction(fn);
+  #prepare<A, R>(fn: FacetTaskSource<A, R>): { fnSource: string; fnHash: string } {
+    const fnSource = requireFacetTaskSource(fn);
     const fnHash = hashSource(fnSource);
     return { fnSource, fnHash };
   }
@@ -1040,7 +1028,7 @@ export class IsolatePool {
    * throws TimeoutError / RetryExhaustedError / ExecutionError.
    */
   async submit<T, R>(
-    fn: FacetTaskFn<T, R>,
+    fn: FacetTaskSource<T, R>,
     arg: T,
     opts?: IsolateCallOptions,
   ): Promise<Awaited<R>> {
@@ -1080,7 +1068,7 @@ export class IsolatePool {
    * decodes its own payload.
    */
   async submitRequest(
-    fn: (request: Request, env: FacetBindings) => Response | Promise<Response>,
+    fn: FacetTaskSource<Request, Response>,
     request: Request,
     opts?: IsolateCallOptions,
   ): Promise<Response> {
@@ -1118,7 +1106,7 @@ export class IsolatePool {
    * Results are returned in input order. Failure handling per `onError`.
    */
   async map<T, R>(
-    fn: FacetTaskFn<T, R>,
+    fn: FacetTaskSource<T, R>,
     items: T[],
     opts?: IsolateMapOptions,
   ): Promise<Array<Awaited<R> | null>> {

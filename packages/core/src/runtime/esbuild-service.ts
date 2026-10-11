@@ -11,6 +11,7 @@
  */
 
 import type { Awaitable } from '../vfs/vfs.js';
+import { ESBUILD_FACET_RUNTIME_SOURCE, TRANSFORM_FACET_RUNTIME_SOURCE } from './compiled-bodies.generated.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
@@ -532,7 +533,7 @@ export async function buildWithEsbuild(
 
 /** Source the esbuild facet evaluates next to esbuild: its build helpers. */
 export function generateEsbuildFacetRuntimeSource(): string {
-  return [isBuildFailure.toString(), serializableMessage.toString(), buildWithEsbuild.toString()].join('\n');
+  return `const { buildWithEsbuild } = ${ESBUILD_FACET_RUNTIME_SOURCE};`;
 }
 
 /**
@@ -541,7 +542,7 @@ export function generateEsbuildFacetRuntimeSource(): string {
  * (oxc-transform.ts's in the facet).
  */
 export function generateTransformFacetRuntimeSource(): string {
-  return [transformWithEsbuild.toString(), runTransformRequest.toString()].join('\n');
+  return `const { runTransformRequest } = ${TRANSFORM_FACET_RUNTIME_SOURCE};`;
 }
 
 /** One transform a {@link EsbuildTransformHost} runs. */

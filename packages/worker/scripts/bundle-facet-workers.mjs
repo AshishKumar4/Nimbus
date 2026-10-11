@@ -74,6 +74,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from 'acorn';
 
 import { amaroFacetDriver } from './amaro-driver.mjs';
+import { compileFacetBodies } from './compile-bodies.mjs';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { stageRuntimeAsset } from './stage-asset.mjs';
@@ -843,6 +844,7 @@ function stageOxcFacet(src) {
 }
 
 async function main() {
+  await compileFacetBodies();
   // 1. Tar-parser preamble (existing W2.5/W4 hot-path helpers).
   const tarStripped = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'tarball-stream.ts'),

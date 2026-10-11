@@ -23,6 +23,7 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView, type ProcessView } from './process-files.js';
 import type { Facet, FacetHost } from './facet-host.js';
@@ -214,7 +215,7 @@ export async function createBashFacetSession(deps: {
       try {
         if (facet.submitRequest) {
           const response = await facet.submitRequest(
-            bashRequestStep,
+            BASH_REQUEST_TASK,
             new Request('https://bash-facet.invalid/step', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -224,7 +225,7 @@ export async function createBashFacetSession(deps: {
           );
           raw = await response.json();
         } else {
-          raw = await facet.submit<BashStepArgs, unknown>(bashFacetStep, args, { signal });
+          raw = await facet.submit<BashStepArgs, unknown>(BASH_STEP_TASK, args, { signal });
         }
       } catch (error) {
         // An aborted step leaves the facet's session dead.
