@@ -101,11 +101,35 @@ function redactSecrets(text: string, secrets: readonly string[]): string {
   return out;
 }
 
-/** A URL's scheme is transport syntax, not secret-bearing input (a password "p" must not redact "http"). */
-function redactDestination(url: string, secrets: readonly string[]): string {
-  const scheme = url.indexOf('://');
-  const prefix = scheme < 0 ? 0 : scheme + 3;
-  return url.slice(0, prefix) + redactSecrets(url.slice(prefix), secrets);
+/** Mask component data, never the delimiters that give the destination its structure. */
+function redactDestination(url: string, secrets: readonly string[], credentialPrompt = false): string {
+  if (!URL.canParse(url)) return '<invalid remote URL>';
+  const parsed = new URL(url);
+  parsed.password = '';
+  if (!credentialPrompt) parsed.username = '';
+  else {
+    const username = unescapeUserinfo(parsed.username);
+    const safe = redactSecrets(username, secrets);
+    if (safe !== username) parsed.username = encodeURIComponent(safe);
+  }
+  parsed.pathname = parsed.pathname.split('/').map((token) => {
+    const data = unescapeUserinfo(token);
+    const safe = redactSecrets(data, secrets);
+    return safe === data ? token : encodeURIComponent(safe);
+  }).join('/');
+  const query = new URLSearchParams();
+  let queryChanged = false;
+  for (const [name, data] of parsed.searchParams) {
+    const safe = redactSecrets(data, secrets);
+    queryChanged ||= safe !== data;
+    query.append(name, safe);
+  }
+  if (queryChanged) parsed.search = query.toString();
+  const fragment = unescapeUserinfo(parsed.hash.slice(1));
+  const safeFragment = redactSecrets(fragment, secrets);
+  if (safeFragment !== fragment) parsed.hash = encodeURIComponent(safeFragment);
+  const result = parsed.href;
+  return credentialPrompt && result.endsWith('/') ? result.slice(0, -1) : result;
 }
 
 /**
@@ -116,13 +140,13 @@ function redactDestination(url: string, secrets: readonly string[]): string {
  */
 export function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets: readonly string[] = []): string {
   // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
-  const shown = redactDestination(anonymizeUrl(url.endsWith('/') ? url : url + '/'), secrets);
+  const shown = redactDestination(url.endsWith('/') ? url : url + '/', secrets);
   if (failure.kind === 'transport') return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
   // A 401 asks for what was not offered (credential_fill), and there is no terminal to ask at.
   if (failure.status === 401 && !credentials.password) {
     const what = credentials.username ? 'Password' : 'Username';
     const prompt = credentialDescription(url, credentials.username);
-    const safePrompt = redactDestination(prompt, secrets);
+    const safePrompt = redactDestination(prompt, secrets, true);
     return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
   const remote = redactCredentials(failure.message ?? '', secrets).trim();
