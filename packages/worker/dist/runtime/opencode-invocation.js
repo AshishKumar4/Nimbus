@@ -1,4 +1,6 @@
-import parseArgv from 'yargs-parser';
+// Only tokenization is used: the official browser export has the same grammar
+// without Node's module-scope createRequire(import.meta.url) or config I/O.
+import parseArgv from 'yargs-parser/browser';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 /** OpenCode's default command is a TUI, even when its first operand names a project. */
 export function classifyOpenCodeInvocation(argv) {
@@ -86,9 +88,9 @@ export function buildOpenCodeTransportPlan(argv, cwd, env = {}) {
             // Explicit defaults prevent serve's global server config from changing
             // the default command's local-only network disposition.
             serveArgv: ['serve', '--hostname', scalar('hostname') ?? '127.0.0.1', '--mdns', 'false',
-                ...globals, ...(args.cors ?? []).flatMap((domain) => ['--cors', domain])],
+                ...globals, ...(args.cors ?? []).map((domain) => `--cors=${domain}`)],
             attachArgv: [...booleanArg('continue'), ...booleanArg('fork'),
-                ...(session === undefined ? [] : ['--session', session]), ...globals],
+                ...(session === undefined ? [] : [`--session=${session}`]), ...globals],
         };
     }
     catch (error) {

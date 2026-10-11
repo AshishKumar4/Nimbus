@@ -1,4 +1,4 @@
-import parseArgv from 'yargs-parser';
+import parseArgv from 'yargs-parser/browser';
 /** OpenCode's default command is a TUI, even when its first operand names a project. */
 export declare function classifyOpenCodeInvocation(argv: string[]): 'oneshot' | 'attached' | 'server' | 'dual';
 export declare function parseOpenCodeArgv(argv: string[]): parseArgv.DetailedArguments;

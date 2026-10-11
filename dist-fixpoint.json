@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e1ad5f9c8b7c8640b88fcf35b26586730563e1fb2ac056b8aa3a827841919743",
+  "fingerprint": "687195264ba9d71dffeacf4575872039afd9401c0d8cf36391d0e3ffed1dc2d4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2424,9 +2424,9 @@
     "packages/worker/dist/runtime/opencode-facet-runner.d.ts": "35bb7fde5cb58173b92112510c8da88dd7e9b2c54f1cbe536f382c1dacb7e9b3",
     "packages/worker/dist/runtime/opencode-facet-runner.d.ts.map": "2e965e42a76459273eecdeb311e7e5345738c39e4a37c9a2afe96e03dabd1305",
     "packages/worker/dist/runtime/opencode-facet-runner.js": "a78026c3478fe08c5cdba1830a6dd97baf3d0d7c78f9e62fe9332b9dd7f9efd2",
-    "packages/worker/dist/runtime/opencode-invocation.d.ts": "9bf5dd189d3960e2fd41635b4dd6104f0bca198f694428f5f0512979398066d0",
-    "packages/worker/dist/runtime/opencode-invocation.d.ts.map": "cc1387ccfc4bc1419c8287e521c136cc77495e91b71041691357d0e526e5141f",
-    "packages/worker/dist/runtime/opencode-invocation.js": "dc064d5737bc2fc5d5ee0838c3b57c7aa35adb3728694b7f068d2aaa16edc644",
+    "packages/worker/dist/runtime/opencode-invocation.d.ts": "d09efdbec8b97d95b63956d22738a1b3c144de9465eaa18be451bea0756ecbc0",
+    "packages/worker/dist/runtime/opencode-invocation.d.ts.map": "7f372f8911b7d3729a257919688cf935086006538d78c5498dbf208a41d07c40",
+    "packages/worker/dist/runtime/opencode-invocation.js": "a082e83a974383c5d054bd153e44bc13a1ca4b22eb9017de2b4eaf3acdbea428",
     "packages/worker/dist/runtime/opentui-facet-backend.d.ts": "14109310530341de73ea0c7ce91e0fd5ad009886c48d829ad5f06f9295b2c6cf",
     "packages/worker/dist/runtime/opentui-facet-backend.d.ts.map": "ee50a2e46585993838104199688fb7056200bd6bac4ea4ea1ba917d6b38fffdf",
     "packages/worker/dist/runtime/opentui-facet-backend.js": "efe55e8856bd012ea0b0a71a39782a56377e756e6c254e287721622f8ba012a7",
@@ -2944,7 +2944,7 @@
     "packages/worker/src/runtime/node-ws-upgrade.ts": "05e7fc6f8af74eff98b1133d78fe478f782e19a32a5f1f39f7f6c39a9e15d7c2",
     "packages/worker/src/runtime/opencode-artifact.ts": "24fee0d208fd50a0d1f0f8c9dc8ed03182b4fa0a64e0448f819582c997e0009c",
     "packages/worker/src/runtime/opencode-facet-runner.ts": "ae88f4f9b3d7a4cad5d23d2cd219b9f1a6574768a79146049cbbd181be823ada",
-    "packages/worker/src/runtime/opencode-invocation.ts": "1542227dea4ad31a1e0bd8e146d315fc917cbbc18fc7a8eda20af5167b9dc998",
+    "packages/worker/src/runtime/opencode-invocation.ts": "cfd49933f91dd64f72969be33bfffb74eb5810d9a367147a376ed862a4c25c57",
     "packages/worker/src/runtime/opentui-facet-backend.ts": "94ce09aac7567515d13a4a81cf8537714745f9997e20d8c72605deb9633db90a",
     "packages/worker/src/runtime/opentui-wasm-bytes.ts": "bd65ffccb0315a7e1ffc833b04207799095026eda156b7f2463f674d54be7fce",
     "packages/worker/src/runtime/oxc-wasm-bytes.ts": "3f7c6b221e77fd50827f8f8231d6abbd591e61b9a45df6fbd1bbc8bf10c5362e",
@@ -3008,6 +3008,7 @@
     "packages/worker/src/sqlite-wasm-bundle.generated.ts": "d66507810a5cfff08991e9d496723bdee884d2f4912904c04ca6144a56053add",
     "packages/worker/src/tailwind-play.generated.ts": "508a577936c065c7c4dc7c448e74f0568f7922d09957ef872bab92cc0fb07f7b",
     "packages/worker/src/types/diff.d.ts": "755443898573fbbbb849388dcd17dd01adb8cff9bf3e16497353e366983ed6a3",
+    "packages/worker/src/types/yargs-parser-browser.d.ts": "5f397448e1b67e1b16501dc3b8df6e97ffb16c81daef2c3639a41e3784e1e16f",
     "packages/worker/src/vfs/facet-resident-limits.ts": "3f5e781d4872c84ca6cd65916b7919810a7c0a743b4d0658d7d24afb6bae62ab",
     "packages/worker/src/vfs/facet-resident-store.ts": "7761fd7c1fe62c894440a71a8e803114f6772f126bb947b8fbc8718170ceb45b",
     "packages/worker/src/workspace-host.ts": "816e14307a8cdf211c77405d00fa71f7ffeb105c5c6d008cfc982e20e5b2dce5",
