@@ -148,6 +148,16 @@ export class TestEgress extends WorkerEntrypoint {
 export class TestTlsEgress extends TestEgress {
   override async connect(socket: Socket): Promise<void> {
     const { localAddress } = await socket.opened as { localAddress?: string };
+    if (localAddress === 'tcp-refused.invalid:7') throw new Error('egress refused this TCP destination');
+    if (localAddress === `${EGRESS_TEST_HOST}:7`) {
+      const reader = socket.readable.getReader();
+      const first = await reader.read();
+      reader.releaseLock();
+      const writer = socket.writable.getWriter();
+      if (!first.done) await writer.write(first.value);
+      await writer.close();
+      return;
+    }
     if (localAddress !== `${EGRESS_TEST_HOST}:443`) return super.connect(socket);
     await readRequestLine(socket.readable);
     const writer = socket.writable.getWriter();

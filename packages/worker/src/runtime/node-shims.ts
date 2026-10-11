@@ -164,6 +164,7 @@ function __nimbusRawSocket() {
 if (typeof __real_net !== "undefined") {
   const __realNet = __real_net.default ?? __real_net;
   const __NativeSocket = __realNet.Socket;
+  const __egressSocketHolds = new WeakMap();
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
   // What a connect refuses before it opens anything (a bad port, a missing
   // one, a lookup that is no function), thrown from connect as Node throws
@@ -188,6 +189,18 @@ if (typeof __real_net !== "undefined") {
       // Already connecting: the native connect refuses it, opening nothing.
       if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
       __nativeConnectChecks((Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args))[0]);
+      if (globalThis.__nimbusEgress === true && !__egressSocketHolds.has(this)) {
+        const socket = this;
+        const hold = __nimbusHoldSocket();
+        __egressSocketHolds.set(socket, hold);
+        const ref = socket.ref, unref = socket.unref;
+        socket.ref = function () { hold(true); return Reflect.apply(ref, this, arguments); };
+        socket.unref = function () { hold(false); return Reflect.apply(unref, this, arguments); };
+        socket.once('close', () => {
+          hold(false); __egressSocketHolds.delete(socket);
+          socket.ref = ref; socket.unref = unref;
+        });
+      }
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
@@ -10924,6 +10937,11 @@ ${NODE_WS_UPGRADE_SOURCE}
 // ERR_NET_SOCKET_NOT_AVAILABLE so callers fail loud.  W8 will route
 // raw outbound TCP through supervisor RPC.
 builtins.net = (() => {
+  if (globalThis.__nimbusEgress === true && typeof __real_net !== 'undefined') {
+    const native = __real_net.default ?? __real_net;
+    return { ...native, get Server() { return builtins.http.Server; },
+      createServer: (options, handler) => builtins.http.createServer(typeof options === 'function' ? options : handler) };
+  }
   class Socket extends __eventsMod {
     constructor() {
       super();

@@ -29,6 +29,22 @@ try {
     assert.equal(result.status, 0, result.stdout);
     assert.match(result.stdout, /secure true true/);
     assert.match(result.stdout, /answer via-egress-tls egress-test\.invalid:443 HEAD \/tls-proof HTTP\/1\.0/);
+    const plain = await run(`
+      const net = require('net');
+      const socket = net.connect(7, 'egress-test.invalid', () => socket.write(Buffer.from([0, 128, 255])));
+      const parts = [];
+      socket.on('data', (part) => parts.push(part));
+      socket.on('end', () => console.log('tcp', socket instanceof net.Socket, [...Buffer.concat(parts)].join(',')));
+      socket.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+    `);
+    assert.equal(plain.status, 0, plain.stdout);
+    assert.match(plain.stdout, /tcp true 0,128,255/);
+    const refusedTcp = await run(`
+      const socket = require('net').connect(7, 'tcp-refused.invalid');
+      socket.on('error', (error) => console.log('refused TCP', error.message));
+    `);
+    assert.equal(refusedTcp.status, 0, refusedTcp.stdout);
+    assert.match(refusedTcp.stdout, /refused TCP .*egress refused this TCP destination/);
     const rejected = await run(`
       const socket = require('tls').connect(443, 'tls-refused.invalid', () => console.log('unexpected secureConnect'));
       socket.on('error', (error) => console.log('refused', error.message));
@@ -66,3 +82,13 @@ try {
     assert.match(result.stdout, /ERR_NIMBUS_EGRESS_TLS Nimbus: TLS sockets are not available/);
   } finally { await terminal.close(); }
 } finally { await without.stop(); }
+
+const isolate = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: '0' } });
+try {
+  const terminal = await localTerminal(isolate, { install: [] });
+  try {
+    const result = await terminal.run(`node -e "const s=require('net').connect(7,'egress-test.invalid'); s.on('error',e=>console.log(e.code+' '+e.message));"`, 60000);
+    assert.equal(result.status, 0, result.stdout);
+    assert.match(result.stdout, /ERR_NET_SOCKET_NOT_AVAILABLE net.Socket: outbound TCP from Nimbus facet not yet supported/);
+  } finally { await terminal.close(); }
+} finally { await isolate.stop(); }
