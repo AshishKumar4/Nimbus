@@ -126,6 +126,19 @@ const watches = () => scheduled.filter(([task]) => task === 'hosting-watch');
   assert.deepEqual(alarms, [], 'the embedder\'s alarm is still left alone');
 }
 
+// Old peer mode was throwaway-only. Its unnameable rows retire, not a guessed facet.
+await ctx.storage.put('hosting:legacy-key', { coordinatorDoId: COORDINATOR, workerKey: 'legacy-key', capability: 'legacy' });
+const warnings = [], warn = console.warn, abortFacet = ctx.facets.abort;
+console.warn = (...args) => warnings.push(args.join(' '));
+ctx.facets.abort = () => assert.fail('legacy cleanup cannot guess a physical facet');
+try {
+  await runtime.supervisorOp({ op: 'cancelHostProcess', args: ['legacy-key'] });
+  await runtime.supervisorOp({ op: 'cancelHostProcess', args: ['legacy-key'] });
+  assert.equal(await ctx.storage.get('hosting:legacy-key'), undefined);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /peer facet could not be named/);
+} finally { console.warn = warn; ctx.facets.abort = abortFacet; }
+
 await runtime.close();
 console.log('hosted-runtime-hosting-watch: ok');
 process.exit(0);
