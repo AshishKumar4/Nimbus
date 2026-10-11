@@ -319,7 +319,6 @@ class PeerProcessHost {
                 pid: supervisor.pid,
                 writerId: params.writerId,
                 hostIncarnation: supervisor.hostIncarnation,
-                // The workspace's egress crosses to the peer, which mints the process's binding with it.
                 network: networkRef(this.network()),
                 workerKey: params.workerKey,
                 webSocketCapability,
