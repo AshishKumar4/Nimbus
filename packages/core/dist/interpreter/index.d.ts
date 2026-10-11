@@ -62,10 +62,12 @@ export interface Interpreter {
      * The module cell for a file's text: Node's wrapper function of
      * (exports, require, module, __filename, __dirname). CommonJS text runs as
      * that function's body; an ES module is linked as runtime/esm-interop.ts
-     * says, with the host's moduleHelpers. `javaScript`: the text is
-     * JavaScript whatever the path's extension (a TypeScript file's emit).
+     * says, with the host's moduleHelpers. Which one the text is, is
+     * `format` where the loader knows it (an `.mjs`, a "type"), else its
+     * syntax (Node's detection). `javaScript`: the text is JavaScript
+     * whatever the path's extension (a TypeScript file's emit).
      */
-    compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean): ModuleCell;
+    compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean, format?: 'module' | 'commonjs'): ModuleCell;
     /**
      * A function returning the value of the script `code` when it is one
      * expression (scriptExpression): vm.runInThisContext's code, as node-shims

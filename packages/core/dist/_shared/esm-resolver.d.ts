@@ -66,10 +66,15 @@ export interface EsmResolver {
      * answer is immediate: the package.json path its scope reads, and the
      * "type" it declares.
      */
-    packageScopeSync(url: string): {
-        pjsonPath: string;
-        type: 'module' | 'commonjs' | 'none';
-    };
+    packageScopeSync(url: string): PackageScope;
+    /** packageScopeSync over a host whose answers may be promises. */
+    packageScope(url: string): Promise<PackageScope>;
+}
+/** Node's package scope of a file: whether a package.json governs it, its path, and the "type" it declares. */
+export interface PackageScope {
+    readonly exists: boolean;
+    readonly pjsonPath: string;
+    readonly type: 'module' | 'commonjs' | 'none';
 }
 /** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
 export declare function unknownFileExtensionMessage(path: string): string;

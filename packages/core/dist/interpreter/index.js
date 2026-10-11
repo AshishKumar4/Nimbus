@@ -240,7 +240,11 @@ function hasModuleSyntax(program) {
  * import or export declarations, or when it parses only as one (top-level
  * await, import.meta); else CommonJS, a script whose top level may return.
  */
-function moduleProgram(text) {
+function moduleProgram(text, format) {
+    if (format === 'module')
+        return { module: true, program: ownProgram(parseQuick(text, MODULE_OPTIONS)) };
+    if (format === 'commonjs')
+        return { module: false, program: ownProgram(parseQuick(text, COMMONJS_OPTIONS)) };
     let module = null;
     try {
         module = ownProgram(parseQuick(text, MODULE_OPTIONS));
@@ -309,12 +313,12 @@ export function createInterpreter(hostOps, host) {
             releaseScopes(root);
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileModule(path, text, origin, javaScript = false) {
+        compileModule(path, text, origin, javaScript = false, format) {
             if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
             const moduleHost = unitHost(host, origin, parentUrl);
-            const parsed = moduleProgram(text);
+            const parsed = moduleProgram(text, format);
             if (parsed.module) {
                 const program = parsed.program;
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
