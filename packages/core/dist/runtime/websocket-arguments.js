@@ -72,11 +72,13 @@ export function webSocketConstructor(input, options) {
 }
 export function webSocketSend(value) {
     if (object(value)) {
-        const tag = value[Symbol.toStringTag];
-        if (value instanceof Blob || ((tag === 'Blob' || tag === 'File')
-            && (typeof value.stream === 'function' || typeof value.arrayBuffer === 'function'))) {
-            const blob = value;
-            return blob;
+        if (value instanceof Blob)
+            return value;
+        if (typeof value === 'object') {
+            const tag = value[Symbol.toStringTag];
+            if ((tag === 'Blob' || tag === 'File') && (('stream' in value && typeof value.stream === 'function')
+                || ('arrayBuffer' in value && typeof value.arrayBuffer === 'function')))
+                return value;
         }
         if (ArrayBuffer.isView(value) || isArrayBuffer(value)) {
             const buffer = ArrayBuffer.isView(value) ? value.buffer : value;

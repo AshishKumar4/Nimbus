@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "be0bd33f693a0e17ca9cf53cc68ba7cdec1328c7ce09004646c1a8cc5cce8879",
+  "fingerprint": "40383c5905b5f1c073b69734af50d3fc71755d6a8c0bd451a09584d9c9b77324",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -684,7 +684,7 @@
     "packages/core/dist/runtime/wave-router.js": "76389addb66331059425a8d1f1ca65b62093c5b9ea6e9f26f3bbf77ebcd19796",
     "packages/core/dist/runtime/websocket-arguments.d.ts": "fce0512c8a8b4f7084711009d4aec1ece84dc148797a330f82e2b114cf114a66",
     "packages/core/dist/runtime/websocket-arguments.d.ts.map": "f374b27396ee020c7841c32305fb1d473008b55a794e11896758353bef111f05",
-    "packages/core/dist/runtime/websocket-arguments.js": "ebd688cb1deda92c87848db6282944cfe1f1b394f2b826800f41f00631ef5de5",
+    "packages/core/dist/runtime/websocket-arguments.js": "54258ae924e872b16068f4a1a440c2dbcf0113305040b17b6c29188108430042",
     "packages/core/dist/shell/elevation-commands.d.ts": "5faafb1c8ebbb0e38b4c0a7a543d3ab1dff581d597b82b38f75654278be80e72",
     "packages/core/dist/shell/elevation-commands.d.ts.map": "b1400f5502e461b1b403edf60af8db677cfe2e8aeded4a73dde631baab690d1a",
     "packages/core/dist/shell/elevation-commands.js": "fcf1e7ea8e29e7974ec0a177fb7ff0c52ae45efeb361d877549fd6d9e03e0d9d",
@@ -1446,7 +1446,7 @@
     "packages/core/src/runtime/wasm-memory.ts": "419a1c9dfbb10eaf906487ffa820453190efb6a983f801bebc73dc0ee9269f88",
     "packages/core/src/runtime/wasm-runner.ts": "de1c1dd50ecd6b464bea7c4fac76d19e2f5c1a2ff8fe0db8f7dc1b2ee6d57cc1",
     "packages/core/src/runtime/wave-router.ts": "ce91ed5bfca072a033271f4081df1ab94b0f0df08f2cddf561193cd7e2dd3ef7",
-    "packages/core/src/runtime/websocket-arguments.ts": "39e4316058a58bc1116ef1b6911055ceacd4b75bb123b80e50378c19e2c4edc0",
+    "packages/core/src/runtime/websocket-arguments.ts": "0e6ddf36bb94148f61d0b666d38b07c128977b21500b05db45ab2f8b000bdf08",
     "packages/core/src/shell/elevation-commands.ts": "9e14a3560a23ee540f4fe258d4bac2a3e6495229e0d62912c5b8227ee76f928e",
     "packages/core/src/shell/exec-dispatch.ts": "e939ea137c65ec8fc4b430d50607fd7f7816497856f44dbfcbeb29f8b9738b71",
     "packages/core/src/shell/features.ts": "3608743c6c60b6691fdad542b917cc54a32b0f70d35f69e7478a3052f5648756",
