@@ -306,7 +306,9 @@ async function expectDecodeFailure(value, pattern) {
     const harness = createSqliteVfsTestHarness();
     const engine = new SqliteVFS(harness.sql, harness.ctx);
     const kernel = engine.as(CRED_KERNEL);
-    await assert.rejects(kernel.writeStream(streamBytes(misframed, 7)), pattern, `${what} is refused`);
+    const answer = await kernel.writeStream(streamBytes(misframed, 7));
+    assert.equal(answer.ok, false, `${what} is refused`);
+    assert.match(answer.error.message, pattern, `${what}: refused by the decoder's own check`);
     for (const path of ['dir', 'empty.txt', 'one.bin', 'dir/many.bin']) {
       assert.equal(kernel.exists(path), false, `${what}: ${path} was not stored`);
     }
