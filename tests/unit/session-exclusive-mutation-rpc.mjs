@@ -125,6 +125,7 @@ for (const delivered of [false, true]) {
       };
     },
     processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+    ensureFacetManager() { this.facetManager ??= { async closeLaunches() {} }; return { manager: this.facetManager }; },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],

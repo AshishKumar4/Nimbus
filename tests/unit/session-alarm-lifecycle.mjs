@@ -225,6 +225,10 @@ function makeDestroyHost(storage) {
     shell: null,
     kernel: null,
     facetManager: null,
+    ensureFacetManager() {
+      this.facetManager ??= { kill: () => false, async closeLaunches() {} };
+      return { manager: this.facetManager };
+    },
     portRegistry: { unregisterByPid() {} },
     viteDevServer: null,
     cirrusReal: null,

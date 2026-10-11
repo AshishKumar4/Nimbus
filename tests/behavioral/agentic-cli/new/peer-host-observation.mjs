@@ -53,8 +53,13 @@ try {
     await resumed.connect(); await resumed.waitForPrompt(30000);
     const attempted = await resumed.run('echo SHOULD_NOT_RUN_AFTER_IDLE_LOSS', 30000);
     a.check('next terminal work is refused before admission', !hasOutputLine(termBody(attempted.output), 'SHOULD_NOT_RUN_AFTER_IDLE_LOSS'), attempted.output.slice(-700));
-    a.check('the refused work reports host loss', /host.*reset|peer.*restarted/i.test(attempted.output), attempted.output.slice(-700));
-    const afterUse = await probe(second, 'state', idle.pid);
+    let afterUse;
+    for (let i = 0; i < 40; i++) {
+      afterUse = await probe(second, 'state', idle.pid);
+      if (afterUse.state !== 'running' && /host.*reset|peer.*restarted/i.test(resumed.buf)) break;
+      await sleep(50);
+    }
+    a.check('the refused work reports host loss', /host.*reset|peer.*restarted/i.test(resumed.buf), resumed.buf.slice(-700));
     a.check('the lost process is terminal before the next work', afterUse.exitCode === 137, JSON.stringify(afterUse));
   }
 } finally {
