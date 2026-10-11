@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -168,6 +169,38 @@ for (const kind of ['deletes', 'directories']) {
   assert.equal(result.committedOps, N);
   assert.equal(kernel.readdir('home/user/proj/calls').length, 0);
   assert.ok(turns >= 1 && turns <= Math.ceil(N / 512), `${turns} turns for ${N} unlink calls`);
+}
+
+// ── Files a wave writes to a mount owe their turn by the bytes they wrote ──
+// Each routed file commits on its own (its mount's call), at its file-end:
+// five of 300 KiB are past a call group's bytes (CALL_GROUP_BYTES), and owe
+// a turn as a group of that size here does.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  const files = new ProcessFiles(engine);
+  const mounted = new MemoryVFS();
+  files.vfs.mount('/mnt', mounted);
+  const size = 300 * 1024;
+  const inodes = [];
+  const chunks = [];
+  for (let i = 0; i < 5; i++) {
+    const path = `mnt/f${i}`;
+    const data = new Uint8Array(size).fill(i);
+    inodes.push({ path, parentPath: 'mnt', kind: 'file', isDir: false, size, mtime: 1, mode: 0o644, chunkCount: Math.ceil(size / 65536) });
+    for (let c = 0; c * 65536 < size; c++) chunks.push({ path, chunkId: c, data: data.subarray(c * 65536, Math.min(size, (c + 1) * 65536)) });
+  }
+  let turns = 0;
+  const result = await engine.as(CRED_KERNEL).writeStream(encodeWriteBatchStream({ inodes, chunks }), {
+    turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  console.log(JSON.stringify({ kind: 'routed', groups: result.committedGroupSequence, turns }));
+  assert.equal(mounted.readFile('/f4').byteLength, size);
+  assert.ok(turns >= 1, `${turns} turns for ${5 * size} bytes written to a mount`);
 }
 
 console.log('wave-apply-turns: ok');
