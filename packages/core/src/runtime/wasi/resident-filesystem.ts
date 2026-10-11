@@ -311,6 +311,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (typeof name === 'string' && DESCRIPTOR_CALLS.has(name) && typeof args[0] === 'number' && directoryPool?.closed(args[0])) {
           throw fsError('EBADF', name, String(args[0]));
         }
+        for (const arg of args) {
+          if (arg && typeof arg === 'object' && 'directory' in arg && 'path' in arg
+            && typeof arg.directory === 'number' && typeof arg.path === 'string' && directoryPool?.closed(arg.directory)) {
+            throw fsError('EBADF', String(name), String(arg.directory));
+          }
+        }
         if (holder !== null && typeof name === 'string' && NAME_OR_ACCESS_CHANGES.has(name)) holder.changing();
         return holder !== null && holder.pending()
           ? timed(holder.send().then(() => Reflect.apply(value, target, args)))
