@@ -32,7 +32,9 @@ function setup() {
   assert.deepEqual(t.failures, [], 'idle cancellation is not host loss');
   t.change();
   let admitted = false;
-  await assert.rejects(t.activity.run(() => { admitted = true; }), /restarted without its process/);
+  const lease = t.activity.acquire();
+  try { await assert.rejects(lease.ready.then(() => { admitted = true; }), /restarted without its process/); }
+  finally { lease.release(); }
   assert.equal(admitted, false, 'wake validates the old incarnation before new work');
   assert.equal(t.failures.length, 1);
   t.remove();
@@ -100,11 +102,13 @@ console.log('host-activity: idle, shared active watches, abort, wake validation 
   const activity = new HostActivity(), response = Promise.withResolvers();
   activity.observe(() => response.promise, () => assert.fail('closure is not host loss'));
   let admitted = false;
-  const work = activity.run(() => { admitted = true; });
+  const lease = activity.acquire();
+  const work = lease.ready.then(() => { admitted = true; });
   await turns();
   activity.close();
   response.resolve(new Response(new ReadableStream(), { headers: { [HOST_INCARNATION_HEADER]: 'late' } }));
   await assert.rejects(work, /abort/i);
+  lease.release();
   assert.equal(admitted, false, 'session close cannot turn cancelled validation into admission');
 }
 

@@ -43,7 +43,6 @@ const ctx = {
 };
 const COORDINATOR = 'coordinator-session';
 const reports = [];
-let failReports = 0;
 const env = {
   WORKSPACES: {
     idFromName(name) { return name; },
@@ -51,7 +50,6 @@ const env = {
     get(id) {
       return {
         async supervisorOp(envelope) {
-          if (failReports > 0) { failReports--; throw new Error('Network connection lost.'); }
           reports.push({ to: id, ...envelope });
           return true;
         },

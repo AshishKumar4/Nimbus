@@ -5,6 +5,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: the retired peer control operations `awaitHostedOpen` and `hostLost`
+  are removed. Staged boot assemblers return the shared `WorkerCode` contract.
 - Fixed: peer process hosts use activity-owned, abortable loss observation and
   validate incarnation on use; idle peers no longer hold a permanent hosting
   RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy

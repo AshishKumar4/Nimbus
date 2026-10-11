@@ -135,7 +135,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
-    /** The facet's isolate dies on its own (out of memory, out of CPU): its held() call rejects with `error`. */
+    /** The facet dies on its own; every active native observation rejects. */
     die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };
 }
@@ -244,14 +244,13 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
 // A `ProcessHost` of either kind, over the SAME facet world, so one suite can
 // be run twice and the two substrates compared assertion for assertion. The
 // peer arm is not a mock of the peer leg: each sibling serves the real
-// `_rpcHostProcess` / `_rpcAwaitHostedOpen` / `_rpcAwaitHostedBoot` /
+// `_rpcHostProcess` / `_rpcAwaitHostedBoot` /
 // `_rpcRouteHostedHttp` / `_rpcCancelHostProcess` legs and the upgrade hop
 // from its own PeerHost, behind a fake `NIMBUS_SESSION` namespace, so what is
 // under test on that arm is the shipped code.
 
 import {
   _rpcAwaitHostedBoot,
-  _rpcAwaitHostedOpen,
   _rpcCancelHostProcess,
   _rpcHostProcess,
   _rpcRouteHostedHttp,
@@ -326,16 +325,13 @@ export function createProcessHost(mode, world, disk, {
 /**
  * A fake `NIMBUS_SESSION` namespace whose sibling sessions host processes
  * through the REAL `_rpc*` host legs, over `world`'s facets. `peers` maps each
- * sibling's name to its state; `peer.die(error)` severs its held host leg
- * exactly as a Durable Object reset severs an inbound call.
+ * sibling's name to its state; `peer.die(error)` ends active watches and calls.
  *
  * `colocated: true` makes every peer report the COORDINATOR's isolate;
- * `peerWithoutFacets: true` gives each peer no `ctx.facets`. `coordinator`
- * (`{ doId, supervisorOp }`) is the session a peer reaches back to through
- * the same namespace. Each peer's storage records the alarm it arms
+ * `peerWithoutFacets: true` gives each peer no `ctx.facets`. Each peer's storage records the alarm it arms
  * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
  */
-export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator, onPeer } = {}) {
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
   const calls = [];
   const stubs = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
@@ -361,17 +357,13 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // accepting the first candidate — would never run under test.
         isolateToken: colocated ? isolateToken() : `peer-isolate-${peers.size}`,
       };
-      // The held host leg is the peer's life. `die()` severs it exactly as a
-      // Durable Object reset severs an inbound call.
+      // A reset closes native watches and rejects any bounded call in flight.
       peer.deathSignal = new AbortController();
       peer.death = new Promise((_, reject) => { peer.die = (error) => { peer.deathSignal.abort(error); reject(error); }; });
       peer.death.catch(() => {});
-      // `reset(error)` is the reset Cloudflare was measured doing (2026-10-07):
-      // the held leg stays open, and every later call to the peer fails with
-      // `error`.
+      // A loss while idle is found on the next request, not by a background watch.
       peer.resetBy = null;
       peer.reset = (error) => { peer.resetBy = error; };
-      // A session arms its hosting watch on its own timer mux (NimbusSession.peerHost).
       peer.peerHost = peerHostFor(ctx, peer.env);
       onPeer?.(peer);
       peers.set(name, peer);
@@ -382,9 +374,6 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
     idFromName: (name) => name,
     idFromString: (id) => id,
     get(name) {
-      if (coordinator !== undefined && name === coordinator.doId) {
-        return { supervisorOp: (envelope) => Promise.resolve().then(() => coordinator.supervisorOp(envelope)) };
-      }
       const peer = peerFor(name);
       calls.push(name);
       // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
@@ -413,7 +402,6 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
           switch (op) {
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
-            case 'awaitHostedOpen': return _rpcAwaitHostedOpen(peer, args[0]);
             case 'awaitHostedBoot': return Promise.race([_rpcAwaitHostedBoot(peer, args[0]), peer.death]);
             case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]);
             case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);

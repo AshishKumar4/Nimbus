@@ -48,7 +48,7 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 
 /** What a builtin run for a process inherits from it: its pid, environment, directory and descriptors. */
-type BuiltinIo = Pick<CommandContext, 'pid' | 'env' | 'cwd' | 'stdin' | 'stdout' | 'stderr' | 'isFdTerminal'>;
+type BuiltinIo = Pick<CommandContext, 'pid' | 'env' | 'cwd' | 'stdin' | 'stdout' | 'stderr' | 'isFdTerminal' | 'signal'>;
 
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
   ASSETS?: Fetcher;
@@ -327,12 +327,11 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         const cmd = await registry.resolve(normalizeCpCommandName(name), resolveContext(cwd, env, view));
         if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
         // It runs here, on the child's own descriptors: a kill stops it.
-        const stop = new AbortController();
-        const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
+        const stopped = self.processes.holdWork(pid);
         try {
           if (stopped.ready) await stopped.ready;
           stopped.signal.throwIfAborted();
-          return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks), stopped.signal)).status;
+          return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks, stopped.signal))).status;
         } finally {
           stopped();
         }
@@ -344,24 +343,24 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
      * terminal: the broker has none to give a child, and a shell that took
      * its stdin for one read nothing from it.
      */
-    const processIo = (pid: number, env: Record<string, string>, cwd: string, stdin: CommandInputStream, hooks: OutputHooks): BuiltinIo => ({
+    const processIo = (pid: number, env: Record<string, string>, cwd: string, stdin: CommandInputStream, hooks: OutputHooks, signal: AbortSignal): BuiltinIo => ({
       pid,
       env,
       cwd,
+      signal,
       stdout: { write: (d: string) => hooks.onStdout(textBytes(String(d))), writeBytes: (d: Uint8Array) => hooks.onStdout(d) },
       stderr: { write: (d: string) => hooks.onStderr(textBytes(String(d))), writeBytes: (d: Uint8Array) => hooks.onStderr(d) },
       stdin,
       isFdTerminal: () => false,
     });
     /** A registry command run as process `io.pid`, on `io`'s descriptors, until `signal` stops it, and how it ended. */
-    const runBuiltin = async (cmd: Command, name: string, args: string[], io: BuiltinIo, signal: AbortSignal): Promise<ChildExit> => {
+    const runBuiltin = async (cmd: Command, name: string, args: string[], io: BuiltinIo): Promise<ChildExit> => {
       const cred = self.processes.cred(io.pid);
       const ctx: CommandContext = {
         ...io,
         cred,
         args,
         vfs: processView(io.pid, cred),
-        signal,
         setUmask: (mask: number) => { self.processes.setUmask(io.pid, mask); },
         runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
       };
@@ -395,13 +394,12 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       const endAwait = self.processes.beginAwait(parent.pid, child.pid);
       const endWork = self.processes.beginWork(child.pid);
       // Its program is this session's work behind its pid: a kill stops it.
-      const stop = new AbortController();
-      const stopped = self.processes.holdWork(child.pid, (reason) => stop.abort(reason), stop.signal);
+      const stopped = self.processes.holdWork(child.pid, undefined, parent.signal);
       let exitCode = 1;
       try {
         if (stopped.ready) await stopped.ready;
         stopped.signal.throwIfAborted();
-        const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal }, stopped.signal);
+        const ended = await runBuiltin(cmd, name, args, { ...parent, pid: child.pid, signal: stopped.signal });
         exitCode = ended.status;
         return ended;
       } finally {

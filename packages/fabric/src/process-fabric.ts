@@ -81,7 +81,7 @@ import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub } from './vendor/types.js';
+import type { ServiceStub, WorkerCode } from './vendor/types.js';
 
 /**
  * The class every generated resident runner exports. One name for every
@@ -284,7 +284,7 @@ export async function residentLoaderConfig(
   spec: ResidentCodeSpec,
   disk: ResidentDiskReader,
   readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>,
-): Promise<Record<string, unknown>> {
+): Promise<WorkerCode> {
   const resolved: Record<string, string | { wasm: ArrayBuffer } | { cjs: string } | { js: string }> = {};
   // The loader is handed every module at once, so the session holds them all
   // while the facet loads. A pack is read first, and its bytes let go once
@@ -693,14 +693,6 @@ export interface ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
   open(params: ProcessHostParams): Promise<HostedProcess>;
-  /**
-   * The actor hosting `workerKey` found, in a new incarnation, that it no
-   * longer holds the process (a peer's own alarm, `hostLost` op), and proved
-   * it hosted it with the capability minted for that open. The process is
-   * lost ({@link ProcessHostLost}). False when this host has no such open.
-   * A facet's host is the coordinator itself, so it never hears this.
-   */
-  hostLost?(workerKey: string, capability: string): boolean;
 }
 
 /**

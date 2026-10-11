@@ -342,11 +342,9 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   fanoutExecute: { method: '_rpcFanoutExecute', args: [0,1,2] },
   processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
   hostProcess: { method: '_rpcHostProcess', args: [0,1] },
-  awaitHostedOpen: { method: '_rpcAwaitHostedOpen', args: [0] },
   awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
   routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0,1] },
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
-  hostLost: { method: '_rpcHostLost', args: [0, 1] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
   hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
   // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).

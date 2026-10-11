@@ -346,13 +346,13 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * host was lost: nothing of it here is left to unwind) is released at its
    * end.
    */
-  holdWork(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & { readonly signal: AbortSignal } {
+  holdWork(pid: number, stop?: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & { readonly signal: AbortSignal } {
     const owner = new AbortController();
     const abort = () => owner.abort(signal?.reason);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     const work = {
-      stop: (reason?: SignalAbortReason) => { owner.abort(reason); stop(reason); },
+      stop: (reason?: SignalAbortReason) => { owner.abort(reason); stop?.(reason); },
       stopped: false, signal: owner.signal,
       observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
     };

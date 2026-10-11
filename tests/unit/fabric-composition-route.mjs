@@ -56,7 +56,7 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
 // ── 1. A conflicting composition is loud; an identical one is a no-op ──────
 {
   assert.equal(hostRoute(), null, 'no composition, no route: a program run without one gets no supervisor binding either');
-  const assembler = async () => ({});
+  const assembler = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'worker.js', modules: { 'worker.js': 'export default {}' } });
   composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', stagedBootAssembler: assembler });
   assert.doesNotThrow(
     () => composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', stagedBootAssembler: assembler }),

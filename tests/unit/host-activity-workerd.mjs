@@ -65,6 +65,8 @@ export class Host extends DurableObject {
     const shared=active.opens();a.release();b.release();
     await new Promise(r=>setTimeout(r,20));
     const afterCancel=await(await active.facet.fetch(new Request('https://user.invalid/'))).text();
+    const wrong=await active.facet.fetch(new Request('https://watch.invalid/',{headers:{[HOST_WATCH_HEADER]:'wrong-capability'}}));
+    const rejectedCapability={body:await wrong.text(),incarnation:wrong.headers.get('x-nimbus-host-incarnation')};
     const c=active.activity.acquire();await c.ready;
     this.ctx.facets.abort('active',new Error('platform reset active actor'));
     for(let i=0;i<100&&!active.lost.length;i++)await new Promise(r=>setTimeout(r,10));
@@ -74,7 +76,8 @@ export class Host extends DurableObject {
     await new Promise(r=>setTimeout(r,20));
     this.ctx.facets.abort('idle',new Error('platform reset idle actor'));
     let admitted=false,error='';
-    try{await idle.activity.run(()=>{admitted=true;});}catch(e){error=e.message;}
+    const validation=idle.activity.acquire();
+    try{await validation.ready;admitted=true;}catch(e){error=e.message;}finally{validation.release();}
     const experiments=[];
     for(const options of [
       {name:'activity-dispose',activity:true,dispose:true},
@@ -130,7 +133,7 @@ export class Host extends DurableObject {
       }
       resetCases.push({cause,resetError,remote,losses});
     }
-    return {shared,afterCancel,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases};
+    return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases};
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
@@ -160,6 +163,7 @@ try{
   const result=JSON.parse(body);
   assert.equal(result.shared,1);
   assert.equal(result.afterCancel,'user response','releasing the watch leaves the program alive');
+  assert.deepEqual(result.rejectedCapability,{body:'user response',incarnation:null},'a wrong capability cannot enter the native observation endpoint');
   assert.equal(result.activeLost.length,1,JSON.stringify(result)+'\n'+logs);
   assert.equal(result.admitted,false,'a reset while idle is rejected before work');
   assert.match(result.error,/restarted|reset/i);

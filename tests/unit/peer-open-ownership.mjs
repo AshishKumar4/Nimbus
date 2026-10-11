@@ -4,6 +4,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
+import { peerPlacement } from '../../packages/fabric/src/process-host.ts';
 
 adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
 const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: ['nodejs_compat'], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
@@ -53,6 +54,12 @@ for (const reset of [false, true]) {
 {
   const t = setup(), host = t.open(), process = await host.open(t.params);
   await process.started; await turns();
+  const placement = await peerPlacement(t.ctx, t.params.pid);
+  assert.equal(placement.workerKey, t.params.workerKey);
+  const peer = t.peers.get(placement.peerName);
+  const before = await peer.peerHost.inspect(placement.workerKey);
+  assert.equal(before.found, true);
+  assert.equal(before.facet, t.world.boots[0].facetName);
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'idle owns no peer RPC stub');
   const lease = hostActivity(t.ctx).acquire(); await lease.ready;
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 1, 'only the active fetch watch owns a stub');
@@ -62,6 +69,8 @@ for (const reset of [false, true]) {
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'a data call does not retain its routing stub');
   await process.release();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
+  assert.equal(await peerPlacement(t.ctx, t.params.pid), null);
+  assert.deepEqual(await peer.peerHost.inspect(placement.workerKey), { found: false, incarnation: before.incarnation, facet: null });
 }
 {
   const t = setup();

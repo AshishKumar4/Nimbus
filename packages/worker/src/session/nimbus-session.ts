@@ -299,6 +299,13 @@ The editor opens this file in Markdown preview mode by default. Use
 
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 
+interface TerminalInputDispatcher {
+  _rpcTerminalInput(frame: string, terminalId: string): Promise<void>;
+}
+function isTerminalInputDispatcher(stub: object): stub is TerminalInputDispatcher {
+  return typeof Reflect.get(stub, '_rpcTerminalInput') === 'function';
+}
+
 export class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
   #runtimeServices: ReturnType<typeof runtimeServices.bindRuntimeServices>;
   // this.ctx and this.env are provided by the DurableObject base class
@@ -943,25 +950,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcHostProcess(boot: unknown, opts: unknown): ReturnType<typeof _rpc._rpcHostProcess> {
     return _rpc._rpcHostProcess(this, boot, opts);
   }
-  async _rpcAwaitHostedOpen(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedOpen> {
-    return _rpc._rpcAwaitHostedOpen(this, workerKey);
-  }
   async _rpcAwaitHostedBoot(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedBoot> {
     return _rpc._rpcAwaitHostedBoot(this, workerKey);
   }
   async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): ReturnType<typeof _rpc._rpcRouteHostedHttp> {
     return _rpc._rpcRouteHostedHttp(this, workerKey, request);
-  }
-  async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
-    // The host asks until it gets an answer; a session that cannot stand up
-    // to act on the report holds no process of that host, and says so.
-    try {
-      this.ensureSqliteFs();
-      this.ensureFacetManager();
-    } catch {
-      return false;
-    }
-    return _rpc._rpcHostLost(this as any, workerKey, capability);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
     return _rpc._rpcCancelHostProcess(this, workerKey);
@@ -1337,13 +1330,18 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
   // relaxed for the methods (default-public; was async/private).
 
-  private terminalInputDispatcher: { _rpcTerminalInput(frame: string, terminalId: string): Promise<void> } | null = null;
+  private terminalInputDispatcher: TerminalInputDispatcher | null = null;
   private terminalInputPending = 0;
   dispatchTerminalInput(frame: string): void {
     const terminal = this.terminal;
     if (!terminal || terminal.signal.aborted) return;
     if (!this.terminalInputDispatcher) {
-      this.terminalInputDispatcher = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id) as unknown as { _rpcTerminalInput(frame: string, terminalId: string): Promise<void> };
+      const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
+      if (!isTerminalInputDispatcher(stub)) {
+        disposeRpcResource(stub);
+        throw new Error('Nimbus: the session exposes no terminal input RPC');
+      }
+      this.terminalInputDispatcher = stub;
     }
     const stub = this.terminalInputDispatcher;
     this.terminalInputPending++;

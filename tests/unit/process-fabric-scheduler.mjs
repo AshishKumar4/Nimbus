@@ -4,7 +4,7 @@
 // EVERY case below runs twice: once with NIMBUS_PROCESS_HOST unset (the
 // process is a facet of the user's own session DO) and once with it set to
 // `peer` (the process is a facet of a sibling DO, reached over the real
-// _rpcHostProcess / _rpcAwaitHostedOpen / _rpcAwaitHostedBoot /
+// _rpcHostProcess / _rpcAwaitHostedBoot /
 // _rpcRouteHostedHttp / _rpcCancelHostProcess legs). An abstraction that only
 // works one way is not an abstraction, so the assertions are shared and only
 // the placement STRING differs.
@@ -498,7 +498,7 @@ for (const mode of PROCESS_HOST_MODES) {
   // The host leg is a trust boundary: a sibling accepts a boot spec and a pid
   // from whoever calls it, so both are parsed rather than believed.
   const world = createFacetWorld(makeProgram());
-  // A host arms the alarm that reports its own reset before it hosts anything.
+  // Opening authenticates and records the hosted process before its use.
   const peer = { peerHost: peerHostFor(createFacetCtx(world, 'peer-do'), { LOADER: world.loader }, async () => {}) };
   const goodOpts = {
     coordinatorDoId: 'coord-do-id', pid: 62, writerId: crypto.randomUUID(), workerKey: 'k62',

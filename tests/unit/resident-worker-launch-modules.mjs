@@ -18,7 +18,7 @@
 
 import assert from 'node:assert/strict';
 import { HOST_WATCH_MODULE } from '../../packages/fabric/src/host-activity.ts';
-import { processImageModules } from './lib/module-map-bundle.mjs';
+import { importModuleSet, processImageModules } from './lib/module-map-bundle.mjs';
 
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
@@ -29,16 +29,10 @@ import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
-/**
- * The program the facet world evaluates: it reports the module map it was
- * booted with, and its request handler echoes which main module it is.
- */
-const evaluate = (config, { facetName }) => ({
-  async startProcess() { return { ok: true, facetName, mainModule: config.mainModule }; },
-  async handleHttpRequest(request) {
-    return Response.json({ facetName, mainModule: config.mainModule, url: request.url });
-  },
-});
+const evaluate = async (config, { facetName }) => {
+  const { NimbusProcess } = await importModuleSet(config.modules, config.mainModule);
+  return new NimbusProcess({ id: { toString: () => facetName } }, config.env);
+};
 
 const createSession = () => launchSession();
 
@@ -65,7 +59,14 @@ async function putTextModule(vfs, source) {
   return path;
 }
 
-const RUNNER = 'import { answer } from "./lib.js"; export default { fetch: () => new Response(answer) };';
+const RUNNER = `import { DurableObject } from "cloudflare:workers";
+import { answer } from "./lib.js";
+import { helper } from "./helper.js";
+export class NimbusProcess extends DurableObject {
+  startProcess() { return { ok: true, facetName: this.ctx.id.toString(), mainModule: "runner.js", answer, helper }; }
+  fetch(request) { return this.handleHttpRequest(request); }
+  handleHttpRequest(request) { return Response.json({ ...this.startProcess(), url: request.url }); }
+}`;
 const LIB = 'export const answer = "forty-two";';
 const HELPER = 'export const helper = true;';
 
@@ -82,10 +83,9 @@ const HELPER = 'export const helper = true;';
   });
 
   assert.ok(spawned.pid > PID_GEN_STRIDE, 'a pid of this generation');
-  assert.deepEqual(spawned.boot, { ok: true, facetName: spawned.boot.facetName, mainModule: HOST_WATCH_MODULE }, 'the boot payload is the runner\'s');
+  assert.deepEqual(spawned.boot, { ok: true, facetName: spawned.boot.facetName, mainModule: 'runner.js', answer: 'forty-two', helper: true }, 'the configured entry ran the named runner and its imports');
   assert.equal(gen1.world.configs.size, 1, 'one module map was built');
   const [config] = [...gen1.world.configs.values()];
-  assert.match(config.modules[config.mainModule], /from "\.\/runner\.js"/, 'the host adapter boots from the named main module');
   assert.equal(config.modules['runner.js'], RUNNER, 'and workerCode sits under that name');
   assert.equal(config.modules['helper.js'], HELPER, 'inline modules ride by value');
   assert.equal(config.modules['lib.js'], LIB, 'the text module landed under its module name, read by path');
@@ -97,7 +97,9 @@ const HELPER = 'export const helper = true;';
   const answered = await spawned.facet.fetch(new Request('http://worker.local/hello?x=1'));
   assert.equal(answered.status, 200);
   const body = await answered.json();
-  assert.equal(body.mainModule, HOST_WATCH_MODULE, 'the facet routed to the process that imported runner.js');
+  assert.equal(body.mainModule, 'runner.js', 'the facet routed to the configured runner');
+  assert.equal(body.answer, 'forty-two', 'the routed runner used its by-path import');
+  assert.equal(body.helper, true, 'the routed runner used its inline import');
   assert.equal(body.url, 'http://worker.local/hello?x=1', 'the request reached the handle intact');
   assert.equal(body.facetName, spawned.boot.facetName, 'and it is the same facet the boot ran in');
 

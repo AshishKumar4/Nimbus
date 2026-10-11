@@ -59,15 +59,16 @@ assert.equal(disposed, 2);
   const send = (data, submissionId) => owner.dispatchTerminalInput(JSON.stringify({ type: 'input', data, submissionId }));
   try {
     send('echo NEVER_ADMITTED\r', 'blocked'); await entered.promise;
-    send('echo QUEUED_ADMITTED\r', 'queued'); await turns();
+    send('echo $?; echo QUEUED_ADMITTED\r', 'queued'); await turns();
     send('\x03', 'interrupt'); await turns();
     const finished = await Promise.race([Promise.all(requests).then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 500))]);
     assert.equal(finished, true, 'interrupted admission settles queued submission RPCs');
     await turns(); terminal.flushNow();
     assert.equal(owner.terminalInputPending, 0);
     assert.equal(released, 1, 'the whole input batch releases its FIFO RPC owner');
-    const completed = frames.filter(frame => frame.type === 'shell-integration' && frame.event === 'complete');
-    assert.ok(completed.some(frame => frame.submissionId === 'blocked' && frame.status === 130), JSON.stringify(frames));
-    assert.ok(completed.some(frame => frame.submissionId === 'queued' && frame.status === 0), JSON.stringify(frames));
+    assert.ok(frames.map(frame => frame.data ?? '').join('').includes('130\r\n'), 'the queued command observes the interrupted command status');
+    const completed = frames.filter(frame => frame.type === 'shell-integration' && frame.event === 'end');
+    assert.ok(completed.some(frame => frame.submissionId === 'blocked' && frame.exitCode === 130), JSON.stringify(frames));
+    assert.ok(completed.some(frame => frame.submissionId === 'queued' && frame.exitCode === 0), JSON.stringify(frames));
   } finally { waiting.resolve(); terminal.close(); await box.workspace.close(); }
 }

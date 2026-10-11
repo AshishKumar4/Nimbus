@@ -633,7 +633,8 @@ async function __nimbusBeforeExitHasWork() {
   // Already-returned writes still publish, but are not new Node work.
   const __nodeHandles = () => Math.max(0, __nimbusLiveHandles() - __nimbusHandleCount("__nimbusAcknowledgedVfsOps"));
   for (;;) {
-    __processMod.emit("beforeExit", __processMod.exitCode || 0);
+    try { __processMod.emit("beforeExit", __processMod.exitCode || 0); }
+    catch (error) { __nimbusUncaughtException(error, false); }
     let __continued = __nodeHandles() > 0;
     for (let __pass = 0; __pass < 4; __pass++) {
       await new Promise((resolve) => __rawSetTimeout(resolve, 0));
@@ -5737,16 +5738,6 @@ export class FacetManager {
         .catch((e: unknown) => this._end(pid, { code: 1, cause: `${what} failed: ${errorMessage(e)}` }))
         .finally(() => this.releaseProcessRpcResources(pid)),
     );
-  }
-
-  /**
-   * The actor hosting `workerKey` reports, from its own next incarnation,
-   * that the platform reset it under the process (fabric
-   * PeerHost.watchFired). True when it was this session's open process, which
-   * is now lost (ProcessHost.hostLost).
-   */
-  hostLost(workerKey: string, capability: string): boolean {
-    return this.processHost.hostLost?.(workerKey, capability) ?? false;
   }
 
   /**

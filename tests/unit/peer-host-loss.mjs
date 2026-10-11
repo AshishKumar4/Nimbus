@@ -6,11 +6,8 @@
 // reset after about a second of CPU, the session got "Durable Object reset
 // because its code was updated." from its RPC, and then kept the server
 // listed as running. Every later request waited 30 s and failed with "peer
-// hosts no process", and nothing restarted it. The held host leg stayed
-// open through that reset; only calls to the sibling failed. Both are
-// covered: `reset` is what Cloudflare did, `die` severs the held leg. And
-// with no call at all, the sibling's own alarm, run by its next
-// incarnation, finds the process it was hosting gone and says so. A facet-hosted process that
+// hosts no process", and nothing restarted it. Active native observation and
+// the next use after idle both report the lost incarnation. A facet-hosted process that
 // ends is reported, its port says so, and its restart policy applies; a
 // peer-hosted one must be the same.
 
@@ -23,7 +20,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
-import { _rpcHostLost, peerHostFor } from '../../packages/worker/src/session/rpc.ts';
+import { peerHostFor } from '../../packages/worker/src/session/rpc.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -36,25 +33,14 @@ const SID = 'tenant:peer-loss';
 const SERVER = 'const http = require("http"); http.createServer(() => {}).listen(process.env.PORT || 3000);';
 const RESET = 'Durable Object reset because its code was updated.';
 
-function setup({ onPeer, failReports = 0 } = {}) {
+function setup({ onPeer } = {}) {
   // The module map is left unbuilt: this suite's subject is the host's life.
   const world = createFacetWorld(() => ({
     async startProcess() { return { ok: true }; },
     async handleHttpRequest() { return new Response('served'); },
   }), { resolveConfig: false });
   const hostEnv = { LOADER: world.loader, ASSETS: stagedAssets };
-  // The session a sibling reports back to: its supervisorOp, as NimbusSession forwards one.
-  let session = null;
-  const coordinator = {
-    doId: SID,
-    supervisorOp: ({ op, args }) => {
-      if (op !== 'hostLost') throw new Error(`coordinator stub: unserved op ${op}`);
-      // `failReports` calls are lost on the way, as a call to a session can be.
-      if (failReports > 0) { failReports--; throw new Error('Network connection lost.'); }
-      return _rpcHostLost(session, ...args);
-    },
-  };
-  const { ns, peers } = createPeerNamespace(world, hostEnv, { coordinator, onPeer });
+  const { ns, peers } = createPeerNamespace(world, hostEnv, { onPeer });
   const ctx = createFacetCtx(world, SID);
   const env = { ...hostEnv, NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' };
   const processes = new SessionProcessSupervisor();
@@ -68,7 +54,6 @@ function setup({ onPeer, failReports = 0 } = {}) {
     onExternalExit: (pid, code, reason) => exits.push({ pid, code, reason }),
   });
   fm.setVfs(vfs, new ProcessFiles(vfs));
-  session = { facetManager: fm };
   const host = { ctx, portRegistry, ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port) };
   return { peers, ctx, env, world, fm, processes, portRegistry, notices, exits, host };
 }
@@ -169,7 +154,9 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   peer.ctx = createFacetCtx(world, peer.ctx.id.toString(), peer.ctx.storage.rows);
   peer.peerHost = nextIncarnation(peer);
   let admitted = false;
-  await assert.rejects(hostActivity(ctx).run(() => { admitted = true; }), /restarted|reset/);
+  const lease = hostActivity(ctx).acquire();
+  try { await assert.rejects(lease.ready.then(() => { admitted = true; }), /restarted|reset/); }
+  finally { lease.release(); }
   assert.equal(admitted, false, 'idle loss is reported before work can run');
   await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end when its host reports its reset');
   assert.equal(processes.get(pid).exitCode, 137);

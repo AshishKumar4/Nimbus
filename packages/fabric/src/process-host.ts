@@ -210,13 +210,18 @@ function describeImageDelivery(delivery: ProcessImageDelivery): string {
  */
 const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
 const PEER_OWNERS_KEY_PREFIX = 'process-peer:';
-interface PeerOwner { workerKey: string; peerName: string }
+export interface PeerOwner { pid: number; workerKey: string; peerName: string }
+
+/** The committed placement, without contacting or waking its hosting actor. */
+export async function peerPlacement(ctx: Pick<DurableObjectState, 'storage'>, pid: number): Promise<PeerOwner | null> {
+  const rows = await ctx.storage.list<PeerOwner>({ prefix: PEER_OWNERS_KEY_PREFIX });
+  return [...rows.values()].find((row) => row.pid === pid) ?? null;
+}
 
 /** The host-process surface a sibling session DO exposes. */
 interface ProcessPeerStub {
   _rpcProcessHostProbe(): Promise<{ isolateToken: string }>;
   _rpcHostProcess(boot: ResidentBootSpec, opts: HostProcessOpts): Promise<{ ok: boolean; incarnation: string }>;
-  _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean; incarnation: string }>;
   _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }>;
   _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
   _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }>;
@@ -278,7 +283,6 @@ function processPeerStub(value: object, peerName: string): ProcessPeerStub {
   const adapter: ProcessPeerStub = {
     _rpcProcessHostProbe: async () => peerAnswer(PeerProbeResult, await dispatch({ op: 'processHostProbe', args: [] })),
     _rpcHostProcess: async (boot, opts) => peerAnswer(PeerOpenResult, await dispatch({ op: 'hostProcess', args: [boot, opts] })),
-    _rpcAwaitHostedOpen: async (key) => peerAnswer(PeerOpenResult, await dispatch({ op: 'awaitHostedOpen', args: [key] })),
     _rpcAwaitHostedBoot: async (key) => {
       const result = peerAnswer(PeerBootResult, await dispatch({ op: 'awaitHostedBoot', args: [key] }));
       return { payload: result.payload };
@@ -322,8 +326,6 @@ class PeerProcessHost implements ProcessHost {
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
-  /** workerKey → how to end an open process whose host reports its reset (hostLost). */
-  private readonly opens = new Map<string, { capability: string; lose: (cause: unknown) => void }>();
   private reconciliation: Promise<void> | undefined;
   private closed = false;
 
@@ -379,10 +381,9 @@ class PeerProcessHost implements ProcessHost {
     const loss = new HostLoss();
     let stopObserving = () => {};
     let started: Promise<unknown>;
-    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
     try {
       if (this.closed) throw new Error('Nimbus: the process host is closed');
-      await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { workerKey: params.workerKey, peerName: placement.peerName } satisfies PeerOwner);
+      await this.ctx.storage.put(PEER_OWNERS_KEY_PREFIX + params.workerKey, { pid: params.pid, workerKey: params.workerKey, peerName: placement.peerName } satisfies PeerOwner);
       if (this.closed) throw new Error('Nimbus: the process host is closed');
       const opened = await this.withPeer(placement.peerName, (stub) => stub._rpcHostProcess(params.boot, {
         coordinatorDoId: supervisor.doId,
@@ -407,7 +408,6 @@ class PeerProcessHost implements ProcessHost {
       stopObserving();
       loss.release();
       this.tokensInUse.delete(params.pid);
-      this.opens.delete(params.workerKey);
       // Awaited, not fired off: a spawn that rejects must mean nothing was
       // left running, which is what a throw from `processes().spawn` means on
       // the other substrate.
@@ -430,7 +430,6 @@ class PeerProcessHost implements ProcessHost {
         stopObserving();
         loss.release();
         this.tokensInUse.delete(params.pid);
-        this.opens.delete(params.workerKey);
         await this._cancel(params.workerKey, placement.peerName);
         await this.ctx.storage.delete(PEER_OWNERS_KEY_PREFIX + params.workerKey);
       },
@@ -459,13 +458,6 @@ class PeerProcessHost implements ProcessHost {
     this.closed = true;
     hostActivity(this.ctx).close();
     await this.clearPlacements();
-  }
-
-  hostLost(workerKey: string, capability: string): boolean {
-    const open = this.opens.get(workerKey);
-    if (open === undefined || open.capability !== capability) return false;
-    open.lose(new Error('the host restarted without it'));
-    return true;
   }
 
   /**

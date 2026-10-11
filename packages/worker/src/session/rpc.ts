@@ -1566,9 +1566,6 @@ export function _rpcProcessHostProbe(self: PeerHostRpcHost): { isolateToken: str
 export function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
   return self.peerHost.host(boot, opts);
 }
-export function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
-  return self.peerHost.awaitOpen(workerKey);
-}
 export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ payload: unknown }>> {
   return self.peerHost.awaitBoot(workerKey);
 }
@@ -1577,21 +1574,4 @@ export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wi
 }
 export function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{ cancelled: boolean }> {
   return self.peerHost.cancel(workerKey);
-}
-
-/**
- * RPC: the actor that hosted `workerKey` for this session reports, from a new
- * incarnation, that the platform reset it under the process. The capability
- * proves it hosted it. True when the process was this session's and is now
- * ended.
- */
-export function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean {
-  // An answer either way: the host keeps asking until it gets one, so a
-  // session that cannot act on the report still answers it.
-  try {
-    return self.facetManager?.hostLost(workerKey, capability) ?? false;
-  } catch (error) {
-    console.warn(`[process-host] a report that process ${workerKey} lost its host could not be applied:`, errorText(error));
-    return false;
-  }
 }

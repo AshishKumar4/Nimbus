@@ -1,3 +1,5 @@
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
+
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
   readonly ready?: Promise<void>;
@@ -47,13 +49,6 @@ export class HostActivity {
     ready?.catch(() => {});
     signal?.addEventListener('abort', release, { once: true });
     return { ready, release };
-  }
-
-  async run<T>(work: () => T | Promise<T>, signal?: AbortSignal): Promise<T> {
-    signal?.throwIfAborted();
-    const lease = this.acquire(signal);
-    try { await lease.ready; signal?.throwIfAborted(); return await work(); }
-    finally { lease.release(); }
   }
 
   /** End every old lease; a reused session starts with a fresh ownership epoch. */
@@ -145,9 +140,8 @@ export function hostActivity(host: object): HostActivity {
 }
 
 /** One native fetch endpoint, outside the guest's HTTP handler, on every resident class. */
-export function observeResidentConfig(config: Record<string, unknown>, capability: string): Record<string, unknown> {
-  if (typeof config.mainModule !== 'string' || typeof config.modules !== 'object' || config.modules === null) throw new TypeError('resident worker has no module map');
-  const modules = config.modules as Record<string, unknown>;
+export function observeResidentConfig(config: WorkerCode, capability: string): WorkerCode {
+  const modules = config.modules;
   const entry = HOST_WATCH_MODULE;
   if (Object.hasOwn(modules, entry)) throw new Error('resident worker uses a reserved module name');
   modules[entry] = `import { NimbusProcess as Base } from ${JSON.stringify('./' + config.mainModule)};

@@ -255,6 +255,14 @@ export class PeerHost {
     return { isolateToken: isolateToken() };
   }
 
+  /** A hosting record's current physical actor, without admitting guest work. */
+  async inspect(workerKey: string): Promise<{ found: boolean; incarnation: string; facet: string | null }> {
+    const record = this.records.get(workerKey);
+    const stored = await this.ctx.storage.get<HostingRecord>(HOSTING_KEY_PREFIX + workerKey);
+    const facet = record && !record.closed ? (await record.facet).name : null;
+    return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet };
+  }
+
   /** Open once and answer. Observation and release are independently owned calls. */
   async host(boot: unknown, opts: unknown): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
     const hostOpts = HostProcessOptsSchema.parse(opts);
@@ -344,24 +352,6 @@ export class PeerHost {
       if (e instanceof LostHostedProcess) return { hostLost: e.message };
       throw e;
     }
-  }
-
-  /**
-   * Settle once the process is OPEN on this peer, or reject with whatever
-   * stopped it from opening.
-   *
-   * This exists so a host failure surfaces at the same place on both substrates.
-   * Opening a facet of your own DO either throws or does not, before the fabric
-   * has a handle; opening one on a peer is a message, and without this the
-   * coordinator would return a handle for a process that never existed and only
-   * discover it later, through `done`.
-   */
-  async awaitOpen(workerKey: string): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
-    return this.answer(workerKey, async () => {
-      const record = await this.awaitRecord(workerKey);
-      await record.facet;
-      return { ok: true, incarnation: this.incarnation };
-    });
   }
 
   /**

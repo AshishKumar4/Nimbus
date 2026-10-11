@@ -54,6 +54,7 @@ import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/proces
 import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -629,7 +630,7 @@ function residentProcessClass(
   return loader
     .get(facetLoaderKey('process', loaderKey), async () => {
       const config = observeResidentConfig(await residentWorkerConfig(env, disk, supervisor, params.boot), watchCapability);
-      assertModuleMapWithinCodeLimit(configModules(config));
+      assertModuleMapWithinCodeLimit(config.modules);
       return applyFacetLimits('process', config);
     })
     .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
@@ -847,16 +848,16 @@ export async function residentWorkerConfig(
   disk: () => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
   boot: ResidentBootSpec,
-): Promise<Record<string, unknown>> {
+): Promise<WorkerCode> {
   if (boot.kind === 'code' && boot.code.env !== undefined) {
     const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source)), supervisor);
-    assertModuleMapWithinCodeLimit(configModules(isolated));
+    assertModuleMapWithinCodeLimit(isolated.modules);
     return isolated;
   }
   const config = boot.kind === 'staged'
     ? await stagedBootAssembler()(env, boot.stage)
     : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
-  assertModuleMapWithinCodeLimit(configModules(config));
+  assertModuleMapWithinCodeLimit(config.modules);
   // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
   return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
 }
@@ -876,16 +877,7 @@ function egressMarker(supervisor: Pick<SupervisorBindingProps, 'egress'>): { NIM
  * (SupervisorBindingProps.egress) that is the egress. An explicit
  * globalOutbound (a binding that mediates, or null that denies) stands.
  */
-function workspaceOutbound<C extends object>(config: C, supervisor: Pick<SupervisorBindingProps, 'egress'>): C | (C & { globalOutbound: unknown }) {
+function workspaceOutbound(config: WorkerCode, supervisor: Pick<SupervisorBindingProps, 'egress'>): WorkerCode {
   if (supervisor.egress === undefined || 'globalOutbound' in config) return config;
   return { ...config, globalOutbound: supervisor.egress };
-}
-
-/** The module map a loader config assembled, or empty when it named none. */
-function configModules(config: object): Record<string, unknown> {
-  const modules: unknown = 'modules' in config ? config.modules : undefined;
-  if (typeof modules !== 'object' || modules === null) return {};
-  // Loader configs only ever carry a module map under this key.
-  const map: Record<string, unknown> = modules as Record<string, unknown>;
-  return map;
 }
