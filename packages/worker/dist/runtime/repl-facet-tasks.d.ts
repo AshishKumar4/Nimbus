@@ -12,7 +12,7 @@ import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
  */
 export declare function pythonReplStepRequestFn(request: Request, facetEnv: FacetBindings): Promise<Response>;
 /** What one prompt step hands the facet: the driver and where the prompt starts. */
-interface RubyReplStep {
+export interface RubyReplStep {
     userCode: string;
     home: string;
     cwd: string;
@@ -38,5 +38,4 @@ export interface RubyReplFacetResult {
 export declare function rubyReplStepFacetFn(args: RubyReplStep, facetEnv: {
     SUPERVISOR?: unknown;
 }): Promise<RubyReplFacetResult>;
-export {};
 //# sourceMappingURL=repl-facet-tasks.d.ts.map

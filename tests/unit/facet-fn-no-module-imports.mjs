@@ -19,7 +19,7 @@ for (const [name, task] of Object.entries({ ...core, ...worker })) {
     : name === 'NPM_INSTALL_BATCH_TASK' ? [TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE, NPM_INSTALL_PREAMBLE].join('\n')
     : name === 'WASM_CALL_TASK' ? WASI_INSTANCE_PREAMBLE_SRC : '';
   const module = assembleLoaderWorkerModuleSource({ fnSource: task.source, preamble, hasBindings: true });
-  const absent = [...freeNames(module)].filter((key) => !FACET_GLOBALS.has(key) && !(key in globalThis) && key !== 'WebAssembly');
+  const absent = [...freeNames(module, { sourceType: 'module' })].filter((key) => !FACET_GLOBALS.has(key) && !(key in globalThis) && key !== 'WebAssembly');
   assert.deepEqual(absent, [], `${name} may read only the actual guest's bindings`);
   count++;
 }

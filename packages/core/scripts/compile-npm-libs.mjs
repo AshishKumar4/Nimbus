@@ -13,6 +13,7 @@ const libraries = {
   typeDescription: '@npmcli/config/lib/type-description.js',
   ini: 'ini',
   nopt: 'nopt',
+  validateName: 'validate-npm-package-name',
 };
 const { module } = await compiledBodies({
   contents: Object.entries(libraries).map(([name, specifier]) => `export { default as ${name} } from ${JSON.stringify(specifier)};`).join('\n'),

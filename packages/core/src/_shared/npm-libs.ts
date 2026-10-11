@@ -10,3 +10,4 @@ export const typeDefs: typeof import('@npmcli/config/lib/type-defs.js').default 
 export const typeDescription: typeof import('@npmcli/config/lib/type-description.js').default = compiled.typeDescription;
 export const ini: typeof import('ini').default = compiled.ini;
 export const nopt: typeof import('nopt').default = compiled.nopt;
+export const validateName: typeof import('validate-npm-package-name').default = compiled.validateName;

@@ -50,7 +50,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node ../../scripts/clean-dist.mjs && node scripts/generate-filesystem-mirrors.mjs && node scripts/compile-npm-libs.mjs && node ../worker/scripts/compile-bodies.mjs && node scripts/pin-transform-pipeline.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "build": "node ../../scripts/clean-dist.mjs && node scripts/generate-filesystem-mirrors.mjs && node scripts/compile-npm-libs.mjs && node ../../scripts/compile-facet-bodies.mjs && node scripts/pin-transform-pipeline.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish && node scripts/check-runtime-packages.mjs",
     "typecheck": "tsc --noEmit"
   },

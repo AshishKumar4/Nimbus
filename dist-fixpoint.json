@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0988dbbb9027b7b0414795d822dad60ba63122e0449d9ec1e98ab4279dd5cff8",
+  "fingerprint": "c0e55304493a46d8bc2fabdd699cd777cc5811b27f12c379c1c6f83aa52d8dbc",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2431,8 +2431,8 @@
     "packages/worker/dist/runtime/python-repl.d.ts": "d64daae68dd590e813c41c785401a794deb668baab388c1a9b60227cdf9638e5",
     "packages/worker/dist/runtime/python-repl.d.ts.map": "e64e177d82befc918780e08173c13851c3277e8c7a9d90d48cb1d9df47904fe3",
     "packages/worker/dist/runtime/python-repl.js": "572e8ae9d395ff0d2beb3d720c114a006b36789aecb7cfdc304c0eef73f2b8e6",
-    "packages/worker/dist/runtime/repl-facet-tasks.d.ts": "69007edfc531be62511eef536248c95f2143876e264d52f5341efce13366cad3",
-    "packages/worker/dist/runtime/repl-facet-tasks.d.ts.map": "35bac0b733a23d61c169ec7341270e9bb1bec3d0617cb9841fce9b6e87591007",
+    "packages/worker/dist/runtime/repl-facet-tasks.d.ts": "ed01114cbde9b682ddb1b5d50f305b8b7f4d36dba5e75732161c1e42b92f064d",
+    "packages/worker/dist/runtime/repl-facet-tasks.d.ts.map": "a69298e355afefe174d921a359bf5f72b41098427d244566e1bd2e2a116527f3",
     "packages/worker/dist/runtime/repl-facet-tasks.js": "07c1ba0cee87bb3ae01e251312c889f3b5a0068f7bf17b44273c3e7c9ee1e88e",
     "packages/worker/dist/runtime/repl-session.d.ts": "5bd249d15f449ca361a31512ac3e13b5cab25a62168fe3ee13a559bf53790b3b",
     "packages/worker/dist/runtime/repl-session.d.ts.map": "7cd7919265dbf76d6fecb77150594b26b88ca346f9ee0f1288303fa81537f322",
@@ -2931,7 +2931,7 @@
     "packages/worker/src/runtime/process-logs-api.ts": "b5e2e21128fca49c6a19cfbc9c4512a6bdc3da94c1138d14854b089f5741c14b",
     "packages/worker/src/runtime/project-fs.ts": "20327a6a047567ffba1c75d0b1af74630e231e6ed0368149420cc5b932bdb728",
     "packages/worker/src/runtime/python-repl.ts": "dab3d0642bcc2851854a37b468640a0a12812afa3cdcc1cb78c2a0ceb9f4cb47",
-    "packages/worker/src/runtime/repl-facet-tasks.ts": "fe1f239308c98a8307716f3da5ca6056efce5630d5fbe54bf8f7da2cd1169821",
+    "packages/worker/src/runtime/repl-facet-tasks.ts": "149e3d727a000860d290e4ff3c5f28309465ed1526d47e5cd7473f19c8c9ddb9",
     "packages/worker/src/runtime/repl-session.ts": "2615cadb587e41c7cf1bda12eb1e9f321932f76480aaf51598c2aa43f189b401",
     "packages/worker/src/runtime/residency-miss-report.ts": "9fdf5ffcdf06b74c1770613fb6b6975926d49ef4b4471178e0f12ebc6968bad0",
     "packages/worker/src/runtime/ruby-repl.ts": "59a9edf7e0e3350daf6d6a355f008f9c0a861165b4ea8febc573746f75c39fb2",

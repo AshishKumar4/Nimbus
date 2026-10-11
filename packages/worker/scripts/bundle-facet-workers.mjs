@@ -74,7 +74,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from 'acorn';
 
 import { amaroFacetDriver } from './amaro-driver.mjs';
-import { compileFacetBodies } from './compile-bodies.mjs';
+import { compileFacetBodies } from '../../../scripts/compile-facet-bodies.mjs';
 import { compiledBodies } from '../../../scripts/lib/compiled-bodies.mjs';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
