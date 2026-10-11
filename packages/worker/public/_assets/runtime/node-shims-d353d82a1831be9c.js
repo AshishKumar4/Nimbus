@@ -19576,6 +19576,7 @@ async function __nimbusEsmImport(id) {
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
   if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
+  let batch = null;
   try {
     // The program's own work while its graph loads, until its evaluation
     // begins (its first meta instance) or it settles: a host whose loading
@@ -19586,6 +19587,8 @@ async function __nimbusEsmImport(id) {
     __nimbusTrackOp(new Promise((resolve) => { loaded = resolve; }));
     __nimbusEsmLoading.push(loaded);
     const evaluation = import(__NIMBUS_BUNDLE_URL + row[2]);
+    // The evaluation it began, when it began within the call (workerd's).
+    batch = __nimbusEsmOpenBatch;
     __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
     return await evaluation;
   } catch (error) {
@@ -19596,9 +19599,27 @@ async function __nimbusEsmImport(id) {
     if (row[0] === "module" && (error === __nimbusEsmStop || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
       return __nimbusEsmInterpret(id);
     }
-    // A module that threw keeps what it threw, for a require() of it.
+    // The body that threw: one its evaluation began and did not complete
+    // (marked already where a later body's check stopped). It keeps what it
+    // threw, for a require() of it, and the error is explained as Node's
+    // loader explains it, from that module. A body suspended in its
+    // top-level await is the thrower only where no other is.
+    let thrower = null;
     for (const record of __nimbusEsmRecords) {
-      if (record !== undefined && record.state === __ESM_FAILED && record.error === undefined && record.batch?.thrower === record) record.error = { value: error };
+      if (record === undefined || (batch !== null && record.batch !== batch)) continue;
+      if (record.state === __ESM_FAILED && record.error === undefined) thrower = record;
+      else if (record.state === __ESM_BEGAN && thrower === null && !__nimbusEsmSuspends(record)) thrower = record;
+    }
+    if (thrower === null) {
+      for (const record of __nimbusEsmRecords) {
+        if (record !== undefined && (batch === null || record.batch === batch) && record.state === __ESM_BEGAN) thrower = record;
+      }
+    }
+    if (thrower !== null) {
+      thrower.state = __ESM_FAILED;
+      thrower.batch?.running.delete(thrower);
+      thrower.error = { value: error };
+      __nimbusExplainCommonJSGlobalLike(error, __nimbusEsmUrl("/" + __nimbusEsm.table[thrower.id][1]), __nimbusEsmSuspends(thrower));
     }
     throw __nimbusEsmLinkError(error, id);
   }
