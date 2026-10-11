@@ -61,6 +61,7 @@ function makeStorage() {
 function makeHost() {
   return {
     processes: new SessionProcessSupervisor(),
+    portRegistry: { clientSocketCount: 0 },
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,

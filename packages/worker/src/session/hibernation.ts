@@ -43,6 +43,7 @@
 
 import type { PersistedLogChunk, PersistAdapter, PersistedLogPid, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers, type TimerHost, type TimerContext } from '@nimbus-sh/fabric/timers.js';
 import { RESIDENT_KEEPALIVE_DETACHED_MS, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
@@ -59,6 +60,7 @@ export type { WsHibernationConfigResult };
  */
 export interface HibHost extends TimerHost {
   processes: SessionProcessSupervisor;
+  portRegistry: Pick<PortRegistry, 'clientSocketCount'>;
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
@@ -343,7 +345,7 @@ export function ensureLogJanitor(host: HibHost, ctx: TimerContext): void {
 }
 
 /** The fields the keep-alive rule reads and keeps; both hosts carry them. */
-export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
+export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 
 /** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
 export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
@@ -444,11 +446,11 @@ export function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any):
  * Only traffic delivered through this runtime's client boundaries counts.
  * A host's socket table belongs to its embedder, not to Nimbus, and even an
  * attached runtime terminal cannot renew an alarm forever without traffic.
- * Attach/input/port requests renew this bounded interest; alarms and facet
- * supervisor calls never do.
+ * Attach/input/port requests renew bounded interest. A routed preview socket
+ * remains interest until it closes; alarms and facet RPC never renew it.
  */
 export function residentClientPresent(host: ResidentKeepaliveHost, now: number): boolean {
-  return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
+  return host.portRegistry.clientSocketCount > 0 || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 
 /** W1: a client reached the session DO (see noteResidentClient). */

@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a quiet client WebSocket routed through a port remains resident
+  interest until it closes; unrelated embedder sockets and idle terminals keep
+  their bounded traffic rule. Closing a preview begins that bounded idle grace.
 - Changed: peer residents retain a passive native coordinator-lifetime socket;
   idle traffic on the hosting peer no longer ends a process while its coordinator
   is alive. Releasing or losing the coordinator ends residency without polling.

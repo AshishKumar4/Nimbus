@@ -113,6 +113,10 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   /** Process supervisor facade (always present from ctor). */
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
+  _w1JanitorAt: number | null;
+  _w1KeepaliveArmed: boolean;
+  _w1LastClientActivityAt: number;
+  _w1SessionDestroyed: boolean;
 
   // ── W9 hibernation persistence state ────────────────────────────────
   _w9WsConfig: WsHibernationConfigResult | null;
