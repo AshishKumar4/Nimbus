@@ -23,6 +23,7 @@ export interface TimerStorage {
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<boolean>;
   setAlarm?(scheduledTime: number): Promise<void>;
+  getAlarm?(): Promise<number | null>;
 }
 
 /** The hosting actor's context, as the timer coordination reads it. */
@@ -172,9 +173,8 @@ export class Timers {
         // fired is no pending entry: this request replaces it, and that
         // dispatch no longer drops it.
         let written: Promise<unknown> | undefined;
-        const fired = host._timerFiring?.get(reason);
-        if (!(reason in map) || whenMs < map[reason] || fired === map[reason]) {
-          if (fired !== undefined) host._timerFiring?.delete(reason);
+        if (!(reason in map) || whenMs < map[reason] || host._timerFiring?.get(reason) === map[reason]) {
+          host._timerFiring?.delete(reason);
           map[reason] = whenMs;
           written = ctx.storage.put(TIMER_REASONS_KEY, map);
         }
@@ -252,10 +252,14 @@ export class Timers {
     return dispatchBody(host, ctx, host._timerEpoch ?? 0, handlers, onLegacyAlarm, alarmInfo);
   }
 
-  /** The reasons a running dispatch fired, and how long it has run; null while none runs. */
-  firing(now = Date.now()): { reasons: string[]; ms: number } | null {
+  /** The platform alarm, the reasons it carries, and the dispatch running: what it fired and for how long. */
+  async state(now = Date.now()): Promise<{ alarmAt: number | null; reasons: Record<string, number> | null; dispatching: { reasons: string[]; ms: number } | null }> {
     const { _timerFiring: fired, _timerFiringSince: since } = this.host;
-    return fired === undefined || since === undefined ? null : { reasons: [...fired.keys()], ms: now - since };
+    return {
+      alarmAt: (await this.ctx.storage.getAlarm?.()) ?? null,
+      reasons: ((await this.ctx.storage.get(TIMER_REASONS_KEY)) as Record<string, number> | undefined) ?? null,
+      dispatching: fired === undefined || since === undefined ? null : { reasons: [...fired.keys()], ms: now - since },
+    };
   }
 }
 

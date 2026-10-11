@@ -5402,8 +5402,6 @@ export class FacetManager {
   private readonly launchPump: PacedWork;
   /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
   private readonly launching = new Map<number, { stage: 'admission' | 'prepare'; since: number }>();
-  /** Since when a one-shot's spawn has waited for the table's reap of ended processes; null while none does. */
-  private reapingSince: number | null = null;
   private readonly launchTasks = new Set<Promise<void>>();
   private launchesClosed = false;
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -7027,8 +7025,7 @@ export class FacetManager {
       }
       entry = found;
     } else {
-      this.reapingSince ??= Date.now();
-      try { await this.processes.reap(); } finally { this.reapingSince = null; }
+      await this.processes.reap();
       // A child of the command that ran it, so under its credential: the
       // program's syscalls answer under the credential the table holds for
       // its pid. At the top of the table it ran as the session user whoever
@@ -7332,9 +7329,8 @@ export class FacetManager {
   }
 
   /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
-  launchState(now = Date.now()): { reapingMs: number | null; launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
+  launchState(now = Date.now()): { launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
     return {
-      reapingMs: this.reapingSince === null ? null : now - this.reapingSince,
       launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
       pacer: this.launchPump.state(now),
     };
