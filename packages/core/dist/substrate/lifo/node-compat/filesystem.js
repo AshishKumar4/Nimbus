@@ -66,6 +66,13 @@ function bridgeFilesystem(bridge) {
         rename: (from, to) => fs.rename(from, to),
         copyFile: (from, to) => fs.copyFile(from, to),
         chmod: (path, mode) => fs.chmod(path, mode),
+        open: (path, flags) => fs.open(path, flags).id,
+        read: (fd, position, length) => fs.read(fd, position, length),
+        write: (fd, position, data) => fs.write(fd, position, data),
+        fstat: (fd) => fs.fstat(fd),
+        ftruncate: (fd, size) => fs.ftruncate(fd, size),
+        fsync: (fd) => fs.fsync(fd),
+        close: (fd) => fs.close(fd),
         get onChange() { return listener; },
         set onChange(next) {
             unsubscribe?.();
