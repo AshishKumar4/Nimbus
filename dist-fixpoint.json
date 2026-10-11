@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "ce58d7beddee182781729fcae50adfa4e11eb874c46d7dc04c74ef54ceb2a377",
+  "fingerprint": "16ce91e1ddb79638a856f2e609fbcb9fd900fac65ec8d0cff2ecd82bd8f2e1ab",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -680,7 +680,7 @@
     "packages/core/dist/runtime/wave-contracts.d.ts.map": "9232fd0a44ec1566c6faa87574dc80a3db579b45869ac42d8f95e29c77776cd7",
     "packages/core/dist/runtime/wave-contracts.js": "272bb30028c1fbdc252197f906c5ec92fe0d032545522b27aad1a8b7d72f92aa",
     "packages/core/dist/runtime/wave-ingest.d.ts": "6434f6940388f4e232ddf85147a17efb665c30b5ddc96fc20b2ac8da6e60eaf5",
-    "packages/core/dist/runtime/wave-ingest.d.ts.map": "193ddba3a26ba2b10b3072ffa9541f72808d458dc0fb8677b1deabc98d10a3e8",
+    "packages/core/dist/runtime/wave-ingest.d.ts.map": "3a7950b5e9e3dd19e3f00365c929045441ebaec35009d2c91b85b65dd809785c",
     "packages/core/dist/runtime/wave-ingest.js": "2db98b3e45c1ea309b11bb060bde24af64fa84f9577a89bd4a0fcf24c37196d7",
     "packages/core/dist/runtime/wave-router.d.ts": "7b9498d1ae9b3566256395a0f67c4f58d2701be8b712f33ab80185a6eb48146e",
     "packages/core/dist/runtime/wave-router.d.ts.map": "6a734dcf26ad3c9eb5facb57371857587bdc9c6b2e923b466a8bd868d570333f",
@@ -1448,7 +1448,7 @@
     "packages/core/src/runtime/wasm-memory.ts": "419a1c9dfbb10eaf906487ffa820453190efb6a983f801bebc73dc0ee9269f88",
     "packages/core/src/runtime/wasm-runner.ts": "de1c1dd50ecd6b464bea7c4fac76d19e2f5c1a2ff8fe0db8f7dc1b2ee6d57cc1",
     "packages/core/src/runtime/wave-contracts.ts": "5dc4db164dabcf910f901bc85854892c36049e2114649a42bdc4cac67cb6b29a",
-    "packages/core/src/runtime/wave-ingest.ts": "47b56e2d8659d5b73d9a35beb32c3fa7905b640dd84b98ef83bf33bdaa8b6dd6",
+    "packages/core/src/runtime/wave-ingest.ts": "223e51e318509258e99f08204b75407bda9aeeaf9b3c92c1b71e37051a35cb12",
     "packages/core/src/runtime/wave-router.ts": "e4ba6970541ec7467ada0ad1a13a7fef4b1b183823dabdd4dab5260f7ecf291d",
     "packages/core/src/runtime/websocket-arguments.ts": "0e6ddf36bb94148f61d0b666d38b07c128977b21500b05db45ab2f8b000bdf08",
     "packages/core/src/shell/elevation-commands.ts": "9e14a3560a23ee540f4fe258d4bac2a3e6495229e0d62912c5b8227ee76f928e",
