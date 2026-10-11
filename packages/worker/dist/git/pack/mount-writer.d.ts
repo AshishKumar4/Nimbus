@@ -2,7 +2,7 @@
  * git/pack/mount-writer.ts — a clone's files on a mounted filesystem.
  *
  * A wave writes a file to a mount in one call, up to ROUTED_FILE_MAX bytes
- * (sqlite-vfs.ts); a larger one it refuses. So on a mount, a file within
+ * (wave-contracts.ts); a larger one it refuses. So on a mount, a file within
  * that goes in the wave as on the session's own filesystem, and a larger
  * one is written as git's checkout writes a file (entry.c write_entry),
  * through the session's file API under the clone's lease, once what the
@@ -21,8 +21,6 @@
  */
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CloneReceipt, CloneWriter } from './clone.js';
-/** wave-contracts.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
-export declare const MOUNT_WAVE_FILE_MAX: number;
 /** An open file's stat, as the session's fstat answers it (times in ms): what its receipt is made of. */
 export type FileStat = Pick<RuntimeVfsStat, 'ino' | 'mode' | 'size' | 'mtime' | 'ctime' | 'uid' | 'gid' | 'dev'>;
 /** The session's file API, as the clone's supervisor binding offers it (its lease presented). */
