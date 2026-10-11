@@ -64,6 +64,7 @@ const a = raw.as(A);
 const plain = raw.as(PLAIN);
 const authority = new ProcessFiles(raw);
 const aFs = authority.bind({ pid: 7001, cred: A });
+const plainFs = authority.bind({ pid: 7002, cred: PLAIN });
 
 // Links A made in its own /tmp. The first four climb out of the private root
 // in storage terms (four `..` from var/agents/a/tmp reach `/`); in A's view,
