@@ -183,7 +183,7 @@ await check('a credentialed mount refuses an open its modes deny, before the rea
   files.vfs.mount('/q', backend);
   const proc = files.bind({ pid: ++pid, cred: USER });
   await assert.rejects(async () => proc.open('/q/secret', { read: true }), refused('EACCES'));
-  await assert.rejects(async () => proc.open('/proc/mounts', { write: true }), refused('EACCES'));
+  await assert.rejects(async () => proc.open('/proc/cpuinfo', { write: true }), refused('EACCES'));
   files.vfs.unmount('/q');
 });
 
