@@ -17,7 +17,7 @@ import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLi
 import { httpFetchCases } from './lib/http-fetch-cases.mjs';
 import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
 import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
-import { generateNodeLibModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
+import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
 import { opencodeBuiltinBridgeModules } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 
 async function exercise(http, serve) {
@@ -204,12 +204,13 @@ await portReady.promise;
 const port = probePort.address().port;
 const released = Promise.withResolvers(); probePort.close(released.resolve); await released.promise;
 writeFileSync(join(dir, 'node-lib.js'), generateNodeLibModule());
+writeFileSync(join(dir, 'node-lib-rest.js'), generateNodeLibRestModule());
 writeFileSync(join(dir, 'node-dns.js'), generateNodeDnsModule());
 const httpBridges = opencodeBuiltinBridgeModules('attached');
 writeFileSync(join(dir, 'http-bridge.js'), httpBridges['node:http'].js);
 writeFileSync(join(dir, 'https-bridge.js'), httpBridges['node:https'].js);
 writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
+const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-lib-rest.js", commonJsModule = embed "node-lib-rest.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
 writeFileSync(join(dir, 'main.js'), `
 // The shims' native provider (node-shims.ts), which NATIVE_HTTP_SOURCE reads.
 const __nativeBuiltin = globalThis.process.getBuiltinModule.bind(globalThis.process);
