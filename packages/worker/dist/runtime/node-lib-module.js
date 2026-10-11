@@ -16,10 +16,12 @@ import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
 import { NODE_DNS_BINDING_SOURCE } from './node-dns-binding.js';
 import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE, NODE_UV_ERRORS } from './node-lib-source.js';
 import { NODE_OPTION_ALIASES, NODE_OPTIONS_TABLE } from '@nimbus-sh/core/runtime/node-cli-options.generated.js';
+import { parseJavaScriptProgram } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { programRequests } from '@nimbus-sh/core/interpreter/module-requests.js';
 const dnsModule = (id) => id === 'dns' || id === 'dns/promises' || id.startsWith('internal/dns/') || id === 'internal/net';
 const moduleFactory = (id, text) => `    ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n    },`;
 const deferredFactory = (module, id) => `    get ${JSON.stringify(id)}() { return require(${JSON.stringify(module)}).sources[${JSON.stringify(id)}]; },`;
-/** `root` and every module of Node's it requires, by the literal ids its text names. */
+/** `root` and every module of Node's it requires (module-requests.ts programRequests). */
 function requireClosure(root) {
     const closure = new Set();
     const pending = [root];
@@ -27,8 +29,12 @@ function requireClosure(root) {
         if (closure.has(id) || !(id in NODE_LIB_SOURCES))
             continue;
         closure.add(id);
-        for (const [, required] of NODE_LIB_SOURCES[id].matchAll(/\brequire\(\s*['"]([^'"]+)['"]\s*\)/g))
-            pending.push(required);
+        const program = parseJavaScriptProgram(NODE_LIB_SOURCES[id]);
+        if (program === null)
+            throw new Error(`Node's ${id} does not parse`);
+        for (const request of programRequests(program))
+            if (request.kind === 'require')
+                pending.push(request.specifier);
     }
     return closure;
 }

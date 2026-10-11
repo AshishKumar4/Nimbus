@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "06e2cc4f50a6620084e1888d5e98f95a198a1f1ebe60a72d05a76d6b572fc66d",
+  "fingerprint": "391bf9245fe16dad08465c843fffca8976e7f7715d576bcf31e998e113b9b57a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2401,8 +2401,8 @@
     "packages/worker/dist/runtime/node-lib-host.d.ts.map": "08232bf17f0a7a683abf29431ead51c512a565a23a6e9e08a116e51b4a553221",
     "packages/worker/dist/runtime/node-lib-host.js": "270de2ecc66c1f175f22cb98af23e62ca060a350d35df4b9f92b8ea2f17fc87c",
     "packages/worker/dist/runtime/node-lib-module.d.ts": "f7fdab255ad8b18493c4807dc9587c206c1e9e6ddf94cd4b691bfa0041eaf7a5",
-    "packages/worker/dist/runtime/node-lib-module.d.ts.map": "af021deed573d8eef98b7eb71318f3bb3419a6f6d068c8e1f8fa913ec0264197",
-    "packages/worker/dist/runtime/node-lib-module.js": "87341944a006c089f3a04b13422e464e2d7e1f941562086854998c4a1c60db17",
+    "packages/worker/dist/runtime/node-lib-module.d.ts.map": "67f44788cdd27e70cdacff0a013134108d9a00942262be48dd2c198a228fd22a",
+    "packages/worker/dist/runtime/node-lib-module.js": "d5e856ccad75cc3bb3db7125fcc72ce37ea8ebda72080bc348d5729a06a15ba0",
     "packages/worker/dist/runtime/node-lib-source.d.ts": "9cc508b2fda5e4dbf9dbcaf9e08f686c7011ae1144ce92d1c71d3bc260a319a8",
     "packages/worker/dist/runtime/node-lib-source.d.ts.map": "bf9f9ae1bb566cee72c0dce16f0ec6bbdea72f77e6eab733ce00e2e3b8083bef",
     "packages/worker/dist/runtime/node-lib-source.js": "cbdac29fcee8f41041a5e79832ca71e831cdcf462710fa7d5b72ca596e51b48c",
@@ -2946,7 +2946,7 @@
     "packages/worker/src/runtime/node-builtin-fronts.ts": "8f2786afe25abf85cf61882c73a809500186eb394a39a84d00baae0b7504d2df",
     "packages/worker/src/runtime/node-dns-binding.ts": "f3e8760be6257fc5198b34b030e1ac0ead311f7da536edcce7341231f6307c1f",
     "packages/worker/src/runtime/node-lib-host.ts": "4c0ae1481ae0179c9891edb0b9d97581982a6e7027f709a7f63e2eb16ed279cb",
-    "packages/worker/src/runtime/node-lib-module.ts": "3fb6ecdd95f4f551b54641046a17ed05bcc61dbb6996b8876b9dec2258e11ff3",
+    "packages/worker/src/runtime/node-lib-module.ts": "c059cc08acdfb97335c75d573a4c19bb42912f855ed06fff8d3801ce33dffa58",
     "packages/worker/src/runtime/node-lib-source.ts": "3f624af0e986d03abc89e3f5eb48fcc0ae7f8532cc084dd00a48006e33d240c3",
     "packages/worker/src/runtime/node-minimatch-source.ts": "515f999697c797b3df014a0c065db46700c31b7cc215b95324610d2d021246c5",
     "packages/worker/src/runtime/node-runner.ts": "100f06e9591b440fb7bcaaa766c2afd69204c0f7061b1ba39d5af7c63787d8a7",
