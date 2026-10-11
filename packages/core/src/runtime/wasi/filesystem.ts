@@ -12,7 +12,6 @@ export interface AuthorityFd {
   rights: bigint;
   rightsInheriting: bigint;
   fdflags: number;
-  entries?: { name: string; type: string }[];
 }
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes
@@ -519,9 +518,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   imports.fd_readdir = guard(imports.fd_readdir, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, buf: number, size: number, cookie: bigint, used: number) => { pathRight(fd, 14); 
     const e = preopen(fd) ?? entry(fd);
     if (e.kind === 'resident') fail('ENOTDIR');
-    const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : e.entries ?? fs.readdirHandle(e.handle.id);
+    // The filesystem owns the listing's revision/lease, including on a
+    // rewind (cookie 0). An unversioned copy here would outlive its recall.
+    const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : fs.readdirHandle(e.handle.id);
     return after(list, entries => {
-      if (e.kind === 'authority') e.entries = entries;
       const all = [{ name: '.', type: 'directory' }, { name: '..', type: 'directory' }, ...entries];
       let written = 0;
       for (let i = num(cookie); i < all.length && written < size; i++) {
