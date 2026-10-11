@@ -35,13 +35,19 @@ import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
  * a staged ES module (the cell at a VFS key) with the ids of the rows its
  * static imports load (-1 for a refused one), the facade of the CommonJS
  * cell at a key, the facade of a builtin or a package the process provides,
- * or the JSON module of the file at a key. Each names its map module.
+ * or the JSON module of the file at a key. A row's map module is its name
+ * (esmRowName): its cell's module for a staged module, else its facade by id.
  */
 export type EsmModuleRow =
-  | readonly [kind: 'module', key: string, name: string, targets: readonly number[], bunScope?: 1]
-  | readonly [kind: 'commonjs', key: string, name: string]
-  | readonly [kind: 'builtin', builtin: string, name: string]
-  | readonly [kind: 'json', key: string, name: string];
+  | readonly [kind: 'module', key: string, targets: readonly number[], bunScope?: 1]
+  | readonly [kind: 'commonjs', key: string]
+  | readonly [kind: 'builtin', builtin: string]
+  | readonly [kind: 'json', key: string];
+
+/** The map module of row `id` (node-shims' __nimbusEsmName reads it so). */
+export function esmRowName(row: EsmModuleRow, id: number): string {
+  return row[0] === 'module' ? commonJsCellModuleName(row[1]) : `${ESM_FACADE_DIR}${id}.js`;
+}
 
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
@@ -150,7 +156,7 @@ export async function stageEsModules(
   for (const [key, { sites }] of cells) {
     const targets: number[] = [];
     targetIds.push(targets);
-    table.push(sites.commonJsNames?.length ? ['module', key, commonJsCellModuleName(key), targets, 1] : ['module', key, commonJsCellModuleName(key), targets]);
+    table.push(sites.commonJsNames?.length ? ['module', key, targets, 1] : ['module', key, targets]);
   }
   const ids = new Map<string, number>();
   for (let id = 0; id < table.length; id++) ids.set(`module:${table[id]![1]}`, id);
@@ -160,8 +166,9 @@ export async function stageEsModules(
     let id = ids.get(`${kind}:${key}`);
     if (id === undefined) {
       id = table.length;
-      const name = `${ESM_FACADE_DIR}${id}.js`;
-      table.push([kind, key, name] as EsmModuleRow);
+      const row: EsmModuleRow = [kind, key];
+      const name = esmRowName(row, id);
+      table.push(row);
       members[name] = source(id, name);
       ids.set(`${kind}:${key}`, id);
     }
@@ -263,7 +270,7 @@ export async function stageEsModules(
           });
         const row = await target(resolution, site.attributes);
         rowTargets.push(row);
-        targets.push(table[row]![2]);
+        targets.push(esmRowName(table[row]!, row));
       } catch (error) {
         rowTargets.push(-1);
         targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);

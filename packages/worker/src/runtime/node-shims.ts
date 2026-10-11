@@ -61,6 +61,7 @@ import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
+import { ESM_FACADE_DIR } from '@nimbus-sh/core/runtime/native-esm.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -12418,11 +12419,17 @@ function __nimbusAssertLoadable(resolution, type) {
 // ═══════════════════════════════════════════════════════════════════════
 // The launch's ES modules are the registry's: it links them, evaluates them,
 // and keeps their bindings live (worker facets/esm-stage.ts stages them).
-// Its table, by id (a meta instance's query): [kind, key or builtin, map
-// module, a module's targets' ids]; and what each refused specifier fails
-// with, by the number of the missing module it names.
+// Its table, by id (a meta instance's query): [kind, key or builtin, a
+// module's targets' ids, 1 for Bun's scope]; and what each refused specifier
+// fails with, by the number of the missing module it names.
 const __nimbusEsm = typeof __NIMBUS_ESM === "undefined" || __NIMBUS_ESM === null ? { table: [], missing: [] } : __NIMBUS_ESM;
 let __nimbusEsmIds = null;
+// The map module of row \`id\` (worker facets/esm-stage.ts esmRowName): a
+// staged module's cell's module, else its facade by id.
+function __nimbusEsmName(id) {
+  const row = __nimbusEsm.table[id];
+  return row[0] === "module" ? __nimbusCodeCells.get(row[1])[1] : ${JSON.stringify(ESM_FACADE_DIR)} + id + ".js";
+}
 // The row of the module of \`kind\` at \`key\` (a builtin's name), or -1.
 function __nimbusEsmId(kind, key) {
   if (__nimbusEsm.table.length === 0) return -1;
@@ -12493,7 +12500,7 @@ function __nimbusEsmEnter(metaUrl) {
     __nimbusCompiling(url, () => __nimbusEsmSourceText(id));
     const scope = { m: __nimbusFileImportMeta(filename, url, row[1] === __nimbusEsmEntryKey), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
     // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
-    if (row[4] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
+    if (row[3] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
     return scope;
   }
   if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
@@ -12527,7 +12534,7 @@ function __nimbusEsmSuspends(record) {
     const row = __nimbusEsm.table[record.id];
     let text = null;
     if (row[0] === "module") {
-      try { text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + row[2], "utf8"); } catch {}
+      try { text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + __nimbusEsmName(record.id), "utf8"); } catch {}
     }
     record.suspends = text !== null && text.includes("await") && __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").hasTopLevelAwait(text);
   }
@@ -12538,7 +12545,7 @@ function __nimbusEsmSuspends(record) {
 function __nimbusEsmSourceText(id) {
   const module = __nimbusModuleAtPath(__nimbusEsm.table[id][1]);
   const text = __nimbusModuleSourceText(module);
-  if (text === null) throw new Error("Nimbus: cannot read the staged module " + __nimbusEsm.table[id][2]);
+  if (text === null) throw new Error("Nimbus: cannot read the staged module " + __nimbusEsmName(id));
   return module.hashbang ? "#!" + text.slice(2) : text;
 }
 // Whether the registry cannot evaluate the module with Node's semantics:
@@ -12559,7 +12566,7 @@ function __nimbusEsmTainted(id) {
       if (record.state === __ESM_ADOPTED) return true;
     }
     const row = __nimbusEsm.table[at];
-    if (row[0] === "module") for (const target of row[3]) stack.push(target);
+    if (row[0] === "module") for (const target of row[2]) stack.push(target);
   }
   return false;
 }
@@ -12660,7 +12667,7 @@ async function __nimbusEsmImport(id) {
     let loaded;
     __nimbusTrackOp(new Promise((resolve) => { loaded = resolve; }));
     __nimbusEsmLoading.push(loaded);
-    const evaluation = import(__NIMBUS_BUNDLE_URL + row[2]);
+    const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
     // The evaluation it began, when it began within the call (workerd's).
     batch = __nimbusEsmOpenBatch;
     __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
@@ -12771,7 +12778,7 @@ function __nimbusEsmPending(id) {
     // Evaluated, or being evaluated by the interpreter: not this graph's to run.
     if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
     order.push(at);
-    for (const target of row[3]) visit(target);
+    for (const target of row[2]) visit(target);
   };
   visit(id);
   return order;
@@ -12780,7 +12787,7 @@ function __nimbusEsmPending(id) {
 function __nimbusEsmCompileError(error, id) {
   const { fatalLocation } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
   for (const at of __nimbusEsmPending(id)) {
-    const name = __nimbusEsm.table[at][2];
+    const name = __nimbusEsmName(at);
     const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + name, "utf8");
     if (fatalLocation(text, "module", -1) === null) continue;
     __nimbusDecorateSyntaxError(error, name);
@@ -12816,7 +12823,7 @@ function __nimbusEsmExportError(error, id, requested, name) {
     // The module the importer's specifier names, as the registry resolved it.
     let requestedUrl = null;
     try { requestedUrl = new URL(requested, __NIMBUS_BUNDLE_URL + module.name).href; } catch {}
-    const target = __nimbusEsm.table[__nimbusEsm.table[at][3].find((t) => t >= 0 && __NIMBUS_BUNDLE_URL + __nimbusEsm.table[t][2] === requestedUrl) ?? -1];
+    const target = __nimbusEsm.table[__nimbusEsm.table[at][2].find((t) => t >= 0 && __NIMBUS_BUNDLE_URL + __nimbusEsmName(t) === requestedUrl) ?? -1];
     if (target === undefined) continue;
     error.message = target[0] === "commonjs"
       ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\\nCommonJS modules can always be imported via the default export, for example using:\\n\\nimport pkg from '" + specifier + "';\\nconst { " + name + " } = pkg;\\n"
