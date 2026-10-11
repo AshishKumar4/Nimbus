@@ -46,6 +46,7 @@ import {
   type RuntimeFsPath,
   type ExclusiveMutationGrant,
   type ExclusiveMutationRequest,
+  type Awaitable,
   type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadOptions,
@@ -146,8 +147,9 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null {
     this.guard(); return this.reading(() => this.target.readRange(path, offset, length, options));
   }
+  /** Session-local routing question, not a supervisor RPC method: concrete-only, like the target's. */
   hasRangedRead(path: RuntimeFsPath): Awaitable<boolean> {
-    this.guard(); return this.target.hasRangedRead?.(path) ?? true;
+    this.guard(); return this.target.hasRangedRead(path);
   }
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner): VfsMutationReceipt {
     this.guard(); return this.target.writeRange(path, offset, bytes, options);
@@ -895,11 +897,13 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () =>
       await readRangeOrWhole(this.namespace, await this.path(path), offset, length)));
   }
+  /** Session-local routing question, not a supervisor RPC method: concrete-only, like the target's. */
   hasRangedRead(path: RuntimeFsPath) {
     // Descriptor-relative paths stay on the piece path: only the bridge's
     // routed lookup can see their backend, and it reports through the same
     // method when they reach it.
-    return this.either([path], () => this.bridge.hasRangedRead?.(path) ?? true, async () => true);
+    const routed = this.bridge as unknown as { hasRangedRead?: (path: RuntimeFsPath) => Awaitable<boolean> };
+    return this.either([path], () => routed.hasRangedRead?.(path) ?? true, async () => true);
   }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
     return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
@@ -1447,7 +1451,8 @@ export class ProcessView implements VFS {
     // read per 64 KiB: take one whole-file read instead. The bridge reports
     // the routed backend's capability without reading anything; a bridge
     // that predates the method is assumed ranged, the common case.
-    if (await this.fs.hasRangedRead?.(path as RuntimeFsPath) === false) {
+    const ranged = await (this.fs as unknown as { hasRangedRead?: (path: RuntimeFsPath) => Awaitable<boolean> }).hasRangedRead?.(path as RuntimeFsPath) ?? true;
+    if (!ranged) {
       const whole = await this.call('open', path, () => this.fs.readFile(path));
       if (whole === null) throw syscallError('ENOENT', 'open', path);
       if (!await unchanged()) throw syscallError('ESTALE', 'read', path, { detail: 'changed during the read' });
