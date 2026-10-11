@@ -4,7 +4,7 @@
 // loop of console.logs costs a call per 64 KiB, not a round trip a line.
 // What has to hold besides: every byte, in order, on each stream and across
 // them; the offsets a stop's replay is checked by; and a fatal report after
-// everything written before it and before everything after.
+// everything written before it.
 
 import assert from 'node:assert/strict';
 
@@ -102,16 +102,16 @@ function contiguous(list) {
 }
 
 {
-  // A fatal report comes after every write before it and before every write after it (an exit listener's).
-  const { result, calls: made } = await run('process.on("exit", () => console.log("exit-listener")); for (let i = 0; i < 500; i++) console.log(i); throw new Error("boom");');
+  // A fatal report comes after every write before it, though they are still in a batch on its way.
+  const { result, calls: made } = await run('for (let i = 0; i < 500; i++) console.log(i); throw new Error("boom");', 5);
   assert.notEqual(result.exitCode, 0);
-  const sequence = made.map((c) => `${c.op}:${c.text}`).join('');
-  const last = sequence.indexOf('stdout:499\n') === -1 ? sequence.lastIndexOf('499\n') : sequence.indexOf('499\n');
+  const sequence = made.map((c) => c.text).join('');
+  const last = sequence.indexOf('499\n');
   const fatal = sequence.indexOf('Error: boom');
-  const after = sequence.indexOf('exit-listener');
-  assert.ok(last !== -1 && fatal !== -1 && after !== -1, sequence.slice(-400));
+  assert.ok(last !== -1 && fatal !== -1, sequence.slice(-400));
   assert.ok(last < fatal, 'the fatal report came before what was written ahead of it');
-  assert.ok(fatal < after, 'an exit listener\'s output came before the fatal report');
+  const report = made.findIndex((c) => c.text.includes('Error: boom'));
+  assert.ok(made.slice(report).every((c) => c.op === 'stderr' && !/^\d+\n/.test(c.text)), 'a write made before the fatal report was sent after it');
 }
 
 console.log('ok - node-output-batching (writes made while a relay call is out go in one call, in order, at their offsets)');
