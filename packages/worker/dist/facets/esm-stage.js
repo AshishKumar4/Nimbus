@@ -107,6 +107,36 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     const kinds = new Map();
     const reals = new Map();
     const listings = new Map();
+    const listing = (dir) => once(listings, dir, () => fs.entries(dir));
+    // What is at VFS key `key`, by its directory's listing where there is
+    // one. Most questions are of names that are not there (each node_modules
+    // a bare specifier is looked for in, up the tree; each package.json of a
+    // package scope), and a listing per directory answers them all, where a
+    // question per name walked the path again from the root. A link, or an
+    // entry the listing cannot type, is asked of the filesystem, which follows it.
+    const kind = (key) => once(kinds, key, async () => {
+        if (fs.held?.(key) !== undefined)
+            return 'file';
+        if (key === '')
+            return 'directory';
+        if (fs.entries !== undefined) {
+            const at = key.lastIndexOf('/');
+            const dir = at === -1 ? '' : key.slice(0, at);
+            if ((await kind(dir)) !== 'directory')
+                return null;
+            const listed = await listing('/' + dir);
+            if (listed !== null) {
+                const type = listed.get(key.slice(at + 1));
+                if (type === undefined)
+                    return null;
+                if (type === 'file' || type === 'directory')
+                    return type;
+            }
+        }
+        if (!(await fs.files.exists(key)))
+            return null;
+        return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+    });
     const realpath = (path) => once(reals, path, async () => {
         // A file that is no link is where its directory's realpath puts it:
         // a listing and a realpath per directory, not a walk per file.
@@ -114,7 +144,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         if (fs.entries !== undefined && at > 0) {
             const dir = path.slice(0, at);
             const name = path.slice(at + 1);
-            const type = (await once(listings, dir, () => fs.entries(dir)))?.get(name);
+            const type = (await listing(dir))?.get(name);
             if (type === 'file')
                 return `${await once(reals, dir, () => fs.realpath(dir))}/${name}`;
         }
@@ -128,6 +158,9 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             const held = fs.held?.(key);
             if (held !== undefined)
                 return held;
+            // A file that is not there (most package scopes' package.json) is not read for.
+            if (fs.entries !== undefined && (await kind(key)) !== 'file')
+                return null;
             try {
                 return await fs.files.readFileString(key);
             }
@@ -144,16 +177,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         });
     };
     const resolver = createEsmResolver({
-        kind(path) {
-            const key = stripLeadingSlashes(path);
-            return once(kinds, key, async () => {
-                if (fs.held?.(key) !== undefined)
-                    return 'file';
-                if (!(await fs.files.exists(key)))
-                    return null;
-                return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
-            });
-        },
+        kind: (path) => kind(stripLeadingSlashes(path)),
         realpath,
         readText,
         isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
