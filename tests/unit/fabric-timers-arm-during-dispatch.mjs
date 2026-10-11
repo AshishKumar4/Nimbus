@@ -306,4 +306,26 @@ async function mustComplete(promise, label) {
   assert.equal(ctx.alarms.at(-1), now + 5);
 }
 
+// ── 10. A turn armed for the running alarm's own instant fires after it ────
+//
+// The platform takes an alarm set to the time it is running as no change,
+// and counts it delivered once the handler returns.
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('resident-launch', now - 10);
+  await mustComplete(
+    timers(host, ctx).dispatch(
+      { 'resident-launch': () => timers(host, ctx).schedule('resident-launch', now - 10) },
+      undefined,
+      { isRetry: false, retryCount: 0, scheduledTime: now - 10 },
+    ),
+    'a turn armed for the running alarm',
+  );
+  assert.deepEqual(ctx.kv.get(TIMER_REASONS_KEY), { 'resident-launch': now - 10 });
+  assert.equal(ctx.alarms.at(-1), now - 9);
+}
+
 console.log('fabric-timers-arm-during-dispatch: all assertions passed');

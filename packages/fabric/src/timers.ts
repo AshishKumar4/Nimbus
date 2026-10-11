@@ -64,8 +64,9 @@ const TIMER_ARM_ATTEMPTS = 3;
  * storage, not on whatever a dispatch's handlers are waiting for.
  * `_timerEpoch` counts {@link Timers.reset}s: a schedule or dispatch writes
  * only while the epoch it was requested in is still current.
- * `_timerFiring` is the reasons a running dispatch fired, each at the
- * deadline it fired at, and `_timerFiringSince` when that dispatch began.
+ * `_timerFiring` is the reasons a running dispatch fired and has not seen
+ * armed again since, each at the deadline it fired at, and
+ * `_timerFiringSince` when that dispatch began.
  */
 export interface TimerHost {
   _timerChain?: Promise<unknown>;
@@ -159,10 +160,12 @@ export class Timers {
         const map: Record<string, number> = { ...(existing || {}) };
         // Earliest-deadline-first: only update if new request is sooner or
         // this reason has no pending entry. A deadline a running dispatch
-        // fired is no pending entry: that dispatch drops it once its handler
-        // is done, and would drop this request with it.
+        // fired is no pending entry: this request replaces it, and that
+        // dispatch no longer drops it.
         let written: Promise<unknown> | undefined;
-        if (!(reason in map) || whenMs < map[reason] || host._timerFiring?.get(reason) === map[reason]) {
+        const fired = host._timerFiring?.get(reason);
+        if (!(reason in map) || whenMs < map[reason] || fired === map[reason]) {
+          if (fired !== undefined) host._timerFiring?.delete(reason);
           map[reason] = whenMs;
           written = ctx.storage.put(TIMER_REASONS_KEY, map);
         }
@@ -219,9 +222,9 @@ export class Timers {
    *
    * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
    * earliest remaining deadline, the map read again for it: what was armed
-   * while the handlers ran is kept, and a fired reason goes only if it still
-   * holds the deadline it fired at. Until then the map keeps every fired
-   * reason, so an alarm retried after a reset mid-handler fires them again.
+   * while the handlers ran is kept, and a fired reason goes unless it was
+   * armed again meanwhile. Until then the map keeps every fired reason, so an
+   * alarm retried after a reset mid-handler fires them again.
    * If no reasons remain, deletes the map key and does NOT call setAlarm —
    * the DO becomes hibernation-eligible after the 10s idle window.
    *
@@ -288,7 +291,7 @@ async function dispatchBody(
     if (Object.keys(existing ?? {}).length === 0) {
       onLegacyAlarm?.();
     } else {
-      for (const reason of fired.keys()) {
+      for (const reason of [...fired.keys()]) {
         if (!current()) return;
         const handler = handlers[reason];
         // Unknown reasons silently dropped (forward-compat).
@@ -308,9 +311,7 @@ async function dispatchBody(
       if (!current()) return;
       const stored = (await ctx.storage.get(TIMER_REASONS_KEY)) as Record<string, number> | undefined;
       const map: Record<string, number> = { ...(stored || {}) };
-      for (const [reason, when] of fired) {
-        if (map[reason] === when) delete map[reason];
-      }
+      for (const reason of fired.keys()) delete map[reason];
       for (const [reason, at] of rearms) {
         if (!(reason in map) || at < map[reason]) map[reason] = at;
       }
@@ -319,8 +320,11 @@ async function dispatchBody(
       const setAlarmFn = ctx?.storage?.setAlarm;
       if (Object.keys(map).length > 0) {
         const written = ctx.storage.put(TIMER_REASONS_KEY, map);
+        // Not at the time of the alarm being run: that is no change to the
+        // platform, which then counts it delivered.
+        const at = Math.min(...Object.values(map));
         const armed = typeof setAlarmFn === 'function'
-          ? setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)))
+          ? setAlarmFn.call(ctx.storage, alarmInfo !== undefined && at <= alarmInfo.scheduledTime ? alarmInfo.scheduledTime + 1 : at)
           : undefined;
         // Joined: a failed write or re-arm surfaces here, in the one warning below.
         await Promise.all([written, armed]);
