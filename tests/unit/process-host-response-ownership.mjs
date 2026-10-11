@@ -4,6 +4,7 @@ import { createFacetWorld, createFacetCtx, createPeerNamespace } from './facet-h
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { hostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 
 adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 const turns = async () => { for (let i = 0; i < 32; i++) await Promise.resolve(); };
@@ -25,7 +26,11 @@ for (const mode of ['facet', 'peer']) for (const ending of ['eof', 'cancel', 'pa
   }), { headers: { [HOST_INCARNATION_HEADER]: 'neighbor' } }), () => assert.fail('no host is lost'));
   let response;
   try {
-    response = await process.handleHttpRequest(new Request('https://app.invalid/'));
+    const request = new Request('https://app.invalid/');
+    if (ending === 'short' || ending === 'long') {
+      const ports = new PortRegistry(); ports.bindFacetStub(11, process); ports.register(3011, 11);
+      response = await ports.routeRequest(3011, request, '/');
+    } else response = await process.handleHttpRequest(request);
     assert.equal(watching, 1, 'the coordinator owns stream work after response headers');
     const reader = response.body.getReader();
     if (ending.includes('cancel')) {

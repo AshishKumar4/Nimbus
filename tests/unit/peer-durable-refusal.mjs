@@ -10,7 +10,7 @@ const world = createFacetWorld(() => ({ startProcess: async () => ({}) }), { res
 const { ns } = createPeerNamespace(world, { LOADER: world.loader });
 const published = [];
 const gen = launchManager('durable-refusal', { env: { NIMBUS_PROCESS_HOST: 'peer', NIMBUS_SESSION: ns }, hooks: { onSpawn: (...args) => published.push(args) } });
-const before = gen.processes.getAll().length;
+
 try {
   for (const runtime of ['python', 'ruby']) {
     const started = await gen.manager.spawnWorker('export default {}', runtime + ' unreserved', '/home/user', {

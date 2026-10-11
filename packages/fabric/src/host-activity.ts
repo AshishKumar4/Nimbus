@@ -169,19 +169,8 @@ export async function hostResponse(
     const response = await dispatch();
     // An upgrade transfers native socket ownership to its caller at the handshake.
     if (response.webSocket || response.body === null) { lease.release(); return response; }
-    const declared = request.method === 'HEAD' ? null : response.headers.get('Content-Length');
-    const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    // Keep native framing; only the terminal pipe owns this activity lease.
-    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>({
-      ...(Number.isSafeInteger(length) ? { expectedLength: length } : {}),
-    });
-    let body = response.body;
-    if (Number.isSafeInteger(length)) {
-      const fixed = new FixedLengthStream(length);
-      void body.pipeTo(fixed.writable, { signal: request.signal }).catch(() => {});
-      body = fixed.readable;
-    }
-    ctx.waitUntil(body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => {}));
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    ctx.waitUntil(response.body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => {}));
     return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
   } catch (error) { lease.release(); throw error; }
 }
