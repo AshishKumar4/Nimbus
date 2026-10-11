@@ -161,20 +161,18 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     type: 'module' | 'commonjs' | 'none';
   }
 
-  // Each package.json once, as Node's package_json_reader holds them for the
-  // process: a graph's modules share their scopes, and asked them again per
-  // import (a launch over pi's 1074 modules). One that does not parse is read
-  // again, its refusal naming each import.
+  // Each package.json read once, as Node's reader holds the ones it read for
+  // the process (src/node_modules.cc GetPackageJSON): a graph's modules share
+  // their scopes, and asked them again per import (a launch over pi's 1074
+  // modules). Like Node's, it holds no absence (a package.json written later
+  // is read), and one that does not parse is read again, its refusal naming
+  // each import.
   const packageConfigs = new Map<string, PackageConfig>();
   function* readPackageConfig(pjsonPath: string, specifier: string, base: string | undefined): Step<PackageConfig> {
     const known = packageConfigs.get(pjsonPath);
     if (known !== undefined) return known;
     const text = (yield* ask.kind(pjsonPath)) === 'file' ? yield* ask.readText(pjsonPath) : null;
-    if (text === null) {
-      const absent: PackageConfig = { exists: false, pjsonPath, type: 'none' };
-      packageConfigs.set(pjsonPath, absent);
-      return absent;
-    }
+    if (text === null) return { exists: false, pjsonPath, type: 'none' };
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(text);
