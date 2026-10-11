@@ -90,7 +90,7 @@ function commandContext(args) {
   ]));
   assert.equal(exitCode, 1, 'foreground clone must propagate the facet failure status');
   assert.deepEqual(harness.acquiredRoots, ['/home/user/foreground']);
-  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true }]);
+  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true, stoppable: true }]);
   assert.deepEqual(harness.releasedOwners, ['owner-1']);
   assert.equal(harness.activeOwners.size, 0);
   assert.equal(harness.waitUntilPromises.length, 0);
@@ -106,7 +106,7 @@ function commandContext(args) {
   ]));
   assert.equal(exitCode, 0);
   assert.deepEqual(harness.acquiredRoots, ['/home/user/background']);
-  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true }]);
+  assert.deepEqual(harness.acquisitionOptions, [{ includeMissingAncestors: true, stoppable: true }]);
   assert.equal(harness.waitUntilPromises.length, 1, 'background clone was not owned by DO waitUntil');
   await harness.waitUntilPromises[0];
   assert.deepEqual(harness.releasedOwners, ['owner-1']);
