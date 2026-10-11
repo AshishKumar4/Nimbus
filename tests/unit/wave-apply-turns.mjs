@@ -97,6 +97,8 @@ assert.ok(singlePathLookups < records / 10, `${singlePathLookups} single-path in
 // ended its leading phase through the turn-aware driver; a removal-only or
 // directory-only wave committed every leading group inside its batch-end, in
 // one turn (an rm -rf node_modules of hundreds of groups held the isolate).
+// Each directory batch owes its turn; removals, which commit one by one, owe
+// one per call group's worth (CALL_GROUP_OPS paths) of what they remove.
 for (const kind of ['deletes', 'directories']) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
@@ -107,13 +109,17 @@ for (const kind of ['deletes', 'directories']) {
   kernel.chown('home/user/proj/old', 1000, 1000);
   new ProcessFiles(engine);
   // Within one batch's 1,024 paths (W7_MAX_PATHS_PER_BATCH).
-  const N = kind === 'deletes' ? 60 : 24;
+  const N = 24;
   const payload = { inodes: [], chunks: [], deletePaths: [] };
   for (let i = 0; i < N; i++) {
     if (kind === 'deletes') {
-      kernel.writeFile(`home/user/proj/old/f${i}`, 'x');
-      kernel.chown(`home/user/proj/old/f${i}`, 1000, 1000);
-      payload.deletePaths.push(`home/user/proj/old/f${i}`);
+      kernel.mkdir(`home/user/proj/old/d${i}`);
+      kernel.chown(`home/user/proj/old/d${i}`, 1000, 1000);
+      for (let j = 0; j < 40; j++) {
+        kernel.writeFile(`home/user/proj/old/d${i}/f${j}`, 'x');
+        kernel.chown(`home/user/proj/old/d${i}/f${j}`, 1000, 1000);
+      }
+      payload.deletePaths.push(`home/user/proj/old/d${i}`);
     } else {
       for (let j = 0; j < 40; j++) payload.inodes.push({ path: `home/user/proj/d${i}/e${j}`, parentPath: `home/user/proj/d${i}`, kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
       payload.inodes.push({ path: `home/user/proj/d${i}`, parentPath: 'home/user/proj', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
@@ -128,9 +134,40 @@ for (const kind of ['deletes', 'directories']) {
   const groups = result.committedGroupSequence;
   console.log(JSON.stringify({ kind, groups, turns }));
   assert.ok(groups > 1, `${kind}: one group only (${groups}); the case proves nothing`);
-  assert.ok(turns >= groups - 1, `${kind}: ${turns} turns in ${groups} committed groups`);
+  if (kind === 'deletes') assert.ok(turns >= 1 && turns < groups, `${kind}: ${turns} turns in ${groups} removals of ${N * 41} paths`);
+  else assert.ok(turns >= groups - 1, `${kind}: ${turns} turns in ${groups} committed groups`);
   if (kind === 'deletes') assert.equal(kernel.readdir('home/user/proj/old').length, 0);
   else assert.equal(kernel.readdir(`home/user/proj/d${N - 1}`).length, 40);
+}
+
+// ── A process's calls that commit one by one owe a turn per call group's worth, not one each ──
+// Red before: every unlink, rmdir, rename and symlink a program made committed
+// alone and then waited a turn (a storage sync) of its own: 3,000 unlinkSync
+// calls took 90 s against 2.4 s for as many mkdirSync calls, which group.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/proj/calls', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  kernel.chown('home/user/proj', 1000, 1000);
+  kernel.chown('home/user/proj/calls', 1000, 1000);
+  new ProcessFiles(engine);
+  const N = 600;
+  for (let i = 0; i < N; i++) {
+    kernel.writeFile(`home/user/proj/calls/f${i}`, 'x');
+    kernel.chown(`home/user/proj/calls/f${i}`, 1000, 1000);
+  }
+  const ops = Array.from({ length: N }, (_, i) => ({ type: 'call', call: { call: 'unlink', path: `home/user/proj/calls/f${i}` } }));
+  let turns = 0;
+  const result = await engine.as(USER).writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }), {
+    turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  console.log(JSON.stringify({ kind: 'calls', groups: result.committedGroupSequence, turns }));
+  assert.equal(result.committedOps, N);
+  assert.equal(kernel.readdir('home/user/proj/calls').length, 0);
+  assert.ok(turns >= 1 && turns <= Math.ceil(N / 512), `${turns} turns for ${N} unlink calls`);
 }
 
 console.log('wave-apply-turns: ok');
