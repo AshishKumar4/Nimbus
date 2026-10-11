@@ -271,21 +271,25 @@ export async function createNativeEsmLoader(context, cjs, main) {
     }
     // Bun's require evaluates async graphs and tolerates require/ESM cycles.
     // Reject those graphs before asking its engine to evaluate them; no body is emulated.
-    function checkRequireGraph(record, parent, seen = new Set()) {
+    function checkRequireGraph(record, parent, seen = new Set(), root = record) {
         if (seen.has(record) || record.resolution.format !== 'module')
             return;
         seen.add(record);
         if (record.failure)
             throw record.failure.value;
         const source = sourceOf(record);
+        // Node's texts: the graph's TLA names the require() and its module;
+        // a cycle names the require() that began the module's evaluation.
         if (record.topLevelAwait ??= hasTopLevelAwait(source)) {
-            throw Object.assign(new Error(ASYNC_REQUIRE_MESSAGE), { code: 'ERR_REQUIRE_ASYNC_MODULE' });
+            const requiring = root.resolution.path ?? root.resolution.url;
+            throw Object.assign(new Error(`${ASYNC_REQUIRE_MESSAGE}\n  From ${parent ?? ''} \n  Requiring ${requiring} `), { code: 'ERR_REQUIRE_ASYNC_MODULE' });
         }
         if (record.state === 'entered' || record.state === 'loading') {
-            throw Object.assign(new Error(`Cannot require() ES Module ${record.resolution.path ?? record.resolution.url} in a cycle.${parent ? ` (from ${parent})` : ''}`), { code: 'ERR_REQUIRE_CYCLE_MODULE' });
+            const from = record.requirer ?? parent;
+            throw Object.assign(new Error(`Cannot require() ES Module ${record.resolution.path ?? record.resolution.url} in a cycle.${from ? ` (from ${from})` : ''}`), { code: 'ERR_REQUIRE_CYCLE_MODULE' });
         }
         for (const site of readModuleImportSites(source).statics) {
-            checkRequireGraph(resolveRecord(site.specifier, record.resolution.url, site.attributes), parent, seen);
+            checkRequireGraph(resolveRecord(site.specifier, record.resolution.url, site.attributes), parent, seen, root);
         }
     }
     const native = {
@@ -311,11 +315,13 @@ export async function createNativeEsmLoader(context, cjs, main) {
             try {
                 const path = filename === mainPath ? filename : context.filesystem().realpath(filename);
                 record = recordFor({ url: pathToFileURL(path).href, path, format: 'module' });
-                if (bun)
-                    checkRequireGraph(record, parentFilename);
                 const caller = parentFilename && parentFilename !== '[eval]' ? parentFilename
                     : context.filename === '[eval]' ? `${context.cwd}/[eval]` : context.filename;
+                if (bun)
+                    checkRequireGraph(record, caller);
                 evaluating = true;
+                if (record.state === 'new')
+                    record.requirer ??= caller;
                 const namespace = hostModule.createRequire(pathToFileURL(caller).href)(root + record.name);
                 return bun ? requiredNamespace(record, record.namespace ?? namespace) : namespace;
             }
@@ -363,7 +369,8 @@ export async function createNativeEsmLoader(context, cjs, main) {
             if (bun && name.startsWith('nimbus/meta-')) {
                 const instance = name.slice('nimbus/meta-'.length, -'.js'.length);
                 const source = metaModuleSource(false);
-                return applySourceEdits(source, readModuleImportSites(source).metas.map((site) => ({ ...site, text: JSON.stringify(`${root}${ESM_META_MODULE}?${instance}`) })));
+                // The instance's `import.meta`, as the query names it: Bun's is its file's.
+                return applySourceEdits(source, readModuleImportSites(source).metas.map((site) => ({ ...site, text: `({ url: ${JSON.stringify(`${root}${ESM_META_MODULE}?${instance}`)} })` })));
             }
             const record = byName.get(name);
             if (!record)

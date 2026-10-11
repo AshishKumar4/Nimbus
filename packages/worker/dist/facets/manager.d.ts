@@ -323,6 +323,8 @@ interface FacetVfsState {
      * CommonJS as Node would run it.
      */
     esm?: EsmStage;
+    /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
+    esmSize?: Record<string, number>;
     /**
      * The files staged only to run whose module is an emit: the map carries the
      * emit and not the file, which no read asked for. A synchronous read of one

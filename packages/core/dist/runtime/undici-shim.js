@@ -58,6 +58,23 @@
  *   - globalThis.fetch — ALREADY patched by node-shims.ts (loopback + AI egress)
  *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, env
  */
+/**
+ * The names the shim's module has beside \`default\`: what an ES module may
+ * import from 'undici' (worker facets/esm-stage.ts builds its facade with
+ * them). tests/unit/undici-shim-exports.mjs evaluates the shim and checks the
+ * list against its keys.
+ */
+export const UNDICI_SHIM_EXPORTS = Object.freeze([
+    "Agent", "BalancedPool", "Blob", "Client", "CloseEvent", "DecoratorHandler", "Dispatcher", "Dispatcher1Wrapper",
+    "EnvHttpProxyAgent", "ErrorEvent", "EventSource", "File", "FormData", "H2CClient", "Headers", "MessageEvent",
+    "MockAgent", "MockCallHistory", "MockCallHistoryLog", "MockClient", "MockPool", "Pool", "ProxyAgent",
+    "RedirectHandler", "Request", "Response", "RetryAgent", "RetryHandler", "RoundRobinPool", "SnapshotAgent",
+    "Socks5ProxyAgent", "Undici", "WebSocket", "WebSocketError", "WebSocketStream", "buildConnector", "cacheStores",
+    "caches", "connect", "deleteCookie", "errors", "fetch", "getCookies", "getGlobalDispatcher", "getGlobalOrigin",
+    "getSetCookies", "install", "interceptors", "mockErrors", "parseCookie", "parseMIMEType", "ping", "pipeline",
+    "request", "serializeAMimeType", "setCookie", "setGlobalDispatcher", "setGlobalOrigin", "stream", "upgrade",
+    "util",
+]);
 export function generateUndiciShimCode() {
     return `
 const __undiciMod = (() => {
@@ -505,8 +522,8 @@ const __undiciMod = (() => {
   for (const name of ["redirect", "responseError", "retry", "dump", "dns", "cache", "decompress", "deduplicate"]) {
     mod.interceptors[name] = unsupported("interceptors." + name, "interceptors operate on the dispatch protocol, and " + dispatchWhy);
   }
-  // Interop: undici is CJS with an \`export default Undici\`. The ESM→CJS
-  // pre-pass reads \`.default\` for \`import undici from 'undici'\`; \`.Undici\`
+  // Interop: undici is CJS with an \`export default Undici\`; an interpreted
+  // module's \`import undici from 'undici'\` reads \`.default\`. \`.Undici\`
   // mirrors the package's own self-reference.
   mod.default = mod;
   mod.Undici = mod;

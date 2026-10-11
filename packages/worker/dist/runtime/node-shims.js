@@ -11861,6 +11861,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // An ES module an import loaded is the ES loader's; require.cache has it
   // once a require() loads it (require(esm)), as Node's has.
   const cached = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
+  // An adopted ES module still evaluating: a require() of it is a cycle.
+  if (cached !== undefined && adopted && required && !cached.loaded) __nimbusEsmRequire(esmId, true, parent);
   if (cached !== undefined) {
     __nimbusUpdateChildren(parent, cached, true);
     if (required) __NodeModule._cache[cacheKey] ??= cached;
@@ -11868,7 +11870,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     return required && record?.namespace ? __nimbusEsmRequired(record) : cached.exports;
   }
   if (adopted) {
-    const namespace = __nimbusEsmRequire(esmId, required);
+    const namespace = __nimbusEsmRequire(esmId, required, parent);
     if (namespace !== null) return namespace;
   }
 
@@ -12083,7 +12085,7 @@ function __nimbusEsmId(kind, key) {
 const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
 const __nimbusEsmRecords = [];
 function __nimbusEsmRecord(id) {
-  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined };
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, suspends: undefined, required: undefined, error: undefined, module: undefined, requirer: undefined };
 }
 // What a body Nimbus stops throws, and a batch Nimbus cancels rejects with.
 const __nimbusEsmStop = new Error("Nimbus: this module was not evaluated by the registry");
@@ -12096,6 +12098,8 @@ const __nimbusEsmInstances = new Map();
 // The batch the meta instances evaluating now join: one evaluation's, which
 // runs every meta instance it links in one synchronous turn, and ends with it.
 let __nimbusEsmOpenBatch = null;
+// What each import() in flight resolves once its graph has loaded (__nimbusEsmImport).
+const __nimbusEsmLoading = [];
 const __nimbusEsmResolved = Promise.resolve();
 const __nimbusEsmThen = Promise.prototype.then;
 // A builtin facade's reads again of its builtin's names (module.syncBuiltinESMExports).
@@ -12114,6 +12118,8 @@ function __nimbusEsmEnter(metaUrl) {
   const row = __nimbusEsm.table[id];
   const record = __nimbusEsmRecord(id);
   if (__nimbusEsmOpenBatch === null) {
+    // An evaluation begins: the graphs it loads are loaded.
+    for (const loaded of __nimbusEsmLoading.splice(0)) loaded();
     __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null };
     __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmResolved, [() => { __nimbusEsmOpenBatch = null; }]);
   }
@@ -12128,6 +12134,8 @@ function __nimbusEsmEnter(metaUrl) {
   if (row[0] === "module") {
     const filename = "/" + row[1];
     const url = __nimbusEsmUrl(filename);
+    // Compiled now, as Node's loader compiles it: its source map, where source maps are on.
+    __nimbusCompiling(url, () => __nimbusEsmSourceText(id));
     const scope = { m: __nimbusFileImportMeta(filename, url, row[1] === __nimbusEsmEntryKey), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
     // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
     if (row[4] === 1) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
@@ -12204,7 +12212,11 @@ function __nimbusEsmTainted(id) {
 // of one: its namespace once the registry evaluated it (Node's
 // require(esm) shape for a require), null where the interpreter is to
 // evaluate it (its record given up), else Node's refusal.
-function __nimbusEsmRequire(id, required) {
+// Node's refusal of a require() whose graph has top-level await.
+function __nimbusRequireAsync(parent, filename) {
+  return nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.\\n  From " + (parent?.filename ?? "") + " \\n  Requiring " + filename + " ");
+}
+function __nimbusEsmRequire(id, required, parent = undefined) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE) {
     if (!required) return record.namespace;
@@ -12227,18 +12239,29 @@ function __nimbusEsmRequire(id, required) {
   }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
-  if (record.state === __ESM_BEGAN) {
-    const filename = "/" + __nimbusEsm.table[id][1];
-    if (__nimbusEsmSuspends(record)) {
-      throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.");
+  const filename = "/" + __nimbusEsm.table[id][1];
+  // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
+  if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
+    if (__nimbusEsmSuspends(record)) throw __nimbusRequireAsync(parent, filename);
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : "") + " A cycle involving require(esm) is not allowed to maintain invariants mandated by the ECMAScript specification. Try making at least part of the dependency in the graph lazily loaded.");
+  }
+  // Evaluating, for a require(): Node's CommonJS loader's, naming the require that began it.
+  if (record.state === __ESM_ADOPTED && record.namespace === null) {
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (record.requirer ? " (from " + record.requirer + ")" : ""));
+  }
+  // A require() refuses a graph with top-level await before any of it runs, as Node's does.
+  if (required && record.state !== __ESM_ADOPTED) {
+    for (const at of __nimbusEsmPending(id)) {
+      if (__nimbusEsmSuspends(__nimbusEsmRecord(at))) throw __nimbusRequireAsync(parent, filename);
     }
-    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle. A cycle involving require(esm) is not allowed to maintain invariants mandated by the ECMAScript specification. Try making at least part of the dependency in the graph lazily loaded.");
   }
   // Linked into an evaluation that has not reached it: that evaluation is
   // cancelled (each body yet to begin stops), and the module is the interpreter's.
   if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop;
   if (record.state !== __ESM_ADOPTED) {
     record.state = __ESM_ADOPTED;
+    // Who began it, for a cycle's refusal: a require()'s module, or none for an import.
+    record.requirer = required ? parent?.filename ?? "" : undefined;
     __nimbusEsmAdoptions++;
     // NIMBUS_DIAG_ESM=1: each adoption named on stderr, to count them in a workload.
     if (__processMod.env.NIMBUS_DIAG_ESM === "1") {
@@ -12273,7 +12296,17 @@ async function __nimbusEsmImport(id) {
   const row = __nimbusEsm.table[id];
   if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
   try {
-    return await import(__NIMBUS_BUNDLE_URL + row[2]);
+    // The program's own work while its graph loads, until its evaluation
+    // begins (its first meta instance) or it settles: a host whose loading
+    // reads keeps the process, as Node's loader keeps it while it reads;
+    // a top-level await that never settles does not. Armed before the
+    // import(), which may link and begin evaluating within the call.
+    let loaded;
+    __nimbusTrackOp(new Promise((resolve) => { loaded = resolve; }));
+    __nimbusEsmLoading.push(loaded);
+    const evaluation = import(__NIMBUS_BUNDLE_URL + row[2]);
+    __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
+    return await evaluation;
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
     // took a module of it; an earlier evaluation stopped at a sibling's
@@ -12358,7 +12391,9 @@ function __nimbusEsmPending(id) {
     if (at < 0 || seen.has(at)) return;
     seen.add(at);
     const row = __nimbusEsm.table[at];
-    if (row[0] !== "module" || __nimbusEsmRecords[at]?.state === __ESM_DONE) return;
+    const state = __nimbusEsmRecords[at]?.state;
+    // Evaluated, or being evaluated by the interpreter: not this graph's to run.
+    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
     order.push(at);
     for (const target of row[3]) visit(target);
   };

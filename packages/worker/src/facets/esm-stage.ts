@@ -23,6 +23,7 @@ import {
   stageEsModule, type StagedEsModule,
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
+import { UNDICI_SHIM_EXPORTS } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { resolveRequireEx, type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { typeScriptUnderNodeModules, type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { nodeModulesRefusal } from '@nimbus-sh/core/runtime/typescript-refusal.js';
@@ -61,6 +62,8 @@ export interface EsmStage {
   readonly table: EsmModuleRow[];
   /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
   readonly missing: EsmMissing[];
+  /** How long staging took, in milliseconds: the launch's debug line. */
+  readonly ms: number;
 }
 
 /** Where a refused specifier points, by its number: a name no map member has, so the graph fails to link. */
@@ -73,6 +76,9 @@ export const ESM_MISSING_DIR = 'nimbus/missing/';
  * which loads the module as a file outside the map.
  */
 export const ESM_NOT_STAGED = 'ERR_NIMBUS_NOT_STAGED';
+
+/** The names each package the process provides has beside `default` (constants.ts FACET_PROVIDED_PACKAGES). */
+const PROVIDED_PACKAGE_EXPORTS: Readonly<Record<string, readonly string[]>> = { undici: UNDICI_SHIM_EXPORTS };
 
 /** Builtins Node names only with their scheme (module.isBuiltin('test') is false). */
 const SCHEME_ONLY_BUILTINS: Readonly<Record<string, true>> = { sea: true, sqlite: true, test: true, 'test/reporters': true };
@@ -87,6 +93,18 @@ function isNodeBuiltin(specifier: string): boolean {
 export interface EsmStageFs {
   readonly files: BridgeRequireFs;
   realpath(path: string): Promise<string>;
+  /** The text the launch already holds for a VFS key (its map's cell), or undefined: read before the filesystem. */
+  held?(key: string): string | undefined;
+}
+
+/** `make()`'s promise, once per key of `cache`. */
+function once<T>(cache: Map<string, Promise<T>>, key: string, make: () => Promise<T>): Promise<T> {
+  let found = cache.get(key);
+  if (found === undefined) {
+    found = make();
+    cache.set(key, found);
+  }
+  return found;
 }
 
 /** A refusal's error, as the process rebuilds it. */
@@ -105,9 +123,11 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false }: {
+  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
+    /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
+    typeScript?: boolean;
     conditions: readonly string[];
     /** Whose resolution the modules link by: Node's ESM_RESOLVE, or Bun's, which falls back to require()'s probing. */
     scope?: ModuleScope;
@@ -118,6 +138,7 @@ export async function stageEsModules(
     gate: boolean;
   },
 ): Promise<EsmStage> {
+  const started = Date.now();
   const table: EsmModuleRow[] = [];
   const members: Record<string, string> = {
     [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
@@ -146,32 +167,49 @@ export async function stageEsModules(
     }
     return id;
   };
-  const readText = async (path: string): Promise<string | null> => {
-    try { return await fs.files.readFileString(stripLeadingSlashes(path)); } catch { return null; }
+  // Each filesystem question once per staging, the launch's own cells
+  // first: a graph's modules share their directories, packages and
+  // manifests, and asks them thousands of times.
+  const kinds = new Map<string, Promise<'file' | 'directory' | null>>();
+  const reals = new Map<string, Promise<string>>();
+  const texts = new Map<string, Promise<string | null>>();
+  const requires = new Map<string, Promise<string | null>>();
+  const readText = (path: string): Promise<string | null> => {
+    const key = stripLeadingSlashes(path);
+    return once(texts, key, async () => {
+      const held = fs.held?.(key);
+      if (held !== undefined) return held;
+      try { return await fs.files.readFileString(key); } catch { return null; }
+    });
   };
-  const requireResolve = async (specifier: string, fromPath: string): Promise<string | null> => {
+  const requireResolve = (specifier: string, fromPath: string): Promise<string | null> => {
     const fromDir = stripLeadingSlashes(fromPath.slice(0, fromPath.lastIndexOf('/')));
-    const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
-    return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+    return once(requires, `${fromDir}\n${specifier}`, async () => {
+      const found = await resolveRequireEx(fs.files, specifier, fromDir, undefined, undefined, conditions);
+      return found === null ? null : '/' + stripLeadingSlashes(found.resolved);
+    });
   };
   const resolver = createEsmResolver({
-    async kind(path) {
+    kind(path) {
       const key = stripLeadingSlashes(path);
-      if (!(await fs.files.exists(key))) return null;
-      return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+      return once(kinds, key, async () => {
+        if (fs.held?.(key) !== undefined) return 'file';
+        if (!(await fs.files.exists(key))) return null;
+        return (await fs.files.isDirectory(key)) ? 'directory' : 'file';
+      });
     },
-    realpath: (path) => fs.realpath(path),
+    realpath: (path) => once(reals, path, () => fs.realpath(path)),
     readText,
     isBuiltin: (specifier) => isNodeBuiltin(specifier) || FACET_PROVIDED_PACKAGES.includes(specifier),
     cjsResolve: requireResolve,
-  }, { conditions, cwd: () => cwd });
+  }, { conditions, cwd: () => cwd, stripTypes: typeScript });
   const exportNames = async (path: string) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
   const notStaged = (path: string) => Object.assign(
     new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED },
   );
 
-  /** The row an import with `attributes`, from the module at `importer`, of what `resolution` names loads. */
-  const target = async (resolution: EsmResolution, attributes: Readonly<Record<string, string>>, importer: string): Promise<number> => {
+  /** The row an import with `attributes` of what `resolution` names loads. */
+  const target = async (resolution: EsmResolution, attributes: Readonly<Record<string, string>>): Promise<number> => {
     resolver.validateAttributes(resolution.url, resolution.format, attributes);
     resolver.assertLoadable(resolution);
     if (resolution.format === 'builtin') {
@@ -179,10 +217,8 @@ export async function stageEsModules(
       if (!FACET_PROVIDED_PACKAGES.includes(builtin)) {
         return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
       }
-      // A package the process provides loads as the process's own, with the names Node finds in its installed copy.
-      const installed = await requireResolve(builtin, importer);
-      const exported = installed === null ? [] : await exportNames(installed);
-      return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, exported));
+      // A package the process provides loads as the process's own module, with its names.
+      return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, PROVIDED_PACKAGE_EXPORTS[builtin] ?? []));
     }
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
     const key = stripLeadingSlashes(resolution.path);
@@ -225,7 +261,7 @@ export async function stageEsModules(
             url.pathname = probed;
             return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' as const : 'commonjs' as const };
           });
-        const row = await target(resolution, site.attributes, parentUrl.pathname);
+        const row = await target(resolution, site.attributes);
         rowTargets.push(row);
         targets.push(table[row]![2]);
       } catch (error) {
@@ -239,5 +275,5 @@ export async function stageEsModules(
     }));
     id++;
   }
-  return { modules, members, table, missing };
+  return { modules, members, table, missing, ms: Date.now() - started };
 }
