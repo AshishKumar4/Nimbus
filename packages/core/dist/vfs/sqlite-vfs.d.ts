@@ -1996,6 +1996,7 @@ export declare class SqliteVFS {
     private directoryPlacement;
     /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
     private deletionKey;
+    private storedParents;
     private checkStoredDeletion;
     private normalizeBatchInode;
     private authorizeBatch;

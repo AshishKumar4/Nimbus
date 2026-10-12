@@ -7605,25 +7605,41 @@ export class SqliteVFS {
         if (normalizeVfsLookupPath(path) !== null) {
             const literal = this.lexicalKey(path, cred);
             const inode = this.inodes.get(literal.value);
-            if (inode !== undefined)
-                return { key: this.physicalKey(literal.value), literal: inode };
+            if (inode !== undefined) {
+                const key = this.physicalKey(literal.value);
+                let stranded = false;
+                for (const parent of this.storedParents(key, cred))
+                    if (parent.inode?.kind === 'symlink') {
+                        stranded = true;
+                        break;
+                    }
+                return { key, literal: stranded ? inode : undefined };
+            }
         }
         const key = this.storageKey(path, cred);
         return { key: this.inodes.get(key.value) !== undefined ? key : this.physicalKey(this.createdPath(key.value, cred, memo)), literal: undefined };
     }
+    *storedParents(key, cred) {
+        const root = this.confinedTmpRoots.get(cred.uid);
+        const name = this.logicalPath(key.value, cred, root);
+        if (name === null)
+            throw vfsKeyError('ENOENT', key.value);
+        for (let at = parentKey(name); at !== ''; at = parentKey(at)) {
+            yield { name: at, inode: this.inodes.get(this.keyOfName(at, root)) };
+        }
+    }
     checkStoredDeletion(key, inode, cred) {
         let writable;
-        for (let at = parentKey(key.value); at !== ''; at = parentKey(at)) {
-            const parent = this.inodes.get(at);
-            if (parent === undefined)
-                throw vfsKeyError('ENOENT', at);
-            if (parent.kind === 'symlink')
+        for (const parent of this.storedParents(key, cred)) {
+            if (parent.inode === undefined)
+                throw vfsKeyError('ENOENT', parent.name);
+            if (parent.inode.kind === 'symlink')
                 continue;
-            if (parent.kind !== 'directory')
-                throw vfsKeyError('ENOTDIR', at);
-            if (!this.accessInode(parent, writable === undefined ? 0o3 : 0o1, cred))
-                throw vfsKeyError('EACCES', at);
-            writable ??= parent;
+            if (parent.inode.kind !== 'directory')
+                throw vfsKeyError('ENOTDIR', parent.name);
+            if (!this.accessInode(parent.inode, writable === undefined ? 0o3 : 0o1, cred))
+                throw vfsKeyError('EACCES', parent.name);
+            writable ??= parent.inode;
         }
         if (writable === undefined)
             this.checkRootWritable(key.value, cred);
