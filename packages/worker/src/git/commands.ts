@@ -146,14 +146,15 @@ function sessionGitFs(vfs: ProjectFs, worktree: string | null = null, promisor?:
       try { data = vfs.readFile(p); } catch { return Promise.resolve(null); }
       return Promise.resolve(data).then((bytes) => bytes, () => null);
     },
-    // A checkout's file modes are the index's: the session writes none here.
-    async writeFile(p, data) {
+    // A file made has the mode its caller asked for (a checkout's: the index's),
+    // so it is never more open than that; one there keeps its own.
+    async writeFile(p, data, mode) {
       await ensureDirectories(p, false);
       // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
       const existing = checkedOut(p) ? (await lstatOrNull(p))?.type : undefined;
       if (existing === 'symlink') await vfs.unlink(p);
       else if (existing === 'directory') await vfs.removeRecursive(p);
-      await vfs.writeFile(p, data);
+      await vfs.writeFile(p, data, mode === undefined ? undefined : { mode });
     },
     async unlink(p) {
       if (await lstatOrNull(p)) await vfs.unlink(p);
@@ -1720,7 +1721,7 @@ async function refusal(ctx: Ctx, error: unknown, strategy?: string): Promise<num
 function checkoutWriter(vfs: ProjectFs, root: string): CheckoutWriter {
   const fs = sessionGitFs(vfs, root);
   return {
-    writeFile: (path, data) => fs.promises.writeFile(path, data),
+    writeFile: (path, data, mode) => fs.promises.writeFile(path, data, { mode }),
     symlink: (target, path) => fs.promises.symlink(target, path),
     unlink: (path) => fs.promises.unlink(path),
     rmdir: (path) => fs.promises.rmdir(path),
@@ -1878,8 +1879,9 @@ async function checkoutPaths(
       if (mode === 0o120000) {
         await writer.symlink(dec.decode(data), file);
       } else {
-        await writer.writeFile(file, data);
-        await writer.chmod(file, mode === 0o100755 ? 0o755 : 0o644);
+        const fileMode = mode === 0o100755 ? 0o755 : 0o644;
+        await writer.writeFile(file, data, fileMode);
+        await writer.chmod(file, fileMode);
       }
       added.add({ path, mode, oid, stat: await wrepo.fs.lstat(path), skipWorktree });
     }

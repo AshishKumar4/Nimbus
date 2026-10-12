@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
+  the session; they changed only what the program itself saw.
+- Fixed: a file JS git checks out, and a loose object it writes, is made with
+  its final mode (0644 or 0755, 0444); it was made 0666 less the umask and
+  changed after, so under a permissive umask others could write it meanwhile.
+
 - Fixed: a file or directory a Node program creates has the mode it asked
   for, as Node's does. `writeFile` and `appendFile` (sync, callback and
   promise forms), `open` and write streams honour `mode`, less the umask, and
