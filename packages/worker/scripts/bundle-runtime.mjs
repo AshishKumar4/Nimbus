@@ -57,7 +57,6 @@ import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { SPECS } from './runtime-specs.mjs';
-import { checkPythonInputs } from '../wasm/python/inputs.mjs';
 
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID;
 // Resolve the wrangler bin from either the package-local or the
@@ -170,7 +169,10 @@ if (!spec) {
   console.error(`known: ${Object.keys(SPECS).join(', ')}`);
   process.exit(2);
 }
-if (RUNTIME === 'cpython') await checkPythonInputs();
+if (RUNTIME === 'cpython') {
+  const { checkPythonInputs } = await import('../wasm/python/inputs.mjs');
+  await checkPythonInputs();
+}
 if (spec.auxiliary_bins) {
   const list = new URL(`${spec.local_base}/${spec.auxiliary_bins}`, import.meta.url);
   const names = readFileSync(list, 'utf8').split('\n').filter(Boolean);
