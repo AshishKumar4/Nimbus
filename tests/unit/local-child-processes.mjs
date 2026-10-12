@@ -37,13 +37,18 @@ const DRIVER = facetTaskSource(`async function drive(args, { SUPERVISOR }) {
   const memory = new WebAssembly.Memory({ initial: 4 });
   __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], pid: args.processPid });
   __wasiAdoptSupervisor(SUPERVISOR);
+  // Made as for a guest that parks, unwrapped: this driver awaits what the
+  // imports answer, as a parked guest would (tests/unit/lib/wasi-imports.mjs).
   const { Suspending } = WebAssembly;
-  delete WebAssembly.Suspending;
+  WebAssembly.Suspending = function Unwrapped(body) { return body; };
   let bundle;
   try {
     bundle = __wasiMakeImports({ argv: ['parent'], env: {}, getMemory: () => memory,
       stdoutBytes: () => {}, stderrBytes: () => {} });
-  } finally { if (Suspending !== undefined) WebAssembly.Suspending = Suspending; }
+  } finally {
+    if (Suspending === undefined) delete WebAssembly.Suspending;
+    else WebAssembly.Suspending = Suspending;
+  }
   const proc = bundle.procImport, wasi = bundle.wasiImport;
   const bytes = new Uint8Array(memory.buffer), view = new DataView(memory.buffer);
   const enc = new TextEncoder(), dec = new TextDecoder();

@@ -36,3 +36,26 @@ export function makeImportsWithoutJSPI(preamble, options) {
     if (Suspending !== undefined) wasm.Suspending = Suspending;
   }
 }
+
+/**
+ * The same table, made as for a guest that parks, with the Suspending wrapper
+ * as the identity. Made as for one that cannot park, the nimbus_proc calls
+ * that have to wait are refused by name (processes.ts mustWait); a test
+ * driving children from JS awaits those calls, as a parked guest would. The
+ * filesystem the bodies answer from is chosen when they are called, by the
+ * engine's real JSPI.
+ *
+ * @param {{ __wasiMakeImports: (options: object) => object }} preamble
+ * @param {object} options  Forwarded to __wasiMakeImports unchanged.
+ */
+export function makeParkingImports(preamble, options) {
+  const wasm = /** @type {any} */ (WebAssembly);
+  const { Suspending } = wasm;
+  wasm.Suspending = function Unwrapped(body) { return body; };
+  try {
+    return preamble.__wasiMakeImports(options);
+  } finally {
+    if (Suspending === undefined) delete wasm.Suspending;
+    else wasm.Suspending = Suspending;
+  }
+}
