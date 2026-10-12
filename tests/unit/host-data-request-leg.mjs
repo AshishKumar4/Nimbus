@@ -11,7 +11,11 @@ let guestCalls = 0, dataCalls = 0, blocked = false;
 const pendingWatch = Promise.withResolvers();
 const world = createFacetWorld(() => ({
   async startProcess() { return {}; },
-  async handleHttpRequest(request) { guestCalls++; return new Response(await request.text()); },
+  async handleHttpRequest(request) {
+    guestCalls++;
+    return new URL(request.url).pathname === '/guest-410'
+      ? new Response('application says gone', { status: 410 }) : new Response(await request.text());
+  },
 }), { resolveConfig: false });
 const { ns, peers } = createPeerNamespace(world, { LOADER: world.loader });
 const ctx = createFacetCtx(world, 'data-leg');
@@ -34,6 +38,12 @@ const host = processHostFor(ctx, { NIMBUS_PROCESS_HOST: 'peer', NIMBUS_SESSION: 
 const params = { pid: 31, workerKey: 'nimbus-process:data-leg:31', writerId: crypto.randomUUID(), boot };
 const process = await host.open(params);
 await process.started; await turns();
+const ordinary = await process.handleHttpRequest(new Request('https://app.invalid/guest-410'));
+assert.equal(ordinary.status, 410);
+assert.equal(await ordinary.text(), 'application says gone');
+let lost = false; void process.lost.catch(() => { lost = true; });
+await turns(); assert.equal(lost, false, 'an unbranded guest 410 is ordinary HTTP, not process host loss');
+guestCalls = 0; dataCalls = 0;
 blocked = true;
 const request = process.handleHttpRequest(new Request('https://app.invalid/data', { method: 'POST', body: 'kept payload' }));
 void request.catch(() => {});

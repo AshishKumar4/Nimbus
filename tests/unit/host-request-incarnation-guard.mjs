@@ -54,6 +54,7 @@ for (const entry of ['handleHttpRequest', 'fetch']) {
     assert.equal(ctx.starts, 0, 'stale data never starts the replacement guest');
     assert.equal(ctx.handlers, 0, 'stale data is refused before either guest entrypoint');
     assert.equal(response.status, 410, 'the old pinned nonce cannot be refreshed by a data reply');
+    assert.equal(response.headers.get(REQUEST_GUARD), capability, 'only an authenticated guard refusal carries the per-open brand');
   }
 }
 for (const entry of ['handleHttpRequest', 'fetch']) {
