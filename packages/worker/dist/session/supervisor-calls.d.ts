@@ -258,7 +258,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
     fsFstat(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fstat"]>>>;
     fsDup(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["dup"]>>>;
-    fsSeek(handleId: number, offset: number, whence: "set" | "current" | "end"): Promise<Awaited<ReturnType<RuntimeFsBridge["seek"]>>>;
+    fsSeek(handleId: number, offset: number, whence: "set" | "end" | "current"): Promise<Awaited<ReturnType<RuntimeFsBridge["seek"]>>>;
     fsSetStatus(handleId: number, status: {
         append?: boolean;
     }): Promise<Awaited<ReturnType<RuntimeFsBridge["setStatus"]>>>;

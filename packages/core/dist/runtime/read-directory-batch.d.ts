@@ -23,6 +23,7 @@ declare const Request: z.ZodObject<{
     retire: z.ZodArray<z.ZodNumber>;
     claim: z.ZodArray<z.ZodNumber>;
     lease: z.ZodBoolean;
+    end: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>;
 export type ReadDirectoryBatchRequest = z.infer<typeof Request>;
 export interface ReadDirectoryDescription {

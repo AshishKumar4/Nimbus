@@ -66,7 +66,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
     fsFstat(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fstat"]>>>;
     fsDup(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["dup"]>>>;
-    fsSeek(handleId: number, offset: number, whence: "set" | "current" | "end"): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["seek"]>>>;
+    fsSeek(handleId: number, offset: number, whence: "set" | "end" | "current"): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["seek"]>>>;
     fsSetStatus(handleId: number, status: {
         append?: boolean;
     }): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["setStatus"]>>>;

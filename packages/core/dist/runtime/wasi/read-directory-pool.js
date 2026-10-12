@@ -69,7 +69,7 @@ export function readDirectoryPool({ call, store, client, before }) {
         claiming.add(entry.handle.id);
         return entry.handle;
     };
-    const exchange = async (open, wantLease) => {
+    const exchange = async (open, wantLease, end = false) => {
         await before();
         const cursor = store.cursor() ?? { epoch: null, rev: 0 };
         // Captured ONCE outside the retried RPC. A cached once-delivery answer
@@ -84,7 +84,7 @@ export function readDirectoryPool({ call, store, client, before }) {
         let result;
         try {
             result = await call({ channel, sequence: sentSequence, epoch: cursor.epoch, cursor: cursor.rev,
-                open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null });
+                open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
         }
         catch (error) {
             uncertain += open.length;
@@ -220,7 +220,10 @@ export function readDirectoryPool({ call, store, client, before }) {
                     retiring.add(id);
                 owned.clear();
                 claiming.clear();
-                await drain();
+                invalidate();
+                // The channel's last exchange: it retires the rest and ends the channel.
+                if (sequence > 0)
+                    await exchange([], false, true);
             });
         },
     };
