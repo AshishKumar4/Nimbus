@@ -3279,7 +3279,7 @@ const __fsMod = (() => {
     if (own) {
       if (own.state === "absent" || own.state === "absentTree") return "absent";
       if (own.state === "alias") return { alias: own.from, link: own.link };
-      return { dir: true };
+      return { dir: true, mode: own.mode };
     }
     for (let i = k.lastIndexOf("/"); i > 0; i = k.lastIndexOf("/", i - 1)) {
       const above = _nsOwn.get(k.slice(0, i));
