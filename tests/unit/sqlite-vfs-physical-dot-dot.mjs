@@ -53,6 +53,20 @@ store.rmdir('/home/user/absolute/../dir');
 assert.equal(store.exists('/home/user/physical/renamed'), false);
 assert.equal(store.exists('/home/user/physical/dir'), false);
 
+store.mkdir('/home/user/absolute/../recursive//a/b', { recursive: true });
+store.mkdirBatch(['/home/user/absolute/../batch//a/b']);
+assert.equal(store.isDirectory('/home/user/physical/recursive/a/b'), true);
+assert.equal(store.isDirectory('/home/user/physical/batch/a/b'), true);
+const staged = '/home/user/absolute/../staged';
+store.writeBatch({
+  inodes: [
+    { path: staged, parentPath: '/home/user/absolute/..', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 },
+    { path: `${staged}/f`, parentPath: staged, isDir: false, size: 6, mtime: 1, mode: 0o644, chunkCount: 1 },
+  ],
+  chunks: [{ path: `${staged}/f`, chunkId: 0, data: new TextEncoder().encode('staged') }],
+});
+assert.equal(store.readFileString('/home/user/physical/staged/f'), 'staged', 'batch-created parents use physical placement too');
+
 engine.snapshot('before');
 root.unlink('home/user/relative');
 root.symlink('/home/user', 'home/user/relative');

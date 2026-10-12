@@ -8436,10 +8436,10 @@ export class SqliteVFS {
     staged?: Map<string, { mode: number; gid: number; defaultAcl: number | null }>,
     priors?: Map<string, INode | undefined>,
   ): NormalizedBatchInodeEntry {
-    const literal = this.storageKey(entry.path, cred);
+    const literal = this.storageKey(entry.path, cred, this.inodes, true);
     // The entry must name its own parent, as the caller wrote it; placement
     // (links followed) comes after.
-    const namedParent = this.storageKey(entry.parentPath, cred);
+    const namedParent = this.storageKey(entry.parentPath, cred, this.inodes, true);
     if (namedParent !== parentKey(literal)) {
       throw vfsError('EINVAL', literal, `parentPath ${namedParent} does not match ${parentKey(literal)}`);
     }
@@ -8487,11 +8487,11 @@ export class SqliteVFS {
     const placed = new Map<string, string>();
     const staged = new Map<string, { mode: number; gid: number; defaultAcl: number | null }>();
     this.readAlong([
-      ...payload.inodes.map((entry) => this.storageKey(entry.path, cred)),
+      ...payload.inodes.map((entry) => this.storageKey(entry.path, cred, this.inodes, true)),
       ...(payload.deletePaths ?? []).map((path) => this.storageKey(path, cred)),
     ]);
     // What stands at every place the batch writes, in one read rather than one per row.
-    this.readPriors(payload.inodes.map((entry) => this.createdPath(this.storageKey(entry.path, cred), cred, placed)), priors);
+    this.readPriors(payload.inodes.map((entry) => this.createdPath(this.storageKey(entry.path, cred, this.inodes, true), cred, placed)), priors);
     const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
     const pending = new Map(inodes.map((entry) => [entry.path, entry]));
     // A batch writes each row at its literal key, so the permission it checks
@@ -8551,7 +8551,7 @@ export class SqliteVFS {
     }
     // Chunks name their inode by path, so they take the inodes' storage keys.
     const chunks = payload.chunks.map((chunk) => {
-      const key = this.storageKey(chunk.path, cred);
+      const key = this.storageKey(chunk.path, cred, this.inodes, true);
       const path = this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
       if (!pending.has(path)) replaced(path);
       return path === chunk.path ? chunk : { ...chunk, path };
@@ -8895,7 +8895,7 @@ export class SqliteVFS {
       // a symbolic link they do not remove refuses the wave with nothing
       // committed (linkReplacedByDirectory).
       checkLeading: (directories, deletes) => asCaller(() => this.inodes.lookingUp(() => {
-        const keys = [...directories.map((inode) => this.storageKey(inode.path, cred)), ...deletes.map((path) => this.storageKey(path, cred))];
+        const keys = [...directories.map((inode) => this.storageKey(inode.path, cred, this.inodes, true)), ...deletes.map((path) => this.storageKey(path, cred))];
         this.readAlong(keys);
         const placed = new Map<string, string>();
         const placedAt = (path: string): string => {
@@ -8903,7 +8903,7 @@ export class SqliteVFS {
           return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
         };
         const linked = this.linkReplacedByDirectory(
-          directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred, placed)),
+          directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred, this.inodes, true), cred, placed)),
           deletes.map(placedAt),
         );
         if (linked !== null) throw linkedDirectoryRefusal(linked);
@@ -9212,7 +9212,7 @@ export class SqliteVFS {
         let placedPrior: KnownPrior | null = null;
         if (whole) {
           // Held whole until its group commits, and authorised there.
-          const path = this.createdPath(this.storageKey(inode.path, cred), cred, placement.placed);
+          const path = this.createdPath(this.storageKey(inode.path, cred, this.inodes, true), cred, placement.placed);
           asCaller(() => this.assertMutationsAllowed([path]));
           placedInode = { ...inode, path, parentPath: parentKey(path) };
         } else {
@@ -11233,14 +11233,14 @@ export class SqliteVFS {
    * per-file mkdir overhead.
    */
   private mkdirBatch(paths: string[], cred: VfsCred): number {
-    this.assertMutationsAllowed(paths.map((path) => this.storageKey(path, cred)));
+    this.assertMutationsAllowed(paths.map((path) => this.storageKey(path, cred, this.inodes, true)));
     const mtime = Date.now();
     const toCreate: BatchInodeEntry[] = [];
     const seen = new Set<string>();
 
     const placed = new Map<string, string>();
     for (const path of paths) {
-      const parts = this.storageKey(path, cred).split('/').filter(Boolean);
+      const parts = this.storageKey(path, cred, this.inodes, true).split('/').filter(Boolean);
       let current = '';
       for (const part of parts) {
         current = this.createdPath(current ? current + '/' + part : part, cred, placed);
