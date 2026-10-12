@@ -31,7 +31,8 @@ import type { RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../..
 import { realmOutcome, startRealm, type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext, CommandOutputStream } from '../types.js';
 import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
-import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { NodeFilesystem, NodeWatch } from '../../node-compat/filesystem.js';
+import type { VfsEvent } from '../../../../vfs/events.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
@@ -41,8 +42,8 @@ import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 
-/** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
-export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
+/** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
+export type FsMethod = Exclude<keyof NodeFilesystem, 'watch'>;
 
 /** A synchronous call the guest makes. */
 export type NodeCall =
@@ -50,7 +51,8 @@ export type NodeCall =
   | { readonly op: 'stdin' }
   | { readonly op: 'listen'; readonly port: number }
   | { readonly op: 'unlisten'; readonly port: number }
-  | { readonly op: 'watch'; readonly on: boolean };
+  /** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
+  | { readonly op: 'watch'; readonly id: number; readonly path: string | null };
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -71,7 +73,8 @@ export type GuestEvent =
 export type HostEvent =
   | { readonly type: 'fetched'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
-  | { readonly type: 'changed' }
+  /** A change watch `id` was told. */
+  | { readonly type: 'changed'; readonly id: number; readonly event: VfsEvent }
   | EgressHostEvent;
 
 /**
@@ -121,7 +124,13 @@ export function isHostEvent(value: unknown): value is HostEvent {
   switch (value.type) {
     case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
     case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
-    case 'changed': return true;
+    case 'changed':
+      return Number.isSafeInteger(value.id) && record(value.event)
+        && (value.event.type === 'add' || value.event.type === 'change' || value.event.type === 'unlink'
+          || value.event.type === 'addDir' || value.event.type === 'unlinkDir' || value.event.type === 'rename')
+        && typeof value.event.path === 'string'
+        && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
+        && typeof value.event.timestamp === 'number';
     default: return false;
   }
 }
@@ -148,7 +157,8 @@ export interface RealmServices {
   stdin(): Promise<Uint8Array>;
   listen(port: number): void;
   unlisten(port: number): void;
-  watch(on: boolean): void;
+  /** Watch `path` as watch `id`, or stop it (null). */
+  watch(id: number, path: string | null): void;
 }
 
 /** A call no method answers, or with arguments not of its kind. */
@@ -223,6 +233,7 @@ function callFilesystem(fs: NodeFilesystem, method: unknown, args: readonly unkn
     case 'isDirectory': return fs.isDirectory(pathArg(a));
     case 'stat': return fs.stat(pathArg(a));
     case 'lstat': return fs.lstat(pathArg(a));
+    case 'realpath': return fs.realpath(pathArg(a));
     case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
     case 'readdir': return fs.readdir(pathArg(a));
     case 'unlink': return fs.unlink(pathArg(a));
@@ -253,8 +264,8 @@ async function performCall(call: unknown, services: RealmServices): Promise<unkn
     case 'listen': return services.listen(portArg(call.port));
     case 'unlisten': return services.unlisten(portArg(call.port));
     case 'watch': {
-      if (typeof call.on !== 'boolean') throw refused('watch that is neither on nor off');
-      return services.watch(call.on);
+      if (!Number.isSafeInteger(call.id) || typeof call.id !== 'number') throw refused('watch without an id');
+      return services.watch(call.id, call.path === null ? null : pathArg(call.path));
     }
     default: throw refused(`call ${JSON.stringify(String(call.op))}`);
   }
@@ -308,7 +319,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       pending.delete(id);
     }
   };
-  let unwatch: (() => void) | undefined;
+  const watches = new Map<number, NodeWatch>();
   let stdinTaken = false;
   const services: RealmServices = {
     filesystem,
@@ -325,14 +336,15 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     unlisten: (port) => {
       if (ports.delete(port)) kernel?.portRegistry.delete(port);
     },
-    watch: (on) => {
-      unwatch?.();
-      unwatch = undefined;
-      if (!on) return;
-      const fs = filesystem();
-      const listener = () => { post({ type: 'changed' }); };
-      fs.onChange = listener;
-      unwatch = () => { if (fs.onChange === listener) fs.onChange = undefined; };
+    watch: (id, path) => {
+      watches.get(id)?.close();
+      watches.delete(id);
+      if (path === null) return;
+      watches.set(id, filesystem().watch(path, (event) => {
+        post({ type: 'changed', id, event: event.oldPath === undefined
+          ? { type: event.type, path: event.path, timestamp: event.timestamp }
+          : { type: event.type, path: event.path, oldPath: event.oldPath, timestamp: event.timestamp } });
+      }));
     },
   };
 
@@ -382,7 +394,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   for (const port of ports) kernel?.portRegistry.delete(port);
   for (const respond of pending.values()) respond(null);
   egress?.close();
-  unwatch?.();
+  for (const watch of watches.values()) watch.close();
   await written;
   if (end.terminated) return exitCodeForAbortSignal(ctx.signal);
   if (end.failure !== null) {

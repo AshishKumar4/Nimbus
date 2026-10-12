@@ -21,8 +21,6 @@ function bridgeFilesystem(bridge) {
             throw syscallError('ENOENT', 'open', path);
         return data;
     };
-    let listener;
-    let unsubscribe;
     return {
         readFile: read,
         readFileString: path => new TextDecoder().decode(read(path)),
@@ -58,6 +56,7 @@ function bridgeFilesystem(bridge) {
                 throw syscallError('ENOENT', 'lstat', path);
             return stat;
         },
+        realpath: path => fs.realpath(path),
         mkdir: (path, options) => fs.mkdir(path, options),
         readdir: path => fs.readdir(path),
         unlink: path => fs.unlink(path),
@@ -73,11 +72,12 @@ function bridgeFilesystem(bridge) {
         ftruncate: (fd, size) => fs.ftruncate(fd, size),
         fsync: (fd) => fs.fsync(fd),
         close: (fd) => fs.close(fd),
-        get onChange() { return listener; },
-        set onChange(next) {
-            unsubscribe?.();
-            listener = next;
-            unsubscribe = next ? bridge.subscribe?.('/', next) : undefined;
+        watch(path, listener) {
+            // A Node watch is of its target, as an inode's is: it follows it across renames.
+            const stop = bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
+                ? { ...event, path: `/${event.path}` }
+                : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` }), { follow: true });
+            return { close: () => stop?.(), ref() { }, unref() { } };
         },
     };
 }

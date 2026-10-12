@@ -8,40 +8,101 @@
  * thousands of files) are coalesced into a single batch emission per
  * microtask, reducing listener overhead.
  */
+/** Whether `path` is `tree` or under it (`tree` '' or '/': the root, which holds everything). */
+export function inWatchedTree(tree, path) {
+    if (tree === '' || tree === '/' || path === tree)
+        return true;
+    return path.length > tree.length && path.charCodeAt(tree.length) === 47 && path.startsWith(tree);
+}
+/**
+ * `event` as a watch of `tree` is told it, one rule for every watch: each
+ * end of it the watch holds (in `tree`) and may see (`shown`: its name for
+ * a path, null when it may not see it) is told; any rename seen at one end
+ * only is that end's add, or unlink. The watched path itself, or a
+ * directory above it, renamed is the watched path's going (unlink, where it
+ * was seen); a watch that follows its target (`follow`) is told its move
+ * instead (a rename, where it may see both places), and moves with it
+ * (CompositeVFS.watchChanges). A directory above it renamed took it along
+ * only if it is there now (`exists`, asked of nothing else); what a
+ * directory renamed to above the watched path brings is not known, and not
+ * told. Null: nothing to tell.
+ */
+export function projectChange(event, tree, shown, follow = false, exists = () => true) {
+    const seen = (path) => (inWatchedTree(tree, path) ? shown(path) : null);
+    const { type, timestamp } = event;
+    const path = seen(event.path);
+    // The event itself where the watch names it as it came.
+    if (event.oldPath === undefined)
+        return path === null ? null : path === event.path ? event : { type, path, timestamp };
+    const from = event.oldPath;
+    if (inWatchedTree(from, tree)) {
+        const moved = event.path + tree.slice(from.length);
+        // Where the watched path was: seen through the directories above `from` as they are, and the ones that
+        // moved with it where they went (they are the same directories).
+        const above = shown(from);
+        const was = above === null ? null : from === tree ? above : shown(moved) === null || !exists(moved) ? null : above + tree.slice(from.length);
+        if (was === null)
+            return null;
+        const now = follow ? shown(moved) : null;
+        return now === null ? { type: 'unlink', path: was, timestamp } : { type: 'rename', path: now, oldPath: was, timestamp };
+    }
+    const oldPath = seen(from);
+    if (path !== null && oldPath !== null)
+        return path === event.path && oldPath === from ? event : { type, path, oldPath, timestamp };
+    if (path !== null)
+        return { type: 'add', path, timestamp };
+    if (oldPath !== null)
+        return { type: 'unlink', path: oldPath, timestamp };
+    return null;
+}
 /**
  * Lightweight EventEmitter for VFS mutations.
- * - Global listeners receive batched events per microtask.
- * - Path listeners receive individual events for matching paths.
+ * - Global listeners receive batched events per microtask: the ones
+ *   published after each registered, whatever registers or lets go while a
+ *   batch is delivered.
+ * - Path listeners receive individual events at or under their path, by
+ *   either end of a rename, and a rename of a directory above their path.
  */
 export class VfsEventEmitter {
     _globalListeners = [];
     _pathListeners = new Map();
     _pending = [];
+    /** Each pending event's publication number (they rise). */
+    _pendingAt = [];
+    /** Publications so far. */
+    _published = 0;
     _flushScheduled = false;
+    /** Publications the path listeners are yet to hear, in order (one a listener makes waits for the one it hears). */
+    _pathQueue = [];
+    _pathDelivering = false;
     // Stats
     _totalEmitted = 0;
     _totalBatches = 0;
-    /** Register a global listener that receives batched events. */
+    /** Register a global listener that receives batched events: those published from now on. */
     on(listener) {
-        this._globalListeners.push(listener);
+        const entry = { listener, from: this._published, removed: false };
+        this._globalListeners.push(entry);
         return () => {
-            const idx = this._globalListeners.indexOf(listener);
+            entry.removed = true;
+            const idx = this._globalListeners.indexOf(entry);
             if (idx >= 0)
                 this._globalListeners.splice(idx, 1);
         };
     }
-    /** Register a listener for a specific path (or path prefix with recursive). */
+    /** Register a listener for a path and everything under it ('' is the root). */
     onPath(path, listener) {
         let list = this._pathListeners.get(path);
         if (!list) {
             list = [];
             this._pathListeners.set(path, list);
         }
-        list.push(listener);
+        const entry = { listener, from: this._published, removed: false };
+        list.push(entry);
         return () => {
+            entry.removed = true;
             const arr = this._pathListeners.get(path);
             if (arr) {
-                const idx = arr.indexOf(listener);
+                const idx = arr.indexOf(entry);
                 if (idx >= 0)
                     arr.splice(idx, 1);
                 if (arr.length === 0)
@@ -49,59 +110,95 @@ export class VfsEventEmitter {
             }
         };
     }
-    /** Emit a VFS event. Batched and flushed on the next microtask. */
+    /** Emit a VFS event: to path listeners now, to global listeners batched on the next microtask; to no one, when no one listens. */
     emit(type, path, oldPath) {
+        const at = ++this._published;
+        this._totalEmitted++;
+        if (this._globalListeners.length === 0 && this._pathListeners.size === 0)
+            return;
         const event = { type, path, timestamp: Date.now(), oldPath };
-        this._pending.push(event);
-        // Immediately deliver to path listeners (no batching for these)
-        this._deliverToPathListeners(event);
-        // Schedule batch flush for global listeners
-        if (!this._flushScheduled) {
-            this._flushScheduled = true;
-            queueMicrotask(() => this._flush());
-        }
-    }
-    _deliverToPathListeners(event) {
-        // Exact match
-        const exact = this._pathListeners.get(event.path);
-        if (exact) {
-            for (const listener of exact) {
-                try {
-                    listener(event);
-                }
-                catch (e) {
-                    console.error('[vfs-events] path listener error:', e);
-                }
+        // Queued for the global listeners first: one a path listener publishes is after it.
+        if (this._globalListeners.length > 0) {
+            this._pending.push(event);
+            this._pendingAt.push(at);
+            if (!this._flushScheduled) {
+                this._flushScheduled = true;
+                queueMicrotask(() => this._flush());
             }
         }
-        // Parent directory listeners (recursive watching)
-        let dir = event.path;
-        while (dir.includes('/')) {
-            dir = dir.substring(0, dir.lastIndexOf('/'));
-            const parent = this._pathListeners.get(dir);
-            if (parent) {
-                for (const listener of parent) {
-                    try {
-                        listener(event);
-                    }
-                    catch (e) {
-                        console.error('[vfs-events] path listener error:', e);
-                    }
-                }
+        // Immediately deliver to path listeners (no batching for these), in publication order.
+        if (this._pathListeners.size === 0)
+            return;
+        this._pathQueue.push({ event, at });
+        if (this._pathDelivering)
+            return;
+        this._pathDelivering = true;
+        try {
+            for (let next = this._pathQueue.shift(); next !== undefined; next = this._pathQueue.shift())
+                this._deliverToPathListeners(next.event, next.at);
+        }
+        finally {
+            this._pathDelivering = false;
+        }
+    }
+    /**
+     * `event` to each path listener registered when it was published, once:
+     * at its path or above it, at either end of a rename, and under a renamed
+     * directory (what it watches moved).
+     */
+    _deliverToPathListeners(event, at) {
+        const heard = [];
+        const hear = (key) => {
+            for (const entry of this._pathListeners.get(key) ?? [])
+                if (entry.from < at && !heard.includes(entry))
+                    heard.push(entry);
+        };
+        for (const end of event.oldPath === undefined ? [event.path] : [event.path, event.oldPath]) {
+            // The end itself, then each directory above it, the root's ('') last: it holds every path.
+            hear(end);
+            for (let dir = end; dir !== '';) {
+                const slash = dir.lastIndexOf('/');
+                dir = slash === -1 ? '' : dir.substring(0, slash);
+                hear(dir);
+            }
+            if (event.oldPath !== undefined && end !== '') {
+                for (const key of this._pathListeners.keys())
+                    if (key.startsWith(`${end}/`))
+                        hear(key);
+            }
+        }
+        for (const entry of heard) {
+            if (entry.removed)
+                continue;
+            try {
+                entry.listener(event);
+            }
+            catch (e) {
+                console.error('[vfs-events] path listener error:', e);
             }
         }
     }
     _flush() {
         this._flushScheduled = false;
         const batch = this._pending;
+        const at = this._pendingAt;
         this._pending = [];
+        this._pendingAt = [];
         if (batch.length === 0)
             return;
-        this._totalEmitted += batch.length;
         this._totalBatches++;
-        for (const listener of this._globalListeners) {
+        // The listeners registered now, each told what was published after it registered; one let go meanwhile is skipped.
+        for (const entry of this._globalListeners.slice()) {
+            if (entry.removed)
+                continue;
+            let first = 0;
+            while (first < at.length && at[first] <= entry.from)
+                first++;
+            if (first === batch.length)
+                continue;
+            const own = first === 0 ? batch : batch.slice(first);
             try {
-                listener(batch);
+                entry.listener(own);
             }
             catch (e) {
                 console.error('[vfs-events] global listener error:', e);

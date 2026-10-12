@@ -1,7 +1,19 @@
 import type { NodeFilesystem as VFS } from './filesystem.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
+import { Buffer } from './buffer.js';
 import { type FsError } from '../../../vfs/vfs-error.js';
+export interface FSWatcher extends EventEmitter {
+    close(): void;
+    ref(): this;
+    unref(): this;
+}
+interface WatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+}
+type WatchListener = (eventType: string, filename: string | Buffer) => void;
 interface Dirent {
     name: string;
     path: string;
@@ -127,11 +139,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         flags?: string;
         encoding?: string;
     }) => Writable;
-    watch: (filename: string | URL, optionsOrListener?: {
-        persistent?: boolean;
-        recursive?: boolean;
-        encoding?: string;
-    } | ((eventType: string, filename: string) => void), listener?: (eventType: string, filename: string) => void) => EventEmitter;
+    watch: (filename: string | URL, optionsOrListener?: WatchOptions | string | WatchListener, listener?: WatchListener) => FSWatcher;
     promises: {
         readFile: (path: string | URL, options?: string | {
             encoding?: string;

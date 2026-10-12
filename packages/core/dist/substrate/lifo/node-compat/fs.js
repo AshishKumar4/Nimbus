@@ -251,14 +251,14 @@ export function createFs(vfs, cwd, stdin) {
         if (!vfs.exists(abs)) {
             throw fsError('ENOENT', 'lstat', abs);
         }
-        return abs;
+        return vfs.realpath(abs);
     }, {
         native: function realpathSyncNative(path) {
             const abs = resolvePath(cwd, path);
             if (!vfs.exists(abs)) {
                 throw fsError('ENOENT', 'realpath', abs);
             }
-            return abs;
+            return vfs.realpath(abs);
         },
     });
     function truncateSync(path, len) {
@@ -484,23 +484,85 @@ export function createFs(vfs, cwd, stdin) {
         return stream;
     }
     // ─── Watch API ───
+    /**
+     * Node's fs.watch: 'rename' when an entry appears or goes, 'change' when
+     * one changes, named from the watched directory (its direct entries,
+     * any depth when recursive), or as the watched file itself.
+     */
     function watch(filename, optionsOrListener, listener) {
-        const abs = resolvePath(cwd, filename);
+        const given = typeof filename === 'string' ? filename : filename.pathname;
+        let abs;
+        try {
+            if (given === '')
+                throw fsError('ENOENT', 'watch', given);
+            abs = realpathSync(filename);
+        }
+        catch (error) {
+            if (errnoCodeOf(error) === 'ENOENT')
+                throw fsError('ENOENT', 'watch', given);
+            throw error;
+        }
+        const directory = vfs.isDirectory(abs);
+        const base = basename(given);
+        const options = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
+            : typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
         const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
-        const watcher = new EventEmitter();
-        // Use VFS onChange to detect changes (coarse-grained)
-        const origOnChange = vfs.onChange;
-        vfs.onChange = () => {
-            origOnChange?.();
-            const eventType = 'change';
-            const name = basename(abs);
-            if (cb)
-                cb(eventType, name);
-            watcher.emit('change', eventType, name);
+        let closed = false;
+        let persistent = options.persistent !== false;
+        let handle;
+        const watcher = new class extends EventEmitter {
+            close() {
+                if (closed)
+                    return;
+                closed = true;
+                handle.close();
+                queueMicrotask(() => this.emit('close'));
+            }
+            ref() {
+                if (!closed) {
+                    persistent = true;
+                    handle.ref();
+                }
+                return this;
+            }
+            unref() {
+                if (!closed) {
+                    persistent = false;
+                    handle.unref();
+                }
+                return this;
+            }
+        }();
+        if (cb)
+            watcher.on('change', (eventType, name) => cb(String(eventType), name instanceof Buffer ? name : String(name)));
+        const inside = (path) => path === abs || (directory && path.startsWith(abs === '/' ? '/' : `${abs}/`));
+        const told = (path, eventType) => {
+            if (closed || !inside(path))
+                return;
+            const name = path === abs ? base : path.slice(abs === '/' ? 1 : abs.length + 1);
+            if (path !== abs && options.recursive !== true && name.includes('/'))
+                return;
+            const bytes = Buffer.from(name);
+            watcher.emit('change', eventType, options.encoding === 'buffer' ? bytes : bytes.toString(options.encoding));
         };
-        watcher.close = () => {
-            vfs.onChange = origOnChange;
+        const changed = (event) => {
+            if (closed)
+                return;
+            // The target itself moved (or a directory above it): the namespace's watch follows it, and so do its names.
+            if (event.type === 'rename' && event.oldPath === abs) {
+                told(abs, 'rename');
+                abs = event.path;
+                return;
+            }
+            if (event.type === 'change') {
+                told(event.path, 'change');
+                return;
+            }
+            if (event.oldPath !== undefined)
+                told(event.oldPath, 'rename');
+            told(event.path, 'rename');
         };
+        handle = vfs.watch(abs, changed, { persistent });
         return watcher;
     }
     // ─── Promises API ───

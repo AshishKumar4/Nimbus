@@ -19,6 +19,7 @@ import { joinRealm } from '../../../../runtime/realm-guest.js';
 import { DNSResolver } from '../../kernel/dns-resolver.js';
 import { createHostsResolver, type VirtualRequest, type VirtualRequestHandler, type VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { VfsEvent } from '../../../../vfs/events.js';
 import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
@@ -65,7 +66,7 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0 || (offTheBox?.awaited ?? 0) > 0);
+  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0);
 }
 
 /** End the process now with `code`, as process.exit() and a fatal error do. */
@@ -82,7 +83,10 @@ const text = (value: unknown, method: string) => typeof value === 'string' ? val
 const flagOf = (value: unknown, method: string) => typeof value === 'boolean' ? value : malformed(method);
 const stat = (value: unknown, method: string) => isStat(value) ? value : malformed(method);
 const count = (value: unknown, method: string) => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0 ? value : malformed(method);
-let changed: (() => void) | undefined;
+/** The program's watches (NodeFilesystem.watch), by id: the host tells each its changes. */
+const watches = new Map<number, { readonly listener: (event: VfsEvent) => void; persistent: boolean }>();
+let nextWatch = 1;
+let persistentWatches = 0;
 const filesystem: NodeFilesystem = {
   readFile: (path) => bytes(call({ op: 'fs', method: 'readFile', args: [path] }), 'readFile'),
   readFileString: (path) => text(call({ op: 'fs', method: 'readFileString', args: [path] }), 'readFileString'),
@@ -93,6 +97,7 @@ const filesystem: NodeFilesystem = {
   isDirectory: (path) => flagOf(call({ op: 'fs', method: 'isDirectory', args: [path] }), 'isDirectory'),
   stat: (path) => stat(call({ op: 'fs', method: 'stat', args: [path] }), 'stat'),
   lstat: (path) => stat(call({ op: 'fs', method: 'lstat', args: [path] }), 'lstat'),
+  realpath: (path) => text(call({ op: 'fs', method: 'realpath', args: [path] }), 'realpath'),
   mkdir: (path, options) => { call({ op: 'fs', method: 'mkdir', args: [path, options] }); },
   readdir: (path) => {
     const entries = call({ op: 'fs', method: 'readdir', args: [path] });
@@ -111,10 +116,33 @@ const filesystem: NodeFilesystem = {
   ftruncate: (fd, size) => { call({ op: 'fs', method: 'ftruncate', args: [fd, size] }); },
   fsync: (fd) => { call({ op: 'fs', method: 'fsync', args: [fd] }); },
   close: (fd) => { call({ op: 'fs', method: 'close', args: [fd] }); },
-  get onChange() { return changed; },
-  set onChange(listener) {
-    changed = listener;
-    call({ op: 'watch', on: listener !== undefined });
+  watch: (path, listener, options) => {
+    const id = nextWatch++;
+    const watch = { listener, persistent: options?.persistent !== false };
+    call({ op: 'watch', id, path });
+    watches.set(id, watch);
+    if (watch.persistent) persistentWatches++;
+    holdWhileBusy();
+    return {
+      close() {
+        if (!watches.delete(id)) return;
+        if (watch.persistent) persistentWatches--;
+        call({ op: 'watch', id, path: null });
+        holdWhileBusy();
+      },
+      ref() {
+        if (!watches.has(id) || watch.persistent) return;
+        watch.persistent = true;
+        persistentWatches++;
+        holdWhileBusy();
+      },
+      unref() {
+        if (!watches.has(id) || !watch.persistent) return;
+        watch.persistent = false;
+        persistentWatches--;
+        holdWhileBusy();
+      },
+    };
   },
 };
 
@@ -186,7 +214,7 @@ events.on('message', (event) => {
       void serve(event.id, event.port, event.request);
       return;
     case 'changed':
-      changed?.();
+      watches.get(event.id)?.listener(event.event);
       return;
   }
 });
