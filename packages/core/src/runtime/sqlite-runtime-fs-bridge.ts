@@ -608,26 +608,25 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean; report?: boolean } = {}): void | VfsRemoval {
+  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean } = {}): void | VfsRemoval {
     return called({ syscall: 'remove', path }, () => {
       try {
         if (!options.recursive) { this.unlink(path); return; }
-        const report = this.removeRecursive(path);
+        const report = this.removeRecursive(path, options.keepVanishedAncestors === true);
         if (options.report) return report;
         const failed = report.failures[0];
         if (failed) throw failed.error;
-        if (!options.force && report.vanished?.length) throw fsError('ENOENT', 'rm', report.vanished[0]);
       } catch (error) {
         if (!(options.force && hasErrorCode(error, 'ENOENT'))) throw error;
       }
     });
   }
 
-  private removeRecursive(path: RuntimeFsPath): VfsRemoval {
+  private removeRecursive(path: RuntimeFsPath, keepVanishedAncestors: boolean): VfsRemoval {
     return called({ syscall: 'rm', path }, () => {
       const located = this.locateMutation(path, false, 'rm');
-      if (located.mount) return located.mount.removeRecursive(located.path);
-      if (this.namespace !== undefined) return this.namespace.sync.removeRecursive('/' + located.path);
+      if (located.mount) return located.mount.removeRecursive(located.path, { keepVanishedAncestors });
+      if (this.namespace !== undefined) return this.namespace.sync.removeRecursive('/' + located.path, { keepVanishedAncestors });
       this.vfs.removeRecursive(located.path);
       return { removed: [typeof path === 'string' ? path : path.path], kept: [], failures: [] };
     });

@@ -44,7 +44,7 @@ const cases = [
   { name: 'scandir EACCES, empty', fault: 'child-read-empty', kept: [], errors: [] },
   { name: 'child lstat EIO, unlink succeeds', fault: 'child-stat', kept: [], errors: [] },
   { name: 'child lstat EIO, unlink fails', fault: 'child-stat-unlink', kept: ['tree', 'tree/bad'], errors: [['/walk/tree/bad', 'Input/output error']] },
-  { name: 'vanished child, -r', fault: 'vanished', kept: [], errors: [['/walk/tree/bad', 'No such file or directory']] },
+  { name: 'vanished child, -r', fault: 'vanished', kept: ['tree'], errors: [['/walk/tree/bad', 'No such file or directory']] },
   { name: 'vanished child, -rf', fault: 'vanished', force: true, kept: [], errors: [] },
   { name: 'symlink-to-directory leaf', fault: 'link', kept: [], errors: [] },
   { name: 'operand stat EACCES', fault: 'operand-stat', kept: ['tree', 'tree/free'], errors: [['/walk/tree', 'Permission denied']] },

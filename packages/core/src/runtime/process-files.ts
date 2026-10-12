@@ -204,7 +204,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
-  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
     this.guard(); return this.target.copyTree(from, to, options);
@@ -1037,7 +1037,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   symlink(target: string, path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
   }
-  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean }) {
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }) {
     return this.either([path], () => this.bridge.remove(path, options), async () => {
       const p = (await this.path(path, false));
       const stat = await this.namespace.stat(p, { follow: false });
@@ -1047,11 +1047,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       }
       if (stat.type !== 'directory') return this.namespace.unlink(p);
       if (!options?.recursive) throw syscallError('EISDIR', 'rm', p);
-      const report = await this.namespace.removeRecursive(p);
+      const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
       if (options.report) return report;
       const failed = report.failures[0];
       if (failed) throw failed.error;
-      if (!options?.force && report.vanished?.length) throw syscallError('ENOENT', 'rm', report.vanished[0]);
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
@@ -1340,8 +1339,8 @@ export class ProcessView implements VFS {
   }
   async truncate(path: string, size: number): Promise<void> { await this.call('open', path, () => this.fs.truncate(path, size)); }
   /** rm -r's complete namespace report, including partial removal and vanished children. */
-  async removeRecursive(path: string): Promise<VfsRemoval> {
-    const report = await this.call('rm', path, () => this.fs.remove(path, { recursive: true, report: true }));
+  async removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): Promise<VfsRemoval> {
+    const report = await this.call('rm', path, () => this.fs.remove(path, { recursive: true, report: true, keepVanishedAncestors: options?.keepVanishedAncestors }));
     if (report === undefined) throw syscallError('ENOTSUP', 'rm', path, { detail: 'the filesystem bridge does not return recursive removal facts' });
     return report;
   }

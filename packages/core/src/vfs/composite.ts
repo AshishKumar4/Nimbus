@@ -156,7 +156,7 @@ export type { Principal } from './vfs.js';
 
 /** The namespace always offers recursive removal, walking a backend that does not. */
 export interface CompositeSyncVFS extends SyncVFS {
-  removeRecursive(path: string): VfsRemoval;
+  removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): VfsRemoval;
 }
 
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
@@ -3215,12 +3215,12 @@ export class CompositeVFS implements VFS {
    * holding it. A walked removal carries on past a failure, as rm -r does,
    * and `failures` says why each one stayed.
    */
-  private removeAt(input: string, sync: boolean): Awaitable<VfsRemoval> {
+  private removeAt(input: string, sync: boolean, keepVanishedAncestors = false): Awaitable<VfsRemoval> {
     // Each removal is told as it lands (watchChanges): a backend's own rm -r at the roots of what it removed, a walked one entry by entry.
     return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
       const { mount } = this.locate(path);
       const composed = this.hasLiveBelow(path) || this.isStructural(path) || mount.options.readOnly === true;
-      if (composed) return this.walkRemove(ops, rel, path, mount, sync, true);
+      if (composed) return this.walkRemove(ops, rel, path, mount, sync, true, keepVanishedAncestors);
       const backend = ops;
       if (typeof backend.removeRecursive === 'function') {
         const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
@@ -3241,11 +3241,11 @@ export class CompositeVFS implements VFS {
           return removal;
         });
       }
-      return this.walkRemove(backend, rel, path, mount, sync);
+      return this.walkRemove(backend, rel, path, mount, sync, false, keepVanishedAncestors);
     }, { told: null, children: true });
   }
 
-  private walkRemove(ops: Ops, rel: string, path: string, mount: Mount, sync: boolean, composed = false): Awaitable<VfsRemoval> {
+  private walkRemove(ops: Ops, rel: string, path: string, mount: Mount, sync: boolean, composed = false, keepVanishedAncestors = false): Awaitable<VfsRemoval> {
     const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
     const order: Array<{ rel: string; dir: boolean; unread?: VfsError }> = [];
     const kept = new Set<string>();
@@ -3258,7 +3258,10 @@ export class CompositeVFS implements VFS {
         if (k === rel || k === '/') break;
       }
     };
-    const missing = (r: string): void => { gone.add(r); vanished.add(r); };
+    const missing = (r: string): void => {
+      gone.add(r); vanished.add(r);
+      if (keepVanishedAncestors && r !== rel) keepWithAncestors(parentOf(r));
+    };
     const errorOf = (r: string, syscall: string, cause: Error): VfsError => {
       if (recallOf(cause) !== null || isAsyncMountRefusal(cause)) throw cause;
       return syscallError(isVfsError(cause) ? cause.code : 'EIO', syscall, at(r), {
@@ -3436,8 +3439,8 @@ export class CompositeVFS implements VFS {
     return awaited({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, false));
   }
 
-  async removeRecursive(path: string): Promise<VfsRemoval> {
-    return awaited({ syscall: 'rm', path }, () => this.removeAt(path, false));
+  async removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): Promise<VfsRemoval> {
+    return awaited({ syscall: 'rm', path }, () => this.removeAt(path, false, options?.keepVanishedAncestors === true));
   }
 
   async symlink(target: string, path: string): Promise<void> {
@@ -3500,7 +3503,7 @@ export class CompositeVFS implements VFS {
         this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel)))),
       rmdir: (path) => syncValue(reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true))),
       rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
-      removeRecursive: (path) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true))),
+      removeRecursive: (path, options) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true, options?.keepVanishedAncestors === true))),
       symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () =>
         this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
       readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () =>

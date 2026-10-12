@@ -2204,7 +2204,7 @@ function mkRm(vfs: UnixVfs): CmdFn {
       const path = resolvePath(ctx.cwd, target);
       try {
         if (!recursive) { await vfs.remove(path, { force }); continue; }
-        const report = await vfs.removeRecursive(path);
+        const report = await vfs.removeRecursive(path, { keepVanishedAncestors: !force });
         for (const failure of report.failures) {
           const named = failure.path === path || failure.path.startsWith(`${path}/`) ? target + failure.path.slice(path.length) : failure.path;
           const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
