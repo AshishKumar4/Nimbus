@@ -534,7 +534,7 @@ export function createFs(vfs, cwd, stdin) {
             }
         }();
         if (cb)
-            watcher.on('change', (eventType, name) => cb(String(eventType), name));
+            watcher.on('change', (eventType, name) => cb(String(eventType), name instanceof Buffer ? name : String(name)));
         const inside = (path) => path === abs || (directory && path.startsWith(abs === '/' ? '/' : `${abs}/`));
         const told = (path, eventType) => {
             if (closed || !inside(path))
@@ -548,14 +548,10 @@ export function createFs(vfs, cwd, stdin) {
         const changed = (event) => {
             if (closed)
                 return;
+            // The target itself moved (or a directory above it): the namespace's watch follows it, and so do its names.
             if (event.type === 'rename' && event.oldPath === abs) {
                 told(abs, 'rename');
-                if (closed)
-                    return;
-                const previous = handle;
                 abs = event.path;
-                handle = vfs.watch(abs, changed, { persistent });
-                previous.close();
                 return;
             }
             if (event.type === 'change') {

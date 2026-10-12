@@ -21,14 +21,15 @@ export declare function inWatchedTree(tree: string, path: string): boolean;
 /**
  * `event` as a watch of `tree` is told it, one rule for every watch: each
  * end of it the watch holds (in `tree`) and may see (`shown`: its name for
- * a path, null when it may not see it) is told; the watched path itself
- * renamed is that rename, wherever it went that the watch may see (the
- * watch follows it, as inotify does); any other rename seen at one end
- * only is that end's add, or unlink; a rename of a directory above `tree`
- * is the watched path's own going (seen where the directory was) or coming
- * (seen where it is now), named `treeName`. Null: nothing to tell.
+ * a path, null when it may not see it) is told; any rename seen at one end
+ * only is that end's add, or unlink. The watched path itself, or a
+ * directory above it, renamed is the watched path's going (unlink, where it
+ * was seen); a watch that follows its target (`follow`) is told its move
+ * instead (a rename, where it may see both places), and moves with it
+ * (CompositeVFS.watchChanges). What a directory renamed to above the
+ * watched path brings is not known, and not told. Null: nothing to tell.
  */
-export declare function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, treeName: string): VfsEvent | null;
+export declare function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, follow?: boolean): VfsEvent | null;
 export type VfsEventListener = (events: VfsEvent[]) => void;
 export type VfsPathListener = (event: VfsEvent) => void;
 /**

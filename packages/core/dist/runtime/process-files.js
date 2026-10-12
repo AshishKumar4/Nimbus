@@ -594,8 +594,15 @@ export class ProcessFiles {
         if (scope.closed)
             return;
         const lost = closeDescriptions(scope);
-        for (const dispose of scope.subscriptions)
-            dispose();
+        // Every subscription stopped, whichever of them fails to.
+        for (const dispose of [...scope.subscriptions]) {
+            try {
+                dispose();
+            }
+            catch (error) {
+                console.error('[process-files] a subscription could not be stopped:', error instanceof Error ? error.message : String(error));
+            }
+        }
         scope.subscriptions.clear();
         scope.closed = true;
         scope.abort.abort();
@@ -669,7 +676,7 @@ class AwaitingProcessBridge {
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }
     /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
-    subscribe(path, listener) {
+    subscribe(path, listener, options) {
         this.live();
         let stopped = false;
         const stop = this.namespace.watchChanges(path, (events) => {
@@ -680,13 +687,13 @@ class AwaitingProcessBridge {
                     ? { type: event.type, path: event.path.slice(1), timestamp: event.timestamp }
                     : { type: event.type, path: event.path.slice(1), oldPath: event.oldPath.slice(1), timestamp: event.timestamp });
             }
-        });
+        }, options);
         const dispose = () => {
             if (stopped)
                 return;
             stopped = true;
-            stop();
             this.scope.subscriptions.delete(dispose);
+            stop();
         };
         this.scope.subscriptions.add(dispose);
         return dispose;

@@ -270,6 +270,8 @@ export interface VfsRange {
  * watches or descriptions.
  */
 export interface SyncVFS {
+    /** VFS.fileStore: the same store as the face it is of. */
+    readonly fileStore?: object;
     stat(path: string, options?: {
         follow?: boolean;
     }): VfsStat | null;
