@@ -84,7 +84,7 @@ const decoder = new TextDecoder();
   const manager = {
     setVfs() {},
     kill(pid, signal) {
-      sessionKills.push({ pid, signal, brokerStillRunning: session.facetProcessManager.isRunning(pid) });
+      sessionKills.push({ pid, signal, brokerStillRunning: session.childProcessManager.isRunning(pid) });
       const code = exitCodeForSignal(signal);
       if (!processes.kill(pid, code)) return false;
       session._reportExternalExit(pid, code, `SIG${signal}`);
@@ -92,7 +92,7 @@ const decoder = new TextDecoder();
     },
   };
   session.facetManagerComposed = { manager, apps: {}, pumpLaunches: async () => {} };
-  session.facetProcessManager = null;
+  session.childProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(registry);
   const shellVfs = new ProcessFiles(rawVfs);

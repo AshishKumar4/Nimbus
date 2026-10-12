@@ -344,7 +344,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return this.facetManagerComposed?.manager ?? null;
   }
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
-  facetProcessManager: ChildProcessManager | null = null;
+  childProcessManager: ChildProcessManager | null = null;
   /**
    * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
    * so an inbound frame reaches it as a supervisor reply — the only shape a

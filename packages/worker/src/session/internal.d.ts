@@ -89,7 +89,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   facetManagerComposed: ComposedFacetManager | null;
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */
-  facetProcessManager: ChildProcessManager | null;
+  childProcessManager: ChildProcessManager | null;
   esbuildService: EsbuildService | null;
   /** The session's pre-bundle pool (its build facet); lazy via ensureBundlePool. */
   bundlePool: PrebundlePool | null;

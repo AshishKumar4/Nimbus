@@ -53,7 +53,7 @@ export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
 }
 
 export type RuntimeServiceHost = Pick<SessionInternal,
-  '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'
+  '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'childProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'
 > & { webSocketRelay: WebSocketRelay | null };
 
 export interface RuntimeServiceContext {
@@ -153,7 +153,7 @@ export function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: 
   }
 
 export function _ensureChildProcessManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext) {
-    if (self.facetProcessManager) return self.facetProcessManager;
+    if (self.childProcessManager) return self.childProcessManager;
     self.ensureSqliteFs();
     self.ensureFacetManager();
     /** The namespace as process `pid` sees it under `cred`. */
@@ -169,7 +169,7 @@ export function _ensureChildProcessManager(self: RuntimeServiceHost, runtimeCont
       // Only a child the broker is still running is launched. One it has
       // ended (killed before its program started) or forgotten is refused,
       // never run apart from the parent that spawned it.
-      if (!self.facetProcessManager?.isRunning(child.pid)) {
+      if (!self.childProcessManager?.isRunning(child.pid)) {
         hooks.onStderr(textBytes(`child_process: process ${child.pid} is not a running child\n`));
         return 1;
       }
@@ -383,13 +383,13 @@ export function _ensureChildProcessManager(self: RuntimeServiceHost, runtimeCont
         try { await shell.closeDescriptors(); } finally { stopped(); }
       }
     };
-    self.facetProcessManager = new ChildProcessManager({
+    self.childProcessManager = new ChildProcessManager({
       processes: self.processes,
       resolve,
       terminate: (pid, signal) => self.ensureFacetManager().manager.kill(pid, signal),
       issueNews: (parentPid) => issueProcessNews(ledgerCtx, parentPid),
     });
-    return self.facetProcessManager;
+    return self.childProcessManager;
   }
 
 export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller> {

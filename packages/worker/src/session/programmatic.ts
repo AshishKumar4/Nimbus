@@ -112,7 +112,7 @@ export interface ProgrammaticHost extends TimerHost {
   _cirrusHmrWsClients?: { clear(): void } | null;
   terminal?: (TerminalLike & { write(text: string): void; close(): void }) | null;
   kernel?: unknown;
-  facetProcessManager?: ChildProcessManager | null;
+  childProcessManager?: ChildProcessManager | null;
   esbuildService?: unknown;
   /** The session's esbuild facet pool; torn down with the installer and dev server. */
   bundlePool?: { dispose(): void } | null;
@@ -1445,7 +1445,7 @@ async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> 
   self.shellProcessPid = null;
   self.terminal = null;
   self.facetManagerComposed = null;
-  self.facetProcessManager = null;
+  self.childProcessManager = null;
   self.esbuildService = null;
   self.viteDevServer = null;
   // The installer's pre-bundler and the dev server's on-demand path share

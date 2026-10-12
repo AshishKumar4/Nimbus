@@ -109,7 +109,7 @@ try {
   // never reach a real composition. `facetManager` is a derived getter now;
   // the composed field is what a preset sets.
   session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
-  session.facetProcessManager = null;
+  session.childProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(registry);
   const shellVfs = new ProcessFiles(rawVfs);

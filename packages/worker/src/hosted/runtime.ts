@@ -78,7 +78,7 @@ class RuntimeOwner {
   _viteShimPort: number | null = null;
   wranglerAliasBannerShown = false;
   facetManagerComposed: ComposedFacetManager | null = null;
-  facetProcessManager: ChildProcessManager | null = null;
+  childProcessManager: ChildProcessManager | null = null;
   esbuildService: EsbuildService | null = null;
   bundlePool: PrebundlePool | null = null;
   npmInstaller: NpmInstaller | null = null;

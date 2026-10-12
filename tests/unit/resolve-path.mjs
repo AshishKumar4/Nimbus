@@ -275,7 +275,7 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   session.processes = main.processes;
   session.filesystem = new SessionFilesystem(main.vfs, session);
   session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
-  session.facetProcessManager = null;
+  session.childProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(main.registry);
   const parent = main.processes.spawn('node', ['app.js'], '/tmp');
@@ -302,7 +302,7 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
       let input = '';
       if (pid > 0) {
         for (;;) {
-          const packet = await session.facetProcessManager.cpReadStdin(pid, 2_000);
+          const packet = await session.childProcessManager.cpReadStdin(pid, 2_000);
           input += new TextDecoder().decode(packet.data);
           if (packet.ended) break;
         }
