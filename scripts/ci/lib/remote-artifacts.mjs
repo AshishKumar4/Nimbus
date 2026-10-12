@@ -7,7 +7,9 @@
 // change of its own, staged, unstaged or untracked (checked once the run is
 // back, so an edit made during it counts).
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NIMBUS_STATE } from './state-dir.mjs';
 
@@ -56,4 +58,28 @@ export function writeRefusal(repo, sha, paths) {
 /** `files` of the archive at `path`, written into `repo`. */
 export function extract(repo, path, files) {
   tar(['xJf', path, '-C', repo, ...files]);
+}
+
+/**
+ * The paths where `files` of the archive at `path` differ from commit `sha`
+ * of `repo`: a file whose bytes differ or that the commit lacks, and a file
+ * the commit has under one of the `replaced` directories (which the archive's
+ * files replace whole) that the archive lacks. Empty: the build reproduces
+ * the commit's artifacts byte for byte.
+ */
+export function differences(repo, sha, path, files, replaced = []) {
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const unpacked = mkdtempSync(join(tmpdir(), 'remote-artifacts-'));
+  try {
+    extract(unpacked, path, files);
+    const differing = files.filter((file) => {
+      const shown = spawnSync('git', ['-C', repo, 'show', `${sha}:${file}`], { maxBuffer: 512 * 1024 * 1024 });
+      return shown.status !== 0 || digest(shown.stdout) !== digest(readFileSync(join(unpacked, file)));
+    });
+    const returned = new Set(files);
+    const committed = replaced.length === 0 ? [] : git(repo, ['ls-tree', '-r', '--name-only', sha, '--', ...replaced]).split('\n').filter(Boolean);
+    return [...differing, ...committed.filter((file) => !returned.has(file))].sort();
+  } finally {
+    rmSync(unpacked, { recursive: true, force: true });
+  }
 }

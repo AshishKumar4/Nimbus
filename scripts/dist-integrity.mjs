@@ -234,6 +234,8 @@ export const INPUT_ROOTS = [
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/src`),
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/scripts`),
   'packages/worker/patches',
+  'packages/worker/wasm/python',
+  'scripts/ci/rebuild-opencode.mjs',
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/package.json`),
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/tsconfig.json`),
   'tsconfig.base.json',

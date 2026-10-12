@@ -27,10 +27,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
 import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
+import { PYTHON_OUTPUTS } from '../../packages/worker/wasm/python/inputs.mjs';
 
 const DIR = 'packages/worker/wasm/python';
 /** What the recipe leaves next to build-python.sh (its "Outputs"). */
-const ARTIFACTS = ['python.wasm', 'python-sci.wasm', 'python313.zip', 'sci-packages.zip'].map((file) => `${DIR}/${file}`);
+const ARTIFACTS = PYTHON_OUTPUTS.map((file) => `${DIR}/${file}`);
+const RETURNED = [...ARTIFACTS, `${DIR}/provenance.json`];
 
 const git = (args, options = {}) => {
   const done = spawnSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...options });
@@ -69,7 +71,7 @@ const script = String.raw`
   else
     grep -E 'import namespaces|inittab|all cases passed' "$W/verify.log"
     echo ${FILES_MARK}
-    tar cf - ${ARTIFACTS.join(' ')} | xz -6 | base64 -w0
+    tar cf - ${RETURNED.join(' ')} | xz -6 | base64 -w0
     echo
   fi
 } > {out} 2>&1`;
@@ -112,8 +114,8 @@ verdict.archive = `${stem}.tar.xz`;
 const unpacked = mkdtempSync(join(tmpdir(), 'remote-python-build-'));
 try {
   keepArchive(verdict.archive, archive);
-  extract(unpacked, verdict.archive, ARTIFACTS);
-  verdict.artifacts = Object.fromEntries(ARTIFACTS.map((path) => {
+  extract(unpacked, verdict.archive, RETURNED);
+  verdict.artifacts = Object.fromEntries(RETURNED.map((path) => {
     const shown = spawnSync('git', ['-C', repo, 'show', `${sha}:${path}`], { maxBuffer: 256 * 1024 * 1024 });
     return [path, { built: digest(readFileSync(join(unpacked, path))), committed: shown.status === 0 ? digest(shown.stdout) : null }];
   }));
@@ -122,8 +124,8 @@ try {
 } finally {
   rmSync(unpacked, { recursive: true, force: true });
 }
-const differing = ARTIFACTS.filter((path) => verdict.artifacts[path].built !== verdict.artifacts[path].committed);
-for (const path of ARTIFACTS) {
+const differing = RETURNED.filter((path) => verdict.artifacts[path].built !== verdict.artifacts[path].committed);
+for (const path of RETURNED) {
   const { built, committed } = verdict.artifacts[path];
   console.log(`${built === committed ? 'same     ' : 'different'} ${path} ${built}${built === committed ? '' : ` (the commit's: ${committed ?? 'none'})`}`);
 }
@@ -132,4 +134,5 @@ verdict.refusal = writeRefusal(repo, sha, differing);
 if (verdict.refusal !== null) finish(1, `${differing.length} artifacts differ; not written (${verdict.refusal}): they are in ${verdict.archive}`);
 extract(repo, verdict.archive, differing);
 verdict.written = differing;
-finish(1, `wrote ${differing.join(', ')}: review them, and commit them with the runtime's new version (runtime-specs.mjs)`);
+const payloadChanged = ARTIFACTS.some(path => differing.includes(path));
+finish(1, `wrote ${differing.join(', ')}: review and commit ${payloadChanged ? "them with the runtime's new version (runtime-specs.mjs)" : 'the provenance; the runtime bytes are unchanged'}`);
