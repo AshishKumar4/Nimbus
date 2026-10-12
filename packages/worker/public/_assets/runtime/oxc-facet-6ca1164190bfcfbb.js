@@ -9554,6 +9554,10 @@ error: the Oxc transform crashed (${reason})`);
   function loaderCall(loader, parentUrl) {
     return loader + "(" + JSON.stringify(parentUrl) + ", ";
   }
+  function attributesClause(source, site, statementEnd) {
+    const close = source.lastIndexOf("}", statementEnd - 1);
+    return close >= site.end ? { start: site.end, end: close + 1 } : void 0;
+  }
   function lexedImportSites(code) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
@@ -9570,7 +9574,10 @@ error: the Oxc transform crashed (${reason})`);
       else if (entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
       else if (entry.t === STATIC_IMPORT) {
         if (entry.n === void 0) return null;
-        statics.push({ start: entry.s - 1, end: entry.e + 1, specifier: entry.n, attributes: Object.fromEntries(entry.at ?? []) });
+        const site = { start: entry.s - 1, end: entry.e + 1 };
+        const attributes = Object.fromEntries(entry.at ?? []);
+        const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : void 0;
+        statics.push({ ...site, specifier: entry.n, attributes, ...clause ? { clause } : {} });
       } else {
         return null;
       }
@@ -9629,7 +9636,8 @@ error: the Oxc transform crashed (${reason})`);
           const key = attribute.key.type === "Identifier" ? attribute.key.name : String(attribute.key.value);
           if (typeof attribute.value.value === "string") attributes[key] = attribute.value.value;
         }
-        statics.push({ start: source.start, end: source.end, specifier: source.value, attributes });
+        const clause = Object.keys(attributes).length > 0 ? attributesClause(code, source, statement.end) : void 0;
+        statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...clause ? { clause } : {} });
       }
     });
     calls.sort((a, b) => a.start - b.start);
@@ -9846,8 +9854,7 @@ error: the Oxc transform crashed (${reason})`);
       return callee.type === "MemberExpression" && !callee.computed && callee.object.type === "Identifier" && moduleNamespaces.has(callee.object.name) && callee.property.type === "Identifier" && callee.property.name === "enableCompileCache";
     };
     const quietClass = (node) => {
-      if (node.type !== "ClassDeclaration") return false;
-      if (node.superClass && node.superClass.type !== "Identifier") return false;
+      if (node.type !== "ClassDeclaration" || node.superClass) return false;
       return node.body.body.every((member) => {
         if (member.type === "StaticBlock") return false;
         if (member.computed) return false;
@@ -9883,14 +9890,14 @@ error: the Oxc transform crashed (${reason})`);
         case "VariableDeclaration": {
           for (const declarator of statement.declarations) {
             const init = declarator.init;
-            if (isLiteral(init)) continue;
             if (init && isCreateRequire(init)) {
               if (declarator.id.type === "Identifier") requires.add(declarator.id.name);
-              continue;
+            } else if (!isLiteral(init)) {
+              const specifier = init ? requireOf(init) : null;
+              if (specifier === null) return false;
+              found.push(specifier);
             }
-            const specifier = init ? requireOf(init) : null;
-            if (specifier === null) return false;
-            found.push(specifier);
+            if (declarator.id.type !== "Identifier") return false;
           }
           return true;
         }

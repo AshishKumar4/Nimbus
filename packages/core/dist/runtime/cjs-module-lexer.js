@@ -11,8 +11,8 @@
  *
  * Between the markers is the upstream file verbatim but for its three
  * `module.exports` lines; tests/unit/cjs-module-lexer-vendor.mjs checks it
- * against the installed package. MIT License, Copyright (C) 2018-2020 Guy
- * Bedford.
+ * lexes as the installed package does. MIT License, Copyright (C) 2018-2020
+ * Guy Bedford.
  */
 export function createCjsLexer() {
     // ---- begin upstream cjs-module-lexer/lexer.js ----
@@ -1688,5 +1688,14 @@ export function createCjsLexer() {
     }
     const initPromise = Promise.resolve();
     // ---- end upstream ----
-    return parseCJS;
+    // The scan state outlives a parse; its source must not (a multi-MiB cell
+    // held by an isolate-wide lexer until its next parse).
+    return (cjsSource, name) => {
+        try {
+            return parseCJS(cjsSource, name);
+        }
+        finally {
+            source = undefined;
+        }
+    };
 }

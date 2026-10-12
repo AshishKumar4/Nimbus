@@ -215,6 +215,12 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         }
         if (resolution.path === undefined)
             throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
+        // A query's or fragment's module is an instance of its own (Node keys
+        // modules by URL), which a row by path cannot be: the importer's graph
+        // is the interpreter's, which keeps each URL's instance.
+        const { search, hash } = new URL(resolution.url);
+        if (search !== '' || hash !== '')
+            throw notStaged(resolution.url);
         const key = stripLeadingSlashes(resolution.path);
         // Node's loader refuses to strip a TypeScript file under node_modules when it loads it.
         if (stripsTypes && stripsTypeScript(key) && typeScriptUnderNodeModules(key)) {
@@ -228,8 +234,11 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             const text = await readText(resolution.path);
             if (text === null)
                 throw notStaged(resolution.path);
-            // JSON.parse's value, as Node's: an object literal would make `__proto__` the prototype.
-            return member('json', key, () => `export default JSON.parse(${JSON.stringify(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)});\n`);
+            // Node's JSON translator: the object require() gives for the same
+            // file, one in require.cache whichever loads it first (node-shims.ts
+            // __nimbusJsonModule); JSON.parse's, as an object literal would make
+            // `__proto__` the prototype.
+            return member('json', key, () => `export default globalThis.__nimbusJsonModule(${JSON.stringify(resolution.path)}, ${JSON.stringify(text)});\n`);
         }
         // CommonJS by Node's format for it, loaded by require().
         if (!isCode(key))

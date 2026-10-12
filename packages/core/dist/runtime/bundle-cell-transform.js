@@ -40,12 +40,14 @@ import { nodeModulesRefusal, typeScriptRefusalShim } from './typescript-refusal.
  */
 export function isBundleModuleCandidate(path) {
     const ext = vfsPathExtension(path);
-    return ext === '.js' || ext === '.mjs' || ext === '' || bundleTypescriptLoader(path) !== null;
+    return ext === '.js' || ext === '.mjs' || ext === '' || bundleCompiledLoader(path) !== null;
 }
 /**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
+ * The esbuild loader for a source in the bundle the runtime compiles,
+ * TypeScript or JSX, or null when the path does not name one. Which
+ * extensions are TypeScript is `typescriptLoader`'s table, the one a
+ * runtime's entry script is decided by; `.jsx` is JSX, which the runtime
+ * compiles for `node` and `bun` alike (runtime-registry.ts's entry).
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: compiling a type annotation is a SyntaxError whether or
@@ -63,7 +65,9 @@ export function isBundleModuleCandidate(path) {
  * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
  * gone. So a declaration file is left exactly as it was staged.
  */
-export function bundleTypescriptLoader(path) {
+export function bundleCompiledLoader(path) {
+    if (vfsPathExtension(path) === '.jsx')
+        return 'jsx';
     return isTypescriptDeclarationFile(path) ? null : typescriptLoader(path);
 }
 /**
@@ -97,7 +101,7 @@ export function needsBundleCellTransform(path, src, packageType) {
         return mayHaveDynamicImport(src);
     if (!isBundleModuleCandidate(path))
         return false;
-    return bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageType) || mayHaveDynamicImport(src);
+    return bundleCompiledLoader(path) !== null || looksLikeEsm(path, src, packageType) || mayHaveDynamicImport(src);
 }
 /**
  * Parseable CommonJS standing in for a module esbuild could not transform: it
@@ -120,7 +124,7 @@ export function esbuildDiagnosticShim(path, reason) {
 export function prepareBundleCell(path, source, packageType, scope, stripTypes = null) {
     // TypeScript Node requires as JavaScript: an ES module by its syntax alone (module-format.ts typeScriptEntryRefused).
     const javaScript = stripTypes === 'javascript' && stripsTypeScript(path);
-    const loader = javaScript ? null : bundleTypescriptLoader(path);
+    const loader = javaScript ? null : bundleCompiledLoader(path);
     const typescript = loader !== null;
     const absUrl = moduleImporterUrl(path);
     const cell = { path, typescript, absUrl };

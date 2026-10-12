@@ -18,12 +18,16 @@
  * hoisted only when every top-level statement before it is one of:
  *   - an import or export-from declaration (evaluated first in either order);
  *   - a function declaration, or a class declaration that runs no code when
- *     declared (no static block, computed key, or static field initializer
- *     but a literal; `extends` a name);
- *   - a const, let or var whose initializers are literals, a
+ *     declared (no heritage: `extends undefined`, or a name in its TDZ,
+ *     throws; no static block, computed key, or static field initializer but
+ *     a literal);
+ *   - a const, let or var that binds names (no pattern) to literals, a
  *     createRequire(import.meta.url) call (pure: a function of the module's
  *     URL), or an earlier hoisted require() (both orders evaluate the two
- *     targets in turn);
+ *     targets in turn). A pattern runs code after its initializer: getters
+ *     (inherited ones, an export named 'module.exports'), an iterator,
+ *     defaults, computed keys, a throw on null. Its declarator's require()
+ *     is hoisted, and it ends the prefix;
  *   - a directive, an empty statement, or a call of module.enableCompileCache.
  *     That one has no effect a module can observe in Nimbus, which keeps no
  *     compile cache (the guest's answers DISABLED, status 3, the same before

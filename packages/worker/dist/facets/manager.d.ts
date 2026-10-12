@@ -1342,7 +1342,7 @@ export declare class FacetManager {
     private readProfile;
     /** Read-profile changes dropped after losing every write race. */
     private readProfileConflicts;
-    /** Per module path: its static references at a revision (see _closureStaticRefs). */
+    /** Per credential and module path: its static references at a revision (see _staticRefsOf). */
     private staticRefsMemo;
     /** Modules whose references are remembered: a few programs' closures. */
     private static readonly STATIC_REFS_MEMO_MAX;

@@ -33,9 +33,11 @@ import type { NodeTypeScript } from './typescript-strip.js';
  */
 export declare function isBundleModuleCandidate(path: string): boolean;
 /**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
+ * The esbuild loader for a source in the bundle the runtime compiles,
+ * TypeScript or JSX, or null when the path does not name one. Which
+ * extensions are TypeScript is `typescriptLoader`'s table, the one a
+ * runtime's entry script is decided by; `.jsx` is JSX, which the runtime
+ * compiles for `node` and `bun` alike (runtime-registry.ts's entry).
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: compiling a type annotation is a SyntaxError whether or
@@ -53,7 +55,7 @@ export declare function isBundleModuleCandidate(path: string): boolean;
  * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
  * gone. So a declaration file is left exactly as it was staged.
  */
-export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
+export declare function bundleCompiledLoader(path: string): 'ts' | 'tsx' | 'jsx' | null;
 /**
  * Whether Node runs a staged JavaScript file as an ES module
  * (module-format.ts isEsModuleFile: its extension, its package scope's

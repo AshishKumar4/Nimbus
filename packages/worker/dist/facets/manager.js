@@ -62,7 +62,7 @@ import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
-import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { bundleCompiledLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
 import { parseResolvablePackageJson, BUILD_BROWSER_PACKAGE_MAP_POLICY, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
@@ -3618,7 +3618,7 @@ function _isLoadableModuleCell(path) {
         return false;
     const ext = vfsPathExtension(path);
     return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.json'
-        || ext === '.wasm' || ext === '' || bundleTypescriptLoader(path) !== null;
+        || ext === '.wasm' || ext === '' || bundleCompiledLoader(path) !== null;
 }
 /**
  * Per-file ceiling for the speculative passes over installed packages: the
@@ -3856,7 +3856,7 @@ function _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, reason) {
             continue;
         // A TypeScript source is never runnable as staged, so it always needs
         // the emit it cannot get; a JavaScript file only if it is ESM.
-        if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path)))
+        if (bundleCompiledLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path)))
             placeEmit(path, esbuildDiagnosticShim(path, reason));
     }
 }
@@ -4238,7 +4238,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // TypeScript source never is). A file that changes has the result as its emit.
     for (const path of Object.keys(bundle)) {
         const cell = bundle[path];
-        const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
+        const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
         // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
         if (typeof code !== 'string' || esModules.has(path))
             continue;
@@ -4697,7 +4697,7 @@ export class FacetManager {
     readProfile = null;
     /** Read-profile changes dropped after losing every write race. */
     readProfileConflicts = 0;
-    /** Per module path: its static references at a revision (see _closureStaticRefs). */
+    /** Per credential and module path: its static references at a revision (see _staticRefsOf). */
     staticRefsMemo = new Map();
     /** Modules whose references are remembered: a few programs' closures. */
     static STATIC_REFS_MEMO_MAX = 16_384;
@@ -5368,7 +5368,7 @@ export class FacetManager {
         const lazy = new Set(vfsState.lazyModules ?? []);
         const syncReadsOf = new Map();
         const refs = [];
-        await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
+        await this._closureStaticRefs(vfs, entry.cred, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
             const reads = lazy.has(path) ? moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path)) : [];
             if (reads.length === 0) {
                 refs.push(moduleRefs);
@@ -5380,7 +5380,7 @@ export class FacetManager {
         const lazyReads = lazyReadsByTarget(syncReadsOf, vfsState.lazyImporters ?? {});
         // An evicted module's reads, under its own path: the import() whose
         // closure walk reaches it fetches them (node-shims.ts __nimbusStageImport).
-        await this._closureStaticRefs(vfs, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
+        await this._closureStaticRefs(vfs, entry.cred, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
             const reads = moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path));
             if (reads.length > 0)
                 lazyReads[path] = [...new Set([...(lazyReads[path] ?? []), ...reads])];
@@ -5454,7 +5454,7 @@ export class FacetManager {
             held.delete(path);
         const dir = stripLeadingSlashes(cwd).replace(/\/+$/, '');
         const reads = new Set();
-        for (const refs of await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer)) {
+        for (const refs of await this._closureStaticRefs(vfs, entry.cred, vfsState.bundlePaths ?? [], pacer)) {
             for (const ref of refs.exact)
                 if (ref.sync)
                     reads.add(stripLeadingSlashes(ref.path));
@@ -5638,14 +5638,16 @@ export class FacetManager {
      * cells were rewritten and lost their import.meta. Each module is parsed once
      * per revision of it, in this session.
      */
-    async _closureStaticRefs(vfs, paths, pacer, 
+    async _closureStaticRefs(vfs, 
+    /** Whose reads these are: the analysis of a file is kept per credential that read it. */
+    cred, paths, pacer, 
     /** Called with each module that names paths, and what it names. */
     each) {
         const out = [];
         for (const path of paths) {
             if (!/\.(?:c|m)?js$/.test(path))
                 continue;
-            const refs = await this._staticRefsOf(vfs, path, pacer);
+            const refs = await this._staticRefsOf(vfs, cred, path, pacer);
             if (refs === null)
                 continue;
             if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
@@ -5661,7 +5663,7 @@ export class FacetManager {
      * revision or cannot be read. The launch's image collector reads the same
      * analysis (collectClosureWasmImages).
      */
-    async _staticRefsOf(vfs, path, pacer) {
+    async _staticRefsOf(vfs, cred, path, pacer) {
         let rev;
         try {
             rev = await vfs.revision(path);
@@ -5669,7 +5671,9 @@ export class FacetManager {
         catch {
             return null;
         }
-        const memo = this.staticRefsMemo.get(path);
+        // A credential's own: one that could not read the file never learns what it names.
+        const key = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}\0${path}`;
+        const memo = this.staticRefsMemo.get(key);
         if (memo && memo.rev === rev)
             return memo.refs;
         let source;
@@ -5692,8 +5696,8 @@ export class FacetManager {
             else
                 refs.exact.push({ path: name, sync: true });
         }
-        this.staticRefsMemo.delete(path);
-        this.staticRefsMemo.set(path, { rev, refs });
+        this.staticRefsMemo.delete(key);
+        this.staticRefsMemo.set(key, { rev, refs });
         for (const oldest of this.staticRefsMemo.keys()) {
             if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX)
                 break;
@@ -5777,7 +5781,7 @@ export class FacetManager {
             cwd: spec.cwd,
             entryCode: spec.entryCode,
             esbuild: this.esbuild ?? undefined,
-            staticRefs: (path) => this._staticRefsOf(vfs, path, pacer),
+            staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
             bundleProfile: profile,
             moduleScope,
             observedReads: new Set(learning.dataReads),

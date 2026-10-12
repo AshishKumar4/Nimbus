@@ -77,6 +77,16 @@ function loaderCall(loader, parentUrl) {
     return loader + '(' + JSON.stringify(parentUrl) + ', ';
 }
 /**
+ * A static specifier's attributes clause, in its statement (which ends at
+ * `statementEnd`): from the specifier's end through the clause's closing
+ * brace, the last brace of the statement. What lies between is the clause
+ * and trivia.
+ */
+function attributesClause(source, site, statementEnd) {
+    const close = source.lastIndexOf('}', statementEnd - 1);
+    return close >= site.end ? { start: site.end, end: close + 1 } : undefined;
+}
+/**
  * The lexer's reading of a cell's import() calls, import.meta and static
  * specifiers, or null where only the grammar can decide (see the header).
  */
@@ -103,7 +113,10 @@ function lexedImportSites(code) {
             // A specifier with escapes the lexer cannot unquote is the grammar's to read.
             if (entry.n === undefined)
                 return null;
-            statics.push({ start: entry.s - 1, end: entry.e + 1, specifier: entry.n, attributes: Object.fromEntries(entry.at ?? []) });
+            const site = { start: entry.s - 1, end: entry.e + 1 };
+            const attributes = Object.fromEntries(entry.at ?? []);
+            const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : undefined;
+            statics.push({ ...site, specifier: entry.n, attributes, ...(clause ? { clause } : {}) });
         }
         else {
             // A phase import (`import source`, `import defer`): the grammar's to refuse or read.
@@ -186,7 +199,8 @@ export function readModuleImportSites(code) {
                 if (typeof attribute.value.value === 'string')
                     attributes[key] = attribute.value.value;
             }
-            statics.push({ start: source.start, end: source.end, specifier: source.value, attributes });
+            const clause = Object.keys(attributes).length > 0 ? attributesClause(code, source, statement.end) : undefined;
+            statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...(clause ? { clause } : {}) });
         },
     });
     calls.sort((a, b) => a.start - b.start);

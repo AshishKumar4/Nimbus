@@ -10,8 +10,8 @@
  *
  * Between the markers is the upstream file verbatim but for its three
  * `module.exports` lines; tests/unit/cjs-module-lexer-vendor.mjs checks it
- * against the installed package. MIT License, Copyright (C) 2018-2020 Guy
- * Bedford.
+ * lexes as the installed package does. MIT License, Copyright (C) 2018-2020
+ * Guy Bedford.
  */
 /** The names a CommonJS module exports, and the specifiers whose exports it re-exports. */
 export interface CjsLexed {

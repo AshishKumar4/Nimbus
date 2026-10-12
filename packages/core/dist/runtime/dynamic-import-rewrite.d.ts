@@ -18,6 +18,8 @@ export interface StaticSpecifierSite {
     readonly specifier: string;
     /** Its `with { … }` attributes, as written. */
     readonly attributes: Readonly<Record<string, string>>;
+    /** Where its attributes clause is, from the specifier's end to the clause's `}`: present with attributes. */
+    readonly clause?: Span;
 }
 /** Where a module's text has module syntax a loader reads: import() calls, import.meta, static specifiers. */
 export interface ImportSites {
