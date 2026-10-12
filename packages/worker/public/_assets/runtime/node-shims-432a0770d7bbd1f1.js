@@ -15164,10 +15164,16 @@ Object.defineProperty(builtins, "http", {
       let nativeResponse;
       const captureResponse = (incoming, response) => {
         nativeResponse = response;
-        // A request abandoned or timed out ends its response as a dropped
-        // socket does in Node: 'close' with no 'finish', and no more writes.
-        if (inbound.signal.aborted) response.destroy();
-        else inbound.signal.addEventListener("abort", () => response.destroy(), { once: true });
+        // A request abandoned or timed out ends as a dropped socket ends it in
+        // Node (_http_server.js socketOnClose): the request destroyed with an
+        // 'aborted' reset, then its response closed with no 'finish' and no
+        // more writes.
+        const dropped = () => {
+          incoming.destroy(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+          response.destroy();
+        };
+        if (inbound.signal.aborted) dropped();
+        else inbound.signal.addEventListener("abort", dropped, { once: true });
         // workerd's #toReqRes keeps only the text before the first unquoted
         // comma of these fields (splitHeaderValue, meant to pick the first of
         // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
