@@ -16,10 +16,10 @@
 // otherwise the archive is saved and its path printed. Then commit them, and
 // run scripts/ci/remote-build.mjs for the dist fixpoint.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
+import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const git = (args) => {
   const done = spawnSync('git', args, { encoding: 'utf8' });
@@ -51,32 +51,28 @@ const script = String.raw`
   (cd packages/worker && NIMBUS_NAPI_WASM_ARTIFACTS="$W/out" bun scripts/bundle-napi-wasm.mjs)
   echo ---PROVENANCE---
   cat "$W/out/napi-wasm/provenance.json"
-  echo ---FILES---
+  echo ${FILES_MARK}
   tar cf - ${STAGED.join(' ')} | xz -9 | base64 -w0
   echo
 } > {out} 2>&1`;
 const r = await mapOnArmada({ repo, sha, files: [], items: [1], label: `napi-wasm loader of ${sha.slice(0, 12)}`, timeout: 1800, command: ['bash', '-c', script] });
-const text = r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '';
-const [log, rest = ''] = text.split('---PROVENANCE---');
-const [provenance, files = ''] = rest.split('---FILES---');
+const { log: rest, archive } = splitArchive(r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '');
+const [log, provenance = ''] = rest.split('---PROVENANCE---');
 console.log(log.trim());
-if (!files.trim()) {
+if (archive === null) {
   console.error(`remote-napi-loader: the build returned no files (outcome ${r.outcomes?.[0]?.kind} ${r.outcomes?.[0]?.exitCode})`);
   process.exit(1);
 }
 console.log(provenance.trim());
-const dir = join(NIMBUS_STATE, 'remote-napi-loader');
-mkdirSync(dir, { recursive: true });
-const archive = join(dir, `${new Date().toISOString().replace(/[:.]/g, '')}-${sha.slice(0, 12)}.tar.xz`);
-writeFileSync(archive, Buffer.from(files.trim(), 'base64'));
+const saved = `${keptAs('remote-napi-loader', sha.slice(0, 12))}.tar.xz`;
+const members = keepArchive(saved, archive);
 // STAGED is repository-relative, whatever directory this runs from.
-const local = git(['-C', repo, 'status', '--porcelain', '--untracked-files=all', '--', ...STAGED]);
-if (git(['-C', repo, 'rev-parse', 'HEAD']) !== sha || local) {
-  console.log(`remote-napi-loader: the staged files are in ${archive}; ${local ? 'files they replace have local changes' : `${sha.slice(0, 12)} is not HEAD`}, so nothing was written. Extract it at the repository root.`);
+const refusal = writeRefusal(repo, sha, STAGED);
+if (refusal !== null) {
+  console.log(`remote-napi-loader: the staged files are in ${saved}; ${refusal}, so nothing was written. Extract it at the repository root.`);
   process.exit(1);
 }
 const loaderDir = join(repo, STAGED[0]);
 if (existsSync(loaderDir)) rmSync(loaderDir, { recursive: true, force: true });
-const untar = spawnSync('tar', ['xJf', archive, '-C', repo], { encoding: 'utf8' });
-if (untar.status !== 0) throw new Error(`tar failed: ${untar.stderr}`);
-console.log(`remote-napi-loader: wrote the staged loader and napi-wasm-artifacts.generated.ts (archive ${archive}). Review and commit them, then run scripts/ci/remote-build.mjs.`);
+extract(repo, saved, members);
+console.log(`remote-napi-loader: wrote the staged loader and napi-wasm-artifacts.generated.ts (archive ${saved}). Review and commit them, then run scripts/ci/remote-build.mjs.`);

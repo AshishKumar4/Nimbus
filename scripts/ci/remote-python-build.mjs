@@ -11,92 +11,125 @@
 //   bun scripts/ci/remote-python-build.mjs [<commit>]
 //
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
-// the commit, never the working tree. The artifacts are written into the
-// worktree only when <commit> is its HEAD and none of them has a change of
-// its own, staged or not (checked when the run returns); either way the
-// archive is saved and its path printed. A run whose artifacts equal the
-// commit's writes nothing: that is the recipe reproducing them.
+// the commit, never the working tree. Artifacts that differ from the
+// commit's are written into the worktree as lib/remote-artifacts.mjs allows
+// (else the archive is left for you). The verdict (build, verify, each
+// artifact's digests, what was written) and the archive are kept under
+// ~/.local/state/nimbus/remote-python-build/, named by time, commit and job.
+//
+// Exit: 0, built and verified, every artifact the commit's byte for byte;
+// 1, the build or verify failed, or an artifact differs (written or left,
+// for review); 2, not graded.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
+import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const DIR = 'packages/worker/wasm/python';
 /** What the recipe leaves next to build-python.sh (its "Outputs"). */
-const ARTIFACTS = ['python.wasm', 'python-sci.wasm', 'python313.zip', 'sci-packages.zip'];
+const ARTIFACTS = ['python.wasm', 'python-sci.wasm', 'python313.zip', 'sci-packages.zip'].map((file) => `${DIR}/${file}`);
 
-const git = (args) => {
-  const done = spawnSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || '').trim()}`);
-  return done.stdout.trim();
+const git = (args, options = {}) => {
+  const done = spawnSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...options });
+  if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || '').toString().trim()}`);
+  return done.stdout;
 };
+const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
 const argv = process.argv.slice(2);
 if (argv.length > 1 || argv.some((arg) => arg.startsWith('--'))) {
   console.error('usage: bun scripts/ci/remote-python-build.mjs [<commit>]');
   process.exit(2);
 }
-const repo = git(['rev-parse', '--show-toplevel']);
-const sha = git(['rev-parse', `${argv[0] ?? 'HEAD'}^{commit}`]);
-const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const committed = (file) => {
-  const done = spawnSync('git', ['-C', repo, 'show', `${sha}:${DIR}/${file}`], { maxBuffer: 256 * 1024 * 1024 });
-  return done.status === 0 ? digest(done.stdout) : null;
+
+/** Not graded: whatever went wrong before a verdict was in hand. */
+const notGraded = (why) => {
+  console.error(`remote-python-build: NOT GRADED — ${why}`);
+  process.exit(2);
 };
 
+// {out}'s first line is the task's verdict; then the log of what failed, or
+// verify's verdicts; then, built and verified, the artifacts.
 const script = String.raw`
 {
-  set -e
   W=$(mktemp -d)
   start=$(date +%s)
-  if ! ${DIR}/build-in-bwrap.sh "$W" > "$W/build.log" 2>&1; then
-    echo BUILD-FAILED after $(( $(date +%s) - start )) s; tail -80 "$W/build.log"; exit 1
+  if ${DIR}/build-in-bwrap.sh "$W" > "$W/build.log" 2>&1; then build=ok; else build=failed; fi
+  seconds=$(( $(date +%s) - start ))
+  verify=skipped
+  if [ $build = ok ]; then
+    if ${DIR}/build-python.sh verify > "$W/verify.log" 2>&1; then verify=ok; else verify=failed; fi
   fi
-  echo "built in $(( $(date +%s) - start )) s"
-  if ! ${DIR}/build-python.sh verify > "$W/verify.log" 2>&1; then
-    echo VERIFY-FAILED; tail -80 "$W/verify.log"; exit 1
+  printf '{"build":"%s","seconds":%d,"verify":"%s"}\n' $build $seconds $verify
+  if [ $build != ok ]; then tail -80 "$W/build.log"
+  elif [ $verify != ok ]; then tail -80 "$W/verify.log"
+  else
+    grep -E 'import namespaces|inittab|all cases passed' "$W/verify.log"
+    echo ${FILES_MARK}
+    tar cf - ${ARTIFACTS.join(' ')} | xz -6 | base64 -w0
+    echo
   fi
-  grep -E 'import namespaces|inittab|all cases passed' "$W/verify.log" || true
-  echo ---FILES---
-  tar cf - -C ${DIR} ${ARTIFACTS.join(' ')} | xz -6 | base64 -w0
-  echo
 } > {out} 2>&1`;
-const r = await mapOnArmada({ repo, sha, files: [], items: [1], label: `cpython-wasi of ${sha.slice(0, 12)}`, timeout: 3600, command: ['bash', '-c', script] });
-const text = r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '';
-const [log, files = ''] = text.split('---FILES---');
-console.log(log.trim());
-if (r.outcomes?.[0]?.exitCode !== 0 || !files.trim()) {
-  console.error(`remote-python-build: the build failed on armada (job ${r.jobId}, exit ${r.outcomes?.[0]?.exitCode})`);
-  process.exit(1);
+
+let repo;
+let sha;
+let run;
+try {
+  repo = git(['rev-parse', '--show-toplevel']).trim();
+  sha = git(['rev-parse', '--verify', `${argv[0] ?? 'HEAD'}^{commit}`]).trim();
+  run = await mapOnArmada({ repo, sha, files: [], items: [1], label: `cpython-wasi of ${sha.slice(0, 12)}`, timeout: 3600, command: ['bash', '-c', script] });
+} catch (error) {
+  notGraded(error.message);
 }
-const saveDir = join(NIMBUS_STATE, 'remote-python-build');
-mkdirSync(saveDir, { recursive: true });
-const saved = join(saveDir, `${new Date().toISOString().replace(/[-:.]/g, '')}-${sha.slice(0, 12)}.tar.xz`);
-writeFileSync(saved, Buffer.from(files.trim(), 'base64'));
+const [outcome] = run.outcomes;
+if (outcome?.kind !== 'exited') notGraded(`armada could not run the build (job ${run.jobId}, ${outcome?.kind} ${outcome?.exitCode}):\n${outcome?.tail ?? 'no outcome'}`);
+if (run.outputs[0] === null) notGraded(`the build wrote nothing (job ${run.jobId})`);
+const { log, archive } = splitArchive(run.outputs[0]);
+const [first, ...rest] = log.split('\n');
+let task;
+try {
+  task = JSON.parse(first);
+} catch {
+  notGraded(`the build wrote no verdict (job ${run.jobId}):\n${log.slice(-4000)}`);
+}
+console.log(rest.join('\n').trim());
+
+const stem = keptAs('remote-python-build', `${sha.slice(0, 12)}-${run.jobId}`);
+const verdict = { commit: sha, job: run.jobId, ...task, artifacts: null, archive: null, written: [], refusal: null };
+const finish = (status, line) => {
+  writeFileSync(`${stem}.json`, `${JSON.stringify(verdict, null, 2)}\n`);
+  console.log(`remote-python-build: ${line}; verdict ${stem}.json (job ${run.jobId})`);
+  process.exit(status);
+};
+if (task.build !== 'ok') finish(1, `the build failed after ${task.seconds} s`);
+if (task.verify !== 'ok') finish(1, `built in ${task.seconds} s, and verify failed`);
+if (archive === null) notGraded(`built and verified, but no artifacts came back (job ${run.jobId})`);
+
+verdict.archive = `${stem}.tar.xz`;
 const unpacked = mkdtempSync(join(tmpdir(), 'remote-python-build-'));
-process.once('exit', () => rmSync(unpacked, { recursive: true, force: true }));
-const untar = spawnSync('tar', ['xJf', saved, '-C', unpacked], { encoding: 'utf8' });
-if (untar.status !== 0) throw new Error(`tar failed: ${untar.stderr}`);
-const built = Object.fromEntries(ARTIFACTS.map((file) => [file, digest(readFileSync(join(unpacked, file)))]));
-for (const file of ARTIFACTS) {
-  const was = committed(file);
-  console.log(`${built[file] === was ? 'same     ' : 'different'} ${file} ${built[file]}${built[file] === was ? '' : ` (the commit's: ${was ?? 'none'})`}`);
+try {
+  keepArchive(verdict.archive, archive);
+  extract(unpacked, verdict.archive, ARTIFACTS);
+  verdict.artifacts = Object.fromEntries(ARTIFACTS.map((path) => {
+    const shown = spawnSync('git', ['-C', repo, 'show', `${sha}:${path}`], { maxBuffer: 256 * 1024 * 1024 });
+    return [path, { built: digest(readFileSync(join(unpacked, path))), committed: shown.status === 0 ? digest(shown.stdout) : null }];
+  }));
+} catch (error) {
+  notGraded(`the artifacts that came back cannot be read (job ${run.jobId}): ${error.message}`);
+} finally {
+  rmSync(unpacked, { recursive: true, force: true });
 }
-const differing = ARTIFACTS.filter((file) => built[file] !== committed(file));
-if (differing.length === 0) {
-  console.log(`remote-python-build: the recipe reproduces ${sha.slice(0, 12)}'s artifacts byte for byte (job ${r.jobId}; archive ${saved})`);
-  process.exit(0);
+const differing = ARTIFACTS.filter((path) => verdict.artifacts[path].built !== verdict.artifacts[path].committed);
+for (const path of ARTIFACTS) {
+  const { built, committed } = verdict.artifacts[path];
+  console.log(`${built === committed ? 'same     ' : 'different'} ${path} ${built}${built === committed ? '' : ` (the commit's: ${committed ?? 'none'})`}`);
 }
-const head = git(['-C', repo, 'rev-parse', 'HEAD']);
-const changed = differing.filter((file) => git(['-C', repo, 'status', '--porcelain', '--', `${DIR}/${file}`]) !== '');
-const refusal = head !== sha ? `${sha.slice(0, 12)} is not this worktree's HEAD`
-  : changed.length > 0 ? `these have changes of their own: ${changed.join(', ')}`
-    : null;
-if (refusal !== null) {
-  console.log(`remote-python-build: saved ${saved} (job ${r.jobId}); not written: ${refusal}`);
-  process.exit(0);
-}
-for (const file of differing) writeFileSync(join(repo, DIR, file), readFileSync(join(unpacked, file)));
-console.log(`remote-python-build: wrote ${differing.join(', ')} (job ${r.jobId}; archive ${saved}). Commit them with the runtime's new version (runtime-specs.mjs).`);
+if (differing.length === 0) finish(0, `built in ${task.seconds} s and verified; the recipe reproduces ${sha.slice(0, 12)}'s artifacts byte for byte`);
+verdict.refusal = writeRefusal(repo, sha, differing);
+if (verdict.refusal !== null) finish(1, `${differing.length} artifacts differ; not written (${verdict.refusal}): they are in ${verdict.archive}`);
+extract(repo, verdict.archive, differing);
+verdict.written = differing;
+finish(1, `wrote ${differing.join(', ')}: review them, and commit them with the runtime's new version (runtime-specs.mjs)`);
