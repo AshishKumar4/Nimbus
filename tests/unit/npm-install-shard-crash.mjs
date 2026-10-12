@@ -7,7 +7,9 @@
 // package.json landed although its shard's outcome was lost (a timed-out
 // execution) is read back as installed. What did not land fails the install
 // where it is required: exit 1, nothing removed, nothing saved; a copy
-// that was there before, at the same version, is not taken for it. Real
+// that was there before, at the same version, is not taken for it, and a
+// replacement of the same name@version is known by the receipt it writes
+// after its package.json. Real
 // NpmInstaller over real SQLite; the fan-out RPC is the seam.
 
 import assert from 'node:assert/strict';
@@ -133,6 +135,47 @@ for (const [clock, touched, replacement] of [['running', false, 'slot@npm:real-b
   } finally {
     Date.now = realNow;
   }
+}
+
+// ── a replacement of the same name@version whose shard's answer is lost after it landed ──
+// The copy there before names the package already, so the batch reads its
+// receipt back: it landed, and is installed; nothing of the receipts is
+// left. Touched meanwhile or not, one whose shard wrote nothing did not.
+for (const [when, touched] of [['after', false], ['after', true], ['before', true]]) {
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  root.mkdir(NM, { recursive: true });
+  root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'app', version: '1.0.0' }));
+  let integrity = 'sha512-x';
+  const crash = { at: null };
+  const env = makeFanoutEnv({
+    root, NM,
+    resultFor: (name) => {
+      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, exports: null, main: 'index.js', module: '', bin: {} };
+      return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
+    },
+    manifestFor: (p) => ({ name: p.name, version: p.version, integrity: p.integrity }),
+    crashFor: (p) => {
+      if (p.name !== crash.at) return null;
+      if (touched) root.utimes(`${NM}/x/package.json`, Date.now() + 1000, Date.now() + 1000);
+      return when;
+    },
+  });
+  const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
+  assert.deepEqual((await installer.install(PROJ, { packages: ['x@1.0.0'] })).failed, []);
+
+  // The registry's x@1.0.0 is another tarball now.
+  integrity = 'sha512-x-republished';
+  crash.at = 'x';
+  const result = await installer.install(PROJ, { packages: ['x@1.0.0'] });
+  const label = `${when}${touched ? ', touched' : ''}`;
+  const landed = when === 'after';
+  assert.deepEqual(result.failed, landed ? [] : ['x@1.0.0'], `${label}: ${landed ? 'its receipt says it landed' : 'no receipt: it did not'}`);
+  assert.equal(JSON.parse(root.readFileString(`${NM}/x/package.json`)).integrity, landed ? 'sha512-x-republished' : 'sha512-x', label);
+  assert.equal(installer.npmCache.readLockfile(PROJ).get('x').integrity, landed ? 'sha512-x-republished' : 'sha512-x', `${label}: the lockfile records what is on disk`);
+  assert.equal(root.exists(`${NM}/.nimbus-receipts`), false, `${label}: no receipt is left`);
 }
 
 console.log('npm-install-shard-crash: ok');

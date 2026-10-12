@@ -57,6 +57,11 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
             root.mkdir(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`, { recursive: true });
             write(`${dir}/${path}`, content);
           }
+          // After its package.json, as the batch writer writes it.
+          if (p.receipt) {
+            root.mkdir(p.receipt.slice(0, p.receipt.lastIndexOf('/')), { recursive: true });
+            write(p.receipt, '');
+          }
           if (crashFor(p) === 'after') throw new Error(`shard crashed after ${p.name}`);
           return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
         });

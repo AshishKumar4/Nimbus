@@ -239,6 +239,9 @@ function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>): string {
   return revision;
 }
 
+/** Where a batch's receipts go in its install root (FacetPackageSpec.receipt), until it has read them back. */
+const RECEIPTS_DIR = '.nimbus-receipts';
+
 // ── NpmInstaller ────────────────────────────────────────────────────────
 
 export class NpmInstaller {
@@ -1046,19 +1049,51 @@ export class NpmInstaller {
     let filesWritten = 0;
 
     const mtime = Date.now();
+    // Each placement's completion marker, its package.json: the package it
+    // names (name@version), before the dispatch and after it.
+    const markerOf = (placement: string) => `${nmDir}/${placement}/package.json`;
+    const identity = (placement: string): string | null => {
+      if (engine.statIfPresent(markerOf(placement), false) === null) return null;
+      try {
+        const { name, version }: { name?: unknown; version?: unknown } = JSON.parse(engine.readFileString(markerOf(placement)));
+        return typeof name === 'string' && typeof version === 'string' ? `${name}@${version}` : null;
+      } catch { return null; }
+    };
+    const wanted = ({ pkg }: PackagePlacement) => `${pkg.registryName ?? pkg.name}@${pkg.version}`;
+    const before = new Map<string, string | null>();
+    for (const { placement } of toFetch) before.set(placement, await withRecall(() => identity(placement)));
+    // A replacement whose marker already names it (the same name@version,
+    // another tarball) is read back by its receipt instead, in this batch's
+    // own folder: one an install cut short left goes first.
+    const receipts = `${nmDir}/${RECEIPTS_DIR}`;
+    if (await withRecall(() => engine.statIfPresent(receipts, false)) !== null) await withRecall(() => engine.removeRecursive(receipts));
+    const acquisition = crypto.randomUUID();
+    const receiptOf = new Map(toFetch.flatMap((target, i): Array<[string, string]> =>
+      (before.get(target.placement) === wanted(target) ? [[target.placement, `${receipts}/${acquisition}-${i}`]] : [])));
+    /** Whether this batch published `target`: its receipt landed, or its marker now names it and named another before. */
+    const landedHere = (target: PackagePlacement): boolean => {
+      const receipt = receiptOf.get(target.placement);
+      if (receipt !== undefined) return engine.statIfPresent(receipt, false) !== null;
+      return identity(target.placement) === wanted(target);
+    };
+
     // Every entry in `toFetch` has a tarball URL — the diff phase fails
     // the ones that don't rather than dropping them. `pkgDir` is the
     // spec's identity: one version may land at two placements.
     const specs: FacetPackageSpec[] = toFetch
-      .map(({ placement, pkg: p }) => ({
-        name: p.name,
-        version: p.version,
-        tarballUrl: p.tarballUrl,
-        integrity: p.integrity || '',
-        pkgDir: nmDir + '/' + placement,
-        installRoot: nmDir,
-        mtime,
-      }));
+      .map(({ placement, pkg: p }) => {
+        const receipt = receiptOf.get(placement);
+        return {
+          name: p.name,
+          version: p.version,
+          tarballUrl: p.tarballUrl,
+          integrity: p.integrity || '',
+          pkgDir: nmDir + '/' + placement,
+          installRoot: nmDir,
+          mtime,
+          ...(receipt === undefined ? {} : { receipt }),
+        };
+      });
 
     if (specs.length === 0) {
       return { installed, failed, filesWritten };
@@ -1140,28 +1175,6 @@ export class NpmInstaller {
       args: { packages: shardSpecs, concurrency: 3 } as InstallBatchSpec,
     }));
 
-    // Each placement's completion marker, its package.json: the package it
-    // names (name@version), before the dispatch and after it.
-    const markerOf = (placement: string) => `${nmDir}/${placement}/package.json`;
-    const identity = (placement: string): string | null => {
-      if (engine.statIfPresent(markerOf(placement), false) === null) return null;
-      try {
-        const { name, version }: { name?: unknown; version?: unknown } = JSON.parse(engine.readFileString(markerOf(placement)));
-        return typeof name === 'string' && typeof version === 'string' ? `${name}@${version}` : null;
-      } catch { return null; }
-    };
-    const before = new Map<string, string | null>();
-    for (const { placement } of toFetch) before.set(placement, await withRecall(() => identity(placement)));
-    /**
-     * Whether this batch published `target`: its marker names the package
-     * now and named another before the dispatch. One that named it already
-     * proves nothing (the same name@version, another tarball): not landed.
-     */
-    const landedHere = ({ placement, pkg }: PackagePlacement): boolean => {
-      const wanted = `${pkg.registryName ?? pkg.name}@${pkg.version}`;
-      return before.get(placement) !== wanted && identity(placement) === wanted;
-    };
-
     try {
       // Every shard settles on its own: one that fails costs its packages,
       // never what the others published.
@@ -1169,9 +1182,9 @@ export class NpmInstaller {
       const shardResults = settled.flatMap((outcome) => (outcome.ok ? [outcome.value] : []));
       const readBack: InstallBatchResult['perPackage'] = [];
       // A shard that failed (or timed out, its writes perhaps landed) is
-      // read back from disk: a package whose package.json, written last,
-      // now names it and named another before is installed; the rest failed
-      // with it, a copy that was there before included.
+      // read back from disk: a package this batch published (landedHere) is
+      // installed; the rest failed with it, a copy that was there before
+      // included.
       for (const [index, outcome] of settled.entries()) {
         if (outcome.ok) continue;
         const reason = `install shard failed: ${describeError(outcome.error)} (${batchRoute.taken?.topology})`;
@@ -1286,6 +1299,10 @@ export class NpmInstaller {
       // here, the throw bubbled — re-throw to preserve the install
       // command's failure semantics.
       throw e instanceof Error ? e : new Error(describeError(e));
+    } finally {
+      if (receiptOf.size > 0) {
+        try { await withRecall(() => engine.removeRecursive(receipts)); } catch { /* absent: no receipt landed; else the next batch removes it */ }
+      }
     }
   }
 
