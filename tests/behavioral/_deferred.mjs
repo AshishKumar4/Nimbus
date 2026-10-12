@@ -107,16 +107,15 @@ export const DEFERRED = validateDeferrals([
       + 'the 65 s residency check resets it on every run, release ce91490f3 included',
     approved: 'user, 2026-10-11',
     owner: 'Main',
-    tracking: 'framework isolate split (user decision 2026-10-11)',
+    tracking: 'unsupported: the per-bundle engine split was measured and not shipped (user decision 2026-10-12)',
   },
   {
     probe: 'frameworks/remix-real',
-    assertion: 'react-router dev serves the app through the port route on its first run',
-    failure: { detail: ['"last":"no resident process was launched"', '@tailwindcss/oxide/index.js'] },
-    reason: "React Router dev's config load fails on @tailwindcss/oxide's missing native binding; its wasm32 build is staged by "
-      + 'work/remix-first-run. Only the first-run serve assertion may fail; setup, install, conditional imports and cleanup must pass.',
-    approved: 'user, 2026-10-08',
-    owner: 'OutstandingManatee',
-    tracking: 'work/remix-first-run (oxide binding, first-run staging), then one-process for the relaunched child',
+    excluded: true,
+    reason: 'React Router dev under Vite 8 needs ~87 MiB of wasm (rolldown 55 MiB) plus ~44 MiB of JS heap even in Node, '
+      + "past a facet's sustained memory",
+    approved: 'user, 2026-10-12',
+    owner: 'Main',
+    tracking: 'unsupported: the per-bundle engine split was measured and not shipped (user decision 2026-10-12)',
   },
 ]);
