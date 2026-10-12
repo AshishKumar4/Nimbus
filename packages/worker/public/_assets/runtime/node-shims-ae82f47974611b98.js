@@ -17896,28 +17896,17 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
+// The ES modules the interpreter evaluated from files outside the map, with
+// their compiled cells: a later require() asks whether their graphs await.
+const __nimbusRuntimeEsModules = new WeakMap();
+// Whether a runtime ES module's graph awaits at its top level (its text read again).
+function __nimbusRuntimeGraphAwaits(key, cell) {
+  const text = __readFileOr(key, null);
+  return text !== null && __nimbusRequiredGraphAwaits(key, cell, text, new Set());
+}
 // The CommonJS modules whose bodies are running now (Node's kIsExecuting):
 // an ES module that imports one is in a require(esm) cycle.
 const __nimbusExecutingCommonJs = new WeakSet();
-// An ES module's import of a JSON file (esm-stage.ts's member): Node's JSON
-// translator, whose value is require()'s for the same file. One object, in
-// require.cache, whichever loads it first.
-function __nimbusJsonExports(key) {
-  const filename = "/" + key;
-  const cached = __NodeModule._cache[filename];
-  if (cached !== undefined && cached.loaded) return cached.exports;
-  const text = __readFileOr(key, null);
-  if (text === null) throw new Error("Cannot read module: " + filename);
-  let exports;
-  try {
-    exports = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text);
-  } catch (error) {
-    error.message = filename + ": " + error.message;
-    throw error;
-  }
-  __NodeModule._cache[filename] = { exports, loaded: true };
-  return exports;
-}
 // `required`: loaded by a require() call, not by an import (an interpreted
 // ES module's static import, core interpreter/modules.ts, or import()).
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
@@ -17941,6 +17930,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // An adopted ES module still evaluating: a require() of it is a cycle.
   if (cached !== undefined && adopted && required && !cached.loaded) __nimbusEsmRequire(esmId, true, parent);
   if (cached !== undefined) {
+    // A require() of an ES module whose graph awaits at its top level, imported already: Node's refusal still.
+    if (required && cached.loaded && (adopted ? __nimbusEsmGraphAwaits(esmId) : __nimbusRuntimeEsModules.has(cached) && __nimbusRuntimeGraphAwaits(normalizedPath, __nimbusRuntimeEsModules.get(cached)))) {
+      throw __nimbusRequireAsync(parent, filename);
+    }
     __nimbusUpdateChildren(parent, cached, true);
     if (required) __NodeModule._cache[cacheKey] ??= cached;
     const record = adopted ? __nimbusEsmRecords[esmId] : undefined;
@@ -17955,7 +17948,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
   // An imported JSON file is require()'s too, as Node's JSON translator
-  // keeps it (__nimbusJsonExports); a query's or a fragment's is its own.
+  // keeps it; a query's or a fragment's is its own.
   if (esModule && !required && !(resolvedPath.endsWith(".json") && cacheKey === filename)) __nimbusEsmInstances.set(cacheKey, mod);
   else __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
@@ -18028,7 +18021,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       compiledText = text;
       // A require() of an ES module refuses its graph if any of it awaits at
       // its top level, evaluated already or not, before any of it runs.
-      if (required && (format === "module" || (format === undefined && __nimbusDetectedModule(cell))) && __nimbusRequiredGraphAwaits(normalizedPath, cell, text, new Set())) {
+      const runtimeEsModule = format === "module" || (format === undefined && __nimbusDetectedModule(cell));
+      if (runtimeEsModule) __nimbusRuntimeEsModules.set(mod, cell);
+      if (required && runtimeEsModule && __nimbusRequiredGraphAwaits(normalizedPath, cell, text, new Set())) {
         evaluating = true;
         throw __nimbusRequireAsync(parent, filename);
       }
@@ -18633,7 +18628,10 @@ function __nimbusEsmEnter(metaUrl) {
     return scope;
   }
   if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
-  if (row[0] === "json") return { c, r, l: () => __nimbusJsonExports(row[1]) };
+  // An ES module's import of a JSON file: Node's JSON translator, whose value
+  // is require()'s for the same file, one object in require.cache whichever
+  // loads it first.
+  if (row[0] === "json") return { c, r, l: () => __loadModule(row[1], row[1], true) };
   return { c, r, l: () => builtins[row[1]], s: (resync) => { __nimbusEsmResyncs.push(resync); } };
 }
 // A body begins: unless an earlier body of its batch threw (Node's
@@ -18765,6 +18763,7 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // Evaluated by the interpreter already: its result, its Module in require.cache again.
   if (record.state === __ESM_ADOPTED && record.module !== undefined && record.namespace !== null) {
+    if (required && __nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, "/" + __nimbusEsm.table[id][1]);
     if (required) __NodeModule._cache[record.module.filename] ??= record.module;
     return required ? __nimbusEsmRequired(record) : record.module.exports;
   }
@@ -19646,10 +19645,11 @@ function __requireFrom(id, fromDir, parent, required = true) {
       throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
     }
     // A query's or fragment's ES module or JSON is its own instance, by its
-    // URL; a CommonJS module is one module by its file, whatever the URL
-    // (Node's CommonJS translator keys its cache by filename).
+    // URL; a CommonJS module (by its extension, its package type or its
+    // syntax) is one module by its file, whatever the URL (Node's CommonJS
+    // translator keys its cache by filename).
     const { search, hash } = new URL(resolution.url);
-    const instance = (search !== "" || hash !== "") && resolution.format !== "commonjs" ? resolution.url : key;
+    const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
     const exports = __loadModule(key, instance, false, parent, esModule);
     // A JSON module's namespace has its value as default alone, whatever it holds.
     return resolution.format === "json" ? __esmNamespaceOf(["default"], () => exports) : exports;
