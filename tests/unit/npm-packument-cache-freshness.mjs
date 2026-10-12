@@ -101,7 +101,8 @@ async function scenario(tier, request, colo) {
   const stored = bucket.entries.get(key);
   assert.equal(stored.json, registry.json());
   const expiresAt = Number(stored.customMetadata.expiresAt);
-  assert.equal(expiresAt, START + PACKUMENT_TTL_MS);
+  assert.equal(expiresAt, START + 300_000, "fresh for the registry's max-age");
+  assert.equal(stored.customMetadata.etag, '"fixture-1"', "with the registry's ETag");
   if (colo) {
     assert.ok(colo.entries.has(packumentL2Url(NAME, REGISTRY)), 'the first registry response filled L2 as well');
   }
@@ -158,4 +159,51 @@ try {
   else delete globalThis.caches;
 }
 assert.equal(failures.length, 0, failures.join('\n'));
+// ── an expired entry is revalidated with its ETag: a 304 renews it, without a body ──
+// And an entry cached before validators were kept is refetched once, not
+// trusted for the rest of its old hour; a version nothing publishes is
+// asked about once, and is no published version.
+if (!expiredControl) {
+  delete globalThis.caches;
+  Date.now = () => now;
+  try {
+    now = START;
+    const bucket = fakeBucket();
+    const registry = fakeRegistry();
+    const client = () => new R2CacheClient(null, bucket);
+    const read = (options = {}) => client().readThroughPackument(NAME, { registry: REGISTRY, retries: 0, ...options });
+    assert.equal((await read()).source, 'network');
+    now = START + 301_000;
+    const renewed = await read();
+    assert.equal(renewed.source, 'r2-cache', 'unchanged: the cached body stands');
+    assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"', 'revalidated with the ETag');
+    assert.equal(Number(bucket.entries.get(packumentKey(NAME, REGISTRY)).customMetadata.expiresAt), now + 300_000, 'fresh again');
+    const requests = registry.requests.length;
+    assert.equal((await read()).source, 'r2-cache');
+    assert.equal(registry.requests.length, requests, 'and served without asking again');
+
+    // An entry from before: no validators, an hour's stamp left.
+    bucket.entries.set(packumentKey(NAME, REGISTRY), { json: registry.json(), uploaded: new Date(now), customMetadata: { expiresAt: String(now + PACKUMENT_TTL_MS) } });
+    const legacy = await read();
+    assert.equal(legacy.source, 'network', 'an entry without validators is refetched');
+    assert.equal(registry.requests.at(-1).ifNoneMatch, null, 'plainly');
+    assert.equal(bucket.entries.get(packumentKey(NAME, REGISTRY)).customMetadata.etag, '"fixture-1"');
+
+    // A version nothing publishes: one revalidation, then ETARGET.
+    const before = registry.requests.length;
+    const missing = await resolveOnePackumentInFacet(
+      { name: NAME, range: '^9.0.0', cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: REGISTRY },
+      { SUPERVISOR: { async getPackument(packageName, options) { const c = client(); return { ...await c.readThroughPackument(packageName, options), events: c._cacheEvents }; } } },
+    );
+    assert.equal(missing.pkg, null);
+    assert.match(missing.error?.reason ?? '', /no published version/);
+    assert.equal(registry.requests.length, before + 1, 'asked once');
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+    if (originalCaches) Object.defineProperty(globalThis, 'caches', originalCaches);
+    else delete globalThis.caches;
+  }
+}
+
 console.log(`npm-packument-cache-freshness: ${expiredControl ? 'expired control' : 'regression'} ok`);

@@ -196,7 +196,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
        */
       getPackument: (
         name: string,
-        options: { retries: number; timeoutMs: number; registry: string },
+        options: { retries: number; timeoutMs: number; registry: string; revalidate?: boolean },
       ) => Promise<{
         json: string | null;
         source: 'r2-cache' | 'network';
@@ -384,7 +384,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const readProperty = (value: unknown, key: string): unknown =>
     value === null || value === undefined ? undefined : Reflect.get(Object(value), key);
   type Loaded = { data: Packument; bytes: number; source: ResolveOneResult['packumentSource'] } | { failed: ResolveOneResult };
-  const loadPackument = async (name: string): Promise<Loaded> => {
+  const loadPackument = async (name: string, revalidate = false): Promise<Loaded> => {
   let packumentText: string | null = null;
   let packumentSource: ResolveOneResult['packumentSource'] = 'network';
   if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
@@ -401,6 +401,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         retries: Math.max(0, spec.retries ?? 3),
         timeoutMs: spec.fetchTimeoutMs ?? 15_000,
         registry: spec.registry,
+        ...(revalidate ? { revalidate: true } : {}),
       }),
       (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }),
     );
@@ -482,9 +483,20 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // is published in lockstep, so it stands in with exactly that version; a
   // target that lacks it installs the package unswapped, with the note that
   // its native build cannot run here, never a target version out of range.
-  let packument: Loaded = await loadPackument(effName);
-  if ('failed' in packument) return packument.failed;
+  // A cached packument that cannot answer what is asked is asked of the
+  // registry once more, past the cache: cached absence is no proof that
+  // nothing is published (a version published since it was cached). Once,
+  // and where that fails, the cached answer stands.
+  const revalidated = async (name: string, loaded: Loaded, answers: (data: Packument) => boolean): Promise<Loaded> => {
+    if ('failed' in loaded || loaded.source !== 'r2-cache' || answers(loaded.data)) return loaded;
+    const again = await loadPackument(name, true);
+    return 'failed' in again ? loaded : again;
+  };
   const stagedVersion = stagedBindingVersion();
+  let packument: Loaded = await revalidated(effName, await loadPackument(effName), (data) => (stagedVersion !== null
+    ? readProperty(data.versions, stagedVersion) !== undefined
+    : pickVersion(data) !== null));
+  if ('failed' in packument) return packument.failed;
   let version = stagedVersion !== null && readProperty(packument.data.versions, stagedVersion) !== undefined
     ? stagedVersion
     : pickVersion(packument.data);
@@ -499,7 +511,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       covered = COMPARE_SEMVER(ownSemver, since) >= 0;
     }
     if (covered) {
-      const target = await loadPackument(__swap.to);
+      const target = await revalidated(__swap.to, await loadPackument(__swap.to), (data) => readProperty(data.versions, String(own)) !== undefined);
       if ('failed' in target) return target.failed;
       if (readProperty(target.data.versions, String(own)) !== undefined) {
         announceSwap(__swap);
