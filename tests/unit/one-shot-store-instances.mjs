@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -67,14 +66,10 @@ const first = await run(firstCred, 'first');
 assert.equal(first.exitCode, 0, JSON.stringify(first));
 assert.equal(first.stdout, 'memory=only in the first process\nok\n');
 assert.equal(first.stderr, '');
-// The between-run authority state is the permission boundary under test,
-// independent of how the write shim transports a writeFileSync mode option.
-const kernel = authority.rawVfs.as(CRED_KERNEL);
-kernel.chown('home/user/secret.txt', 1000, 1000);
-kernel.chmod('home/user/secret.txt', 0o600);
+// What the first process left at the authority, as it left it: its own file, with the mode it asked for.
 const stat = authority.kfs.stat('home/user/secret.txt');
 assert.equal(stat.uid, 1000, 'the first write reached the authority as its own process');
-assert.equal(stat.mode & 0o7777, 0o600);
+assert.equal(stat.mode & 0o7777, 0o600, 'the first write made the file with the mode it asked for');
 assert.equal(authority.read('home/user/secret.txt'), 'private');
 assert.equal(authority.read('home/user/memory-only.txt'), 'authority bytes', 'the injected cell never reached the authority');
 const secondAuthority = authority.rawVfs.as(secondCred);

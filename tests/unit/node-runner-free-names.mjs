@@ -32,13 +32,48 @@ const runners = {
 
 const free = (source) => [...freeNames(source, { sourceType: 'module', guarded: true })].filter((name) => !FACET_GLOBALS.has(name)).sort();
 
-// The check itself: a name nothing declares is reported, a declared one under any name is not, nor one
-// read under a typeof test of it or installed on globalThis; one read past its guard is.
+// The check itself. A name nothing declares is reported; a declared one, under any name, is not.
 assert.deepEqual(free('const a = 1; export default b(a);'), ['b']);
 assert.deepEqual(free('const renamed = (x) => x; export default renamed(1);'), []);
-assert.deepEqual(free('export default typeof given === "number" ? given : 0;'), []);
-assert.deepEqual(free('globalThis.made = 1; export default made;'), []);
-assert.deepEqual(free('if (typeof given === "number") f(given); export default given;'), ['f', 'given']);
+// A read only where a typeof test of the name says it is there cannot throw: the branch the test
+// guards, by its sense (negation and && included), and the typeof itself.
+const guarded = [
+  'export default typeof given === "number" ? given : 0;',
+  'export default typeof given !== "undefined" && given !== null ? given : null;',
+  'export default typeof given === "undefined" ? undefined : given;',
+  'export default typeof given === "function" ? given() : null;',
+  'export default typeof given !== "undefined" && given === true;',
+  'if (typeof given !== "undefined") given(); export default 0;',
+  'if (typeof given === "undefined") {} else given(); export default 0;',
+  'export default !(typeof given === "undefined") && given;',
+  'export default typeof given == "undefined" || given;',
+  'export default typeof given;',
+];
+for (const source of guarded) assert.deepEqual(free(source), [], source);
+// Anywhere else the read may throw: the other branch, the test's own reads before its typeof, after the guard.
+const unguarded = [
+  'export default typeof missing === "undefined" ? missing : 0;',
+  'export default typeof missing === "number" ? 0 : missing;',
+  'if (typeof missing === "undefined") missing(); export default 0;',
+  'if (typeof missing !== "undefined") {} else missing(); export default 0;',
+  'export default missing === 1 && typeof missing === "number" ? missing : 0;',
+  'export default typeof missing === "number" || missing;',
+  'if (typeof missing === "number") f(missing); export default missing;',
+];
+for (const source of unguarded) assert.ok(free(source).includes('missing'), source);
+// A name some code puts on globalThis is still not declared: a read of it may run before the
+// install, or the install never run (it is read as globalThis's property where that is meant).
+const installed = [
+  'globalThis.missing = 1; export default missing;',
+  'if (false) globalThis.missing = 1; export default missing;',
+  'globalThis.missing = missing; export default 0;',
+  'function f() { globalThis.missing = 1; } export default missing;',
+  'function f(globalThis) { globalThis.missing = 1; } f({}); export default missing;',
+  'Object.defineProperty(globalThis, "missing", { value: 1 }); export default missing;',
+  'Object.defineProperties(globalThis, { missing: { value: 1 } }); export default missing;',
+];
+for (const source of installed) assert.deepEqual(free(source), ['missing'], source);
+assert.deepEqual(free('globalThis.made = 1; export default globalThis.made;'), []);
 
 const failures = [];
 for (const [label, source] of Object.entries(runners)) {
