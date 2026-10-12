@@ -315,15 +315,13 @@ export class ReplaySessions {
     await this.sessions.get(pid)?.journal.boundary(run);
   }
 
-  async netTls(pid: number, run: string | undefined, action: string, token: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
+  netTls(pid: number, run: string | undefined, action: string, token: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
     const session = this.sessions.get(pid);
-    if (!session) throw new Error('netTls: no such process or connection');
-    return session.netTls(run, action, token, payload);
+    return session ? session.netTls(run, action, token, payload) : Promise.reject(new Error('netTls: no such process or connection'));
   }
 
-  async outbound(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
+  outbound(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
     const session = this.sessions.get(pid);
-    if (!session) throw new Error('outbound: this run of the process has stopped');
-    return session.outbound(run, action, payload);
+    return session ? session.outbound(run, action, payload) : Promise.reject(new Error('outbound: this run of the process has stopped'));
   }
 }
