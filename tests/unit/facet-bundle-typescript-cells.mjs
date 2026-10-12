@@ -165,7 +165,7 @@ assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
   assert.equal(node.emits?.has(`${PROJ}/src/index.ts`) ?? false, false, 'native staging supersedes the intermediate emit');
   const nodeSet = generatedModuleSet(await generateEntrypointCode('', node, false, nodeFacetSources('/* native-ts */')), 'runner.js');
   assert.equal(typeof nodeSet[commonJsCellModuleName(`${PROJ}/src/index.ts`)]?.js, 'string', 'the stripped module is a { js } map member');
-  assert.equal(node.bundle[`${TS}/lib/lib.es5.d.ts`], LIB_ES5, 'a declaration file is staged verbatim');
+  assert.equal(read.bundle[`${TS}/lib/lib.es5.d.ts`], LIB_ES5, 'a declaration file tsc reads is staged verbatim');
 }
 
 // ── The facet's module map, as a launch generates it ─────────────────────
