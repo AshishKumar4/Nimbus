@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { assertCurrentInputs, digestInputs } from '../../packages/worker/scripts/artifact-inputs.mjs';
 import { OPENCODE_SOURCE, opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mjs';
+import { sha256Hex } from '../../packages/worker/scripts/stage-asset.mjs';
 const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
 const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const { parse } = workerRequire('acorn');
@@ -73,12 +74,13 @@ run('bwrap', [
   '--setenv', 'NIMBUS_OPENCODE_ROOT', '/src/opencode/packages/opencode',
   '--setenv', 'NIMBUS_OPENCODE_DIST', '/build/dist', '--setenv', 'MODELS_DEV_API_JSON', '/build/models.json',
   '--setenv', 'HOME', '/tmp', '--setenv', 'BUN_INSTALL_CACHE_DIR', '/build/bun-cache',
+  '--setenv', 'TMPDIR', '/tmp',
   'bun', 'build-node.ts',
 ], repo, env);
 assertCurrentInputs('OpenCode', inputs, await opencodeInputs(), 'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
 writeFileSync(join(dist, 'provenance.json'), JSON.stringify({
   artifact: 'opencode',
-  source: { ...OPENCODE_SOURCE, inputs, upstreamInputs: await digestInputs(upstream, ['bun.lock', 'package.json']) },
+  source: { ...OPENCODE_SOURCE, inputs, catalogSnapshotSha256: sha256Hex(readFileSync(models)), upstreamInputs: await digestInputs(upstream, ['bun.lock', 'package.json']) },
   toolchain: { bun: Bun.version },
 }, null, 2) + '\n');
 run('node', ['packages/worker/scripts/bundle-opencode.mjs'], repo, env);
