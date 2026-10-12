@@ -61,8 +61,8 @@ const supervisor = {
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
-    + '\n;__residentSetStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
-    + '\n;return { fs: __fsMod, cap: () => __residentStorageCap(), bytes: () => __residentDbBytes() };',
+    + '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
+    + '\n;return { fs: __fsMod, cap: () => __resident.admission.storageCap(), bytes: () => __resident.admission.dbBytes() };',
 );
 const statOf = (size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gid: 1000 });
 const metadata = { 'home/user/locales': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };

@@ -70,7 +70,7 @@ function createWgetImpl(kernel?: Kernel): Command {
       // host's loopback router, never by fetch.
       const walk = await walkRedirects(
         { url: new URL(url), method: 'GET', headers: new Headers() },
-        { follow: true, send: (hop) => sendHop(kernel, hop.url, hopInit(hop, ctx.signal)) },
+        { follow: true, send: (hop) => sendHop(kernel, ctx.pid, hop.url, hopInit(hop, ctx.signal)) },
       );
       if (walk.kind === 'refused') {
         if (!options.quiet) await ctx.stderr.write('failed.\n');

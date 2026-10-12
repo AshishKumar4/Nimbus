@@ -66,6 +66,7 @@ const supervisor = {
   readdir: slow((p) => bridge.readdir(p)),
   exists: slow(async (p) => (await bridge.stat(p)) !== null),
   mkdir: slow((p) => bridge.mkdir(p, { recursive: true })),
+  chmod: slow((p, mode) => bridge.chmod(p, mode)),
   fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
   fsAcquire: slow((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
 };

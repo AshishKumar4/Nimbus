@@ -555,11 +555,16 @@ Implementation rules:
   HMR bridge is unchanged.
 - W8 under a workspace egress: Node `net.connect` and `net.Socket` use the
   native socket transport through the egress's `connect`. An optional
-  `connectTls({ hostname, port })` owns TLS and returns its plaintext streams;
-  `tls.connect({ socket })` closes the plain connection and continues on those
-  streams. Without that method TLS retains its named refusal. Without an
-  egress, Node outbound TCP retains its current refusal. Inline Node
-  WebSockets relay their upgrade, messages and close through `egress.fetch`.
+  `connectTls({ hostname, port, servername? })` owns TLS and returns its
+  plaintext streams; `servername` crosses when the program names one other
+  than the host, and the egress presents it and checks the server by it.
+  `tls.connect({ socket })` (STARTTLS) fails with `ERR_NIMBUS_EGRESS_STARTTLS`:
+  the egress carries that connection, and workerd starts no TLS on a
+  connection through a service binding. Under an egress without
+  `connectTls`, TLS retains its named refusal. A host's `egressFor` gives
+  each process its own egress, asked once per process: the process's
+  binding, globalOutbound, peer and commands all use it. Without an egress, Node
+  outbound TCP retains its current refusal. Inline Node WebSockets relay their upgrade, messages and close through `egress.fetch`.
   Known Node difference: workerd resolves a refused plain CONNECT's
   `socket.opened` and then signals EOF/close without bytes or the egress's
   refusal text; it does not emit an ECONNREFUSED error. A rejected

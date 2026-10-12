@@ -651,7 +651,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
 			const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
 			const tree: TreeInstall = {
-				targetBase, vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal,
+				targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
 				force: spec.force === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
 				omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
@@ -1027,9 +1027,9 @@ export function createNpmCommand(
 			case 'info':
 			case 'view':
 			case 'show':
-				return (await npmInfo(ctx, kernel?.network ?? ISOLATE_NETWORK));
+				return (await npmInfo(ctx, (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid)));
 			case 'search':
-				return (await npmSearch(ctx, kernel?.network ?? ISOLATE_NETWORK));
+				return (await npmSearch(ctx, (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid)));
 			case '-v':
 			case '--version':
 				await ctx.stdout.write(NPM_VERSION + '\n');

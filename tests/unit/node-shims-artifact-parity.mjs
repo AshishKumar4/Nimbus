@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Parity guard for the node-compat layer's staged assets. The ~230 KiB
 // generateShimsCode() output, VFS_WRITE_LEDGER_SOURCE,
-// FACET_RESIDENT_STORE_SOURCE and the runtime-code interpreter with its host
+// the resident-store library and the runtime-code interpreter with its host
 // module (scripts/interpreter-bundle.mjs) are promoted out of the worker bundle into
 // public/_assets/runtime/<family>-<buildId>.js (scripts/bundle-node-shims.mjs)
 // and fetched per isolate by runtime/node-shims-artifact.ts. The src modules
@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { bundleResidentStore } from '../../packages/worker/scripts/resident-store-bundle.mjs';
 import * as pins from '../../packages/worker/src/node-shims-artifact.generated.ts';
 import { bundleInterpreter, bundleRegistry } from '../../packages/worker/scripts/interpreter-bundle.mjs';
 
@@ -34,10 +34,11 @@ const interpreter = await bundleInterpreter({ start: workerRoot });
 const cases = [
   { name: 'NODE_SHIMS', source: 'generateShimsCode()', current: generateShimsCode() },
   { name: 'VFS_WRITE_LEDGER', source: 'VFS_WRITE_LEDGER_SOURCE', current: VFS_WRITE_LEDGER_SOURCE },
-  { name: 'RESIDENT_STORE', source: 'FACET_RESIDENT_STORE_SOURCE', current: FACET_RESIDENT_STORE_SOURCE },
+  { name: 'RESIDENT_STORE', source: 'the resident-store bundle of worker src', current: await bundleResidentStore(workerRoot) },
   { name: 'JS_INTERPRETER_PRIMORDIALS', source: 'the primordials bundle of core src', current: interpreter.primordials },
   { name: 'JS_INTERPRETER', source: 'the interpreter bundle of core src', current: interpreter.interpreter },
   { name: 'JS_INTERPRETER_OPS', source: 'HOST_OPS_SOURCE', current: interpreter.ops },
+  { name: 'JS_PARSER', source: 'the parser bundle of core src', current: interpreter.parserModule },
   { name: 'NODE_LIB', source: 'generateNodeLibModule()', current: generateNodeLibModule() },
   { name: 'NODE_LIB_REST', source: 'generateNodeLibRestModule()', current: generateNodeLibRestModule() },
   { name: 'NODE_DNS', source: 'generateNodeDnsModule()', current: generateNodeDnsModule() },

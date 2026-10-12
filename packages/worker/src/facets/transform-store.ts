@@ -2,13 +2,14 @@
  * transform-store.ts — a session's launch transform results, kept by content
  * in its SQLite database.
  *
- * A launch lowers every ES module and TypeScript source in its closure to
- * CommonJS (core runtime/bundle-cell-transform.ts). For pi that is 11.5 MB of
- * source and 11-15 s of esbuild CPU, and it was kept only in the isolate's
- * heap, so every reset, eviction and re-drive paid it again: session
- * zealous-pangolin-6268 was torn down five times in 4.4 h and redid the whole
- * transform after each one. Here a result outlives the isolate, and a
- * re-driven or repeated launch reads it back instead.
+ * A launch reads every ES module in its closure for staging, and strips or
+ * compiles every TypeScript source (core runtime/bundle-cell-transform.ts).
+ * When that was a lowering to CommonJS, for pi it was 11.5 MB of source and
+ * 11-15 s of esbuild CPU, kept only in the isolate's heap, so every reset,
+ * eviction and re-drive paid it again: session zealous-pangolin-6268 was torn
+ * down five times in 4.4 h and redid the whole transform after each one. Here
+ * a result outlives the isolate, and a re-driven or repeated launch reads it
+ * back instead.
  *
  * Addressing. A result is stored under the sha256 of everything its output is
  * a function of: the pipeline's code (TRANSFORM_PIPELINE_ID, which core's
@@ -71,7 +72,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 /** Bytes of a result kept in its own row; a larger one goes in parts of this size. */
 const PART_BYTES = MAX_TX_BLOB_BYTES;
 /** The layout of a key's preimage; a change to it is a change of every address. */
-const KEY_SCHEMA = 'nimbus-transform/4';
+const KEY_SCHEMA = 'nimbus-transform/5';
 /** Rows removed per transaction when a generation's rows are dropped. */
 const DROP_BATCH_ROWS = 128;
 
@@ -139,7 +140,6 @@ function ensureSchema(sql: SqlDatabase): void {
   // results written within the same hour.
   sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_transform_results (
     key TEXT NOT NULL,
-    lowered INTEGER NOT NULL,
     bytes INTEGER NOT NULL,
     charge INTEGER NOT NULL,
     used INTEGER NOT NULL,
@@ -147,6 +147,10 @@ function ensureSchema(sql: SqlDatabase): void {
     write_id TEXT NULL,
     parts INTEGER NOT NULL
   )`);
+  // A store from before ES modules ran natively marked lowered results in a column of their own.
+  if ([...sql.exec("SELECT 1 FROM pragma_table_info('nimbus_transform_results') WHERE name = 'lowered'")].length > 0) {
+    sql.exec('ALTER TABLE nimbus_transform_results DROP COLUMN lowered');
+  }
   sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS nimbus_transform_results_key ON nimbus_transform_results(key)');
   sql.exec('CREATE INDEX IF NOT EXISTS nimbus_transform_results_used ON nimbus_transform_results(used)');
   sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_transform_result_parts (
@@ -241,7 +245,7 @@ export class TransformStore implements BundleCellResultStore {
       const batch = unique.slice(i, i + perExec);
       const marks = batch.map(() => '?').join(',');
       const rows = [...this.sql.exec(
-        `SELECT key, lowered, bytes, code, write_id, parts FROM nimbus_transform_results WHERE key IN (${marks})`,
+        `SELECT key, bytes, code, write_id, parts FROM nimbus_transform_results WHERE key IN (${marks})`,
         ...batch,
       )];
       for (const row of rows) {
@@ -252,10 +256,9 @@ export class TransformStore implements BundleCellResultStore {
           this.forget(key);
           continue;
         }
-        // A result is its map's JSON, a line of its own (JSON escapes every line break), then its code.
+        // A result is its import sites' JSON, a line of its own (JSON escapes every line break), then its code.
         const lineEnd = code.indexOf('\n');
-        // \`lowered\`: 0 not lowered, 1 lowered, 2 lowered and an ES module.
-        found.set(key, { map: code.slice(0, lineEnd), code: code.slice(lineEnd + 1), lowered: Number(row.lowered) !== 0, esModule: Number(row.lowered) === 2 });
+        found.set(key, { sites: code.slice(0, lineEnd), code: code.slice(lineEnd + 1) });
       }
       // Recency to the hour: a launch within the hour of the last rewrites nothing.
       this.sql.exec(`UPDATE nimbus_transform_results SET used = ? WHERE used < ? AND key IN (${marks})`, hour, hour, ...batch);
@@ -284,7 +287,7 @@ export class TransformStore implements BundleCellResultStore {
   }
 
   async put(key: string, result: StoredBundleCell, spend?: (bytes: number) => Promise<void>): Promise<string | null> {
-    const bytes = encoder.encode(`${result.map}\n${result.code}`);
+    const bytes = encoder.encode(`${result.sites}\n${result.code}`);
     const inline = bytes.byteLength <= PART_BYTES;
     const parts = inline ? 0 : Math.ceil(bytes.byteLength / PART_BYTES);
     const charge = chargeOf(bytes.byteLength, parts);
@@ -294,7 +297,7 @@ export class TransformStore implements BundleCellResultStore {
     if (unopened !== null) return unopened;
     // Content-addressed: a result already held is this one.
     if (this.holds(key)) return null;
-    const row = { key, lowered: result.esModule ? 2 : result.lowered ? 1 : 0, bytes: bytes.byteLength, charge };
+    const row = { key, bytes: bytes.byteLength, charge };
     if (inline) {
       const refused = this.refusable(() => {
         this.ledger.admit(charge);
@@ -356,7 +359,7 @@ export class TransformStore implements BundleCellResultStore {
    * leaves this write's parts to its caller.
    */
   private commit(
-    row: { key: string; lowered: number; bytes: number; charge: number },
+    row: { key: string; bytes: number; charge: number },
     code: Uint8Array | null,
     writeId: string | null,
     parts: number,
@@ -364,8 +367,8 @@ export class TransformStore implements BundleCellResultStore {
     const inserted = this.transactions.transactionSync(() => {
       if (this.holds(row.key)) return false;
       this.sql.exec(
-        'INSERT INTO nimbus_transform_results (key, lowered, bytes, charge, used, code, write_id, parts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        row.key, row.lowered, row.bytes, row.charge, hourNow(), code, writeId, parts,
+        'INSERT INTO nimbus_transform_results (key, bytes, charge, used, code, write_id, parts) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        row.key, row.bytes, row.charge, hourNow(), code, writeId, parts,
       );
       this.sql.exec('UPDATE nimbus_transform_store SET charge = charge + ? WHERE slot = 1', row.charge);
       return true;

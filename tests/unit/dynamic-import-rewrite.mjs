@@ -73,69 +73,29 @@ return { quoted, template, pattern: String(pattern), viaMember, viaOptional, loa
   assert.deepEqual(calls, result.map(spec => [parent, spec]));
 }
 
-// Token traversal must still see later bindings, nested syntax
-// and directives before choosing its metadata capture name.
-{
-  const source = `"use strict";
-class Reader {
-  #url = import.meta['url'];
-  read() { return this.#url; }
-}
-function later(__nimbusMetadataModule_) { return [import.meta.url, __nimbusMetadataModule_]; }
-const __nimbusMetadataModule = 'user binding';
-const { url } = import.meta;
-return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
-  (function () { return this; })() === undefined];`;
-  const rewritten = rewriteDynamicImports(source, parent, true);
-  const execute = new Function('exports', 'require', 'module', rewritten);
-  assert.deepEqual(execute({}, () => {}, { __nimbusImportMeta: { url: parent } }),
-    [parent, [parent, 'argument'], parent, 'user binding', true]);
-}
-
-// routeImports false binds import.meta alone: a transform routes import()
-// once lowering has turned the cell's imports into member reads.
-{
-  const rewritten = rewriteDynamicImports('return [import.meta.url, import("./y.js")];', parent, true, false);
-  assert.doesNotMatch(rewritten, /__nimbusDynamicImport/);
-  assert.match(rewritten, /import\("\.\/y\.js"\)/);
-  assert.match(rewritten, /__nimbusMetadataModule\.__nimbusImportMeta\.url/);
-}
-
-// The metadata binding goes on the line it is inserted in: every line keeps its number.
-{
-  const source = '"use strict"\nconst a = import.meta.url;\nthrow a;\n';
-  const rewritten = rewriteDynamicImports(source, parent, true);
-  assert.equal(rewritten.split('\n').length, source.split('\n').length);
-  assert.equal(rewritten.split('\n')[2], 'throw a;');
-}
-
 // A script the parse refuses is returned as written, for the compile to report.
 assert.equal(rewriteDynamicImports('import(', parent), 'import(');
 // Code with no import() is returned as is, unparsed.
 assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
 
-// A bin's hashbang line stays first and is no code: its import.meta binds to
-// the module's metadata and its import() goes to the process, as in Node.
-// This is esbuild's CommonJS for such a bin, a pre-lowered (rewrite-only) cell.
+// A bin's hashbang line stays first and is no code: its import() goes to the
+// process, as in Node. This is esbuild's CommonJS for such a bin.
 {
   const source = [
     '#!/usr/bin/env node --title="import(\'./hashbang.js\')"',
     '"use strict";',
-    'var import_node_url = require("node:url");',
-    'const here = (0, import_node_url.fileURLToPath)(new URL(".", import.meta.url));',
-    'exports.loaded = import("./cli-main.js").then((main) => [here, main.value]);',
+    'exports.loaded = import("./cli-main.js").then((main) => main.value);',
   ].join('\n');
   const service = new EsbuildService();
-  const result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent, moduleMetadata: true });
+  const result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent });
   assert.match(result.code, /^#!\/usr\/bin\/env node/, 'the hashbang stays the first line');
-  const module = { exports: {}, __nimbusImportMeta: { url: parent } };
-  const require = (id) => (id === 'node:url' ? { fileURLToPath: (url) => new URL(url).pathname } : {});
+  const module = { exports: {} };
   const { result: loaded, calls } = await withProcessImport(() => ({ value: 7 }), () => {
     // A loader skips the hashbang line; so does this.
-    runCell(result.code.replace(/^#!/, '//'), { exports: module.exports, require, module });
+    runCell(result.code.replace(/^#!/, '//'), { exports: module.exports, require: () => ({}), module });
     return module.exports.loaded;
   });
-  assert.deepEqual(loaded, ['/home/user/app/lib/', 7]);
+  assert.equal(await loaded, 7);
   assert.deepEqual(calls, [[parent, './cli-main.js']], "the hashbang line's text was not taken for an import");
 }
 
@@ -150,15 +110,16 @@ assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
 }
 
 // Pure JavaScript rewriting needs no wasm engine, even on a host where one
-// was never configured. Exercise metadata through both public entry points.
+// was never configured, through both public entry points.
 {
   const service = new EsbuildService();
-  const options = { rewriteOnly: true, dynamicImportParent: parent, moduleMetadata: true };
-  const single = await service.transform('return import.meta.url;', options);
-  const [batch] = await service.transformMany([{ code: 'return import.meta["resolve"]("./value");', options }]);
-  const module = { __nimbusImportMeta: { url: parent, resolve: path => new URL(path, parent).href } };
-  assert.equal(new Function('exports', 'require', 'module', single.code)({}, null, module), parent);
-  assert.equal(new Function('exports', 'require', 'module', batch.code)({}, null, module), 'file:///home/user/app/lib/value');
+  const options = { rewriteOnly: true, dynamicImportParent: parent };
+  const single = await service.transform('return import("./a.js");', options);
+  const [batch] = await service.transformMany([{ code: 'return import("./b.js");', options }]);
+  const { calls } = await withProcessImport((spec) => spec, async () => [
+    await new Function(single.code)(), await new Function(batch.code)(),
+  ]);
+  assert.deepEqual(calls, [[parent, './a.js'], [parent, './b.js']]);
 }
 
 

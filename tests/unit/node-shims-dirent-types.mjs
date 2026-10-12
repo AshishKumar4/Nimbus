@@ -64,6 +64,7 @@ const supervisor = {
   fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
   fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
   mkdir: (path, options) => bridge.mkdir(path, options),
+  chmod: (path, mode) => bridge.chmod(path, mode),
   writeFile: (path, content) => bridge.writeFile(path, typeof content === 'string' ? enc.encode(content) : content),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).

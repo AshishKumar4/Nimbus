@@ -145,7 +145,7 @@ export class WebSocketRelay {
     }
     headers.set('Upgrade', 'websocket');
     if (protocols.length > 0) headers.set('Sec-WebSocket-Protocol', protocols.join(', '));
-    const response = await this.network().fetch(upgradeUrl(url), { headers });
+    const response = await this.network().forProcess(pid).fetch(upgradeUrl(url), { headers });
     const socket = response.webSocket;
     if (!socket) {
       const head = { status: response.status, statusText: response.statusText, headers: [...response.headers] };

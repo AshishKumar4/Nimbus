@@ -106,7 +106,7 @@ try {
   // ── 0. the count, and the choice, a map is made under ──────────────────
   {
     const texts = ['plain ascii', `two-byte é€ and a pair 😀, ${'x'.repeat(300_000)}`, 'lone \ud800 surrogate', ''];
-    const generated = { code: texts[0], source: new ModuleSource([texts[0]]), immutableModules: {}, modules: { a: texts[1] }, codeModules: { b: texts[2], c: texts[3] } };
+    const generated = { code: texts[0], source: new ModuleSource([texts[0]]), immutableModules: {}, modules: { a: texts[1] }, codeModules: { b: texts[2], c: texts[3] }, esModules: {} };
     const exact = texts.reduce((sum, text) => sum + encoder.encode(text).byteLength, 0);
     assert.equal(generatedMapTextBytes(generated, 0), exact, 'a map is counted as the platform counts it, in UTF-8 bytes');
     assert.equal(generatedMapTextBytes(generated, 3 * exact), null, 'a map that cannot reach its room is not read');

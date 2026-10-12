@@ -2,12 +2,12 @@
  * bundle-cell-transform.ts — what the session does to one staged module
  * before it can run as a module cell.
  *
- * Every cell a process can require is CommonJS by the time it is wrapped
- * (commonjs-cell.ts): the guest's registry could compile an ES module, but
- * cannot resolve its package imports, give it its own file URL, or import
- * names from the CommonJS it depends on. So an ES module or a TypeScript
- * source is lowered to CommonJS, and a CommonJS cell's dynamic `import()`
- * calls are routed to the process's ESM loader.
+ * An ES module runs as itself (native-esm.ts): the transform host reads where
+ * its module syntax is (its import sites), which the session stages it by.
+ * TypeScript is stripped (Node's) or compiled (the runtime's own), its module
+ * syntax kept, and then staged the same way where it is an ES module. A
+ * CommonJS cell's dynamic `import()` calls are routed to the process's ESM
+ * loader.
  *
  * A cell's result is a function of four things: its path, its source, this
  * pipeline's code, and the transform host's code. That is what lets a
@@ -22,27 +22,22 @@ import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './es
 import { type ModuleScope, type PackageType } from './module-format.js';
 import type { NodeTypeScript } from './typescript-strip.js';
 /**
- * An ES module this large is lowered in the session (async-module-lowering.ts
- * lowerEsModule, which reads it a statement at a time, in bounded memory)
- * rather than shipped to the transform facet, which lowers a smaller one the
- * same way.
- */
-export declare const BUNDLED_ESM_REWRITE_MIN_BYTES: number;
-/**
- * The bundle entries that may need the ESM→CJS transform before they can run
- * as module cells.
+ * The bundle entries that may need the pipeline before they can run as
+ * module cells.
  *
  * Extensionless entries are in the set because that is the shape of nearly
  * every npm `bin` script. `.json` is data and `.cjs` is CommonJS by
- * definition; neither needs the transform. Content decides from here:
+ * definition; neither is staged as an ES module. Content decides from here:
  * `looksLikeEsm` sniffs module syntax, and parses an extensionless file,
  * which may be data rather than a script.
  */
 export declare function isBundleModuleCandidate(path: string): boolean;
 /**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
+ * The esbuild loader for a source in the bundle the runtime compiles,
+ * TypeScript or JSX, or null when the path does not name one. Which
+ * extensions are TypeScript is `typescriptLoader`'s table, the one a
+ * runtime's entry script is decided by; `.jsx` is JSX, which the runtime
+ * compiles for `node` and `bun` alike (runtime-registry.ts's entry).
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: compiling a type annotation is a SyntaxError whether or
@@ -60,7 +55,7 @@ export declare function isBundleModuleCandidate(path: string): boolean;
  * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
  * gone. So a declaration file is left exactly as it was staged.
  */
-export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
+export declare function bundleCompiledLoader(path: string): 'ts' | 'tsx' | 'jsx' | null;
 /**
  * Whether Node runs a staged JavaScript file as an ES module
  * (module-format.ts isEsModuleFile: its extension, its package scope's
@@ -70,8 +65,8 @@ export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | nul
 export declare function looksLikeEsm(path: string, src: string, packageType: PackageType): boolean;
 /**
  * Whether the staged cell at `path` goes through the pipeline at all: an ES
- * module or TypeScript source to lower, or CommonJS (`.cjs` included) whose
- * dynamic `import()` calls are the process's.
+ * module to stage, TypeScript to strip or compile, or CommonJS (`.cjs`
+ * included) whose dynamic `import()` calls are the process's.
  */
 export declare function needsBundleCellTransform(path: string, src: string, packageType: PackageType): boolean;
 /**
@@ -85,30 +80,22 @@ export type BundleCell = {
     readonly path: string;
     /** A TypeScript source: its emit becomes the module cell, and the source keeps its bytes. */
     readonly typescript: boolean;
-    /**
-     * Lowered from ESM or compiled from TypeScript, so its module's block scope
-     * applies (commonjs-cell.ts THE WRAPPER); a CommonJS cell is only rewritten.
-     */
-    readonly lowered: boolean;
     readonly absUrl: string;
 } & (
 /** The host's step: one transform request. */
 {
     readonly request: EsbuildTransformRequest;
 }
-/** Settled in the session: the bounded rewrite's answer, or a source the pre-pass cannot read. */
+/** Settled in the session: a source the pre-pass cannot read, or a refusal. */
  | {
     readonly outcome: EsbuildTransformOutcome;
 });
 /** What a cell stages as. */
 export interface BundleCellResult {
-    /** The cell's code: CommonJS, the TypeScript emit, or the diagnostic shim. */
+    /** The cell's code: an ES module's, CommonJS with its import() routed, a TypeScript emit, or the diagnostic shim. */
     readonly code: string;
-    /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
-    readonly map: string;
-    readonly lowered: boolean;
-    /** An ES module lowered for the runtime (lowered too): Node's ES module semantics, whatever its map. */
-    readonly esModule: boolean;
+    /** An ES module's import sites (dynamic-import-rewrite.ts ImportSites) as JSON, which the session stages it by; '' for CommonJS. */
+    readonly sites: string;
     /**
      * esbuild's verdict was a rejection, and `code` is the shim that reports it.
      * Never stored: a host can report a crash as a rejection, and a stored shim
@@ -121,8 +108,8 @@ export interface BundleCellResult {
  * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
  *
  * This is computation in the caller's isolate proportional to the source —
- * the provided-module pre-pass and, for large bundled ESM, its lowering to
- * CommonJS — so a paced caller accounts the source before it.
+ * the provided-module pre-pass — so a paced caller accounts the source
+ * before it.
  */
 export declare function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope, stripTypes?: NodeTypeScript | null): BundleCell;
 /**
@@ -141,9 +128,8 @@ export declare function entryScriptRequest(code: string, parentUrl: string): Esb
 /** A result as a store keeps it: only transforms that succeeded are kept. */
 export interface StoredBundleCell {
     readonly code: string;
-    readonly map: string;
-    readonly lowered: boolean;
-    readonly esModule: boolean;
+    /** BundleCellResult.sites. */
+    readonly sites: string;
 }
 /**
  * Transform results kept across launches, by content: the worker's
@@ -184,7 +170,7 @@ export interface BundleCellTransformStats {
     cells: number;
     /** Answered from the store, with no transform at all. */
     stored: number;
-    /** Transformed by this launch: lowered, or rewritten for dynamic import(). */
+    /** Transformed by this launch: read for staging, stripped or compiled, or rewritten for dynamic import(). */
     transformed: number;
     /** esbuild's verdict was a rejection; the cell is a diagnostic shim. */
     failed: number;
@@ -211,7 +197,7 @@ export interface BundleCellTransformStats {
  * Only a paced launch stores what it transforms: its writes land on as many
  * turns as they take, where an unpaced one would put every write in one turn.
  * A transient host failure throws (settleBundleCell) before anything of its
- * slice is placed. Each cell is lowered for the launch's runtime's module
+ * slice is placed. Each cell is staged for the launch's runtime's module
  * `scope`.
  */
 export declare function transformBundleCells(cells: ReadonlyArray<{

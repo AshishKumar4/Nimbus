@@ -30,11 +30,8 @@ class Loader {
   static kind = 'loader';
 }
 const viaMembers = [loader.import('a'), new Loader().import('b'), (loader)?.import('c')];
-const __nimbu\u0073MetadataModule_ = 'escaped user binding';
-function read(__nimbusMetadataModule) {
-  return [new URL('.', import.meta.url).href, __nimbusMetadataModule, __nimbu\u0073MetadataModule_];
-}
-return import('./later.js').then((later) => ({ metadata: read('parameter'), viaMembers, later,
+const \u0069mportLike = 'escaped user binding';
+return import('./later.js').then((later) => ({ binding: importLike, viaMembers, later,
   count: Object.keys(catalog).length, total: Object.values(catalog).reduce((sum, model) => sum + model.cost, 0) }));
 `;
 
@@ -49,7 +46,7 @@ return import('./later.js').then((later) => ({ metadata: read('parameter'), viaM
     }
   };
   try {
-    rewriteDynamicImports(source, parent, true);
+    rewriteDynamicImports(source, parent);
   } finally {
     globalThis.ArrayBuffer = NativeArrayBuffer;
   }
@@ -74,7 +71,7 @@ return import('./later.js').then((later) => ({ metadata: read('parameter'), viaM
   let result;
   try {
     const service = new EsbuildService();
-    result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent, moduleMetadata: true });
+    result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent });
   } finally {
     Parser.prototype.nextToken = nextToken;
   }
@@ -84,9 +81,9 @@ return import('./later.js').then((later) => ({ metadata: read('parameter'), viaM
     // A loader skips the hashbang line; so does this.
     const body = result.code.replace(/^#!/, '//');
     const { result: output } = await withProcessImport((specifier, from) => ({ from, specifier }),
-      () => runCell(body, { module: { __nimbusImportMeta: { url: parent } } }));
+      () => runCell(body, { module: {} }));
     assert.deepEqual(output, {
-      metadata: ['file:///home/user/bin/', 'parameter', 'escaped user binding'],
+      binding: 'escaped user binding',
       viaMembers: ['object:a', 'class:b', 'object:c'],
       later: { from: parent, specifier: './later.js' },
       count,

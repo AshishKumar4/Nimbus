@@ -68,17 +68,9 @@ import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost, type ChildNews, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay, type WasiOutputTarget } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
+import { createResidentStore } from '../../vfs/resident/index.js';
 declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontier: number; seq: number }) => void) => ChildNews;
 
-// The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
-// an instance of its own spliced ahead of this body by scripts/bundle-facet-workers.mjs:
-// the store a node process reads its synchronous calls from, here listed on demand.
-declare const __wasiResidentStore: {
-  __residentBindInMemory(budget: number): unknown;
-  __residentSetStorage(storage: undefined, supervisor: unknown): void;
-  __residentBootLazy(supervisor: unknown): Promise<boolean>;
-  __residentNamespaceView(supervisor: unknown, device: number, cred: WasiCred): ResidentNamespace;
-};
 
 // errno constants
 const __WASI_ESUCCESS       = 0;
@@ -235,15 +227,17 @@ let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem; ready: Pr
 function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
-  const store = __wasiResidentStore;
-  store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-  store.__residentSetStorage(undefined, supervisor);
+  // The store a node process reads its synchronous calls from, here listed on
+  // demand: this process's own (vfs/resident).
+  const store = createResidentStore();
+  store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+  store.admission.setStorage(undefined, supervisor);
   let view: ResidentNamespace | null = null;
   const ready = (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
-    if (root === null || !(await store.__residentBootLazy(supervisor))) return null;
-    view = store.__residentNamespaceView(supervisor, root.dev, cred);
+    if (root === null || !(await store.lazy.bootLazy(supervisor))) return null;
+    view = store.lazy.namespaceView(supervisor, root.dev, cred);
     return view;
   })().catch(() => { view = null; return null; });
   const booting: ResidentNamespace = {

@@ -23,6 +23,7 @@ const stat = (path) => files.has(strip(path)) ? { type: 'file', size: files.get(
   : dirs(path) ? { type: 'directory', size: 0, revision: 0 } : null;
 // Every path is revision 0, as a mount's are: no revision ever moves.
 const bridge = {
+  realpath: async (path) => '/' + strip(path), // This fixture has no links.
   revision: async () => 0,
   stat: async (path) => {
     const st = stat(path);

@@ -27,7 +27,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
@@ -79,12 +79,8 @@ const hidden = (all, dir) => {
 const at = (paths, path) => paths.filter((entry) => entry.path === path);
 
 // A resident store for A, over the real RPC handlers.
-const store = new Function(
-  FACET_RESIDENT_STORE_SOURCE
-    + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
-    + ' __residentAdmit, __residentCursor, __residentGet, __residentSetPlan };',
-)();
-store.__residentBind({
+const store = createResidentStore();
+store.bind({
   storage: {
     sql: (() => {
       const db = new Database(':memory:');
@@ -110,8 +106,8 @@ const supervisor = {
   fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, undefined, pid),
 };
 async function barrier() {
-  const held = store.__residentCursor();
-  return store.__residentAdmit(await supervisor.fsAcquire(held.epoch, held.rev));
+  const held = store.coherence.cursor();
+  return store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev));
 }
 
 plain.mkdir('/home/user/d');
@@ -122,19 +118,19 @@ plain.mkdir('/home/user/work/lib', { recursive: true });
 plain.writeFile('/home/user/work/lib/index.js', 'export default 1;');
 plain.mkdir('/home/user/shelf');
 plain.writeFile('/home/user/shelf/book.txt', 'book');
-store.__residentAdoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
 // The launch's data plan holds every file here: this test is about what the
 // barrier evicts, not about what the store is asked to hold.
-store.__residentSetPlan([
+store.sync.setPlan([
   'home/user/d/p', 'home/user/e/q', 'home/user/work/lib/index.js', 'home/user/shelf/book.txt',
   // Where a later scenario renames the shelf to.
   'home/user/cupboard/book.txt',
 ]);
 {
-  const filled = await store.__residentSynchronizeFromSupervisor(supervisor);
+  const filled = await store.sync.synchronize(supervisor);
   assert.equal(filled.failed, 0);
   for (const path of ['home/user/d/p', 'home/user/e/q', 'home/user/work/lib/index.js', 'home/user/shelf/book.txt']) {
-    assert.ok(store.__residentGet(path) !== undefined, `the store did not fill ${path}`);
+    assert.ok(store.cells.get(path) !== undefined, `the store did not fill ${path}`);
   }
 }
 
@@ -148,7 +144,7 @@ store.__residentSetPlan([
   hidden({ a: paths }, 'home/user/d');
   const applied = await barrier();
   assert.deepEqual(applied.dropped, ['home/user/d/p'], 'a row for a removed file was kept');
-  assert.equal(store.__residentGet('home/user/d/p'), undefined);
+  assert.equal(store.cells.get('home/user/d/p'), undefined);
 }
 
 // ── A directory made private: its rows stop being served ─────────────────
@@ -156,7 +152,7 @@ store.__residentSetPlan([
   plain.chmod('/home/user/e', 0o700);
   const applied = await barrier();
   assert.deepEqual(applied.dropped, ['home/user/e/q'], 'a row under a directory A was locked out of was kept');
-  assert.equal(store.__residentGet('home/user/e/q'), undefined);
+  assert.equal(store.cells.get('home/user/e/q'), undefined);
   const [read] = await supervisor.fsReadBatch([{ path: 'home/user/e/q', offset: 0, length: 64 }]);
   assert.equal(read.error?.code, 'EACCES', 'A read a file under a directory it may no longer enter');
 }
@@ -234,8 +230,8 @@ store.__residentSetPlan([
   }
   const applied = await barrier();
   assert.deepEqual(applied.dropped, ['home/user/shelf/book.txt']);
-  await store.__residentSynchronizeFromSupervisor(supervisor);
-  assert.equal(asText(store.__residentGet('home/user/shelf/book.txt')), 'book v2');
+  await store.sync.synchronize(supervisor);
+  assert.equal(asText(store.cells.get('home/user/shelf/book.txt')), 'book v2');
 }
 {
   plain.removeRecursive('/home/user/work');
@@ -246,9 +242,9 @@ store.__residentSetPlan([
     ['home/user/shelf/book.txt', 'home/user/work/lib/index.js'],
     'a row for a file that is gone was kept',
   );
-  const refilled = await store.__residentSynchronizeFromSupervisor(supervisor);
+  const refilled = await store.sync.synchronize(supervisor);
   assert.equal(refilled.failed, 0);
-  assert.equal(asText(store.__residentGet('home/user/cupboard/book.txt')), 'book v2');
+  assert.equal(asText(store.cells.get('home/user/cupboard/book.txt')), 'book v2');
 }
 {
   // A's own private /tmp, under its own names; PLAIN hears of it only as B's

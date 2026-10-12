@@ -21,6 +21,9 @@
 export interface TsconfckFs {
     /** Whether `path` (absolute) is a regular file. */
     isFile(path: string): boolean;
+    /** Optional metadata on old config-only hosts; file probes still decide. */
+    isDirectory?(path: string): boolean;
+    realpath?(path: string): string;
     /** `path`'s text; throws where it cannot be read. */
     readFileString(path: string): string;
 }

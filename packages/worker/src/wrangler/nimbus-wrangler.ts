@@ -596,8 +596,9 @@ export class NimbusWrangler {
         for (const wl of this.config.worker_loaders) {
           const binding = wl.binding;
           if (!binding) continue;
+          // A Worker it loads goes out through the Worker's own network (NimbusLoaderRPC).
           claim('worker_loaders', binding, ctxExports.NimbusLoaderRPC({
-            props: { depth: nextDepth },
+            props: { depth: nextDepth, ...(this.network.egress === undefined ? {} : { egress: this.network.egress, networkId: this.network.id }) },
           }));
         }
       }

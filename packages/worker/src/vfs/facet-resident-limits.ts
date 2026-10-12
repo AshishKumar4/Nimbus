@@ -1,14 +1,10 @@
 /**
- * Bounds of the in-facet resident store (vfs/facet-resident-store.ts) that the
- * supervisor also needs.
- *
- * They live apart from the store because that module exports the store's
- * source text, FACET_RESIDENT_STORE_SOURCE (~105 KB). The facet receives that
- * text as a staged asset (scripts/bundle-node-shims.mjs), and importing a
- * constant from the store module would bundle the text into the Worker too:
- * esbuild keeps a template literal with substitutions even when nothing reads
- * it. The Worker bundle has a size gate
- * (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs).
+ * Bounds of the in-facet resident store (vfs/resident) that the
+ * supervisor also needs, apart from the store's components so that the
+ * Worker, which has a size gate
+ * (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs), imports them
+ * without the store: the facet receives the store as a staged asset
+ * (scripts/bundle-node-shims.mjs).
  */
 
 import { VFS_BUNDLE_MAX_BYTES } from '@nimbus-sh/core/constants.js';

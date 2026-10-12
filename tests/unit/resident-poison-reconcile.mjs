@@ -24,27 +24,20 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const dec = new TextDecoder();
 
-/** A fresh module scope holding the shipped store source, over its own SQLite. */
+/** A fresh typed store over its own SQLite. */
 function loadStore() {
-  const factory = new Function(
-    FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBind, __residentAdmit, __residentAdoptModuleBundle,'
-      + ' __residentSynchronizeFromSupervisor, __residentCursor, __residentStats,'
-      + ' __residentKeys, __residentGet, __residentSetPlan, __residentStamp, __residentSetStorage,'
-      + ' bundle: __nimbusResidentBundle };',
-  );
-  const store = factory();
-  store.__residentBind({ storage: { sql: createSqliteVfsTestHarness().sql } });
+  const store = createResidentStore();
+  store.bind({ storage: { sql: createSqliteVfsTestHarness().sql } });
   // The launch's data plan names every file here: this test is about how the
   // store keeps what it holds, not about what it is asked to hold.
-  store.__residentSetPlan(Array.from({ length: FILES }, (_, i) => `app/d${Math.floor(i / 100)}/f${i}.dat`));
+  store.sync.setPlan(Array.from({ length: FILES }, (_, i) => `app/d${Math.floor(i / 100)}/f${i}.dat`));
   return store;
 }
 
@@ -90,8 +83,8 @@ function meteredSupervisor() {
 async function bootedStore() {
   const store = loadStore();
   const supervisor = meteredSupervisor();
-  store.__residentAdoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
-  const result = await store.__residentSynchronizeFromSupervisor(supervisor);
+  store.sync.adoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+  const result = await store.sync.synchronize(supervisor);
   return { store, supervisor, result };
 }
 
@@ -114,10 +107,10 @@ function asText(cell) {
  */
 function assertNoStaleByte(store, label, ownWrites = new Set()) {
   let checked = 0;
-  for (const path of store.__residentKeys()) {
+  for (const path of store.cells.keys()) {
     if (ownWrites.has(path)) continue;
     assert.equal(
-      asText(store.__residentGet(path)),
+      asText(store.cells.get(path)),
       dec.decode(kfs.readFile(path)),
       `${label}: ${path} is stale — the store served bytes the authority has replaced`,
     );
@@ -153,7 +146,7 @@ kfs.writeFile(MOVED, PEER_BYTES);
 kfs.writeFile('app/scratch', 'x');
 kfs.unlink('app/scratch');
 
-const heldCursor = cold.store.__residentCursor();
+const heldCursor = cold.store.coherence.cursor();
 const poisoned = await _rpcFsAcquire(host, heldCursor.epoch, heldCursor.rev);
 assert.equal(
   poisoned.poison,
@@ -164,7 +157,7 @@ assert.equal(
 // ── the reconcile: correct, and proportional to what moved ──────────────────
 
 const warm = { store: cold.store, supervisor: meteredSupervisor() };
-const reconciled = await warm.store.__residentSynchronizeFromSupervisor(warm.supervisor);
+const reconciled = await warm.store.sync.synchronize(warm.supervisor);
 
 assert.equal(reconciled.reconciled, true, 'a same-epoch poison is repaired by revision');
 assert.equal(reconciled.cursor.epoch, rawVfs.epoch);
@@ -173,7 +166,7 @@ assert.ok(reconciled.cursor.rev > 0, 'the cursor advanced past the poison');
 // Correctness first. This is the assertion the cost is only allowed to buy
 // against: the peer's write must be visible, and nothing else may have drifted.
 assert.equal(
-  asText(warm.store.__residentGet(MOVED)),
+  asText(warm.store.cells.get(MOVED)),
   PEER_BYTES,
   "a peer's write during the churn must be visible after the reconcile",
 );
@@ -201,8 +194,8 @@ assert.ok(
 const dropped = await bootedStore();
 dropped.supervisor.cost.readBytes = 0;
 dropped.supervisor.cost.readCalls = 0;
-dropped.store.__residentAdmit(poisoned);
-await dropped.store.__residentSynchronizeFromSupervisor(dropped.supervisor);
+dropped.store.cells.admit(poisoned);
+await dropped.store.sync.synchronize(dropped.supervisor);
 assert.equal(assertNoStaleByte(dropped.store, 'drop-and-refill'), FILES);
 
 const dropBytes = dropped.supervisor.cost.readBytes;
@@ -227,7 +220,7 @@ assert.ok(
   // and survives an incarnation change like it survives a delta.
   const { store } = await bootedStore();
   store.bundle['app/d0/unflushed.txt'] = 'MY-OWN-UNFLUSHED-BYTES';
-  assert.equal(store.__residentStats().files, FILES + 1);
+  assert.equal(store.cells.stats().files, FILES + 1);
 
   const restarted = new SqliteVFS(harness.sql, harness.ctx);
   restarted.rotateIncarnation();
@@ -241,14 +234,14 @@ assert.ok(
     fsList: (after, limit) => _rpcFsList(restartedHost, after ?? null, limit ?? null),
     fsReadBatch: (requests) => _rpcFsReadBatch(restartedHost, requests),
   };
-  const result = await store.__residentSynchronizeFromSupervisor(supervisor);
+  const result = await store.sync.synchronize(supervisor);
   assert.equal(result.reconciled, false, 'revisions across epochs are not comparable');
   assert.equal(result.rekeyed, FILES, 'a row whose content key is listed again is kept');
   assert.equal(result.dropped, 0, 'so nothing is rebuilt');
   assert.equal(result.filled, 0, 'and nothing is fetched');
   assert.equal(result.cursor.epoch, restarted.epoch, 'and the store re-dates to the new epoch');
   assert.equal(
-    asText(store.__residentGet('app/d0/unflushed.txt')),
+    asText(store.cells.get('app/d0/unflushed.txt')),
     'MY-OWN-UNFLUSHED-BYTES',
     'an unflushed own write is newer than any authority revision and is kept',
   );
@@ -266,7 +259,7 @@ assert.ok(
 
 {
   const { store } = await bootedStore();
-  const before = store.__residentCursor();
+  const before = store.coherence.cursor();
   kfs.writeFile('app/d1/f101.dat', 'moved-under-a-short-listing'.padEnd(FILE_BYTES, 'q'));
   const truncated = {
     fsList: async () => {
@@ -277,11 +270,11 @@ assert.ok(
     },
     fsReadBatch: (requests) => _rpcFsReadBatch(host, requests),
   };
-  const result = await store.__residentSynchronizeFromSupervisor(truncated);
+  const result = await store.sync.synchronize(truncated);
   assert.equal(result.complete, false, 'the listing never finished');
   assert.equal(result.cursor, null, 'so no cursor may be published');
   assert.equal(result.dropped, 0, 'and no row may be dropped against it');
-  assert.deepEqual(store.__residentCursor(), before, 'the held cursor is untouched');
+  assert.deepEqual(store.coherence.cursor(), before, 'the held cursor is untouched');
 }
 
 // A held own write (N18: the store had no room, so the cell sits in the heap)
@@ -299,26 +292,26 @@ for (const comparable of [true, false]) {
   // adopted at another epoch's cursor, so none of its revisions can be
   // compared with the listing's.
   if (comparable) {
-    store.__residentAdoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
-    await store.__residentSynchronizeFromSupervisor(full);
+    store.sync.adoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+    await store.sync.synchronize(full);
   } else {
-    store.__residentAdoptModuleBundle({}, { epoch: 'another-epoch', rev: 0 });
+    store.sync.adoptModuleBundle({}, { epoch: 'another-epoch', rev: 0 });
   }
   // No room at all: every own write is held in the heap.
-  store.__residentSetStorage({ facet: 'held-facet', grant: 0 }, full);
+  store.admission.setStorage({ facet: 'held-facet', grant: 0 }, full);
   const dated = comparable ? 'app/held-dated.txt' : 'app/held-dated-other-epoch.txt';
   const undated = comparable ? 'app/held-undated.txt' : 'app/held-undated-other-epoch.txt';
   store.bundle[dated] = 'OWN-V1';
   store.bundle[undated] = 'OWN-IN-FLIGHT';
-  assert.equal(store.__residentGet(dated), 'OWN-V1', 'a held own write reads back');
+  assert.equal(store.cells.get(dated), 'OWN-V1', 'a held own write reads back');
   kfs.writeFile(dated, 'OWN-V1');
-  store.__residentStamp(dated, rawVfs.revision());
+  store.cells.stamp(dated, rawVfs.revision());
   kfs.writeFile(dated, 'PEER-V2');
-  const repaired = await store.__residentSynchronizeFromSupervisor(full);
+  const repaired = await store.sync.synchronize(full);
   assert.equal(repaired.reconciled, comparable, `the repair ${comparable ? 'compared' : 'could not compare'} revisions`);
-  assert.notEqual(store.__residentGet(dated), 'OWN-V1',
+  assert.notEqual(store.cells.get(dated), 'OWN-V1',
     `${comparable ? 'a peer overwrote' : 'across epochs'}: the repair forgets the dated held cell, never serves it`);
-  assert.equal(store.__residentGet(undated), 'OWN-IN-FLIGHT', 'an undated held cell (write-back in flight) stays');
+  assert.equal(store.cells.get(undated), 'OWN-IN-FLIGHT', 'an undated held cell (write-back in flight) stays');
   assert.ok(repaired.own.some((entry) => entry.path === undated), 'and is reported as own, like an own file row');
 }
 
@@ -328,7 +321,7 @@ for (const comparable of [true, false]) {
 // COH-012): each case is one store over one fresh authority, a sequence of
 // peer writes, own writes, write-backs (flush: committed and acknowledged),
 // barriers and repairs (a churn write standing in for the poison it causes),
-// and after every event what __residentGet serves per path (null: a miss).
+// and after every event what cells.get serves per path (null: a miss).
 // `full` is a store with no room: every own write is held in the heap and
 // nothing fetched is admitted.
 const FIXTURE = 'lean/fixtures/resident-poison-reconcile.json';
@@ -348,29 +341,27 @@ if (fixturePath) {
       fsAcquire: (epoch, cursor) => _rpcFsAcquire(caseHost, epoch, cursor),
       fsStorageGrant: async () => ({ granted: 0 }),
     };
-    const store = new Function(FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentAdoptModuleBundle,'
-      + ' __residentSynchronizeFromSupervisor, __residentCursor, __residentGet, __residentSetPlan, __residentStamp,'
-      + ' __residentSetStorage, bundle: __nimbusResidentBundle };')();
-    store.__residentBind({ storage: { sql: createSqliteVfsTestHarness().sql } });
+    const store = createResidentStore();
+    store.bind({ storage: { sql: createSqliteVfsTestHarness().sql } });
     // No plan and no push roots: a repair refetches only what it dropped.
-    store.__residentSetPlan([]);
-    store.__residentAdoptModuleBundle({}, { epoch: vfs.epoch, rev: vfs.revision() });
-    await store.__residentSynchronizeFromSupervisor(supervisor);
-    store.__residentSetStorage({ facet: 'bridge', grant: c.full ? 0 : 64 * 1024 * 1024 }, supervisor);
+    store.sync.setPlan([]);
+    store.sync.adoptModuleBundle({}, { epoch: vfs.epoch, rev: vfs.revision() });
+    await store.sync.synchronize(supervisor);
+    store.admission.setStorage({ facet: 'bridge', grant: c.full ? 0 : 64 * 1024 * 1024 }, supervisor);
     for (const [i, e] of c.events.entries()) {
       const where = `${FIXTURE} case ${fixture.cases.indexOf(c)} event ${i} (${e.event}${e.path ? ' ' + e.path : ''})`;
       if (e.event === 'peer') k.writeFile(e.path, e.bytes);
       else if (e.event === 'own') store.bundle[e.path] = e.bytes;
-      else if (e.event === 'flush') { k.writeFile(e.path, e.bytes); store.__residentStamp(e.path, vfs.revision()); }
+      else if (e.event === 'flush') { k.writeFile(e.path, e.bytes); store.cells.stamp(e.path, vfs.revision()); }
       else if (e.event === 'barrier') {
-        const at = store.__residentCursor();
-        store.__residentAdmit(await supervisor.fsAcquire(at.epoch, at.rev));
+        const at = store.coherence.cursor();
+        store.cells.admit(await supervisor.fsAcquire(at.epoch, at.rev));
       } else if (e.event === 'repair') {
         k.writeFile(c.churn, e.bytes);
-        await store.__residentSynchronizeFromSupervisor(supervisor);
+        await store.sync.synchronize(supervisor);
       } else throw new Error(`${where}: unknown event`);
       for (const [path, want] of Object.entries(e.expect)) {
-        const got = store.__residentGet(path);
+        const got = store.cells.get(path);
         assert.deepEqual(got === undefined ? null : asText(got), want, `${where}: ${path}`);
       }
     }
