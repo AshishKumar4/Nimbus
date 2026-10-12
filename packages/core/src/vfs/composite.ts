@@ -2914,8 +2914,8 @@ export class CompositeVFS implements VFS {
       // on Linux; only a directory above a mount point has no backend to ask.
       const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);
       const walkingChildren = what === 'removed' && children && path !== ROOT_POINT;
-      if (this.isStructural(path) && !metadataOnly && !walkingChildren) throw new Refusal('EBUSY', path, `a mount point cannot be ${what}`);
-      if (route.mount.options.readOnly && !walkingChildren) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
+      if (this.isStructural(path) && !metadataOnly && !walkingChildren) throw new Refusal('EBUSY', path, what === 'removed' ? undefined : `a mount point cannot be ${what}`);
+      if (route.mount.options.readOnly && !walkingChildren) throw new Refusal('EROFS', path, what === 'removed' || what === 'unlinked' ? undefined : `${route.mount.point} is mounted read-only`);
       return andThen(this.reachable(path, sync), () => andThen(parents ? this.makeTree(parentOf(path), undefined, sync) : undefined, () => {
         const ops = this.ops(route, sync);
         const removes = what === 'unlinked' || what === 'removed';

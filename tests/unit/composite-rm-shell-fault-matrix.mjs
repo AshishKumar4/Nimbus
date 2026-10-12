@@ -149,8 +149,8 @@ for (const test of cases) for (const asynchronous of [false, true]) {
     assert.equal(result.exitCode, test.errors.length ? 1 : 0, `${test.name}: ${result.stderr}`);
     assert.equal(result.stdout, '');
     const lines = result.stderr.trim().split('\n').filter(Boolean).sort();
-    assert.equal(lines.length, test.errors.length, `${test.name}: ${result.stderr}`);
-    for (const [path, detail] of test.errors) assert.ok(lines.some((line) => line.startsWith(`rm: cannot remove '${path}': `) && line.includes(detail)), `${test.name}: ${result.stderr}`);
+    const expectedLines = test.errors.map(([path, detail]) => `rm: cannot remove '${path}': ${test.fault === 'detail' ? 'Permission denied: ' : ''}${detail}`).sort();
+    assert.deepEqual(lines, expectedLines, `${test.name}: exact diagnostics`);
     if (state.mounted) assert.deepEqual(state.mounted.root.readdir('').map((entry) => entry.name).sort(), test.mounted);
     if (test.fault === 'link') assert.equal(state.root.readFileString('outside/secret'), 'outside', 'rm never follows the directory link leaf');
     console.log(JSON.stringify({ case: test.name, face: asynchronous ? 'async' : 'sync', exit: result.exitCode, kept: actual, stderr: result.stderr }));
