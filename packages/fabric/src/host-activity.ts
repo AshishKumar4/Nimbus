@@ -9,6 +9,8 @@ export interface HostActivityLease {
 
 export interface HostObservation {
   acquire(signal?: AbortSignal): HostActivityLease;
+  /** A watch on the host is open now and found the pinned incarnation. */
+  validated(): boolean;
   close(): void;
 }
 
@@ -25,7 +27,7 @@ interface Observation {
   readonly lost: (error: Error) => void;
   /** The host's incarnation, pinned when the process opened; a watch never changes it. */
   readonly incarnation: string | Promise<string>;
-  current?: { abort: AbortController; ready: Promise<void> };
+  current?: { abort: AbortController; ready: Promise<void>; validated?: true };
   failed: Error | null;
 }
 
@@ -42,6 +44,7 @@ export class HostActivity {
         if (!this.observations.has(observation)) throw new Error('Nimbus: the process is no longer running');
         return this.hold(signal, observation);
       },
+      validated: () => !observation.failed && observation.current?.validated === true,
       close: () => { this.observations.delete(observation); observation.current?.abort.abort(); },
     };
   }
@@ -120,6 +123,7 @@ export class HostActivity {
         await close();
         throw new Error('Nimbus: the process host restarted without its process');
       }
+      if (observation.current?.abort === abort) observation.current.validated = true;
       if (socket) {
         const cancel = () => socket.close(1000, 'watch released');
         const ended = () => {
@@ -305,9 +309,13 @@ export class NimbusProcess extends Base {
   // caller leave as its request's signal.
   // A guest that fails answers a capability-branded 500 (HOST_FAILED_HEADER):
   // its host learns the call arrived, whatever the guest's compatibility date.
-  async hostHttpRequest(request, key, pinned, id, ended, abandoned) {
-    if (key !== capability) return new Response('Not found', { status: 404 });
-    if (pinned !== this.#incarnation) return this.#replaced();
+  async hostHttpRequest(request, id, ended, abandoned, admission) {
+    // Its host sends the capability and the pinned incarnation while it has
+    // no live watch that found this instance; with one, the watch admits it.
+    if (admission !== undefined) {
+      if (admission[0] !== capability) return new Response('Not found', { status: 404 });
+      if (admission[1] !== this.#incarnation) return this.#replaced();
+    }
     const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
     this.#admitted.add(admitted);
     try { return await super.handleHttpRequest(admitted); }

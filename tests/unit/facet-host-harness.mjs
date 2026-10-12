@@ -135,11 +135,11 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async hostHttpRequest(request, key, pinned, id, ended, abandoned) {
+        async hostHttpRequest(request, id, ended, abandoned, admission) {
           carried.push({ id, ended: [...ended], abandoned: [...abandoned] });
           const instance = await ensure(name, start);
-          const receiver = evaluatesAdapter ? instance : await receiverOf(instance, key);
-          return receiver.hostHttpRequest(request, key, pinned, id, ended, abandoned);
+          const receiver = evaluatesAdapter ? instance : await receiverOf(instance, admission?.[0]);
+          return receiver.hostHttpRequest(request, id, ended, abandoned, admission);
         },
         async abandonHttpRequest(key, id) {
           const instance = await ensure(name, start);
@@ -187,8 +187,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
-    /** The platform puts a fresh instance of the facet's class in its place, without its host's start. */
-    replace: (name) => live.set(name, classes.get(name).instantiate(name)),
+    /** The platform puts a fresh instance of the facet's class in its place, without its host's start: the old one's watches end. */
+    replace: (name) => { live.set(name, classes.get(name).instantiate(name)); die(name, new Error('the facet was replaced')); },
     /** The facet dies on its own; every active native observation rejects. */
     die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };
