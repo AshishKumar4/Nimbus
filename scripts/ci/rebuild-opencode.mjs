@@ -28,7 +28,7 @@ const upstream = join(scratch, 'source');
 run('git', ['clone', '--depth', '1', '--branch', `v${OPENCODE_SOURCE.version}`, OPENCODE_SOURCE.url, upstream]);
 const sourceCommit = run('git', ['rev-parse', 'HEAD'], upstream);
 if (sourceCommit !== OPENCODE_SOURCE.commit) throw new Error(`OpenCode v${OPENCODE_SOURCE.version} source changed`);
-run('bun', ['install', '--ignore-scripts', '--linker=hoisted'], upstream);
+run('bun', ['install', '--frozen-lockfile', '--ignore-scripts', '--linker=hoisted'], upstream);
 const recipe = join(repo, 'packages/worker/scripts/opencode');
 for (const patch of ['nimbus-defer-global-io.patch', 'nimbus-tree-sitter-exports.patch']) run('git', ['apply', join(recipe, patch)], upstream);
 const packageRoot = join(upstream, 'packages/opencode');
