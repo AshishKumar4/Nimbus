@@ -14,8 +14,9 @@
 //
 // Modelled here as `app` → a@1, b@1; a → c@^1; b → c@^2. Whichever major
 // wins root, the other dependent must carry its own copy, nested under
-// itself and nowhere higher. Through the real NpmInstaller over real
-// SQLite; the fan-out RPC is the seam.
+// itself; what that copy needs goes as high as it fits beneath the
+// dependent, as npm's arborist places it. Through the real NpmInstaller
+// over real SQLite; the fan-out RPC is the seam.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -44,7 +45,7 @@ function resolveFromRegistry(name, spec) {
   const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
   if (!version) {
     return {
-      pkg: null, deps: {}, peerDeps: {}, optionalDeps: {},
+      pkg: null,
       cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
       error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` },
     };
@@ -57,7 +58,7 @@ function resolveFromRegistry(name, spec) {
     dependencies, peerDependencies, exports: null, main: 'index.js', module: '', bin: {},
   };
   return {
-    pkg, deps: pkg.dependencies, peerDeps: peerDependencies ?? {}, optionalDeps: {},
+    pkg,
     // The registry cache is what the next install's lock-check reads edges from.
     cacheWrites: [registryRecord(pkg, Date.now())],
     messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
@@ -95,11 +96,11 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   console.log(`  root c@${versionAt(root, 'c')}; ${loser}/node_modules/c@${wanted}`);
 }
 
-// ── transitive: the nested copy's own unsatisfied edge nests under IT ──────
+// ── transitive: the nested copy's own unsatisfied edge goes as high as it fits ──
 {
   assert.equal(versionAt(root, 'd'), '2.0.0', 'root d is what a asked for');
-  assert.equal(versionAt(root, 'b/node_modules/c/node_modules/d'), '1.0.0', 'nested c@2 gets d@1 under its own placement');
-  assert.equal(root.exists(`${NM}/b/node_modules/d`), false, 'never higher than the dependent that needs it');
+  assert.equal(versionAt(root, 'b/node_modules/d'), '1.0.0', 'nested c@2 gets d@1 beside it, beneath b, where root d@2 is the first conflict');
+  assert.equal(root.exists(`${NM}/b/node_modules/c/node_modules/d`), false, 'and no deeper');
 }
 
 // ── reuse: an edge root already satisfies creates no duplicate ─────────────
@@ -113,7 +114,7 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
 {
   const lock = installer.npmCache.readLockfile(PROJ);
   const placements = [...lock.keys()].sort();
-  assert.deepEqual(placements, ['a', 'b', 'b/node_modules/c', 'b/node_modules/c/node_modules/d', 'c', 'd', 'e'], 'lockfile lists both placements of c and of d');
+  assert.deepEqual(placements, ['a', 'b', 'b/node_modules/c', 'b/node_modules/d', 'c', 'd', 'e'], 'lockfile lists both placements of c and of d');
   assert.equal(lock.get('b/node_modules/c').name, 'c');
   assert.equal(lock.get('b/node_modules/c').resolvedVer, '2.0.0');
   assert.equal(lock.get('b/node_modules/c').hoistedPath, `${NM}/b/node_modules/c`);
@@ -139,26 +140,22 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   console.log('  second install: lock-check no-op, tree intact');
 }
 
-// ── a peer edge never nests: the host provides it, mismatched or not ────────
+// ── a peer is placed with the package that needs it ─────────────────────────
 //
-// A nested duplicate of a peer is worse than a mismatched shared copy (two
-// Reacts break hooks; npm refuses with ERESOLVE rather than duplicating).
-// `pc` peers on c@^2 while root holds c@1.0.0: no nested c, one warn line
-// the way npm warns, one c row in the lockfile.
+// `pc` peers on c@^2, and a needs c@^1. npm places a package's peers with
+// it (its peer set), before the next layer's dependencies: c@2 goes to root
+// beside pc, and a, placed before it, nests the c@1 it declared. No copy of
+// the peer nests under pc, and nothing is warned.
 {
   Object.assign(REGISTRY, { pc: { '1.0.0': { dependencies: {}, peerDependencies: { c: '^2.0.0' } } } });
   const peer = makeInstaller({ a: '^1.0.0', pc: '^1.0.0' });
   const result = await peer.installer.install(PROJ, { pid: 1 });
   assert.deepEqual(result.failed, [], peer.log.join('\n'));
-  assert.equal(versionAt(peer.root, 'c'), '1.0.0');
-  assert.equal(peer.root.exists(`${NM}/pc/node_modules/c`), false, 'a peer edge is never nested');
-  const warn = peer.log.find((l) => /\[warn\] peer c@\^2\.0\.0 from pc is met by c@1\.0\.0 \(c\)/.test(l));
-  assert.ok(warn, `the mismatch is warned once: ${peer.log.join('\n')}`);
-  assert.equal(peer.log.filter((l) => /\[warn\] peer c@/.test(l)).length, 1);
-  const lock = peer.installer.npmCache.readLockfile(PROJ);
-  assert.deepEqual([...lock.keys()].filter((k) => lock.get(k).name === 'c'), ['c'], 'one c row');
-  assert.ok(!peer.log.some((l) => /nested\)/.test(l)), 'nothing nested');
-  console.log(`  peer: ${warn.trim()}`);
+  assert.equal(versionAt(peer.root, 'c'), '2.0.0', "the peer is placed at root, with pc");
+  assert.equal(versionAt(peer.root, 'a/node_modules/c'), '1.0.0', 'a nests the c it declared');
+  assert.equal(peer.root.exists(`${NM}/pc/node_modules/c`), false, 'a peer is never nested under the package that needs it');
+  assert.ok(!peer.log.some((l) => /\[warn\] peer/.test(l)), `nothing is warned: ${peer.log.join('\n')}`);
+  console.log('  peer: c@2 at root with pc, a/node_modules/c@1');
 }
 
 // ── shadowing: a copy nested under an ancestor cannot break what is beneath ──
@@ -208,6 +205,29 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   assert.ok(reason, `the reason names the cycle: ${cycleLog.join('\n')}`);
   assert.ok(!cycleLog.some((l) => l.startsWith('Done!')), 'no success line over a broken tree');
   console.log(`  cycle: ${reason.trim()}`);
+}
+
+// ── a named package is planned with the project's roots ──────────────────
+// `npm install d@1` in a project whose a needs d@^2 at root: the named
+// version wins root, and a, kept from the lockfile, nests the d it
+// declared, as npm's arborist plans it. Red before: only d was resolved, and
+// a was left seeing a root d outside its range.
+{
+  const named = makeInstaller({ a: '^1.0.0' });
+  assert.deepEqual((await named.installer.install(PROJ, { pid: 1 })).failed, [], named.log.join('\n'));
+  assert.equal(versionAt(named.root, 'd'), '2.0.0', 'first, a puts d@2 at root');
+  const result = await named.installer.install(PROJ, { pid: 1, packages: ['d@1.0.0'] });
+  assert.deepEqual(result.failed, [], named.log.join('\n'));
+  assert.equal(versionAt(named.root, 'd'), '1.0.0', 'the named version is at root');
+  assert.equal(versionAt(named.root, 'a/node_modules/d'), '2.0.0', 'and a nests the d it declared');
+  console.log('  named: d@1 at root, a/node_modules/d@2');
+
+  // A named package the lockfile records but the disk lost is installed
+  // again; the rest of the tree is left as the lockfile records it.
+  named.root.removeRecursive(`${NM}/a`);
+  assert.deepEqual((await named.installer.install(PROJ, { pid: 1, packages: ['a@^1.0.0'] })).failed, [], named.log.join('\n'));
+  assert.equal(versionAt(named.root, 'a'), '1.0.0', 'the named package is back');
+  console.log('  named: a package the disk lost is installed again');
 }
 
 console.log('npm-install-nested-conflict: ok');

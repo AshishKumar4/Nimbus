@@ -120,9 +120,11 @@ function relativeRequest(fromDir: string, target: string): string {
 }
 
 export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[] {
+  const bins = npmBinMap(pkg.name, pkg.bin);
+  if (bins.size === 0) return [];
   const packagePath = normalizeVfsPath(`${nodeModulesPath}/${pkg.name}`);
   const packageVersion = String(pkg.version || '');
-  return [...npmBinMap(pkg.name, pkg.bin)].map(([name, target]) => ({
+  return [...bins].map(([name, target]) => ({
     name,
     packageName: pkg.name,
     packageVersion,

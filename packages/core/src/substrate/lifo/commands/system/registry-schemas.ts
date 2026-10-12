@@ -9,6 +9,9 @@ export const RegistryVersionInfoSchema = z.object({
 	scripts: z.record(z.string(), z.string()).optional(),
 	dependencies: z.record(z.string(), z.string()).optional(),
 	devDependencies: z.record(z.string(), z.string()).optional(),
+	optionalDependencies: z.record(z.string(), z.string()).optional(),
+	peerDependencies: z.record(z.string(), z.string()).optional(),
+	peerDependenciesMeta: z.record(z.string(), z.object({ optional: z.boolean().optional() }).passthrough()).optional(),
 	dist: z.object({
 		tarball: z.string(),
 		shasum: z.string().optional(),

@@ -253,4 +253,36 @@ const manifestPath = npmBinManifestPath(nm);
   assert.equal(shims.length, count, 'every long-named command is linked');
 }
 
+// Linking again links what changed: a shim the manifest records as it is,
+// and that is there, is left as it is; one that is gone, or whose package
+// changed, is written again; and so is the manifest, when it changes.
+{
+  const harness = createSqliteVfsTestHarness();
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
+  const installer = new NpmInstaller(new ProcessFiles(rawVfs), harness.sql);
+  for (const pkg of ['one', 'two', 'three']) {
+    vfs.mkdir(`${nm}/${pkg}`, { recursive: true });
+    vfs.writeFile(`${nm}/${pkg}/cli.js`, '');
+  }
+  const pkg = (name, version) => [name, { name, version, bin: { [name]: 'cli.js' } }];
+  await installer.linkBins(new Map([pkg('one', '1.0.0'), pkg('two', '1.0.0'), pkg('three', '1.0.0')]), { engine: vfs, nmDir: nm });
+  const shim = (name) => `${nm}/.bin/${name}`;
+  // The transaction that last wrote it.
+  const written = (path) => vfs.stat(path).gen;
+  const before = { one: written(shim('one')), manifest: written(npmBinManifestPath(nm)) };
+  vfs.unlink(shim('two'));
+
+  await installer.linkBins(new Map([pkg('one', '1.0.0'), pkg('two', '1.0.0'), pkg('three', '2.0.0')]), { engine: vfs, nmDir: nm });
+  assert.equal(written(shim('one')), before.one, 'an unchanged shim is not written again');
+  assert.ok(vfs.exists(shim('two')), 'a shim that is gone is written again');
+  assert.equal(JSON.parse(vfs.readFileString(npmBinManifestPath(nm))).bins.three.packageVersion, '2.0.0', 'a changed package is linked anew');
+  assert.notEqual(written(npmBinManifestPath(nm)), before.manifest);
+
+  const manifest = written(npmBinManifestPath(nm));
+  await installer.linkBins(new Map([pkg('one', '1.0.0'), pkg('two', '1.0.0'), pkg('three', '2.0.0')]), { engine: vfs, nmDir: nm });
+  assert.equal(written(npmBinManifestPath(nm)), manifest, 'nor is a manifest that does not change');
+  assert.equal((await resolveNpmBin(vfs, '/home/user/project', 'two'))?.targetPath, `${nm}/two/cli.js`);
+}
+
 console.log('npm-bin-links: ok');

@@ -56,7 +56,7 @@ const resolved = {
     name: 'big-icons', version: '1.0.0', tarballUrl: 'https://registry.invalid/big-icons-1.0.0.tgz', integrity: 'sha512-fixture',
     dependencies: {}, exports: null, main: 'index.js', module: 'index.js', bin: {},
   },
-  deps: {}, peerDeps: {}, optionalDeps: {}, cacheWrites: [], messages: [], events: [],
+  cacheWrites: [], messages: [], events: [],
   packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
 };
 const env = {
@@ -64,7 +64,7 @@ const env = {
   NIMBUS_SESSION: {
     idFromName: (name) => ({ toString: () => name, name }),
     idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => resolved) }) }),
+    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => ({ ok: true, value: resolved })) }) }),
   },
 };
 

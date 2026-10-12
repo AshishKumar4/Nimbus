@@ -31,7 +31,7 @@ async function printHelp(stdout) {
     (await stdout.write('  LIFO_CDN               CDN for ESM imports (default: https://esm.sh)\n'));
 }
 // ─── install ───
-async function lifoInstall(ctx, registry, kernel) {
+async function lifoInstall(ctx, registry, kernel, deps) {
     const name = ctx.args[1];
     if (!name) {
         await ctx.stderr.write('lifo install: package name required\n');
@@ -41,7 +41,7 @@ async function lifoInstall(ctx, registry, kernel) {
     const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
     await ctx.stdout.write(`Installing ${npmName} globally...\n`);
     // Install directly (no shell.execute round-trip)
-    const exitCode = await npmInstallGlobal(npmName, ctx, registry, kernel);
+    const exitCode = await npmInstallGlobal(npmName, ctx, registry, kernel, deps);
     if (exitCode !== 0)
         return exitCode;
     // After npm install, check for lifo manifest and re-register with lifo runtime
@@ -303,7 +303,9 @@ async function lifoUnlink(ctx) {
     return 0;
 }
 // ─── Factory ───
-export function createLifoPkgCommand(registry, _shellExecute, kernel) {
+export function createLifoPkgCommand(registry, _shellExecute, kernel, 
+/** Its install port: the host's, else the shell's own. */
+deps) {
     return async (ctx) => {
         const subcommand = ctx.args[0];
         if (!subcommand || subcommand === '--help' || subcommand === '-h') {
@@ -314,7 +316,7 @@ export function createLifoPkgCommand(registry, _shellExecute, kernel) {
             case 'install':
             case 'i':
             case 'add':
-                return (await lifoInstall(ctx, registry, kernel));
+                return (await lifoInstall(ctx, registry, kernel, deps));
             case 'remove':
             case 'rm':
             case 'uninstall':
