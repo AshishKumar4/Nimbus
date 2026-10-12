@@ -64,10 +64,15 @@ const env = { ...process.env, NIMBUS_OPENCODE_ROOT: packageRoot, NIMBUS_OPENCODE
 // Bun embeds CommonJS __dirname in its chunks. A random clone path changes
 // those literals, and therefore every chunk hash that depends on them.
 run('bwrap', [
-  '--unshare-user', '--bind', '/', '/', '--bind', upstream, '/src/opencode', '--bind', scratch, '/build',
+  '--unshare-user', '--tmpfs', '/',
+  '--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc',
+  ...['/bin', '/sbin', '/lib', '/lib64'].flatMap(dir => ['--ro-bind-try', dir, dir]),
+  '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+  '--bind', upstream, '/src/opencode', '--bind', scratch, '/build',
   '--chdir', '/src/opencode/packages/opencode',
   '--setenv', 'NIMBUS_OPENCODE_ROOT', '/src/opencode/packages/opencode',
   '--setenv', 'NIMBUS_OPENCODE_DIST', '/build/dist', '--setenv', 'MODELS_DEV_API_JSON', '/build/models.json',
+  '--setenv', 'HOME', '/tmp', '--setenv', 'BUN_INSTALL_CACHE_DIR', '/build/bun-cache',
   'bun', 'build-node.ts',
 ], repo, env);
 assertCurrentInputs('OpenCode', inputs, await opencodeInputs(), 'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
