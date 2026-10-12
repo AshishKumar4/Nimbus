@@ -1748,6 +1748,7 @@ function parseTagArgs(args: readonly string[]) {
       }
     }
   }
+  if (messageFile === '-') unsupportedOption('tag', '--file=-');
   return { annotate, force, del, list, lines, messages, messageFile, operands };
 }
 
@@ -2348,6 +2349,7 @@ interface ParsedDiffArgs {
 function parseDiffArgs(args: readonly string[], columns: string | undefined): ParsedDiffArgs {
   let cached = false;
   let noIndex = false;
+  let patch = false;
   let dashdash = false;
   // Renames are on by default, as with git's diff.renames; null turns them off.
   let minimumScore: number | null = DEFAULT_RENAME_SCORE;
@@ -2392,11 +2394,12 @@ function parseDiffArgs(args: readonly string[], columns: string | undefined): Pa
       case '-z': output.z = true; continue;
       case '--no-renames': minimumScore = null; continue;
       // A patch is the default, and nothing here colors or runs external tools.
-      case '-p': case '-u': case '--patch': case '--no-ext-diff': case '--no-color': continue;
+      case '-p': case '-u': case '--patch': patch = true; continue;
+      case '--no-ext-diff': case '--no-color': continue;
       case '--stat': case '--name-only': case '--name-status': {
         const format = arg === '--stat' ? 'stat' : arg === '--name-only' ? 'name-only' : 'name-status';
         if (output.format !== 'patch' && output.format !== format) {
-          throw new GitGlobalsError(`fatal: options '--${output.format}' and '${arg}' cannot be used together\n`, 128);
+          throw new UnsupportedGitOperation(`fatal: options '--${output.format}' and '${arg}' cannot be used together\n`, 128);
         }
         output.format = format;
         continue;
@@ -2405,6 +2408,7 @@ function parseDiffArgs(args: readonly string[], columns: string | undefined): Pa
     throw new UnsupportedGitOperation(`error: unknown option '${arg.replace(/^-+/, '')}'\n${DIFF_USAGE}`, 129);
   }
   if (noIndex && cached) throw new GitGlobalsError("fatal: options '--cached' and '--no-index' cannot be used together\n", 128);
+  if (patch && output.format === 'stat') unsupportedOption('diff', 'combined patch and diffstat');
   if (!noIndex) for (const revision of positionals) validateRevision(revision);
   return { cached, noIndex, dashdash, minimumScore, output, positionals, pathArgs };
 }
