@@ -13,7 +13,7 @@ import Nimbus.Refine.Json
 
 namespace Nimbus.Refine.CompositeCases
 
-open Nimbus.Vfs.Composite
+open Nimbus.Vfs Nimbus.Vfs.Composite
 open Nimbus.Vfs.CompositeOps
 open Nimbus.Refine
 
@@ -129,7 +129,12 @@ def sortedPaths (ps : List Path) : Json :=
 
 def xoutJson : XOut → Json
   | .err c => .obj [("error", .str c)]
-  | .report r k => .obj [("removed", sortedPaths r), ("kept", sortedPaths k)]
+  | .report r k fs vanished =>
+    let failures := (fs.mergeSort fun a b => decide
+      ((key a.path, a.code, a.syscall) ≤ (key b.path, b.code, b.syscall))).map fun f =>
+        Json.obj [("path", pathJson f.path), ("code", .str f.code), ("syscall", .str f.syscall)]
+    .obj ([("removed", sortedPaths r), ("kept", sortedPaths k), ("failures", .arr failures)] ++
+      if vanished.isEmpty then [] else [("vanished", sortedPaths vanished)])
   | .bytes b => .obj [("bytes", .str s!"v{b}")]
   | .supported => .obj [("supported", .bool true)]
   | .count n => .obj [("count", .ofNat n)]
@@ -140,7 +145,8 @@ def xJson (P : Principal) (x : X) (o : XOut) : Json :=
   let base (name : String) (path : String) (extra : List (String × Json)) : Json :=
     .obj ([("as", .ofNat (uidOf P)), ("op", .str name), ("path", .str path)] ++ extra ++ [("expect", xoutJson o)])
   match x with
-  | .removeRecursive p => base "removeRecursive" p []
+  | .removeRecursive p strict => base "removeRecursive" p
+      (if strict then [("keepVanishedAncestors", .bool true)] else [])
   | .readRange p => base "readRange" p [("offset", .ofNat 0), ("length", .ofNat 64)]
   | .writeFileIfRevision p c => base "writeFileIfRevision" p [("expected", .ofNat (if c then 0 else 1))]
   | .readFileAtRevision p => base "readFileAtRevision" p []
@@ -148,15 +154,19 @@ def xJson (P : Principal) (x : X) (o : XOut) : Json :=
   | .statMode p => base "statMode" p []
 
 def capsJson (c : Caps) : Json :=
-  .obj [("removeRecursive", .bool c.removeRecursive), ("readRange", .bool c.readRange), ("cas", .bool c.cas),
-    ("rootMode", match c.rootMode with | some m => .ofNat m | none => .null), ("pins", .arr (c.pins.map fun p => .str (key p)))]
+  let faults (fs : List (Path × String)) : Json :=
+    .arr (fs.map fun (p, code) => .obj [("path", .str (key p)), ("code", .str code)])
+  .obj ([("removeRecursive", .bool c.removeRecursive), ("readRange", .bool c.readRange), ("cas", .bool c.cas),
+    ("rootMode", match c.rootMode with | some m => .ofNat m | none => .null), ("pins", .arr (c.pins.map fun p => .str (key p)))] ++
+    if c.faults = ({} : CompositeRemoval.Faults) then [] else
+      [("faults", .obj [("stat", faults c.faults.stat), ("readdir", faults c.faults.readdir), ("remove", faults c.faults.remove)])])
 
-def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 511 else none, []⟩
+def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 511 else none, [], false, {}⟩
 
 def genX (S : St) : Gen X := do
   let p ← genPath S
   let k ← below 8
-  if k < 3 then return .removeRecursive p
+  if k < 3 then return .removeRecursive p false
   else if k < 4 then return .readRange p
   else if k < 5 then
     let revisionOp ← below 2
@@ -205,7 +215,7 @@ def genCase : Gen (Option Json) := do
           if !t.isEmpty then pins := pins ++ [← pick (t.map (·.1))]
       let mode ← below 3
       capList := capList ++ [(b, ⟨rr, (← below 2) == 0, (← below 2) == 0,
-        if mode == 0 then none else some 511, pins⟩)]
+        if mode == 0 then none else some 511, pins, false, {}⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let mut steps : Array Json := #[]
   let n := (← below 16) + 6
@@ -253,7 +263,7 @@ def directedX : Json := Id.run do
      (1, [(["f"], .file 5), (["d"], .dir), (["d", "x"], .file 6), (["d", "y"], .file 7), (["e"], .dir), (["e", "z"], .file 8)]),
      (2, [(["g"], .file 9)])]
   let capList : List (Backend × Caps) :=
-    [(0, fullCaps 0), (1, ⟨false, false, false, some 511, [["d", "x"]]⟩), (2, ⟨true, true, true, none, []⟩)]
+    [(0, fullCaps 0), (1, ⟨false, false, false, some 511, [["d", "x"]], false, {}⟩), (2, ⟨true, true, true, none, [], false, {}⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let steps : List (Principal × (Op ⊕ X)) :=
     [(0, .inr (.statMode "/")), (0, .inr (.statMode "/m1")), (0, .inr (.statMode "/m2")),
@@ -265,10 +275,10 @@ def directedX : Json := Id.run do
      (0, .inr (.copy "/m1" "/m2/all" true)), (0, .inl (.readdir "/m2/all")),
      (0, .inr (.copy "/" "/m2/root" true)), (0, .inr (.copy "/m1/f" "/m1" false)),
      (0, .inr (.copy "/m1/e" "/m1/e/z2" true)), (0, .inr (.copy "/m1/d" "/m2/g" true)),
-     (0, .inr (.removeRecursive "/m1/d")), (0, .inl (.readdir "/m1/d")),
-     (0, .inr (.removeRecursive "/m1/e")), (0, .inl (.stat "/m1/e")),
-     (0, .inr (.removeRecursive "/m2/all")), (0, .inl (.stat "/m2/all")),
-     (0, .inr (.removeRecursive "/m1")), (0, .inr (.removeRecursive "/"))]
+     (0, .inr (.removeRecursive "/m1/d" false)), (0, .inl (.readdir "/m1/d")),
+     (0, .inr (.removeRecursive "/m1/e" false)), (0, .inl (.stat "/m1/e")),
+     (0, .inr (.removeRecursive "/m2/all" false)), (0, .inl (.stat "/m2/all")),
+     (0, .inr (.removeRecursive "/m1" false)), (0, .inr (.removeRecursive "/" false))]
   let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
   let mut out : Array Json := #[]
   for (P, st) in steps do

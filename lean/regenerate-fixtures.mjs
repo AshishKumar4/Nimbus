@@ -3,7 +3,7 @@
 // returns the model's own git patch and blob ids; the caller checks and applies
 // only that generated fixture patch. --model-only is a targeted proof-build.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mapOnArmada } from '../scripts/ci/lib/armada.mjs';
@@ -12,7 +12,7 @@ const args = process.argv.slice(2);
 const container = args.includes('--container');
 const modelOnly = args.includes('--model-only');
 const outAt = args.indexOf('--out');
-const positional = args.filter((arg, i) => !arg.startsWith('--') && i !== outAt + 1);
+const positional = args.filter((arg, i) => !arg.startsWith('--') && (outAt < 0 || i !== outAt + 1));
 const git = (argv, options = {}) => {
   const result = spawnSync('git', argv, { encoding: 'utf8', maxBuffer: 1 << 28, ...options });
   if (result.status !== 0) throw new Error(`git ${argv[0]}: ${result.stderr || result.error?.message}`);

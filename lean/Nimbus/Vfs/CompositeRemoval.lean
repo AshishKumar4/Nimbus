@@ -118,12 +118,22 @@ def ancestors (operand q : Path) : List Path :=
     let p := q.take i
     if pfx operand p then some p else none
 
+def mergePaths (ps qs : List Path) : List Path :=
+  ps ++ qs.filter (fun q => !ps.contains q)
+
+theorem mem_mergePaths (p : Path) (ps qs : List Path) :
+    p ∈ mergePaths ps qs ↔ p ∈ ps ∨ p ∈ qs := by
+  simp [mergePaths, List.contains_iff_mem]
+  tauto
+
 def keep (operand q : Path) (r : Result) : Result :=
-  { r with kept := (r.kept ++ ancestors operand q).eraseDups }
+  { r with kept := mergePaths r.kept (ancestors operand q) }
 
 def gone (operand q : Path) (vanished strict : Bool) (S' : St) (r : Result) : Result :=
-  let r' := { r with state := S', gone := (r.gone ++ [q]).eraseDups,
-    vanished := if vanished then (r.vanished ++ [q]).eraseDups else r.vanished }
+  let r' : Result := { r with
+    state := S'
+    gone := mergePaths r.gone [q]
+    vanished := if vanished then mergePaths r.vanished [q] else r.vanished }
   if vanished && strict && q != operand then keep operand q.dropLast r' else r'
 
 def refused (operand : Path) (f : Failure) (r : Result) : Result :=
@@ -134,15 +144,12 @@ def refused (operand : Path) (f : Failure) (r : Result) : Result :=
 def erase (S : St) (b : Backend) (rp : Path) (vanished : Bool := false) : St :=
   setTree S b (if vanished then cut (S.trees b) rp else (S.trees b).filter (·.1 != rp))
 
-def attempt (base : St) (P : Principal) (composed : Bool) {operand : Path}
-    (S : St) (e : Entry operand) : Except Failure St :=
+def backendError (base : St) (composed : Bool) {operand : Path}
+    (S : St) (e : Entry operand) : Option String :=
   let m := owner base composed operand e.path
   let rp := localPath base composed operand e.path
   let c := cfg m.backend
-  let syscall := if e.dir then "rmdir" else "unlink"
-  let error (code : String) : Except Failure St := .error ⟨e.path, code, syscall⟩
-  let backendError : Option String :=
-    match fault c.faults.remove rp with
+  match fault c.faults.remove rp with
     | some code => some code
     | none =>
       if c.pins.contains rp then some "EBUSY"
@@ -153,14 +160,21 @@ def attempt (base : St) (P : Principal) (composed : Bool) {operand : Path}
           else if !(children (S.trees m.backend) rp).isEmpty then some "ENOTEMPTY"
           else none
         | some _ => if e.dir then some "ENOTDIR" else none
-  if composed && isStructural base P e.path then error (if e.dir then "EBUSY" else "EISDIR")
-  else if c.readOnly then error "EROFS"
-  else match backendError with
-    | none => .ok (erase S m.backend rp)
+
+def syscall {operand : Path} (e : Entry operand) : String := if e.dir then "rmdir" else "unlink"
+
+def busyCode {operand : Path} (e : Entry operand) : String := if e.dir then "EBUSY" else "EISDIR"
+
+def attempt (base : St) (P : Principal) (composed : Bool) {operand : Path}
+    (S : St) (e : Entry operand) : Except Failure St :=
+  if composed && isStructural base P e.path then .error ⟨e.path, busyCode e, syscall e⟩
+  else if (cfg (owner base composed operand e.path).backend).readOnly then .error ⟨e.path, "EROFS", syscall e⟩
+  else match backendError cfg base composed S e with
+    | none => .ok (erase S (owner base composed operand e.path).backend (localPath base composed operand e.path))
     | some code =>
       let useUnread := ["ENOTEMPTY", "EISDIR", "ENOTDIR", "EEXIST"].contains code
       .error ⟨e.path, if useUnread then e.unread.getD code else code,
-        if useUnread && e.unread.isSome then "scandir" else syscall⟩
+        if useUnread && e.unread.isSome then "scandir" else syscall e⟩
 
 /-- The single policy-parameterized walk. In particular, a failed child prevents
     its parent's rmdir: there is no additional ancestor error or mount EBUSY. -/
@@ -187,7 +201,7 @@ def run (base : St) (P : Principal) (composed strict : Bool) (operand : Path)
 theorem kept_skips (base : St) (P : Principal) (composed strict : Bool) {operand : Path}
     (r : Result) (e : Entry operand) (h : e.path ∈ r.kept) :
     step cfg base P composed strict r e = r := by
-  simp [step, List.contains_iff_mem.mpr h]
+  simp [step, List.contains_iff_mem, h]
 
 theorem ancestors_exact (operand q p : Path) :
     p ∈ ancestors operand q ↔ pfx operand p = true ∧ p <+: q := by
@@ -200,7 +214,7 @@ theorem ancestors_exact (operand q p : Path) :
     · contradiction
   · rintro ⟨hp, hq⟩
     refine ⟨p.length, List.mem_range.mpr (Nat.lt_succ_of_le hq.length_le), ?_⟩
-    rw [hq.take_eq]
+    rw [← List.prefix_iff_eq_take.mp hq]
     simp [hp]
 
 /-- A refused child keeps every ancestor through the operand. Processing any of
@@ -210,7 +224,7 @@ theorem child_failure_skips_ancestors (base : St) (P : Principal) (composed stri
     (hp : e.path <+: f.path) :
     step cfg base P composed strict (refused operand f r) e = refused operand f r := by
   apply kept_skips
-  simp only [refused, keep, List.mem_eraseDups, List.mem_append]
+  simp only [refused, keep, mem_mergePaths]
   exact Or.inr ((ancestors_exact _ _ _).mpr ⟨e.under, hp⟩)
 
 /-- Strict ENOENT retains ancestors but never the vanished child and never adds a
@@ -224,8 +238,8 @@ theorem vanished_policy (operand q : Path) (S' : St) (r : Result) :
   refine ⟨by simp [gone], by simp [gone], ?_, ?_⟩
   · simp [gone, keep]
   · intro hq p hp hpar
-    simp only [gone, hq, beq_iff_eq, ne_eq, decide_true, Bool.and_self, ite_true,
-      keep, List.mem_eraseDups, List.mem_append]
+    simp only [gone, hq, bne_iff_ne, decide_true, Bool.and_self, ite_true,
+      keep, mem_mergePaths]
     exact Or.inr ((ancestors_exact _ _ _).mpr ⟨hp, hpar⟩)
 
 theorem lstat_failure_unlinks (S : St) (P : Principal) (composed : Bool)
@@ -260,7 +274,12 @@ theorem erase_other (S : St) (b c : Backend) (rp : Path) (vanished : Bool) (h : 
 theorem erase_exact (S : St) (b : Backend) (rp : Path) :
     (∀ x ∈ (erase S b rp false).trees b, x.1 ≠ rp) ∧
     (∀ x, x.1 ≠ rp → (x ∈ (erase S b rp false).trees b ↔ x ∈ S.trees b)) := by
-  simp [erase, setTree]
+  constructor
+  · intro x hx
+    have hx' : x ∈ (S.trees b).filter (·.1 != rp) := by simpa [erase, setTree] using hx
+    simpa using (List.mem_filter.mp hx').2
+  · intro x hx
+    simp [erase, setTree, hx]
 
 theorem attempt_frame (base : St) (P : Principal) (composed : Bool) {operand : Path}
     (S S' : St) (e : Entry operand) (h : attempt cfg base P composed S e = .ok S') :
