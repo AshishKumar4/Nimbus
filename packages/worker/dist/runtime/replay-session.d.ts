@@ -20,12 +20,6 @@ export declare class ReplaySession {
     /** Every session's TLS tokens, by the pid that opened each: another process's token is refused at once. */
     owners: Map<string, number>);
     /**
-     * A supervisor call from one of its runs, answered through `dispatch`
-     * through its journal, which counts what it does outside itself and
-     * checks what a run after a stop is answered against the run before it.
-     */
-    call(op: string, args: readonly unknown[] | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown>;
-    /**
      * A TLS connection opened through the session (`open`: where to; the
      * outbound proxies it), and its upgrade asked for (`upgrade`: answered
      * once the outbound has made the TLS session with the server). Opening
@@ -63,7 +57,12 @@ export declare class ReplaySessions {
     get(pid: number | undefined): ReplaySession | undefined;
     /** `pid`'s replay session ends, if it has one (ReplaySession.close). */
     close(pid: number): void;
-    /** A supervisor call from a process, answered through `dispatch`: for one that can stop, through its journal. */
+    /**
+     * A supervisor call from a process, answered through `dispatch`: for one
+     * that can stop, through its journal, which counts what it does outside
+     * itself and checks what a run after a stop is answered against the run
+     * before it.
+     */
     call(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown>;
     stdinPrepared(pid: number, run: string | undefined): void;
     cacheResult(pid: number, run: string | undefined, ticket: string, result: {
