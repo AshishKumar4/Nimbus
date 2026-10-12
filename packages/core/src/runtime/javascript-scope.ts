@@ -8,9 +8,8 @@
  * parameters and its body's `var`s, a block's, a switch's, a `for` head's
  * `let` and `const`, a catch clause's, and a class's name inside its body.
  *
- * rolldown-compat.ts (the build facet's runtime) and async-module-lowering.ts
- * (the transform facet's) both bundle it, with binding-pattern.ts, its one
- * import.
+ * rolldown-compat.ts (the build facet's runtime) bundles it, with
+ * binding-pattern.ts, its one import.
  */
 import type { Identifier, Pattern } from 'acorn';
 import { bindingIdentifiers } from './binding-pattern.js';

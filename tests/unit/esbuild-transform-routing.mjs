@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+// Transform routing: CommonJS engine errors stay authoritative; JavaScript
+// ES modules stage unchanged without an engine, and TS/JSX retain module syntax.
 
 import assert from 'node:assert/strict';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
@@ -8,11 +10,8 @@ function serviceWith(transform) {
   return service;
 }
 
-// Pi 0.84.3's pre-bundled CLI wraps CommonJS factories inside a call. Its
-// awaits are all inside functions, but the old brace scanner treated them as
-// top-level and routed the entire 3.7 MiB ESM chunk through the TLA line
-// converter. A successful CJS transform is authoritative and must return
-// directly, without a speculative second pass.
+// A successful CJS transform is authoritative, including a pre-bundled CLI
+// whose awaits are all inside functions.
 {
   const calls = [];
   const service = serviceWith(async (code, options) => {
@@ -30,37 +29,18 @@ function serviceWith(transform) {
   assert.deepEqual(calls.map((call) => call.format), ['cjs']);
 }
 
-// Esbuild's real CJS-TLA rejection, not a Nimbus source heuristic, opens the
-// existing two-pass path. Native ESM declarations stay above the async IIFE.
+// CJS top-level await is refused by the engine, with no second transform.
 {
   const calls = [];
+  const original = new Error('Top-level await is currently not supported with the "cjs" output format');
   const service = serviceWith(async (code, options) => {
     calls.push({ code, format: options.format });
-    if (options.format === 'cjs') {
-      throw new Error('Top-level await is currently not supported with the "cjs" output format');
-    }
-    return {
-      code: 'import value from "value";\nawait value();\n',
-      map: '',
-      warnings: [],
-    };
+    throw original;
   });
-  const output = await service.transform('import value from "value";\nawait value();', {
-    loader: 'js',
-    format: 'cjs',
-  });
-  assert.deepEqual(calls.map((call) => call.format), ['cjs', 'esm']);
-  // The lowered module runs as CommonJS: it requires "value" and awaits its
-  // call in the async body it returns.
-  const required = [];
-  let settled = false;
-  const done = new Function('module', 'exports', 'require', output.code)({ exports: {} }, {}, (name) => {
-    required.push(name);
-    return () => new Promise((resolve) => setTimeout(() => { settled = true; resolve(); }, 1));
-  });
-  assert.deepEqual(required, ['value']);
-  await done;
-  assert.ok(settled, 'the body awaited value()');
+  await assert.rejects(service.transform('import value from "value";\nawait value();', {
+    loader: 'js', format: 'cjs',
+  }), (error) => error === original);
+  assert.deepEqual(calls.map((call) => call.format), ['cjs']);
 }
 
 // Errors unrelated to top-level await remain the original esbuild error.
@@ -97,8 +77,7 @@ for (const hosted of [true, false]) {
 
 console.log('esbuild-transform-routing: ok');
 
-// An ES module is lowered without the engine; one nested past the lowering's
-// parse loads it, for the engine's CommonJS.
+// An ES module, shallow or deeply nested, stages without loading the engine.
 {
   let loads = 0;
   const service = new EsbuildService(undefined, {
@@ -108,22 +87,40 @@ console.log('esbuild-transform-routing: ok');
     },
   });
   const at = { esModule: 'node', dynamicImportParent: 'file:///app/m.mjs' };
-  const shallow = await service.transform('export const a = 1;', at);
-  assert.match(shallow.code, /__esModule/);
-  assert.equal(loads, 0, 'a lowered ES module loads no engine');
-  const deep = await service.transform(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, at);
-  assert.equal(deep.code, 'ENGINE(cjs)', 'one nested past the lowering is the engine\'s');
-  assert.equal(loads, 1);
+  for (const source of ['export const a = 1;', `export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`]) {
+    const result = await service.transform(source, at);
+    assert.equal(result.code, source, 'native ES-module source is unchanged');
+    assert.equal(result.esModule, 'node');
+    assert.deepEqual(JSON.parse(result.map), { calls: [], metas: [], statics: [], moduleSyntax: true });
+  }
+  assert.equal(loads, 0, 'native ES-module staging loads no engine');
 }
-console.log('esbuild-transform-routing: deep ES modules load the engine');
+console.log('esbuild-transform-routing: deep ES modules stage without the engine');
 
-// A data: URL module nested past the lowering stages from the engine's emit, which has no map.
+// TypeScript and JSX compile with no output format. Module syntax stages
+// natively; a CommonJS emit only has its dynamic import() calls routed.
 {
-  const { stagedDataUrlModule } = await import('../../packages/worker/src/facets/manager.ts');
-  const service = new EsbuildService(undefined, {
-    engine: async () => ({ transform: async () => ({ code: 'module.exports.x = 1;', map: '', warnings: [] }) }),
+  const calls = [];
+  const service = serviceWith(async (code, options) => {
+    calls.push(options);
+    return { code, map: '', warnings: [] };
   });
-  const staged = await stagedDataUrlModule(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, 'node', service);
-  assert.match(staged, /module\.exports\.x = 1;/);
+  for (const loader of ['ts', 'jsx']) {
+    const source = 'export const x = import.meta.url;';
+    const result = await service.transform(source, { loader, esModule: 'node', dynamicImportParent: 'file:///app/x.js' });
+    assert.equal(result.code, source);
+    assert.equal(result.esModule, 'node');
+    assert.equal(JSON.parse(result.map).metas.length, 1);
+    const commonJs = await service.transform('module.exports = () => import("./x.mjs");', {
+      loader, esModule: 'node', dynamicImportParent: 'file:///app/x.js',
+    });
+    assert.equal(commonJs.esModule, undefined);
+    assert.equal(commonJs.map, '');
+    assert.match(commonJs.code, /__nimbusDynamicImport\("file:\/\/\/app\/x\.js",/);
+  }
+  for (const options of calls) {
+    assert.equal(Object.hasOwn(options, 'format'), false, 'the engine keeps the compiled source\'s module syntax');
+    assert.deepEqual(options.supported, { 'dynamic-import': true, 'import-meta': true });
+  }
 }
-console.log('esbuild-transform-routing: a deep data: module stages');
+console.log('esbuild-transform-routing: TS/JSX emits retain their module format');

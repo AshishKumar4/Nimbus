@@ -14,8 +14,10 @@
 // lookup that misses a built-in prototype, the names the bundle reads on
 // Object.prototype, the globals), and then the interpreter loads and compiles
 // a corpus that exercises the whole parser: acorn's own source and the
-// interpreter's as modules, every kind of syntax, regular expressions with
-// Unicode property escapes, and code it refuses. Nothing may be logged.
+// interpreter's and parser's as modules, every kind of syntax, regular
+// expressions with Unicode property escapes, and code it refuses; and the
+// parser module, which a fatal report loads alone, places the corpus's
+// errors (fatalLocation). Nothing may be logged.
 //
 // Under bun this builds the interpreter and runs itself under node with
 // --disallow-code-generation-from-strings, as a Worker refuses string code.
@@ -131,6 +133,7 @@ if (process.argv[2] !== '--run') {
   assert.equal(run.status, 0, 'the run failed');
   const result = JSON.parse(run.stdout.trim().split('\n').at(-1));
   assert.ok(result.compiled > 10, `the corpus compiled (${result.compiled} units)`);
+  assert.equal(result.placed, result.compiled, 'the parser placed every unit\'s error');
   assert.ok(result.poisoned > 1000, `the realm logs its built-ins (${result.poisoned} properties and lookups)`);
   assert.deepEqual(result.log, [], `the interpreter reached ${result.log.length} built-ins:\n${result.log.slice(0, 40).join('\n')}`);
   console.log(`${result.compiled} units of ${Math.round(result.bytes / 1024)} KiB loaded, parsed and compiled in a realm whose ${result.poisoned} built-in properties and lookups log their use: none reached`);
@@ -141,17 +144,20 @@ if (process.argv[2] !== '--run') {
 async function run(dir) {
   const require = createRequire(import.meta.url);
   const { loadPrimordials } = await import('./lib/interpreter-load.mjs');
+  const { PARSER_FILE } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
+  const parserFile = join(dir, PARSER_FILE);
   const interpreterFile = join(dir, 'interpreter.js');
   const opsFile = join(dir, 'interpreter-ops.js');
   // Records with every field their own: the harness reads nothing through Object.prototype once the realm logs.
   const corpus = [
     { kind: 'module', path: '/w/acorn.mjs', text: readFileSync(join(dir, 'acorn.mjs'), 'utf8') },
     { kind: 'module', path: '/w/interpreter.js', text: readFileSync(interpreterFile, 'utf8') },
+    { kind: 'module', path: '/w/parser.js', text: readFileSync(parserFile, 'utf8') },
     ...SYNTAX,
   ].map((u) => ({ __proto__: null, kind: u.kind, path: u.path ?? '', text: u.text, params: u.params ?? [], refused: u.refused === true }));
   // Names a lookup that misses an object could ask Object.prototype for: those the bundle reads as
   // properties, and every name in the corpus, whose names acorn keys its own records by.
-  const names = new Set(readFileSync(interpreterFile, 'utf8').match(/(?<=\.)[A-Za-z_$][\w$]*/g));
+  const names = new Set([interpreterFile, parserFile].flatMap((file) => readFileSync(file, 'utf8').match(/(?<=\.)[A-Za-z_$][\w$]*/g)));
   for (const unit of corpus) for (const name of unit.text.match(/[A-Za-z_$][\w$]*/g) ?? []) names.add(name);
   for (let i = 0; i < 64; i++) names.add(String(i));
   for (const name of ['type', 'start', 'end', 'name', 'value', 'raw', 'regex', 'bigint', 'body', 'kind', 'key', 'computed', 'directive']) names.add(name);
@@ -159,14 +165,17 @@ async function run(dir) {
   // The launch's start: the primordials are captured before any program code runs.
   const primordials = loadPrimordials(interpreterFile);
   const { LAUNCH_PRIMORDIALS } = primordials;
-  // The interpreter's two modules, compiled now and evaluated once the realm logs: their evaluation is
+  // The interpreter's three modules, compiled now and evaluated once the realm logs: their evaluation is
   // the interpreter loading, and Node's module loader, which is not the interpreter, stays out of it.
   const { compileFunction } = await import('node:vm');
   const wrapper = (file) => compileFunction(readFileSync(file, 'utf8'), ['exports', 'require', 'module', '__filename', '__dirname'], { filename: file });
+  const parserModule = wrapper(parserFile);
   const interpreterModule = wrapper(interpreterFile);
   const opsModule = wrapper(opsFile);
+  let parser = null;
   const requireBeside = (id) => {
     if (id === './interpreter-primordials.js') return primordials;
+    if (id === `./${PARSER_FILE}`) return parser ??= evaluate(parserModule, parserFile);
     throw new Error(`the interpreter required ${id}`);
   };
   const evaluate = (moduleWrapper, file) => {
@@ -276,10 +285,17 @@ async function run(dir) {
     poisoned++;
   }
 
-  // The interpreter loads, as in a launch, after the program has had the realm.
+  // The parser loads alone, as a fatal report loads it, and places each unit's error; then the
+  // interpreter loads, as in a launch, after the program has had the realm.
   let compiled = 0;
   let bytes = 0;
+  let placed = 0;
   logging = true;
+  const { fatalLocation } = requireBeside(`./${PARSER_FILE}`);
+  for (let i = 0; i < corpus.length; i++) {
+    fatalLocation(corpus[i].text, corpus[i].kind === 'module' ? 'module' : 'script', -1);
+    placed++;
+  }
   const interpreter = evaluate(interpreterModule, interpreterFile);
   const interp = interpreter.createInterpreter(evaluate(opsModule, opsFile), { __proto__: null, dynamicImport: () => undefined, primordials: LAUNCH_PRIMORDIALS });
   for (let i = 0; i < corpus.length; i++) {
@@ -300,5 +316,5 @@ async function run(dir) {
   logging = false;
   const entries = [];
   for (let i = 0; i < logged; i++) entries[entries.length] = log[i];
-  write(`${stringify({ compiled, bytes, poisoned, log: entries })}\n`);
+  write(`${stringify({ compiled, placed, bytes, poisoned, log: entries })}\n`);
 }

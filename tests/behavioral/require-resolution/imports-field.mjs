@@ -23,7 +23,7 @@
 //   1. synthetic-exact: {"#x":"./x.js"} + require("#x") → loads
 //   2. synthetic-conditional: {"#x":{"node":"./n.js","default":"./d.js"}} → picks node variant under CJS conditions
 //   3. synthetic-pattern: {"#x/*":"./src/*.js"} + require("#x/foo") → ./src/foo.js
-//   4. synthetic-missing: require("#nonexistent") → clean error "Cannot find module"
+//   4. synthetic-missing: require("#nonexistent") → Node's ERR_PACKAGE_IMPORT_NOT_DEFINED
 //   5. wild-chalk: chalk@5's source/index.js loads (uses #ansi-styles + #supports-color)
 //   6. wild-astro-progress: npm create astro@latest advances past chalk error
 
@@ -40,7 +40,7 @@ await t.waitForPrompt(60_000);
 const A = makeAsserter('require-resolution/imports-field');
 
 // The synthetic packages are CommonJS (no "type"): their files require,
-// which an ES module's scope has no name for (module-format-matches-node).
+// which an ES module's scope has no name for (module-format-matches-node-workerd).
 
 // ── Check 1: synthetic-exact ────────────────────────────────────────
 //
@@ -127,8 +127,10 @@ A.check(
 
 // ── Check 4: synthetic-missing ──────────────────────────────────────
 //
-// require("#nonexistent") with no matching imports entry → clean error
-// (not silent, not crashy — a Cannot-find-module).
+// require("#nonexistent") with no matching imports entry → Node's
+// ERR_PACKAGE_IMPORT_NOT_DEFINED (Module._resolveFilename's
+// packageImportsResolve), naming the package.json and the requiring file;
+// verified on Node 22.22.3.
 
 await t.run('rm -rf /home/user/if-miss && mkdir -p /home/user/if-miss/node_modules/mypkg', 5_000);
 await t.writeFile('/home/user/if-miss/node_modules/mypkg/package.json', JSON.stringify({
@@ -150,8 +152,8 @@ require('/home/user/if-miss/node_modules/mypkg/index.js');
 `);
 const missR = await t.run('node /home/user/if-miss/consumer.js', 30_000);
 A.check(
-  'synthetic-missing: require("#nonexistent") throws "Cannot find module" (clean error, not silent)',
-  /CAUGHT=Cannot find module ['"]?#nonexistent/.test(missR.output),
+  'synthetic-missing: require("#nonexistent") throws Node\'s ERR_PACKAGE_IMPORT_NOT_DEFINED, imported from the requiring file',
+  missR.output.includes('CAUGHT=Package import specifier "#nonexistent" is not defined in package /home/user/if-miss/node_modules/mypkg/package.json imported from /home/user/if-miss/node_modules/mypkg/index.js'),
   `tail: ${missR.output.slice(-500)}`,
 );
 

@@ -109,14 +109,14 @@ export interface RunFreshOpts {
   signal?: AbortSignal;
   /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
   launchesServer?: boolean;
-  /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+  /** The program is an ES module (RuntimeRunOpts.esModule). */
   esModule?: boolean;
-  /** RuntimeRunOpts.esModuleMap. */
-  esModuleMap?: string;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   /** A node program's command line (RuntimeRunOpts.node). */
   node?: NodeLaunch;
+  /** CommonJS the runner evaluates before the entry, in the entry's scope (bun-runner.ts BUN_SHIM_PREAMBLE). */
+  preamble?: string;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -195,8 +195,8 @@ export async function runFresh(
       filename: opts.filename,
       dirname: opts.dirname,
       ...(opts.esModule ? { esModule: true } : {}),
-      ...(opts.esModuleMap ? { esModuleMap: opts.esModuleMap } : {}),
       ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
+      ...(opts.preamble ? { preamble: opts.preamble } : {}),
       command,
       port,
       attachedTty: opts.attachedTty,

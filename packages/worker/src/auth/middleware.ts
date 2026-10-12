@@ -262,6 +262,16 @@ export function expireLegacyNimbusTokenCookie(): string {
 }
 
 /**
+ * Expire one session's route-owned attach cookie. Used when its session is
+ * destroyed through the public path, so a dead session frees its jar slot.
+ * Only the destroyed sid's name is ever expired here — sibling sessions'
+ * credentials are untouched.
+ */
+export function expireSessionCookie(sessionId: string): string {
+  return `${nimbusTokenCookieName(sessionId)}=; Path=/; Max-Age=0; SameSite=None; HttpOnly; Secure; Partitioned`;
+}
+
+/**
  * Migration headers for a request that authenticated via the legacy global
  * cookie: re-issue its verified token under the route-owned name and expire
  * the legacy name, in the same response. Returns [] unless verification used
@@ -270,11 +280,18 @@ export function expireLegacyNimbusTokenCookie(): string {
  * token keeps its verified expiry; this never mints, never extends, never
  * consults anything but the already-verified claims.
  */
-export function sessionCookieMigration(
+/**
+ * Plan the legacy-migration headers for an authenticated session request.
+ * Runs at authentication, before any session dispatch: the capacity check
+ * throws here, so a refusal precedes every side effect and the response
+ * policy below only applies already-validated headers, never failing after
+ * a write has committed. Returns [] when no migration applies.
+ */
+export function planSessionCookieMigration(
   requestCookie: string | null,
   verified: VerifiedNimbusRequestToken,
   sessionId: string,
-): string[] {
+): readonly string[] {
   if (!requestCookie) return [];
   if (verified.credentialSource !== 'legacy-cookie') return [];
   if (verified.claims.sid !== sessionId || verified.claims.exp === undefined) return [];
@@ -284,6 +301,19 @@ export function sessionCookieMigration(
     expireLegacyNimbusTokenCookie(),
     cookie,
   ];
+}
+
+/**
+ * The response half of {@link planSessionCookieMigration}: headers already
+ * validated at authentication. Kept as a thin alias so response sites name
+ * the policy, not the plan step.
+ */
+export function sessionCookieMigration(
+  requestCookie: string | null,
+  verified: VerifiedNimbusRequestToken,
+  sessionId: string,
+): readonly string[] {
+  return planSessionCookieMigration(requestCookie, verified, sessionId);
 }
 
 /**
@@ -321,7 +351,9 @@ export function enforceSessionCookieCapacity(cookieHeader: string | null, propos
     const at = pair.indexOf('=');
     if (at <= 0) continue;
     const name = pair.slice(0, at);
-    if (name.startsWith(NIMBUS_TOKEN_COOKIE_PREFIX)) names += 1;
+    // A replacement does not grow the jar: the proposed name is excluded
+    // below and re-added once, so re-attaching a held session always fits.
+    if (name.startsWith(NIMBUS_TOKEN_COOKIE_PREFIX) && name !== proposedName) names += 1;
     // Cookie does not reveal partitioning, so count every visible pair
     // conservatively. Chrome counts name + value, excluding attributes.
     if (name === proposedName || (expireLegacy && name === NIMBUS_TOKEN_COOKIE)) continue;

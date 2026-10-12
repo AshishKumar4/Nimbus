@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { moduleRequests } from '../../packages/core/src/interpreter/index.ts';
 
-const requests = (text, path = 'pkg/index.js') => moduleRequests(path, text).map((r) => `${r.kind}:${r.specifier}`).sort();
+const requests = (text, path = 'pkg/index.js') => moduleRequests(path, text).requests.map((r) => `${r.kind}:${r.specifier}`).sort();
 
 // ── every form, with its kind ──
 assert.deepEqual(requests([
@@ -94,8 +94,15 @@ assert.deepEqual(requests([
   'export const a = label("not-a-module"), b = second("not-a-module-either", "x");',
 ].join('\n')), []);
 
-// ── text the parser cannot read asks for nothing ──
-assert.deepEqual(requests('import a from "x"; const = ;'), []);
-assert.deepEqual(requests('import type { T } from "types-only";\n', 'pkg/index.ts'), []);
+// ── text the parser cannot read asks for nothing, and says why ──
+assert.deepEqual(moduleRequests('pkg/index.js', 'import a from "x"; const = ;'), { requests: [], unread: 'syntax' });
+assert.deepEqual(moduleRequests('pkg/index.ts', 'import type { T } from "types-only";\n'), { requests: [], unread: 'unparsed' });
+assert.equal(moduleRequests('pkg/index.js', 'import a from "x";').unread, undefined, 'text it read has no reason');
+// Read with the loader's parse goal: a module's top-level return is a syntax
+// error, which the permissive read (a script's goal after a module's) is not.
+assert.deepEqual(moduleRequests('pkg/a.mjs', 'return 1;'), { requests: [] });
+assert.deepEqual(moduleRequests('pkg/a.mjs', 'return 1;', false, 'module'), { requests: [], unread: 'syntax' });
+assert.deepEqual(moduleRequests('pkg/a.js', 'return 1;', false, 'detect'), { requests: [] }, 'detection reads a script where a module does not parse');
+assert.deepEqual(moduleRequests('pkg/a.js', 'require("x");', false, 'commonjs').requests.map((r) => r.specifier), ['x']);
 
 console.log('interpreter-module-requests: ok');

@@ -8,12 +8,11 @@ import { launchFs } from './lib/launch-fs.mjs';
 // Directory resolution needs the intermediate package metadata at runtime,
 // even when reading that metadata completes later than reading its target.
 {
-  const inner = 'home/user/node_modules/pkg/inner/package.json';
-  const text = JSON.stringify({ main: '../other.js' });
+  const inner = 'home/user/node_modules/pkg/package.json';
+  const text = JSON.stringify({ name: 'pkg', main: 'inner' });
   const world = launchFs({
-    'home/user/node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', main: 'inner' }),
     [inner]: text,
-    'home/user/node_modules/pkg/other.js': 'module.exports = 42;',
+    'home/user/node_modules/pkg/inner/index.js': 'module.exports = 42;',
   });
   const fs = requireFsOverBridge(world.fs);
   const read = fs.readFileString;

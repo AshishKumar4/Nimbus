@@ -23,6 +23,7 @@
 import type { AnyNode, BlockStatement, Expression, FunctionExpression, Pattern, PrivateIdentifier, Program, SpreadElement, Super } from 'acorn';
 import { type Analysis, type Binding, type ClassNode, type FunctionNode, FunctionScope } from './scope.js';
 import { SafeMap } from './intrinsics.js';
+import { type StackUnit } from './stack.js';
 import { type Env, FunctionInfo, type FunctionShape, type InterpreterRuntime } from './runtime.js';
 import { type Code } from './code.js';
 import type { ModulePlan } from './modules.js';
@@ -53,6 +54,7 @@ type ImportInfo = {
 };
 /** What every function of one unit (a module, script or constructed function) shares, compiled now or later. */
 export interface UnitContext {
+    readonly stack: StackUnit;
     /** The text the unit was parsed from; functions compiled later are parsed from it again. */
     readonly source: string;
     readonly module: boolean;
@@ -235,6 +237,8 @@ export declare class Compiler {
     private staticKey;
     /** A property key: static, or computed and converted with ToPropertyKey. */
     private propertyKey;
+    /** A fault's node is captured by the code, never written while it runs. */
+    private located;
     expr(node: Expression | PrivateIdentifier | Super | SpreadElement): Code;
     /** Each expression's code, in order. */
     private exprs;
