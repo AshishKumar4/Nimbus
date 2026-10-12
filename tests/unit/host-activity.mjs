@@ -80,12 +80,13 @@ function setup() {
   sent.settled(third.id, false, async (id) => { abandons.push(id); });
   await turns();
   assert.deepEqual(abandons, [1, 2]);
+  assert.deepEqual([second.ended, third.ended], [[0], []], 'an id is carried by the next request after it ended');
   const carrying = sent.send();
-  assert.deepEqual(carrying, { id: 3, ended: [0, 2], abandoned: [1] });
+  assert.deepEqual(carrying, { id: 3, ended: [2], abandoned: [1] });
   sent.settled(carrying.id, true, async () => {});
   // The call that carried them failed: the next one carries them again.
   sent.unsent(carrying);
-  assert.deepEqual(sent.send(), { id: 4, ended: [3, 0, 2], abandoned: [1] });
+  assert.deepEqual(sent.send(), { id: 4, ended: [3, 2], abandoned: [1] });
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
