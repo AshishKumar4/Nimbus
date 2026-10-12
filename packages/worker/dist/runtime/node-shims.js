@@ -7637,7 +7637,9 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       for (const site of __nimbusStackSites({}, Infinity, constructor)) {
         const file = site.getFileName();
         const module = typeof file === "string" ? __nimbusModuleOfFile(file) : null;
-        if (module !== null && module.path !== null) return globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(module.path.replace(/^\\/+/, "")));
+        // A map module's path, or the program's entry's file (the stack entry has no map path).
+        const path = module === null ? null : module.path ?? (typeof module.file === "string" && module.file.startsWith("/") ? module.file : null);
+        if (path !== null) return globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path.replace(/^\\/+/, "")));
       }
     } catch {}
     return unbound;
