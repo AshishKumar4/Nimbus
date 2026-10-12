@@ -108,6 +108,12 @@ check('linked prefix cache preserves identity, hops and permission', ({ root, us
   assert.equal(user.readFileString('home/user/pkg/g'), 'sibling');
   assert.ok(looked <= 4, `a sibling resumed the searched prefix in ${looked} lookups`);
   assert.equal(user.lstat('home/user/pkg').type, 'symlink');
+  for (let repeat = 0; repeat < 3; repeat++) {
+    assert.equal(user.stat('home/user/pkg').type, 'directory');
+    user.revision('home/user/pkg');
+    assert.equal(user.lstat('home/user/pkg').type, 'symlink');
+    assert.equal(user.readlink('home/user/pkg'), 'physical');
+  }
   assert.equal(user.readFileString(`home/user/pkg/${'loop/'.repeat(39)}f`), 'physical');
   assert.throws(() => user.readFileString(`home/user/pkg/${'loop/'.repeat(40)}f`), { code: 'ELOOP' });
   user.unlink('home/user/pkg');

@@ -3307,7 +3307,7 @@ export class SqliteVFS {
     const linked = this.lastLinkedPrefix;
     if (linked !== null && tree === this.inodes && linked.cred === cred
       && linked.epoch === this.resolutionEpoch && linked.tableEpoch === this.inodes.epoch
-      && ((followLeaf && current === linked.spelling) || current.startsWith(`${linked.spelling}/`))) {
+      && current.startsWith(`${linked.spelling}/`)) {
       return this.walkComponents(path, cred, followLeaf, creating, tree);
     }
     // For a name directly below it (a namespace walking a path a component at
@@ -3364,7 +3364,7 @@ export class SqliteVFS {
     const last = this.lastLinkedPrefix;
     const reusable = last !== null && tree === this.inodes && last.cred === cred
       && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch
-      && ((followLeaf && input === last.spelling) || input.startsWith(`${last.spelling}/`));
+      && input.startsWith(`${last.spelling}/`);
     const start = reusable ? { path: last.name, hops: last.hops } : undefined;
     const suffix = reusable ? input.slice(last.spelling.length) : input;
     let hops = start?.hops ?? 0;
