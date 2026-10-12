@@ -33,7 +33,7 @@ import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
-import { canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed, } from '@nimbus-sh/core/_shared/npm-tree.js';
+import { bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed, } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
 import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
@@ -1386,9 +1386,18 @@ export class NpmInstaller {
         const installed = new Map();
         // Swapped lock entries by placement: each resolves its swap target at its own locked version.
         const swapPlacements = [];
+        // What a package (not the project) bundles comes in its archive: a name
+        // its parent, or an ancestor between, bundles (inDepBundle).
+        const inDepBundle = (key) => {
+            for (let child = key, cut = child.lastIndexOf('/node_modules/'); cut > 0; child = child.slice(0, cut), cut = child.lastIndexOf('/node_modules/')) {
+                const parent = packageJsonDocument(lock.packages[child.slice(0, cut)] ?? {})?.manifest ?? {};
+                if (bundledNames(parent).includes(child.slice(cut + '/node_modules/'.length)))
+                    return true;
+            }
+            return false;
+        };
         for (const [key, entry] of Object.entries(lock.packages)) {
-            // A bundled entry comes in its bundler's archive.
-            if (key === '' || entry.inBundle === true)
+            if (key === '' || inDepBundle(key))
                 continue;
             const placement = key.slice('node_modules/'.length);
             const folderName = placement.split('/node_modules/').pop() ?? placement;
