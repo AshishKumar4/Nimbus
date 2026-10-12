@@ -7,12 +7,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Changed: `npm install` has one engine. The Worker's installer and the
   shell's own npm (a library workspace with no installer of its own) plan
-  every install with core `_shared/npm-tree.js`, which places packages as
-  npm 10's arborist does. A conflict goes to the highest ancestor it fits.
-  A package's peers are placed with it. A package named on the command
-  line is resolved even where an installed copy meets it (`pkg@latest`, an
-  alias retargeted). Installs are checked against npm 10.9.8 itself, on
-  both hosts.
+  every install with core `_shared/npm-arborist.js`, npm 10's arborist
+  build: a conflict goes to the highest ancestor it fits, a package's peers
+  are placed with it, an optional peer only constrains, and what a package
+  bundles is its own. A package named on the command line is resolved even
+  where an installed copy meets it (`pkg@latest`, an alias retargeted).
+  Installs are checked against npm 10.9.8 itself, on both hosts. A cycle of
+  incompatible ranges, which npm breaks with a link, fails past 16 levels.
 - Breaking: a required failure changes nothing, as in npm. An install with
   a required dependency that cannot be resolved, or that is refused for its
   platform (EBADPLATFORM), now installs nothing and exits 1; before, it
@@ -21,8 +22,8 @@ published independently in the `@nimbus-sh` npm scope.
   what failed. It removes nothing, leaves package.json unchanged, and
   records in the lockfile only what is on disk.
 - Breaking: a peer dependency that conflicts with one of the project's own
-  dependencies is npm's ERESOLVE, and the install fails. `--force` and
-  `--legacy-peer-deps` let it through with a warning.
+  dependencies is npm's ERESOLVE, and the install fails. `--force` lets it
+  through with a warning; `--legacy-peer-deps` installs no peers at all.
 - Changed: `npm install <pkg>` plans with the project's whole tree, and
   prunes what the tree no longer needs. It saves where npm saves: `-D`,
   `-O`, otherwise where the project already declares the package. A bare
@@ -33,6 +34,8 @@ published independently in the `@nimbus-sh` npm scope.
   needed. The decision is made per placement, over the whole graph. A
   dependency that is in both `dependencies` and `devDependencies` takes its
   `devDependencies` range. The project's own `peerDependencies` install.
+  `--omit=dev` plans the whole tree and leaves out what only
+  devDependencies reach, as npm does.
 - Changed: `npm install -g` uses npm's global layout, where each package's
   dependencies sit beneath it.
 - Changed: the shell's own npm publishes under a journal in `node_modules`.

@@ -100,6 +100,7 @@ export class NpmCache {
       optional_deps_json TEXT NOT NULL DEFAULT '{}',
       peer_meta_json TEXT NOT NULL DEFAULT '{}',
       registry_name  TEXT NOT NULL DEFAULT '',
+      bundle_json    TEXT NOT NULL DEFAULT '',
       fetched_at     INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (name, version)
     )`);
@@ -115,7 +116,7 @@ export class NpmCache {
       const cols = [...this.sql.exec(`PRAGMA table_info(pkg_registry_cache)`)];
       existingCols = new Set(cols.map((r) => String((r as any).name)));
     } catch { /* PRAGMA failed — fall through and ATTEMPT, swallow on error */ }
-    for (const [col, fallback] of [['peer_deps_json', '{}'], ['platform_json', '{}'], ['optional_deps_json', '{}'], ['peer_meta_json', '{}'], ['registry_name', '']]) {
+    for (const [col, fallback] of [['peer_deps_json', '{}'], ['platform_json', '{}'], ['optional_deps_json', '{}'], ['peer_meta_json', '{}'], ['registry_name', ''], ['bundle_json', '']]) {
       if (existingCols.has(col)) continue;
       try {
         this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${fallback}'`);
@@ -191,7 +192,7 @@ export class NpmCache {
   // ── Registry cache ────────────────────────────────────────────────────
 
   private static readonly REGISTRY_COLUMNS =
-    'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, fetched_at';
+    'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, bundle_json, fetched_at';
 
   private rowToRegistryEntry(r: Record<string, unknown>): RegistryCacheEntry {
     return {
@@ -209,6 +210,7 @@ export class NpmCache {
       optionalDepsJson: String(r.optional_deps_json ?? '{}'),
       peerMetaJson: String(r.peer_meta_json ?? '{}'),
       registryName: String(r.registry_name ?? ''),
+      bundleJson: String(r.bundle_json ?? ''),
       fetchedAt: Number(r.fetched_at),
     };
   }
@@ -282,12 +284,12 @@ export class NpmCache {
         this.sql.exec(
           `INSERT OR REPLACE INTO pkg_registry_cache
            (${NpmCache.REGISTRY_COLUMNS})
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           entry.name, entry.version, entry.tarballUrl, entry.integrity,
           entry.depsJson, entry.peerDepsJson || '{}',
           entry.exportsJson, entry.main, entry.moduleField,
           entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}',
-          entry.peerMetaJson || '{}', entry.registryName ?? '',
+          entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '',
           entry.fetchedAt,
         );
         written++;

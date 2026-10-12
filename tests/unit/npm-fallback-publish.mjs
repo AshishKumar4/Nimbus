@@ -15,6 +15,12 @@
  *     package half-published over the one it retired): the next install
  *     undoes it before it plans, and leaves alone a retired-looking copy the
  *     journal does not name;
+ *   - an undo whose journal could not be removed afterwards: the next
+ *     install replays nothing the undo already made (the copy it put back
+ *     stays);
+ *   - a crash mid-carry (the carried copy complete where it was carried,
+ *     residue where it was): recovery stops there, so the ancestor it was
+ *     carried into is not undone over it; both are kept, and named;
  *   - a replacement bundling its own node_modules: the kept nested package
  *     the old one held is carried into the new one;
  *   - Ctrl-C while the install fetches: nothing changes, and no staging
@@ -98,6 +104,16 @@ SqliteVFS.prototype.rename = function (from, to, ...rest) {
     throw Object.assign(new Error(`EIO: injected source cleanup ${from}`), { code: 'EIO', renamed: 'all' });
   }
   return realRename.call(this, from, to, ...rest);
+};
+// And a removal the predicate picks, once.
+const realUnlink = SqliteVFS.prototype.unlink;
+let unlinkFault = null;
+SqliteVFS.prototype.unlink = function (path, ...rest) {
+  if (unlinkFault?.(String(path))) {
+    unlinkFault = null;
+    throw Object.assign(new Error(`EIO: injected unlink ${path}`), { code: 'EIO' });
+  }
+  return realUnlink.call(this, path, ...rest);
 };
 const staged = (from) => from.includes('/.nimbus-staging');
 const retired = (path) => /\/\.[^/]+-retired-[a-z0-9]+$/.test(path);
@@ -198,6 +214,55 @@ try {
     assert.deepEqual(ws.tree(), { xc: '1.0.0' }, 'the complete retired copy is put back');
     assert.equal(ws.fs.exists(`${ws.NM}/xc/lib/residue.js`), false, 'over the residue');
     assert.deepEqual(ws.dotEntries(), []);
+    ws.close();
+  }
+
+  // ── An undo whose journal stays, then a rerun ─────────────────────────
+  {
+    const ws = await workspace();
+    assert.equal((await ws.npm('install xc@1.0.0')).exitCode, 0);
+    fault = (from, to) => staged(from) && to.endsWith('/node_modules/xc');
+    unlinkFault = (path) => path.endsWith('/.nimbus-install-journal');
+    assert.notEqual((await ws.npm('install xc@2.0.0')).exitCode, 0);
+    fault = null;
+    unlinkFault = null;
+    assert.deepEqual(ws.tree(), { xc: '1.0.0' }, 'the undo put xc@1 back');
+    assert.ok(ws.dotEntries().includes('.nimbus-install-journal'), 'and its journal stayed');
+    const rerun = await ws.npm('install');
+    assert.equal(rerun.exitCode, 0, rerun.stderr);
+    assert.doesNotMatch(rerun.stderr, /could not|restored/, 'nothing the undo made is made again');
+    assert.deepEqual(ws.tree(), { xc: '1.0.0' }, 'xc@1 stays');
+    assert.deepEqual(ws.dotEntries(), []);
+    ws.close();
+  }
+
+  // ── A crash mid-carry, then a rerun ──────────────────────────────────────
+  {
+    const ws = await workspace();
+    assert.equal((await ws.npm('install bp@1.0.0 bc@2.0.0')).exitCode, 0);
+    // As a crash leaves it: bp@1 retired, bp@2 published, and the kept
+    // bc@1 carried into it whole, residue left where it was.
+    ws.user.rename(`${ws.NM}/bp`, `${ws.NM}/.bp-retired-crash2`);
+    ws.user.mkdir(`${ws.NM}/bp/node_modules`, { recursive: true });
+    ws.user.writeFile(`${ws.NM}/bp/package.json`, '{"name":"bp","version":"2.0.0"}');
+    ws.user.rename(`${ws.NM}/.bp-retired-crash2/node_modules/bc`, `${ws.NM}/bp/node_modules/bc`);
+    ws.user.mkdir(`${ws.NM}/.bp-retired-crash2/node_modules/bc/lib`, { recursive: true });
+    ws.user.writeFile(`${ws.NM}/.bp-retired-crash2/node_modules/bc/lib/residue.js`, '');
+    ws.user.writeFile(`${ws.NM}/.nimbus-install-journal`, JSON.stringify({
+      run: 'crash2',
+      committed: false,
+      steps: [
+        { kind: 'retire', from: `${ws.NM}/bp`, to: `${ws.NM}/.bp-retired-crash2`, state: 'done' },
+        { kind: 'publish', from: `${ws.NM}/.nimbus-staging-crash2/0`, to: `${ws.NM}/bp`, state: 'done' },
+        { kind: 'carry', from: `${ws.NM}/.bp-retired-crash2/node_modules/bc`, to: `${ws.NM}/bp/node_modules/bc`, state: 'begun' },
+      ],
+    }));
+    const rerun = await ws.npm('install');
+    assert.notEqual(rerun.exitCode, 0, 'an install that cannot be undone safely fails');
+    assert.match(rerun.stderr, /could not tell whether .*node_modules\/bc.*nothing older is undone/);
+    assert.ok(ws.fs.exists(`${ws.NM}/bp/node_modules/bc/package.json`), 'the complete carried copy is kept: bp is not undone over it');
+    assert.ok(ws.fs.exists(`${ws.NM}/.bp-retired-crash2`), 'and so is the retired copy');
+    assert.ok(ws.dotEntries().includes('.nimbus-install-journal'), 'with the journal that names them');
     ws.close();
   }
 

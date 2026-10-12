@@ -11,7 +11,7 @@
  * beneath it, and by nobody else.
  */
 
-import { isExactVersion, isSemverRange, rangeSubset, satisfiesRange } from './npm-semver.js';
+import { isExactVersion, isSemverRange, rangeSubset, rangesIntersect, satisfiesRange } from './npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from './npm-spec.js';
 import { LruMap } from './lru-map.js';
 import { z } from 'zod/v4';
@@ -72,6 +72,15 @@ export interface TreeManifest {
   readonly optionalDependencies?: DependencyMap;
   readonly peerDependencies?: DependencyMap;
   readonly peerDependenciesMeta?: Readonly<Record<string, { readonly optional?: boolean }>>;
+  /** `bundleDependencies` as published (npm also reads `bundledDependencies`): what its archive carries in its own node_modules, read by bundledNames. */
+  readonly bundleDependencies?: unknown;
+}
+
+/** The names a manifest bundles: its `bundleDependencies` list, or every dependency for `true`. They are not resolved, nor deduped away. */
+export function bundledNames(manifest: TreeManifest): string[] {
+  const declared = manifest.bundleDependencies;
+  if (declared === true) return Object.keys(manifest.dependencies ?? {});
+  return Array.isArray(declared) ? declared.filter((name): name is string => typeof name === 'string') : [];
 }
 
 /** A package a host knows: its name and version, and the manifest its edges are read from. */
@@ -169,6 +178,11 @@ const ProjectManifestSchema = z.object({
   optionalDependencies: DependencyMapSchema.optional().catch(undefined),
   peerDependencies: DependencyMapSchema.optional().catch(undefined),
   peerDependenciesMeta: z.record(z.string(), z.object({ optional: z.boolean().optional().catch(undefined) }).catch({})).optional().catch(undefined),
+  bundleDependencies: z.unknown(),
+  bundledDependencies: z.unknown(),
+}).transform(({ bundleDependencies, bundledDependencies, ...manifest }): ProjectManifest => {
+  const bundle = bundleDependencies ?? bundledDependencies;
+  return bundle === undefined ? manifest : { ...manifest, bundleDependencies: bundle };
 });
 
 /** package.json, read: the document as written (every field, for saving), and the dependencies npm reads from it. */
@@ -224,11 +238,12 @@ export function inferSaveType(manifest: ProjectManifest | null, name: string): S
   return 'prod';
 }
 
-/** A package named on the command line: `name`, the spec it gives (null: none), and where it is saved. */
+/** A package named on the command line: `name`, the spec it gives (null: none), and where it is saved (`explicit`: a flag said so; else inferred). */
 export interface NamedPackage {
   readonly name: string;
   readonly range: string | null;
   readonly saveType: SaveType;
+  readonly explicit: boolean;
 }
 
 /**
@@ -240,43 +255,47 @@ export interface NamedPackage {
 export function namedPackages(manifest: ProjectManifest | null, specs: readonly string[], flags: { saveDev?: boolean; saveOptional?: boolean } = {}): NamedPackage[] {
   return specs.map((spec) => {
     const { name, range } = splitPackageSpec(spec);
+    const explicit = flags.saveDev === true || flags.saveOptional === true;
     const saveType: SaveType = flags.saveDev ? 'dev' : flags.saveOptional ? 'optional' : inferSaveType(manifest, name);
     const declared = manifest?.[SAVE_FIELD[saveType]]?.[name];
-    return { name, range: (range === null || range === '*') && declared !== undefined ? declared : range, saveType };
+    return { name, range: (range === null || range === '*') && declared !== undefined ? declared : range, saveType, explicit };
   });
 }
 
 /**
  * A project's roots, as npm's Node loads the root's edges, the later
  * replacing the earlier of one name: its peers, dependencies and optional
- * dependencies (manifestEdges), then its devDependencies, but with
- * `production` (`--omit=dev`); then the packages named on the command line,
- * explicit requests of their save type. `implicit`: names the project needs
+ * dependencies (manifestEdges), then its devDependencies; then the packages
+ * named on the command line, explicit requests of their save type. The
+ * tree is planned whole: `--omit=dev` leaves out at reification what only
+ * devDependencies reach (TreePlan.dev). `implicit`: names the project needs
  * without declaring them (a global prefix's installed packages), each met
  * by what is there.
  */
 export function projectRoots(
   manifest: ProjectManifest | null,
   named: readonly NamedPackage[],
-  { implicit = [], legacyPeerDeps = false, production = false }: { implicit?: readonly string[]; legacyPeerDeps?: boolean; production?: boolean } = {},
+  { implicit = [], legacyPeerDeps = false }: { implicit?: readonly string[]; legacyPeerDeps?: boolean } = {},
 ): TreeRoot[] {
   const roots = new Map<string, TreeRoot>();
   for (const name of implicit) roots.set(name, { name, range: '*', type: 'prod' });
   for (const edge of manifestEdges(manifest ?? {}, { legacyPeerDeps })) roots.set(edge.name, edge);
-  if (!production) for (const [name, range] of Object.entries(manifest?.devDependencies ?? {})) roots.set(name, { name, range, type: 'dev' });
+  for (const [name, range] of Object.entries(manifest?.devDependencies ?? {})) roots.set(name, { name, range, type: 'dev' });
   for (const { name, range, saveType } of named) roots.set(name, { name, range: range ?? 'latest', type: saveType, explicit: true });
   return [...roots.values()];
 }
 
 /**
  * package.json (`json`, as parsed) with what the command line named saved,
- * as npm saves it after an install: each package that installed
- * (`installed`: the version under its name) under its save type, at
- * `^version` unless the spec given is a range `^version` would widen, an
- * alias as the package it names; out of the fields its save type excludes.
- * One that did not install keeps the spec given. As npm writes package.json,
- * a name in optionalDependencies is not repeated in dependencies. Every
- * other field is as it was.
+ * as npm saves it: first added where its save type goes and out of the
+ * fields that type excludes (add-rm-pkg-deps add), then, once it installed
+ * (`installed`: the version under its name), saved at `^version` unless the
+ * spec given is a range `^version` would widen, an alias as the package it
+ * names (reify #saveIdealTree). An explicit save type writes that field; an
+ * inferred one updates every field that names it, but a peer or optional
+ * range a dev one still intersects. One that did not install keeps the
+ * spec given. As npm writes package.json, a name in optionalDependencies is
+ * not repeated in dependencies. Every other field is as it was.
  */
 export function saveNamed(
   json: Readonly<Record<string, unknown>>,
@@ -293,25 +312,39 @@ export function saveNamed(
     }
     return map;
   };
-  for (const { name, range, saveType } of named) {
+  const has = (key: DependencyField, name: string) => field(key)[name] !== undefined;
+  for (const { name, range, saveType, explicit } of named) {
+    // add-rm-pkg-deps add: the spec as given, where its save type goes.
     const drop = saveType === 'prod' ? ['devDependencies', 'peerDependencies'] as const
       : saveType === 'dev' ? ['dependencies'] as const
       : saveType === 'optional' ? ['peerDependencies'] as const
       : ['dependencies', 'optionalDependencies'] as const;
-    for (const key of drop) if (declared[key]?.[name] !== undefined) delete field(key)[name];
+    for (const key of drop) if (has(key, name)) delete field(key)[name];
     const spec = range ?? '*';
-    const version = installed(name);
-    let saved = spec;
-    if (version !== null) {
-      // reify.js #saveIdealTree: a range the saved `^version` would widen is kept as given.
-      const { range: requested, alias, registryName } = parseRegistryRequest(name, spec);
-      const prefixed = `^${version}`;
-      const isRange = isSemverRange(requested) && !isExactVersion(requested) && requested !== '*' && requested !== '' && requested !== 'latest';
-      const range = isRange && !rangeSubset(prefixed, requested) ? requested : prefixed;
-      saved = alias ? `npm:${registryName}@${range}` : range;
-    }
     const target = field(SAVE_FIELD[saveType]);
-    if (saved !== '*' || target[name] === undefined) target[name] = saved;
+    if (spec !== '*' || target[name] === undefined) target[name] = spec;
+    if ((saveType === 'peer' || saveType === 'peerOptional') && has('devDependencies', name)) field('devDependencies')[name] = target[name];
+
+    // reify #saveIdealTree: the installed version.
+    const version = installed(name);
+    if (version === null) continue;
+    const { range: requested, alias, registryName } = parseRegistryRequest(name, spec);
+    const prefixed = `^${version}`;
+    const isRange = isSemverRange(requested) && !isExactVersion(requested) && requested !== '*' && requested !== '' && requested !== 'latest';
+    const savedRange = isRange && !rangeSubset(prefixed, requested) ? requested : prefixed;
+    const saved = alias ? `npm:${registryName}@${savedRange}` : savedRange;
+    if (explicit) {
+      target[name] = saved;
+      if (saveType === 'prod' && has('optionalDependencies', name)) delete field('optionalDependencies')[name];
+      continue;
+    }
+    if (has('dependencies', name)) field('dependencies')[name] = saved;
+    const updates = (key: 'peerDependencies' | 'optionalDependencies') => has(key, name) && (!has('devDependencies', name) || !rangesIntersect(saved, field(key)[name]));
+    const peer = updates('peerDependencies');
+    const optional = updates('optionalDependencies');
+    if (has('devDependencies', name)) field('devDependencies')[name] = saved;
+    if (peer) field('peerDependencies')[name] = saved;
+    if (optional) field('optionalDependencies')[name] = saved;
   }
   const optional = fields.get('optionalDependencies') ?? declared.optionalDependencies ?? {};
   for (const name of Object.keys(optional)) if ((fields.get('dependencies') ?? declared.dependencies)?.[name] !== undefined) delete field('dependencies')[name];

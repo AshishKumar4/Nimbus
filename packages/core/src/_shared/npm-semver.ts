@@ -58,6 +58,15 @@ export function versionAtLeast(a: string, b: string): boolean {
   return semver.valid(a, LOOSE) !== null && semver.valid(b, LOOSE) !== null && semver.gte(a, b, LOOSE);
 }
 
+/** Whether some version both ranges allow (semver.intersects, loose). */
+export function rangesIntersect(a: string, b: string): boolean {
+  try {
+    return semver.intersects(a, b, LOOSE);
+  } catch {
+    return false;
+  }
+}
+
 /** Whether every version `inner` allows, `outer` allows too (semver.subset, loose). */
 export function rangeSubset(inner: string, outer: string): boolean {
   try {

@@ -18,16 +18,10 @@ export interface RegistryCacheEntry {
   integrity: string;
   depsJson: string;       // JSON-encoded Record<string, string>
   /**
-   * JSON-encoded REQUIRED peerDependencies (X.5-F R2).
-   *
-   * Optional peers — those marked `peerDependenciesMeta.<name>.optional
-   * === true` in the source packument — are filtered out before this
-   * field is written. Storing only the required subset means downstream
-   * lockfile-validity checks can ask "is this peer in the tree?"
-   * without having to consult the meta field again.
-   *
-   * Defaults to '{}' for entries written by pre-X.5-F builds (the
-   * column was added via ALTER TABLE, see ensureSchema).
+   * JSON-encoded peerDependencies: every peer, the optional ones named by
+   * peerMetaJson. Rows written before peerMetaJson was kept hold only the
+   * required peers, which read as required. '{}' for rows written before
+   * the column existed (added via ALTER TABLE, see ensureSchema).
    */
   peerDepsJson?: string;
   exportsJson: string;    // JSON-encoded exports field
@@ -52,6 +46,8 @@ export interface RegistryCacheEntry {
   optionalDepsJson?: string;
   /** JSON-encoded `peerDependenciesMeta` (which peers are optional); '{}' for rows written before it was kept, whose peers are the required ones. */
   peerMetaJson?: string;
+  /** JSON-encoded `bundleDependencies` as published; '' for none (and rows written before it was kept). */
+  bundleJson?: string;
   fetchedAt: number;
 }
 
@@ -104,6 +100,7 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
     platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
     optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
     peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
+    bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
     fetchedAt,
   };
 }
@@ -114,6 +111,7 @@ const NO_PLATFORM: Platform = Object.freeze({});
 export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage {
   const platform: Platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
   const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
+  const bundle: unknown = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
   return {
     name: record.name,
     version: record.version,
@@ -123,6 +121,7 @@ export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage 
     dependencies: decoded(record.depsJson, isStringMap, {}),
     peerDependencies: ranges(record.peerDepsJson),
     ...(Object.keys(peerMeta).length > 0 ? { peerDependenciesMeta: peerMeta } : {}),
+    ...(bundle === undefined ? {} : { bundleDependencies: bundle }),
     optionalDependencies: ranges(record.optionalDepsJson),
     os: isStringList(platform.os) ? platform.os : undefined,
     cpu: isStringList(platform.cpu) ? platform.cpu : undefined,

@@ -41,7 +41,7 @@ const LOCK = {
   },
 };
 
-function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK, resolve = null) {
+function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK, resolve = null, failFor = () => null) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
@@ -55,7 +55,7 @@ function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK, resolve = null) {
   const shardsSeen = [];
   const log = [];
   const env = makeFanoutEnv({
-    root, NM, shardsSeen,
+    root, NM, shardsSeen, failFor,
     resultFor: (name, spec) => {
       resolveAsked.push(name);
       if (resolve) return resolve(name, spec);
@@ -240,6 +240,68 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.match(rejected.stderr, /in sync/);
   assert.equal(await ws.vfs.as(CRED_KERNEL).exists('/home/user/proj/node_modules/stale/index.js'), true,
     'node_modules is not touched before the lock is accepted');
+}
+
+// ── an optional peer the lock records stays optional ───────────────────
+//
+// h declares p as an optional peer; p is in the lock as optional. When p's
+// tarball fails, npm ci leaves p out and installs h.
+{
+  const pkgJson = { name: 'opt-peer', version: '1.0.0', dependencies: { h: '1.0.0' }, optionalDependencies: { p: '1.0.0' } };
+  const lock = {
+    name: 'opt-peer', lockfileVersion: 3,
+    packages: {
+      '': { name: 'opt-peer', version: '1.0.0', dependencies: { h: '1.0.0' }, optionalDependencies: { p: '1.0.0' } },
+      'node_modules/h': { version: '1.0.0', resolved: tgz('h', '1.0.0'), integrity: 'sha512-h', peerDependencies: { p: '1.0.0' }, peerDependenciesMeta: { p: { optional: true } } },
+      'node_modules/p': { version: '1.0.0', resolved: tgz('p', '1.0.0'), integrity: 'sha512-p', optional: true },
+    },
+  };
+  const { installer, root, log } = makeInstaller(pkgJson, lock, null, (p) => (p.name === 'p' ? 'integrity mismatch' : null));
+  const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(result.failed, [], `the optional peer's failure fails nothing: ${log.join('\n')}`);
+  assert.equal(versionAt(root, 'h'), '1.0.0');
+  assert.equal(root.exists(`${NM}/p`), false, 'p is left out');
+}
+
+// ── a stopped npm ci leaves node_modules as it was ───────────────────────
+{
+  const { installer, root } = makeInstaller();
+  const stop = new AbortController();
+  stop.abort(new DOMException('stopped', 'AbortError'));
+  await assert.rejects(installer.install(PROJ, { pid: 1, fromLockfile: true, signal: stop.signal }), { name: 'AbortError' });
+  assert.ok(root.exists(`${NM}/stale/index.js`), 'nothing was cleared');
+}
+
+// ── a stop after the plan publishes nothing ──────────────────────────────
+{
+  const stop = new AbortController();
+  const { installer, root, log } = makeInstaller({ name: 'stop', version: '1.0.0', dependencies: { s: '1.0.0' } }, LOCK, (name) => ({
+    pkg: { name, version: '1.0.0', tarballUrl: tgz(name, '1.0.0'), integrity: 'sha512-s', dependencies: {}, exports: null, main: '', module: '', bin: {} },
+    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
+  }));
+  const onProgress = (msg) => { log.push(msg); if (msg.startsWith('To fetch:')) stop.abort(new DOMException('stopped', 'AbortError')); };
+  await assert.rejects(installer.install(PROJ, { pid: 1, signal: stop.signal, onProgress }), { name: 'AbortError' });
+  assert.equal(root.exists(`${NM}/s`), false, 'nothing is published once the install is stopped');
+}
+
+// ── a partial npm ci records what is on disk, not the tree it cleared ───
+{
+  const pkgJson = { name: 'partial', version: '1.0.0', dependencies: { q: '1.0.0', r: '1.0.0' } };
+  const lock = {
+    name: 'partial', lockfileVersion: 3,
+    packages: {
+      '': { name: 'partial', version: '1.0.0', dependencies: { q: '1.0.0', r: '1.0.0' } },
+      'node_modules/q': { version: '1.0.0', resolved: tgz('q', '1.0.0'), integrity: 'sha512-q' },
+      'node_modules/r': { version: '1.0.0', resolved: tgz('r', '1.0.0'), integrity: 'sha512-r' },
+    },
+  };
+  const { installer, root } = makeInstaller(pkgJson, lock, null, (p) => (p.name === 'r' ? 'integrity mismatch' : null));
+  // What an earlier install recorded, in the tree npm ci clears.
+  installer.npmCache.writeLockfile(PROJ, new Map([['old', { name: 'old', resolvedVer: '1.0.0', integrity: 'sha512-old', depsJson: '{}', hoistedPath: `${NM}/old` }]]), { storage: null });
+  const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.ok(result.failed.length > 0);
+  assert.deepEqual([...installer.npmCache.readLockfile(PROJ).keys()], ['q'], 'the inventory is what this npm ci left on disk');
+  assert.equal(root.exists(`${NM}/old`), false);
 }
 
 console.log('npm-ci: ok');

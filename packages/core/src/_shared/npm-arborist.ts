@@ -33,7 +33,7 @@
 
 import { versionAtLeast } from './npm-semver.js';
 import {
-  depthOf, edgeRequest, isOptional, isPeer, manifestEdges, MAX_NEST_DEPTH, meets,
+  bundledNames, depthOf, edgeRequest, isOptional, isPeer, manifestEdges, MAX_NEST_DEPTH, meets,
   type EdgeType, type TreeEdge, type TreePackage, type TreeRoot,
 } from './npm-tree.js';
 
@@ -101,6 +101,8 @@ export interface TreePlan<P extends TreePackage, I extends TreePackage> {
   readonly failures: readonly TreeFailure[];
   /** Placements (and failure ids) a path of required edges reaches from the project. */
   readonly required: ReadonlySet<string>;
+  /** Placements only devDependencies reach (calc-dep-flags' dev): what `--omit=dev` leaves out at reification. */
+  readonly dev: ReadonlySet<string>;
   /** Placements (and failure ids) left out: optional failures and refusals, what the host leaves out, and their optional sets. */
   readonly skipped: ReadonlySet<string>;
   /** Why each one left out is (by placement or failure id). */
@@ -390,8 +392,17 @@ function canReplace(node: Node, old: Node, ignorePeers: Iterable<string> = []): 
   return true;
 }
 
-/** Whether `node` is a needless copy: nothing wants it, or a copy two folders up does as well (Node.canDedupe). */
+/** Whether `node` came in a package's archive: a name its parent, or an ancestor between, bundles (Node.inDepBundle). */
+function inBundle(node: Node): boolean {
+  for (let child = node, parent = node.parent; parent && !parent.isProjectRoot; child = parent, parent = parent.parent) {
+    if (parent.pkg !== null && bundledNames(parent.pkg).includes(child.name)) return true;
+  }
+  return false;
+}
+
+/** Whether `node` is a needless copy: nothing wants it, or a copy two folders up does as well; never a bundled one (Node.canDedupe). */
 function canDedupe(node: Node, preferDedupe: boolean): boolean {
+  if (inBundle(node)) return false;
   const grandparent = node.parent?.parent;
   if (!grandparent) return false;
   if (node.edgesIn.size === 0) return true;
@@ -410,7 +421,6 @@ type Verdict = 'OK' | 'REPLACE' | 'KEEP' | 'CONFLICT';
 class CanPlace {
   readonly verdict: Verdict;
   self: Verdict | null = null;
-  readonly children: CanPlace[] = [];
   private readonly current: Node | undefined;
   private readonly targetEdge: Edge | undefined;
   private readonly edgeOverride: boolean;
@@ -523,7 +533,6 @@ class CanPlace {
       const peer = peerEdge.to;
       if (!peerEdge.peer || !peer || peerPath.includes(peer)) continue;
       const check = new CanPlace(peer, deepestNestingTarget(this.target, peer.name), peerEdge, this, peerPath, true, false);
-      this.children.push(check);
       if (check.verdict === 'CONFLICT') conflict = true;
     }
     this.peersChecked = conflict ? 'CONFLICT' : state;
@@ -677,10 +686,12 @@ class Builder<P extends TreePackage> {
     return node;
   }
 
-  /** A node's problem edges: unmet (but an optional peer's), invalid, or named on the command line (#problemEdges). */
+  /** A node's problem edges: unmet (but an optional peer's), invalid, or named on the command line (#problemEdges); what its archive bundles is its own. */
   private problemEdges(node: Node): Edge[] {
     const problems: Edge[] = [];
+    const bundled = new Set(node.isProjectRoot || node.pkg === null ? [] : bundledNames(node.pkg));
     for (const edge of node.edgesOut.values()) {
+      if (bundled.has(edge.name)) continue;
       if (edge.to && this.loadFailures.has(edge.to)) continue;
       if (!edge.to) {
         if (edge.type !== 'peerOptional' || edge.explicit) problems.push(edge);
@@ -955,6 +966,7 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   // only edges are followed.
   const reached = new Set<Node>();
   const required = new Set<Node>();
+  const prod = new Set<Node>();
   const mark = (flagged: Set<Node>, start: Node, follow: (edge: Edge) => boolean) => {
     const pending = [start];
     for (let each = pending.pop(); each; each = pending.pop()) {
@@ -967,12 +979,14 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     if (!edge.to) continue;
     mark(reached, edge.to, () => true);
     if (!edge.optional) mark(required, edge.to, (e) => !e.optional);
+    if (edge.type !== 'dev') mark(prod, edge.to, () => true);
   }
   const withFolders = (flagged: Set<Node>) => {
     for (const each of [...flagged]) for (let up = each.parent; up && !up.isProjectRoot; up = up.parent) flagged.add(up);
   };
   withFolders(reached);
   withFolders(required);
+  withFolders(prod);
 
   // ── What the project does not reach is extraneous, and goes from a tree installed before; a frozen tree is installed as it is ──
   if (!options.frozen && installed.length > 0) for (const each of [...tree.nodes()]) if (each.tree === tree && !reached.has(each)) tree.detach(each);
@@ -982,9 +996,11 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   // The tree, as the hosts get it, before anything is left out of it.
   const nodes = new Map<string, TreeNode<P, I>>();
   const requiredAt = new Set<string>();
+  const dev = new Set<string>();
   for (const each of tree.nodes()) {
     const at = each.location;
     if (required.has(each)) requiredAt.add(at);
+    if (!prod.has(each)) dev.add(at);
     if (each.pkg === null) continue;
     // The host's own packages, under the types it gave them.
     nodes.set(at, each.origin === 'planned' && each.marks.placedFor
@@ -998,8 +1014,9 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   const leaveOut = (start: Node, reason: string): ReadonlySet<string> | null => {
     if (required.has(start)) return null;
     reasons.set(start.location, reason);
+    // The set, and what is beneath each member's folder, which goes with it.
     const set = optionalSet(start);
-    for (const member of set) skipped.add(member.location);
+    for (const member of set) for (const each of [member, ...descendants(member)]) skipped.add(each.location);
     for (const member of set) tree.detach(member);
     return skipped;
   };
@@ -1023,6 +1040,7 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     resolvedAny: builder.resolutions.size > 0,
     failures: [...failures.values()],
     required: requiredAt,
+    dev,
     skipped,
     reasons,
     extraneous,

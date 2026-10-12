@@ -60,7 +60,7 @@ const env = {
   NIMBUS_SESSION: {
     idFromName: (name) => ({ toString: () => name, name }),
     idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => resolved) }) }),
+    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => ({ ok: true, value: resolved })) }) }),
   },
 };
 

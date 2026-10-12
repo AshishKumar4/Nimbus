@@ -1076,8 +1076,8 @@ export class IsolatePool {
    * Run `fn` on every item in `items`, at most `concurrency` at a time,
    * pinned to stable slots so warm isolates are reused. Results are in input
    * order. After an item fails no item starts, and the map rejects with the
-   * first failure once every item that started has settled: nothing it
-   * dispatched is still running when it returns.
+   * first failure once every execution it started has settled, a timed-out
+   * one included: nothing it dispatched is still running when it returns.
    */
   async map<T, R>(
     fn: FacetTaskSource<T, R>,
@@ -1101,17 +1101,18 @@ export class IsolatePool {
   }
 
   /**
-   * The peer-DO transport of `map`: the coordinator forwards the task's
-   * already compiled expression. Its exact bytes key the same warm slots.
+   * The peer-DO transport of `map` (`stopOnFailure`) and `mapSettled`: the
+   * coordinator forwards the task's already compiled expression, whose exact
+   * bytes key the same warm slots. Each item's outcome.
    */
   async mapSource<T, R>(
     fnSource: string,
     items: T[],
+    stopOnFailure: boolean,
     opts?: IsolateMapOptions,
-  ): Promise<Array<Awaited<R>>> {
+  ): Promise<Array<Settled<Awaited<R>>>> {
     if (items.length === 0) return [];
-    const fnHash = hashSource(fnSource);
-    return valuesOf(await this.#mapInternal<T, R>(fnSource, fnHash, items, opts, true));
+    return this.#mapInternal<T, R>(fnSource, hashSource(fnSource), items, opts, stopOnFailure);
   }
 
   async #mapInternal<T, R>(
@@ -1154,6 +1155,10 @@ export class IsolatePool {
     await Promise.all(
       Array.from({ length: concurrency }, (_, slotIndex) => runSlot(slotIndex)),
     );
+    // An item that timed out answered its caller, but its execution may
+    // still be live on the Worker (#dispatchSlot's tail): the map returns
+    // once every execution it started has settled, so none outlives it.
+    await Promise.all(Array.from({ length: concurrency }, (_, slotIndex) => this.slotTails.get(slotIndex)));
     for (let idx = 0; idx < items.length; idx++) {
       settled[idx] ??= { ok: false, error: new Error('not started: an earlier item failed') };
     }

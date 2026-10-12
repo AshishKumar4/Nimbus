@@ -10,8 +10,9 @@
 // version of a name); `shardsSeen` records package names the write shard
 // was asked to install. Each package is written to the placement the
 // supervisor chose (`pkgDir`), root or nested: `manifestFor(p)`, its
-// package.json (by default its name and version), unless `failFor(p)` names
-// why it fails there.
+// package.json (by default its name and version), and `filesFor(p)`'s other
+// files (path in the package → content: what its archive bundles), unless
+// `failFor(p)` names why it fails there.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
@@ -25,7 +26,7 @@ export function kernelInstaller(vfs, sql, opts) {
   return installer;
 }
 
-export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }) }) {
+export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}) }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {
       // The install shard: write each package's package.json so the
@@ -38,6 +39,10 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
           const dir = p.pkgDir ?? `${NM}/${p.name}`;
           root.mkdir(dir, { recursive: true });
           root.writeFile(`${dir}/package.json`, JSON.stringify(manifestFor(p)));
+          for (const [path, content] of Object.entries(filesFor(p))) {
+            root.mkdir(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`, { recursive: true });
+            root.writeFile(`${dir}/${path}`, content);
+          }
           return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
         });
         return {
@@ -60,7 +65,7 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
         return {
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
-            return fanoutReply(args);
+            return { results: fanoutReply(args).results.map((value) => ({ ok: true, value })) };
           },
         };
       },

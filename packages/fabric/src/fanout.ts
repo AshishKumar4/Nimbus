@@ -209,8 +209,9 @@ export interface FanoutOptions {
   maxPeers?: number;
 }
 
+/** A peer shard's outcome per task, in bucket order: what crosses the RPC, so a failure is its message. */
 interface FanoutPeerResult<R> {
-  results: R[];
+  results: Array<{ ok: true; value: R } | { ok: false; message: string }>;
 }
 
 // Task values retain the submitted function's type; validate the wire envelope.
@@ -447,6 +448,7 @@ export class Fanout {
               // invoking process pid, so package writes are authorized
               // as the user (not rejected as pid:0).
               supervisorPid: this.opts.supervisorPid,
+              stopOnFailure,
             };
             const rpcResp = await dispatch({ op: 'fanoutExecute', args: [fnSource, peerArgs, shardOpts] });
             try {
@@ -464,7 +466,8 @@ export class Fanout {
                 if (origIdx === undefined) {
                   throw new Error(`peer DO result had no original task index (siblingName=${siblingName})`);
                 }
-                results[origIdx] = { ok: true, value: peerResults[i] };
+                const outcome = peerResults[i];
+                results[origIdx] = outcome.ok ? { ok: true, value: outcome.value } : { ok: false, error: new Error(outcome.message) };
               }
             } finally {
               disposeRpcResource(rpcResp);
@@ -518,7 +521,7 @@ export class Fanout {
         const error = outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason));
         for (const task of phase[at].bucket) results[taskIndex.get(task) ?? -1] = { ok: false, error };
       });
-      if (stopOnFailure && outcomes.some((outcome) => outcome.status === 'rejected')) break;
+      if (stopOnFailure && phase.some(({ bucket }) => bucket.some((task) => results[taskIndex.get(task) ?? -1]?.ok === false))) break;
     }
     for (let i = 0; i < results.length; i++) {
       results[i] ??= { ok: false, error: new Error('not dispatched: an earlier shard failed') };
@@ -549,6 +552,8 @@ export interface FanoutShardOptions {
   supervisorPid?: number;
   /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
   network?: WorkspaceNetworkRef;
+  /** submitMany's: no task starts after one fails. Otherwise (submitManySettled) each runs, whatever the others do. */
+  stopOnFailure?: boolean;
 }
 
 /**
@@ -600,8 +605,8 @@ export async function executeFanoutShard(
   });
   try {
     // The coordinator already validated and serialized the function.
-    const results = await pool.mapSource(fnSource, args);
-    return { results };
+    const settled = await pool.mapSource(fnSource, args, opts.stopOnFailure !== false);
+    return { results: settled.map((outcome) => (outcome.ok ? outcome : { ok: false, message: describeError(outcome.error) })) };
   } finally {
     try { pool.dispose(); } catch { /* best-effort */ }
     claim?.release();

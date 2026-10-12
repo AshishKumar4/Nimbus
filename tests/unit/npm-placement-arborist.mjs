@@ -123,6 +123,12 @@ const REGISTRY = {
   // A dev-only dependency, omitted with --omit=dev.
   devtool: { '1.0.0': { dependencies: { devdep: '1.0.0' } } },
   devdep: { '1.0.0': {} },
+  // An optional set whose required member fails, with a physical child of its own.
+  'pf-s': { '2.0.0': {} },
+  'pf-t': { '1.0.0': {}, '2.0.0': {} },
+  'pf-o': { '1.0.0': { dependencies: { 'pf-s': '1.0.0' }, optionalDependencies: { 'pf-t': '1.0.0' } } },
+  // A package whose archive carries a dependency no registry has.
+  'bun-a': { '1.0.0': { dependencies: { 'bun-b': '1.0.0' }, bundleDependencies: ['bun-b'] } },
   // A dependency reached through a version the tree replaces: pruned with the copy that needed it.
   rx: { '1.0.0': { dependencies: { ry: '1.0.0' } }, '2.0.0': {} },
   ry: { '1.0.0': {} },
@@ -131,6 +137,8 @@ const REGISTRY = {
 // tarball's are, so npm's content-addressed cache cannot answer for them);
 // a step of a sequence breaks more from then on.
 const BROKEN = ['bad-2.0.0.tgz', 'oy-1.0.0.tgz', 'oz-1.0.0.tgz'];
+// What an archive carries besides its package.json, by tarball: path in the package → content.
+const BUNDLED = { 'bun-a-1.0.0.tgz': { 'node_modules/bun-b/package.json': JSON.stringify({ name: 'bun-b', version: '1.0.0' }) } };
 const brokenNow = new Set();
 const NO_BYTES = await sriOf(new TextEncoder().encode('no tarball has these bytes, broken now'));
 const ROOT = { a: '^1.0.0', b: '^1.0.0', host: '^1.0.0', shared: '1.0.0', user: '^1.0.0' };
@@ -141,7 +149,8 @@ const manifests = new Map();
 for (const [name, versions] of Object.entries(REGISTRY)) {
   for (const version of Object.keys(versions)) {
     manifests.set(`${name}-${version}.tgz`, manifest(name, version));
-    tarballs.set(`${name}-${version}.tgz`, packageTarball({ 'package/package.json': JSON.stringify(manifest(name, version)) }));
+    const extra = Object.fromEntries(Object.entries(BUNDLED[`${name}-${version}.tgz`] ?? {}).map(([path, content]) => [`package/${path}`, content]));
+    tarballs.set(`${name}-${version}.tgz`, packageTarball({ 'package/package.json': JSON.stringify(manifest(name, version)), ...extra }));
   }
 }
 const integrity = new Map();
@@ -197,7 +206,7 @@ function treeOf(readdir, readFile, exists, dir) {
   return sorted(found);
 }
 /** What package.json declares, as each engine left it. */
-const declared = (pkg) => ({ dependencies: pkg.dependencies ?? {}, devDependencies: pkg.devDependencies ?? {}, optionalDependencies: pkg.optionalDependencies ?? {} });
+const declared = (pkg) => ({ dependencies: pkg.dependencies ?? {}, devDependencies: pkg.devDependencies ?? {}, optionalDependencies: pkg.optionalDependencies ?? {}, peerDependencies: pkg.peerDependencies ?? {} });
 
 /** `npm <args>` in `dir`, against the local registry (not spawnSync: it is served from this process). */
 const npmIn = (dir, args) => new Promise((resolve) => {
@@ -240,7 +249,7 @@ function resolveTask(name, spec) {
   const file = `${request.registryName}-${version}.tgz`;
   const pkg = {
     name: request.installName, version, tarballUrl: `${base}/${file}`, integrity: isBroken(file) ? NO_BYTES : integrity.get(file),
-    dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, peerDependenciesMeta: fields.peerDependenciesMeta,
+    dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, peerDependenciesMeta: fields.peerDependenciesMeta, bundleDependencies: fields.bundleDependencies,
     optionalDependencies: fields.optionalDependencies,
     exports: null, main: 'index.js', module: '', bin: {},
   };
@@ -260,6 +269,7 @@ function workerProject(dir = 'app') {
     root, NM: `${dir}/node_modules`, resultFor: resolveTask,
     failFor: (p) => (isBroken(file(p)) ? `integrity mismatch for ${file(p)}` : null),
     manifestFor: (p) => manifests.get(file(p)),
+    filesFor: (p) => BUNDLED[file(p)] ?? {},
   });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
@@ -415,6 +425,11 @@ try {
     '--legacy-peer-deps installs no peers': [[['install', '--legacy-peer-deps', 'ph@1.0.0', 'pp@2.0.0']], { ph: '1.0.0', pp: '2.0.0' }],
     'an optional dependency missing from the registry': [[['install', 'ra1']], { ra1: '1.0.0' }],
     '--omit=dev': [[{ manifest: { dependencies: { xc: '1.0.0' }, devDependencies: { devtool: '1.0.0' } } }, ['install', '--omit=dev']], { xc: '1.0.0' }],
+    'a named devDependency with --omit=dev is saved, not installed': [[['install', '-D', 'xc@1.0.0', '--omit=dev']], {}],
+    'a dependency also a devDependency with --omit=dev': [[{ manifest: { dependencies: { xc: '1.0.0' }, devDependencies: { xc: '2.0.0' } } }, ['install', '--omit=dev']], {}],
+    'an inferred dev save updates a peer range it no longer meets': [[{ manifest: { devDependencies: { xc: '^1.0.0' }, peerDependencies: { xc: '^1.0.0' } } }, ['install', 'xc@2.0.0']], { xc: '2.0.0' }],
+    'an optional set takes its physical children': [[{ manifest: { dependencies: { 'pf-s': '2.0.0', 'pf-t': '2.0.0' }, optionalDependencies: { 'pf-o': '1.0.0' } } }, ['install']], { 'pf-s': '2.0.0', 'pf-t': '2.0.0' }],
+    'a bundled dependency comes in its archive': [[['install', 'bun-a'], ['install']], { 'bun-a': '1.0.0', 'bun-a/node_modules/bun-b': '1.0.0' }],
     'a replaced copy takes what only it needed': [[['install', 'rx@1.0.0'], ['install', 'rx@2.0.0']], { rx: '2.0.0' }],
   };
   for (const [label, [commands, expected]] of Object.entries(scenarios)) {

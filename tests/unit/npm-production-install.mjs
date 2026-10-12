@@ -64,7 +64,7 @@ function makeInstaller(pkgJson) {
         return {
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
-            return { results: args.map(answer) };
+            return { results: args.map((task) => ({ ok: true, value: answer(task) })) };
           },
         };
       },
