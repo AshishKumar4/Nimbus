@@ -57,7 +57,7 @@ const script = String.raw`
   if ! ${DIR}/build-python.sh verify > "$W/verify.log" 2>&1; then
     echo VERIFY-FAILED; tail -80 "$W/verify.log"; exit 1
   fi
-  sed -n '/=== verify ===/,$p' "$W/verify.log" | grep -E 'MODULE_|HAVE_|import namespaces|inittab|: ok|ok$' || true
+  grep -E 'import namespaces|inittab|all cases passed' "$W/verify.log" || true
   echo ---FILES---
   tar cf - -C ${DIR} ${ARTIFACTS.join(' ')} | xz -6 | base64 -w0
   echo
