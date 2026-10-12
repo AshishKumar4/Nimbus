@@ -152,6 +152,7 @@ import { createNamespace, type Namespace } from './namespace.js';
 import { createSync, type Sync } from './sync.js';
 import { heapTables, sqlTables, type HeapTables, type ResidentSql, type ResidentTables } from './tables.js';
 
+export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export type { ResidentCell } from './cell-cost.js';
