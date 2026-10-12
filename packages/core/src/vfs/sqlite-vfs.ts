@@ -75,6 +75,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 
 interface LexicalVfsKey { readonly kind: 'lexical'; readonly value: string; readonly spelling: string }
 interface PhysicalVfsKey { readonly kind: 'physical'; readonly value: string }
+interface DeletionVfsKey { readonly key: PhysicalVfsKey; readonly literal: INode | undefined }
 import { readDeclaredSource, type Principal, type VfsContentRef, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { errnoCodeOf, vfsError } from './vfs-error.js';
 import {
@@ -8536,13 +8537,30 @@ export class SqliteVFS {
   }
 
   /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
-  private deletionKey(path: string, cred: VfsCred, memo?: Map<string, string>): PhysicalVfsKey {
+  private deletionKey(path: string, cred: VfsCred, memo?: Map<string, string>): DeletionVfsKey {
     if (normalizeVfsLookupPath(path) !== null) {
       const literal = this.lexicalKey(path, cred);
-      if (this.inodes.get(literal.value) !== undefined) return this.physicalKey(literal.value);
+      const inode = this.inodes.get(literal.value);
+      if (inode !== undefined) return { key: this.physicalKey(literal.value), literal: inode };
     }
     const key = this.storageKey(path, cred);
-    return this.inodes.get(key.value) !== undefined ? key : this.physicalKey(this.createdPath(key.value, cred, memo));
+    return { key: this.inodes.get(key.value) !== undefined ? key : this.physicalKey(this.createdPath(key.value, cred, memo)), literal: undefined };
+  }
+
+  private checkStoredDeletion(key: PhysicalVfsKey, inode: INode, cred: VfsCred): void {
+    let writable: INode | undefined;
+    for (let at = parentKey(key.value); at !== ''; at = parentKey(at)) {
+      const parent = this.inodes.get(at);
+      if (parent === undefined) throw vfsKeyError('ENOENT', at);
+      if (parent.kind === 'symlink') continue;
+      if (parent.kind !== 'directory') throw vfsKeyError('ENOTDIR', at);
+      if (!this.accessInode(parent, writable === undefined ? 0o3 : 0o1, cred)) throw vfsKeyError('EACCES', at);
+      writable ??= parent;
+    }
+    if (writable === undefined) this.checkRootWritable(key.value, cred);
+    else if ((writable.mode & 0o1000) !== 0 && cred.uid !== 0 && cred.uid !== writable.uid && cred.uid !== inode.uid) {
+      throw vfsKeyError('EPERM', key.value);
+    }
   }
 
   private normalizeBatchInode(
@@ -8643,12 +8661,17 @@ export class SqliteVFS {
 
     // A row left at its literal key (under a link's own name, by an older
     // build) is removed where it is; otherwise the name is where it resolves.
-    const deleted = (path: string): string => this.deletionKey(path, cred, placed).value;
-    const deletes = (payload.deletePaths ?? []).map(deleted);
+    const deleted = (path: string): DeletionVfsKey => this.deletionKey(path, cred, placed);
+    const deletes = (payload.deletePaths ?? []).map((path) => deleted(path).key.value);
     const linked = this.linkReplacedByDirectory(inodes.filter((entry) => entry.isDir).map((entry) => entry.path), deletes, priors);
     if (linked !== null) throw linkedDirectoryRefusal(linked);
     for (const path of payload.deletePaths ?? []) {
-      const normalized = deleted(path);
+      const selected = deleted(path);
+      const normalized = selected.key.value;
+      if (selected.literal !== undefined) {
+        this.checkStoredDeletion(selected.key, selected.literal, cred);
+        continue;
+      }
       const existing = this.checkAccess(normalized, 0, cred, {
         followLeaf: false,
         allowMissingLeaf: true,
@@ -9009,7 +9032,7 @@ export class SqliteVFS {
         const keys = [...directories.map((inode) => this.storageKey(inode.path, cred, this.inodes, true).value), ...deletes.map((path) => this.storageKey(path, cred).value)];
         this.readAlong(keys);
         const placed = new Map<string, string>();
-        const placedAt = (path: string): string => this.deletionKey(path, cred, placed).value;
+        const placedAt = (path: string): string => this.deletionKey(path, cred, placed).key.value;
         const linked = this.linkReplacedByDirectory(
           directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred, this.inodes, true).value, cred, placed)),
           deletes.map(placedAt),
