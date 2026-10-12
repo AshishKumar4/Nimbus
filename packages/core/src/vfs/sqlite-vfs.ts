@@ -5566,7 +5566,7 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsKeyError('ENOENT', path);
-    this.assertMutationsAllowed([inode.path]);
+    this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
     // Nothing explicit: only now (null) and omit (undefined).
     const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
     if (useNow) {
@@ -5596,6 +5596,7 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred);
     const inode = resolved.inode;
     if (!inode) throw vfsKeyError('ENOENT', path);
+    this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
     this.chmodInode(inode, mode, cred, resolved.path);
   }
 
@@ -5625,7 +5626,7 @@ export class SqliteVFS {
     if (perms !== null && (!Number.isSafeInteger(perms) || perms < 0 || perms > 0o777)) {
       throw vfsError('EINVAL', `default ACL ${String(perms)}`);
     }
-    this.assertMutationsAllowed([inode.path]);
+    this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
     this.publishMetadata(inode, { defaultAcl: perms });
   }
 
@@ -5654,7 +5655,7 @@ export class SqliteVFS {
       throw vfsKeyError('EPERM', resolved.path);
     }
     if (gid !== null && gid === inode.gid && cred.uid !== 0 && !owner) throw vfsKeyError('EPERM', resolved.path);
-    this.assertMutationsAllowed([inode.path]);
+    this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
     this.publishMetadata(inode, {
       uid: uid ?? inode.uid,
       gid: gid ?? inode.gid,
@@ -8675,7 +8676,7 @@ export class SqliteVFS {
     cred: VfsCred,
     onCommit?: () => void,
   ): { inodes: number; chunks: number } {
-    this.assertMutationsAllowed(batchMutationPaths(payload).map((path) => this.lexicalKey(path, cred).value));
+    this.assertMutationsAllowed(Array.from(batchMutationPaths(payload), (path) => this.lexicalKey(path, cred).value));
     const normalized = this.authorizeBatch(payload, cred);
     this.assertMutationsAllowed(batchMutationPaths(normalized));
     return this._writeBatchWithRetry(
