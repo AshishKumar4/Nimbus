@@ -28,15 +28,15 @@ export function inWatchedTree(tree: string, path: string): boolean {
 /**
  * `event` as a watch of `tree` is told it, one rule for every watch: each
  * end of it the watch holds (in `tree`) and may see (`shown`: its name for
- * a path, null when it may not see it) is told; the watched path itself,
- * or a directory above it, renamed is the watched path's own move: a rename
- * where the watch may see both its places, else its going (unlink) or
- * coming (add); any other rename seen at one end only is that end's add, or
- * unlink; a directory renamed to above the watched path is its coming
- * (add). Null: nothing to tell. A watch that is told its own move follows
- * it (CompositeVFS.watchChanges).
+ * a path, null when it may not see it) is told; any rename seen at one end
+ * only is that end's add, or unlink. The watched path itself, or a
+ * directory above it, renamed is the watched path's going (unlink, where it
+ * was seen); a watch that follows its target (`follow`) is told its move
+ * instead (a rename, where it may see both places), and moves with it
+ * (CompositeVFS.watchChanges). What a directory renamed to above the
+ * watched path brings is not known, and not told. Null: nothing to tell.
  */
-export function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null): VfsEvent | null {
+export function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, follow = false): VfsEvent | null {
   const seen = (path: string): string | null => (inWatchedTree(tree, path) ? shown(path) : null);
   const { type, timestamp } = event;
   const path = seen(event.path);
@@ -45,18 +45,15 @@ export function projectChange(event: VfsEvent, tree: string, shown: (path: strin
   const from = event.oldPath;
   if (inWatchedTree(from, tree)) {
     const was = shown(tree);
-    const now = shown(from === tree ? event.path : event.path + tree.slice(from.length));
-    if (was !== null && now !== null) return { type: 'rename', path: now, oldPath: was, timestamp };
-    if (was !== null) return { type: 'unlink', path: was, timestamp };
-    return now === null ? null : { type: 'add', path: now, timestamp };
+    if (was === null) return null;
+    const now = follow ? shown(event.path + tree.slice(from.length)) : null;
+    return now === null ? { type: 'unlink', path: was, timestamp } : { type: 'rename', path: now, oldPath: was, timestamp };
   }
   const oldPath = seen(from);
   if (path !== null && oldPath !== null) return path === event.path && oldPath === from ? event : { type, path, oldPath, timestamp };
   if (path !== null) return { type: 'add', path, timestamp };
   if (oldPath !== null) return { type: 'unlink', path: oldPath, timestamp };
-  if (!inWatchedTree(event.path, tree)) return null;
-  const there = shown(tree);
-  return there === null ? null : { type: 'add', path: there, timestamp };
+  return null;
 }
 
 export type VfsEventListener = (events: VfsEvent[]) => void;

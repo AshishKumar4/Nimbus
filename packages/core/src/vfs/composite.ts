@@ -403,8 +403,10 @@ interface WriteWatch {
 /** One watchChanges registration: its view, the tree it watches, and the mounts whose backends tell it their own changes. */
 interface ChangeWatch {
   readonly view: CompositeVFS;
-  /** The namespace path watched, and everything under it: where it is now, told its own move (projectChange). */
+  /** The namespace path watched, and everything under it: where its target is now, for a watch that follows it (projectChange). */
   path: string;
+  /** It follows its target's own move (watchChanges' `follow`). */
+  readonly follow: boolean;
   readonly listener: (events: readonly VfsEvent[]) => void;
   readonly subscribed: Map<Mount, () => void>;
   /** Batches published to it and not yet told, in landing order (judgeChanges judges each as it is told). */
@@ -1137,11 +1139,15 @@ export class CompositeVFS implements VFS {
    * every directory above it, judged through this view's own lookup. In
    * landing order, in the batches its backend makes of them; to the watches
    * registered when it landed; a watch let go hears nothing more. No write
-   * waits for it, and nothing is read for it but whether the directory a
-   * backend makes whole (mkdir -p on a mount that resolves its own paths)
-   * was there; a judgment through a backend that awaits is waited for by
-   * that watch alone, its later changes behind it. The returned function
-   * stops it.
+   * reads or waits for it; a watch that is not root's looks up the
+   * directories above each change (the lookups a path read makes), and a
+   * judgment through a backend that awaits is waited for by that watch
+   * alone, its later changes behind it. The returned function stops it.
+   *
+   * A watch is of `path` wherever it leads: the path renamed away, or a
+   * directory above it, is its unlink. One that follows its target
+   * (`follow`, as Node's fs.watch does, an inode's watch) is told that move
+   * instead, a rename, and is then of the path its target has.
    *
    * A backend that tells its own changes (VFS.watchChanges: SQLite) is
    * watched per mount, as this view's principal sees it, so its every
@@ -1154,9 +1160,11 @@ export class CompositeVFS implements VFS {
    * range made its file, and what kind of entry rm -r removed, is not
    * looked up: those are change and unlink.
    */
-  watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void {
+  watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void, options?: { follow?: boolean }): () => void {
     const changes = this.table.changes ??= { watches: new Set(), ready: [], draining: false };
-    const watch: ChangeWatch = { view: this, path: normalizePath(path), listener, subscribed: new Map(), queue: [], waiting: false, stopped: false };
+    const watch: ChangeWatch = {
+      view: this, path: normalizePath(path), follow: options?.follow === true, listener, subscribed: new Map(), queue: [], waiting: false, stopped: false,
+    };
     changes.watches.add(watch);
     try {
       for (const mount of this.table.mounts.values()) this.subscribeChanges(watch, mount);
@@ -1190,20 +1198,23 @@ export class CompositeVFS implements VFS {
    * Watch `mount`'s backend, as this view sees it, where it tells its own
    * changes and holds part of `watch`'s tree: a source fixed for every
    * principal (one that gives a backend per principal, or per moment, is
-   * told as the namespace changes it). The whole of it: the watched tree may
-   * move anywhere on it (a rename does not leave its mount).
+   * told as the namespace changes it). For a watch that follows its target,
+   * the whole of it: the target may move anywhere on it (a rename does not
+   * leave its mount).
    */
   private subscribeChanges(watch: ChangeWatch, mount: Mount): void {
     if (typeof mount.source === 'function') return;
     const { path } = watch;
-    if (!inWatchedTree(mount.point, path) && !inWatchedTree(path, mount.point)) return;
+    const rel = path === mount.point || path.startsWith(mount.under) ? (watch.follow ? '/' : relativeTo(mount.point, path))
+      : inWatchedTree(path, mount.point) ? '/' : null;
+    if (rel === null) return;
     const backend = this.backend(mount);
     if (backend === null || typeof backend.watchChanges !== 'function') return;
     const { point } = mount;
     const named = (event: VfsEvent): VfsEvent => (event.oldPath === undefined
       ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
       : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp });
-    watch.subscribed.set(mount, backend.watchChanges('/', (events) => {
+    watch.subscribed.set(mount, backend.watchChanges(rel, (events) => {
       const changes = this.table.changes;
       if (changes === undefined || watch.stopped) return;
       this.publishChanges(changes, watch, { mount, events: point === ROOT_POINT ? events : events.map(named) });
@@ -1317,8 +1328,8 @@ export class CompositeVFS implements VFS {
   }
 
   /**
-   * `batch` as `watch` is told it (projectChange), in order, the watch
-   * following its own move: each end shown from the mount it is on (that
+   * `batch` as `watch` is told it (projectChange), in order, a watch that
+   * follows its target moving with it: each end shown from the mount it is on (that
    * mount still at its point, the namespace routing the path to it, its
    * source present: feedShows, asked only where another mount meets the
    * watched tree), and, for a watch that is not root's, under directories it
@@ -1361,10 +1372,10 @@ export class CompositeVFS implements VFS {
           }
           return reached(path) ? path : null;
         };
-        const one = projectChange(event, tree, shown);
+        const one = projectChange(event, tree, shown, watch.follow);
         if (one === null) continue;
         told.push(one);
-        if (one.type === 'rename' && one.oldPath === tree) {
+        if (watch.follow && one.type === 'rename' && one.oldPath === tree) {
           watch.path = one.path;
           routed = routedFrom(watch.path);
         }
@@ -1384,7 +1395,7 @@ export class CompositeVFS implements VFS {
         waits ||= isPromise(searched);
         reach.set(path, searched);
       }
-      if (moved !== null) tree = moved;
+      if (moved !== null && watch.follow) tree = moved;
     }
     if (!waits) return project((path) => reach.get(path) === true);
     const paths = [...reach.keys()];
@@ -2893,8 +2904,8 @@ export class CompositeVFS implements VFS {
       // a backend that resolves its own paths makes the rest in one call.
       if (r.mount.options.resolvesPaths) {
         const whole = this.locate(path);
-        // Watched, it looks first whether the directory is there: only one it made is told.
-        return andThen(this.table.changes === undefined ? null : this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
+        // It looks first whether the directory is there, as the components on any other mount are looked at: only one it made is told.
+        return andThen(this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
           path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, ...(there?.type === 'directory' ? { told: null } : {}),
         }, () => {
           this.guardMutation([at, path]);

@@ -714,7 +714,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   gateLaunch(named: readonly string[]): Promise<void> { return this.bridge.gateLaunch(named); }
   revision(path?: RuntimeFsPath): number { return this.bridge.revision(path); }
   /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
-  subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
+  subscribe(path: string, listener: (event: VfsEvent) => void, options?: { follow?: boolean }): () => void {
     this.live();
     let stopped = false;
     const stop = this.namespace.watchChanges(path, (events) => {
@@ -724,7 +724,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
           ? { type: event.type, path: event.path.slice(1), timestamp: event.timestamp }
           : { type: event.type, path: event.path.slice(1), oldPath: event.oldPath.slice(1), timestamp: event.timestamp });
       }
-    });
+    }, options);
     const dispose = (): void => {
       if (stopped) return;
       stopped = true;

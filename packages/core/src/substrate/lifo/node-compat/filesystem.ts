@@ -114,9 +114,10 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     fsync: (fd) => fs.fsync(fd),
     close: (fd) => fs.close(fd),
     watch(path, listener) {
+      // A Node watch is of its target, as an inode's is: it follows it across renames.
       const stop = bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
         ? { ...event, path: `/${event.path}` }
-        : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` }));
+        : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` }), { follow: true });
       return { close: () => stop?.(), ref() {}, unref() {} };
     },
   };

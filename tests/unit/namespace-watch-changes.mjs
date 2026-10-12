@@ -248,7 +248,7 @@ await check('a rename is told at each end the watcher may see: out, in from wher
   pub.stop(); all.stop(); stop();
 });
 
-await check('a watch of a path whose directory is renamed hears it go and come; a watched path renamed is followed', async () => {
+await check('a watch of a path hears it go when it, or the directory above it, is renamed', async () => {
   kernel.mkdir('home/user/anc/sub', { recursive: true });
   kernel.writeFile('home/user/anc/sub/file', 'f');
   kernel.writeFile('home/user/followed', 'f');
@@ -259,8 +259,8 @@ await check('a watch of a path whose directory is renamed hears it go and come; 
   await ns.rename('/home/user/followed', '/home/user/followed2');
   await settled();
   assert.deepEqual(leaf.take(), ['unlink /home/user/anc/sub/file']);
-  assert.deepEqual(moved.take(), ['add /home/user/anc2/sub/file']);
-  assert.deepEqual(followed.take(), ['rename /home/user/followed -> /home/user/followed2']);
+  assert.deepEqual(moved.take(), [], 'what a directory renamed above it brings is not known');
+  assert.deepEqual(followed.take(), ['unlink /home/user/followed']);
   leaf.stop(); moved.stop(); followed.stop();
 });
 
@@ -312,7 +312,7 @@ await check('a change on a store mounted twice is told at both names', async () 
   ns.unmount('/a'); ns.unmount('/b');
 });
 
-await check('mkdir -p tells only a directory it made', async () => {
+await check('mkdir -p tells only a directory it made, a watch registered while it runs included', async () => {
   ns.mount('/rp', new MemoryVFS({ uid: 0, gid: 0 }), { resolvesPaths: true });
   const w = watching('/rp');
   await ns.mkdir('/rp/d', { recursive: true });
@@ -320,6 +320,18 @@ await check('mkdir -p tells only a directory it made', async () => {
   assert.deepEqual(w.take(), ['addDir /rp/d']);
   w.stop();
   ns.unmount('/rp');
+  const g = gated();
+  const slow = new MemoryVFS({ uid: 0, gid: 0 });
+  slow.mkdir('/d');
+  ns.mount('/rps', asyncOnly(slow, { beforeCall: (method) => (method === 'mkdir' ? (g.enter(), g.gate) : undefined) }), { resolvesPaths: true });
+  const making = ns.mkdir('/rps/d', { recursive: true });
+  await g.entering;
+  const late = watching('/rps');
+  g.release();
+  await making;
+  assert.deepEqual(late.take(), []);
+  late.stop();
+  ns.unmount('/rps');
 });
 
 await check('a change is told to the watches registered when it landed, whatever was registered when it began', async () => {
@@ -381,12 +393,19 @@ await check('registering a watch stores nothing an open description holds', asyn
 });
 
 
-await check('a watch follows its path when it, or a directory above it, is renamed, the changes after it in the same batch too', async () => {
+await check('a watch of a path hears it go when it, or a directory above it, is renamed; one that follows its target moves with it, the changes after in the same batch too', async () => {
   kernel.writeFile('home/user/f1', 'one');
   kernel.mkdir('home/user/dirA/sub', { recursive: true });
   kernel.writeFile('home/user/dirA/sub/deep', 'one');
-  const file = watching('/home/user/f1');
-  const deep = watching('/home/user/dirA/sub/deep');
+  const fixedFile = watching('/home/user/f1');
+  const fixedDeep = watching('/home/user/dirA/sub/deep');
+  const following = (path) => {
+    const heard = [];
+    const stop = ns.watchChanges(path, (events) => heard.push(...events.map(said)), { follow: true });
+    return { stop, take: () => heard.splice(0) };
+  };
+  const file = following('/home/user/f1');
+  const deep = following('/home/user/dirA/sub/deep');
   kernel.rename('home/user/f1', 'home/user/f2');
   kernel.writeFile('home/user/f2', 'two');
   kernel.rename('home/user/dirA', 'home/user/dirB');
@@ -394,7 +413,9 @@ await check('a watch follows its path when it, or a directory above it, is renam
   await settled();
   assert.deepEqual(file.take(), ['rename /home/user/f1 -> /home/user/f2', 'change /home/user/f2']);
   assert.deepEqual(deep.take(), ['rename /home/user/dirA/sub/deep -> /home/user/dirB/sub/deep', 'change /home/user/dirB/sub/deep']);
-  file.stop(); deep.stop();
+  assert.deepEqual(fixedFile.take(), ['unlink /home/user/f1']);
+  assert.deepEqual(fixedDeep.take(), ['unlink /home/user/dirA/sub/deep']);
+  for (const w of [file, deep, fixedFile, fixedDeep]) w.stop();
 });
 
 await check('a directory above a watched path renamed: nothing told where the watcher could not look, and no path is made up', async () => {
