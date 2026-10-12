@@ -169,8 +169,8 @@ assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
 }
 
 // A JSX entry (`node app.jsx`, `bun app.jsx`) is compiled as TypeScript is:
-// the launch's request names the jsx loader, the file stays as written, and
-// the program runs its emit, a module of the map.
+// the launch's request names the jsx loader and the file stays as written
+// (node-runtime-code-workerd.mjs runs one).
 {
   const APP = 'home/user/jsx';
   const SOURCE = 'globalThis.React = { createElement: (type) => ({ type }) };\nconsole.log((<b/>).type);\n';
@@ -178,15 +178,13 @@ assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
   const jsxEsbuild = new EsbuildService(undefined, {
     transformHost: async (requests) => requests.map(({ code, options }) => {
       loaders.push(options.loader);
-      return { code: code.replace('<b/>', 'React.createElement("b", null)'), map: '', warnings: [] };
+      return { code, map: '', warnings: [] };
     }),
   });
   const jsx = await buildPrefetchBundle(launchFs({ [`${APP}/app.jsx`]: SOURCE }).fs,
     { scriptPath: `/${APP}/app.jsx`, cwd: `/${APP}`, entryCode: SOURCE, esbuild: jsxEsbuild });
   assert.deepEqual(loaders, ['jsx'], 'the entry is compiled with the jsx loader');
   assert.equal(jsx.bundle[`${APP}/app.jsx`], SOURCE, 'the file is kept as written');
-  const jsxSet = generatedModuleSet(await generateEntrypointCode(SOURCE, jsx, false, nodeFacetSources('/* jsx */'), [], `/${APP}/app.jsx`, `/${APP}`, true), 'runner.js');
-  assert.match(jsxSet[commonJsCellModuleName(`${APP}/app.jsx`)]?.cjs ?? '', /React\.createElement\("b", null\)/, 'the program\'s module is the compiled JSX');
 }
 
 // ── The facet's module map, as a launch generates it ─────────────────────

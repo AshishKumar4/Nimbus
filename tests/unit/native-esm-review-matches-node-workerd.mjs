@@ -168,6 +168,25 @@ const FILES = {
     "const required = createRequire(import.meta.url)('./dep.cjs');",
     'console.log(a === b, a === required, globalThis.evaluations);',
   ].join('\n') + '\n',
+  // A typeless .js is CommonJS by its syntax: one module whatever the query.
+  'js-query/dep.js': "globalThis.evaluations = (globalThis.evaluations ?? 0) + 1;\nmodule.exports = { marker: 'js' };\n",
+  'js-query/main.mjs': [
+    "import a from './dep.js?a';",
+    "import b from './dep.js?b';",
+    "import { createRequire } from 'node:module';",
+    "const required = createRequire(import.meta.url)('./dep.js');",
+    'console.log(a === b, a === required, globalThis.evaluations);',
+  ].join('\n') + '\n',
+  // A module whose query import made it the interpreter's, with top-level
+  // await, imported and then required: Node refuses the require still.
+  'adopted-tla/dep.mjs': 'export const x = 1;\n',
+  'adopted-tla/parent.mjs': "import { x } from './dep.mjs?q';\nawait 0;\nexport { x };\n",
+  'adopted-tla/main.mjs': [
+    "import { createRequire } from 'node:module';",
+    "const { x } = await import('./parent.mjs');",
+    'console.log("imported", x);',
+    "try { console.log('required', createRequire(import.meta.url)('./parent.mjs').x); } catch (e) { console.log('required', e.code); }",
+  ].join('\n') + '\n',
   // JSON's __esModule/default are data, not CommonJS interop instructions.
   'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
   'json-query-esmodule/main.mjs': "import v from './data.json?q' with { type: 'json' };\nconsole.log(JSON.stringify(v));\n",
@@ -221,6 +240,8 @@ const COMMANDS = [
   'node commented-json/main.mjs',
   'node missing-cjs-export/main.mjs',
   'node cjs-query/main.mjs',
+  'node js-query/main.mjs',
+  'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',
   'node clause-comment-fallback/main.mjs',

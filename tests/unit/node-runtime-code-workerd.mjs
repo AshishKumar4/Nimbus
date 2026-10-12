@@ -42,7 +42,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -94,6 +94,9 @@ const FILES = {
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
+  // A JSX entry, which the launch compiles (node and bun alike): Bun runs it
+  // so, and its output is the reference.
+  'app.jsx': 'globalThis.React = { createElement: (type) => ({ type }) };\nconsole.log("JSX " + (<b/>).type);\n',
   // Module files written while the program runs (so interpreted), each with
   // top-level await: import() resolves once the module has finished, and
   // rejects with what its evaluation throws; require() refuses the module,
@@ -371,6 +374,20 @@ try {
     const grammar = await terminal.run(`cd ${W} && node grammar.js`);
     assert.equal(grammar.status, 0, grammar.stdout);
     assert.match(grammar.stdout, /^GRAMMAR true 7$/m, grammar.stdout);
+
+    const jsxHost = mkdtempSync(join(tmpdir(), 'node-runtime-code-jsx-'));
+    try {
+      writeFileSync(join(jsxHost, 'app.jsx'), FILES['app.jsx']);
+      const reference = spawnSync('bun', ['app.jsx'], { cwd: jsxHost, encoding: 'utf8', env: { PATH: process.env.PATH } });
+      assert.equal(reference.stdout, 'JSX b\n', `bun runs the JSX entry: ${reference.stderr}`);
+    } finally {
+      rmSync(jsxHost, { recursive: true, force: true });
+    }
+    for (const runtime of ['node', 'bun']) {
+      const jsx = await terminal.run(`cd ${W} && ${runtime} app.jsx`);
+      assert.equal(jsx.status, 0, `${runtime} app.jsx: ${jsx.stdout}`);
+      assert.match(jsx.stdout, /^JSX b$/m, `${runtime} runs the compiled JSX entry as Bun does:\n${jsx.stdout}`);
+    }
 
     // One EventEmitter, workerd's: Node's function-constructor inheritance,
     // express's prototype mixin, native http servers and the static helpers.
