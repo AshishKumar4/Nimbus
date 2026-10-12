@@ -34,6 +34,8 @@ import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
+import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -623,7 +625,16 @@ export class ProcessFiles {
         // Every other method forwards to the guarded bridge.
         const listing = pid === undefined ? () => undefined : (create) => this.listingOf(pid, create);
         const clock = () => this.engine.revision();
-        return new AwaitingProcessBridge(guarded, view, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+        const bridge = new AwaitingProcessBridge(guarded, view, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+        registerDirectoryReadBridge(bridge, scope, async (path) => {
+            const real = await bridge.realpath(path);
+            if (real === '/' || view.composes(real))
+                return null;
+            const route = await view.route(real, { follow: true });
+            const key = normalizeVfsPath(real);
+            return route.point === '/' && route.source !== null && readLeaseCovers(key, true, SESSION_KERNEL_ROOTS) ? key : null;
+        });
+        return bridge;
     }
 }
 /** The kernel's own filesystems: never walked, and never in a process's listing, which is SQLite's and its embedder's. */
@@ -1054,6 +1065,8 @@ class AwaitingProcessBridge {
         return this.on(handleId, () => this.bridge.write(handleId, offset, bytes), () => this.descriptors.write(handleId, offset, bytes));
     }
     close(handleId) {
+        // A prefetched directory's accounting ends with its description's id, however it closes.
+        directoryReadHandleClosed(this.scope, handleId);
         return this.awaits(handleId) ? this.descriptors.close(handleId) : this.bridge.close(handleId);
     }
     fsync(handleId) {

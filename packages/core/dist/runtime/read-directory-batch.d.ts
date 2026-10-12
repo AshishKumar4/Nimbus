@@ -47,8 +47,10 @@ export interface ReadDirectoryBatchResult {
 export interface ReadDirectorySupervisor {
     fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult>;
 }
+/** The process's DescriptorScope (descriptors.ts), as far as this account needs it. */
 interface Scope {
     readonly closed: boolean;
+    readonly subscriptions: Set<() => void>;
 }
 interface Binding {
     readonly scope: Scope;
@@ -58,8 +60,6 @@ interface Binding {
 export declare function registerDirectoryReadBridge(fs: RuntimeFsBridge, scope: Scope, place: Binding['place']): void;
 /** A normal close also retires a prefetched handle's accounting. */
 export declare function directoryReadHandleClosed(scope: Scope, id: number): void;
-/** The authoritative scope closes descriptions; drop accounting at that same lifetime boundary. */
-export declare function disposeDirectoryReadScope(scope: Scope): void;
 export declare function hasDirectoryReadBridge(fs: RuntimeFsBridge): boolean;
 /**
  * Must be delivered once. Its cached answer keeps the ORIGINAL client's

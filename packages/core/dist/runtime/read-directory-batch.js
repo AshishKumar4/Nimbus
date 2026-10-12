@@ -20,7 +20,6 @@ const Request = z.object({
     lease: z.boolean(),
 });
 const scopes = new WeakMap();
-const endedScopes = new WeakSet();
 const bridges = new WeakMap();
 /** Called only by ProcessFiles where each face is bound to its actual descriptor scope. */
 export function registerDirectoryReadBridge(fs, scope, place) {
@@ -28,17 +27,6 @@ export function registerDirectoryReadBridge(fs, scope, place) {
 }
 /** A normal close also retires a prefetched handle's accounting. */
 export function directoryReadHandleClosed(scope, id) { scopes.get(scope)?.tracked.delete(id); }
-/** The authoritative scope closes descriptions; drop accounting at that same lifetime boundary. */
-export function disposeDirectoryReadScope(scope) {
-    endedScopes.add(scope);
-    const budget = scopes.get(scope);
-    if (!budget)
-        return;
-    budget.ended = true;
-    budget.channels.clear();
-    budget.tracked.clear();
-    scopes.delete(scope);
-}
 export function hasDirectoryReadBridge(fs) { return bridges.has(fs); }
 function refusal(code, message) { return Object.assign(new Error(`${code}: ${message}`), { code }); }
 function codeOf(error) { return typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined; }
@@ -54,11 +42,21 @@ export async function readDirectoryBatch(fs, input) {
     if (!bound)
         throw refusal('ENOTSUP', 'directory prefetch needs a process descriptor scope');
     const { scope } = bound;
-    if (scope.closed || endedScopes.has(scope))
+    if (scope.closed)
         throw refusal('ESTALE', 'directory descriptor scope ended');
-    const budget = scopes.get(scope)
-        ?? { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
-    scopes.set(scope, budget);
+    let budget = scopes.get(scope);
+    if (budget === undefined) {
+        const created = { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
+        scopes.set(scope, created);
+        // The scope closes its descriptions; the account ends on the same release, before the scope is marked closed.
+        scope.subscriptions.add(() => {
+            created.ended = true;
+            created.channels.clear();
+            created.tracked.clear();
+            scopes.delete(scope);
+        });
+        budget = created;
+    }
     const live = () => { if (scope.closed || budget.ended)
         throw refusal('ESTALE', 'directory descriptor scope ended'); };
     const run = async () => {
