@@ -365,7 +365,7 @@ export function createNimbusHandler(
       ) {
         // Land on the path that was actually requested — the app owns it;
         // the exchange only strips the token from the query.
-        return handleAttachExchange(url, preview.sid, env, {
+        return handleAttachExchange(url, preview.sid, env, request.headers.get('Cookie'), {
           redirectPath: url.pathname,
           singleUseScope: 'session:preview',
           reusableScope: null,
@@ -491,7 +491,7 @@ export function createNimbusHandler(
         && url.searchParams.get(NIMBUS_TOKEN_QUERY)
         && resolveAuthMode(env, explicitMode) === 'enforce'
       ) {
-        return handleAttachExchange(url, route.sessionId, env, {
+        return handleAttachExchange(url, route.sessionId, env, request.headers.get('Cookie'), {
           redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
           singleUseScope: 'session:bootstrap',
           reusableScope: 'session:attach',
@@ -777,6 +777,7 @@ async function handleAttachExchange(
   url: URL,
   sessionId: string,
   env: any,
+  cookieHeader: string | null,
   options: {
     redirectPath: string;
     /** Scope a single-use (`jti`) token must carry at this entry point. */
@@ -828,9 +829,9 @@ async function handleAttachExchange(
     const clean = new URL(url);
     clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
     clean.pathname = options.redirectPath;
-    enforceSessionCookieCapacity(request, sessionId);
+    enforceSessionCookieCapacity(cookieHeader, sessionId);
     const setCookies = [setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId)];
-    if (request.headers.get('Cookie')?.includes(`${NIMBUS_TOKEN_COOKIE}=`)) {
+    if (cookieHeader?.includes(`${NIMBUS_TOKEN_COOKIE}=`)) {
       // Migrating: the legacy global credential stops being selected the
       // moment the route-owned one lands.
       setCookies.push(expireLegacyNimbusTokenCookie());

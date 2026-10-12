@@ -308,8 +308,8 @@ export const NIMBUS_TOKEN_SET_COOKIE_LIMIT = 4096;
  * sibling session's credential to make room would be the same ownership
  * bug in reverse.
  */
-export function enforceSessionCookieCapacity(request: Request, sessionId: string): void {
-  const cookie = request.headers.get('Cookie') ?? '';
+export function enforceSessionCookieCapacity(cookieHeader: string | null, sessionId: string): void {
+  const cookie = cookieHeader ?? '';
   let names = 0;
   let sessionBytes = 0;
   for (const c of cookie.split(';')) {
