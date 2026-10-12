@@ -4,9 +4,10 @@
 // wasi-instance, which also runs any `\0asm` file) opens /dev/stdin,
 // /dev/stdout, /dev/stderr, /dev/fd/N and /proc/self/fd/N as its own
 // descriptors, as on Linux. bash's WASI processes are covered by
-// bash-dev-fd.mjs; this is the same rule for every other WASI guest. Reading
-// /dev/stdin is the probe's (runtime-primitives/new/wasi-dev-fd): under this
-// local host a piped `python3 -c` reads no stdin at all, by sys.stdin either.
+// bash-dev-fd.mjs; this is the same rule for every other WASI guest. The
+// first case is the guest's stdin itself: the WASI layer reads it from the
+// process's input channel for every runtime (it used to be wired for none but
+// the generic wasm runner's, so CPython read an empty stdin).
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -31,6 +32,11 @@ const ws = await open({ facets: localFacetHost(ISOLATE_NETWORK) });
 ws.vfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).writeFile('home/user/f.txt', 'in a file\n');
 const py = (program) => `python3 -c ${JSON.stringify(program)}`;
 const cases = [
+  // Its stdin, read as fd 0 and by each name for it.
+  { command: `printf 'line\\n' | ${py("import sys; print(sys.stdin.read().strip())")}`, stdout: 'line\n' },
+  { command: `printf 'line\\n' | ${py("print(open('/dev/stdin').read().strip())")}`, stdout: 'line\n' },
+  { command: `printf 'by-number\\n' | ${py("print(open('/dev/fd/0').read().strip())")}`, stdout: 'by-number\n' },
+  { command: `printf 'proc\\n' | ${py("print(open('/proc/self/fd/0').read().strip())")}`, stdout: 'proc\n' },
   { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); print(open('/dev/fd/%d' % fd).read().strip())"), stdout: 'in a file\n' },
   { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); print(open('/proc/self/fd/%d' % fd).read().strip())"), stdout: 'in a file\n' },
   { command: py("f = open('/dev/stdout', 'w'); f.write('out\\n'); f.flush()"), stdout: 'out\n' },
