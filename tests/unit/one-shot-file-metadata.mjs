@@ -134,6 +134,8 @@ const fs = require('fs');
   fs.utimesSync(at('utimes-sync.txt'), 1000, 2000);
   const timedNow = fs.statSync(at('utimes-sync.txt')).mtimeMs;
   await fs.promises.symlink('utimes-sync.txt', at('lutimes-link'));
+  // A link made by the async call is in the sync view once a barrier brings it.
+  await fs.promises.readdir('/home/user');
   fs.lutimesSync(at('lutimes-link'), 1000, 3000);
   const tfd = fs.openSync(at('futimes-sync.txt'), 'w');
   fs.futimesSync(tfd, 1000, 4000);
