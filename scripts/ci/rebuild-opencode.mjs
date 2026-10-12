@@ -61,7 +61,15 @@ const models = join(scratch, 'models.json');
 writeFileSync(models, JSON.stringify(snapshot));
 const dist = join(scratch, 'dist');
 const env = { ...process.env, NIMBUS_OPENCODE_ROOT: packageRoot, NIMBUS_OPENCODE_DIST: dist, MODELS_DEV_API_JSON: models };
-run('bun', ['build-node.ts'], packageRoot, env);
+// Bun embeds CommonJS __dirname in its chunks. A random clone path changes
+// those literals, and therefore every chunk hash that depends on them.
+run('bwrap', [
+  '--unshare-user', '--bind', '/', '/', '--bind', upstream, '/src/opencode', '--bind', scratch, '/build',
+  '--chdir', '/src/opencode/packages/opencode',
+  '--setenv', 'NIMBUS_OPENCODE_ROOT', '/src/opencode/packages/opencode',
+  '--setenv', 'NIMBUS_OPENCODE_DIST', '/build/dist', '--setenv', 'MODELS_DEV_API_JSON', '/build/models.json',
+  'bun', 'build-node.ts',
+], repo, env);
 assertCurrentInputs('OpenCode', inputs, await opencodeInputs(), 'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
 writeFileSync(join(dist, 'provenance.json'), JSON.stringify({
   artifact: 'opencode',

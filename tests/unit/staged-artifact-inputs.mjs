@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -13,7 +13,6 @@ import { SPECS } from '../../packages/worker/scripts/napi-wasm/specs.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const loaderDir = path.join(repo, 'packages/worker/public/_assets/napi-wasm/loader');
-const { readdir } = await import('node:fs/promises');
 const [loaderBuild] = await readdir(loaderDir);
 const provenance = JSON.parse(await readFile(path.join(loaderDir, loaderBuild, 'provenance.json'), 'utf8'));
 const root = await mkdtemp(path.join(tmpdir(), 'staged-artifact-inputs-'));
@@ -68,7 +67,7 @@ try {
   assert.throws(() => runBuildFixpoint({
     root, steps: [{ cwd: 'packages/worker', script: 'bundle:napi-wasm' }],
     roots: ['packages/worker/src/napi-wasm-artifacts.generated.ts'],
-  }), error => error instanceof BuildFailure && error.message.includes(filesystem));
+  }), error => error instanceof BuildFailure && error.message.includes('bundle:napi-wasm'));
   assert.deepEqual(await readFile(path.join(root, 'packages/worker/src/napi-wasm-artifacts.generated.ts')), manifest, 'the refused gate preserves its output');
   await copy(filesystem);
 
