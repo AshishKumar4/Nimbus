@@ -4,7 +4,18 @@
   "target": "wasm32-wasip1",
   "source": {
     "url": "https://github.com/withastro/compiler-rs/archive/refs/tags/v0.5.1.tar.gz",
-    "sha256": "c9e546b0fb1bd4e61f4559bbed8f15368e4488fb73c2d828936a1cebf0b20592"
+    "sha256": "c9e546b0fb1bd4e61f4559bbed8f15368e4488fb73c2d828936a1cebf0b20592",
+    "inputs": {
+      "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "packages/worker/scripts/napi-wasm/astro-compiler/Cargo.lock": "090a5d238c8dbd6a5428d00e9648ad276e79e30210f5307e2c69e1775aca22fc",
+      "packages/worker/scripts/napi-wasm/build.mjs": "7994687704b17f1ec5ba1d4243a014991d30b45552557c908ff87e1d3ebbbd0f",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "69ade52f21928330b1910721cf56d13453188c4a6f279c56ab76ff18c8dfebb7",
+      "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
+      "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
+      "packages/worker/scripts/napi-wasm/specs.mjs#astro-compiler@0.5.1": "3d95d4ea518f50f28c9405571fa71a746d73de0c36c59e424698ac46cf9cd876",
+      "packages/worker/scripts/napi-wasm/specs.mjs#emnapi-link": "08bdc8cef180f63a612f6d138d9dc271fd4ce9bf7dd8a32d096a6f640a8bb2be"
+    }
   },
   "toolchain": "rustc 1.96.1 (31fca3adb 2026-06-26)\nbinary: rustc\ncommit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd\ncommit-date: 2026-06-26\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.1\nLLVM version: 22.1.2",
   "cargo": {

@@ -4,7 +4,17 @@
   "target": "wasm32-wasip1",
   "source": {
     "url": "https://github.com/bruits/satteri/archive/refs/tags/satteri-v0.10.5.tar.gz",
-    "sha256": "2193132300046ebacdc791d757986741e86abbb6306068dff39d2e4fada68db3"
+    "sha256": "2193132300046ebacdc791d757986741e86abbb6306068dff39d2e4fada68db3",
+    "inputs": {
+      "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "packages/worker/scripts/napi-wasm/build.mjs": "7994687704b17f1ec5ba1d4243a014991d30b45552557c908ff87e1d3ebbbd0f",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "69ade52f21928330b1910721cf56d13453188c4a6f279c56ab76ff18c8dfebb7",
+      "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
+      "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
+      "packages/worker/scripts/napi-wasm/specs.mjs#satteri@0.10.5": "89f69fcd16b974342f0b4cf46bf6f2cecf2245d1b88056eaa28a4899fb96f9fe",
+      "packages/worker/scripts/napi-wasm/specs.mjs#emnapi-link": "08bdc8cef180f63a612f6d138d9dc271fd4ce9bf7dd8a32d096a6f640a8bb2be"
+    }
   },
   "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
   "cargo": {
