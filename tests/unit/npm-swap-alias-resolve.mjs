@@ -216,6 +216,22 @@ const REGISTRY = {
   assert.ok(behind.events.some((e) => e.type === 'advisory' && e.from === 'rollup' && /publishes no 4\.63\.5/.test(e.reason)),
     `and the note says why it cannot run here: ${JSON.stringify(behind.events)}`);
   console.log('  a lagging swap target never answers with a version outside the range');
+
+  // The same, from the cache, where the read of the target past the cache
+  // fails outright (the call rejects): the cached answer stands, as it
+  // would have, and rollup installs unswapped, with the note.
+  const asked = [];
+  const cached = { rollup: ROLLUP.rollup, '@rollup/wasm-node': packument('@rollup/wasm-node', { '4.0.0': {} }) };
+  const lost = { SUPERVISOR: { async getPackument(name, options) {
+    asked.push(`${name}${options?.revalidate ? ' again' : ''}`);
+    if (options?.revalidate) throw new Error('the supervisor call was lost');
+    return { json: cached[name] ?? null, source: 'r2-cache', events: [] };
+  } } };
+  const kept = await resolveOnePackumentInFacet(spec({ name: 'rollup', range: '^4.50.0' }), lost);
+  assert.deepEqual(asked, ['rollup', '@rollup/wasm-node', '@rollup/wasm-node again'], 'the lagging target is asked once more');
+  assert.match(kept.pkg?.tarballUrl ?? '', /\/rollup-4\.63\.5\.tgz$/, 'a failed second read keeps the cached answer: rollup, unswapped');
+  assert.ok(kept.events.some((e) => e.type === 'advisory' && e.from === 'rollup' && /publishes no 4\.63\.5/.test(e.reason)), 'with the note');
+  console.log('  a failed read past the cache keeps what the cache answered');
 }
 
 // A package whose binding Nimbus stages installs at a staged version when
@@ -242,6 +258,15 @@ const REGISTRY = {
     assert.equal(exact.pkg?.version, version, `a lock at the staged ${version} keeps it`);
     assert.ok(!exact.events.some((e) => e.type === 'advisory' && e.from === 'rolldown'), `with no note: ${version} loads`);
   }
+  // Cached without the staged version, and the read past the cache fails
+  // outright: the cached pick stands, as it would have.
+  const unstaged = packument('rolldown', Object.fromEntries([`${major}.${minor}.0`, newer].map((v) => [v, {}])));
+  const lostAgain = { SUPERVISOR: { async getPackument(_name, options) {
+    if (options?.revalidate) throw new Error('the supervisor call was lost');
+    return { json: unstaged, source: 'r2-cache', events: [] };
+  } } };
+  const fallback = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: 'latest' }), lostAgain);
+  assert.equal(fallback.pkg?.version, newer, 'a failed second read keeps the cached pick');
   const pinned = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: newer }), registry(ROLLDOWN).env);
   assert.equal(pinned.pkg?.version, newer, 'an exact pin (a lockfile) is honoured');
   const note = pinned.events.find((e) => e.type === 'advisory' && e.from === 'rolldown');
