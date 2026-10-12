@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
-import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT } from '../constants.js';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_ENDED_CHANNELS } from '../constants.js';
 export const DIRECTORY_READ_RPC = 'fsReadDirectories';
 const Ids = z.array(z.number().int().nonnegative()).max(DIRECTORY_PREFETCH_LIMIT);
 const Request = z.object({
@@ -53,12 +53,13 @@ export async function readDirectoryBatch(fs, input) {
         throw refusal('ESTALE', 'directory descriptor scope ended');
     let budget = scopes.get(scope);
     if (budget === undefined) {
-        const created = { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
+        const created = { ended: false, reserved: 0, channels: new Map(), endedChannels: new Set(), tracked: new Map(), tail: Promise.resolve() };
         scopes.set(scope, created);
         // The scope closes its descriptions; the account ends on the same release, before the scope is marked closed.
         scope.subscriptions.add(() => {
             created.ended = true;
             created.channels.clear();
+            created.endedChannels.clear();
             created.tracked.clear();
             scopes.delete(scope);
         });
@@ -68,6 +69,8 @@ export async function readDirectoryBatch(fs, input) {
         throw refusal('ESTALE', 'directory descriptor scope ended'); };
     const run = async () => {
         live();
+        if (budget.endedChannels.has(request.channel))
+            throw refusal('ESTALE', 'directory prefetch channel ended');
         let channel = budget.channels.get(request.channel);
         if (!channel) {
             // A late request from a rewound run cannot close reused descriptor numbers.
@@ -134,6 +137,12 @@ export async function readDirectoryBatch(fs, input) {
                 }
             }
             budget.channels.delete(request.channel);
+            budget.endedChannels.add(request.channel);
+            for (const oldest of budget.endedChannels) {
+                if (budget.endedChannels.size <= DIRECTORY_ENDED_CHANNELS)
+                    break;
+                budget.endedChannels.delete(oldest);
+            }
         }
         if (closeErrors.length)
             throw closeErrors[0];

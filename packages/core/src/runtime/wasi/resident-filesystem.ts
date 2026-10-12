@@ -92,8 +92,12 @@ export interface ResidentNamespace {
   lookup(keys: string[], content: boolean): Promise<boolean>;
   /** List everything under `key` in a few pages. False when that did not finish. */
   listTree(key: string): Promise<boolean>;
-  /** The bytes of file `key` the store holds, or undefined. */
-  content(key: string): Uint8Array | undefined;
+  /**
+   * The bytes of file `key` the store holds, or undefined; with `revision`,
+   * only bytes dated at it or later (or the facet's own): a read of older
+   * bytes that landed after a barrier admitted the change is not served.
+   */
+  content(key: string, revision?: number): Uint8Array | undefined;
   /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
   fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
   /**
@@ -386,7 +390,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     list: (key) => timed(resident.list(key)),
     lookup: (keys, content) => timed(resident.lookup(keys, content)),
     listTree: (key) => timed(resident.listTree(key)),
-    content: (key) => resident.content(key),
+    content: (key, revision) => resident.content(key, revision),
     fill: (key, entry) => timed(resident.fill(key, entry)),
     pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
     fillMany: (files) => timed(resident.fillMany(files)),
@@ -561,9 +565,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
       if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT) break;
       const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
-      if (fetchingAhead.has(sibling) || store.content(sibling) !== undefined) continue;
+      if (fetchingAhead.has(sibling)) continue;
       const found = entryAt(sibling);
-      if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES) continue;
+      if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES || store.content(sibling, found.revision) !== undefined) continue;
       // What this process decided or writes through is its own to read.
       if (holder?.content(found) !== undefined || holder?.writing(found.ino) !== undefined) continue;
       if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES) break;
@@ -667,7 +671,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder?.writing(entry.ino) !== undefined) return undefined;
     const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined =>
       (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
-    const held = store.content(key);
+    const held = store.content(key, entry.revision);
     if (held !== undefined && held.byteLength === entry.size) return held;
     const fill = (): Promise<Uint8Array | undefined> => {
       counts.fills++;
@@ -678,7 +682,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
     if (batch === undefined) return fill();
     return batch.then(() => {
-      const fetched = store.content(key);
+      const fetched = store.content(key, entry.revision);
       return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
     });
   };

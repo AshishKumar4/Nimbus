@@ -239,6 +239,19 @@ let __wasiResident: { sup: WasiSupervisorStub; who: string; fs: ResidentFilesyst
  */
 let __wasiKept: { who: string; device: number; walked: readonly string[] } | null = null;
 
+/**
+ * Syscalls this facet's watchdog gave up on (withParkDeadline): each may
+ * still complete, whenever, into this facet's store and descriptor table.
+ * One is enough to make the facet unfit for another process: its store is
+ * not kept, and __wasiReusable says so to whoever leases the facet.
+ */
+let __wasiAbandoned = 0;
+
+/** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
+export function __wasiReusable(): boolean {
+  return __wasiAbandoned === 0;
+}
+
 /** Who a store's names were walked as. */
 function __wasiWho(cred: WasiCred): string {
   return `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
@@ -274,7 +287,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     list: (key: string) => (view === null ? Promise.resolve(false) : view.list(key)),
     lookup: (keys: string[], content: boolean) => (view === null ? Promise.resolve(false) : view.lookup(keys, content)),
     listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
-    content: (key: string) => (view === null ? undefined : view.content(key)),
+    content: (key: string, revision?: number) => (view === null ? undefined : view.content(key, revision)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
     pages: (key: string, revision: number, size: number, first: number, last: number) =>
       (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
@@ -380,7 +393,9 @@ export async function __wasiSettleWrites(): Promise<string | null> {
       // A run that ended with its store answering, and everything it wrote
       // answered, leaves the store to the next process in this facet.
       const view = await resident.ready;
-      if (failed === null && view !== null && view.ready()) __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
+      if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready()) {
+        __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
+      }
     }
   } catch (error) {
     if (__wasiProcessGone === null) throw error;
@@ -777,6 +792,7 @@ function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        __wasiAbandoned++;
         __wasiResident?.fs.cancelPendingDirectories();
         resolve(__WASI_EAGAIN);
       }, __WASI_PARK_DEADLINE_MS);

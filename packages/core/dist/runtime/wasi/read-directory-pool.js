@@ -1,5 +1,5 @@
 /** Guest-side bookkeeping for real, single-use directory descriptions. It owns no filesystem authority. */
-import { DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
+import { DIRECTORY_BATCH_LIMIT, DIRECTORY_END_WAIT_MS, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
 function failure(code, message) { return Object.assign(new Error(`${code}: ${message}`), { code }); }
 /** Whether the store's entry shows the directory as the authority's access check saw it when it opened it. */
 function asOpened(entry, current) {
@@ -11,7 +11,7 @@ function keyOfPath(path) {
     const named = typeof path === 'string' ? path : 'root' in path ? `${path.root}/${path.path}` : '';
     return named.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
 }
-export function readDirectoryPool({ call, store, client, before }) {
+export function readDirectoryPool({ call, store, client, before, endWaitMs = DIRECTORY_END_WAIT_MS }) {
     const channel = crypto.randomUUID();
     let sequence = 0, generation = 0, cancelled = 0;
     let owner = null, epoch = null;
@@ -215,16 +215,23 @@ export function readDirectoryPool({ call, store, client, before }) {
         async dispose() {
             ended = true;
             cancelled++;
-            await serial(async () => {
-                for (const id of owned.keys())
-                    retiring.add(id);
-                owned.clear();
-                claiming.clear();
-                invalidate();
-                // The channel's last exchange: it retires the rest and ends the channel.
-                if (sequence > 0)
-                    await exchange([], false, true);
-            });
+            for (const id of owned.keys())
+                retiring.add(id);
+            owned.clear();
+            claiming.clear();
+            invalidate();
+            if (sequence === 0)
+                return;
+            // The channel's last exchange retires the rest and ends the channel. It
+            // is sent now, not behind an exchange the session may never answer (a
+            // park the watchdog gave up on): its later sequence supersedes that
+            // one. The run waits for it at most endWaitMs.
+            let timer;
+            await Promise.race([
+                exchange([], false, true).then(() => { }, () => { }),
+                new Promise((resolve) => { timer = setTimeout(resolve, endWaitMs); }),
+            ]);
+            clearTimeout(timer);
         },
     };
 }

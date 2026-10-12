@@ -20,6 +20,8 @@ export interface GitFacetResult {
   error?: string;
   /** git's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
   fsStats?: ResidentFilesystemStats | null;
+  /** Whether another git may run in this facet (__wasiReusable: no syscall in it was abandoned). */
+  reusable?: boolean;
   /** The facet's clock (which moves only across I/O) where the run entered, git was instantiated, and git exited. */
   clock?: { entered: number; instantiated: number; exited: number };
 }

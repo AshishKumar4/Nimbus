@@ -151,7 +151,8 @@ export function makeGitRunnerFactory(deps: {
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
         return 1;
       }
-      if (result.error === undefined && idle.length < WARM_GIT_FACETS) idle.push(warm);
+      // A facet in which a syscall was abandoned may still be written by it: never another git's.
+      if (result.error === undefined && result.reusable === true && idle.length < WARM_GIT_FACETS) idle.push(warm);
       const returned = Date.now();
       await writeOut(ctx.stdout, result.stdout);
       await writeOut(ctx.stderr, result.stderr);
@@ -239,6 +240,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     stderr: joined(stderr),
     error: run.error || (lost ? 'output lost: ' + lost : undefined),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
+    reusable: typeof __wasiReusable === 'function' && __wasiReusable(),
     clock: { entered, instantiated, exited },
   };
 };

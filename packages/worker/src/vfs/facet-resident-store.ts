@@ -1516,6 +1516,18 @@ function __residentCopyByKey(t, path, ckey, rev) {
   return true;
 }
 
+/**
+ * Whether the namespace holds a later revision of \`path\` than \`rev\`: bytes
+ * read at \`rev\` are older than what a barrier admitted while the read was
+ * in flight (read-ahead goes on beside the program's own calls), and are not
+ * installed, or a later read would be served them by their length alone.
+ */
+function __residentOutdated(t, path, rev) {
+  const [parent, name] = __nsSplit(path);
+  const listed = t.nsGet(parent, name);
+  return listed !== undefined && typeof rev === "number" && Number(listed.rev) > rev;
+}
+
 function __residentDelete(t, path) {
   const had = __residentHead(path) !== undefined || __residentHeld.has(path);
   __residentForgetHeld(path);
@@ -2490,7 +2502,11 @@ function __residentNamespaceView(supervisor, device, cred) {
     list: (k) => __nsListDirectory(supervisor, k),
     lookup: (keys, content) => __nsLookupKeys(supervisor, keys, content ? __RESIDENT_LOOKUP_CONTENT_BYTES : 0),
     listTree: (k) => __nsListSubtree(supervisor, k),
-    content(k) {
+    content(k, revision) {
+      if (typeof revision === "number") {
+        const stamped = __residentProvenance(k);
+        if (stamped !== undefined && stamped !== __RK_OWN_WRITE && stamped < revision) return undefined;
+      }
       const cell = __residentGet(k);
       if (cell === undefined || (cell && typeof cell === "object" && cell.error)) return undefined;
       return typeof cell === "string" ? encoder.encode(cell) : cell;
@@ -2499,7 +2515,7 @@ function __residentNamespaceView(supervisor, device, cred) {
       const cursor = __residentCursor();
       if (cursor === null) return null;
       await __residentFetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
-      const bytes = view.content(k);
+      const bytes = view.content(k, entry.revision);
       return bytes === undefined ? null : bytes;
     },
     pages: (k, rev, size, first, last) => __residentPages(supervisor, k, rev, size, first, last),
@@ -2996,6 +3012,7 @@ async function __residentFetchFiles(supervisor, files) {
       const seen = (landed.get(range.path) || 0) + 1;
       landed.set(range.path, seen);
       if (seen === range.parts && !failedPaths.has(range.path)) {
+        if (__residentOutdated(t, range.path, range.rev)) { failedPaths.add(range.path); continue; }
         __residentPutHead(t, range.path, __RK_BINARY, range.size, range.parts, range.rev, range.ckey);
         filled++;
       }
@@ -3012,7 +3029,7 @@ async function __residentFetchFiles(supervisor, files) {
   }
 
   for (const file of later) {
-    if (__residentCopyByKey(t, file.path, file.ckey, file.rev)) copied++;
+    if (!__residentOutdated(t, file.path, file.rev) && __residentCopyByKey(t, file.path, file.ckey, file.rev)) copied++;
     else failed++;
   }
   if (ranges.length > 0) await __residentReportSize();

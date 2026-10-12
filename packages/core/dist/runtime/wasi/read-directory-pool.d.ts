@@ -17,6 +17,8 @@ interface Options {
     readonly client: ProcessFsClient;
     /** Publish the caller's pending writes before recording the original lease ask. */
     readonly before: () => Promise<void>;
+    /** How long dispose waits for the channel's last exchange (DIRECTORY_END_WAIT_MS). */
+    readonly endWaitMs?: number;
 }
 export interface ReadDirectoryPool {
     open(path: RuntimeFsPath, key: string, prefetch: () => Promise<readonly RuntimeFsPath[]>): Promise<RuntimeFileHandle | null>;
@@ -44,6 +46,6 @@ export interface ReadDirectoryPool {
      */
     dispose(): Promise<void>;
 }
-export declare function readDirectoryPool({ call, store, client, before }: Options): ReadDirectoryPool;
+export declare function readDirectoryPool({ call, store, client, before, endWaitMs }: Options): ReadDirectoryPool;
 export {};
 //# sourceMappingURL=read-directory-pool.d.ts.map
