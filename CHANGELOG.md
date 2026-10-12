@@ -22,7 +22,7 @@ published independently in the `@nimbus-sh` npm scope.
   Whether a directory renamed above a watched path took it along is judged
   by a look when the watch began and the changes told since; a backend that
   holds changes back answers that look as they were told, storing and
-  recalling nothing (the new optional `VFS.landed`, which `SqliteFiles`
+  recalling nothing (the new optional `VFS.landedAt`, which `SqliteFiles`
   implements).
   A backend may tell its own (the new optional `VFS.watchChanges`, which
   `SqliteFiles` implements, without storing any held write); any other
