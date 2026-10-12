@@ -7941,7 +7941,7 @@ const __tlsMod = (() => {
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
     const egressed = globalThis.__nimbusEgress === true;
     if (egressed || !proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
-    const socket = egressed ? __nimbusEgressTlsConnect(real, realNet, args, notImplemented)
+    const socket = egressed ? __nimbusEgressTlsConnect(real, realNet, args)
       : proxied ? proxiedConnect(...args) : real.connect(...args);
     let closed = false;
     let hold = null;

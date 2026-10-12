@@ -13,7 +13,7 @@ import * as runtimeServices from '../hosted/services.js';
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
-import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type EgressFor, type EgressProcess, type WorkspaceEgress, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -329,8 +329,28 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      * Called once per instance, by whatever needs the network first.
      */
     protected workspaceEgress(): WorkspaceEgress | undefined;
-    /** {@link workspaceEgress}, for the session's init and processes (not part of the embedder surface). */
-    egressForWorkspace(): WorkspaceEgress | undefined;
+    /**
+     * The egress for one of the session's processes (NimbusWorkspaceOptions.egressFor),
+     * when the workspace has one ({@link workspaceEgress}): asked once per
+     * process while it lives, so its fetch, sockets, TLS, commands and Dynamic
+     * Worker, wherever it is hosted, all go through what this returns. An
+     * embedder that tells execs apart implements it, e.g.
+     * `return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString(), execId: process.execId } })`.
+     * Undefined keeps the workspace's egress for that process.
+     */
+    protected egressFor?(process: EgressProcess): WorkspaceEgress | undefined;
+    /** {@link workspaceEgress} and {@link egressFor}, for the session's workspace (not part of the embedder surface). */
+    egressForWorkspace(): {
+        egress?: WorkspaceEgress;
+        egressFor?: EgressFor;
+    };
+    /**
+     * The session's network, before and across its workspaces: under
+     * {@link egressFor} it selects from whatever process table the session
+     * holds as a process asks (a destroy installs a new one), and a process
+     * is asked for once, whether this network or the workspace's asks first.
+     */
+    sessionNetwork(): WorkspaceNetwork;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority(): ProcessFiles;
     /** The pid-keyed filesystem bridge behind the supervisor ops. */

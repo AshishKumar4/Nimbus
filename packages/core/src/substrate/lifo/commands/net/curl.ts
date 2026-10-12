@@ -481,7 +481,7 @@ async function executeCurlRequest(
           const gateway = await dispatchWorkspaceRequest(kernel, NIMBUS_AI_GATEWAY_PORT, new Request(hop.url, hopInit(hop, signal)));
           if (gateway.kind !== 'refused') return gateway;
         }
-        return await sendHop(kernel, hop.url, hopInit(hop, signal));
+        return await sendHop(kernel, ctx.pid, hop.url, hopInit(hop, signal));
       },
     },
   );

@@ -155,8 +155,9 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | a plain TCP socket a program opens | yes, to the egress's `connect()` |
 | TLS a runtime makes itself over a plain socket (CPython's `ssl`: pip's downloads, `urllib` over https) | yes: the egress's `connect()` carries the encrypted stream |
 | a WebSocket server in the session (`ws`'s `WebSocketServer`, an `http` server's `'upgrade'`) | not available, egress or not: workerd's HTTP server emits `'request'`, never `'upgrade'`; a session's client connecting to one closes with 1006 (`Network connection lost`), measured with `ws` 8.22 and the global WebSocket |
-| a node program's TLS socket (`tls.connect`) | refused by name (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only, so the TLS session could only be made off the egress |
-| a worker or dev server a command starts (wrangler dev, vite) | yes |
+| a node program's TLS socket (`tls.connect`) | through the egress's optional `connectTls({ hostname, port, servername? })`, which makes the TLS session (`servername` when the program names one other than the host); without it, refused by name (`ERR_NIMBUS_EGRESS_TLS`) |
+| TLS over a socket the program opened (`tls.connect({ socket })`, STARTTLS) | refused by name (`ERR_NIMBUS_EGRESS_STARTTLS`): the egress carries that connection, and workerd starts no TLS on a connection through a service binding |
+| a worker or dev server a command starts (wrangler dev, vite), and a Worker that one loads (`worker_loaders`) | yes |
 | an inline `node` program (a host without Dynamic Workers: Bun, Node): fetch, `http`/`https` | yes, as Node's fetch: the response streams, an unread body is not read, the program's redirect mode is honored and each hop is its own request through the egress |
 | an inline `node` program's WebSocket | refused by name: a WebSocket cannot cross the inline program's realm to the host |
 | a facet of `localFacetHost` (Bun, Node): its fetch | yes, as an inline `node` program's |
@@ -164,9 +165,41 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | Nimbus's own traffic (R2, runtime catalog, OAuth, AI, static assets, its Durable Objects) | no |
 
 HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a
-request, not a socket. A session's processes keep their network across an
+request, not a socket. How a TLS socket's name works under an egress:
+
+- `servername: ''` asks Node to send no SNI. It is not forwarded, so the
+  egress presents the host name. An egress on workerd cannot send no SNI:
+  its TLS always presents the name it checks.
+- With a `servername` other than the host, an egress on workerd makes the
+  session with `startTls({ expectedServerHostname })`, which checks the
+  certificate only after the handshake. A certificate that fails shows up
+  after `secureConnect`: as an internal error at the program's first write,
+  or as an end with no data at a read, not as a handshake error. No byte the
+  program writes reaches the server.
+- The name is checked as given. Node removes a trailing dot
+  (`example.com.`) before it checks; the egress does not. A session's processes keep their network across an
 instance reset: a launch the reset interrupted is re-driven through the same
 egress, before or without a reconnect.
+
+To tell which exec made a request, mint an egress per process:
+`NimbusWorkspace.create({ egress, egressFor })`, or `egressFor` on the
+session. It gets `{ pid, execId }` once per process and returns that
+process's egress, or undefined for the workspace's. Everything the process
+does goes through it: its programs and their sockets, the commands it runs,
+and its Dynamic Worker wherever it is hosted. A host that builds its facets'
+network itself makes it with `selectProcessEgress(egress, egressFor,
+processes)` over the workspace's process table, not `workspaceNetwork`.
+
+```ts
+export class Session extends NimbusSession {
+  protected override workspaceEgress() {
+    return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString() } });
+  }
+  protected override egressFor(process: EgressProcess) {
+    return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString(), execId: process.execId } });
+  }
+}
+```
 
 ## Proteus-Style Tool Provider
 
