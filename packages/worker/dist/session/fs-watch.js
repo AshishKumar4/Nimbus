@@ -60,6 +60,7 @@
  * acceptable and matches the W9 flush debounce pattern at
  * hibernation.ts:236-256).
  */
+import { normalizePath } from '@nimbus-sh/core/vfs/composite.js';
 /** Hard cap on pending events per subscriber before drop-oldest. */
 const SUB_MAX_QUEUE = 200;
 /**
@@ -77,7 +78,7 @@ function genSubId() {
  * (whose changes it would tell twice). None: the whole namespace.
  */
 function watchedTrees(paths) {
-    const trees = [...new Set(paths.map((p) => `/${p.replace(/^\/+|\/+$/g, '')}`))].sort();
+    const trees = [...new Set(paths.map(normalizePath))].sort();
     if (trees.length === 0 || trees.includes('/'))
         return ['/'];
     return trees.filter((tree, i) => !trees.slice(0, i).some((outer) => tree.startsWith(`${outer}/`)));

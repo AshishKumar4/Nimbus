@@ -445,7 +445,12 @@ export declare class CompositeVFS implements VFS {
      * removed, is not looked up: those are change and unlink.
      */
     watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
-    /** Watch `mount`'s backend, as this view sees it, where it tells its own changes and holds part of `watch`'s tree. */
+    /**
+     * Watch `mount`'s backend, as this view sees it, where it tells its own
+     * changes and holds part of `watch`'s tree: a source fixed for every
+     * principal (one that gives a backend per principal, or per moment, is
+     * told as the namespace changes it).
+     */
     private subscribeChanges;
     /** `events`, changes on `mount` (namespace paths), told to `watch` as far as this view shows them there. */
     private hearChanges;

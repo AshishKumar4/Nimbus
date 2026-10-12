@@ -751,8 +751,15 @@ export class CompositeVFS {
                 delete this.table.changes;
         };
     }
-    /** Watch `mount`'s backend, as this view sees it, where it tells its own changes and holds part of `watch`'s tree. */
+    /**
+     * Watch `mount`'s backend, as this view sees it, where it tells its own
+     * changes and holds part of `watch`'s tree: a source fixed for every
+     * principal (one that gives a backend per principal, or per moment, is
+     * told as the namespace changes it).
+     */
     subscribeChanges(watch, mount) {
+        if (typeof mount.source === 'function')
+            return;
         const { path } = watch;
         const rel = path === mount.point || path.startsWith(mount.under) ? relativeTo(mount.point, path)
             : under(path, mount.point) ? '/' : null;
