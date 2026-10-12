@@ -13,6 +13,7 @@ import { CRED_KERNEL, CRED_SESSION_USER, GIT_WASI_ENV } from '../../packages/cor
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
+import { encodeIndexFile, splitIndexEntries } from '../../packages/worker/src/git/worktree/dircache.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -20,9 +21,10 @@ const vfs = new SqliteVFS(harness.sql, harness.ctx);
 vfs.as(CRED_KERNEL).mkdir('home/user', { recursive: true, mode: 0o755 });
 vfs.as(CRED_KERNEL).chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const files = new ProcessFiles(vfs);
+const user = vfs.as(CRED_SESSION_USER);
 
 /** `git <args>` through the front door; `real` is whether real git is installed. What real git was handed, if anything. */
-async function git(args, { real = true, env = {} } = {}) {
+async function git(args, { real = true, env = {}, view, status = 7 } = {}) {
   let stdout = '';
   let stderr = '';
   const handed = [];
@@ -30,9 +32,14 @@ async function git(args, { real = true, env = {} } = {}) {
     pid: 1, cred: CRED_SESSION_USER, args, cwd: '/home/user', env,
     stdout: { write(s) { stdout += s; }, writeBytes(b) { stdout += Buffer.from(b).toString('utf8'); } },
     stderr: { write(s) { stderr += s; } },
-    vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
+    vfs: view ?? files.view({ pid: 1, cred: CRED_SESSION_USER }),
     signal: new AbortController().signal,
-  }, vfs, undefined, undefined, undefined, undefined, undefined, real ? async () => { handed.push([...args]); return 7; } : undefined);
+  }, vfs, undefined, undefined, undefined, undefined, undefined, real ? async () => {
+    assert.equal(stdout, '', 'no built-in output before handoff');
+    assert.equal(stderr, '', 'no built-in diagnostic before handoff');
+    handed.push([...args]);
+    return status;
+  } : undefined);
   return { code, stdout, stderr, real: handed };
 }
 
@@ -78,5 +85,150 @@ assert.notEqual(alone.code, 0, 'a command it lacks is its own refusal');
 const unknownOption = await git(['--git-dir=repo/.git', 'status'], { real: false });
 assert.equal(unknownOption.code, 129);
 assert.match(unknownOption.stderr, /unknown option/);
+
+const identity = ['-c', 'user.name=Ada', '-c', 'user.email=ada@example.com'];
+const inRepo = ['-C', 'repo'];
+assert.equal((await git([...inRepo, ...identity, 'commit', '-qamseed', '--allow-empty'])).code, 0);
+assert.equal((await git([...inRepo, 'tag', 'seed'])).code, 0);
+const indexBefore = user.readFile('home/user/repo/.git/index');
+const headBefore = user.readFile('home/user/repo/.git/refs/heads/master');
+user.writeFile('home/user/repo/f', 'unstaged\n');
+
+// Every command's parser owns its capability boundary, including later
+// letters in clusters and flags after operands on mutating commands.
+const unsupported = [
+  ['init', '--shared', 'not-created'],
+  ['clone', '--filter=object:type=blob', 'https://example.com/repo', 'not-cloned'],
+  ['clone', '--filter=combine:blob:none+tree:0', 'https://example.com/repo'],
+  ['clone', '--filter=sparse:oid=HEAD', 'https://example.com/repo'],
+  ['clone', '-qvZ', 'https://example.com/repo'],
+  ['status', '-sb'], ['status', '--porcelain=v2'], ['status', '--short=yes'],
+  ['add', '-vN', 'f'], ['add', '--all=yes'],
+  ['ls-files', '-ct'], ['diff', '--word-diff'], ['diff', 'seed', 'HEAD'],
+  ['reset', '--keep', 'HEAD'], ['tag', '-as', '-m', 'signed', 'not-created'],
+  ['rev-parse', '--show-toplevel', '--show-prefix'],
+  ['commit', '-aqpm', 'no-commit'], ['commit', '--dry-run', '-m', 'no-commit'],
+  ['commit', '--', 'f'], ['commit', '--allow-empty=yes', '-m', 'no-commit'],
+  ['log', '--grep=needle'], ['log', 'HEAD'], ['log', '--', 'f'],
+  ['branch', '--show-current', '--sort=-committerdate'],
+  ['branch', 'new-branch', 'HEAD'], ['branch', '-d', 'a', 'b'], ['branch', '--list', '*'],
+  ['checkout', '-qbnew-branch', '--no-overlay'], ['checkout', '-b', 'new-branch', 'HEAD'],
+  ['checkout', 'HEAD', '--', 'f', '--no-overlay'],
+  ['remote', 'set-url', 'origin', 'https://example.com/repo'],
+  ['remote', 'add', '--fetch', 'origin', 'https://example.com/repo'],
+  ['fetch', 'origin', '--prune'], ['fetch', 'origin', 'main'],
+  ['pull', 'origin', 'main', '--dry-run'], ['push', 'origin', 'main', '--dry-run'],
+  ['push', '-qn', 'origin', 'main'], ['push', 'origin', 'main:other'],
+  ['merge', '--squash', 'topic'], ['merge', 'a', 'b'],
+  ['config', '--worktree', 'user.name', 'wrong'],
+  ['config', '--get', 'user.name', 'pattern'], ['config', 'set', 'user.name', 'wrong'],
+];
+for (const words of unsupported) {
+  const args = [...inRepo, ...words];
+  const original = [...args];
+  const ran = await git(args, { status: 37 });
+  assert.deepEqual(ran.real, [original], `${words.join(' ')}: unsupported invocation handed off`);
+  assert.deepEqual(args, original, 'the invocation is untouched');
+  assert.equal(ran.code, 37, 'real git status passes through');
+  assert.deepEqual(user.readFile('home/user/repo/.git/index'), indexBefore, 'no index mutation before handoff');
+  assert.deepEqual(user.readFile('home/user/repo/.git/refs/heads/master'), headBefore, 'no commit before handoff');
+  const alone = await git(args, { real: false });
+  assert.ok(alone.code !== 0, `${words.join(' ')}: not silently ignored without real git`);
+  assert.equal(alone.stdout, '', 'a refused invocation has no partial stdout');
+  assert.ok(alone.stderr, 'the parser diagnostic is preserved without real git');
+}
+assert.equal(user.exists('home/user/repo/not-created'), false);
+assert.equal(user.exists('home/user/repo/not-cloned'), false);
+assert.equal(user.exists('home/user/repo/.git/refs/heads/new-branch'), false);
+assert.equal(user.exists('home/user/repo/.git/refs/tags/not-created'), false);
+
+// Syntax-only handoffs need no filesystem or JavaScript git acquisition.
+const noFs = new Proxy({}, { get() { throw new Error('unexpected JavaScript filesystem acquisition'); } });
+assert.equal((await git([...inRepo, 'commit', '--dry-run', '-m', 'x'], { view: noFs })).code, 7);
+
+for (const args of [
+  [...inRepo, ...identity, 'commit', '-qqam--dry-run', '--allow-empty'],
+  [...inRepo, ...identity, 'commit', '--message', '--amend', '--allow-empty', '--'],
+  [...inRepo, 'log', '-n1', '--oneline'], [...inRepo, 'log', '-1', '--oneline'],
+  [...inRepo, 'status', '-szuall', '--', '--porcelain=v2'],
+  [...inRepo, 'ls-files', '-csz', '--', '--bogus'],
+  [...inRepo, 'config', 'test.option', '--global'],
+  [...inRepo, 'config', '--get', '--', 'test.option'],
+  [...inRepo, 'remote', '-v'], [...inRepo, 'branch', '--show-current', '--'],
+]) {
+  const ran = await git(args);
+  assert.deepEqual(ran.real, [], `${args.join(' ')}: implemented forms stay JavaScript`);
+  assert.equal(ran.code, 0, ran.stderr);
+  if (args.includes('log')) assert.equal(ran.stdout.trim().split('\n').length, 1, 'attached log count is consumed');
+}
+
+// Operational failures never hand off, even when they sound unsupported.
+for (const words of [
+  ['add', 'missing'], ['commit', '--cleanup=invalid', '-m', 'x'],
+  ['checkout', 'no-such-branch'], ['fetch', 'no-such-remote'],
+  ['pull', 'no-such-remote'], ['push', 'no-such-remote'], ['merge', 'no-such-branch'],
+  ['tag', '-d', 'seed', 'missing'], ['reset', '--hard', 'no-such-revision'],
+]) {
+  const ran = await git([...inRepo, ...words]);
+  assert.deepEqual(ran.real, [], `${words.join(' ')}: operational failure is not a capability refusal`);
+  assert.notEqual(ran.code, 0);
+}
+const failure = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
+  get(target, key) {
+    if (key === 'readFileUncached') return () => { throw new Error('unsupported storage backend'); };
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
+assert.deepEqual((await git([...inRepo, 'status'], { view: failure })).real, []);
+
+// Config made by real git is shared by JavaScript identity and settings.
+user.mkdir('home/user/xdg/git', { recursive: true });
+user.writeFile('home/user/xdg/git/config', '[user]\n name = XDG\n email = xdg@example.com\n[init]\n defaultBranch = xdg\n');
+user.writeFile('home/user/.gitconfig', '[user]\n name = Global\n email = global@example.com\n[init]\n defaultBranch = global\n');
+user.writeFile('home/user/explicit-config', '[user]\n name = Explicit\n email = explicit@example.com\n[init]\n defaultBranch = explicit\n');
+const configEnv = { HOME: '/home/user', XDG_CONFIG_HOME: '/home/user/xdg' };
+for (const [name, env] of [
+  ['Global', configEnv],
+  ['Explicit', { ...configEnv, GIT_CONFIG_GLOBAL: '/home/user/explicit-config' }],
+  ['XDG', { HOME: '/home/user/no-home-config', XDG_CONFIG_HOME: '/home/user/xdg' }],
+]) {
+  const directory = `identity-${name}`;
+  assert.equal((await git(['init', '-q', directory], { env })).code, 0);
+  assert.equal(user.readFileString(`home/user/${directory}/.git/HEAD`), `ref: refs/heads/${name.toLowerCase()}\n`);
+  const ran = await git(['-C', directory, 'commit', '-q', '-m', 'identity', '--allow-empty'], { env });
+  assert.deepEqual(ran.real, [], 'global identity remains JavaScript');
+  assert.equal(ran.code, 0, ran.stderr);
+  assert.match((await git(['-C', directory, 'log', '-n1'], { env })).stdout, new RegExp(`Author: ${name} <`));
+}
+assert.equal((await git([...inRepo, 'config', 'user.name', 'Local'], { env: configEnv })).code, 0);
+assert.equal((await git([...inRepo, '-c', 'user.name=Override', 'config', '--get', 'user.name'], { env: configEnv })).stdout, 'Override\n');
+assert.equal((await git([...inRepo, 'config', '--get', 'user.name'], { env: configEnv })).stdout, 'Local\n');
+
+// Real git's unreadable index modes are identified before any writes,
+// including checkout -b and commit -a's otherwise early mutations.
+for (const signature of ['link', 'sdir']) {
+  user.writeFile('home/user/repo/.git/index', encodeIndexFile(splitIndexEntries(indexBefore), [{ signature, bytes: new Uint8Array(20) }]));
+  const before = user.readFile('home/user/repo/.git/index');
+  for (const words of [['status'], ['add', 'f'], ['commit', '-am', 'no-commit'], ['checkout', '-b', 'unreadable'], ['reset', '--hard', 'HEAD'], ['merge', 'topic']]) {
+    const ran = await git([...inRepo, ...identity, ...words]);
+    assert.deepEqual(ran.real, [[...inRepo, ...identity, ...words]], `${signature}: ${words[0]} hands off`);
+    assert.deepEqual(user.readFile('home/user/repo/.git/index'), before);
+    assert.equal(user.exists('home/user/repo/.git/index.lock'), false);
+    assert.equal(user.exists('home/user/repo/.git/refs/heads/unreadable'), false);
+    const alone = await git([...inRepo, ...words], { real: false });
+    assert.equal(alone.code, 128);
+    assert.equal(alone.stdout, '');
+  }
+}
+user.writeFile('home/user/repo/.git/index', indexBefore);
+user.writeFile('home/user/repo/.git/config.worktree', '[core]\n sparseCheckout = true\n sparseCheckoutCone = false\n');
+assert.equal((await git([...inRepo, 'config', 'extensions.worktreeConfig', 'true'])).code, 0);
+user.mkdir('home/user/repo/.git/info', { recursive: true });
+user.writeFile('home/user/repo/.git/info/sparse-checkout', '*.txt\n');
+for (const words of [['add', 'f'], ['checkout', '-b', 'noncone'], ['commit', '-am', 'no-commit'], ['pull', 'origin', 'main']]) {
+  assert.equal((await git([...inRepo, ...words])).code, 7, 'non-cone state hands off before mutation');
+  assert.equal(user.exists('home/user/repo/.git/refs/heads/noncone'), false);
+}
 
 console.log('git-routing: built-in, real git, its children, and git alone');
