@@ -209,18 +209,18 @@ function emptyStep(filtered: boolean): FetchPackStep {
 
 async function finished(
   context: CloneContext,
-  summary: { packSha: string; packBytes: number; objects: number },
+  summary: { packSha: string; packBytes: number; objects: number } | null,
   shallow: ShallowUpdate,
   before: string[],
 ): Promise<FetchPackStep> {
   const wrote = await updateShallow(context, shallow, before);
   return {
     pending: null,
-    packName: 'pack-' + summary.packSha,
-    objects: summary.objects,
-    bytes: summary.packBytes,
+    packName: summary === null ? null : 'pack-' + summary.packSha,
+    objects: summary?.objects ?? 0,
+    bytes: summary?.packBytes ?? 0,
     shallow: wrote,
-    promisor: shallow.filtered,
+    promisor: summary !== null && shallow.filtered,
     // What the wants reach is here when the repository was complete and the pack is neither filtered nor shallow.
     selfContained: shallow.complete && !shallow.filtered && !wrote,
   };

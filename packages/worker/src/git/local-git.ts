@@ -1,4 +1,5 @@
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import { GIT_WASI_ENV } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { FacetProcessManager } from '../facets/process.js';
 import type { LocalGit } from './remote-helper.js';
 
@@ -39,7 +40,7 @@ export function createLocalGit(manager: FacetProcessManager, from: Pick<CommandC
           if (ended || signal.aborted) throw cancelled();
           const child = await manager.spawn({
             command: 'git', args, parentPid: from.pid, cwd: from.cwd,
-            env: { ...from.env, GIT_DIR: gitDir, NIMBUS_GIT_WASI: '1' },
+            env: { ...from.env, GIT_DIR: gitDir, [GIT_WASI_ENV]: '1' },
             stdio: ['pipe', 'pipe', 'pipe'],
           });
           pid = child.childPid;

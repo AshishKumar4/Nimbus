@@ -338,7 +338,8 @@ async function storePack(
     // A clone's batches are sized to decode within one invocation's budget.
     throw new PackFormatError('pack ' + tmpName + ' ran past its decoding budget after ' + stored.pending.decoded + ' entries');
   }
-  return stored;
+  if (stored.summary === null) throw new PackFormatError('pack ' + tmpName + ' holds no objects');
+  return { result: stored.result, summary: stored.summary };
 }
 
 export interface StorePackOptions {
@@ -372,7 +373,7 @@ export interface PendingPack {
   promisor?: string;
 }
 
-export type StoredPack = { result: PackProcessResult; summary: PackSummary } | { pending: PendingPack };
+export type StoredPack = { result: PackProcessResult; summary: PackSummary | null } | { pending: PendingPack };
 
 /** storePack, or where its decoding stopped when the budget ran out first (see resumePack). */
 export async function storePackResumable(
@@ -452,7 +453,6 @@ async function settlePack(
     promisor,
     record: record === undefined ? undefined : { path: stageDirectory(context) + '/' + record.name, extra },
   });
-  if (summary === null) throw new PackFormatError('pack ' + tmpName + ' holds no objects');
   return { result, summary };
 }
 
@@ -813,6 +813,7 @@ async function cloneStream(
     budgetUnits: request.budgetUnits,
     onObject: (object) => watch.see(object.type, object.oid),
   });
+  if (!('pending' in stored) && stored.summary === null) throw new PackFormatError('the server sent no objects for the commit');
   await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows, sparse: request.sparse });
   await writer.flush();
   return {
