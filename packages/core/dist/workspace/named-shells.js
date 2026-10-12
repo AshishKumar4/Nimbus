@@ -48,14 +48,35 @@ export class NamedShells {
      * started even when it saves nothing else (`persist: false`), so the name
      * exists from then on, rooted there.
      */
-    async hold(id, options, body) {
+    hold(id, options, body) {
+        return this.run(id, options, body);
+    }
+    /** The last saved state, after earlier calls on this name have settled. */
+    read(id) {
+        return this.run(id);
+    }
+    async run(id, options, body) {
         const name = ShellIdSchema.parse(id);
-        const { ready, leave } = this.enqueue(name);
-        await ready;
+        const previous = this.queues.get(name) ?? Promise.resolve();
+        let release = () => { };
+        const gate = new Promise((resolve) => { release = resolve; });
+        const tail = previous.then(() => gate);
+        this.queues.set(name, tail);
+        await previous;
         let detached = false;
+        const leave = () => {
+            release();
+            if (this.queues.get(name) === tail)
+                this.queues.delete(name);
+        };
         const detach = () => { detached = true; leave(); };
         try {
-            const saved = this.load(name);
+            // Every call, so a workspace whose tables were dropped makes it again.
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
+            const [row] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
+            const saved = row === undefined ? null : parseShellState({ cwd: row.cwd, env: JSON.parse(String(row.env)) });
+            if (options === undefined || body === undefined)
+                return saved;
             const state = saved ?? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} };
             // The next owner may start before this body settles. It sees the last
             // durable state, including a new name's initial root, never this body's
@@ -76,40 +97,9 @@ export class NamedShells {
             }
         }
         finally {
-            options.detach?.removeEventListener('abort', detach);
+            options?.detach?.removeEventListener('abort', detach);
             leave();
         }
-    }
-    /** The last saved state, after earlier calls on this name have settled. */
-    async read(id) {
-        const name = ShellIdSchema.parse(id);
-        const { ready, leave } = this.enqueue(name);
-        await ready;
-        try {
-            return this.load(name);
-        }
-        finally {
-            leave();
-        }
-    }
-    enqueue(name) {
-        const previous = this.queues.get(name) ?? Promise.resolve();
-        let release = () => { };
-        const gate = new Promise((resolve) => { release = resolve; });
-        const tail = previous.then(() => gate);
-        this.queues.set(name, tail);
-        const leave = () => {
-            release();
-            if (this.queues.get(name) === tail)
-                this.queues.delete(name);
-        };
-        return { ready: previous, leave };
-    }
-    load(name) {
-        // Every call, so a workspace whose tables were dropped makes it again.
-        this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
-        const [saved] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
-        return saved === undefined ? null : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
     }
     save(name, state) {
         const env = { ...state.env };

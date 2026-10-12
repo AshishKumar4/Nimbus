@@ -68,6 +68,8 @@ export const SHELLS_TABLE = 'vfs_shells';
 export class NamedShells {
   /** One queue per name: the last call made on it, settled when that call is. */
   private readonly queues = new Map<string, Promise<void>>();
+  private readonly idle = Promise.resolve();
+  private parsedName: string | undefined;
 
   constructor(
     private readonly sql: SqlDatabase,
@@ -96,11 +98,14 @@ export class NamedShells {
   private run(id: string): Promise<ShellState | null>;
   private run<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
   private async run<T>(id: string, options?: NamedShellOptions, body?: (shell: NamedShell) => Promise<T>): Promise<T | ShellState | null> {
-    const name = ShellIdSchema.parse(id);
-    const previous = this.queues.get(name) ?? Promise.resolve();
+    // Cache only name syntax; reload its saved state on every turn.
+    const name = this.parsedName !== undefined && id === this.parsedName ? id : ShellIdSchema.parse(id);
+    this.parsedName = name;
+    const queued = this.queues.get(name);
+    const previous = queued ?? this.idle;
     let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const tail = previous.then(() => gate);
+    const tail = queued === undefined ? gate : previous.then(() => gate);
     this.queues.set(name, tail);
     await previous;
     let detached = false;
