@@ -65,7 +65,7 @@ import { formatProcMounts, registerMountCommands } from '../shell/mount-commands
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler, type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
-import { NamedShells, SHELLS_TABLE, type NamedShell, type NamedShellOptions } from './named-shells.js';
+import { NamedShells, SHELLS_TABLE, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 
 export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 
@@ -622,6 +622,11 @@ export class NimbusWorkspace {
    */
   withNamedShell<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T> {
     return this.namedShells.hold(id, options, body);
+  }
+
+  /** Read a named shell's saved cwd and exact UTF-16 environment, or null if it has no saved state. */
+  shellState(id: string): Promise<ShellState | null> {
+    return this.namedShells.read(id);
   }
 
   /** The hosting object forwards its supervisorOp RPC to this method. */

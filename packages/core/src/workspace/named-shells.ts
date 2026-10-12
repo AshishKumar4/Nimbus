@@ -86,41 +86,59 @@ export class NamedShells {
    */
   async hold<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T> {
     const name = ShellIdSchema.parse(id);
+    return this.enqueue(name, async (leave) => {
+      let detached = false;
+      const detach = () => { detached = true; leave(); };
+      try {
+        const saved = this.load(name);
+        const state = saved ?? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} };
+        // The next owner may start before this body settles. It sees the last
+        // durable state, including a new name's initial root, never this body's
+        // in-flight cwd/environment or its later completion.
+        if (saved === null) this.save(name, state);
+        if (options.detach?.aborted) detach();
+        else options.detach?.addEventListener('abort', detach, { once: true });
+        const call: { shell?: Shell } = {};
+        try {
+          return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
+        } finally {
+          if (!detached && options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
+        }
+      } finally {
+        options.detach?.removeEventListener('abort', detach);
+      }
+    });
+  }
+
+  /** The last saved state, after earlier calls on this name have settled. */
+  read(id: string): Promise<ShellState | null> {
+    const name = ShellIdSchema.parse(id);
+    return this.enqueue(name, async () => this.load(name));
+  }
+
+  private async enqueue<T>(name: string, body: (leave: () => void) => Promise<T>): Promise<T> {
     const previous = this.queues.get(name) ?? Promise.resolve();
     let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const tail = previous.then(() => gate);
     this.queues.set(name, tail);
     await previous;
-    let detached = false;
     const leave = () => {
       release();
       if (this.queues.get(name) === tail) this.queues.delete(name);
     };
-    const detach = () => { detached = true; leave(); };
     try {
-      // Every call, so a workspace whose tables were dropped makes it again.
-      this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
-      const [saved] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
-      const state = saved === undefined
-        ? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} }
-        : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
-      // The next owner may start before this body settles. It sees the last
-      // durable state, including a new name's initial root, never this body's
-      // in-flight cwd/environment or its later completion.
-      if (saved === undefined) this.save(name, state);
-      if (options.detach?.aborted) detach();
-      else options.detach?.addEventListener('abort', detach, { once: true });
-      const call: { shell?: Shell } = {};
-      try {
-        return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
-      } finally {
-        if (!detached && options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
-      }
+      return await body(leave);
     } finally {
-      options.detach?.removeEventListener('abort', detach);
       leave();
     }
+  }
+
+  private load(name: string): ShellState | null {
+    // Every call, so a workspace whose tables were dropped makes it again.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
+    const [saved] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
+    return saved === undefined ? null : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
   }
 
   private save(name: string, state: ShellState): void {
