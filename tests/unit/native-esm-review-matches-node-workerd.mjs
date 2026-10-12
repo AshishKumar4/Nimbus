@@ -231,6 +231,10 @@ const FILES = {
     "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './a.mjs';\\nimport './bad.mjs';\\n\");",
     // Its name: the order is what this checks; the parser's words are the interpreter's own.
     "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.name); }",
+    // A module that parses only as a script is no module either.
+    "writeFileSync(new URL('./returns.mjs', import.meta.url), 'return 1;\\n');",
+    "writeFileSync(new URL('./generated-return.mjs', import.meta.url), \"import './a.mjs';\\nimport './returns.mjs';\\n\");",
+    "try { await import('./generated-return.mjs'); } catch (e) { console.log('rejected', e.name); }",
   ].join('\n') + '\n',
   // JSON's __esModule/default are data, not CommonJS interop instructions.
   'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
