@@ -3369,12 +3369,14 @@ export class SqliteVFS {
     const suffix = reusable ? input.slice(last.spelling.length) : input;
     let hops = start?.hops ?? 0;
     let leafLink = false;
+    let searchedExisting = true;
     const name = walkVfsPath(suffix, (prefix, final) => {
       if (final && keyOnly && !followLeaf) return null;
       const key = this.keyOfName(prefix.slice(1), root);
       if (tree === this.inodes && this.exclusiveMutationLeases.size > 0) this.recallReads(key);
       const inode = tree.get(key);
       if (inode === undefined) {
+        searchedExisting = false;
         if (!final && !creating) throw vfsKeyError('ENOENT', prefix);
         return null;
       }
@@ -3398,7 +3400,7 @@ export class SqliteVFS {
     }).slice(1);
     const key = this.keyOfName(name, root);
     const inode = keyOnly ? undefined : tree.get(key);
-    if (hops > 0 && tree === this.inodes) {
+    if (searchedExisting && hops > 0 && tree === this.inodes) {
       const directory = inode?.kind === 'directory';
       const leaf = input.slice(input.lastIndexOf('/') + 1);
       const cacheable = directory || (!leafLink && leaf !== '' && leaf !== '.' && leaf !== '..');
@@ -3411,7 +3413,8 @@ export class SqliteVFS {
         };
       }
     }
-    return this.walked(key, inode, name, cred, tree, path, leafLink);
+    return searchedExisting ? this.walked(key, inode, name, cred, tree, path, leafLink)
+      : { path: key, inode, name };
   }
 
   /** A walk's answer, kept as lastResolution when it found something on the live tree. */
