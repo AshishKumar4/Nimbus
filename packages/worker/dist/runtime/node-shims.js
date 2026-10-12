@@ -12253,7 +12253,7 @@ function __nimbusRequiredGraphAwaits(key, cell, text, seen) {
   seen.add(key);
   if (__nimbusModuleAwaits(cell)) return true;
   const parentUrl = __nimbusEsmUrl("/" + key);
-  for (const request of __nimbusModuleRequests(key, text)) {
+  for (const request of __nimbusModuleRequests(key, text).requests) {
     if (request.kind !== "static") continue;
     let resolution;
     try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
@@ -12274,8 +12274,13 @@ function __nimbusRequiredGraphAwaits(key, cell, text, seen) {
   return false;
 }
 // Whether a module of row \`id\`'s graph awaits at its top level: Node's
-// require() refuses such a graph, evaluated or not.
+// require() refuses such a graph, evaluated or not. The table does not
+// change, so neither does the answer: kept per row.
+const __nimbusEsmAwaits = [];
 function __nimbusEsmGraphAwaits(id) {
+  return __nimbusEsmAwaits[id] ??= __nimbusEsmGraphWalksAwait(id);
+}
+function __nimbusEsmGraphWalksAwait(id) {
   const seen = new Set();
   const stack = [id];
   while (stack.length > 0) {
@@ -12731,7 +12736,13 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
   const staged = __nimbusEsmId("module", key);
   const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
   if (text === null) return;
-  for (const request of __nimbusModuleRequests(key, text)) {
+  const analysis = __nimbusModuleRequests(key, text, staged !== -1);
+  // A module of the graph its parser could not read (a syntax error, or
+  // TypeScript or JSX) is loaded as the interpreter loads it, for the error
+  // that load gives, before any body runs; one it does load (code staged for
+  // it) is the launch's own to link.
+  if (analysis.unread !== undefined && staged === -1) __nimbusRuntimeModule(key, text, __nimbusFileFormat("/" + key));
+  for (const request of analysis.requests) {
     if (request.kind !== "static") continue;
     let resolution;
     try {
@@ -12749,7 +12760,10 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
     // An unstaged module, or a query's or fragment's instance (the
     // interpreter's own): its closure is the late graph's too.
     if (id === -1 || search !== "" || hash !== "") {
-      __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
+      // What the interpreter loads as an ES module (a CommonJS module compiles when it evaluates, as Node's does).
+      if (resolution.format === "module" || resolution.format === "detect") {
+        __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
+      }
       continue;
     }
     __nimbusEsmCheckLinks(id, seen, checked);
@@ -12941,10 +12955,10 @@ async function __nimbusReadAhead(paths, quota) {
 // and require() of a string), as the runtime-code interpreter's parser reads
 // it (core/interpreter moduleRequests): a request in a comment is none, one
 // in a template or with escapes is read as the language reads it.
-function __nimbusModuleRequests(path, text) {
-  if (typeof __nimbusRegistryRequire !== "function") return [];
-  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text); }
-  catch { return []; }
+function __nimbusModuleRequests(path, text, javaScript = false) {
+  if (typeof __nimbusRegistryRequire !== "function") return { requests: [] };
+  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text, javaScript); }
+  catch { return { requests: [] }; }
 }
 
 // Where a request from the module at importer leads, by the loader's own
@@ -13000,7 +13014,7 @@ function __nimbusImportStager(quota) {
           // uses; the file/byte quota applies before any fill is issued.
           for (const image of __nimbusRelativeWasmPaths(text, round[i])) images.add(image);
           // An import() in the closure is its own: it prefetches when it runs.
-          for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
+          for (const request of __nimbusModuleRequests(round[i], text).requests) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
         if (images.size > 0) await __nimbusReadAhead(images, quota);
         const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);

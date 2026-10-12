@@ -98,13 +98,17 @@ function leadingSlashes(path) {
 /**
  * The modules a file's text asks for, as this parser reads it
  * (module-requests.ts programRequests: imports, import() and require() of a
- * string, a createRequire binding's calls, and a require wrapper's). Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
- * import() prefetch (node-shims.ts) finds what to fetch with it.
+ * string, a createRequire binding's calls, and a require wrapper's), or why
+ * it read none: the text does not parse ('syntax'), or is TypeScript or JSX,
+ * which it does not read ('unparsed'). The import() prefetch (node-shims.ts)
+ * finds what to fetch with the requests; a late graph's link plan loads a
+ * module it could not read as the interpreter does, for its error.
+ * `javaScript`: the text is JavaScript whatever the path's extension (a
+ * staged module's, as compileModule's).
  */
-export function moduleRequests(path, text) {
-    if (UNPARSED_EXTENSIONS[extensionOf(path)])
-        return [];
+export function moduleRequests(path, text, javaScript = false) {
+    if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
+        return { requests: [], unread: 'unparsed' };
     let program;
     try {
         program = parseQuick(text, MODULE_OPTIONS);
@@ -114,10 +118,10 @@ export function moduleRequests(path, text) {
             program = parseQuick(text, COMMONJS_OPTIONS);
         }
         catch {
-            return [];
+            return { requests: [], unread: 'syntax' };
         }
     }
-    return programRequests(program);
+    return { requests: programRequests(program) };
 }
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
