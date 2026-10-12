@@ -1492,7 +1492,7 @@ export class CompositeVFS implements VFS {
    * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
    * backend that holds changes back, as they have been told (VFS.landedAt), its own lookup storing and recalling nothing.
    */
-  private presentAt(path: string): Awaitable<boolean> {
+  private presentAt(path: string, canWait = true): Awaitable<boolean> {
     const decide = (sync: boolean): Awaitable<boolean> => {
       const refused = (error: unknown): boolean => {
         if (isVfsError(error)) return false;
@@ -1510,7 +1510,10 @@ export class CompositeVFS implements VFS {
         const stat = this.statAt(path, false, sync);
         return isPromise(stat) ? stat.then((found) => found !== null, refused) : stat !== null;
       } catch (error) {
-        if (sync && isAsyncMountRefusal(error)) return decide(false);
+        if (sync && isAsyncMountRefusal(error)) {
+          if (canWait) return decide(false);
+          throw error;
+        }
         return refused(error);
       }
     };
@@ -3331,6 +3334,11 @@ export class CompositeVFS implements VFS {
     return awaited({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, false));
   }
 
+  /** VFS.landedAt, as this view's watches judge it (presentAt). */
+  async landedAt(path: string): Promise<boolean> {
+    return this.presentAt(normalizePath(path));
+  }
+
   async readFile(path: string): Promise<Uint8Array> {
     return awaited({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => ops.readFile(rel)));
   }
@@ -3464,6 +3472,7 @@ export class CompositeVFS implements VFS {
     return {
       stat: (path, options) => syncValue(reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () =>
         this.statAt(path, options?.follow !== false, true))),
+      landedAt: (path) => syncValue(this.presentAt(normalizePath(path), false)),
       readFile: (path) => syncValue(reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel)))),
       readRange: (path, offset, length) => syncValue(reported({ syscall: 'open', path }, () =>
         this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)))),

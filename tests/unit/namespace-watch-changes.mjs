@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { VfsEventEmitter } from '../../packages/core/src/vfs/events.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -388,12 +389,15 @@ await check('registering a watch stores nothing an open description holds, a wat
   kernel.writeFile('home/user/held.log', 'base:');
   const writer = raw.openDescription('home/user/held.log', CRED_KERNEL, { read: false, write: true });
   writer.write(writer.end(), enc.encode('held'));
+  // A namespace mounted in another: the outer one's look goes through it.
+  const outer = new CompositeVFS(new MemoryVFS({ uid: 0, gid: 0 }));
+  outer.mount('/db', ns);
   let stored = 0;
   const exec = harness.sql.exec.bind(harness.sql);
   harness.sql.exec = (query, ...params) => { if (/^\s*(INSERT|UPDATE|DELETE)/i.test(query)) stored++; return exec(query, ...params); };
   try {
-    for (const view of [ns, ns.as(PUBLIC)]) {
-      for (const path of ['/home/user/unrelated', '/home/user/held.log']) {
+    for (const [view, at] of [[ns, ''], [ns.as(PUBLIC), ''], [outer, '/db'], [outer.as(PUBLIC), '/db']]) {
+      for (const path of [`${at}/home/user/unrelated`, `${at}/home/user/held.log`]) {
         watching(path, view).stop();
         view.watchChanges(path, () => {}, { follow: true })();
       }
