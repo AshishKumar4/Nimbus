@@ -148,11 +148,16 @@ const cases = {
 
   async 'mount points are immutable; mkdir -p of one is a no-op'() {
     const vfs = new CompositeVFS(new MemoryVFS());
-    vfs.mount('/pc', () => device({ '/a': 'x' }));
+    const mounted = device({ '/a': 'x' });
+    vfs.mount('/pc', mounted);
     assert.equal(await code(vfs.unlink('/pc')), 'EISDIR', 'unlink(2) refuses a directory first');
     assert.equal(await code(vfs.rmdir('/pc')), 'EBUSY');
     assert.equal(await code(vfs.rename('/pc', '/elsewhere')), 'EBUSY');
-    assert.equal(await code(vfs.removeRecursive('/pc')), 'EBUSY');
+    const removal = await vfs.removeRecursive('/pc');
+    assert.deepEqual(removal.removed, ['/pc/a']);
+    assert.deepEqual(removal.kept, ['/pc']);
+    assert.deepEqual(removal.failures.map(({ path, error }) => [path, error.code]), [['/pc', 'EBUSY']]);
+    assert.equal(await vfs.stat('/pc/a'), null, 'recursive removal enters the mount but keeps its root');
     assert.equal(await code(vfs.mkdir('/pc')), 'EBUSY');
     assert.equal(await code(vfs.mkdir('/pc', { recursive: true })), 'ok');
     assert.equal(await code(vfs.writeFile('/pc', bytes('x'))), 'EBUSY');
