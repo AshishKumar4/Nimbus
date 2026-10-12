@@ -95,6 +95,9 @@ assert.equal((await git([...inRepo, 'tag', 'seed'])).code, 0);
 const indexBefore = user.readFile('home/user/repo/.git/index');
 const headBefore = user.readFile('home/user/repo/.git/refs/heads/master');
 user.writeFile('home/user/repo/f', 'unstaged\n');
+user.copyTree('home/user/repo/.git', 'home/user/bare');
+const bareDiff = ['-C', 'bare', 'diff', 'HEAD', 'HEAD'];
+assert.deepEqual((await git(bareDiff)).real, [bareDiff], 'two-commit diff is unsupported in a bare repository too');
 
 // Every command's parser owns its capability boundary, including later
 // letters in clusters and flags after operands on mutating commands.
