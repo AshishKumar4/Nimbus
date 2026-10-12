@@ -45,6 +45,9 @@ const cases=[
     }
     const usedLegacy=await request('/s/session-b/api/stats',{Cookie:`__Host-nimbus_token=${legacy}`});
     assert.equal(usedLegacy.status,200);
+    const migrationHeaders=usedLegacy.headers.getSetCookie();
+    assert.ok(migrationHeaders[0]?.startsWith('__Host-nimbus_token=;')&&/Max-Age=0/.test(migrationHeaders[0]),'Chrome must remove the legacy bytes before receiving the new name');
+    assert.ok(migrationHeaders[1]?.startsWith(`${name('session-b')}=`),'per-sid issuance follows legacy expiry');
     assert.ok(usedLegacy.headers.getSetCookie().some(value=>value.startsWith(`${name('session-b')}=`)),'a truly selected legacy cookie still migrates');
   }],
   ['sibling legacy preservation',async()=>{
