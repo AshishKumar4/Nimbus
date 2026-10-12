@@ -4,7 +4,7 @@ export async function gitFacetCall(args, facetEnv) {
     const gitMod = modules?.['git.wasm'];
     const run = Reflect.get(globalThis, '__gitRun');
     if (!gitMod || typeof run !== 'function') {
-        return { exitCode: 127, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git-runner: the facet has no git image or no __gitRun' };
+        return { exitCode: 127, error: 'git-runner: the facet has no git image or no __gitRun' };
     }
     return await run({ ...args, gitMod, supervisor: facetEnv?.SUPERVISOR });
 }

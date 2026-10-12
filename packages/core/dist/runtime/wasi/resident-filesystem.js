@@ -172,7 +172,7 @@ export function residentFilesystem(session, resident, delegation) {
         list: (key) => timed(resident.list(key)),
         lookup: (keys, content) => timed(resident.lookup(keys, content)),
         listTree: (key) => timed(resident.listTree(key)),
-        content: (key) => resident.content(key),
+        content: (key, revision) => resident.content(key, revision),
         fill: (key, entry) => timed(resident.fill(key, entry)),
         pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
         fillMany: (files) => timed(resident.fillMany(files)),
@@ -359,10 +359,10 @@ export function residentFilesystem(session, resident, delegation) {
             if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT)
                 break;
             const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
-            if (fetchingAhead.has(sibling) || store.content(sibling) !== undefined)
+            if (fetchingAhead.has(sibling))
                 continue;
             const found = entryAt(sibling);
-            if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES)
+            if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES || store.content(sibling, found.revision) !== undefined)
                 continue;
             // What this process decided or writes through is its own to read.
             if (holder?.content(found) !== undefined || holder?.writing(found.ino) !== undefined)
@@ -484,7 +484,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder?.writing(entry.ino) !== undefined)
             return undefined;
         const keep = (bytes) => (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
-        const held = store.content(key);
+        const held = store.content(key, entry.revision);
         if (held !== undefined && held.byteLength === entry.size)
             return held;
         const fill = () => {
@@ -497,7 +497,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (batch === undefined)
             return fill();
         return batch.then(() => {
-            const fetched = store.content(key);
+            const fetched = store.content(key, entry.revision);
             return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
         });
     };

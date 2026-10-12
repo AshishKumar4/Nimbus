@@ -38,8 +38,14 @@ export declare const DIRECTORY_BATCH_LIMIT = 64;
  * answer's descriptions are. The WASI park deadline's length.
  */
 export declare const DIRECTORY_END_WAIT_MS = 10000;
-/** Ended directory channels a scope remembers, refusing a late request of one; the oldest is forgotten first. */
-export declare const DIRECTORY_ENDED_CHANNELS: number;
+/**
+ * How far ahead of the first request of a directory channel that has not
+ * reached the session a request may be numbered: a run sends one exchange
+ * at a time, and its end beside at most one unanswered, so a few is plenty;
+ * a request past it is refused. It bounds what the session keeps of a
+ * channel's requests in flight, live or ended.
+ */
+export declare const DIRECTORY_SEQUENCE_WINDOW = 8;
 export declare const FS_LIST_TREE_MAX_ENTRIES: number;
 export declare const MOUNT_LIST_NAME_LIMIT = 8192;
 export declare const VFS_DELIVERY_RETRY_WINDOW_MS = 5000;

@@ -6,18 +6,17 @@ export interface GitFacetArgs {
     argv: string[];
     env: Record<string, string>;
     cred: WasiCred;
-    /** The session pid git runs as: the parent of the children it starts. */
+    /** The session pid git runs as (its runtime process): its output and input, and the parent of the children it starts. */
     pid: number;
-    /** Its output goes to the session as it is written (SupervisorRPC stdout/stderr), not back in the result. */
-    live: boolean;
 }
+/** What a git run ends with; its output went to the session as it was written (SupervisorRPC stdout/stderr). */
 export interface GitFacetResult {
     exitCode: number;
-    stdout: Uint8Array;
-    stderr: Uint8Array;
     error?: string;
     /** git's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
     fsStats?: ResidentFilesystemStats | null;
+    /** Whether another git may run in this facet (__wasiReusable: no syscall in it was abandoned). */
+    reusable?: boolean;
     /** The facet's clock (which moves only across I/O) where the run entered, git was instantiated, and git exited. */
     clock?: {
         entered: number;
