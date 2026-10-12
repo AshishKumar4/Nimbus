@@ -241,7 +241,7 @@ if (!expiredControl) {
         const reached = new Promise((resolve) => { entered = resolve; });
         raced.gate = { held: () => { entered(); return held; } };
         const a = readRaced();
-        await reached;
+        assert.equal(await Promise.race([reached.then(() => 'held'), a.then(() => 'renewed')]), 'held', 'the renewal is made conditional on what was read');
         assert.equal(published.requests.at(-1).ifNoneMatch, '"fixture-1"');
         published.publish('2.0.0');
         raced.gate = null;
