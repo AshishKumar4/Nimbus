@@ -2,13 +2,43 @@
 import assert from 'node:assert/strict';
 import { SqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
+import { VfsError, syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { RecallRequired } from '../../packages/core/src/vfs/recall.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { testBox } from './lib/test-box.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+
+function rooted(view) {
+  const at = (path) => '/home/user' + (path.startsWith('/') ? path : '/' + path);
+  return new Proxy(view, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        if (key === 'symlink') args[1] = at(args[1]);
+        else {
+          if (typeof args[0] === 'string') args[0] = at(args[0]);
+          if (key === 'rename' && typeof args[1] === 'string') args[1] = at(args[1]);
+        }
+        return value.apply(target, args);
+      };
+    },
+  });
+}
+
+class RootedFiles extends SqliteFiles {
+  constructor(engine, cred) { super(engine, rooted(engine.as(cred))); this.store = engine; }
+  as(cred) { return new RootedFiles(this.store, cred); }
+  stat(path, options) {
+    if (path === '/') {
+      const stat = this.credentialed.stat('/');
+      return { type: stat.type, size: stat.size, mtimeMs: stat.mtime, mode: stat.mode, uid: stat.uid, gid: stat.gid, ino: stat.ino };
+    }
+    return super.stat(path, options);
+  }
+}
 const cases = [
   { name: 'scandir EACCES, non-empty', fault: 'child-read', kept: ['tree', 'tree/bad', 'tree/bad/secret'], errors: [['/walk/tree/bad', 'Permission denied']] },
   { name: 'scandir EACCES, empty', fault: 'child-read-empty', kept: [], errors: [] },
@@ -40,7 +70,10 @@ function image(root, prefix) {
 async function fixture(test, asynchronous) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
-  const root = engine.as(CRED_KERNEL);
+  const setup = engine.as(CRED_KERNEL);
+  setup.mkdir('home/user', { recursive: true });
+  setup.chown('home/user', USER.uid, USER.gid);
+  const root = rooted(setup);
   root.mkdir('tree');
   root.chown('tree', USER.uid, USER.gid);
   root.writeFile('tree/free', 'free');
@@ -54,14 +87,14 @@ async function fixture(test, asynchronous) {
   if (test.fault === 'two-read') { root.mkdir('tree/worse'); root.chown('tree/worse', USER.uid, USER.gid); root.writeFile('tree/worse/secret', 'secret'); }
   if (test.fault === 'link') { root.mkdir('outside'); root.writeFile('outside/secret', 'outside'); root.symlink('/outside', 'tree/bad'); }
   let vanish = true;
-  class Walked extends SqliteFiles {
+  class Walked extends RootedFiles {
     removeRecursive = undefined;
     constructor(...args) { super(...args); if (asynchronous) this.sync = undefined; }
-    as(cred, actor, options) { return new Walked(engine, engine.as(cred, { ...options, actor })); }
+    as(cred) { return new Walked(engine, cred); }
     stat(path, options) {
       const read = () => {
         if (test.fault === 'operand-stat' && path === '/tree') throw new VfsError('EACCES', 'permission denied', path);
-        if (test.fault.startsWith('child-stat') && path === '/tree/bad') throw new VfsError('EIO', 'input/output error', path);
+        if (test.fault.startsWith('child-stat') && path === '/tree/bad') throw syscallError('EIO', 'lstat', path);
         return super.stat(path, options);
       };
       return asynchronous ? Promise.resolve().then(read) : read();
@@ -78,23 +111,26 @@ async function fixture(test, asynchronous) {
     }
     unlink(path) {
       const remove = () => {
-        if (test.fault === 'child-stat-unlink' && path === '/tree/bad') throw new VfsError('EIO', 'input/output error', path);
+        if (test.fault === 'child-stat-unlink' && path === '/tree/bad') throw syscallError('EIO', 'unlink', path);
         return super.unlink(path);
       };
       return asynchronous ? Promise.resolve().then(remove) : remove();
     }
     rmdir(path) { return asynchronous ? Promise.resolve().then(() => super.rmdir(path)) : super.rmdir(path); }
   }
-  const backend = new Walked(engine, engine.as(USER));
+  const backend = new Walked(engine, USER);
   assert.equal(backend.sync === undefined, asynchronous, 'an awaited backend has no synchronous face');
   const box = await testBox({ harness, vfs: engine, mounts: { '/walk': backend } });
   let mounted = null;
   if (test.fault.startsWith('mount-')) {
     const mountedHarness = createSqliteVfsTestHarness();
     const mountedEngine = new SqliteVFS(mountedHarness.sql, mountedHarness.ctx);
-    const mountedRoot = mountedEngine.as(CRED_KERNEL);
+    const setupMount = mountedEngine.as(CRED_KERNEL);
+    setupMount.mkdir('home/user', { recursive: true });
+    setupMount.chown('home/user', USER.uid, USER.gid);
+    const mountedRoot = rooted(setupMount);
     mountedRoot.writeFile('a', 'a'); mountedRoot.writeFile('b', 'b');
-    box.files.vfs.mount('/walk/tree/mounted', new SqliteFiles(mountedEngine, mountedEngine.as(USER)), { readOnly: test.fault === 'mount-ro' });
+    box.files.vfs.mount('/walk/tree/mounted', new RootedFiles(mountedEngine, USER), { readOnly: test.fault === 'mount-ro' });
     mounted = { harness: mountedHarness, root: mountedRoot };
   }
   return {

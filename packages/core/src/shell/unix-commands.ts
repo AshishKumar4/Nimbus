@@ -2207,7 +2207,9 @@ function mkRm(vfs: UnixVfs): CmdFn {
         const report = await vfs.removeRecursive(path);
         for (const failure of report.failures) {
           const named = failure.path === path || failure.path.startsWith(`${path}/`) ? target + failure.path.slice(path.length) : failure.path;
-          await ctx.stderr.write(`rm: cannot remove '${named}': ${strerror(failure.error)}\n`);
+          const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
+            : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
+          await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
           code = 1;
         }
         if (!force) for (const gone of report.vanished ?? []) {

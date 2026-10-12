@@ -608,11 +608,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean } = {}): void {
+  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean; report?: boolean } = {}): void | VfsRemoval {
     return called({ syscall: 'remove', path }, () => {
       try {
         if (!options.recursive) { this.unlink(path); return; }
         const report = this.removeRecursive(path);
+        if (options.report) return report;
         const failed = report.failures[0];
         if (failed) throw failed.error;
         if (!options.force && report.vanished?.length) throw fsError('ENOENT', 'rm', report.vanished[0]);
@@ -622,7 +623,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  removeRecursive(path: RuntimeFsPath): VfsRemoval {
+  private removeRecursive(path: RuntimeFsPath): VfsRemoval {
     return called({ syscall: 'rm', path }, () => {
       const located = this.locateMutation(path, false, 'rm');
       if (located.mount) return located.mount.removeRecursive(located.path);

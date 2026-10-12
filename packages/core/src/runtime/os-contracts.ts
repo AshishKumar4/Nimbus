@@ -429,8 +429,7 @@ export interface RuntimeFsBridge {
    */
   subscribe?(path: string, listener: (event: VfsEvent) => void, options?: { follow?: boolean }): () => void;
   realpath(path: RuntimeFsPath): Awaitable<string>;
-  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): Awaitable<void>;
-  removeRecursive(path: RuntimeFsPath): Awaitable<VfsRemoval>;
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean }): Awaitable<void | VfsRemoval>;
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void | number>;
   /**
    * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
