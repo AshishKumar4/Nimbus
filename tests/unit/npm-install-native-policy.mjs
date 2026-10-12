@@ -528,7 +528,7 @@ function makeInstaller(pkgJson, resultFor) {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const appDeps = { 'native-gate': '^1.0.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const cw = (name, version, deps = {}) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: JSON.stringify(deps), peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
@@ -563,7 +563,7 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const cw = (name, version) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
@@ -678,7 +678,7 @@ function makeInstaller(pkgJson, resultFor) {
 // which is not a semver range at all — answers presence-only.
 {
   const cw = (name, version) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });

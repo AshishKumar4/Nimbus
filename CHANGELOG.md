@@ -61,9 +61,11 @@ published independently in the `@nimbus-sh` npm scope.
   Ctrl-C before publication changes nothing. Installs into one tree, in
   either host, run one at a time. A stopped install that is waiting for the
   tree never starts.
-- Changed: registry cache records belong to the registry package. An
-  alias's records are kept under the package it names, and under the alias
-  name for the version it installed.
+- Changed: registry cache records belong to the registry package, and are
+  kept only under its name; an alias's lockfile entry names the package it
+  installed. A record cached before this release does not say which package
+  it is, so it is not used: the first install after upgrading resolves its
+  tree from the registry once.
 - A file on a mount is opened by one rule, and its open description is one
   implementation (`vfs/mounted-description.js`), for a process's synchronous
   face, its asynchronous one, and a wave's `open`; one descriptor numbering per

@@ -148,7 +148,7 @@ const REGISTRY = {
   gpa: { '1.0.0': { peerDependencies: { gp: '1.0.0' } } },
   gpb: { '1.0.0': { peerDependencies: { gp: '2.0.0' } } },
   gp: { '1.0.0': {}, '2.0.0': {} },
-  // A peer conflict that is not the project's own: npm's warning, ERESOLVE with --strict-peer-deps.
+  // A peer conflict that is not the project's own: let through, ERESOLVE with --strict-peer-deps.
   sa: { '1.0.0': { dependencies: { ph: '1.0.0', pp: '2.0.0' } } },
 };
 // Tarballs whose bytes are not the ones their integrity names (and no
@@ -458,7 +458,7 @@ try {
     'a newer copy one dependent needs, beside one that takes any': [[['install', 'pd1'], ['install', 'pd2']], { pd1: '1.0.0', pd2: '1.0.0', 'pd2/node_modules/zc': '1.0.0', zc: '2.0.0' }],
     '--prefer-dedupe replaces it with the older copy both accept': [[['install', 'pd1'], ['install', 'pd2', '--prefer-dedupe']], { pd1: '1.0.0', pd2: '1.0.0', zc: '1.0.0' }],
     "an alias edge met by another package's copy": [[['install', 'xc@1.0.0'], ['install', 'al']], { al: '1.0.0', xc: '1.0.0' }],
-    "another package's peer conflict is a warning": [[['install', 'sa']], { sa: '1.0.0', ph: '1.0.0', pp: '2.0.0' }],
+    "another package's peer conflict is let through": [[['install', 'sa']], { ph: '1.0.0', pp: '1.0.0', sa: '1.0.0', 'sa/node_modules/pp': '2.0.0' }],
     "another package's peer conflict with --strict-peer-deps is ERESOLVE": [[['install', 'sa', '--strict-peer-deps']], {}],
   };
   for (const [label, [commands, expected]] of Object.entries(scenarios)) {

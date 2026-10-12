@@ -43,7 +43,7 @@ import {
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import {
-  canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed,
+  bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed,
   type NamedPackage, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
@@ -1601,9 +1601,17 @@ export class NpmInstaller {
     const installed = new Map<string, InstalledPackage<ResolvedPackage>>();
     // Swapped lock entries by placement: each resolves its swap target at its own locked version.
     const swapPlacements: { placement: string; folderName: string; spec: string }[] = [];
+    // What a package (not the project) bundles comes in its archive: a name
+    // its parent, or an ancestor between, bundles (inDepBundle).
+    const inDepBundle = (key: string): boolean => {
+      for (let child = key, cut = child.lastIndexOf('/node_modules/'); cut > 0; child = child.slice(0, cut), cut = child.lastIndexOf('/node_modules/')) {
+        const parent = packageJsonDocument(lock.packages[child.slice(0, cut)] ?? {})?.manifest ?? {};
+        if (bundledNames(parent).includes(child.slice(cut + '/node_modules/'.length))) return true;
+      }
+      return false;
+    };
     for (const [key, entry] of Object.entries(lock.packages)) {
-      // A bundled entry comes in its bundler's archive.
-      if (key === '' || entry.inBundle === true) continue;
+      if (key === '' || inDepBundle(key)) continue;
       const placement = key.slice('node_modules/'.length);
       const folderName = placement.split('/node_modules/').pop() ?? placement;
       const name = typeof entry.name === 'string' ? entry.name : folderName;

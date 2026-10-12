@@ -326,6 +326,29 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.equal(root.exists(`${NM}/old`), false);
 }
 
+// ── bundled entries: what a package bundles comes in its archive; what the project bundles installs ──
+//
+// npm records `inBundle` for both (node.inBundle); only a package's bundle
+// is left out of separate extraction (inDepBundle).
+{
+  const pkgJson = { name: 'bundling', version: '1.0.0', dependencies: { own: '1.0.0', carrier: '1.0.0' }, bundleDependencies: ['own'] };
+  const lock = {
+    name: 'bundling', lockfileVersion: 3,
+    packages: {
+      '': { name: 'bundling', version: '1.0.0', dependencies: { own: '1.0.0', carrier: '1.0.0' }, bundleDependencies: ['own'] },
+      'node_modules/own': { version: '1.0.0', resolved: tgz('own', '1.0.0'), integrity: 'sha512-own', inBundle: true },
+      'node_modules/carrier': { version: '1.0.0', resolved: tgz('carrier', '1.0.0'), integrity: 'sha512-carrier', dependencies: { inner: '1.0.0' }, bundleDependencies: ['inner'] },
+      'node_modules/carrier/node_modules/inner': { version: '1.0.0', inBundle: true },
+    },
+  };
+  const { installer, root, resolveAsked, shardsSeen, log } = makeInstaller(pkgJson, lock);
+  const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(result.failed, [], log.join('\n'));
+  assert.deepEqual(resolveAsked, []);
+  assert.equal(versionAt(root, 'own'), '1.0.0', "what the project bundles is installed");
+  assert.deepEqual([...shardsSeen].sort(), ['carrier', 'own'], "what a package bundles is not fetched on its own");
+}
+
 // ── a lock that does not meet its own dependencies fails before anything changes ──
 //
 // npm ci builds the ideal tree over the lock and checks it is the lock's
@@ -334,8 +357,8 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 for (const [label, entries, line] of [
   ['a dependency the lock lacks', {}, /Missing: b@1\.2\.0 from lock file/],
   ['a dependency the lock holds at a version its dependent does not accept', {
-    'node_modules/b': { version: '2.0.0', resolved: tgz('b', '2.0.0'), integrity: 'sha512-b2' },
-  }, /Invalid: lock file's b@2\.0\.0 does not satisfy b@1\.\d\.\d/],
+    'node_modules/a/node_modules/b': { version: '2.0.0', resolved: tgz('b', '2.0.0'), integrity: 'sha512-b2' },
+  }, /Invalid: lock file's b@2\.0\.0 does not satisfy b@1\.2\.0/],
 ]) {
   const pkgJson = { name: 'unsound', version: '1.0.0', dependencies: { a: '1.0.0' } };
   const lock = {

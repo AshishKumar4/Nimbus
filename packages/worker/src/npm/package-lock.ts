@@ -24,8 +24,6 @@ export interface PackageLockEntry {
   peerDependencies?: unknown;
   peerDependenciesMeta?: unknown;
   bundleDependencies?: unknown;
-  /** Carried in its bundler's archive. */
-  inBundle?: unknown;
   bin?: unknown;
   os?: unknown;
   cpu?: unknown;

@@ -110,7 +110,8 @@ console.log('  ok  a warm resolve answers what the cold one did');
   root.mkdir('app/node_modules', { recursive: true });
   const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor: () => null });
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx: { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage } });
-  installer.npmCache.putRegistryEntries([record]);
+  // As the facet writes it now: the registry package's own.
+  installer.npmCache.putRegistryEntries([{ ...record, registryName: 'odd' }]);
   // A warm install over it: odd is installed, as the lockfile records, and the plan keeps it.
   root.writeFile('app/package.json', JSON.stringify({ name: 'app', dependencies: { odd: '1.0.0' } }));
   root.mkdir('app/node_modules/odd', { recursive: true });
