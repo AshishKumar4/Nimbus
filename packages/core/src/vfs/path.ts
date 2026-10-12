@@ -41,11 +41,28 @@ export function normalizeVfsPath(p: string): string {
   // its leading slash, as most lookups pass, is returned without the split.
   const plain = plainVfsPath(text);
   if (plain !== null) return plain;
-  const segments = text.split('/');
+  return normalizedSegments(text, false);
+}
+
+/** Dot-only spellings may use indexed lookup; parents and trailing directory checks must be walked. */
+export function normalizeVfsLookupPath(path: string): string | null {
+  const plain = plainVfsPath(path);
+  return plain === null ? normalizedSegments(path, true) : plain;
+}
+
+function normalizedSegments(path: string, lookup: false): string;
+function normalizedSegments(path: string, lookup: true): string | null;
+function normalizedSegments(path: string, lookup: boolean): string | null {
+  const segments = path.split('/');
+  const leaf = segments[segments.length - 1];
+  if (lookup && (leaf === '' || leaf === '.')) return null;
   const out: string[] = [];
   // `..` at the root stays at the root, as POSIX resolves `/..`.
   for (const seg of segments) {
-    if (seg === '..') out.pop();
+    if (seg === '..') {
+      if (lookup) return null;
+      out.pop();
+    }
     else if (seg !== '.' && seg !== '') out.push(seg);
   }
   return out.join('/');
