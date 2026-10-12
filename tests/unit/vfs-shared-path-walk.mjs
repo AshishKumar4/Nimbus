@@ -18,6 +18,7 @@ await namespace.writeFile('/m/real/f', new TextEncoder().encode('file'));
 await namespace.symlink('/m/real', '/m/link');
 
 for (const path of ['/m/link/.', '/m/link//', '/m/link/../real', '/m/real/.']) {
+  assert.equal(kernel.resolveName(path, false), null, 'the plain store fast path leaves component spellings to the namespace');
   const route = await namespace.route(path, { follow: false });
   const asynchronous = await namespace.stat(path, { follow: false });
   const synchronous = namespace.sync.stat(path, { follow: false });
@@ -30,5 +31,6 @@ assert.equal(new TextDecoder().decode(await namespace.readFile('/m/link/../real/
 assert.equal(backend.stat('/link', { follow: false }).type, 'symlink');
 kernel.mkdir('home/user', { recursive: true });
 assert.equal((await namespace.stat('/home/user/.')).type, 'directory');
+assert.equal(kernel.resolveName('/.', false), null, 'root dot spellings also use the namespace walk');
 harness.db.close();
 console.log('vfs-shared-path-walk: ok');

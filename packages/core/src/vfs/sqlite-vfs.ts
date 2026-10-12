@@ -3391,7 +3391,10 @@ export class SqliteVFS {
     tree: InodeLookup = this.inodes,
   ): VfsNameResolution | null {
     const root = this.confinedTmpRoots.get(cred.uid);
-    const current = this.nameOf(path, cred, tree, root);
+    const plain = plainVfsPath(path);
+    if (plain === null) return null;
+    const key = this.keyOfName(plain, root);
+    const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;
     // As resolvePath: a lookup into a delegated subtree recalls it first.
     // A walk that follows a link answers null below (the caller walks it by
     // components, through resolvePath, which recalls where the link leads).

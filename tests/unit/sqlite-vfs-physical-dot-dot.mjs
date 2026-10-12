@@ -66,6 +66,9 @@ store.writeBatch({
   chunks: [{ path: `${staged}/f`, chunkId: 0, data: new TextEncoder().encode('staged') }],
 });
 assert.equal(store.readFileString('/home/user/physical/staged/f'), 'staged', 'batch-created parents use physical placement too');
+for (const cursor of ['/home/user/physical/f', '/home/user/missing/sub', '/future/not-created']) {
+  assert.deepEqual(store.list(`${cursor}/`, 3), store.list(cursor, 3), 'a pagination cursor is lexical, even past missing or non-directory entries');
+}
 
 engine.snapshot('before');
 root.unlink('home/user/relative');
@@ -74,6 +77,7 @@ const snapshot = engine.at('before', USER);
 assert.equal(snapshot.readFileString('/home/user/relative/../f'), 'beside the target', 'snapshots walk their pinned links');
 assert.equal(snapshot.storageKey('/home/user/relative/../f'), 'home/user/physical/f');
 assert.deepEqual(snapshot.readdir('/home/user/relative/..'), snapshot.readdir('/home/user/physical'), 'snapshot directory lookups also use pinned links');
+assert.deepEqual(snapshot.list('/home/user/physical/f/', 3), snapshot.list('/home/user/physical/f', 3));
 
 root.mkdir('tmp/shared/child', { recursive: true });
 root.writeFile('tmp/shared/f', 'shared');
