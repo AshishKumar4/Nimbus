@@ -26,10 +26,12 @@ export declare function inWatchedTree(tree: string, path: string): boolean;
  * directory above it, renamed is the watched path's going (unlink, where it
  * was seen); a watch that follows its target (`follow`) is told its move
  * instead (a rename, where it may see both places), and moves with it
- * (CompositeVFS.watchChanges). What a directory renamed to above the
- * watched path brings is not known, and not told. Null: nothing to tell.
+ * (CompositeVFS.watchChanges). A directory above it renamed took it along
+ * only if it is there now (`exists`, asked of nothing else); what a
+ * directory renamed to above the watched path brings is not known, and not
+ * told. Null: nothing to tell.
  */
-export declare function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, follow?: boolean): VfsEvent | null;
+export declare function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, follow?: boolean, exists?: (path: string) => boolean): VfsEvent | null;
 export type VfsEventListener = (events: VfsEvent[]) => void;
 export type VfsPathListener = (event: VfsEvent) => void;
 /**
@@ -49,6 +51,9 @@ export declare class VfsEventEmitter {
     /** Publications so far. */
     private _published;
     private _flushScheduled;
+    /** Publications the path listeners are yet to hear, in order (one a listener makes waits for the one it hears). */
+    private _pathQueue;
+    private _pathDelivering;
     private _totalEmitted;
     private _totalBatches;
     /** Register a global listener that receives batched events: those published from now on. */

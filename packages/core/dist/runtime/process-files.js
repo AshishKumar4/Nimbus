@@ -562,9 +562,7 @@ export class ProcessFiles {
         scope.waveDescriptions.clear();
         scope.closed = true;
         scope.abort.abort();
-        for (const unsubscribe of scope.subscriptions)
-            unsubscribe();
-        scope.subscriptions.clear();
+        this.stopSubscriptions(scope);
         return { lost };
     }
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
@@ -590,11 +588,8 @@ export class ProcessFiles {
      * bridge on it). A flush that fails (an aborted binding's, a mount's
      * refusal) loses its bytes and is reported after the scope is closed.
      */
-    closeScope(scope) {
-        if (scope.closed)
-            return;
-        const lost = closeDescriptions(scope);
-        // Every subscription stopped, whichever of them fails to.
+    /** Every subscription of `scope` stopped, whichever of them fails to. */
+    stopSubscriptions(scope) {
         for (const dispose of [...scope.subscriptions]) {
             try {
                 dispose();
@@ -604,6 +599,12 @@ export class ProcessFiles {
             }
         }
         scope.subscriptions.clear();
+    }
+    closeScope(scope) {
+        if (scope.closed)
+            return;
+        const lost = closeDescriptions(scope);
+        this.stopSubscriptions(scope);
         scope.closed = true;
         scope.abort.abort();
         return andThen(lost, reportLost);

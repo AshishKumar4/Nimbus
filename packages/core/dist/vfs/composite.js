@@ -812,17 +812,15 @@ export class CompositeVFS {
      * Watch `mount`'s backend, as this view sees it, where it tells its own
      * changes and holds part of `watch`'s tree: a source fixed for every
      * principal (one that gives a backend per principal, or per moment, is
-     * told as the namespace changes it). For a watch that follows its target,
-     * the whole of it: the target may move anywhere on it (a rename does not
-     * leave its mount).
+     * told as the namespace changes it). The whole of it: what is under the
+     * watched path, and where it moves to, is the namespace's to judge (a
+     * rename does not leave its mount).
      */
     subscribeChanges(watch, mount) {
         if (typeof mount.source === 'function')
             return;
         const { path } = watch;
-        const rel = path === mount.point || path.startsWith(mount.under) ? (watch.follow ? '/' : relativeTo(mount.point, path))
-            : inWatchedTree(path, mount.point) ? '/' : null;
-        if (rel === null)
+        if (!inWatchedTree(mount.point, path) && !inWatchedTree(path, mount.point))
             return;
         const backend = this.backend(mount);
         if (backend === null || typeof backend.watchChanges !== 'function')
@@ -831,7 +829,7 @@ export class CompositeVFS {
         const named = (event) => (event.oldPath === undefined
             ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
             : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp });
-        watch.subscribed.set(mount, backend.watchChanges(rel, (events) => {
+        watch.subscribed.set(mount, backend.watchChanges('/', (events) => {
             const changes = this.table.changes;
             if (changes === undefined || watch.stopped)
                 return;
@@ -921,8 +919,16 @@ export class CompositeVFS {
     }
     /** `watch`'s queued batches, judged and told in order; one judged by awaiting holds the rest until it is told. */
     tellQueued(changes, watch) {
-        while (!watch.stopped && !watch.waiting && watch.queue.length > 0) {
-            const judged = this.judgeChanges(watch, watch.queue.shift());
+        for (let batch = watch.queue.shift(); batch !== undefined && !watch.stopped; batch = watch.waiting ? undefined : watch.queue.shift()) {
+            let judged;
+            try {
+                judged = this.judgeChanges(watch, batch);
+            }
+            catch (error) {
+                // A batch that cannot be judged is not told; the write that made it, and every other watch, go on.
+                console.error('[composite-vfs] a change could not be judged:', error instanceof Error ? error.message : String(error));
+                continue;
+            }
             if (isPromise(judged)) {
                 watch.waiting = true;
                 void judged.then((events) => {
@@ -952,19 +958,21 @@ export class CompositeVFS {
     }
     /**
      * `batch` as `watch` is told it (projectChange), in order, a watch that
-     * follows its target moving with it: each end shown from the mount it is on (that
-     * mount still at its point, the namespace routing the path to it, its
-     * source present: feedShows, asked only where another mount meets the
-     * watched tree), and, for a watch that is not root's, under directories it
-     * may search (searchable): on the mount, as its backend judged them where
-     * it told them (judged), else by this view's lookups, an end where a
-     * directory above the watched path was shown only where the watch may
-     * search both where that directory was and where it went (they are the
-     * same directories).
+     * follows its target moving with it: each end shown from the mount it is
+     * on (that mount still at its point, the namespace routing the path to
+     * it, its source present: feedShows, asked only where another mount meets
+     * the watched tree), and, for a watch that is not root's, under
+     * directories it may search (searchable): an end its backend told as the
+     * watcher's principal sees it (judged) by the directories above the mount,
+     * any other by this view's lookups. Where a directory above the watched
+     * path was renamed, the watched path is looked at where it went: there,
+     * and seen there, or it is not told.
      */
     judgeChanges(watch, batch) {
         const { mount, events, judged } = batch;
-        // The path the namespace looks up for `path`: on a mount whose backend judged it, its first name there (the directories above the mount).
+        if (this.table.mounts.get(mount.point) !== mount)
+            return [];
+        // The path the namespace looks up for an end its backend told: on a mount whose backend judged it, its first name there.
         const lookedUp = (path) => {
             if (!judged || path === mount.point)
                 return path;
@@ -972,8 +980,6 @@ export class CompositeVFS {
             const slash = rest.indexOf('/', 1);
             return CompositeVFS.reroot(mount.point, slash === -1 ? rest : rest.slice(0, slash));
         };
-        if (this.table.mounts.get(mount.point) !== mount)
-            return [];
         const routedFrom = (tree) => {
             // No other mount at, above or in the watched tree: every path in it is this mount's to show.
             let alone = true;
@@ -983,33 +989,21 @@ export class CompositeVFS {
             }
             return (path) => (alone && inWatchedTree(tree, path)) || this.feedShows(path, mount);
         };
+        // Where the watched path went when a directory above it was renamed (it is looked at there), or null.
+        const movedBy = (event, tree) => {
+            const from = event.oldPath;
+            return from !== undefined && from !== tree && inWatchedTree(from, tree) ? event.path + tree.slice(from.length) : null;
+        };
         const cred = this.viewer.cred;
         const everywhere = cred === null || cred.uid === 0;
-        // The paths each event may name, where the watch is when it comes (it may move within the batch).
-        const asked = (event, tree) => {
-            const from = event.oldPath;
-            if (from === undefined)
-                return { moved: null, paths: [event.path] };
-            // The watched path itself, or a directory above it, renamed: where the watched path is now.
-            const moved = inWatchedTree(from, tree) ? event.path + tree.slice(from.length) : null;
-            return { moved, paths: moved === null ? [event.path, from] : [event.path, from, tree, moved] };
-        };
-        const project = (reached) => {
+        const project = (reached, there) => {
             const told = [];
             let routed = routedFrom(watch.path);
             for (const event of events) {
                 const tree = watch.path;
-                const { moved } = asked(event, tree);
-                const shown = (path) => {
-                    if (!routed(path))
-                        return null;
-                    if (!judged && moved !== null && event.oldPath !== undefined && path === tree && path !== event.oldPath) {
-                        // Where the watched path was, under a directory that moved: seen there only if seen where it is now.
-                        return reached(event.oldPath) && reached(moved) ? path : null;
-                    }
-                    return reached(lookedUp(path)) ? path : null;
-                };
-                const one = projectChange(event, tree, shown, watch.follow);
+                const moved = movedBy(event, tree);
+                const shown = (path) => (routed(path) && reached(path === moved ? path : lookedUp(path)) ? path : null);
+                const one = projectChange(event, tree, shown, watch.follow, there);
                 if (one === null)
                     continue;
                 told.push(one);
@@ -1020,31 +1014,59 @@ export class CompositeVFS {
             }
             return told;
         };
-        if (everywhere)
-            return project(() => true);
+        // Every lookup the batch may ask for, wherever the watch may move within it.
         const reach = new Map();
+        const presence = new Map();
         let waits = false;
-        // Every path the batch may ask about, wherever the watch may move within it.
         let tree = watch.path;
         for (const event of events) {
-            const { moved, paths } = asked(event, tree);
-            for (const path of judged ? paths.map(lookedUp) : paths) {
-                if (reach.has(path))
-                    continue;
-                const searched = this.searchable(path);
-                waits ||= isPromise(searched);
-                reach.set(path, searched);
+            const moved = movedBy(event, tree);
+            if (moved !== null && !presence.has(moved)) {
+                const found = this.presentAt(moved);
+                waits ||= isPromise(found);
+                presence.set(moved, found);
             }
-            if (moved !== null && watch.follow)
-                tree = moved;
+            if (!everywhere) {
+                const ends = event.oldPath === undefined ? [lookedUp(event.path)] : [lookedUp(event.path), lookedUp(event.oldPath)];
+                for (const path of moved === null ? ends : [...ends, moved]) {
+                    if (reach.has(path))
+                        continue;
+                    const searched = this.searchable(path);
+                    waits ||= isPromise(searched);
+                    reach.set(path, searched);
+                }
+            }
+            if (watch.follow && event.oldPath !== undefined && inWatchedTree(event.oldPath, tree))
+                tree = event.path + tree.slice(event.oldPath.length);
         }
+        const decided = (known) => (path) => known.get(path) === true;
         if (!waits)
-            return project((path) => reach.get(path) === true);
-        const paths = [...reach.keys()];
-        return Promise.all(reach.values()).then((answers) => {
-            const known = new Map(paths.map((path, i) => [path, answers[i]]));
-            return project((path) => known.get(path) === true);
-        });
+            return project(everywhere ? () => true : decided(reach), decided(presence));
+        const settle = (map) => {
+            const keys = [...map.keys()];
+            return Promise.all(map.values()).then((answers) => new Map(keys.map((key, i) => [key, answers[i] === true])));
+        };
+        return Promise.all([settle(reach), settle(presence)]).then(([reached, present]) => project(everywhere ? () => true : decided(reached), decided(present)));
+    }
+    /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
+    presentAt(path) {
+        const decide = (sync) => {
+            const refused = (error) => {
+                if (isVfsError(error))
+                    return false;
+                throw error;
+            };
+            try {
+                const stat = this.statAt(path, false, sync);
+                return isPromise(stat) ? stat.then((found) => found !== null, refused) : stat !== null;
+            }
+            catch (error) {
+                if (sync && isAsyncMountRefusal(error))
+                    return decide(false);
+                return refused(error);
+            }
+        };
+        return decide(true);
     }
     /**
      * Whether this view may search every directory above `path`, by its own
@@ -2505,7 +2527,7 @@ export class CompositeVFS {
                     const ops = this.ops(route, sync);
                     return this.reportWrite({ path, route, ops, follow: false, kind: 'create' }, () => {
                         this.guardMutation([input, path]);
-                        return ops.mkdir(route.rel, options);
+                        return andThen(ops.mkdir(route.rel, options), () => undefined);
                     }, sync);
                 });
             }

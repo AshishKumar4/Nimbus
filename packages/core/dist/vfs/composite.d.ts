@@ -491,9 +491,9 @@ export declare class CompositeVFS implements VFS {
      * Watch `mount`'s backend, as this view sees it, where it tells its own
      * changes and holds part of `watch`'s tree: a source fixed for every
      * principal (one that gives a backend per principal, or per moment, is
-     * told as the namespace changes it). For a watch that follows its target,
-     * the whole of it: the target may move anywhere on it (a rename does not
-     * leave its mount).
+     * told as the namespace changes it). The whole of it: what is under the
+     * watched path, and where it moves to, is the namespace's to judge (a
+     * rename does not leave its mount).
      */
     private subscribeChanges;
     /**
@@ -523,17 +523,19 @@ export declare class CompositeVFS implements VFS {
     private tellWatch;
     /**
      * `batch` as `watch` is told it (projectChange), in order, a watch that
-     * follows its target moving with it: each end shown from the mount it is on (that
-     * mount still at its point, the namespace routing the path to it, its
-     * source present: feedShows, asked only where another mount meets the
-     * watched tree), and, for a watch that is not root's, under directories it
-     * may search (searchable): on the mount, as its backend judged them where
-     * it told them (judged), else by this view's lookups, an end where a
-     * directory above the watched path was shown only where the watch may
-     * search both where that directory was and where it went (they are the
-     * same directories).
+     * follows its target moving with it: each end shown from the mount it is
+     * on (that mount still at its point, the namespace routing the path to
+     * it, its source present: feedShows, asked only where another mount meets
+     * the watched tree), and, for a watch that is not root's, under
+     * directories it may search (searchable): an end its backend told as the
+     * watcher's principal sees it (judged) by the directories above the mount,
+     * any other by this view's lookups. Where a directory above the watched
+     * path was renamed, the watched path is looked at where it went: there,
+     * and seen there, or it is not told.
      */
     private judgeChanges;
+    /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
+    private presentAt;
     /**
      * Whether this view may search every directory above `path`, by its own
      * lookup (resolve, the last component not looked at), and, on a mount that
