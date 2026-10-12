@@ -89,17 +89,24 @@ export interface PortEntry {
  * of, so it is not held to it.
  *
  * The pipe into the last stage is explicit, so its settlement is when the
- * body is done with (`owner.settle`): its end, its error, or `owner.signal`
- * aborting it.
+ * body is done with: its end (`owner.settle`), its failure (`owner.fail`),
+ * or `owner.signal` aborting it.
  */
 export declare function relayRpcBody(response: Response, method: string, owner: BodyOwner, gated?: TransformStream<Uint8Array, Uint8Array> | null): Response;
 /** Who owns work for a relayed body: it ends with `signal`, and hears once the relay settles. */
 export interface BodyOwner {
     readonly signal: AbortSignal;
+    /** The body was delivered whole, or there was none to deliver. */
     settle(): void;
+    /** The body will not be delivered: to its handler, the caller has left. */
+    fail(reason?: unknown): void;
 }
-/** One response's scope (RouteableFacetTarget), and the owner whose relay settles it. */
-export declare function responseScope(signal: AbortSignal): {
+/**
+ * One response's scope (RouteableFacetTarget), and the owner whose relay
+ * settles it. Its signal is the caller's, or the relay failing, whichever
+ * comes first: a client that resets is seen both ways, in either order.
+ */
+export declare function responseScope(caller: AbortSignal): {
     scope: ResponseScope;
     owner: BodyOwner;
 };

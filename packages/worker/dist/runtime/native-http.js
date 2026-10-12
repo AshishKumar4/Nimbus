@@ -254,6 +254,10 @@ Object.defineProperty(builtins, "http", {
         };
         if (inbound.signal.aborted) dropped();
         else inbound.signal.addEventListener("abort", dropped, { once: true });
+        // A response that ends unfinished takes its connection with it, and
+        // its request is aborted, as Node's socketOnClose does: the platform
+        // can cancel the response body before the caller's leaving arrives.
+        response.once("close", () => { if (!response.writableFinished) dropped(); });
         // workerd's #toReqRes keeps only the text before the first unquoted
         // comma of these fields (splitHeaderValue, meant to pick the first of
         // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"

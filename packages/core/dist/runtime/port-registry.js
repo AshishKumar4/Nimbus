@@ -77,8 +77,8 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  * of, so it is not held to it.
  *
  * The pipe into the last stage is explicit, so its settlement is when the
- * body is done with (`owner.settle`): its end, its error, or `owner.signal`
- * aborting it.
+ * body is done with: its end (`owner.settle`), its failure (`owner.fail`),
+ * or `owner.signal` aborting it.
  */
 export function relayRpcBody(response, method, owner, gated = null) {
     if (response.body === null) {
@@ -96,16 +96,23 @@ export function relayRpcBody(response, method, owner, gated = null) {
         headers: response.headers,
     });
 }
-/** One response's scope (RouteableFacetTarget), and the owner whose relay settles it. */
-export function responseScope(signal) {
+/**
+ * One response's scope (RouteableFacetTarget), and the owner whose relay
+ * settles it. Its signal is the caller's, or the relay failing, whichever
+ * comes first: a client that resets is seen both ways, in either order.
+ */
+export function responseScope(caller) {
     let settle = () => { };
     const settled = new Promise((resolve) => { settle = resolve; });
+    const failed = new AbortController();
+    const signal = AbortSignal.any([caller, failed.signal]);
     // A caller that leaves is done with the body, whatever its relay still waits on.
     signal.addEventListener('abort', settle, { once: true });
-    return { scope: { signal, settled }, owner: { signal, settle } };
+    const fail = (reason) => failed.abort(reason ?? new DOMException('The response was not delivered', 'AbortError'));
+    return { scope: { signal, settled }, owner: { signal, settle, fail } };
 }
 function settleWith(owner, source, last) {
-    void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.settle);
+    void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);
 }
 /**
  * A JavaScript stage of the relay, errored when `signal` aborts. A pipe waits
@@ -135,7 +142,7 @@ function decodeContentCoding(response, port, method, owner, gated) {
         return relayRpcBody(response, method, owner, gated);
     const format = DECODABLE_CONTENT_CODINGS.get(coding);
     if (!format) {
-        owner.settle();
+        owner.fail();
         void response.body.cancel().catch(() => { });
         return new Response(JSON.stringify({
             error: `port proxy: target answered Content-Encoding "${coding}", which this hop cannot decode`,
