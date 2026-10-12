@@ -135,7 +135,7 @@ export async function registerHostedCommands(self, workspace) {
                 const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
                 const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
                 return makeGitRunnerFactory({
-                    facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem,
+                    facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
                     fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
                 });
             })().catch((error) => { gitFactory = null; throw error; });
