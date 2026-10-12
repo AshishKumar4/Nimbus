@@ -3,7 +3,7 @@
   `lean/traceability.yaml` is the inventory; `lean/README.md` says how to run
   every check.
 
-  Vfs: RevisionFloor, FastCdc, Composite, CompositeOps, CompositeCache, CompositeFeed, CompositePerm, CompositeBeneath, Ledger, Hydration, ProcessFiles
+  Vfs: RevisionFloor, FastCdc, Composite, CompositeOps, CompositeCache, CompositeFeed, CompositePerm, CompositeBeneath, Ledger, Hydration, HydrationAsync, ProcessFiles
   ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc, Bugs, Tier
   Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Held, Refetch, Namespace, DurableDelta, Visibility, VisibleDelta, ContentKey, ContentKeyAsync, Relist
   Refine (a separate root): the generators of `lean/fixtures/`
@@ -23,6 +23,7 @@ import Nimbus.Runtime.PipesTraces
 import Nimbus.Runtime.PipesHeld
 import Nimbus.Vfs.Ledger
 import Nimbus.Vfs.Hydration
+import Nimbus.Vfs.HydrationAsync
 import Nimbus.Vfs.ProcessFiles
 import Nimbus.ContentStore.Bugs
 import Nimbus.ContentStore.Quiesce
