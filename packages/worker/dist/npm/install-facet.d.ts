@@ -30,5 +30,13 @@ export interface FacetPackageSpec {
     installRoot: string;
     /** mtime for every inode written by this package (ms since epoch). */
     mtime: number;
+    /**
+     * Where the package's receipt goes once its package.json is written: an
+     * empty file saying this batch published it, which the installer reads
+     * back where the shard's own answer was lost. Given only where the
+     * package.json already there names the same package (a replacement of
+     * the same name@version), which is no evidence of its own.
+     */
+    receipt?: string;
 }
 //# sourceMappingURL=install-facet.d.ts.map

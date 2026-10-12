@@ -169,6 +169,10 @@ if (!spec) {
   console.error(`known: ${Object.keys(SPECS).join(', ')}`);
   process.exit(2);
 }
+if (RUNTIME === 'cpython') {
+  const { checkPythonInputs } = await import('../wasm/python/inputs.mjs');
+  await checkPythonInputs();
+}
 if (spec.auxiliary_bins) {
   const list = new URL(`${spec.local_base}/${spec.auxiliary_bins}`, import.meta.url);
   const names = readFileSync(list, 'utf8').split('\n').filter(Boolean);

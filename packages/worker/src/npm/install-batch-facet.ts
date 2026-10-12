@@ -611,6 +611,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       await writer.file(completionMarker.path, 0o644, completionMarker.data, ownerId);
       totalFileInodes += 1;
       totalBytesWritten += completionMarker.data.length;
+      // Waves publish in order: a receipt that landed says its package.json did.
+      if (spec.receipt) await writer.file(spec.receipt, 0o644, new Uint8Array(0), ownerId);
 
       // Write tarballs to R2 only after a successful network install so the
       // next tenant can skip the round-trip to npm. This is awaited, because

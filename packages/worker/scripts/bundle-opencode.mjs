@@ -61,6 +61,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildOpencodeAttachEntryFromSources, chunkClosure } from './build-opencode-attach-entry.mjs';
 import { readCorePin, sha256Hex } from './stage-asset.mjs';
+import { assertCurrentInputs, digestInputs } from './artifact-inputs.mjs';
+import { OPENCODE_SOURCE, opencodeInputs } from './opencode/inputs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -278,6 +280,16 @@ async function main() {
     }
   }
   const restaging = path.resolve(distDir) === path.resolve(assetDir);
+  const provenance = JSON.parse(await fs.readFile(path.join(distDir, 'provenance.json'), 'utf8'));
+  if (provenance.source?.commit !== OPENCODE_SOURCE.commit || provenance.source?.version !== version) {
+    throw new Error('[bundle-opencode] provenance does not name the pinned upstream source');
+  }
+  assertCurrentInputs('OpenCode', provenance.source?.inputs, await opencodeInputs(),
+    'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
+  if (restaging) {
+    assertCurrentInputs('OpenCode output', provenance.outputs,
+      await digestInputs(distDir, Object.keys(provenance.outputs ?? {})), 'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
+  }
 
   const indexSrc = path.join(distDir, 'index.js');
   if (!(await exists(indexSrc))) {
@@ -304,7 +316,7 @@ async function main() {
   // build's chunk-*.js files are aggregated into the single chunks.json pack;
   // a restage from committed assets already carries the pack.
   const entries = await fs.readdir(distDir, { withFileTypes: true });
-  const fileNames = entries.filter((e) => e.isFile()).map((e) => e.name);
+  const fileNames = entries.filter((e) => e.isFile() && e.name !== 'provenance.json').map((e) => e.name);
   const chunkNames = fileNames.filter((n) => CHUNK_RE.test(n)).sort();
   const staged = [];
   for (const name of fileNames.filter((n) => !CHUNK_RE.test(n)).sort()) {
@@ -385,6 +397,10 @@ async function main() {
   }
   sidecars.sort();
   const buildId = hash.digest('hex').slice(0, 16);
+  if (!restaging) {
+    provenance.outputs = Object.fromEntries(staged.filter(file => file.name !== 'index-attach.js').map(file => [file.name, digests[file.name]]));
+    await fs.writeFile(path.join(assetDir, 'provenance.json'), JSON.stringify(provenance, null, 2) + '\n');
+  }
 
   const entryPath = `/${assetRel.split(path.sep).join('/')}/index.js`;
   await emitGenerated({
