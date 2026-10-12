@@ -4562,8 +4562,10 @@ export class SqliteVFS {
    * Refuse a mutation at `path` another lease covers; `owner` presents the
    * caller's own lease, `holds` the delegations the caller's process holds.
    */
-  assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void {
-    this.withHolds(holds === undefined ? this.activeHolds : holds(), () => this.withMutationOwner(owner, () => this.assertMutationsAllowed([path])));
+  assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>, cred?: VfsCred): void {
+    this.withHolds(holds === undefined ? this.activeHolds : holds(), () => this.withMutationOwner(owner, () => this.assertMutationsAllowed([
+      cred === undefined ? path : this.lexicalKey(path, cred).value,
+    ])));
   }
 
   /**
