@@ -60,10 +60,13 @@ for (const writable of [true, false]) {
   root.chown('var/agents/a/tmp', USER.uid, USER.gid);
   root.chmod('var/agents/a/tmp', 0o700);
   root.writeFile('var/agents/a/tmp/f', 'private');
+  root.writeFile('var/agents/a/tmp/unlink', 'unlink');
   engine.confinePrincipal(USER.uid, 'var/agents/a/tmp');
   root.chmod('var/agents/a', 0);
   const user = engine.as(USER);
   assert.equal(user.readFileString('/tmp/f'), 'private');
+  user.unlink('/tmp/unlink');
+  assert.equal(user.exists('/tmp/unlink'), false, 'unlink uses the same logical deletion authority');
   user.writeBatch({ inodes: [], chunks: [], deletePaths: ['/tmp/f'] });
   assert.equal(user.exists('/tmp/f'), false, 'ordinary private deletion uses logical, not hidden holding parents');
   assert.equal(harness.db.query("SELECT path FROM vfs_inodes WHERE path = 'var/agents/a/tmp/f'").get(), null);
