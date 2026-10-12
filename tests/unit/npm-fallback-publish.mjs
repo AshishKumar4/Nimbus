@@ -24,6 +24,9 @@
  *     into;
  *   - an inverse that moves everything and then fails: the copy put back
  *     is the one that was installed, and the next install keeps it;
+ *   - a crash mid-retirement whose source cannot be listed at recovery:
+ *     recovery stops and changes neither copy; the next one, which can
+ *     list it, restores the whole copy;
  *   - a crash while an inverse is made, before it moved anything, part of
  *     the way, and after it moved everything: recovery finishes it, and
  *     the copy put back is the one that was installed;
@@ -110,6 +113,16 @@ SqliteVFS.prototype.rename = function (from, to, ...rest) {
     throw Object.assign(new Error(`EIO: injected source cleanup ${from}`), { code: 'EIO', renamed: 'all' });
   }
   return realRename.call(this, from, to, ...rest);
+};
+// A listing the predicate picks fails, once.
+const realReaddir = SqliteVFS.prototype.readdir;
+let readdirFault = null;
+SqliteVFS.prototype.readdir = function (path, ...rest) {
+  if (readdirFault?.(String(path))) {
+    readdirFault = null;
+    throw Object.assign(new Error(`EIO: injected readdir ${path}`), { code: 'EIO' });
+  }
+  return realReaddir.call(this, path, ...rest);
 };
 // And a removal the predicate picks, once.
 const realUnlink = SqliteVFS.prototype.unlink;
@@ -321,6 +334,35 @@ try {
     assert.deepEqual(ws.tree(), { xc: '1.0.0' }, `${point}: xc@1 is back`);
     assert.equal(ws.fs.readFileString(`${ws.NM}/xc/local.txt`), 'mine', `${point}: the very copy that was installed`);
     assert.deepEqual(ws.dotEntries(), [], point);
+    ws.close();
+  }
+
+  // ── A crash mid-retirement whose source cannot be listed at recovery ─────
+  // The copy is whole where it was, a part of it where it went: a listing
+  // that fails proves nothing, so recovery changes neither copy, and the
+  // next one, which can list it, puts the tree back as it was.
+  {
+    const ws = await workspace();
+    assert.equal((await ws.npm('install xc@1.0.0')).exitCode, 0);
+    ws.user.writeFile(`${ws.NM}/xc/local.txt`, 'mine');
+    ws.user.mkdir(`${ws.NM}/.xc-retired-crash4`, { recursive: true });
+    ws.user.writeFile(`${ws.NM}/.xc-retired-crash4/package.json`, '{"name":"xc","version":"1.0.0"}');
+    ws.user.writeFile(`${ws.NM}/.nimbus-install-journal`, JSON.stringify({
+      run: 'crash4',
+      committed: false,
+      steps: [{ kind: 'retire', from: `${ws.NM}/xc`, to: `${ws.NM}/.xc-retired-crash4`, state: 'begun' }],
+    }));
+    readdirFault = (path) => path.endsWith('/node_modules/xc');
+    const failed = await ws.npm('install');
+    readdirFault = null;
+    assert.notEqual(failed.exitCode, 0, 'recovery that cannot read the evidence stops');
+    assert.equal(ws.fs.readFileString(`${ws.NM}/xc/local.txt`), 'mine', 'the whole copy is not touched');
+    assert.ok(ws.fs.exists(`${ws.NM}/.xc-retired-crash4/package.json`), 'nor is the part');
+    const rerun = await ws.npm('install');
+    assert.equal(rerun.exitCode, 0, rerun.stderr);
+    assert.deepEqual(ws.tree(), { xc: '1.0.0' });
+    assert.equal(ws.fs.readFileString(`${ws.NM}/xc/local.txt`), 'mine', 'the very copy that was installed');
+    assert.deepEqual(ws.dotEntries(), []);
     ws.close();
   }
 

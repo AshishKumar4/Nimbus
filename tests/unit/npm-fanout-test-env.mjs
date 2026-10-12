@@ -42,10 +42,15 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
           if (errorText) return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 0, bytesWritten: 0, elapsed: 1, warnings: [], errorText };
           const dir = p.pkgDir ?? `${NM}/${p.name}`;
           root.mkdir(dir, { recursive: true });
-          root.writeFile(`${dir}/package.json`, JSON.stringify(manifestFor(p)));
+          // As the batch writer does: every file stamped with the batch's mtime.
+          const write = (path, content) => {
+            root.writeFile(path, content);
+            if (p.mtime !== undefined) root.utimes(path, p.mtime, p.mtime);
+          };
+          write(`${dir}/package.json`, JSON.stringify(manifestFor(p)));
           for (const [path, content] of Object.entries(filesFor(p))) {
             root.mkdir(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`, { recursive: true });
-            root.writeFile(`${dir}/${path}`, content);
+            write(`${dir}/${path}`, content);
           }
           if (crashFor(p) === 'after') throw new Error(`shard crashed after ${p.name}`);
           return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };

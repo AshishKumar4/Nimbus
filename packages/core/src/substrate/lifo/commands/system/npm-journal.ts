@@ -137,13 +137,18 @@ export class InstallJournal {
 		}
 	}
 
-	/** Every path under `dir`, relative to it ('' for `dir` itself); a link is not followed. */
-	private async pathsUnder(dir: string, prefix = '', out = new Set<string>()): Promise<Set<string>> {
+	/**
+	 * Every path under `path`, relative to it ('' for `path` itself); a link
+	 * is not followed. Only a directory is listed, and a listing that fails,
+	 * or names what is not there, throws: an incomplete listing is no
+	 * evidence of what a rename moved.
+	 */
+	private async pathsUnder(path: string, prefix = '', out = new Set<string>()): Promise<Set<string>> {
 		out.add(prefix);
-		if (await this.vfs.isSymlink(dir)) return out;
-		let entries: Array<{ name: string }>;
-		try { entries = await this.vfs.readdir(dir); } catch { return out; }
-		for (const { name } of entries) await this.pathsUnder(join(dir, name), `${prefix}/${name}`, out);
+		const stat = await this.vfs.stat(path, { follow: false });
+		if (stat === null) throw new Error(`${path} was listed, and is not there`);
+		if (stat.type !== 'directory') return out;
+		for (const { name } of await this.vfs.readdir(path)) await this.pathsUnder(join(path, name), `${prefix}/${name}`, out);
 		return out;
 	}
 

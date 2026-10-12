@@ -563,8 +563,16 @@ export class NpmInstaller {
     const published: PackagePlacement[] = [];
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
+      // A placement's completion marker, its package.json: the version it names, and when it was written.
+      const marker = async (placement: string): Promise<{ version: string; mtime: number } | null> => {
+        const path = `${nmDir}/${placement}/package.json`;
+        try {
+          const { version }: { version?: unknown } = JSON.parse(await project.readFileString(path));
+          return typeof version === 'string' ? { version, mtime: (await project.lstat(path)).mtime } : null;
+        } catch { return null; }
+      };
       const batchResult = engineDir !== null
-        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, installedVersion, opts.pid)
+        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, marker, opts.pid)
         : await this.fetchIntoMount(toFetch, nmDir, principal);
       totalFiles += batchResult.filesWritten;
       published.push(...batchResult.installed);
@@ -1036,8 +1044,8 @@ export class NpmInstaller {
   private async fetchViaBatchFacet(
     toFetch: PackagePlacement[],
     nmDir: string,
-    /** The version installed at a placement, by its package.json (the batch writer's completion marker). */
-    installedVersion: (placement: string) => Promise<string | undefined>,
+    /** A placement's completion marker: its package.json's version, and its mtime (the batch writer stamps every file it writes with the batch's). */
+    marker: (placement: string) => Promise<{ version: string; mtime: number } | null>,
     pid?: number,
   ): Promise<FetchOutcome> {
     const log = (msg: string) => this.onProgress?.(msg);
@@ -1148,7 +1156,9 @@ export class NpmInstaller {
       const readBack: InstallBatchResult['perPackage'] = [];
       // A shard that failed (or timed out, its writes perhaps landed) is
       // read back from disk: a package whose package.json, written last, is
-      // in place at its version is installed; the rest failed with it.
+      // in place at its version and was written by this batch (its mtime
+      // the batch's) is installed; the rest failed with it, a copy that was
+      // there before included.
       for (const [index, outcome] of settled.entries()) {
         if (outcome.ok) continue;
         const reason = `install shard failed: ${describeError(outcome.error)} (${batchRoute.taken?.topology})`;
@@ -1156,7 +1166,8 @@ export class NpmInstaller {
         const dirs = new Set(tasks[index].args.packages.map((spec) => spec.pkgDir));
         for (const target of toFetch) {
           if (!dirs.has(`${nmDir}/${target.placement}`)) continue;
-          const landed = (await installedVersion(target.placement)) === target.pkg.version;
+          const written = await marker(target.placement);
+          const landed = written !== null && written.version === target.pkg.version && written.mtime === mtime;
           readBack.push({ name: target.pkg.name, version: target.pkg.version, pkgDir: `${nmDir}/${target.placement}`, fileCount: 0, bytesWritten: 0, elapsed: 0, warnings: [], ...(landed ? {} : { errorText: reason }) });
         }
       }
