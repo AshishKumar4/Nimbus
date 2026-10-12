@@ -3268,7 +3268,7 @@ export class SqliteVFS {
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
     const plain = plainVfsPath(path);
-    if (plain === null) return this.walkComponents(path, cred, followLeaf, allowMissing, tree);
+    if (plain === null) return this.walkComponents(path, cred, followLeaf, false, tree);
     const key = this.keyOfName(plain, root);
     const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;
     // The last walk (see lastResolution), when nothing since could have
@@ -3305,7 +3305,7 @@ export class SqliteVFS {
         if (leaf || allowMissing) return { path: this.keyOfName(current, root), inode: undefined, name: current };
         throw vfsKeyError('ENOENT', prefix);
       }
-      if (inode.kind === 'symlink' && (!leaf || followLeaf)) return this.walkComponents(current, cred, followLeaf, allowMissing, tree);
+      if (inode.kind === 'symlink' && (!leaf || followLeaf)) return this.walkComponents(current, cred, followLeaf, false, tree);
       if (!leaf) {
         if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', prefix);
         if (!this.accessInode(inode, 0o1, cred)) throw vfsKeyError('EACCES', prefix);
@@ -3317,7 +3317,7 @@ export class SqliteVFS {
 
   /** The namespace's component walk, looking up this tree in the caller's names. */
   private walkComponents(
-    path: string, cred: VfsCred, followLeaf: boolean, allowMissing: boolean, tree: InodeLookup,
+    path: string, cred: VfsCred, followLeaf: boolean, creating: boolean, tree: InodeLookup,
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
     const spelling = stripLeadingSlashes(path);
@@ -3327,7 +3327,7 @@ export class SqliteVFS {
       if (tree === this.inodes && this.exclusiveMutationLeases.size > 0) this.recallReads(key);
       const inode = tree.get(key);
       if (inode === undefined) {
-        if (!final && !allowMissing) throw vfsKeyError('ENOENT', prefix);
+        if (!final && !creating) throw vfsKeyError('ENOENT', prefix);
         return null;
       }
       if (inode.kind === 'symlink' && (!final || followLeaf)) return () => dec.decode(this.readWhole(inode));
@@ -3386,7 +3386,7 @@ export class SqliteVFS {
     tree: InodeLookup = this.inodes,
   ): VfsNameResolution | null {
     const root = this.confinedTmpRoots.get(cred.uid);
-    const current = this.nameOf(path, cred);
+    const current = this.nameOf(path, cred, tree, root);
     // As resolvePath: a lookup into a delegated subtree recalls it first.
     // A walk that follows a link answers null below (the caller walks it by
     // components, through resolvePath, which recalls where the link leads).
@@ -5438,9 +5438,15 @@ export class SqliteVFS {
   }
 
   /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
-  private statIfPresent(path: string, cred: VfsCred, followLeaf: boolean): VfsStat | null {
-    const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true }).inode;
-    return inode === undefined ? null : this.statOf(inode);
+  private statIfPresent(path: string, cred: VfsCred, followLeaf: boolean, tree: InodeLookup = this.inodes): VfsStat | null {
+    try {
+      const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true, tree }).inode;
+      return inode === undefined ? null : this.statOf(inode);
+    } catch (error) {
+      const code = errnoCodeOf(error);
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      throw error;
+    }
   }
 
   /** A linked inode's stat, for `stat` and for the entries `list` reports. */
@@ -6887,8 +6893,7 @@ export class SqliteVFS {
       lstat: (path) => this.statOf(resolve(path, 0, false).inode!),
       statIfPresent: (path, followLeaf = true) => {
         pinned();
-        const inode = this.checkAccess(path, 0, bound, { followLeaf, allowMissingLeaf: true, tree }).inode;
-        return inode === undefined ? null : this.statOf(inode);
+        return this.statIfPresent(path, bound, followLeaf, tree);
       },
       landedAt: (path) => probe(path) !== undefined,
       utimes: readOnly,
@@ -6897,7 +6902,7 @@ export class SqliteVFS {
       getDefaultAcl: (path) => { const inode = resolve(path, 0).inode!; return inode.isDir ? inode.defaultAcl : null; },
       chown: readOnly,
       readdir: (path) => {
-        const np = this.storageKey(path, bound);
+        const np = this.storageKey(path, bound, tree);
         if (np !== '') {
           const inode = resolve(np, 0o4).inode!;
           if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', path);
@@ -6910,7 +6915,7 @@ export class SqliteVFS {
       list: (after, limit) => {
         pinned();
         const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
-        const from = after === null || after === undefined ? '' : this.storageKey(after, bound);
+        const from = after === null || after === undefined ? '' : this.storageKey(after, bound, tree);
         const entries: VfsListEntry[] = [];
         const searchableDirs = new Map<string, boolean>();
         let cursor = from;
@@ -6950,7 +6955,7 @@ export class SqliteVFS {
       invalidatedSince: (epoch, cursor) => ({
         epoch: this._epoch, rev: g, paths: [], poison: epoch !== this._epoch || cursor !== g,
       }),
-      storageKey: (path) => this.storageKey(path, bound),
+      storageKey: (path) => this.storageKey(path, bound, tree),
       // Nothing under a snapshot ever changes, so a watch never fires.
       subscribe: () => () => {},
       acquireExclusiveMutation: readOnly,
