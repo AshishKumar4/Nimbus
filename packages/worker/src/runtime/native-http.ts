@@ -244,9 +244,7 @@ Object.defineProperty(builtins, "http", {
       const inbound = new __nativeHttpRequest(request, { headers, signal: AbortSignal.any([request.signal, controller.signal]) });
       let detach = () => {};
       let timer;
-      let nativeResponse;
       const captureResponse = (incoming, response) => {
-        nativeResponse = response;
         // A request abandoned or timed out ends as a dropped socket ends it in
         // Node (_http_server.js socketOnClose): the request destroyed with an
         // 'aborted' reset, then its response closed with no 'finish' and no
