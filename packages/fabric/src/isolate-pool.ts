@@ -759,6 +759,8 @@ export class IsolatePool {
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, ArrayBuffer>,
     signal?: AbortSignal,
+    /** Collects this dispatch's tail: it settles once every execution the dispatch started has. */
+    tails?: Promise<void>[],
   ): Promise<T> {
     // A warm slot executes one dispatch at a time: queue behind the
     // previous owner, then record this dispatch as the new tail. The
@@ -768,7 +770,9 @@ export class IsolatePool {
     // settle — never the caller's settle alone.
     const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
     let release: () => void;
-    this.slotTails.set(slotIndex, new Promise<void>((resolve) => { release = resolve; }));
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    this.slotTails.set(slotIndex, tail);
+    tails?.push(tail);
     await previous;
     if (this.disposed) {
       release!();
@@ -1128,6 +1132,7 @@ export class IsolatePool {
       Math.min(opts?.concurrency ?? this.concurrency, items.length),
     );
     const settled: Array<Settled<Awaited<R>>> = new Array(items.length);
+    const tails: Promise<void>[] = [];
     let cursor = 0;
     let failed = false;
 
@@ -1143,6 +1148,8 @@ export class IsolatePool {
             (entrypoint) => entrypoint.execute(items[idx]),
             resilience,
             opts?.wasmModules,
+            undefined,
+            tails,
           )) as Awaited<R>;
           settled[idx] = { ok: true, value };
         } catch (err) {
@@ -1157,8 +1164,9 @@ export class IsolatePool {
     );
     // An item that timed out answered its caller, but its execution may
     // still be live on the Worker (#dispatchSlot's tail): the map returns
-    // once every execution it started has settled, so none outlives it.
-    await Promise.all(Array.from({ length: concurrency }, (_, slotIndex) => this.slotTails.get(slotIndex)));
+    // once every execution it started has settled, so none outlives it,
+    // and waits for nothing else that shares its slots.
+    await Promise.all(tails);
     for (let idx = 0; idx < items.length; idx++) {
       settled[idx] ??= { ok: false, error: new Error('not started: an earlier item failed') };
     }
