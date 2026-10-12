@@ -170,6 +170,7 @@ for (const words of [
   ['pull', 'no-such-remote'], ['push', 'no-such-remote'], ['merge', 'no-such-branch'],
   ['tag', '-d', 'seed', 'missing'], ['reset', '--hard', 'no-such-revision'],
   ['checkout', 'HEAD', '--', 'f', '--no-overlay'],
+  ['checkout', '-b', 'bad..branch'],
 ]) {
   const ran = await git([...inRepo, ...words]);
   assert.deepEqual(ran.real, [], `${words.join(' ')}: operational failure is not a capability refusal`);
@@ -219,6 +220,18 @@ for (const command of ['fetch', 'pull', 'push']) {
   assert.notEqual(failed.code, 0);
   assert.equal(networkCalls.length, 1);
 }
+networkCalls.length = 0;
+networkResult = { success: true, filesWritten: 1, elapsed: 1 };
+const afterFetch = { ...doEnv, LOADER: { load() { return { getEntrypoint() { return { async fetch(request) {
+  networkCalls.push(await request.json());
+  user.writeFile('home/user/repo/.git/FETCH_HEAD', 'fetch completed before merge refusal\n');
+  return Response.json(networkResult);
+} }; } }; } } };
+const refusedPull = await git([...inRepo, ...identity, 'pull', '-q', 'origin', 'missing'], { doCtx, doEnv: afterFetch });
+assert.notEqual(refusedPull.code, 0);
+assert.deepEqual(refusedPull.real, [], 'a merge refusal after a successful fetch is not replayed');
+assert.equal(networkCalls.length, 1);
+assert.equal(user.readFileString('home/user/repo/.git/FETCH_HEAD'), 'fetch completed before merge refusal\n');
 networkResult = { success: false, cancelled: 'interrupted' };
 const stopped = new AbortController();
 stopped.abort('SIGINT');
@@ -256,6 +269,11 @@ for (const [name, env] of [
 assert.equal((await git([...inRepo, 'config', 'user.name', 'Local'], { env: configEnv })).code, 0);
 assert.equal((await git([...inRepo, '-c', 'user.name=Override', 'config', '--get', 'user.name'], { env: configEnv })).stdout, 'Override\n');
 assert.equal((await git([...inRepo, 'config', '--get', 'user.name'], { env: configEnv })).stdout, 'Local\n');
+assert.equal((await git([...inRepo, 'config', '--get', 'init.defaultBranch'], {
+  env: { ...configEnv, GIT_CONFIG_GLOBAL: '../explicit-config' },
+})).stdout, 'explicit\n', 'a relative global config is relative to the command cwd');
+user.writeFile('home/user/.gitconfig', user.readFileString('home/user/.gitconfig') + '[status]\n showUntrackedFiles = no\n');
+assert.equal((await git([...inRepo, 'status', '--short'], { env: configEnv })).stdout, '', 'ordinary settings read the global config too');
 
 // Real git's unreadable index modes are identified before any writes,
 // including checkout -b and commit -a's otherwise early mutations.
