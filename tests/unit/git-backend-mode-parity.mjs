@@ -19,7 +19,8 @@ import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-ru
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
-const REQUESTS = { 'plain.txt': undefined, 'run.sh': 0o777, 'private.txt': 0o600, 'readonly.txt': 0o444 };
+// null: no mode asked for.
+const REQUESTS = { 'plain.txt': null, 'run.sh': 0o777, 'private.txt': 0o600, 'readonly.txt': 0o444 };
 const AT_SESSION = { 'plain.txt': 0o664, 'run.sh': 0o775, 'private.txt': 0o600, 'readonly.txt': 0o444 };
 const GIT_VIEW = { 'plain.txt': 0o644, 'run.sh': 0o755, 'private.txt': 0o644, 'readonly.txt': 0o644 };
 
@@ -45,7 +46,7 @@ export const git = {
     const seen = {};
     for (const [name, mode] of Object.entries(requests)) {
       const path = dir + '/' + name;
-      await fs.promises.writeFile(path, name, mode === undefined ? undefined : { mode });
+      await fs.promises.writeFile(path, name, mode === null ? undefined : { mode });
       seen[name] = (await fs.promises.stat(path)).mode & 0o7777;
     }
     globalThis.__gitView = seen;
@@ -75,7 +76,7 @@ export const git = {
 }
 
 // What the session makes of the same requests from a program's writes.
-for (const [name, mode] of Object.entries(REQUESTS)) user.writeFile(`home/user/program/${name}`, name, mode === undefined ? undefined : { mode });
+for (const [name, mode] of Object.entries(REQUESTS)) user.writeFile(`home/user/program/${name}`, name, mode === null ? undefined : { mode });
 
 assert.deepEqual(modesAt('program'), AT_SESSION, "a program's writes: the bits asked for, under the session's 002 umask");
 assert.deepEqual(modesAt('facet'), AT_SESSION, "the facet's files: the same");
