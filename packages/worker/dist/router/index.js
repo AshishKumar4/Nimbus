@@ -147,9 +147,20 @@ export function createNimbusHandler(options = {}) {
                 setCookies.push(expireSessionCookie(destroyedSession));
             if (setCookies.length === 0)
                 return answered;
+            // Fetched answers (ASSETS shell, the session DO's upgrade) arrive with
+            // immutable headers: append only to a mutable copy. A 101 keeps its
+            // accepted socket — it lives beside headers, not in them, so copying
+            // headers alone carries it across untouched.
+            const headers = new Headers(answered.headers);
             for (const value of setCookies)
-                answered.headers.append('Set-Cookie', value);
-            return answered;
+                headers.append('Set-Cookie', value);
+            return new Response(answered.body, {
+                status: answered.status,
+                statusText: answered.statusText,
+                headers,
+                // @ts-expect-error workerd-only upgrade slot; absent on plain answers
+                ...(answered.webSocket === undefined ? {} : { webSocket: answered.webSocket }),
+            });
         };
         const answered = (response) => applySessionResponsePolicy(response);
         const url = new URL(request.url);
