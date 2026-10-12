@@ -8,7 +8,8 @@
   cap 8 pending bytes per handle; EFBIG past it, nothing acknowledged). Processes
   open, write, fsync, close, are released (`releaseProcess`: every handle
   flushed, then later use EBADF) or killed (nothing flushed; the loss report
-  names exactly the handles with pending bytes). A buffered flush reads the file,
+  names exactly the handles with pending bytes). An `O_TRUNC` open flushes its
+  process's own handles on the path first, in open order, then truncates. A buffered flush reads the file,
   applies the handle's pending writes in order (an `append` one at the end as it
   is then), and writes it back. A write-through `append` takes the end in the same
   call. `read` expects the file's bytes after each step, so two handles on one
@@ -152,6 +153,8 @@ def genDescCase : Gen (Option Json) := do
       let p ← below 2
       let app := (← below 3) == 0
       let tr := !app && (← below 4) == 0
+      -- O_TRUNC cuts the file after the opener's own pending writes on it, flushed in open order (Linux: they are in the page cache before it).
+      if tr then d := flushAll d (d.hs.filter fun h => h.pid == pid && h.path == p)
       let file := if tr then [] else (d.files p).getD []
       d := { d with files := upd d.files p (some file), hs := d.hs ++ [⟨d.nextFd, pid, p, app, 0, []⟩], nextFd := d.nextFd + 1 }
       out := out.push (.obj [("op", .str "open"), ("pid", .ofNat pid), ("fd", .ofNat (d.nextFd - 1)), ("path", .str (fname p)),

@@ -29,10 +29,13 @@
  * most one per link record in flight (a known leak, by that name pattern).
  */
 
-import type { CompositeVFS } from '../vfs/composite.js';
+import type { Awaitable } from '../vfs/vfs.js';
+import type { CompositeVFS, VfsMutationRoute } from '../vfs/composite.js';
 import type { RoutedStat, RoutedWaveRecord, WaveRouter } from './wave-contracts.js';
 import type { VfsCred, VfsRemoval, VfsStat } from '../vfs/vfs.js';
-import { VfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
+import { VFS_DESCRIPTION, VfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
+import { openFollows, openOnMount } from '../vfs/mounted-description.js';
+import { openFlags } from './descriptors.js';
 
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export const LINK_SLOT_SUFFIX = '.nimbus-wave';
@@ -56,7 +59,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
           const cut = at.lastIndexOf('/');
           return attempt(at.slice(0, cut) || '/', missing === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${missing}`);
         };
-        let route: ReturnType<CompositeVFS['mutationRoute']>;
+        let route: Awaitable<VfsMutationRoute>;
         try {
           route = ns.mutationRoute(at, { follow: true });
         } catch (error) {
@@ -81,6 +84,17 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       // Removing its own slot after a failure is the record's own: not admitted again, under the same lease.
       const cleanup = view(cred, undefined, owner);
       return applyRecord(ns, cleanup, record, pinsOf(ns, record));
+    },
+    async open(call, cred, guard, owner) {
+      // Pinned under the wave's lease alone: its description's later writes are not this wave's to admit.
+      const ns = view(cred, undefined, owner);
+      const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
+      const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
+      await pinOf(ns, parentOf(call.path))();
+      const opened = await openOnMount(file, {
+        flags, mode: call.mode, refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
+      }, false, guard);
+      return { file, stat: statOf(opened) };
     },
   };
 }
@@ -123,7 +137,7 @@ function pinOf(ns: CompositeVFS, dir: string): () => void | Promise<void> {
     throw new VfsError('ESTALE', 'the directory a wave placed this record in moved under it', dir);
   };
   return () => {
-    let route: ReturnType<CompositeVFS['mutationRoute']>;
+    let route: Awaitable<VfsMutationRoute>;
     try {
       route = ns.mutationRoute(dir, { follow: true });
     } catch {
@@ -188,7 +202,7 @@ async function applyRecord(
       }
       else if (call.call === 'unlink') await ns.unlink(call.path);
       else if (call.call === 'rmdir') await ns.rmdir(call.path);
-      // An open description's truncate, by its name: a mount numbers its files its own way.
+      // A truncate the process made by the file's name: one through a description is the description's (WaveIngest).
       else if (call.call === 'ftruncate') await ns.truncate(call.path, call.size);
       else if (call.call === 'rm') {
         // The name itself, a link not followed: rm removes the link.
@@ -207,21 +221,8 @@ async function applyRecord(
       }
       // A mount keeps no owner or times of a link apart from what it names: refused, as a backend without them refuses.
       else if (call.call === 'lchown' || call.call === 'lutimes') throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
-      else if (call.call === 'open') {
-        // open(2) to write, as the session's own open decides it on a mount.
-        const name = await ns.stat(call.path, { follow: false });
-        if (name !== null && call.create === true && call.exclusive === true) throw new VfsError('EEXIST', 'file already exists', call.path);
-        if (call.nofollow === true && name?.type === 'symlink') throw new VfsError('ELOOP', 'too many levels of symbolic links', call.path);
-        const there = call.nofollow === true ? name : await ns.stat(call.path);
-        if (there === null && call.create !== true) throw new VfsError('ENOENT', 'no such file or directory', call.path);
-        if (there?.type === 'directory') throw new VfsError('EISDIR', 'is a directory', call.path);
-        await pinned();
-        if (there === null) await ns.writeFile(call.path, new Uint8Array(0), { mode: call.mode });
-        else if (call.truncate === true) await ns.truncate(call.path, 0);
-        return statOf(await ns.stat(call.path));
-      }
-      // A description's close: a mount keeps no description (its open made none).
-      else if (call.call === 'close') return null;
+      // An open is the router's own (WaveRouter.open), and a description's close the binding's.
+      else if (call.call === 'open' || call.call === 'close') throw new Error(`internal: a ${call.call} call is not a record the router applies`);
       else await ns.symlink(call.target, call.path);
       return null;
     }
@@ -243,8 +244,8 @@ async function applyRecord(
       return statOf(await ns.stat(record.path));
     }
     case 'data-call': {
-      // The namespace's call with the whole bytes; a description's write or
-      // append by its name, as a mount numbers its files its own way.
+      // The namespace's call with the whole bytes; a write or append through
+      // a description is the description's (WaveIngest), this one by name.
       await pinned();
       if (record.call === 'appendFile' || record.call === 'append') {
         const prior = await ns.stat(record.path);
@@ -262,6 +263,8 @@ async function applyRecord(
   }
 }
 
+function statOf(stat: VfsStat): RoutedStat;
+function statOf(stat: VfsStat | null): RoutedStat | null;
 function statOf(stat: VfsStat | null): RoutedStat | null {
   if (stat === null) return null;
   return {

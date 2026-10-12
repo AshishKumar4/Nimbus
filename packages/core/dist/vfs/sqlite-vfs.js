@@ -1527,9 +1527,12 @@ export class SqliteVFS {
     }
     // ── Helpers ───────────────────────────────────────────────────────────
     /**
-     * A description of `path`, opened as `cred`. Its writes are its opener's,
-     * wherever they run: `principal` (else the calling view's, else `cred`'s)
-     * is the one its write events name and its held appends are written as.
+     * A description of `path`, opened as `cred`, its access decided by the
+     * open that asks (openAccess, or the creat(2) that made it, which writes
+     * whatever its mode): the lookup asks only search. Its writes are its
+     * opener's, wherever they run: `principal` (else the calling view's, else
+     * `cred`'s) is the one its write events name and its held appends are
+     * written as.
      */
     openDescription(path, cred, rights, principal, holds, 
     /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
@@ -1544,7 +1547,7 @@ export class SqliteVFS {
             this.activeHolds = holds();
         let resolved;
         try {
-            resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+            resolved = this.checkAccess(path, 0, cred);
         }
         finally {
             this.activeWrite = priorWrite;
@@ -7921,8 +7924,12 @@ export class SqliteVFS {
                 }
                 return { befores, results, after: this._revision };
             },
-            isDescribed: (id) => this.isDescribed(described, id),
             reopened: (path, id) => this.reopened(described, path, id, cred),
+            forgetDescription: (id) => {
+                const { pid } = described;
+                if (pid !== null)
+                    this.transactionSync(() => this.forgetDescription(pid, id));
+            },
             openSequence: (sequence) => this.openSequence(sequence),
             advanceSequence: (writer, seq) => this.transactionSync(() => this.advanceSequence(writer, seq)),
             refuseInSequence: (writer, refused, closed) => this.refuseInSequence(writer, refused, closed),
@@ -7999,7 +8006,7 @@ export class SqliteVFS {
                 this.utimes(call.path, call.atime, call.mtime, cred, false);
             else if (call.call === 'open')
                 return this.openToWrite(call, cred, described);
-            // Closing a description already gone (a mount's open keeps none) closes nothing.
+            // A close is the binding's, of any description it keeps, a mount's included; one already gone closes nothing.
             else if (call.call === 'close')
                 this.closeDescribed(described, call.description);
             else
@@ -8461,14 +8468,6 @@ export class SqliteVFS {
         const rights = Number(kept.rights);
         const handle = by.descriptions.adopt(id, Number(kept.ino), { read: (rights & 4) !== 0, write: (rights & 2) !== 0 }, path, cred);
         return handle === null ? null : by.descriptions.node(id);
-    }
-    /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
-    isDescribed(by, id) {
-        if (by.descriptions === undefined)
-            return false;
-        if (by.descriptions.node(id) !== undefined)
-            return true;
-        return by.pid !== null && [...this.sql.exec('SELECT 1 FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id)].length > 0;
     }
     /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
     describedBy(by, id, path, cred) {
