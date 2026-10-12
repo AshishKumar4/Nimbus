@@ -17,6 +17,7 @@
 #   ./build-in-bwrap.sh <work> wasi assets      # re-link the interpreter and repack
 #   ./build-in-bwrap.sh <work> ext sci assets   # rebuild the compiled packages and relink
 #   ./build-python.sh verify                    # from the tree: check the artifacts
+#   bun scripts/ci/remote-python-build.mjs [<commit>]   # all of it on armada, for a commit
 #
 # Outputs, next to this script:
 #   python.wasm       the interpreter, stripped, built as a WASI reactor
