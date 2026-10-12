@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { HostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { HostActivity, HOST_INCARNATION_HEADER, SentRequests } from '../../packages/fabric/src/host-activity.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { testBox } from './lib/test-box.mjs';
 
