@@ -61,7 +61,7 @@ export interface NpmInstallPort {
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
         registry: string;
         production?: boolean;
-        /** `npm ci`: validate package-lock.json, remove node_modules, place exactly what the lock records. */
+        /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
         fromLockfile?: boolean;
         npmLog?: NpmLogEmitter | null;
         onProgress?: (line: string) => void;

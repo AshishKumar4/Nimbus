@@ -16,10 +16,6 @@ import { LruMap } from './lru-map.js';
 import { z } from 'zod/v4';
 // ── Placements ───────────────────────────────────────────────────────────────
 const NM = '/node_modules/';
-/** `name` under `parent`; `''` is the project itself. */
-export function nestedPlacement(parent, name) {
-    return parent ? `${parent}${NM}${name}` : name;
-}
 /** The containing placement, `''` at root. */
 export function parentPlacement(placement) {
     const i = placement.lastIndexOf(NM);
@@ -33,17 +29,6 @@ export function placementName(placement) {
 /** How deep a placement is: 1 at root. */
 export function depthOf(placement) {
     return placement === '' ? 0 : placement.split(NM).length;
-}
-/** Placements Node's walk visits for `name` from inside `from`, nearest first, root last. */
-export function visiblePlacements(from, name) {
-    const out = [];
-    let dir = from;
-    while (dir) {
-        out.push(`${dir}${NM}${name}`);
-        dir = parentPlacement(dir);
-    }
-    out.push(name);
-    return out;
 }
 /**
  * A cycle with mutually incompatible ranges has no finite layout without

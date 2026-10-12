@@ -17,7 +17,7 @@
  * lock's root declares other dependencies than the project; then they are
  * found again, and what the project does not reach goes.
  */
-import { depthOf } from '../npm-tree.js';
+import { depthOf, parentPlacement, placementName } from '../npm-tree.js';
 import { Builder } from './build.js';
 import { calcDepFlags } from './flags.js';
 import { descendants, Node, Tree } from './model.js';
@@ -35,11 +35,10 @@ export async function planTree(roots, installed, host, options = {}) {
     // The installed tree, each package in its folder.
     const installedAt = new Map([['', project]]);
     for (const entry of [...installed].sort((a, b) => depthOf(a.at) - depthOf(b.at))) {
-        const slash = entry.at.lastIndexOf('/node_modules/');
-        const parent = installedAt.get(slash < 0 ? '' : entry.at.slice(0, slash));
+        const parent = installedAt.get(parentPlacement(entry.at));
         if (!parent)
             continue;
-        const name = slash < 0 ? entry.at : entry.at.slice(slash + '/node_modules/'.length);
+        const name = placementName(entry.at);
         const node = 'failed' in entry
             ? new Node(name, { kind: 'failed', reason: entry.failed }, [])
             : new Node(name, { kind: 'installed', pkg: entry.pkg, refused: entry.refused, skipIfOptional: entry.skipIfOptional, lock: entry.lock }, builder.edgesOf(entry.pkg));
