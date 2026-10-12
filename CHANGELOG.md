@@ -5,8 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: walked recursive removal keeps unreadable children and their parents,
-  reports traversal failures, and continues removing siblings.
+- Fixed: walked recursive removal attempts unreadable entries, continues past
+  failures, and reports each entry that remains. The shell reports vanished
+  children unless `rm -f` was requested.
+- Changed: `rm -r` enters mounted subtrees and removes their writable contents,
+  as Linux does. It keeps busy mount points and their ancestors.
 - Fixed: credentialed SQLite paths follow links before `..`, matching the
   namespace while keeping plain lookups on their indexed fast path.
 

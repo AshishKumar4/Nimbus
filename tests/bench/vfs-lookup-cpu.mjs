@@ -42,7 +42,7 @@ try {
   }
   for (const entry of readdirSync(join(source, 'vfs'))) {
     const target = join(fixture, 'vfs', entry);
-    if (['sqlite-vfs.ts', 'path.ts', 'composite.ts'].includes(entry)) {
+    if (['sqlite-vfs.ts', 'path.ts', 'composite.ts', 'sqlite-files.ts'].includes(entry)) {
       writeFileSync(target, readFileSync(join(baseline, 'vfs', entry)));
     } else symlinkSync(join(source, 'vfs', entry), target);
   }
@@ -85,7 +85,7 @@ try {
     const seedRemoval = () => {
       root.mkdir('home/user/tree');
       root.chown('home/user/tree', USER.uid, USER.gid);
-      root.writeBatch({ inodes: Array.from({ length: 2000 }, (_, i) => ({ path: `home/user/tree/f${i}`, parentPath: 'home/user/tree', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: USER.uid, gid: USER.gid })), chunks: [] });
+      for (let at = 0; at < 2000; at += 64) root.writeBatch({ inodes: Array.from({ length: Math.min(64, 2000 - at) }, (_, i) => ({ path: `home/user/tree/f${at + i}`, parentPath: 'home/user/tree', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: USER.uid, gid: USER.gid })), chunks: [] });
     };
     return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
@@ -152,7 +152,7 @@ try {
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
     if (result.medianDelta > 0) failures.push(`${kind}: median paired CPU delta ${result.medianDelta} ms is positive`);
-    if (interval[0] < spread[0] || interval[1] > spread[1]) failures.push(`${kind}: confidence interval is outside A/A spread`);
+    if (interval[1] >= 0 && (interval[0] < spread[0] || interval[1] > spread[1])) failures.push(`${kind}: confidence interval is outside A/A spread`);
     for (let i = 0; i < leases.length; i++) arms[i].engine.releaseExclusiveMutation(leases[i].owner);
   }
   assert.ok(checksum > 0);

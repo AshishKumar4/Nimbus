@@ -205,6 +205,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): void { this.guard(); return this.target.remove(path, options); }
+  removeRecursive(path: RuntimeFsPath): VfsRemoval { this.guard(); return this.target.removeRecursive(path); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
     this.guard(); return this.target.copyTree(from, to, options);
@@ -1047,10 +1048,14 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       }
       if (stat.type !== 'directory') return this.namespace.unlink(p);
       if (!options?.recursive) throw syscallError('EISDIR', 'rm', p);
-      const report: VfsRemoval | undefined = await this.namespace.removeRecursive(p);
-      const failed = report?.failures?.[0];
-      if (failed) throw syscallError(failed.error.code, 'rm', failed.path);
+      const report = await this.namespace.removeRecursive(p);
+      const failed = report.failures[0];
+      if (failed) throw failed.error;
+      if (!options?.force && report.vanished?.length) throw syscallError('ENOENT', 'rm', report.vanished[0]);
     });
+  }
+  removeRecursive(path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.removeRecursive(path), async () => this.namespace.removeRecursive(await this.path(path, false)));
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
     return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
@@ -1337,21 +1342,9 @@ export class ProcessView implements VFS {
     await this.call('open', path, () => this.fs.writeFileFrom(path, size, source));
   }
   async truncate(path: string, size: number): Promise<void> { await this.call('open', path, () => this.fs.truncate(path, size)); }
-  /**
-   * rm -r: what went, by the roots removed, what is still there, and why.
-   * The engine removes a tree in one step or refuses it whole, so its report
-   * is the operand or the refusal.
-   */
+  /** rm -r's complete namespace report, including partial removal and vanished children. */
   async removeRecursive(path: string): Promise<VfsRemoval> {
-    try {
-      await this.fs.remove(path, { recursive: true });
-      return { removed: [path], kept: [], failures: [] };
-    } catch (error) {
-      const converted = toVfsError(error, 'rm', path);
-      if (!(converted instanceof VfsError) || converted.code === 'ENOENT') throw converted;
-      const failure: VfsRemovalFailure = { path, error: converted };
-      return { removed: [], kept: [path], failures: [failure] };
-    }
+    return await this.call('rm', path, () => this.fs.removeRecursive(path));
   }
   async symlink(target: string, path: string): Promise<void> { await this.call('symlink', target, () => this.fs.symlink(target, path), path); }
   async readlink(path: string): Promise<string> {

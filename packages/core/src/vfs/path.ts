@@ -45,9 +45,22 @@ export function normalizeVfsPath(p: string): string {
 }
 
 /** Dot-only spellings may use indexed lookup; parents and trailing directory checks must be walked. */
+let recentLookup: { path: string; key: string | null } | null = null;
+let priorLookup: { path: string; key: string | null } | null = null;
 export function normalizeVfsLookupPath(path: string): string | null {
   const plain = plainVfsPath(path);
-  return plain === null ? normalizedSegments(path, true) : plain;
+  if (plain !== null) return plain;
+  if (recentLookup?.path === path) return recentLookup.key;
+  if (priorLookup?.path === path) {
+    const matched = priorLookup;
+    priorLookup = recentLookup;
+    recentLookup = matched;
+    return matched.key;
+  }
+  const key = normalizedSegments(path, true);
+  priorLookup = recentLookup;
+  recentLookup = { path, key };
+  return key;
 }
 
 function normalizedSegments(path: string, lookup: false): string;

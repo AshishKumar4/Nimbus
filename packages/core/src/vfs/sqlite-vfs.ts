@@ -2813,6 +2813,7 @@ export class SqliteVFS {
    */
   private lastResolution: {
     epoch: number; tableEpoch: number; cred: VfsCred; name: string; key: string; inode: INode; leafIsLink: boolean;
+    spelling: string; followedLeaf: boolean;
   } | null = null;
   /** A linked directory's searched prefix, valid under the same mutation clocks as lastResolution. */
   private lastLinkedPrefix: {
@@ -3288,11 +3289,11 @@ export class SqliteVFS {
     creating = false,
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
-    const linked = this.lastLinkedPrefix;
-    if (linked !== null && tree === this.inodes && linked.cred === cred
-      && linked.epoch === this.resolutionEpoch && linked.tableEpoch === this.inodes.epoch) {
-      const spelled = stripLeadingSlashes(path);
-      if ((followLeaf && spelled === linked.spelling) || spelled.startsWith(`${linked.spelling}/`)) return this.walkComponents(path, cred, followLeaf, creating, tree);
+    const last = this.lastResolution;
+    const reusable = last !== null && last.cred === cred && tree === this.inodes
+      && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch;
+    if (reusable && last.spelling === path && !(followLeaf && last.leafIsLink) && (followLeaf || !last.followedLeaf)) {
+      return { path: last.key, inode: last.inode, name: last.name };
     }
     const plain = normalizeVfsLookupPath(path);
     if (plain === null) return this.walkComponents(path, cred, followLeaf, creating, tree);
@@ -3300,11 +3301,14 @@ export class SqliteVFS {
     const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;
     // The last walk (see lastResolution), when nothing since could have
     // changed where it leads: for this name, its answer.
-    const last = this.lastResolution;
-    const reusable = last !== null && last.cred === cred && tree === this.inodes
-      && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch;
     if (reusable && last.name === current && !(followLeaf && last.leafIsLink)) {
       return { path: last.key, inode: last.inode, name: current };
+    }
+    const linked = this.lastLinkedPrefix;
+    if (linked !== null && tree === this.inodes && linked.cred === cred
+      && linked.epoch === this.resolutionEpoch && linked.tableEpoch === this.inodes.epoch
+      && ((followLeaf && current === linked.spelling) || current.startsWith(`${linked.spelling}/`))) {
+      return this.walkComponents(path, cred, followLeaf, creating, tree);
     }
     // For a name directly below it (a namespace walking a path a component at
     // a time asks for each in turn), its search proof: only the new name is
@@ -3339,7 +3343,7 @@ export class SqliteVFS {
         if (leaf || allowMissing) return { path: this.keyOfName(current, root), inode: undefined, name: current };
         throw vfsKeyError('ENOENT', prefix);
       }
-      if (inode.kind === 'symlink' && (!leaf || followLeaf)) return this.walkComponents(current, cred, followLeaf, creating, tree);
+      if (inode.kind === 'symlink' && (!leaf || followLeaf)) return this.walkComponents(path, cred, followLeaf, creating, tree);
       if (!leaf) {
         if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', prefix);
         if (!this.accessInode(inode, 0o1, cred)) throw vfsKeyError('EACCES', prefix);
@@ -3407,23 +3411,24 @@ export class SqliteVFS {
         };
       }
     }
-    return this.walked(key, inode, name, cred, tree);
+    return this.walked(key, inode, name, cred, tree, path, leafLink);
   }
 
   /** A walk's answer, kept as lastResolution when it found something on the live tree. */
   private walked(
-    key: string, inode: INode | undefined, name: string, cred: VfsCred, tree: InodeLookup,
+    key: string, inode: INode | undefined, name: string, cred: VfsCred, tree: InodeLookup, spelling = name, followedLeaf = false,
   ): { path: string; inode: INode | undefined; name: string } {
-    if (inode !== undefined && tree === this.inodes) this.remember(cred, name, key, inode);
+    if (inode !== undefined && tree === this.inodes) this.remember(cred, name, key, inode, spelling, followedLeaf);
     return { path: key, inode, name };
   }
 
   /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
-  private remember(cred: VfsCred, name: string, key: string, inode: INode): void {
+  private remember(cred: VfsCred, name: string, key: string, inode: INode, spelling = name, followedLeaf = false): void {
     const last = this.lastResolution;
     if (last === null) {
       this.lastResolution = {
         epoch: this.resolutionEpoch, tableEpoch: this.inodes.epoch, cred, name, key, inode, leafIsLink: inode.kind === 'symlink',
+        spelling, followedLeaf,
       };
       return;
     }
@@ -3434,6 +3439,8 @@ export class SqliteVFS {
     last.key = key;
     last.inode = inode;
     last.leafIsLink = inode.kind === 'symlink';
+    last.spelling = spelling;
+    last.followedLeaf = followedLeaf;
   }
 
   /**
@@ -3616,12 +3623,12 @@ export class SqliteVFS {
     if (path === undefined) return this._revision;
     // A credentialed caller asks about its own view; a confined one asking
     // after /tmp/x means its own file, so the counter must be that file's.
-    const p = cred === undefined ? normalizeVfsPath(path) : this.storageKey(path, cred).value;
+    const p = cred === undefined ? normalizeVfsPath(path) : this.lexicalKey(path, cred).value;
     if (p === '') return this._revision;
     // Mutations stamp the path a name resolves to, so that is the counter.
     let resolved: { path: string; inode: INode | undefined };
     try {
-      resolved = this.resolvePath(p, cred ?? CRED_KERNEL, true, true);
+      resolved = this.resolvePath(path, cred ?? CRED_KERNEL, true, true);
     } catch {
       // A name that does not resolve is the name's own counter. Read, not
       // admitted: no lookup of it will find it through that name.

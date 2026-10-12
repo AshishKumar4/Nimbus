@@ -2201,8 +2201,25 @@ function mkRm(vfs: UnixVfs): CmdFn {
     if (!targets.length) { if (force) return 0; await ctx.stderr.write('rm: missing operand\n'); return 1; }
     let code = 0;
     for (const target of targets) {
-      try { await vfs.remove(resolvePath(ctx.cwd, target), { recursive, force }); }
-      catch (error) { await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`); code = 1; }
+      const path = resolvePath(ctx.cwd, target);
+      try {
+        if (!recursive) { await vfs.remove(path, { force }); continue; }
+        const report = await vfs.removeRecursive(path);
+        for (const failure of report.failures) {
+          const named = failure.path === path || failure.path.startsWith(`${path}/`) ? target + failure.path.slice(path.length) : failure.path;
+          await ctx.stderr.write(`rm: cannot remove '${named}': ${strerror(failure.error)}\n`);
+          code = 1;
+        }
+        if (!force) for (const gone of report.vanished ?? []) {
+          const named = gone === path || gone.startsWith(`${path}/`) ? target + gone.slice(path.length) : gone;
+          await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
+          code = 1;
+        }
+      } catch (error) {
+        if (force && isVfsError(error, 'ENOENT')) continue;
+        await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`);
+        code = 1;
+      }
     }
     return code;
   };

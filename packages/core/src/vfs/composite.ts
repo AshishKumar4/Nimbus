@@ -30,7 +30,7 @@ import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode 
 import { normalizeVfsPath } from './path.js';
 import { walkVfsPath } from './path-walk.js';
 import { posixAccess } from './posix-access.js';
-import { withRecall } from './recall.js';
+import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { S_IFMT, abandon, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 
@@ -153,6 +153,11 @@ export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
 }
 
 export type { Principal } from './vfs.js';
+
+/** The namespace always offers recursive removal, walking a backend that does not. */
+export interface CompositeSyncVFS extends SyncVFS {
+  removeRecursive(path: string): VfsRemoval;
+}
 
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
@@ -705,7 +710,7 @@ export class CompositeVFS implements VFS {
    * keep a view per agent for its life).
    */
   private readonly views: Views;
-  private readonly syncView: SyncVFS;
+  private readonly syncView: CompositeSyncVFS;
 
   constructor(root: VfsSource, options?: MountOptions);
   /** @internal a view over the same table. */
@@ -2324,7 +2329,7 @@ export class CompositeVFS implements VFS {
     return this.viewer;
   }
 
-  get sync(): SyncVFS {
+  get sync(): CompositeSyncVFS {
     return this.syncView;
   }
 
@@ -2890,7 +2895,7 @@ export class CompositeVFS implements VFS {
   private onMutation<T>(
     input: string, follow: boolean, sync: boolean, what: string,
     run: (ops: Ops, rel: string, path: string) => Awaitable<T>,
-    { parents = false, written, told }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType | null } = {},
+    { parents = false, written, told, children = false }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType | null; children?: boolean } = {},
   ): Awaitable<T> {
     return andThen(this.resolve(input, follow, sync, parents), (path) => {
       this.present(path);
@@ -2908,8 +2913,9 @@ export class CompositeVFS implements VFS {
       // chmod, chown and utimes of a mount point change the mounted root, as
       // on Linux; only a directory above a mount point has no backend to ask.
       const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);
-      if (this.isStructural(path) && !metadataOnly) throw new Refusal('EBUSY', path, `a mount point cannot be ${what}`);
-      if (route.mount.options.readOnly) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
+      const walkingChildren = what === 'removed' && children && path !== ROOT_POINT;
+      if (this.isStructural(path) && !metadataOnly && !walkingChildren) throw new Refusal('EBUSY', path, `a mount point cannot be ${what}`);
+      if (route.mount.options.readOnly && !walkingChildren) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
       return andThen(this.reachable(path, sync), () => andThen(parents ? this.makeTree(parentOf(path), undefined, sync) : undefined, () => {
         const ops = this.ops(route, sync);
         const removes = what === 'unlinked' || what === 'removed';
@@ -3212,9 +3218,10 @@ export class CompositeVFS implements VFS {
   private removeAt(input: string, sync: boolean): Awaitable<VfsRemoval> {
     // Each removal is told as it lands (watchChanges): a backend's own rm -r at the roots of what it removed, a walked one entry by entry.
     return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
-      if (this.hasLiveBelow(path)) throw new Refusal('EBUSY', path, 'something is mounted beneath it');
-      const backend = ops as SyncVFS;
       const { mount } = this.locate(path);
+      const composed = this.hasLiveBelow(path) || this.isStructural(path) || mount.options.readOnly === true;
+      if (composed) return this.walkRemove(ops, rel, path, mount, sync, true);
+      const backend = ops;
       if (typeof backend.removeRecursive === 'function') {
         const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
         return andThen(backend.removeRecursive(rel), (report) => {
@@ -3222,6 +3229,7 @@ export class CompositeVFS implements VFS {
             ? {
               removed: report.removed.map(at),
               kept: report.kept.map(at),
+              ...(report.vanished === undefined ? {} : { vanished: report.vanished.map(at) }),
               // Each failure named as Node names the call that met it, on the namespace's path.
               failures: report.failures.map((f) => ({
                 path: at(f.path),
@@ -3233,15 +3241,16 @@ export class CompositeVFS implements VFS {
           return removal;
         });
       }
-      return this.walkRemove(backend, rel, path, mount);
-    }, { told: null });
+      return this.walkRemove(backend, rel, path, mount, sync);
+    }, { told: null, children: true });
   }
 
-  private walkRemove(ops: SyncVFS, rel: string, path: string, mount: Mount): Awaitable<VfsRemoval> {
+  private walkRemove(ops: Ops, rel: string, path: string, mount: Mount, sync: boolean, composed = false): Awaitable<VfsRemoval> {
     const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
-    const order: Array<{ rel: string; dir: boolean }> = [];
+    const order: Array<{ rel: string; dir: boolean; unread?: VfsError }> = [];
     const kept = new Set<string>();
     const gone = new Set<string>();
+    const vanished = new Set<string>();
     const failures: VfsRemovalFailure[] = [];
     const keepWithAncestors = (r: string): void => {
       for (let k = r; ; k = parentOf(k)) {
@@ -3249,75 +3258,82 @@ export class CompositeVFS implements VFS {
         if (k === rel || k === '/') break;
       }
     };
-    const unread = (r: string, error: VfsError): void => {
-      if (error.code === 'ENOENT') { gone.add(r); return; }
-      keepWithAncestors(r);
-      failures.push({ path: at(r), error });
-    };
-    const reading = <T>(r: string, syscall: string, read: () => Awaitable<T>, next: (value: T) => Awaitable<void>): Awaitable<void> => {
-      const fail = (cause: Error): void => unread(r, syscallError(isVfsError(cause) ? cause.code : 'EIO', syscall, at(r), {
+    const missing = (r: string): void => { gone.add(r); vanished.add(r); };
+    const errorOf = (r: string, syscall: string, cause: Error): VfsError => {
+      if (recallOf(cause) !== null || isAsyncMountRefusal(cause)) throw cause;
+      return syscallError(isVfsError(cause) ? cause.code : 'EIO', syscall, at(r), {
         detail: isVfsError(cause) ? cause.detail : String(cause), cause,
-      }));
-      let out: Awaitable<T>;
-      try {
-        out = read();
-      } catch (cause) {
-        unread(r, syscallError(isVfsError(cause) ? cause.code : 'EIO', syscall, at(r), {
-          detail: isVfsError(cause) ? cause.detail : String(cause), cause,
-        }));
+      });
+    };
+    const statFailed = (r: string, error: VfsError): void => {
+      if (r === rel) throw error;
+      if (error.code === 'ENOENT') { missing(r); return; }
+      // FTS_NS: unlink can succeed even when lstat cannot answer.
+      order.push({ rel: r, dir: false });
+    };
+    const visit = (r: string): Awaitable<void> => {
+      let stat: Awaitable<VfsStat | null>;
+      try { stat = composed ? this.statAt(at(r), false, sync) : ops.stat(r, { follow: false }); }
+      catch (cause) {
+        statFailed(r, errorOf(r, 'lstat', isVfsError(cause) || cause instanceof Error ? cause : new Error(String(cause), { cause })));
         return undefined;
       }
-      return isPromise(out) ? out.then(next, fail) : next(out);
+      return isPromise(stat) ? stat.then((value) => entered(r, value), (cause: Error) => statFailed(r, errorOf(r, 'lstat', cause))) : entered(r, stat);
     };
-    const visit = (r: string): Awaitable<void> => r === rel
-      ? andThen(ops.stat(r, { follow: false }), (stat) => entered(r, stat))
-      : reading(r, 'lstat', () => ops.stat(r, { follow: false }), (stat) => entered(r, stat));
     const entered = (r: string, stat: VfsStat | null): Awaitable<void> => {
       if (stat === null) {
         if (r === rel) throw new Refusal('ENOENT', path);
-        gone.add(r);
+        missing(r);
         return undefined;
       }
-      order.push({ rel: r, dir: stat.type === 'directory' });
+      const entry: { rel: string; dir: boolean; unread?: VfsError } = { rel: r, dir: stat.type === 'directory' };
+      order.push(entry);
       if (stat.type !== 'directory') return undefined;
-      return reading(r, 'scandir', () => ops.readdir(r), (entries) => entries.reduce<Awaitable<void>>(
+      const failed = (cause: Error): void => {
+        const error = errorOf(r, 'scandir', cause);
+        if (error.code === 'ENOENT') missing(r);
+        else entry.unread = error;
+      };
+      let entries: Awaitable<VfsDirent[]>;
+      try { entries = composed ? this.readdirAt(at(r), sync) : ops.readdir(r); }
+      catch (cause) { failed(isVfsError(cause) || cause instanceof Error ? cause : new Error(String(cause), { cause })); return undefined; }
+      const descend = (entries: VfsDirent[]): Awaitable<void> => entries.reduce<Awaitable<void>>(
         (chain, entry) => andThen(chain, () => visit(r === '/' ? `/${entry.name}` : `${r}/${entry.name}`)),
         undefined,
-      ));
+      );
+      return isPromise(entries) ? entries.then(descend, failed) : descend(entries);
     };
     return andThen(visit(rel), () => {
       order.reverse();
       return andThen(order.reduce<Awaitable<void>>((chain, entry) => andThen(chain, () => {
-        if (kept.has(entry.rel) || gone.has(entry.rel)) return undefined;
-        const fail = (cause: unknown): void => {
-          if (isVfsError(cause, 'ENOENT')) { gone.add(entry.rel); return; }
+        if (gone.has(entry.rel) || (kept.has(entry.rel) && !(composed && this.table.mounts.has(at(entry.rel))))) return undefined;
+        const fail = (cause: Error): void => {
+          let error = errorOf(entry.rel, entry.dir ? 'rmdir' : 'unlink', cause);
+          if (error.code === 'ENOENT') { missing(entry.rel); return; }
+          if (entry.unread !== undefined && ['ENOTEMPTY', 'EISDIR', 'ENOTDIR', 'EEXIST'].includes(error.code)) error = entry.unread;
           keepWithAncestors(entry.rel);
-          failures.push({
-            path: at(entry.rel),
-            error: syscallError(isVfsError(cause) ? cause.code : 'EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), {
-              detail: isVfsError(cause) ? cause.detail : String(cause), cause,
-            }),
-          });
+          failures.push({ path: at(entry.rel), error });
         };
         try {
-          // Each entry guarded right before it is removed, after the walk's
-          // reads: a refusal keeps it (and the directories holding it).
-          this.guardMutation([at(entry.rel)]);
-          const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
-          const removed = (): void => {
-            gone.add(entry.rel);
-            if (this.table.changes !== undefined) this.tellLanded(mount, storeBehind(this.table, ops), entry.dir ? 'unlinkDir' : 'unlink', [at(entry.rel)]);
+          const remove = (backend: Ops, r: string, holder: Mount, named: string): Awaitable<void> => {
+            this.guardMutation([named]);
+            const out = entry.dir && typeof backend.rmdir === 'function' ? backend.rmdir(r) : backend.unlink(r);
+            return andThen(out, () => {
+              gone.add(entry.rel);
+              if (this.table.changes !== undefined) this.tellLanded(holder, storeBehind(this.table, backend), entry.dir ? 'unlinkDir' : 'unlink', [named]);
+            });
           };
-          if (isPromise(out)) return out.then(removed, fail);
-          removed();
+          const out = composed ? this.onMutation(at(entry.rel), false, sync, entry.dir ? 'removed' : 'unlinked',
+            (backend, r, named) => remove(backend, r, this.locate(named).mount, named), { told: null }) : remove(ops, entry.rel, mount, at(entry.rel));
+          if (isPromise(out)) return out.then(() => undefined, fail);
           return undefined;
         } catch (cause) {
-          fail(cause);
+          fail(isVfsError(cause) || cause instanceof Error ? cause : new Error(String(cause), { cause }));
           return undefined;
         }
       }), undefined), () => {
         const removed = [...gone].filter((r) => r === rel || !gone.has(parentOf(r))).map(at).sort();
-        return { removed, kept: [...kept].map(at).sort(), failures };
+        return { removed, kept: [...kept].map(at).sort(), failures, ...(vanished.size === 0 ? {} : { vanished: [...vanished].map(at).sort() }) };
       });
     });
   }
@@ -3465,7 +3481,7 @@ export class CompositeVFS implements VFS {
     return root?.describe?.() ?? { source: 'none', type: 'composite' };
   }
 
-  private makeSync(): SyncVFS {
+  private makeSync(): CompositeSyncVFS {
     return {
       stat: (path, options) => syncValue(reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () =>
         this.statAt(path, options?.follow !== false, true))),
