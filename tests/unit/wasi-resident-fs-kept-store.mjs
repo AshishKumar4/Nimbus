@@ -11,12 +11,7 @@
  *     the next process's first answer takes the barrier from the store's
  *     cursor, which drops it, and the new bytes are read;
  *   - a process of another credential, or in a facet of its own, keeps
- *     nothing of it;
- *   - the subtree a run changed (git's .git, for its index.lock) is taken by
- *     the next run in the facet before it changes anything: a lock made and
- *     removed there costs no wave, one made and renamed over the index costs
- *     one, and both answer as before; a change a peer made there before the
- *     grant is seen, not overwritten; another credential claims nothing.
+ *     nothing of it.
  */
 
 import assert from 'node:assert/strict';
@@ -90,52 +85,6 @@ await other.end();
 
 const elsewhere = await residentGuest({ of: first });
 assert.equal((await run(elsewhere)).stats.pagesFetched, 3, 'a process in a facet of its own keeps nothing');
-await elsewhere.end();
 
-// git's optional index lock, run after run in one facet.
-kernel.mkdir('home/user/repo/.git', { recursive: true, mode: 0o755 });
-kernel.chown('home/user/repo', USER.uid, USER.gid);
-kernel.chown('home/user/repo/.git', USER.uid, USER.gid);
-kernel.writeFile('home/user/repo/.git/index', 'index-0', { mode: 0o644 });
-kernel.chown('home/user/repo/.git/index', USER.uid, USER.gid);
-const LOCK = 'home/user/repo/.git/index.lock';
-/** A status: the lock taken, written, and rolled back (`commit`: renamed over the index). What its client sent and took. */
-async function status(guest, commit = false) {
-  const fd = await guest.open(LOCK, { create: true, exclusive: true, write: true });
-  await guest.write(fd, commit ? 'index-new' : 'unused');
-  await guest.close(fd);
-  assert.equal(commit ? await guest.rename(LOCK, 'home/user/repo/.git/index') : await guest.unlink(LOCK), 0);
-  const before = guest.stats().client;
-  await guest.end();
-  return before;
-}
-const learn = await residentGuest({ of: first });
-const learnt = await status(learn);
-assert.ok(learnt.waves >= 1 && learnt.grants === 0, `the first run sends its lock to the session: ${JSON.stringify(learnt)}`);
-const rollback = await residentGuest({ after: learn });
-const rolled = await status(rollback);
-assert.equal(rolled.grants, 1, 'the next run in the facet takes .git before it changes anything');
-assert.equal(rolled.waves, 0, 'a lock made and removed under it is never sent');
-assert.equal(kernel.exists(LOCK), false);
-assert.equal(new TextDecoder().decode(kernel.readFile('home/user/repo/.git/index')), 'index-0');
-
-// A peer writes in .git between two runs: the run after it sees that, and its own rename lands over it.
-kernel.writeFile('home/user/repo/.git/index', 'index-peer', { mode: 0o644 });
-const committing = await residentGuest({ after: rollback });
-const fdPeer = await committing.open('home/user/repo/.git/index');
-assert.equal(await committing.pread(fdPeer, 64), 'index-peer', 'the grant is followed by a barrier: a change before it is seen');
-await committing.close(fdPeer);
-const committed = await status(committing, true);
-assert.equal(committed.grants, 1);
-assert.ok(committed.waves <= 1, `a lock renamed over the index is sent once, at the end: ${committed.waves}`);
-assert.equal(new TextDecoder().decode(kernel.readFile('home/user/repo/.git/index')), 'index-new');
-assert.equal(kernel.exists(LOCK), false);
-
-const stranger = await residentGuest({ after: committing, cred: { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 } });
-const fdStranger = await stranger.open('home/user/notes.txt');
-await stranger.close(fdStranger);
-assert.equal(stranger.stats().client.grants, 0, "another credential's run claims nothing the last one changed");
-await stranger.end();
-
-await learn.dispose();
+await elsewhere.dispose();
 console.log('wasi-resident-fs-kept-store: ok');

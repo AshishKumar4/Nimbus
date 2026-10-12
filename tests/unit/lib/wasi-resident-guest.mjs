@@ -224,15 +224,6 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
       return names;
     },
     async mkdir(name) { const n = putPath(name); return wasiImport.path_create_directory(PREOPEN_FD, PATH, n); },
-    /** path_unlink_file: the errno. */
-    async unlink(name) { const n = putPath(name); return wasiImport.path_unlink_file(PREOPEN_FD, PATH, n); },
-    /** path_rename within the preopen: the errno. */
-    async rename(from, to) {
-      const a = enc.encode(from), b = enc.encode(to);
-      bytesAt().set(a, PATH);
-      bytesAt().set(b, PATH + 512);
-      return wasiImport.path_rename(PREOPEN_FD, PATH, a.length, PREOPEN_FD, PATH + 512, b.length);
-    },
     /** fd_filestat_get: { nlink, size }, or a thrown errno. */
     async fstat(fd) {
       const errno = await wasiImport.fd_filestat_get(fd, OUT);

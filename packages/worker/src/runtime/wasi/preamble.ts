@@ -234,11 +234,10 @@ let __wasiResident: { sup: WasiSupervisorStub; who: string; fs: ResidentFilesyst
 /**
  * The store the last process of this facet left at the end of its run (a
  * warm facet, FacetSpec.warm): whose names it holds, the device the session's
- * filesystem reports, the directories it opened and the subtree it changed.
- * The next process of the same credential continues it, and takes that
- * subtree before it changes anything (ResidentDelegation.claim).
+ * filesystem reports, and the directories it opened. The next process of the
+ * same credential continues it.
  */
-let __wasiKept: { who: string; device: number; walked: readonly string[]; mutated: string | null } | null = null;
+let __wasiKept: { who: string; device: number; walked: readonly string[] } | null = null;
 
 /** Who a store's names were walked as. */
 function __wasiWho(cred: WasiCred): string {
@@ -312,7 +311,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     } : {}),
     isHomeRoot: isHomeDirectory,
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
-    ...(kept === null || view === null ? {} : { walked: kept.walked, ...(kept.mutated === null ? {} : { claim: [kept.mutated] }) }),
+    ...(kept === null || view === null ? {} : { walked: kept.walked }),
   });
   if (kept !== null && view !== null) fs.inbound();
   return { fs, ready };
@@ -380,9 +379,7 @@ export async function __wasiSettleWrites(): Promise<string | null> {
         .join('; ');
       // A run that ended with its store answering leaves it to the next process in this facet.
       const view = await resident.ready;
-      if (view !== null && view.ready()) {
-        __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked(), mutated: resident.fs.mutated() };
-      }
+      if (view !== null && view.ready()) __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
     }
   } catch (error) {
     if (__wasiProcessGone === null) throw error;

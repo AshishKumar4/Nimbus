@@ -252,20 +252,6 @@ export interface ProcessFsClient {
   draw(grant: ProcessFsGrant, bytes: number): boolean;
   /** The grant holding `key` (held, not shared), without counting a mutation. */
   held(key: string): ProcessFsGrant | undefined;
-  /**
-   * Take `roots` now, one after another, before the program decides or sends
-   * anything (a warm facet's run, with the subtree its last run changed): the
-   * one claim path, as for a subtree that earned it, with a range of
-   * LEARNED_GRANT_INOS. Resolves once each is held or refused; a hint only,
-   * which the session grants or refuses as any claim.
-   */
-  claimAhead(roots: readonly string[]): Promise<void>;
-  /**
-   * The subtree this run changed: the nearest directory above every
-   * mutation the client was asked about (holder) and every grant one was
-   * decided under, when it may be held; else null.
-   */
-  mutated(): string | null;
   /** Whether `key` is in a subtree the process holds or shares: what is decided there is not known elsewhere yet. */
   holds(key: string): boolean;
   /** Whether any op is logged and not yet answered. */
@@ -385,12 +371,6 @@ const DATA_PIECE_BYTES = WAVE_BYTES;
 
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
-/**
- * The range of a subtree taken ahead (claimAhead): a run that changes
- * a repository's .git (a lock, a few objects) uses a handful; more renews
- * it, doubled, as any range.
- */
-export const LEARNED_GRANT_INOS = 64;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
 
@@ -427,8 +407,6 @@ interface Grant extends ProcessFsGrant {
   closing: boolean;
   ended: boolean;
   lastUsed: number;
-  /** Something was decided under it (ProcessFsClient.mutated). */
-  used: boolean;
 }
 
 function parentKey(key: string): string {
@@ -1059,11 +1037,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * subtree. Past MAX_DELEGATIONS_PER_PROCESS, the nearest grant and this
    * subtree become their common ancestor (when that may be taken).
    */
-  /** The subtree this run changed so far (ProcessFsClient.mutated): '' once it spans what may not be held. */
-  let changed: string | null = null;
-  const changedUnder = (key: string): void => { changed = changed === null ? key : commonAncestor(changed, key); };
-
-  const claim = (root: string, first?: number): void => {
+  const claim = (root: string): void => {
     const port = session.grants;
     if (port === undefined || claiming !== null || settling) return;
     claiming = (async () => {
@@ -1090,7 +1064,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       await client.flush();
       paused = true;
       await quiet();
-      const inos = rangeOf.has(target) ? rangeOf.get(target)! * 2 : (first ?? options.grantInos ?? GRANT_INOS);
+      const inos = rangeOf.has(target) ? rangeOf.get(target)! * 2 : (options.grantInos ?? GRANT_INOS);
       let granted: ExclusiveMutationGrant;
       try {
         granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
@@ -1114,7 +1088,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         closing: false,
         ended: false,
         lastUsed: now(),
-        used: false,
       };
       grants.push(grant);
       counters.grants++;
@@ -1142,11 +1115,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         // waits for its own answer (and so for the backlog's).
         if (pendingSyncOps >= DECIDED_BACKLOG_OPS || pendingSyncBytes >= DECIDED_BACKLOG_BYTES) return undefined;
         held.lastUsed = now();
-        held.used = true;
-        changedUnder(held.root);
         return held;
       }
-      changedUnder(parentKey(key));
       if (session.grants === undefined || settling || escaped !== null) return undefined;
       // Shared, or another's: the session decides; a subtree it refused is not asked for again.
       if (grants.some((grant) => !grant.ended && within(key, grant.root))) return undefined;
@@ -1162,19 +1132,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       if (deepest !== undefined) claim(deepest);
       return undefined;
-    },
-    async claimAhead(roots) {
-      for (const root of roots.slice(0, MAX_DELEGATIONS_PER_PROCESS)) {
-        if (!allowedRoot(root) || [...refusedRoots].some((refused) => within(root, refused))) continue;
-        if (grants.some((grant) => !grant.ended && within(root, grant.root))) continue;
-        await claiming?.catch(() => {});
-        claim(root, LEARNED_GRANT_INOS);
-        await claiming?.catch(() => {});
-      }
-    },
-    mutated() {
-      for (const grant of grants) if (grant.used) changedUnder(grant.root);
-      return changed !== null && allowedRoot(changed) ? changed : null;
     },
     number(grant) {
       const held = grant as Grant;
