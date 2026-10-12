@@ -2,6 +2,12 @@ import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsS
 import type { VfsEvent } from '../../../vfs/events.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 
+export interface NodeWatch {
+  close(): void;
+  ref(): void;
+  unref(): void;
+}
+
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
 export interface NodeFilesystem {
   readFile(path: string): Uint8Array;
@@ -14,6 +20,7 @@ export interface NodeFilesystem {
   stat(path: string): RuntimeVfsStat;
   /** stat(2) of `path` itself where it names a link (lstat); ENOENT when nothing is there. */
   lstat(path: string): RuntimeVfsStat;
+  realpath(path: string): string;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   readdir(path: string): RuntimeVfsDirEntry[];
   unlink(path: string): void;
@@ -34,11 +41,10 @@ export interface NodeFilesystem {
   close(fd: number): void;
   /**
    * Each change at `path` or under it the process's namespace shows
-   * (RuntimeFsBridge.subscribe), its paths absolute; the returned function
-   * stops it. `persistent` (default true): a guest stays while it is open,
-   * as Node's fs.watch keeps its process.
+   * (RuntimeFsBridge.subscribe), its paths absolute. `persistent` (default
+   * true): a guest stays while the watch is open and ref'd, as Node's does.
    */
-  watch(path: string, listener: (event: VfsEvent) => void, options?: { persistent?: boolean }): () => void;
+  watch(path: string, listener: (event: VfsEvent) => void, options?: { persistent?: boolean }): NodeWatch;
 }
 
 /**
@@ -91,6 +97,7 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
       if (!stat) throw syscallError('ENOENT', 'lstat', path);
       return stat;
     },
+    realpath: path => fs.realpath(path),
     mkdir: (path, options) => fs.mkdir(path, options),
     readdir: path => fs.readdir(path) as RuntimeVfsDirEntry[],
     unlink: path => fs.unlink(path),
@@ -106,8 +113,11 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     ftruncate: (fd, size) => fs.ftruncate(fd, size),
     fsync: (fd) => fs.fsync(fd),
     close: (fd) => fs.close(fd),
-    watch: (path, listener) => bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
-      ? { ...event, path: `/${event.path}` }
-      : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` })) ?? (() => {}),
+    watch(path, listener) {
+      const stop = bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
+        ? { ...event, path: `/${event.path}` }
+        : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` }));
+      return { close: () => stop?.(), ref() {}, unref() {} };
+    },
   };
 }

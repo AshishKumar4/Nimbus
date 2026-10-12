@@ -1,6 +1,7 @@
-import type { NodeFilesystem as VFS } from './filesystem.js';
+import type { NodeFilesystem as VFS, NodeWatch } from './filesystem.js';
 
 import type { RuntimeOpenFlags, RuntimeVfsStat as VfsStat } from '../../../runtime/os-contracts.js';
+import type { VfsEvent } from '../../../vfs/events.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
@@ -9,6 +10,20 @@ import { Buffer } from './buffer.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
+
+export interface FSWatcher extends EventEmitter {
+  close(): void;
+  ref(): this;
+  unref(): this;
+}
+
+interface WatchOptions {
+  persistent?: boolean;
+  recursive?: boolean;
+  encoding?: string;
+}
+
+type WatchListener = (eventType: string, filename: string | Buffer) => void;
 
 // ─── Dirent ───
 
@@ -325,7 +340,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
       if (!vfs.exists(abs)) {
         throw fsError('ENOENT', 'lstat', abs);
       }
-      return abs;
+      return vfs.realpath(abs);
     },
     {
       native: function realpathSyncNative(path: string | URL): string {
@@ -333,7 +348,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
         if (!vfs.exists(abs)) {
           throw fsError('ENOENT', 'realpath', abs);
         }
-        return abs;
+        return vfs.realpath(abs);
       },
     },
   );
@@ -600,27 +615,66 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
    * one changes, named from the watched directory (its direct entries,
    * any depth when recursive), or as the watched file itself.
    */
-  function watch(filename: string | URL, optionsOrListener?: { persistent?: boolean; recursive?: boolean; encoding?: string } | ((eventType: string, filename: string) => void), listener?: (eventType: string, filename: string) => void): EventEmitter {
-    const abs = resolvePath(cwd, filename);
-    const options = typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
+  function watch(filename: string | URL, optionsOrListener?: WatchOptions | string | WatchListener, listener?: WatchListener): FSWatcher {
+    const given = typeof filename === 'string' ? filename : filename.pathname;
+    let abs: string;
+    try {
+      if (given === '') throw fsError('ENOENT', 'watch', given);
+      abs = realpathSync(filename);
+    } catch (error) {
+      if (errnoCodeOf(error) === 'ENOENT') throw fsError('ENOENT', 'watch', given);
+      throw error;
+    }
+    const directory = vfs.isDirectory(abs);
+    const base = basename(given);
+    const options = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
+      : typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+    let closed = false;
+    let persistent = options.persistent !== false;
+    let handle: NodeWatch;
 
-    const watcher = new EventEmitter();
-    if (cb) watcher.on('change', (eventType, name) => cb(String(eventType), String(name)));
-    const inside = (path: string): boolean => path === abs || path.startsWith(abs === '/' ? '/' : `${abs}/`);
+    const watcher = new class extends EventEmitter implements FSWatcher {
+      close(): void {
+        if (closed) return;
+        closed = true;
+        handle.close();
+        queueMicrotask(() => this.emit('close'));
+      }
+      ref(): this {
+        if (!closed) { persistent = true; handle.ref(); }
+        return this;
+      }
+      unref(): this {
+        if (!closed) { persistent = false; handle.unref(); }
+        return this;
+      }
+    }();
+    if (cb) watcher.on('change', (eventType, name) => cb(String(eventType), name as string | Buffer));
+    const inside = (path: string): boolean => path === abs || (directory && path.startsWith(abs === '/' ? '/' : `${abs}/`));
     const told = (path: string, eventType: 'rename' | 'change'): void => {
-      if (!inside(path)) return;
-      const name = path === abs ? basename(abs) : path.slice(abs === '/' ? 1 : abs.length + 1);
+      if (closed || !inside(path)) return;
+      const name = path === abs ? base : path.slice(abs === '/' ? 1 : abs.length + 1);
       if (path !== abs && options.recursive !== true && name.includes('/')) return;
-      watcher.emit('change', eventType, name);
+      const bytes = Buffer.from(name);
+      watcher.emit('change', eventType, options.encoding === 'buffer' ? bytes : bytes.toString(options.encoding));
     };
-    const stop = vfs.watch(abs, (event) => {
+    const changed = (event: VfsEvent): void => {
+      if (closed) return;
+      if (event.type === 'rename' && event.oldPath === abs) {
+        told(abs, 'rename');
+        if (closed) return;
+        const previous = handle;
+        abs = event.path;
+        handle = vfs.watch(abs, changed, { persistent });
+        previous.close();
+        return;
+      }
       if (event.type === 'change') { told(event.path, 'change'); return; }
       if (event.oldPath !== undefined) told(event.oldPath, 'rename');
       told(event.path, 'rename');
-    }, { persistent: options.persistent !== false });
-
-    (watcher as unknown as Record<string, unknown>).close = stop;
+    };
+    handle = vfs.watch(abs, changed, { persistent });
 
     return watcher;
   }

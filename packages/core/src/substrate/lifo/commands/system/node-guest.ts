@@ -84,7 +84,7 @@ const flagOf = (value: unknown, method: string) => typeof value === 'boolean' ? 
 const stat = (value: unknown, method: string) => isStat(value) ? value : malformed(method);
 const count = (value: unknown, method: string) => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0 ? value : malformed(method);
 /** The program's watches (NodeFilesystem.watch), by id: the host tells each its changes. */
-const watches = new Map<number, { readonly listener: (event: VfsEvent) => void; readonly persistent: boolean }>();
+const watches = new Map<number, { readonly listener: (event: VfsEvent) => void; persistent: boolean }>();
 let nextWatch = 1;
 let persistentWatches = 0;
 const filesystem: NodeFilesystem = {
@@ -97,6 +97,7 @@ const filesystem: NodeFilesystem = {
   isDirectory: (path) => flagOf(call({ op: 'fs', method: 'isDirectory', args: [path] }), 'isDirectory'),
   stat: (path) => stat(call({ op: 'fs', method: 'stat', args: [path] }), 'stat'),
   lstat: (path) => stat(call({ op: 'fs', method: 'lstat', args: [path] }), 'lstat'),
+  realpath: (path) => text(call({ op: 'fs', method: 'realpath', args: [path] }), 'realpath'),
   mkdir: (path, options) => { call({ op: 'fs', method: 'mkdir', args: [path, options] }); },
   readdir: (path) => {
     const entries = call({ op: 'fs', method: 'readdir', args: [path] });
@@ -117,16 +118,30 @@ const filesystem: NodeFilesystem = {
   close: (fd) => { call({ op: 'fs', method: 'close', args: [fd] }); },
   watch: (path, listener, options) => {
     const id = nextWatch++;
-    const persistent = options?.persistent !== false;
+    const watch = { listener, persistent: options?.persistent !== false };
     call({ op: 'watch', id, path });
-    watches.set(id, { listener, persistent });
-    if (persistent) persistentWatches++;
+    watches.set(id, watch);
+    if (watch.persistent) persistentWatches++;
     holdWhileBusy();
-    return () => {
-      if (!watches.delete(id)) return;
-      if (persistent) persistentWatches--;
-      call({ op: 'watch', id, path: null });
-      holdWhileBusy();
+    return {
+      close() {
+        if (!watches.delete(id)) return;
+        if (watch.persistent) persistentWatches--;
+        call({ op: 'watch', id, path: null });
+        holdWhileBusy();
+      },
+      ref() {
+        if (!watches.has(id) || watch.persistent) return;
+        watch.persistent = true;
+        persistentWatches++;
+        holdWhileBusy();
+      },
+      unref() {
+        if (!watches.has(id) || !watch.persistent) return;
+        watch.persistent = false;
+        persistentWatches--;
+        holdWhileBusy();
+      },
     };
   },
 };
