@@ -310,17 +310,19 @@ export class NimbusProcess extends Base {
   // caller leave as its request's signal.
   // A guest that fails answers a capability-branded 500 (HOST_FAILED_HEADER):
   // its host learns the call arrived, whatever the guest's compatibility date.
-  async hostHttpRequest(request, id, ended, abandoned, admission) {
+  hostHttpRequest(request, id, ended, abandoned, admission) {
     // Its host sends the capability and the pinned incarnation while it has
     // no live watch that found this instance; with one, the watch admits it.
     if (admission !== undefined) {
       if (admission[0] !== capability) return new Response('Not found', { status: 404 });
       if (admission[1] !== this.#incarnation) return this.#replaced();
     }
-    const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
-    this.#admitted.add(admitted);
-    try { return await super.handleHttpRequest(admitted); }
-    catch (error) { return new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } }); }
+    // The request is this call's own: its signal becomes the one its host can abort.
+    Object.defineProperty(request, 'signal', { value: this.#request(id, ended, abandoned).signal });
+    this.#admitted.add(request);
+    const failed = (error) => new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } });
+    try { return Promise.resolve(super.handleHttpRequest(request)).catch(failed); }
+    catch (error) { return failed(error); }
   }
   abandonHttpRequest(key, id) {
     if (key === capability) this.#request(id, []).abort(new DOMException('The caller left the request', 'AbortError'));

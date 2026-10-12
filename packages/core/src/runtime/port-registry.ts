@@ -118,7 +118,8 @@ export function relayRpcBody(response: Response, method: string, owner: BodyOwne
   // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
   const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
   const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? ownedStage(owner);
-  settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable);
+  // An owned stage in the chain ends it when the caller leaves (RelayScope); a chain without one, the pipe's signal.
+  settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable, gated === null && last instanceof FixedLengthStream);
   return new Response(last.readable, {
     status: response.status,
     statusText: response.statusText,
@@ -179,8 +180,8 @@ export function responseScope(caller: AbortSignal): { scope: ResponseScope; owne
   return { scope, owner: scope };
 }
 
-function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: WritableStream<Uint8Array>): void {
-  void source.pipeTo(last, { signal: owner.signal }).then(() => owner.settle(), () => owner.fail());
+function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: WritableStream<Uint8Array>, watched = true): void {
+  void source.pipeTo(last, watched ? { signal: owner.signal } : undefined).then(() => owner.settle(), () => owner.fail());
 }
 
 /** A JavaScript stage of the relay, which its owner errors if the caller leaves (RelayScope). */
@@ -537,7 +538,8 @@ export class PortRegistry {
       // Preserve query; replace the pathname with the inner path so
       // the user's HTTP server sees its own URL shape. (Fragments
       // never make it onto the wire, so there's nothing to forward.)
-      const innerUrl = new URL(pathname + outerUrl.search, outerUrl.origin);
+      // Every caller's `pathname` is a path; one that is not resolves against the origin.
+      const innerUrl = pathname.startsWith('/') ? outerUrl.origin + pathname + outerUrl.search : new URL(pathname + outerUrl.search, outerUrl.origin).href;
 
       // Rebuild a Request targeting the inner URL. Body is forwarded as
       // a stream — we do NOT await `.text()`/`.arrayBuffer()`, which
@@ -580,7 +582,7 @@ export class PortRegistry {
         body: hasBody ? request.body : undefined,
       };
       if (hasBody) init.duplex = 'half';
-      const forwarded = new Request(innerUrl.toString(), init);
+      const forwarded = new Request(innerUrl, init);
 
       // HTTP crosses Workers RPC as Request/Response values, streamed with
       // flow control and never materialised. A WebSocket upgrade cannot: its
