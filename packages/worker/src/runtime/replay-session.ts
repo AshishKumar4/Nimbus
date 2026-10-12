@@ -56,19 +56,6 @@ export class ReplaySession {
   ) {}
 
   /**
-   * A supervisor call from one of its runs, answered through `dispatch`
-   * through its journal, which counts what it does outside itself and
-   * checks what a run after a stop is answered against the run before it.
-   */
-  call(op: string, args: readonly unknown[] | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown> {
-    // A call that names no run is the session's own on the process's behalf
-    // (the stat a `< file` relaunch makes), not something a run was told.
-    if (run === undefined || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
-    if (op === 'getCachedTarball' || op === 'getPackument') return this.journal.externalRead(op, args, run);
-    return this.journal.handle(op, args, run, dispatch);
-  }
-
-  /**
    * A TLS connection opened through the session (`open`: where to; the
    * outbound proxies it), and its upgrade asked for (`upgrade`: answered
    * once the outbound has made the TLS session with the server). Opening
@@ -300,10 +287,19 @@ export class ReplaySessions {
     session.close();
   }
 
-  /** A supervisor call from a process, answered through `dispatch`: for one that can stop, through its journal. */
+  /**
+   * A supervisor call from a process, answered through `dispatch`: for one
+   * that can stop, through its journal, which counts what it does outside
+   * itself and checks what a run after a stop is answered against the run
+   * before it.
+   */
   call(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown> {
-    const session = this.get(pid);
-    return session ? session.call(op, args, run, dispatch) : dispatch();
+    const journal = pid === undefined ? undefined : this.sessions.get(pid)?.journal;
+    // A call that names no run is the session's own on the process's behalf
+    // (the stat a `< file` relaunch makes), not something a run was told.
+    if (!journal || run === undefined || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
+    if (op === 'getCachedTarball' || op === 'getPackument') return journal.externalRead(op, args, run);
+    return journal.handle(op, args, run, dispatch);
   }
 
   stdinPrepared(pid: number, run: string | undefined): void { this.sessions.get(pid)?.journal.prepared(run); }
