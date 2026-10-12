@@ -136,6 +136,19 @@ function fixture(options = {}) {
   await s.close();
 }
 
+// A session that cannot account for another channel (a shell's scope full of
+// runs whose ends never arrived) makes the batch unavailable: the directory
+// is opened as any is (null), and the pool asks no more.
+{
+  const s = fixture();
+  s.hook = () => { throw Object.assign(new Error('ENOSPC: too many directory prefetch channels'), { code: 'ENOSPC' }); };
+  assert.equal(await s.pool.open('/d0', 'd0', async () => ['/d1']), null, 'the caller opens it itself');
+  const asked = s.calls.length;
+  assert.equal(await s.pool.open('/d1', 'd1', async () => []), null);
+  assert.equal(s.calls.length, asked, 'and the pool asks the session no more');
+  s.hook = null;
+}
+
 // The run ends even when an exchange is never answered (a park the watchdog
 // gave up on): its end is sent at once, and waited for at most endWaitMs.
 {
