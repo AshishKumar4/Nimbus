@@ -1,8 +1,9 @@
 // A resident node process (a listening server, whose store is its facet's
 // SQLite), timed by the client: how long it takes to boot and answer, and an
-// answer that reads 200 files and their stats synchronously, enough times to
-// see past the shell's prompt polling. What a change to the resident store
-// must leave as it was.
+// answer that reads 200 files and their stats synchronously twenty times
+// over (4,000 of each, so the store's work outweighs the request's), enough
+// times to see past the shell's prompt polling. What a change to the resident
+// store must leave as it was.
 import { mintSession, deleteSession, Terminal } from '../../_driver.mjs';
 
 const REPS = Number(process.env.REPS ?? 12);
@@ -23,7 +24,9 @@ const fs = require('fs');
 const http = require('http');
 http.createServer((req, res) => {
   let n = 0;
-  for (const f of fs.readdirSync('tree')) n += fs.readFileSync('tree/' + f).length + fs.statSync('tree/' + f).size;
+  for (let pass = 0; pass < 20; pass++) {
+    for (const f of fs.readdirSync('tree')) n += fs.readFileSync('tree/' + f).length + fs.statSync('tree/' + f).size;
+  }
   res.end(String(n));
 }).listen(${PORT}, () => console.log('listening'));
 EOF`, 60_000);
@@ -40,7 +43,7 @@ EOF`, 60_000);
     if (round > 0) { boots.push(booted); answers.push(answered); }
   }
   console.log(JSON.stringify({ label: 'resident boot to first answer', ...stats(boots) }));
-  console.log(JSON.stringify({ label: 'resident 10 answers of 200 reads', ...stats(answers) }));
+  console.log(JSON.stringify({ label: 'resident 10 answers of 4000 reads and stats', ...stats(answers) }));
   console.log(JSON.stringify({ label: 'true (shell floor)', ...stats(await (async () => { const xs = []; for (let i = 0; i < REPS; i++) xs.push(await time('true')); return xs; })()) }));
 } finally {
   await t.close().catch(() => {});
