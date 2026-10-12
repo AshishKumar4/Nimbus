@@ -234,8 +234,8 @@ export function sessionCookieMigration(requestCookie, verified, sessionId) {
     const cookie = setNimbusTokenCookie(verified.raw, verified.claims.exp, sessionId);
     enforceSessionCookieCapacity(requestCookie, cookie, true);
     return [
-        cookie,
         expireLegacyNimbusTokenCookie(),
+        cookie,
     ];
 }
 /**

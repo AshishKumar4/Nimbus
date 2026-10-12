@@ -220,7 +220,7 @@ export function createNimbusHandler(options = {}) {
                 basePath: '',
             }, env, {
                 tenantSegment: auth.tenantSegment,
-                migrateSessionCookies: auth instanceof Response ? [] : sessionCookieMigration(request.headers.get('Cookie'), auth.verified, preview.sid),
+                migrateSessionCookies: auth.verified ? sessionCookieMigration(request.headers.get('Cookie'), auth.verified, preview.sid) : [],
             });
         }
         // Embedder custom routes run first among the control-plane routes.

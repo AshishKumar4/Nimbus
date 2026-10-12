@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b69155b16f484b370da279701840ec8e94154d296ff89eefb3028ce12e7e9a94",
+  "fingerprint": "b8dbb97580f21ee25e1309ae403c4903565928d01aadb80a796441110b3be6a9",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2029,7 +2029,7 @@
     "packages/worker/dist/auth/index.js": "8889f637429cab780a674d9e8502739a8930286279ddf4530693d698d820dc6d",
     "packages/worker/dist/auth/middleware.d.ts": "e153a6b2b26bb4299b096c19fcab143c92c72ccce033d71de8a5cac3c2e605fb",
     "packages/worker/dist/auth/middleware.d.ts.map": "b4cdeb57b79728f4d98fda6f8630b69395e00003f9a5ec29ae99d02827faad30",
-    "packages/worker/dist/auth/middleware.js": "1a89ee0a2fc7c7b8da00af89ac8e1652ea7328a0099cd0b94428c7c3aa9fcc63",
+    "packages/worker/dist/auth/middleware.js": "7bf3d6a0e12d5bfd7b842431156a55de7b4b2105355a332f452dc940bb07a6cd",
     "packages/worker/dist/auth/token.d.ts": "5feed85797431cd1fdd1f804d318c875590aabffaf9d313a53018f0a04e54ffb",
     "packages/worker/dist/auth/token.d.ts.map": "9ef0635f8922b62869d1100f6b50d6d07b5945e2efbde277f5e0a6eb5262b6c1",
     "packages/worker/dist/auth/token.js": "ddcf6b76220521fce11cb4557e76a05778341a9a821ba248614e6d425fd8e427",
@@ -2386,7 +2386,7 @@
     "packages/worker/dist/router/do-errors.js": "b69cf479f2c28970f7189b03f8a4687ef3fe3085a0f7b3b790898cb958ad4351",
     "packages/worker/dist/router/index.d.ts": "00d9730302e24081246f916b04f715253cce2420c35e6c4d2d1b92b40404fe2a",
     "packages/worker/dist/router/index.d.ts.map": "f193127d7cde82b9454368fe3dde65d65cb14cb080f96e75448329791e66ee08",
-    "packages/worker/dist/router/index.js": "35916c468cacd680129e0542c7c49966323327297e1fd22f8f52c2ead7a86e19",
+    "packages/worker/dist/router/index.js": "0949392983d966a7259a2a381b3fa84805c5266f5e47fb035af445c940b5237c",
     "packages/worker/dist/router/public-directory-do.d.ts": "8f9b4d55ab6b30d9156fda33a6a3819fa0a49ed82faab87da8740fa2a1589823",
     "packages/worker/dist/router/public-directory-do.d.ts.map": "da80b24520416dbcd67bd286a36a7e355432cdaa7970b8a14885e33b4721d310",
     "packages/worker/dist/router/public-directory-do.js": "8f5ec96b04d21fcef381eeae59f738d9c0ea43de9e55abd358241abe2c4f3150",
@@ -2847,7 +2847,7 @@
     "packages/worker/src/_shared/session-router.ts": "5c440b2f2f808468de9145b711432682dea5510775b88de2124f97703e288f2a",
     "packages/worker/src/amaro-wasm-artifact.generated.ts": "c2c6459ea2fcec19900f16889091b1d02f05c2149c4ecaa920656ec90cddda23",
     "packages/worker/src/auth/index.ts": "723b31b7d1d104f9bfc19d6b8d9b3631e6d73b8ab7f818800e0c23a4b8b22925",
-    "packages/worker/src/auth/middleware.ts": "17cf8dcb231ae72c6ad96096845556df8af78b2f4893e6512bd5d8727f19ea41",
+    "packages/worker/src/auth/middleware.ts": "1cfb2b6f5db4280faf778dabd20610d5c231828551475a0536ccce9456ea874f",
     "packages/worker/src/auth/token.ts": "1508686fdc934253906d0709446df5e23cba05bc4de8dceae8508d31ba32f39c",
     "packages/worker/src/auth/types.ts": "8cb5eee073e354c11858f8b9f0319032de67d2fe670471d902d3fcf6ec9d0fa0",
     "packages/worker/src/bindings/body.ts": "686e3ccfcf99b8062d9f62cb7f399b87865c8b8e3c299896e321734def422878",
@@ -2967,7 +2967,7 @@
     "packages/worker/src/replica/routing.ts": "b89c1fdbc8ed7469bbac7c83b16fceb230fe1330d6c693183586bc8cd2668d64",
     "packages/worker/src/rolldown-facet-artifact.generated.ts": "e8aefce5c21096d1bbf2a1c7df6d46b5b3030cbb36e1b7f3513b28cb06b98a89",
     "packages/worker/src/router/do-errors.ts": "d5fef23330d57259b2c65e777057db3aebf5954a13f2d72e2f2232704b11f297",
-    "packages/worker/src/router/index.ts": "2a0ff36e676fc93476bf4b2cde2a852c51a8b318960a6db9f628e8662181b4e7",
+    "packages/worker/src/router/index.ts": "71447e86e08110e3a387c0b8fd9524239c0ee17c482cd5a7fa0df3a8dbb05ade",
     "packages/worker/src/router/public-directory-do.ts": "f9a2d68ceb8c4bf27cb7c14764d110afb019b2ba00d3bdb77e83eda70cd7b50a",
     "packages/worker/src/router/public-directory.ts": "03090bb1f15b812602b15fc18825907d2ceb686eb4fcd102b192401c0f25ef70",
     "packages/worker/src/router/remote-api.ts": "392ea5d689f2ad75449b0971e392bba6f94b3a3733d916733689722037ef645b",
