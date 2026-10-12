@@ -2,6 +2,7 @@ import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREF
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
@@ -14,6 +15,7 @@ const __WASI_EACCES = 2;
 const __WASI_EBADF = 8;
 const __WASI_ECONNREFUSED = 14;
 const __WASI_EEXIST = 20;
+const __WASI_EFAULT = 21;
 const __WASI_EHOSTUNREACH = 23;
 const __WASI_EINTR = 27;
 const __WASI_EINVAL = 28;
@@ -116,7 +118,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS() {
-    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
+    return { root: '', umask: CRED_SESSION_USER.umask, residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
 }
 let __wasiFS = __wasiEmptyFS();
 let __wasiPreopens = [];
@@ -370,6 +372,7 @@ export function __wasiInitFS(opts) {
     __wasiProcessGone = null;
     __wasiFS = {
         root: __wasiCanonicalize(opts.root || ''),
+        umask: (opts.cred?.umask ?? CRED_SESSION_USER.umask) & 0o777,
         // Largest regular file the codec answers from a resident copy.
         residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
         cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
@@ -1828,6 +1831,18 @@ export function __wasiMakeImports(opts) {
     // the codec answers its files and directories; a stream's (stdio, a pipe,
     // a socket) status is preview1's, with the mode its kind has.
     const fsImport = {
+        umask(mask, out) {
+            try {
+                writeU32LE(out, __wasiFS.umask);
+            }
+            catch (error) {
+                if (error instanceof RangeError)
+                    return __WASI_EFAULT;
+                throw error;
+            }
+            __wasiFS.umask = mask & 0o777;
+            return __WASI_ESUCCESS;
+        },
         fd_stat(fd, out) {
             const kind = fdTable.get(fd)?.kind;
             const format = kind === 'stdin' || kind === 'stdout' || kind === 'stderr' ? 0o020620
@@ -1857,6 +1872,7 @@ export function __wasiMakeImports(opts) {
         allocateFd: __wasiAllocateFd,
         abi: opts.abi,
         synchronous: opts.parking === 'none',
+        umask: () => __wasiFS.umask,
         residentBytes: __wasiFS.residentFileCap,
         extension: fsImport,
         processGone: (refusal) => { __wasiProcessGone ??= refusal; },

@@ -65,7 +65,7 @@ export function makeClangRunnerFactory(deps) {
                 return 1;
             }
             const { uid, gid, groups, umask } = requireVfsCred(ctx.cred, binName);
-            const processCred = { uid, gid, groups: [...groups] };
+            const processCred = { uid, gid, groups: [...groups], umask };
             // Fast paths — no wasm boot.
             if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
                 ctx.stdout.write(`Nimbus wasm-clang (binji-2020, LLVM 8.0.1)\n`);

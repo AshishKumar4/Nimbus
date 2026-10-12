@@ -1,5 +1,5 @@
 import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { WriteStreamOptions } from './wave-contracts.js';
+import { type WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 import { type Awaitable } from '../vfs/vfs.js';
@@ -90,6 +90,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
+        umask?: number;
     } & RuntimeMutationOwner): void;
     /**
      * Whether anything may be at `located`: a mounted name (its mount

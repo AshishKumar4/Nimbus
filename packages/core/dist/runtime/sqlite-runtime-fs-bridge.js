@@ -1,6 +1,7 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { withUmask } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
@@ -272,8 +273,9 @@ export class SqliteRuntimeFsBridge {
         });
     }
     /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
-    owned(owner) {
-        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
+    owned(owner, umask) {
+        const cred = withUmask(this.vfs.cred, umask);
+        return owner === undefined && cred === this.vfs.cred ? this.vfs : this.rawVfs.as(cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
     }
     truncate(path, size, options = {}) {
         return called({ syscall: 'truncate', path }, () => {
@@ -408,7 +410,7 @@ export class SqliteRuntimeFsBridge {
             if (exists)
                 this.vfs.access(p, openAccess(normalizedFlags, directory));
             if (!exists) {
-                this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
+                this.owned(owner, flags.umask).writeFile(p, new Uint8Array(0), { mode: flags.mode });
             }
             else if (normalizedFlags.truncate) {
                 this.owned(owner).truncate(p, 0);
@@ -483,7 +485,7 @@ export class SqliteRuntimeFsBridge {
             // permission check on its parent (`/` has none).
             if (this.mayExist(located))
                 throw fsError('EEXIST', 'mkdir', path);
-            this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
+            this.owned(owner, options.umask).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
         });
     }
     /**

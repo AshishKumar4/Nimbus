@@ -87,8 +87,7 @@ export function makeGitRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: ${GIT_WASM} or ${GIT_SYSTEM_CONFIG} missing from the install\n`);
                 return 127;
             }
-            const { uid, gid, groups } = requireVfsCred(ctx.cred, binName);
-            const cred = { uid, gid, groups: [...groups] };
+            const cred = requireVfsCred(ctx.cred, binName);
             try {
                 image ??= withHostView(deps.filesystem, CRED_KERNEL, (runtimeVfs) => runtimeVfs.readArrayBufferUncached(wasmPath));
                 await image;
