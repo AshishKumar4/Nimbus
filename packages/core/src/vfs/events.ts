@@ -39,9 +39,10 @@ export function projectChange(event: VfsEvent, tree: string, shown: (path: strin
   const seen = (path: string): string | null => (inWatchedTree(tree, path) ? shown(path) : null);
   const { type, timestamp } = event;
   const path = seen(event.path);
-  if (event.oldPath === undefined) return path === null ? null : { type, path, timestamp };
+  // The event itself where the watch names it as it came.
+  if (event.oldPath === undefined) return path === null ? null : path === event.path ? event : { type, path, timestamp };
   const oldPath = seen(event.oldPath);
-  if (path !== null && oldPath !== null) return { type, path, oldPath, timestamp };
+  if (path !== null && oldPath !== null) return path === event.path && oldPath === event.oldPath ? event : { type, path, oldPath, timestamp };
   if (oldPath !== null && event.oldPath === tree) {
     const there = shown(event.path);
     if (there !== null) return { type, path: there, oldPath, timestamp };
