@@ -10,8 +10,10 @@
  *     node-compat shims;
  *   - `VFS_WRITE_LEDGER_SOURCE` (@nimbus-sh/core _shared/vfs-write-ledger.ts),
  *     the write ledger the shims' filesystem writes go through;
- *   - `FACET_RESIDENT_STORE_SOURCE` (src/vfs/facet-resident-store.ts), a
- *     resident facet's SQLite-backed resident set the shims read from.
+ *   - the resident store's library (src/vfs/resident, bundled here by
+ *     esbuild), defining `__nimbusResidentModule`, whose
+ *     createResidentStore each process calls for the resident set the shims
+ *     read from.
  * and carries more as modules of its map: the runtime-code interpreter
  * and its host module (scripts/interpreter-bundle.mjs), which a launch
  * compiles only when its program first produces code no launch staged, and
@@ -58,7 +60,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 const { generateShimsCode } = await import(path.join(ROOT, 'dist/runtime/node-shims.js'));
 const { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } = await import(path.join(ROOT, 'dist/runtime/node-lib-module.js'));
-const { FACET_RESIDENT_STORE_SOURCE } = await import(path.join(ROOT, 'dist/vfs/facet-resident-store.js'));
+const { bundleResidentStore } = await import('./resident-store-bundle.mjs');
 const { VFS_WRITE_LEDGER_SOURCE } = await import('@nimbus-sh/core/_shared/vfs-write-ledger.js');
 const { bundleInterpreter, bundleRegistry } = await import('./interpreter-bundle.mjs');
 const interpreter = await bundleInterpreter({ start: ROOT });
@@ -83,8 +85,8 @@ const SOURCES = [
   {
     name: 'RESIDENT_STORE',
     family: 'resident-store',
-    source: FACET_RESIDENT_STORE_SOURCE,
-    from: 'dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE',
+    source: await bundleResidentStore(ROOT),
+    from: 'src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs',
   },
   {
     name: 'JS_INTERPRETER_PRIMORDIALS',

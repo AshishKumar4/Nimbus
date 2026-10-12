@@ -1,7 +1,7 @@
 /**
- * A process's own permission checks, by the one POSIX calculation
- * (core posixAccess). What differs between callers is only what they make of
- * metadata or a credential that is absent, and that is all that is here.
+ * The namespace's permission checks, by the one POSIX calculation (core
+ * posixAccess): what is here is only what the namespace makes of metadata or
+ * a credential that is absent.
  */
 
 import { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
@@ -37,20 +37,4 @@ export function namespaceAllows(cred: ResidentCred | null, meta: ModeMeta | unde
     want,
     { uid: Number(cred.uid), gid: Number(cred.gid), groups: groupsOf(cred) },
   );
-}
-
-/**
- * Whether a program running as `cred` may `want` a path whose stat is
- * `meta`. Only a stat that states the owner, group and mode can be judged;
- * one that does not is not judged in the process's favour: absent fields
- * used to default to mode 0644 and owner 1000, which made any undescribed
- * file the reader's own.
- */
-export function programAllows(cred: ResidentCred, meta: ModeMeta | undefined | null, want: number): boolean {
-  if (want === 0) return true;
-  const mode = Number(meta?.mode);
-  const uid = Number(meta?.uid);
-  const gid = Number(meta?.gid);
-  if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return false;
-  return posixAccess({ mode, uid, gid }, want, { uid: Number(cred.uid), gid: Number(cred.gid), groups: groupsOf(cred) });
 }

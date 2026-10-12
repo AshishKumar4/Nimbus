@@ -13,7 +13,6 @@ export type ResidentStat = Partial<RuntimeVfsStat> & {
   revision?: number;
   linkTarget?: string | null;
   target?: string | null;
-  [field: string]: unknown;
 };
 
 /** One entry of an ACQUIRE answer (VfsInvalidatedPath), as received. */

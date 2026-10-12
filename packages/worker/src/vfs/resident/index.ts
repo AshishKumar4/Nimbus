@@ -153,7 +153,6 @@ import { createSync, type Sync } from './sync.js';
 import { heapTables, sqlTables, type HeapTables, type ResidentSql, type ResidentTables } from './tables.js';
 
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
-export { programAllows } from './permissions.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export type { ResidentCell } from './cell-cost.js';
 
