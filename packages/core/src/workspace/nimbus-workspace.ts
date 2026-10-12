@@ -246,8 +246,8 @@ export interface NimbusWorkspaceOptions {
    * keeps `egress` for that process. Requires `egress`, which still carries
    * the workspace's work that no process makes. A host that builds the
    * network for its `facets` itself makes it with
-   * `selectProcessEgress(egress, egressFor, processes)` and passes the same
-   * `processes`.
+   * `selectProcessEgress(egress, egressFor, processes)` over the same
+   * `processes`; a process is still asked for once.
    */
   readonly egressFor?: EgressFor;
 }
@@ -367,11 +367,12 @@ export class NimbusWorkspace {
     // Only a supervisor this workspace created gets its pid base set here; a
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
-    if (options.egressFor !== undefined) {
-      if (options.egress === undefined) throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
-      selectProcessEgress(options.egress, options.egressFor, processes);
+    if (options.egressFor !== undefined && options.egress === undefined) {
+      throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
     }
-    kernel.network = workspaceNetwork(options.egress);
+    kernel.network = options.egress !== undefined && options.egressFor !== undefined
+      ? selectProcessEgress(options.egress, options.egressFor, processes)
+      : workspaceNetwork(options.egress);
     // Its processes bind to this filesystem, so a reap releases them here,
     // and their output waits for what they wrote to be published: the one
     // place the table and the filesystem meet.

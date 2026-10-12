@@ -34,6 +34,8 @@ import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egr
  * request that reaches it went through the egress.
  */
 const EGRESS_TEST_HOST = 'egress-test.invalid';
+/** What test egresses were asked under /who/ (TestEgress), as `<path> <exec>`: one isolate's, for a test to read back. */
+const WHO_SEEN: string[] = [];
 
 /** What the egress answers a plain-HTTP request to EGRESS_TEST_HOST with, over TCP: the canary wheel, or its request line. */
 function egressTcpHttpResponse(requestLine: string): Uint8Array {
@@ -98,6 +100,12 @@ export class TestEgress extends WorkerEntrypoint<Cloudflare.Env, TestEgressProps
     if (url.pathname === '/who' || url.pathname.startsWith('/who.')) {
       return new Response(`via-egress who ${this.who()}`, { status: url.pathname === '/who' ? 200 : 403, headers: { 'content-type': 'text/plain' } });
     }
+    // Any other path under /who is recorded with the exec that asked; /who-seen lists them, oldest first.
+    if (url.pathname.startsWith('/who/')) {
+      WHO_SEEN.push(`${url.pathname.slice('/who/'.length)} ${this.who()}`);
+      return Response.json({});
+    }
+    if (url.pathname === '/who-seen') return new Response(WHO_SEEN.join('\n'), { headers: { 'content-type': 'text/plain' } });
     const encoding = /^\/encoded-(gzip|br|deflate)$/.exec(url.pathname)?.[1];
     if (encoding !== undefined) {
       // As a server compresses: the body encoded, sent as it is (encodeBody 'manual').
