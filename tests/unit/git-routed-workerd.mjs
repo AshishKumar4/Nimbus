@@ -90,6 +90,15 @@ try {
     assert.match(await real('blame a.txt'), /\) one$/m);
     assert.match(await real('log --graph --oneline'), /^\* [0-9a-f]+ topic-b$/m);
 
+    // Its output's reader gone (a pipe closed early), real git dies of SIGPIPE, silently, as natively.
+    await sh("awk 'BEGIN { for (i = 0; i < 200000; i++) print \"line \" i }' > repo/large.txt");
+    await builtIn('add large.txt');
+    await builtIn('commit -q -m large');
+    const piped = await terminal.run(`cd repo && set -o pipefail; NIMBUS_GIT_WASI=1 git show HEAD:large.txt | head -n 1; echo "status=$?"; cd ~`, 300_000);
+    assert.match(piped.stdout, /^line 0$/m, piped.stdout.slice(-400));
+    assert.match(piped.stdout, /status=141/, `SIGPIPE's status under pipefail: ${piped.stdout.slice(-400)}`);
+    assert.doesNotMatch(piped.stdout, /output lost|git: /, 'and no diagnostic');
+
     // A SHA-256 repository real git made: every ordinary command on it is
     // real git's, so real git reads what was written.
     await sh("mkdir r256 && printf 'hi\\n' > r256/f");

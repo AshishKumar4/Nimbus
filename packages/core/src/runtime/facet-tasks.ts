@@ -145,6 +145,7 @@ declare const __wasiSupervisorOutput: (sup: unknown) => {
     stdoutBytes(bytes: Uint8Array): void | Promise<void>;
     stderrBytes(bytes: Uint8Array): void | Promise<void>;
     drain(): Promise<string | null>;
+    brokenPipe(): boolean;
 };
 declare const __wasiFsStats: (() => ResidentFilesystemStats | null) | undefined;
 /** The green-thread scheduler — see runtime/wasi-threads.ts. */
