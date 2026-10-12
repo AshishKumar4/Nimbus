@@ -36,7 +36,9 @@ export interface EgressTlsTarget {
     /**
      * The name the session presents (SNI) and checks the server's certificate
      * by, when the program named one other than `hostname`
-     * (`tls.connect({ servername })`); absent, `hostname`, as in Node.
+     * (`tls.connect({ servername })`). Absent, `hostname` for both. Only the
+     * certificate check matches Node there: an empty servername is not
+     * forwarded, so the egress presents `hostname` as SNI where Node sends none.
      */
     servername?: string;
 }

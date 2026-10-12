@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f1246240b9db240dbdbcb567dc7f54f83c3726c238aab4acfcf90ee59bd90cf3",
+  "fingerprint": "61edf22f0617c60b8030102bb57985b67a8d3f70f7f648d34afc0fe9105be824",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -235,8 +235,8 @@
     "packages/core/dist/_shared/wire-codec.d.ts": "62ee51307b04f3d0be24123c6efa9753ca91ecfb5bf5b4f7ac40f8308258a4ac",
     "packages/core/dist/_shared/wire-codec.d.ts.map": "d36e825c6f7451c23cce43e729f8e9cc59f9453fb95a4c9efd8bd66814df2b8a",
     "packages/core/dist/_shared/wire-codec.js": "4a6c2526674feffce561a5364367e69d327397adb04e70f4dd880f9e3ac74742",
-    "packages/core/dist/_shared/workspace-network.d.ts": "8ccfe18ea423b50689c83ac5928bb73e8f924b37c2ff971bb3e5965d0e9889e3",
-    "packages/core/dist/_shared/workspace-network.d.ts.map": "ef036fd451c3dfcd1eb2e6c1258d91df324a60f854bf138f0f9ac3982e3b75f0",
+    "packages/core/dist/_shared/workspace-network.d.ts": "bff0e095e302ba50d870e2f2ce5b0fdd845e77800dbbe72c8292ed8d0ff6e33c",
+    "packages/core/dist/_shared/workspace-network.d.ts.map": "7716eb7d239aa2e13568acd6149d41866408f7e4fb497f7c0cfb5852f6d9f22c",
     "packages/core/dist/_shared/workspace-network.js": "7f5c78f6c51f16e2598b0660634ce531ccec1a4be84f9ce7304b6d8538d64d4c",
     "packages/core/dist/constants.d.ts": "d8f400c1509cab2471f69353558979f195b31d19c2b06d5ab093eb04f3a48888",
     "packages/core/dist/constants.d.ts.map": "b80ac0023ba0cd99d88b8f5e81c2aaf34c8a3b0e571c8b882931bf864637775f",
@@ -1351,7 +1351,7 @@
     "packages/core/src/_shared/vfs-write-ledger.ts": "2401674e28057127bd7811898b1f14a3b1d05395507fe752301460fbdab151b1",
     "packages/core/src/_shared/websocket-upgrade.ts": "781961c07f12aee559abb641b2a25caa676744ad792c821f3e9f3e6e73514643",
     "packages/core/src/_shared/wire-codec.ts": "73ed1420aa77ef34d7b28046e04601c7faf0d965e42139fcd8c0681211a5d00c",
-    "packages/core/src/_shared/workspace-network.ts": "bffb37c2da9503d71071544181881c467c54530f82d4e36c2f138d0f4a2a0ad9",
+    "packages/core/src/_shared/workspace-network.ts": "0d0b901172e7275f7fa8d9449d43eaae5317962bdf66cc481983711fe76f7118",
     "packages/core/src/constants.ts": "8739ebaf948f18b36ba433c5dfa617b56035a84ba51637d080fc81c4eba8de8c",
     "packages/core/src/index.ts": "a49867adb71e9a91eb997d0b3180ffacdfdb5bf0ca2462a19547a68198daa3d2",
     "packages/core/src/interpreter/classes.ts": "3ec6f3fe3a90c996934824bca7b7d593d0ae0b9e61b257166221c71f58488189",
