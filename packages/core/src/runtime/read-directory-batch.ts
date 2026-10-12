@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
-import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_ENDED_CHANNELS } from '../constants.js';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT } from '../constants.js';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
 
 export const DIRECTORY_READ_RPC = 'fsReadDirectories' as const;
@@ -63,14 +63,21 @@ export interface ReadDirectorySupervisor {
 
 /** The process's DescriptorScope (descriptors.ts), as far as this account needs it. */
 interface Scope { readonly closed: boolean; readonly subscriptions: Set<() => void> }
-interface Channel { sequence: number }
+/** A live channel: the last sequence it took, and every sequence that has reached the session. */
+interface Channel { sequence: number; readonly seen: Set<number> }
 interface Tracked { readonly channel: string; claimed: boolean }
 interface Budget {
   ended: boolean;
   reserved: number;
   readonly channels: Map<string, Channel>;
-  /** Channels a run ended (`end`), oldest first: a late request of one is refused, never a channel again. */
-  readonly endedChannels: Set<string>;
+  /**
+   * Channels a run ended (`end`) while some of their earlier requests had
+   * not reached the session, with those requests' sequences: such a request
+   * is refused when it arrives (never a channel again), and the channel is
+   * forgotten once all have. A channel whose requests all arrived is
+   * forgotten at its end.
+   */
+  readonly endedChannels: Map<string, Set<number>>;
   readonly tracked: Map<number, Tracked>;
   tail: Promise<void>;
 }
@@ -108,7 +115,7 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
   if (scope.closed) throw refusal('ESTALE', 'directory descriptor scope ended');
   let budget = scopes.get(scope);
   if (budget === undefined) {
-    const created: Budget = { ended: false, reserved: 0, channels: new Map(), endedChannels: new Set(), tracked: new Map(), tail: Promise.resolve() };
+    const created: Budget = { ended: false, reserved: 0, channels: new Map(), endedChannels: new Map(), tracked: new Map(), tail: Promise.resolve() };
     scopes.set(scope, created);
     // The scope closes its descriptions; the account ends on the same release, before the scope is marked closed.
     scope.subscriptions.add(() => {
@@ -123,7 +130,12 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
   const live = (): void => { if (scope.closed || budget.ended) throw refusal('ESTALE', 'directory descriptor scope ended'); };
   const run = async (): Promise<ReadDirectoryBatchResult> => {
     live();
-    if (budget.endedChannels.has(request.channel)) throw refusal('ESTALE', 'directory prefetch channel ended');
+    const outstanding = budget.endedChannels.get(request.channel);
+    if (outstanding !== undefined) {
+      outstanding.delete(request.sequence);
+      if (outstanding.size === 0) budget.endedChannels.delete(request.channel);
+      throw refusal('ESTALE', 'directory prefetch channel ended');
+    }
     let channel = budget.channels.get(request.channel);
     if (!channel) {
       // A late request from a rewound run cannot close reused descriptor numbers.
@@ -132,9 +144,10 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
       // superseded, and cannot allocate after that recovery acknowledged.
       if (request.retire.length || request.claim.length || (request.sequence !== 1 && request.open.length > 0)) throw refusal('ESTALE', 'unknown directory prefetch channel');
       if (budget.channels.size >= DIRECTORY_PREFETCH_LIMIT) throw refusal('ENOSPC', 'too many directory prefetch channels');
-      channel = { sequence: 0 };
+      channel = { sequence: 0, seen: new Set() };
       budget.channels.set(request.channel, channel);
     }
+    channel.seen.add(request.sequence);
     if (request.sequence <= channel.sequence) throw refusal('ESTALE', 'directory batch was already superseded');
     channel.sequence = request.sequence;
 
@@ -163,11 +176,11 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
         if (record.channel === request.channel) { try { await close(id); } catch (error) { closeErrors.push(error); } }
       }
       budget.channels.delete(request.channel);
-      budget.endedChannels.add(request.channel);
-      for (const oldest of budget.endedChannels) {
-        if (budget.endedChannels.size <= DIRECTORY_ENDED_CHANNELS) break;
-        budget.endedChannels.delete(oldest);
-      }
+      // The run's requests are numbered from 1 without gaps: those that have
+      // not arrived are refused when they do.
+      const missing = new Set<number>();
+      for (let sequence = 1; sequence < request.sequence; sequence++) if (!channel.seen.has(sequence)) missing.add(sequence);
+      if (missing.size > 0) budget.endedChannels.set(request.channel, missing);
     }
     if (closeErrors.length) throw closeErrors[0];
     live();

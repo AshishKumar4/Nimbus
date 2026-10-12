@@ -157,8 +157,6 @@ export const DIRECTORY_BATCH_LIMIT = 64;
  * answer's descriptions are. The WASI park deadline's length.
  */
 export const DIRECTORY_END_WAIT_MS = 10_000;
-/** Ended directory channels a scope remembers, refusing a late request of one; the oldest is forgotten first. */
-export const DIRECTORY_ENDED_CHANNELS = 4 * DIRECTORY_PREFETCH_LIMIT;
 
 // Entries one subtree listing (fsListTree) carries before it is refused
 // (E2BIG): two list pages' worth, in one round trip and one revision.

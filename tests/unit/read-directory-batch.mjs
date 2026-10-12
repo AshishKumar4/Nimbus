@@ -86,8 +86,17 @@ try {
     assert.equal(first.opened.length, 2, `run ${run} still prefetches`);
     await readDirectoryBatch(fs, { ...request([], { retire: [first.opened[0].handle.id] }), channel: runChannel, sequence: 2, end: true });
     for (const opened of first.opened) await assert.rejects(async () => fs.fstat(opened.handle.id), { code: 'EBADF' }, 'its end closes every description of the channel');
-    // A first request of the run that arrives after its end opens nothing.
-    await assert.rejects(() => readDirectoryBatch(fs, { ...request([`${root}/d3`]), channel: runChannel, sequence: 1 }), { code: 'ESTALE' }, 'an ended channel is not a channel again');
+  }
+  // A first request of a run that reaches the session after the run's end
+  // (its second exchange arrived, and ended the channel, first) opens nothing.
+  {
+    const late = crypto.randomUUID();
+    await readDirectoryBatch(fs, { ...request([]), channel: late, sequence: 2, end: true });
+    await assert.rejects(() => readDirectoryBatch(fs, { ...request([`${root}/d3`]), channel: late, sequence: 1 }), { code: 'ESTALE' }, 'an ended channel is not a channel again');
+    // Its last outstanding request in, the ended channel is forgotten; a request numbered past its end makes a channel again.
+    const again = await readDirectoryBatch(fs, { ...request([`${root}/d3`]), channel: late, sequence: 1 });
+    assert.equal(again.opened.length, 1, 'remembered only while one of its requests was outstanding');
+    await readDirectoryBatch(fs, { ...request([], { retire: [again.opened[0].handle.id] }), channel: late, sequence: 2, end: true });
   }
 
   // Rewinding creates another descriptor scope: an old channel must not
