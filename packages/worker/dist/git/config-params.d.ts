@@ -35,7 +35,7 @@ export declare function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
             encoding: 'utf8';
         }): Promise<Uint8Array | string>;
     };
-}, env: Record<string, string>): G;
+}, env: Record<string, string>, cwd: string): G;
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
  * value, and all of them after the files' for a read of every value.

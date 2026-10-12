@@ -660,7 +660,7 @@ function parseCheckoutArgs(args) {
     if (ignoreSkipWorktree && paths.length === 0)
         unsupportedOption('checkout', '--ignore-skip-worktree-bits without paths');
     const ref = create ?? operands[0];
-    if (ref !== undefined)
+    if (create === undefined && ref !== undefined)
         validateRevision(ref);
     return { quiet, create: create !== undefined, ref, paths, ignoreSkipWorktree };
 }
@@ -1036,8 +1036,6 @@ function ambiguousArgument(arg) {
 /** A revision as rev-parse reads one: a ref, or a full or uniquely abbreviated object name. */
 async function resolveRevision(git, fs, gitdir, rev, cache) {
     const name = rev === '@' ? 'HEAD' : rev;
-    if (/[~^:{}\\]|\.\.|^@/.test(name))
-        throw new Error(`unsupported revision syntax '${rev}'`);
     try {
         return await git.resolveRef({ fs, gitdir, ref: name });
     }
@@ -3359,7 +3357,7 @@ realGit) {
         };
         const fs = sessionGitFs(repoVfs, null, promisor);
         const fileGit = git;
-        git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env), globals.config);
+        git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env, dir), globals.config);
         commandFs = fs;
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
         commandEngines.set(fs, {

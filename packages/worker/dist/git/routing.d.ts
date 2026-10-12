@@ -24,7 +24,7 @@ export type GitFamilyPolicy = {
  * JS/WASI. Every family past the latency gate stays JavaScript.
  */
 export declare const GIT_FAMILY_POLICY: Readonly<Record<GitFamily, GitFamilyPolicy>>;
-/** A capability refusal, raised only while no command effects have occurred. */
+/** A capability refusal; only the front door's pre-effect phase may hand it off. */
 export declare class UnsupportedGitOperation extends Error {
     readonly diagnostic: string;
     readonly code: number;

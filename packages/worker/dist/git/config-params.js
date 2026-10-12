@@ -70,11 +70,12 @@ function configKey(path) {
     return path.slice(0, first).toLowerCase() + path.slice(first, last) + path.slice(last).toLowerCase();
 }
 /** The global files in git's order, read by cf-git's canonical config parser. */
-export function withGlobalConfig(git, fs, env) {
+export function withGlobalConfig(git, fs, env, cwd) {
     const home = env.HOME;
     const xdg = env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
-    const files = env.GIT_CONFIG_GLOBAL !== undefined ? [env.GIT_CONFIG_GLOBAL]
-        : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])];
+    const files = (env.GIT_CONFIG_GLOBAL !== undefined ? [env.GIT_CONFIG_GLOBAL]
+        : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])])
+        .map((file) => file.startsWith('/') ? file : `${cwd}/${file}`);
     if (files.length === 0)
         return git;
     const contents = new Map();
