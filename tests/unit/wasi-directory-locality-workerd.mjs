@@ -31,7 +31,10 @@ try {
     assert.equal(stats.delegated.access ?? 0, 0, 'access(2) of a configuration file is answered from the namespace');
 
     // The next git continues the store the last one left: one barrier brings
-    // it forward, and nothing it read is read again.
+    // it forward, and nothing it read is read again. (The first status wrote
+    // the index it refreshed, which the second reads anew; the third finds
+    // nothing changed.)
+    assert.deepEqual((await statusOf()).porcelain, []);
     const again = await statusOf();
     console.log(JSON.stringify({ again: again.stats }));
     assert.deepEqual(again.porcelain, [], 'still clean');

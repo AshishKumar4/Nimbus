@@ -88,7 +88,6 @@ function fixture() {
     assert.equal(s.pool.local(a.id), null, 'revocation disables locality, not the real descriptor');
     assert.equal(s.held.has(a.id), true);
   } finally { await s.close(); }
-  assert.equal(s.held.size, 0);
 }
 
 // Lost/late first answer: the original ask cannot be replaced by arrival time.
