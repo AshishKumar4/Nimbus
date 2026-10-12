@@ -537,6 +537,39 @@ await check('a listener that publishes while it is told: what it publishes is af
   await settled();
   assert.deepEqual(all, ['first', 'second']);
   assert.deepEqual(late, ['second']);
+  const paths = new VfsEventEmitter();
+  const heardA = [];
+  const heardB = [];
+  paths.onPath('', (event) => {
+    heardA.push(event.path);
+    if (event.path === 'a') paths.emit('add', 'b');
+  });
+  paths.onPath('', (event) => heardB.push(event.path));
+  paths.emit('add', 'a');
+  assert.deepEqual(heardA, ['a', 'b']);
+  assert.deepEqual(heardB, ['a', 'b'], 'every path listener hears them in the order they were published');
+});
+
+await check('a killed process\'s subscriptions all stop, one whose backend fails to stop included', async () => {
+  const failing = new MemoryVFS({ uid: 0, gid: 0 });
+  failing.watchChanges = () => () => { throw new Error('the backend could not stop'); };
+  ns.mount('/stuck', failing);
+  const procPid = 4130;
+  const proc = files.bind({ pid: procPid, cred: CRED_KERNEL });
+  const heard = [];
+  proc.subscribe('/stuck', () => {});
+  proc.subscribe('/home/user', (event) => heard.push(said(event)));
+  const errors = console.error;
+  console.error = () => {};
+  try {
+    files.killProcess(procPid);
+  } finally {
+    console.error = errors;
+  }
+  kernel.writeFile('home/user/after-kill', 'k');
+  await settled();
+  assert.deepEqual(heard, []);
+  ns.unmount('/stuck');
 });
 
 
