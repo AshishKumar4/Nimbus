@@ -129,7 +129,7 @@ function recordingEgress() {
   const shard = await executeFanoutShard(env, peerCtx, String(async (n) => n), [1, 2], {
     tag: 'egress-test', omitSupervisor: true, network: ref, coordinatorDoId: 'egress-pool-do',
   });
-  assert.deepEqual(shard.results, [10, 20], 'the shard answers each task, in order');
+  assert.deepEqual(shard.results, [{ ok: true, value: 10 }, { ok: true, value: 20 }], 'the shard answers each task, in order');
   const shardConfigs = await Promise.all(configs.map((make) => make()));
   assert.ok(shardConfigs.length > 0 && shardConfigs.every((config) => config.globalOutbound === egress), 'a peer facet was loaded without the coordinator\'s egress');
   assert.ok(loaderIds.length > 0 && loaderIds.every((id) => id.endsWith(':' + network.id)), 'a peer loader id is not the coordinator network\'s own: ' + loaderIds);

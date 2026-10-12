@@ -9,6 +9,7 @@
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isStringMap = (value) => isObject(value) && Object.values(value).every((v) => typeof v === 'string');
 const isStringList = (value) => Array.isArray(value) && value.every((v) => typeof v === 'string');
+const isPeerMeta = (value) => isObject(value) && Object.values(value).every((meta) => isObject(meta) && (meta.optional === undefined || typeof meta.optional === 'boolean'));
 const isAnyJson = (value) => true;
 /**
  * `json`'s value when it has the field's shape (`shape`); `fallback` for
@@ -19,14 +20,14 @@ function decoded(json, shape, fallback) {
     if (!json)
         return fallback;
     // Most of a record's maps are empty: no parse for those.
-    if (json === '{}')
-        return {};
-    let value;
-    try {
-        value = JSON.parse(json);
-    }
-    catch {
-        return fallback;
+    let value = {};
+    if (json !== '{}') {
+        try {
+            value = JSON.parse(json);
+        }
+        catch {
+            return fallback;
+        }
     }
     return shape(value) ? value : fallback;
 }
@@ -42,6 +43,7 @@ export function registryRecord(pkg, fetchedAt) {
     return {
         name: pkg.name,
         version: pkg.version,
+        registryName: pkg.registryName ?? pkg.name,
         tarballUrl: pkg.tarballUrl,
         integrity: pkg.integrity,
         depsJson: JSON.stringify(pkg.dependencies),
@@ -52,28 +54,27 @@ export function registryRecord(pkg, fetchedAt) {
         binJson: JSON.stringify(pkg.bin),
         platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
         optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
+        peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
+        bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
         fetchedAt,
-    };
-}
-/** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
-export function recordEdges(record) {
-    return {
-        dependencies: decoded(record.depsJson, isStringMap, {}),
-        peerDependencies: ranges(record.peerDepsJson),
-        optionalDependencies: ranges(record.optionalDepsJson),
     };
 }
 const NO_PLATFORM = Object.freeze({});
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record) {
     const platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
+    const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
+    const bundle = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
     return {
         name: record.name,
         version: record.version,
+        ...(record.registryName ? { registryName: record.registryName } : {}),
         tarballUrl: record.tarballUrl,
         integrity: record.integrity,
         dependencies: decoded(record.depsJson, isStringMap, {}),
         peerDependencies: ranges(record.peerDepsJson),
+        ...(Object.keys(peerMeta).length > 0 ? { peerDependenciesMeta: peerMeta } : {}),
+        ...(bundle === undefined ? {} : { bundleDependencies: bundle }),
         optionalDependencies: ranges(record.optionalDepsJson),
         os: isStringList(platform.os) ? platform.os : undefined,
         cpu: isStringList(platform.cpu) ? platform.cpu : undefined,
