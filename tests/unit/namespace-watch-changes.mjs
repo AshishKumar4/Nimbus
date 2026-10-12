@@ -188,7 +188,8 @@ await check('a change under a directory the watcher may not search is not told t
 await check('a mount whose source gives the watcher nothing, or another store, tells it nothing of another\'s writes', async () => {
   const storeA = new MemoryVFS({ uid: 0, gid: 0 });
   const storeB = new MemoryVFS({ uid: 0, gid: 0 });
-  ns.mount('/device', (principal) => (principal.cred?.uid === 1000 ? null : storeA));
+  const storeD = new MemoryVFS({ uid: 0, gid: 0 });
+  ns.mount('/device', (principal) => (principal.cred?.uid === 1000 ? null : storeD));
   ns.mount('/pc', (principal) => (principal.cred?.uid === 2000 ? storeB : storeA));
   ns.mount('/actors', (principal) => (principal.actor === 'b' ? storeB : storeA));
   const none = watching('/device', ns.as(PUBLIC));
