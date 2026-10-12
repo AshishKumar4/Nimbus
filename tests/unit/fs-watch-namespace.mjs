@@ -31,7 +31,8 @@ kernel.writeFile('home/user/notes.txt', 'n');
 await files.vfs.writeFile('/home/user/drive/report.txt', new TextEncoder().encode('r'));
 kernel.writeFile('etc/elsewhere', 'e');
 await settle();
-const events = sent.flatMap((frame) => frame.events.map((event) => `${event.type} ${event.path}`));
+// In order on each filesystem; SQLite's come as its engine batches them.
+const events = sent.flatMap((frame) => frame.events.map((event) => `${event.type} ${event.path}`)).sort();
 assert.deepEqual(events, ['add home/user/notes.txt', 'change home/user/drive/report.txt'], 'each change in the tree, once, as the wire names it');
 assert.ok(sent.every((frame) => frame.type === 'fs-watch-event' && frame.subId === subscribed.subId));
 

@@ -28,7 +28,8 @@ export type VfsPathListener = (event: VfsEvent) => void;
  * - Path listeners receive individual events for matching paths.
  */
 export class VfsEventEmitter {
-  private _globalListeners: VfsEventListener[] = [];
+  /** Each global listener, and how much of the batch now pending was published before it registered (none of its own). */
+  private _globalListeners: { listener: VfsEventListener; before: number }[] = [];
   private _pathListeners = new Map<string, VfsPathListener[]>();
   private _pending: VfsEvent[] = [];
   private _flushScheduled = false;
@@ -37,11 +38,12 @@ export class VfsEventEmitter {
   private _totalEmitted = 0;
   private _totalBatches = 0;
 
-  /** Register a global listener that receives batched events. */
+  /** Register a global listener that receives batched events: those published from now on. */
   on(listener: VfsEventListener): () => void {
-    this._globalListeners.push(listener);
+    const entry = { listener, before: this._pending.length };
+    this._globalListeners.push(entry);
     return () => {
-      const idx = this._globalListeners.indexOf(listener);
+      const idx = this._globalListeners.indexOf(entry);
       if (idx >= 0) this._globalListeners.splice(idx, 1);
     };
   }
@@ -111,8 +113,11 @@ export class VfsEventEmitter {
     this._totalEmitted += batch.length;
     this._totalBatches++;
 
-    for (const listener of this._globalListeners) {
-      try { listener(batch); } catch (e) { console.error('[vfs-events] global listener error:', e); }
+    for (const entry of this._globalListeners) {
+      const own = entry.before === 0 ? batch : batch.slice(entry.before);
+      entry.before = 0;
+      if (own.length === 0) continue;
+      try { entry.listener(own); } catch (e) { console.error('[vfs-events] global listener error:', e); }
     }
   }
 
