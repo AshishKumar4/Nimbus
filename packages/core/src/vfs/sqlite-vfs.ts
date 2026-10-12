@@ -4635,7 +4635,7 @@ export class SqliteVFS {
     // A directory that is there is made already: no mutation, so no lease
     // refuses it (a session's mkdir -p of its home while a lease holds a
     // repository under it). Each one made is checked as it is made.
-    const existing = this.probeInode(normalized, cred, false);
+    const existing = this.probeInode(normalized, cred);
     if (existing !== undefined) {
       if (existing.kind !== 'directory') throw vfsKeyError('EEXIST', path);
       return;
