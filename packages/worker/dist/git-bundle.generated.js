@@ -5,6 +5,6 @@
  * github:AshishKumar4/cf-git + isomorphic-git/http/web) that the git network
  * facet imports as `git-bundle.js`. GIT_BUNDLE_SHA256 is verified at fetch time.
  */
-export const GIT_BUNDLE_ENTRY = "/_assets/runtime/git-b96d68f94ef9037f.js";
-export const GIT_BUNDLE_BUILD_ID = "b96d68f94ef9037f";
-export const GIT_BUNDLE_SHA256 = "b96d68f94ef9037fad6a2d229188bbfb7ff81863365f04c58aaeb84142e17fcd";
+export const GIT_BUNDLE_ENTRY = "/_assets/runtime/git-50aef669a30c56a8.js";
+export const GIT_BUNDLE_BUILD_ID = "50aef669a30c56a8";
+export const GIT_BUNDLE_SHA256 = "50aef669a30c56a87ca13b7ce114f61a2ffff33c624fc57785ae0f9ee6e417e3";
