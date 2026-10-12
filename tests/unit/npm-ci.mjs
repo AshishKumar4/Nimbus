@@ -355,6 +355,52 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.deepEqual(['p', 'd', 'x', 'y'].filter((name) => suspect.root.exists(`${NM}/${name}`)), ['p'], 'a suspect lock\'s flags are found again, and what nothing reaches goes');
 }
 
+// ── a trusted lock's flags decide what a failure costs, and what --omit=peer leaves out ──
+//
+// reify leaves a failed package out only where it is optional
+// (_handleOptionalFailure): a package a required dev path and an optional
+// one share is devOptional, not optional, and its failure fails npm ci. A
+// package the lock marks peer is left out by --omit=peer.
+{
+  const entry = (name, extra = {}) => ({ version: '1.0.0', resolved: tgz(name, '1.0.0'), integrity: `sha512-${name}`, ...extra });
+  const shared = (flags) => {
+    const pkgJson = { name: 'shared', version: '1.0.0', devDependencies: { dev: '1.0.0' }, optionalDependencies: { opt: '1.0.0' } };
+    return [pkgJson, {
+      name: 'shared', lockfileVersion: 3,
+      packages: {
+        '': { name: 'shared', version: '1.0.0', devDependencies: { dev: '1.0.0' }, optionalDependencies: { opt: '1.0.0' } },
+        'node_modules/dev': entry('dev', { dev: true, dependencies: { shared: '1.0.0' } }),
+        'node_modules/opt': entry('opt', { optional: true, dependencies: { shared: '1.0.0' } }),
+        'node_modules/shared': entry('shared', flags),
+      },
+    }];
+  };
+  const failShared = (p) => (p.name === 'shared' ? 'integrity mismatch for shared' : null);
+
+  const required = makeInstaller(...shared({ devOptional: true }), null, failShared);
+  const failed = await required.installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(failed.failed, ['shared@1.0.0'], `a devOptional package's failure fails npm ci: ${required.log.join('\n')}`);
+
+  const optional = makeInstaller(...shared({ optional: true }), null, failShared);
+  const left = await optional.installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(left.failed, [], `an optional package's failure leaves it out: ${optional.log.join('\n')}`);
+  assert.equal(optional.root.exists(`${NM}/shared`), false);
+
+  const pkgJson = { name: 'peers', version: '1.0.0', dependencies: { host: '1.0.0' } };
+  const lock = {
+    name: 'peers', lockfileVersion: 3,
+    packages: {
+      '': { name: 'peers', version: '1.0.0', dependencies: { host: '1.0.0' } },
+      'node_modules/host': entry('host', { peerDependencies: { peer: '1.0.0' } }),
+      'node_modules/peer': entry('peer', { peer: true }),
+    },
+  };
+  const omitPeer = makeInstaller(pkgJson, lock);
+  assert.deepEqual((await omitPeer.installer.install(PROJ, { pid: 1, fromLockfile: true, omitPeer: true })).failed, [], omitPeer.log.join('\n'));
+  assert.ok(omitPeer.root.exists(`${NM}/host/package.json`));
+  assert.equal(omitPeer.root.exists(`${NM}/peer`), false, '--omit=peer leaves out what the lock marks peer');
+}
+
 // ── bundled entries: what a package bundles comes in its archive; what the project bundles installs ──
 //
 // npm records `inBundle` for both (node.inBundle); only a package's bundle

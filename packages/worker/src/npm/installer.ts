@@ -1644,7 +1644,11 @@ export class NpmInstaller {
       };
       // Its edges as the lock records them, read as any manifest is (optional peers, bundles), and its flags.
       const manifest = packageJsonDocument(entry)?.manifest ?? {};
-      const lock = { dev: entry.dev === true, optional: entry.optional === true, devOptional: entry.devOptional === true, extraneous: entry.extraneous === true };
+      // As load-virtual reads them: devOptional also where it is dev or optional.
+      const lock = {
+        dev: entry.dev === true, optional: entry.optional === true, peer: entry.peer === true, extraneous: entry.extraneous === true,
+        devOptional: entry.devOptional === true || entry.dev === true || entry.optional === true,
+      };
       const pkg: ResolvedPackage = {
         name: folderName,
         version,

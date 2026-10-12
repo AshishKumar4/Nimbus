@@ -186,9 +186,10 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   const lockOf = (each: Node<H>) => (each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined);
   const flagsOf = (each: Node<H>): LockFlags =>
     lockOf(each) ?? { dev: !prod.has(each), optional: !required.has(each), devOptional: !prodRequired.has(each), peer: !nonPeer.has(each) };
+  // A failure is fatal unless the package is optional (reify's _handleOptionalFailure): devOptional only joins the --omit filter.
   const isRequired = (each: Node<H>) => {
     const lock = lockOf(each);
-    return lock ? !lock.optional && !lock.devOptional : required.has(each);
+    return lock ? lock.optional !== true : required.has(each);
   };
 
   // What the project does not reach is extraneous: it goes from a tree
