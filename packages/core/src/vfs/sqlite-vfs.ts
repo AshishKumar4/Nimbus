@@ -4637,6 +4637,10 @@ export class SqliteVFS {
     // repository under it). Each one made is checked as it is made.
     const existing = this.probeInode(normalized, cred);
     if (existing !== undefined) {
+      if (options?.recursive && existing.kind === 'symlink') {
+        const target = this.resolvePath(entryVfsPath(path).path, cred, true, true).inode;
+        if (target?.kind === 'directory') return;
+      }
       if (existing.kind !== 'directory') throw vfsKeyError('EEXIST', path);
       return;
     }
