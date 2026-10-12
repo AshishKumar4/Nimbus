@@ -753,11 +753,11 @@ export class CompositeVFS {
      *
      * A watch is of `path` wherever it leads: the path renamed away, or a
      * directory above it, is its unlink; a directory above it took it along
-     * only if it was there, as the changes told after say (a change this
-     * namespace tells may have made it: no proof), else as it is now. One
-     * that follows its target (`follow`, as Node's fs.watch does, an inode's
-     * watch) is told that move instead, a rename, and is then of the path its
-     * target has.
+     * only if it was there, as a look when the watch began (a backend that
+     * awaits answers it when it does) and the changes since say, else as it
+     * is now. One that follows its target (`follow`, as Node's fs.watch does,
+     * an inode's watch) is told that move instead, a rename, and is then of
+     * the path its target has.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
@@ -776,8 +776,24 @@ export class CompositeVFS {
     watchChanges(path, listener, options) {
         const changes = this.table.changes ??= { watches: new Set(), ready: [], draining: false };
         const watch = {
-            view: this, path: normalizePath(path), follow: options?.follow === true, listener, subscribed: new Map(), queue: [], waiting: false, stopped: false,
+            view: this, path: normalizePath(path), follow: options?.follow === true, listener, subscribed: new Map(), queue: [], waiting: false, stopped: false, present: null,
         };
+        try {
+            const found = this.presentAt(watch.path);
+            const looking = !isPromise(found) ? found : found.then((there) => {
+                if (watch.present === looking)
+                    watch.present = there;
+                return there;
+            }, () => {
+                if (watch.present === looking)
+                    watch.present = null;
+                return false;
+            });
+            watch.present = looking;
+        }
+        catch {
+            watch.present = null;
+        }
         changes.watches.add(watch);
         try {
             for (const mount of this.table.mounts.values())
@@ -979,10 +995,10 @@ export class CompositeVFS {
      * directories it may search (searchable): an end its backend told as the
      * watcher's principal sees it (judged) by the directories above the mount,
      * any other by this view's lookups. Where a directory above the watched
-     * path was renamed, the watched path is followed to where it is now, through
-     * what this watch was published after it: it was there to take as that says,
-     * else as the namespace has it there now; and seen there, or it is not told.
-     * Judged event by event, a wait holding the rest.
+     * path was renamed, it took the watched path along if something was there,
+     * as the watch's look when it began and the changes judged since say (else
+     * as the namespace has it where it is now), seen where it is now, or it is
+     * not told. Judged event by event, a wait holding the rest.
      */
     judgeChanges(watch, batch) {
         const { mount, events, judged } = batch;
@@ -1034,38 +1050,33 @@ export class CompositeVFS {
                     ask(searched, lookedUp(event.oldPath), searchable);
             }
         }
-        // Where the watched path a directory above it took to `moved` (event i) is after what this watch has been
-        // published since, and whether it was there to take, as that says: moved on, changed (as its backend tells it:
-        // the namespace's own change may have made it) or removed there, or anything at or from under it, it was;
-        // anything else there or made, replaced or removed above it, it was not; null: not said.
-        const carriedOn = (i, moved) => {
+        // Where the watched path a directory above it took to `moved` (event i) is now, through the moves this watch
+        // has been published since.
+        const carriedTo = (i, moved) => {
             let at = moved;
-            let was = null;
-            for (const later of [{ events: events.slice(i + 1), judged }, ...watch.queue]) {
-                for (const event of later.events) {
+            for (const later of [events.slice(i + 1), ...watch.queue.map((queued) => queued.events)]) {
+                for (const event of later) {
                     const from = event.oldPath;
-                    if (from !== undefined && inWatchedTree(from, at)) {
-                        if (from === at)
-                            was ??= true;
+                    if (from !== undefined && inWatchedTree(from, at))
                         at = event.path + at.slice(from.length);
-                    }
-                    else if (event.path === at) {
-                        const gone = event.type === 'unlink' || event.type === 'unlinkDir';
-                        was ??= gone || (event.type === 'change' && later.judged);
-                        if (gone)
-                            return { at, was };
-                    }
-                    else if (inWatchedTree(at, event.path) || (from !== undefined && inWatchedTree(at, from))) {
-                        was ??= true;
-                    }
-                    else if (inWatchedTree(event.path, at) && event.type !== 'change') {
-                        was ??= false;
-                        if (event.type === 'unlink' || event.type === 'unlinkDir')
-                            return { at, was };
-                    }
                 }
             }
-            return { at, was };
+            return at;
+        };
+        // Whether something is at the watched path `tree` after `event`, from whether it was before (watch.present):
+        // its own change says (a change, wherever it is told, leaves something there); one under it says it is a
+        // directory; one made, removed or replaced (not known) above it says. Moved away, it is wherever the watch went.
+        const after = (event, tree, was, carried) => {
+            const { type, path, oldPath: from } = event;
+            if (from !== undefined && inWatchedTree(from, tree))
+                return carried ?? false;
+            if (path === tree)
+                return type !== 'unlink' && type !== 'unlinkDir';
+            if (inWatchedTree(tree, path) || (from !== undefined && inWatchedTree(tree, from)))
+                return true;
+            if (inWatchedTree(path, tree))
+                return type === 'change' ? was : type === 'rename' ? null : false;
+            return was;
         };
         const told = [];
         const judgeFrom = (start) => {
@@ -1079,8 +1090,12 @@ export class CompositeVFS {
                 const moved = movedBy(event, tree);
                 let along = null;
                 if (moved !== null) {
-                    const { at, was } = carriedOn(i, moved);
-                    const there = was ?? ask(present, at, presentAt);
+                    const known = watch.present;
+                    // The look the watch began with settles first.
+                    if (isPromise(known))
+                        return known.then(() => judgeFrom(i));
+                    const at = carriedTo(i, moved);
+                    const there = known ?? ask(present, at, presentAt);
                     const seen = everywhere || ask(searched, at, searchable);
                     if (isPromise(there) || isPromise(seen))
                         return Promise.all([there, seen]).then(() => judgeFrom(i));
@@ -1094,10 +1109,12 @@ export class CompositeVFS {
                     return everywhere || searched.get(lookedUp(path)) === true ? path : null;
                 };
                 const one = projectChange(event, tree, shown, watch.follow, () => along?.was === true);
+                const follows = one !== null && watch.follow && one.type === 'rename' && one.oldPath === tree;
+                watch.present = after(event, tree, watch.present, follows ? along?.was ?? true : null);
                 if (one === null)
                     continue;
                 told.push(one);
-                if (watch.follow && one.type === 'rename' && one.oldPath === tree) {
+                if (follows) {
                     watch.path = one.path;
                     routed = routedFrom(watch.path);
                 }

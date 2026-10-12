@@ -270,6 +270,8 @@ interface ChangeWatch {
     /** An earlier batch's judgment awaits: the ones after it wait behind it. */
     waiting: boolean;
     stopped: boolean;
+    /** Whether something is at `path`, as a look when the watch began and the changes judged since say; null: not known. */
+    present: Awaitable<boolean> | null;
 }
 /** Changes published to a watch: in namespace names, from the mount their ends are on. */
 interface Changes {
@@ -465,11 +467,11 @@ export declare class CompositeVFS implements VFS {
      *
      * A watch is of `path` wherever it leads: the path renamed away, or a
      * directory above it, is its unlink; a directory above it took it along
-     * only if it was there, as the changes told after say (a change this
-     * namespace tells may have made it: no proof), else as it is now. One
-     * that follows its target (`follow`, as Node's fs.watch does, an inode's
-     * watch) is told that move instead, a rename, and is then of the path its
-     * target has.
+     * only if it was there, as a look when the watch began (a backend that
+     * awaits answers it when it does) and the changes since say, else as it
+     * is now. One that follows its target (`follow`, as Node's fs.watch does,
+     * an inode's watch) is told that move instead, a rename, and is then of
+     * the path its target has.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
@@ -533,10 +535,10 @@ export declare class CompositeVFS implements VFS {
      * directories it may search (searchable): an end its backend told as the
      * watcher's principal sees it (judged) by the directories above the mount,
      * any other by this view's lookups. Where a directory above the watched
-     * path was renamed, the watched path is followed to where it is now, through
-     * what this watch was published after it: it was there to take as that says,
-     * else as the namespace has it there now; and seen there, or it is not told.
-     * Judged event by event, a wait holding the rest.
+     * path was renamed, it took the watched path along if something was there,
+     * as the watch's look when it began and the changes judged since say (else
+     * as the namespace has it where it is now), seen where it is now, or it is
+     * not told. Judged event by event, a wait holding the rest.
      */
     private judgeChanges;
     /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
