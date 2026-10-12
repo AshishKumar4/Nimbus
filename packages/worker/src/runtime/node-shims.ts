@@ -7654,7 +7654,8 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       // The interpreter's frames too: a module it evaluates may be the caller.
       const holder = {};
       if (__nimbusInterpreter !== null) {
-        __nimbusInterpreter.captureStack(holder, constructor);
+        // All its frames: the constructor is native, never one of them.
+        __nimbusInterpreter.captureStack(holder);
         const stamp = __nimbusInterpretedStacks.get(holder);
         if (stamp !== undefined) stamp.sites = __nimbusStackSites({}, Infinity, constructor);
       }
