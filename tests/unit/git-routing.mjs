@@ -15,6 +15,8 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { encodeIndexFile } from '../../packages/worker/src/git/worktree/dircache.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -24,17 +26,17 @@ const files = new ProcessFiles(vfs);
 const user = vfs.as(CRED_SESSION_USER);
 
 /** `git <args>` through the front door; `real` is whether real git is installed. What real git was handed, if anything. */
-async function git(args, { real = true, env = {}, view, status = 7 } = {}) {
+async function git(args, { real = true, env = {}, view, status = 7, doCtx, doEnv, stdoutError, signal = new AbortController().signal } = {}) {
   let stdout = '';
   let stderr = '';
   const handed = [];
   const code = await runGitCommand({
     pid: 1, cred: CRED_SESSION_USER, args, cwd: '/home/user', env,
-    stdout: { write(s) { stdout += s; }, writeBytes(b) { stdout += Buffer.from(b).toString('utf8'); } },
+    stdout: { write(s) { if (stdoutError) throw stdoutError; stdout += s; }, writeBytes(b) { if (stdoutError) throw stdoutError; stdout += Buffer.from(b).toString('utf8'); } },
     stderr: { write(s) { stderr += s; } },
     vfs: view ?? files.view({ pid: 1, cred: CRED_SESSION_USER }),
-    signal: new AbortController().signal,
-  }, vfs, undefined, undefined, undefined, undefined, undefined, real ? async () => {
+    signal,
+  }, vfs, doCtx, doEnv, undefined, undefined, undefined, real ? async () => {
     assert.equal(stdout, '', 'no built-in output before handoff');
     assert.equal(stderr, '', 'no built-in diagnostic before handoff');
     handed.push([...args]);
@@ -181,6 +183,56 @@ const failure = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
   },
 });
 assert.deepEqual((await git([...inRepo, 'status'], { view: failure })).real, []);
+const pipe = new Error('the reader closed');
+pipe.code = 'EPIPE';
+const piped = await git([...inRepo, 'status'], { stdoutError: pipe });
+assert.equal(piped.code, 141);
+assert.deepEqual(piped.real, []);
+user.writeFile('home/user/repo/.git/index.lock', 'external owner');
+const locked = await git([...inRepo, 'add', 'f']);
+assert.equal(locked.code, 128);
+assert.deepEqual(locked.real, [], 'a real index lock is an operational refusal');
+assert.equal(user.readFileString('home/user/repo/.git/index.lock'), 'external owner');
+user.unlink('home/user/repo/.git/index.lock');
+
+// Network failures and cancellation are not parser refusals. A later flag
+// cannot start even a quiet transport before its capability handoff.
+adoptCtxExports({ SupervisorRPC() { return { async stdout() {}, [Symbol.dispose]() {} }; } });
+const networkCalls = [];
+let networkResult = { success: false, error: 'unsupported transport operation' };
+const doEnv = { ASSETS: stagedAssets, LOADER: { load() { return { getEntrypoint() { return { async fetch(request) {
+  networkCalls.push(await request.json());
+  return Response.json(networkResult);
+} }; } }; } } };
+const doCtx = { id: { toString: () => 'git-routing-network' }, waitUntil() {} };
+assert.equal((await git([...inRepo, 'remote', '-v', 'add', 'origin', 'https://example.invalid/repo'])).code, 0);
+for (const words of [['fetch', '-q', 'origin', '--prune'], ['pull', '-q', 'origin', 'master', '--dry-run'], ['push', '-q', 'origin', 'master', '--dry-run']]) {
+  const ran = await git([...inRepo, ...words], { doCtx, doEnv });
+  assert.equal(ran.code, 7);
+  assert.equal(networkCalls.length, 0, 'no transport before handoff');
+}
+for (const command of ['fetch', 'pull', 'push']) {
+  networkCalls.length = 0;
+  const args = [...inRepo, ...identity, command, '-q', 'origin', ...(command === 'fetch' ? [] : ['master'])];
+  const failed = await git(args, { doCtx, doEnv });
+  assert.deepEqual(failed.real, [], 'a network failure that says unsupported never hands off');
+  assert.notEqual(failed.code, 0);
+  assert.equal(networkCalls.length, 1);
+}
+networkResult = { success: false, cancelled: 'interrupted' };
+const stopped = new AbortController();
+stopped.abort('SIGINT');
+const cancelled = await git([...inRepo, 'fetch', '-q', 'origin'], { doCtx, doEnv, signal: stopped.signal });
+assert.deepEqual(cancelled.real, []);
+assert.notEqual(cancelled.code, 0);
+adoptCtxExports(undefined);
+
+// An implemented config action must delete, not silently turn into a read.
+assert.equal((await git([...inRepo, 'config', 'test.delete', 'present'])).code, 0);
+const unset = await git([...inRepo, 'config', '--unset', 'test.delete']);
+assert.deepEqual(unset.real, []);
+assert.equal(unset.code, 0, unset.stderr);
+assert.equal((await git([...inRepo, 'config', '--get', 'test.delete'])).code, 1);
 
 // Config made by real git is shared by JavaScript identity and settings.
 user.mkdir('home/user/xdg/git', { recursive: true });
