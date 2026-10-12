@@ -70,12 +70,16 @@ const FILES = {
   'req/cycle-b.mjs': "import { createRequire } from 'node:module';\ntry { createRequire(import.meta.url)('./cycle-a.mjs'); } catch (e) { console.log(e.code); }\n",
   // A bin that loads its program through require() first (pi's): staging
   // imports it (esm-require-hoist.ts); one whose prefix is observable keeps
-  // the require at its call.
+  // the require at its call: a statement, a pattern's default, a heritage.
   'hoist/bin.mjs': '#!/usr/bin/env node\nimport { createRequire, enableCompileCache } from "node:module";\n\nenableCompileCache();\ncreateRequire(import.meta.url)("./app.mjs");\n',
   'hoist/app.mjs': "import { dep } from './dep.mjs';\nconsole.log('app', dep, typeof import.meta.url);\nexport const ready = true;\n",
   'hoist/dep.mjs': "console.log('dep');\nexport const dep = 1;\n",
   'hoist/observed.mjs': "import { createRequire } from 'node:module';\nconsole.log('before');\nconst ns = createRequire(import.meta.url)('./app2.mjs');\nconsole.log('after', ns.v, Object.keys(ns));\n",
   'hoist/app2.mjs': "console.log('app2');\nexport default 1;\nexport const v = 2;\n",
+  'hoist/pattern.mjs': "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nfunction bootstrap() { console.log('bootstrap'); }\nconst { setup = bootstrap() } = require('./settings.mjs');\nrequire('./app.mjs');\n",
+  'hoist/settings.mjs': "console.log('settings');\nexport const other = 1;\n",
+  'hoist/default.mjs': "import { createRequire } from 'node:module';\nconst { x = console.log('prefix') } = 0;\ncreateRequire(import.meta.url)('./app.mjs');\n",
+  'hoist/heritage.mjs': "import { createRequire } from 'node:module';\nclass C extends undefined {}\ncreateRequire(import.meta.url)('./app.mjs');\n",
   // require() of an evaluated graph with top-level await still refuses it.
   'req/tla-after.mjs': "import { createRequire } from 'node:module';\nawait import('./tla.mjs');\ntry { createRequire(import.meta.url)('./tla.mjs'); } catch (e) { console.log(e.code); }\n",
   // A throw stops the graph where Node's evaluation stops.
@@ -133,7 +137,7 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs', 'node detect/main.mjs', 'node dyncwd/main.mjs',
+  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node hoist/pattern.mjs', 'node hoist/default.mjs', 'node hoist/heritage.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs', 'node detect/main.mjs', 'node dyncwd/main.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];
