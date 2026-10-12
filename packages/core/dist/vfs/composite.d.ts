@@ -530,8 +530,10 @@ export declare class CompositeVFS implements VFS {
      * directories it may search (searchable): an end its backend told as the
      * watcher's principal sees it (judged) by the directories above the mount,
      * any other by this view's lookups. Where a directory above the watched
-     * path was renamed, the watched path is looked at where it went: there,
-     * and seen there, or it is not told.
+     * path was renamed, the watched path is followed to where it is now, through
+     * what this watch was published after it: it was there to take as that says,
+     * else as the namespace has it there now; and seen there, or it is not told.
+     * Judged event by event, a wait holding the rest.
      */
     private judgeChanges;
     /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */

@@ -149,7 +149,9 @@ export interface VFS {
     /**
      * With `recursive`, it may answer the directories it made, top down
      * (none: they were all there), as Node's answers the first of them;
-     * nothing: it does not say.
+     * nothing: it does not say, and on a mount that resolves its own paths
+     * (MountOptions.resolvesPaths) nothing it made is told
+     * (CompositeVFS.watchChanges), unless its backend tells its own changes.
      */
     mkdir(path: string, options?: {
         recursive?: boolean;

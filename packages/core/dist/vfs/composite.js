@@ -879,7 +879,15 @@ export class CompositeVFS {
             for (const other of this.table.mounts.values()) {
                 if (watch.subscribed.has(other))
                     continue;
-                const theirs = watch.view.sourceOf(other);
+                let theirs;
+                try {
+                    theirs = watch.view.sourceOf(other);
+                }
+                catch (error) {
+                    // A source that fails this watch's view shows it nothing there; the change landed, and every other watch is told.
+                    console.error('[composite-vfs] a change could not be judged:', error instanceof Error ? error.message : String(error));
+                    continue;
+                }
                 if (theirs === null || storeOf(theirs) !== store)
                     continue;
                 this.publishChanges(changes, watch, {
@@ -919,7 +927,10 @@ export class CompositeVFS {
     }
     /** `watch`'s queued batches, judged and told in order; one judged by awaiting holds the rest until it is told. */
     tellQueued(changes, watch) {
-        for (let batch = watch.queue.shift(); batch !== undefined && !watch.stopped; batch = watch.waiting ? undefined : watch.queue.shift()) {
+        while (!watch.stopped && !watch.waiting) {
+            const batch = watch.queue.shift();
+            if (batch === undefined)
+                return;
             let judged;
             try {
                 judged = this.judgeChanges(watch, batch);
@@ -965,13 +976,13 @@ export class CompositeVFS {
      * directories it may search (searchable): an end its backend told as the
      * watcher's principal sees it (judged) by the directories above the mount,
      * any other by this view's lookups. Where a directory above the watched
-     * path was renamed, the watched path is looked at where it went: there,
-     * and seen there, or it is not told.
+     * path was renamed, the watched path is followed to where it is now, through
+     * what this watch was published after it: it was there to take as that says,
+     * else as the namespace has it there now; and seen there, or it is not told.
+     * Judged event by event, a wait holding the rest.
      */
     judgeChanges(watch, batch) {
         const { mount, events, judged } = batch;
-        if (this.table.mounts.get(mount.point) !== mount)
-            return [];
         // The path the namespace looks up for an end its backend told: on a mount whose backend judged it, its first name there.
         const lookedUp = (path) => {
             if (!judged || path === mount.point)
@@ -989,21 +1000,94 @@ export class CompositeVFS {
             }
             return (path) => (alone && inWatchedTree(tree, path)) || this.feedShows(path, mount);
         };
-        // Where the watched path went when a directory above it was renamed (it is looked at there), or null.
+        // Where the watched path went when a directory above it was renamed, or null.
         const movedBy = (event, tree) => {
             const from = event.oldPath;
             return from !== undefined && from !== tree && inWatchedTree(from, tree) ? event.path + tree.slice(from.length) : null;
         };
         const cred = this.viewer.cred;
         const everywhere = cred === null || cred.uid === 0;
-        const project = (reached, there) => {
-            const told = [];
-            let routed = routedFrom(watch.path);
+        // This view's answers, by path, as each settles: whether it may search to it, whether something is there.
+        const searched = new Map();
+        const present = new Map();
+        const ask = (known, path, lookup) => {
+            let answer = known.get(path);
+            if (answer === undefined) {
+                answer = lookup(path);
+                if (isPromise(answer))
+                    answer = answer.then((found) => { known.set(path, found === true); return found === true; });
+                known.set(path, answer);
+            }
+            return answer;
+        };
+        const searchable = (path) => this.searchable(path);
+        const presentAt = (path) => this.presentAt(path);
+        if (!everywhere) {
             for (const event of events) {
+                ask(searched, lookedUp(event.path), searchable);
+                if (event.oldPath !== undefined)
+                    ask(searched, lookedUp(event.oldPath), searchable);
+            }
+        }
+        // Where the watched path a directory above it took to `moved` (event i) is after what this watch has been
+        // published since, and whether it was there to take, as that says: moved on, changed or removed there, or
+        // anything at or from under it, it was; made or replaced there or above it, it was not; null: not said.
+        const carriedOn = (i, moved) => {
+            let at = moved;
+            let was = null;
+            const rest = [events.slice(i + 1), ...watch.queue.map((later) => later.events)];
+            for (const list of rest) {
+                for (const later of list) {
+                    const from = later.oldPath;
+                    if (from !== undefined && inWatchedTree(from, at)) {
+                        if (from === at)
+                            was ??= true;
+                        at = later.path + at.slice(from.length);
+                    }
+                    else if (later.path === at) {
+                        const gone = later.type === 'unlink' || later.type === 'unlinkDir';
+                        was ??= gone || later.type === 'change';
+                        if (gone)
+                            return { at, was };
+                    }
+                    else if (inWatchedTree(at, later.path) || (from !== undefined && inWatchedTree(at, from))) {
+                        was ??= true;
+                    }
+                    else if (inWatchedTree(later.path, at) && later.type !== 'change') {
+                        was ??= false;
+                        if (later.type === 'unlink' || later.type === 'unlinkDir')
+                            return { at, was };
+                    }
+                }
+            }
+            return { at, was };
+        };
+        const told = [];
+        const judgeFrom = (start) => {
+            if (this.table.mounts.get(mount.point) !== mount)
+                return told;
+            let routed = routedFrom(watch.path);
+            for (let i = start; i < events.length; i++) {
+                const event = events[i];
                 const tree = watch.path;
                 const moved = movedBy(event, tree);
-                const shown = (path) => (routed(path) && reached(path === moved ? path : lookedUp(path)) ? path : null);
-                const one = projectChange(event, tree, shown, watch.follow, there);
+                let along = null;
+                if (moved !== null) {
+                    const { at, was } = carriedOn(i, moved);
+                    const there = was ?? ask(present, at, presentAt);
+                    const seen = everywhere || ask(searched, at, searchable);
+                    if (isPromise(there) || isPromise(seen))
+                        return Promise.all([there, seen]).then(() => judgeFrom(i));
+                    along = { was: there, seen };
+                }
+                const shown = (path) => {
+                    if (!routed(path))
+                        return null;
+                    if (path === moved)
+                        return along?.seen === true ? path : null;
+                    return everywhere || searched.get(lookedUp(path)) === true ? path : null;
+                };
+                const one = projectChange(event, tree, shown, watch.follow, () => along?.was === true);
                 if (one === null)
                     continue;
                 told.push(one);
@@ -1014,39 +1098,8 @@ export class CompositeVFS {
             }
             return told;
         };
-        // Every lookup the batch may ask for, wherever the watch may move within it.
-        const reach = new Map();
-        const presence = new Map();
-        let waits = false;
-        let tree = watch.path;
-        for (const event of events) {
-            const moved = movedBy(event, tree);
-            if (moved !== null && !presence.has(moved)) {
-                const found = this.presentAt(moved);
-                waits ||= isPromise(found);
-                presence.set(moved, found);
-            }
-            if (!everywhere) {
-                const ends = event.oldPath === undefined ? [lookedUp(event.path)] : [lookedUp(event.path), lookedUp(event.oldPath)];
-                for (const path of moved === null ? ends : [...ends, moved]) {
-                    if (reach.has(path))
-                        continue;
-                    const searched = this.searchable(path);
-                    waits ||= isPromise(searched);
-                    reach.set(path, searched);
-                }
-            }
-            if (watch.follow && event.oldPath !== undefined && inWatchedTree(event.oldPath, tree))
-                tree = event.path + tree.slice(event.oldPath.length);
-        }
-        const decided = (known) => (path) => known.get(path) === true;
-        if (!waits)
-            return project(everywhere ? () => true : decided(reach), decided(presence));
-        const settle = (map) => {
-            const keys = [...map.keys()];
-            return Promise.all(map.values()).then((answers) => new Map(keys.map((key, i) => [key, answers[i] === true])));
-        };
-        return Promise.all([settle(reach), settle(presence)]).then(([reached, present]) => project(everywhere ? () => true : decided(reached), decided(present)));
+        const asked = [...searched.values()].filter(isPromise);
+        return asked.length === 0 ? judgeFrom(0) : Promise.all(asked).then(() => judgeFrom(0));
     }
     /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
     presentAt(path) {
@@ -2560,27 +2613,21 @@ export class CompositeVFS {
             // a backend that resolves its own paths makes the rest in one call.
             if (r.mount.options.resolvesPaths) {
                 const whole = this.locate(path);
-                // One call makes it all, and what it made is told as its backend says (VFS.mkdir); one that does
-                // not say is looked at first while a watch is there, and told only then.
-                return andThen(this.table.changes === undefined ? undefined : this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
-                    path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, told: null,
-                }, () => {
+                // One call makes it all, and what it made is told as its backend says (VFS.mkdir).
+                return this.reportWrite({ path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, told: null }, () => {
                     this.guardMutation([at, path]);
                     const made = ops.mkdir(whole.rel, { recursive: true, mode });
                     const tell = (dirs) => {
-                        if (this.table.changes === undefined)
+                        if (this.table.changes === undefined || dirs === undefined || dirs.length === 0)
                             return;
-                        const paths = dirs !== undefined ? dirs.map((rel) => CompositeVFS.reroot(whole.mount.point, rel))
-                            : there === undefined || there?.type === 'directory' ? [] : [path];
-                        if (paths.length > 0)
-                            this.tellLanded(whole.mount, storeBehind(this.table, ops), 'addDir', paths);
+                        this.tellLanded(whole.mount, storeBehind(this.table, ops), 'addDir', dirs.map((rel) => CompositeVFS.reroot(whole.mount.point, rel)));
                     };
                     if (isPromise(made))
                         made.then(tell, () => { });
                     else
                         tell(made);
                     return andThen(made, () => undefined);
-                }, sync));
+                }, sync);
             }
             return andThen(this.softStat(ops, r.rel, true), (stat) => {
                 if (stat !== null) {
