@@ -21,7 +21,7 @@
  *     previewed app owns the path space so the requested path is kept.
  */
 import { type NimbusAuthEnv } from './token.js';
-import { type VerifiedNimbusToken } from './types.js';
+import { type VerifiedNimbusRequestToken } from './types.js';
 /**
  * Cookie name used for in-iframe token persistence.
  *
@@ -41,16 +41,12 @@ import { type VerifiedNimbusToken } from './types.js';
 export declare const NIMBUS_TOKEN_COOKIE = "__Host-nimbus_token";
 /** Prefix of every per-session attach cookie name (`${PREFIX}<sid>`). */
 export declare const NIMBUS_TOKEN_COOKIE_PREFIX = "__Host-nimbus_token-";
-/** Largest sid accepted into a cookie name (matches {@link ID_COMPONENT_RE}). */
-export declare const NIMBUS_TOKEN_COOKIE_SID_MAX = 128;
 /**
  * The cookie name for one already-validated session id. Callers must pass a
  * sid this request's route already parsed and validated; the guard here only
  * keeps a malformed value from ever becoming a cookie name.
  */
 export declare function nimbusTokenCookieName(sessionId: string): string;
-/** Whether a value may appear in an attach cookie name: same alphabet as a route sid. */
-export declare function isValidNimbusTokenCookieSid(value: unknown): value is string;
 /** Query parameter name. */
 export declare const NIMBUS_TOKEN_QUERY = "nimbus_token";
 /**
@@ -74,15 +70,15 @@ export declare function extractBearerToken(request: Request, sessionId?: string)
  *         `requireToken` is true (default).
  * @throws Any error from {@link verifyNimbusToken}.
  */
-export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusToken>;
+export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusRequestToken>;
 export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: {
     requireToken: true;
     sessionId?: string;
-}): Promise<VerifiedNimbusToken>;
+}): Promise<VerifiedNimbusRequestToken>;
 export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: {
     requireToken?: boolean;
     sessionId?: string;
-}): Promise<VerifiedNimbusToken | null>;
+}): Promise<VerifiedNimbusRequestToken | null>;
 /**
  * Authorize a request for a route: verify its token, require every scope in
  * `scopes`, and, on a route that addresses a session, require the token's
@@ -92,7 +88,7 @@ export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv,
 export declare function authorizeRequest(request: Request, env: NimbusAuthEnv, required: {
     scopes: readonly string[];
     sessionId?: string;
-}): Promise<VerifiedNimbusToken>;
+}): Promise<VerifiedNimbusRequestToken>;
 /**
  * Assert that the verified token carries every required scope.
  *
@@ -148,7 +144,7 @@ export declare function expireLegacyNimbusTokenCookie(): string;
  * token keeps its verified expiry; this never mints, never extends, never
  * consults anything but the already-verified claims.
  */
-export declare function sessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusToken, sessionId: string): string[];
+export declare function sessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusRequestToken, sessionId: string): string[];
 /**
  * Largest attach-cookie jar an exchange will grow: at most this many
  * per-session names, and the request's Cookie header plus the new
@@ -160,6 +156,8 @@ export declare function sessionCookieMigration(requestCookie: string | null, ver
 export declare const NIMBUS_TOKEN_COOKIE_LIMIT = 24;
 export declare const NIMBUS_TOKEN_COOKIE_HEADER_LIMIT: number;
 export declare const NIMBUS_TOKEN_SET_COOKIE_LIMIT = 4096;
+/** Chrome's name/value quota per CHIPS partition and registrable domain. */
+export declare const NIMBUS_TOKEN_PARTITION_BYTES_LIMIT = 10240;
 /**
  * Refuse an exchange that would overflow the browser's cookie jar.
  * Runs before any single-use bootstrap is consumed, so a refusal never
@@ -167,7 +165,7 @@ export declare const NIMBUS_TOKEN_SET_COOKIE_LIMIT = 4096;
  * sibling session's credential to make room would be the same ownership
  * bug in reverse.
  */
-export declare function enforceSessionCookieCapacity(cookieHeader: string | null, sessionId: string): void;
+export declare function enforceSessionCookieCapacity(cookieHeader: string | null, proposedCookie: string, expireLegacy?: boolean): void;
 /**
  * Map a NimbusAuthError to a `Response` suitable for the embedder's
  * `fetch` handler to return. JSON body with `{ error, code }`.

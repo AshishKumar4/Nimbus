@@ -82,6 +82,11 @@ export interface VerifiedNimbusToken {
     /** The exact wire bytes that verified, for re-issue without re-minting. */
     raw: string;
 }
+/** Provenance assigned by request selection, never by JWT claims. */
+export type NimbusCredentialSource = 'authorization' | 'query' | 'session-cookie' | 'legacy-cookie';
+export interface VerifiedNimbusRequestToken extends VerifiedNimbusToken {
+    credentialSource: NimbusCredentialSource;
+}
 /**
  * Options for `issueNimbusToken`. All optional.
  *

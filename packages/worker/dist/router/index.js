@@ -36,7 +36,7 @@ import { doUnavailableError } from './do-errors.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
-import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_COOKIE, expireLegacyNimbusTokenCookie, enforceSessionCookieCapacity, sessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
+import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, enforceSessionCookieCapacity, sessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
@@ -538,9 +538,6 @@ async function handleAttachExchange(url, sessionId, env, cookieHeader, options) 
             if (verified.claims.sid === undefined) {
                 throw new NimbusTokenClaimsError('single-use attach token missing sid');
             }
-            const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
-            if (!fresh)
-                throw new NimbusBootstrapConsumedError();
             cookieTtlMs = DEFAULT_TOKEN_TTL_MS;
         }
         else {
@@ -555,16 +552,21 @@ async function handleAttachExchange(url, sessionId, env, cookieHeader, options) 
             singleUse: false,
         });
         const cookieExpSec = Math.floor(Date.now() / 1000) + Math.floor(cookieTtlMs / 1000);
+        const cookie = setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId);
+        // Signing is pure. Every issuance limit runs before the only mutating
+        // step, so a refused exchange leaves its single-use URL retryable.
+        enforceSessionCookieCapacity(cookieHeader, cookie);
+        if (verified.claims.jti !== undefined) {
+            const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
+            if (!fresh)
+                throw new NimbusBootstrapConsumedError();
+        }
         const clean = new URL(url);
         clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
         clean.pathname = options.redirectPath;
-        enforceSessionCookieCapacity(cookieHeader, sessionId);
-        const setCookies = [setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId)];
-        if (cookieHeader?.includes(`${NIMBUS_TOKEN_COOKIE}=`)) {
-            // Migrating: the legacy global credential stops being selected the
-            // moment the route-owned one lands.
-            setCookies.push(expireLegacyNimbusTokenCookie());
-        }
+        // An exchange authenticates by its query, not by the legacy cookie.
+        // Only actual legacy-cookie use expires that credential (and its sid).
+        const setCookies = [cookie];
         const headers = new Headers({
             Location: clean.pathname + clean.search,
             'Cache-Control': 'no-store',
