@@ -7,8 +7,8 @@
  * object, by one flow (objectWriter): one at a time, or for a command that
  * writes many (add's blobs) in the shared wave writer's waves, straight into
  * the engine. The worktree goes through the command's view of the
- * namespace. Configuration is cf-git's reading of .git/config, and for
- * core.excludesFile the global files git reads as well.
+ * namespace. Configuration is cf-git's reading of .git/config, with the
+ * global files and command overrides supplied by the command.
  */
 
 import { deflateSync } from 'node:zlib';
@@ -24,6 +24,7 @@ import { coneMatcher, parseConeSparseCheckout, type SparseMatcher } from '../pac
 import { DirCache, compareBytes, objectId, type IndexEdit } from './dircache.js';
 import { Excludes, parsePatternList, type PatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf, type ObjectStore } from './tree.js';
+import { UnsupportedGitOperation } from '../routing.js';
 import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
 
 /** The cf-git calls a repository makes. */
@@ -111,6 +112,8 @@ const indexLocks = new Map<string, Promise<void>>();
 export class WorktreeRepo {
   /** This command holds its repository's index lock. */
   private locked = false;
+  private indexWritten = false;
+  private preparedIndex: DirCache | null = null;
 
   readonly store: ObjectStore;
   readonly fs: WorktreeFs;
@@ -352,9 +355,26 @@ export class WorktreeRepo {
 
   /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
   async readIndex(): Promise<DirCache> {
-    const dc = await DirCache.read(this.vfs, `${this.gitdir}/index`);
+    const dc = this.preparedIndex ?? await DirCache.read(this.vfs, `${this.gitdir}/index${this.indexWritten ? '.lock' : ''}`);
+    this.preparedIndex = null;
     if (dc.hasSkipWorktree()) await this.clearPresentSkips(dc);
     return dc;
+  }
+
+  /** Capability is checked before branch creation, staging, fetch or checkout. Reuse the index read there. */
+  async prepare(): Promise<void> {
+    if (await this.isSparse()) {
+      if (configBool(await this.worktreeSetting('core.sparseCheckoutCone')) !== true) {
+        throw new UnsupportedGitOperation('fatal: a sparse checkout without cone mode is not supported\n', 128);
+      }
+      let patterns = '';
+      try { patterns = new TextDecoder().decode(await this.vfs.readFile(`${this.gitdir}/info/sparse-checkout`)); }
+      catch (error) { if (!isAbsent(error)) throw error; }
+      if (parseConeSparseCheckout(patterns) === null) {
+        throw new UnsupportedGitOperation('fatal: a sparse checkout without cone mode is not supported\n', 128);
+      }
+    }
+    this.preparedIndex = await DirCache.read(this.vfs, `${this.gitdir}/index`);
   }
 
   /**
@@ -418,22 +438,6 @@ export class WorktreeRepo {
     try { return parsePatternList(await this.vfs.readFile(path), base); } catch { return []; }
   }
 
-  /** A global config value: ~/.gitconfig over $XDG_CONFIG_HOME/git/config, as git reads them. */
-  private async globalConfig(path: string): Promise<unknown> {
-    const home = this.env.HOME;
-    const xdg = this.env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
-    if (home) {
-      try {
-        const value = await this.configIn(`${home}/.gitconfig`, path);
-        if (value !== undefined) return value;
-      } catch { /* no such file */ }
-    }
-    if (xdg) {
-      try { return await this.git.getConfig({ fs: this.gitFs, gitdir: `${xdg}/git`, path }); } catch { /* no such file */ }
-    }
-    return undefined;
-  }
-
   /**
    * setup_standard_excludes: core.excludesFile (or $XDG_CONFIG_HOME/git/ignore,
    * else ~/.config/git/ignore), then $GIT_DIR/info/exclude, then each
@@ -442,7 +446,7 @@ export class WorktreeRepo {
    */
   async excludes(dc: DirCache): Promise<Excludes> {
     const home = this.env.HOME;
-    const configured = await this.config('core.excludesfile') ?? await this.globalConfig('core.excludesfile');
+    const configured = await this.config('core.excludesfile');
     let file = typeof configured === 'string' ? configured : '';
     if (file.startsWith('~/') && home) file = `${home}${file.slice(1)}`;
     if (!file) {
@@ -496,13 +500,32 @@ export class WorktreeRepo {
     const tail = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
     indexLocks.set(this.gitdir, tail);
     await previous;
-    this.locked = true;
+    const lock = `${this.gitdir}/index.lock`;
+    let acquired = false;
     try {
-      return await fn();
+      await this.vfs.writeFile(lock, new Uint8Array(0), { exclusive: true });
+      acquired = true;
+      this.locked = true;
+      // The unlocked preparation may have preceded another writer.
+      if (this.preparedIndex !== null) {
+        const now = await this.currentTrailer();
+        const before = this.preparedIndex.trailer;
+        if (now === null || before === null ? now !== before : compareBytes(now, before) !== 0) this.preparedIndex = null;
+      }
+      const result = await fn();
+      if (this.indexWritten) {
+        await this.vfs.rename(lock, `${this.gitdir}/index`);
+        acquired = false;
+      }
+      return result;
     } finally {
       this.locked = false;
-      release();
-      if (indexLocks.get(this.gitdir) === tail) indexLocks.delete(this.gitdir);
+      this.indexWritten = false;
+      try { if (acquired) await this.vfs.unlink(lock); }
+      finally {
+        release();
+        if (indexLocks.get(this.gitdir) === tail) indexLocks.delete(this.gitdir);
+      }
     }
   }
 
@@ -510,7 +533,9 @@ export class WorktreeRepo {
   async writeIndex(dc: DirCache, edit: IndexEdit = {}): Promise<void> {
     if (!this.locked) throw new Error('internal error: the index is written only under its lock');
     const bytes = dc.encode(edit, await this.racilySmudged(dc, edit));
-    await this.vfs.writeFile(`${this.gitdir}/index`, bytes);
+    await this.vfs.writeFile(`${this.gitdir}/index.lock`, bytes);
+    this.preparedIndex = null;
+    this.indexWritten = true;
   }
 
   /** The checksum the index file ends with now, null when there is none. */
@@ -531,10 +556,14 @@ export class WorktreeRepo {
     let racy = false;
     for (let i = 0; i < dc.count && !racy; i++) racy = dc.isRacy(i);
     if (!dc.refreshed && !dc.cacheTreeChanged && !racy) return;
-    await this.withIndexLock(async () => {
-      const now = await this.currentTrailer();
-      const same = now === null || dc.trailer === null ? now === dc.trailer : compareBytes(now, dc.trailer) === 0;
-      if (same) await this.writeIndex(dc);
-    });
+    try {
+      await this.withIndexLock(async () => {
+        const now = await this.currentTrailer();
+        const same = now === null || dc.trailer === null ? now === dc.trailer : compareBytes(now, dc.trailer) === 0;
+        if (same) await this.writeIndex(dc);
+      });
+    } catch (error) {
+      if (!isVfsError(error, 'EEXIST')) throw error;
+    }
   }
 }

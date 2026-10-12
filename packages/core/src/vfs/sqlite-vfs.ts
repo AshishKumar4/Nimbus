@@ -422,7 +422,7 @@ export interface CredentialedVfs {
   kind(path: string): VfsInodeKind | null;
   access(path: string, mode: number): void;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number; umask?: number }): void;
-  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number; umask?: number }): void;
+  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number; umask?: number; exclusive?: boolean }): void;
   /**
    * writeFile of a file whose `size` bytes arrive over time from `source`,
    * published whole once they have (see SqliteVFS.writeFileFrom). Answers
@@ -4623,10 +4623,13 @@ export class SqliteVFS {
   private writeFile(
     path: string,
     content: string | Uint8Array,
-    options: { mode?: number; ino?: number } | undefined,
+    options: { mode?: number; ino?: number; exclusive?: boolean } | undefined,
     cred: VfsCred,
     onCommit?: () => void,
   ): void {
+    if (options?.exclusive && this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode) {
+      throw vfsKeyError('EEXIST', path);
+    }
     const data = typeof content === 'string' ? enc.encode(content) : content;
     const inode = this.fileWriteInode(path, data.length, options, cred);
     try {

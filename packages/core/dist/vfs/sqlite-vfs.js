@@ -3719,6 +3719,9 @@ export class SqliteVFS {
     }
     /** `ino`: the number a delegation's holder gave the file it made (askedIno), kept when this makes it. */
     writeFile(path, content, options, cred, onCommit) {
+        if (options?.exclusive && this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode) {
+            throw vfsKeyError('EEXIST', path);
+        }
         const data = typeof content === 'string' ? enc.encode(content) : content;
         const inode = this.fileWriteInode(path, data.length, options, cred);
         try {

@@ -24,8 +24,14 @@ export type GitFamilyPolicy = {
  * JS/WASI. Every family past the latency gate stays JavaScript.
  */
 export declare const GIT_FAMILY_POLICY: Readonly<Record<GitFamily, GitFamilyPolicy>>;
+/** A capability refusal; only the front door's pre-effect phase may hand it off. */
+export declare class UnsupportedGitOperation extends Error {
+    readonly diagnostic: string;
+    readonly code: number;
+    constructor(diagnostic: string, code: number);
+}
 /** Unknown commands and aliases have an explicit family too. */
 export declare function classifyGitCommand(sub: string | undefined): GitFamily;
-/** Which git answers subcommand `sub` with `args` (the words after it): the family's policy, or real git for what the built-in one lacks. */
-export declare function gitBackend(sub: string | undefined, args: readonly string[]): GitFamilyPolicy['backend'];
+/** The measured family choice; capability belongs to the command's parser. */
+export declare function gitBackend(sub: string | undefined): GitFamilyPolicy['backend'];
 //# sourceMappingURL=routing.d.ts.map

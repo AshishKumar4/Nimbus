@@ -1244,13 +1244,13 @@ export class ProcessView {
      * mode, and a new one is never visible at another mode.
      */
     async writeFile(path, data, options) {
-        if (options?.mode === undefined) {
+        if (options?.mode === undefined && options?.exclusive !== true) {
             await this.call('open', path, () => this.fs.writeFile(path, data));
             return;
         }
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
         await this.call('open', path, async () => {
-            const handle = await this.fs.open(path, { write: true, create: true, truncate: true, mode: options.mode });
+            const handle = await this.fs.open(path, { write: true, create: true, truncate: true, mode: options?.mode, exclusive: options?.exclusive });
             try {
                 let offset = 0;
                 while (offset < bytes.length) {

@@ -71,6 +71,63 @@ interface ConfigReader {
   getConfigAll(args: { path: string }): Promise<unknown[]>;
 }
 
+/** The global files in git's order, read by cf-git's canonical config parser. */
+export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
+  promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
+}, env: Record<string, string>, cwd: string): G {
+  const home = env.HOME;
+  const xdg = env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
+  const files = (env.GIT_CONFIG_GLOBAL !== undefined ? [env.GIT_CONFIG_GLOBAL]
+    : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])])
+    .map((file) => file.startsWith('/') ? file : `${cwd}/${file}`);
+  if (files.length === 0) return git;
+  const contents = new Map<string, ReturnType<typeof fs.promises.readFile>>();
+  const read = (file: string, options?: 'utf8' | { encoding: 'utf8' }) => {
+    let content = contents.get(file);
+    if (content === undefined) { content = fs.promises.readFile(file, options); contents.set(file, content); }
+    return content;
+  };
+  const values = new Map<string, ReturnType<ConfigReader['getConfigAll']>>();
+  const globals = (path: string): ReturnType<ConfigReader['getConfigAll']> => {
+    const key = configKey(path);
+    let found = values.get(key);
+    if (found === undefined) {
+      found = (async () => {
+        const all: Awaited<ReturnType<ConfigReader['getConfigAll']>> = [];
+        for (const file of files) {
+          const gitdir = `${file}.nimbus`;
+          const request = {
+            path,
+            gitdir,
+            fs: { promises: { ...fs.promises, readFile: (name: string, options?: 'utf8' | { encoding: 'utf8' }) => read(name === `${gitdir}/config` ? file : name, options) } },
+          };
+          all.push(...await git.getConfigAll(request));
+        }
+        return all;
+      })();
+      values.set(key, found);
+    }
+    return found;
+  };
+  const reads: ConfigReader = {
+    async getConfig(args) {
+      const local = await git.getConfig(args);
+      if (local !== undefined || ('fs' in args && args.fs !== fs)) return local;
+      const all = await globals(args.path);
+      return all[all.length - 1];
+    },
+    async getConfigAll(args) {
+      const local = await git.getConfigAll(args);
+      if ('fs' in args && args.fs !== fs) return local;
+      return [...await globals(args.path), ...local];
+    },
+  };
+  return new Proxy(git, {
+    get: (target, property, receiver) =>
+      property === 'getConfig' || property === 'getConfigAll' ? reads[property] : Reflect.get(target, property, receiver),
+  });
+}
+
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
  * value, and all of them after the files' for a read of every value.

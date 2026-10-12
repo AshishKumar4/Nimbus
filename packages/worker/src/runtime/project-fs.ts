@@ -17,7 +17,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString'
-  | 'readFileUncached' | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
+  | 'readFileUncached' | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rename' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
 
 /**
  * A tool's calls on its tree in the engine's call shape (keys with or
@@ -76,6 +76,7 @@ export function projectFs(view: ProcessView): ProjectFs {
     writeFile: (key, content, options) => view.writeFile(at(key), content, options),
     mkdir: (key, options) => view.mkdir(at(key), options),
     unlink: (key) => view.unlink(at(key)),
+    rename: (from, to) => view.rename(at(from), at(to)),
     rmdir: (key) => view.rmdir(at(key)),
     // As the engine's: the whole tree goes, or the call fails.
     removeRecursive: async (key) => {
