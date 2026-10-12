@@ -50,7 +50,7 @@ export class SessionProcessSupervisor {
     isLogOrphan = (pid) => !this.table.get(pid);
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
-    endWaiters = new Map();
+    /** Per pid, what its first terminal transition tells; see subscribeTerminal. */
     terminalSubscribers = new Map();
     /** Releases an ended process's filesystem binding; see setRelease. */
     release = null;
@@ -355,11 +355,7 @@ export class SessionProcessSupervisor {
         if (entry?.state !== 'running')
             return Promise.resolve(entry?.exitCode ?? 0);
         return new Promise((resolve) => {
-            const waiters = this.endWaiters.get(pid);
-            if (waiters)
-                waiters.push(resolve);
-            else
-                this.endWaiters.set(pid, [resolve]);
+            this.subscribeTerminal(pid, () => resolve(this.table.get(pid)?.exitCode ?? 0));
         });
     }
     /** A decided end is told to observers (published) once the output before it is. */
@@ -373,10 +369,6 @@ export class SessionProcessSupervisor {
         if (!wasRunning || this.table.get(pid)?.state === 'running')
             return;
         this.forgetWaits(pid);
-        const waiters = this.endWaiters.get(pid);
-        this.endWaiters.delete(pid);
-        for (const resolve of waiters ?? [])
-            resolve(this.table.get(pid)?.exitCode ?? 0);
         const subscribers = this.terminalSubscribers.get(pid);
         this.terminalSubscribers.delete(pid);
         for (const listener of subscribers ?? []) {

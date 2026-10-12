@@ -170,14 +170,13 @@ export function createChildProcessHost(self, runtimeContext) {
         issueNews: parent => issueProcessNews(runtimeContext.ctx, parent),
     };
 }
-export function _ensureChildProcessManager(self, host) {
+export function _ensureChildProcessManager(self) {
     const workspace = self.runtimeWorkspace;
     if (!workspace)
         throw new Error('Nimbus runtime is not initialized');
     if (self.childProcessManager !== workspace.children) {
         self.ensureSqliteFs();
         self.ensureFacetManager();
-        workspace.children.bindHost(host);
         self.childProcessManager = workspace.children;
     }
     return workspace.children;
@@ -227,7 +226,7 @@ export function bindRuntimeServices(host, context) {
         ensureBundlePool: ensureBundlePool.bind(null, host, context),
         ensureFacetManager: ensureFacetManager.bind(null, host, context),
         _ensureWebSocketRelay: _ensureWebSocketRelay.bind(null, host, context),
-        _ensureChildProcessManager: _ensureChildProcessManager.bind(null, host, childProcessHost),
+        _ensureChildProcessManager: _ensureChildProcessManager.bind(null, host),
         ensureNpmInstaller: ensureNpmInstaller.bind(null, host, context),
         ensureGlobalPrefixDirs: ensureGlobalPrefixDirs.bind(null, host, context),
     };

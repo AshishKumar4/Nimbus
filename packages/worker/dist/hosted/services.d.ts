@@ -39,7 +39,7 @@ export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContex
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;
 export declare function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): WebSocketRelay;
 export declare function createChildProcessHost(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ChildProcessHost;
-export declare function _ensureChildProcessManager(self: RuntimeServiceHost, host: ChildProcessHost): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
+export declare function _ensureChildProcessManager(self: RuntimeServiceHost): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
 export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller>;
 export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {

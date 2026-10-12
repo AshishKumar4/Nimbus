@@ -71,7 +71,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private readonly isLogOrphan;
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     private onTerminalCb;
-    private readonly endWaiters;
+    /** Per pid, what its first terminal transition tells; see subscribeTerminal. */
     private readonly terminalSubscribers;
     /** Releases an ended process's filesystem binding; see setRelease. */
     private release;
