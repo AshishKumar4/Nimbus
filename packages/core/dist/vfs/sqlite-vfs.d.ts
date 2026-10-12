@@ -872,6 +872,8 @@ export declare class SqliteVFS {
     private storageKey;
     /** {@link storageKey} of a name already normalized, under a principal's private root. */
     private keyOfName;
+    /** A listing cursor is a lexical index position, not a path that must still exist. */
+    private cursorKey;
     /**
      * The name a credential uses for `path`, whichever spelling it came in: a
      * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the

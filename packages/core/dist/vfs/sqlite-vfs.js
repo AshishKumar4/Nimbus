@@ -2087,6 +2087,10 @@ export class SqliteVFS {
             return name;
         return `${root}/${name.slice(TMP_ROOT.length + 1)}`;
     }
+    /** A listing cursor is a lexical index position, not a path that must still exist. */
+    cursorKey(path, cred) {
+        return this.keyOfName(normalizeVfsPath(path), this.confinedTmpRoots.get(cred.uid));
+    }
     /**
      * The name a credential uses for `path`, whichever spelling it came in: a
      * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the
@@ -2457,7 +2461,11 @@ export class SqliteVFS {
      */
     resolveName(path, cred, followLeaf, stop, tree = this.inodes) {
         const root = this.confinedTmpRoots.get(cred.uid);
-        const current = this.nameOf(path, cred, tree, root);
+        const plain = plainVfsPath(path);
+        if (plain === null)
+            return null;
+        const key = this.keyOfName(plain, root);
+        const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;
         // As resolvePath: a lookup into a delegated subtree recalls it first.
         // A walk that follows a link answers null below (the caller walks it by
         // components, through resolvePath, which recalls where the link leads).
@@ -4671,7 +4679,7 @@ export class SqliteVFS {
         // Before the walk, deliberately — see VfsListPage.
         const epoch = this._epoch;
         const rev = this._revision;
-        const from = after === null || after === undefined ? '' : this.storageKey(after, cred);
+        const from = after === null || after === undefined ? '' : this.cursorKey(after, cred);
         const entries = [];
         // The page is bounded by its encoded bytes, not only its row count: a full
         // page of long, escaped names or link targets can exceed the RPC frame.
@@ -5982,7 +5990,7 @@ export class SqliteVFS {
             list: (after, limit) => {
                 pinned();
                 const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
-                const from = after === null || after === undefined ? '' : this.storageKey(after, bound, tree);
+                const from = after === null || after === undefined ? '' : this.cursorKey(after, bound);
                 const entries = [];
                 const searchableDirs = new Map();
                 let cursor = from;
