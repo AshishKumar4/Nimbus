@@ -12,6 +12,7 @@
 // at once, with whatever the process had logged and the session not answered.
 
 import assert from 'node:assert/strict';
+import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { processes, reservedFacetNames, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { facetLimits } from '../../packages/fabric/src/facet-limits.ts';
 
@@ -47,6 +48,7 @@ function makeCtx(id) {
         return {
           async startProcess() { return { ok: true }; },
           async handleHttpRequest() { return new Response('ok'); },
+          fetch: answerHostWatch(),
         };
       },
       abort(name) { events.push(`abort ${name}`); },

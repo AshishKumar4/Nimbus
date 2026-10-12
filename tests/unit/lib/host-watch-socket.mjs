@@ -1,3 +1,11 @@
+import { HOST_INCARNATION_HEADER } from '../../../packages/fabric/src/host-activity.ts';
+
+/** A resident facet stub's host watch (observeResidentConfig): its instance's incarnation, on a body that stays open. */
+export function answerHostWatch() {
+  const incarnation = crypto.randomUUID();
+  return async () => new Response(new ReadableStream(), { headers: { [HOST_INCARNATION_HEADER]: incarnation } });
+}
+
 // The harness models a native socket close, not an RPC promise cancellation.
 export class HostWatchSocket extends EventTarget {
   constructor() {

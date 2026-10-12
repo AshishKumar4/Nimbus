@@ -124,7 +124,7 @@ try {
   assert.equal(bulk.headers.get('transfer-encoding'), null, 'never chunked');
   assert.equal((await bulk.arrayBuffer()).byteLength, 8 * 1024 * 1024);
   const done = await until('bulk', (row) => row.settled !== null, 'EOF settles the response');
-  assert.equal(done.gated, 128 + 1, 'the gate sees 128 chunks of 64 KiB, then the end');
+  assert.equal(done.gated, 1 + 128 + 1, 'the gate lets out the head, 128 chunks of 64 KiB, then the end');
   assert.equal(done.aborted, null);
   for (const size of [2, 4]) {
     await assert.rejects(async () => (await fetch(`${base}/mismatch?key=m${size}&size=${size}`)).arrayBuffer(), `a ${size}-byte body for 3 declared fails`);

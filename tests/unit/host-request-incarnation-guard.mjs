@@ -66,8 +66,9 @@ for (const entry of ['handleHttpRequest', 'fetch']) {
   const response = await process[entry](request(nonce));
   assert.equal(await response.text(), 'guest answer');
   assert.equal(response.headers.get('x-guest-answer'), 'kept');
-  assert.deepEqual(ctx.seen, [{ entry: entry === 'fetch' ? 'fetch' : 'http', method: 'POST',
-    headers: [['content-type', 'text/plain;charset=UTF-8'], ['x-application-header', 'kept']], body: 'request payload' }],
+  // What the client sent, as this runtime constructs it, without the private transport.
+  const sent = new Request('https://leaf.invalid/', { method: 'POST', body: 'request payload', headers: { 'x-application-header': 'kept' } });
+  assert.deepEqual(ctx.seen, [{ entry: entry === 'fetch' ? 'fetch' : 'http', method: 'POST', headers: [...sent.headers], body: 'request payload' }],
     'the data guard strips its capability/nonce and preserves ordinary request semantics');
 }
 {

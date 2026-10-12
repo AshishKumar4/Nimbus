@@ -68,14 +68,15 @@ export class Host extends DurableObject {
       const activity = new HostActivity(), lost=[];
       const key='watch-'+name;
       const leaf=this.env.LOADER.get(name,()=>observeResidentConfig(structuredClone(CODE),key)).getDurableObjectClass('NimbusProcess');
-      const facet=this.ctx.facets.get(name,async()=>({class:leaf}));
+      const reopen=()=>this.ctx.facets.get(name,async()=>({class:leaf}));
+      const facet=reopen();
       const pin=await facet.fetch(new Request('https://watch.invalid/',{headers:{[HOST_WATCH_HEADER]:key}}));
       const pinned=pin.headers.get(HOST_INCARNATION_HEADER);await pin.body.cancel();
       await facet.startProcess();
       let opens=0;
       const target=activity.observe(signal=>{opens++;return facet.fetch(new Request('https://watch.invalid/',{signal,headers:{[HOST_WATCH_HEADER]:key}}));},error=>lost.push(error.message),pinned);
       const data=()=>new Request('https://user.invalid/',{headers:{[HOST_REQUEST_HEADER]:key,[HOST_INCARNATION_HEADER]:pinned}});
-      return {activity,target,lost,facet,data,key,opens:()=>opens};
+      return {activity,target,lost,facet,reopen,data,key,opens:()=>opens};
     };
     const active=await make('active');
     const a=active.target.acquire(),b=active.target.acquire();
@@ -89,11 +90,12 @@ export class Host extends DurableObject {
     this.ctx.facets.abort('active',new Error('platform reset active actor'));
     for(let i=0;i<100&&!active.lost.length;i++)await new Promise(r=>setTimeout(r,10));
     c.release();
-    // The facet's next call starts a fresh instance of the same class: the
+    // A stub got again starts a fresh instance of the same class: the
     // original's pinned incarnation is refused there before any guest code.
     const stale=[];
+    const replaced=active.reopen();
     for(const entry of ['handleHttpRequest','fetch']){
-      const refused=await active.facet[entry](active.data());
+      const refused=await replaced[entry](active.data());
       stale.push({entry,status:refused.status,brand:refused.headers.get(HOST_REQUEST_HEADER)===active.key,body:await refused.text()});
     }
     const idle=await make('idle');

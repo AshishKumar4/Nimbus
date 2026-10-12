@@ -9,6 +9,7 @@
 // session logged nothing.
 
 import assert from 'node:assert/strict';
+import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { processes } from '../../packages/fabric/src/workerd-facet-host.ts';
 
 const reset = Object.assign(new Error('internal error; reference = rt37uhceu8hlrdg0l0sbn6i6'), { durableObjectReset: true });
@@ -23,6 +24,7 @@ function makeCtx(failure, rows = new Map()) {
         return {
           async startProcess() { throw failure; },
           async handleHttpRequest() { return new Response('ok'); },
+          fetch: answerHostWatch(),
         };
       },
       abort() {},
