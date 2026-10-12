@@ -27,7 +27,7 @@
  * state-0 content and publish it atomically.
  */
 
-import { VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
+import { projectChange, VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
 import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap } from './path.js';
 import { PathRevisions, type OwnGeneration } from './path-revisions.js';
 import { z } from 'zod/v4';
@@ -1326,9 +1326,9 @@ interface PendingWrite {
   release(): void;
 }
 
-/** A committed mutation, as the event bus (unless `type` is null) and the write observers hear of it. */
+/** A committed mutation, as the event bus and the write observers hear of it. */
 interface Mutation {
-  type: VfsEventType | null;
+  type: VfsEventType;
   path: string;
   oldPath?: string;
   write: PendingWrite | undefined;
@@ -1389,7 +1389,7 @@ const APPEND_RUN_LATENCY_MS = 100;
 const LEAF_READS: ReadonlySet<keyof CredentialedVfs> = new Set([
   'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
   'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat', 'statIfPresent',
-  'getDefaultAcl', 'readdir', 'contentKey', 'storageKey',
+  'getDefaultAcl', 'readdir', 'contentKey', 'storageKey', 'subscribe',
 ] satisfies (keyof CredentialedVfs)[]);
 
 /**
@@ -3810,17 +3810,17 @@ export class SqliteVFS {
   }
 
   /**
-   * A watch in `cred`'s view (CredentialedVfs.subscribe). A watch is not a
-   * cache, so an event it may not see is simply not delivered.
+   * A watch in `cred`'s view (CredentialedVfs.subscribe), each change told
+   * as the one rule tells a watch (projectChange), each end judged here
+   * (watchedName). A watch is not a cache, so an end it may not see is
+   * simply not told.
    */
   private subscribe(path: string, cred: VfsCred, listener: (event: VfsEvent) => void): () => void {
-    return this.events.onPath(this.storageKey(path, cred), (event) => {
-      const name = this.watchedName(event.path, cred);
-      if (name === null) return;
-      const oldPath = event.oldPath === undefined ? null : this.watchedName(event.oldPath, cred);
-      listener(oldPath === null
-        ? { type: event.type, path: name, timestamp: event.timestamp }
-        : { type: event.type, path: name, oldPath, timestamp: event.timestamp });
+    const key = this.storageKey(path, cred);
+    const name = normalizeVfsPath(path);
+    return this.events.onPath(key, (event) => {
+      const told = projectChange(event, key, (at) => this.watchedName(at, cred), name);
+      if (told !== null) listener(told);
     });
   }
 
@@ -6467,30 +6467,28 @@ export class SqliteVFS {
       this._gen = gen;
       this.touchedDirectoriesCommitted(touched, now, gen);
       const published: string[] = [];
+      const made: { type: 'add' | 'addDir'; path: string }[] = [];
       for (const row of page) {
         const path = job.dst + String(row.path).slice(job.src.length);
         if (!inserted.has(path)) continue;
+        const dir = Number(row.kind) === INODE_KIND_DIRECTORY;
         published.push(path);
-        this.committedRows.set(path, { gen, file: Number(row.kind) !== INODE_KIND_DIRECTORY });
+        made.push({ type: dir ? 'addDir' : 'add', path });
+        this.committedRows.set(path, { gen, file: !dir });
         if (!this._countersLoaded) continue;
-        if (Number(row.kind) === INODE_KIND_DIRECTORY) this._totalDirs++;
+        if (dir) this._totalDirs++;
         else { this._totalFiles++; this._usedBytes += Number(row.size); }
       }
       copied += published.length;
       if (published.length > 0) this.bumpRevision(published);
-      // One event for the tree, as rename emits: events queue until the
-      // turn ends, and one per copied row would hold the whole tree.
-      // Nothing stood at any path it copies to (planCopyTree refuses an
-      // existing target). The bus hears of the tree once, at its root; a
-      // write observer of every entry, a page as it commits.
+      // Each entry it made, a page as it commits, as a removal tells each
+      // entry it removed (a watch of any path in the tree hears its own):
+      // nothing stood at any path it copies to (planCopyTree refuses an
+      // existing target).
       const observed = this.writeObservers.size > 0;
-      const copiedEntry = (path: string) => ({ before: null, after: this.inodes.get(path) ?? null });
-      this.emitMutations([
-        ...(cursor === null && inserted.has(job.dst)
-          ? [{ type: Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' as const : 'add' as const, path: job.dst, change: copiedEntry(job.dst) }]
-          : []),
-        ...(observed ? published.filter((path) => path !== job.dst).map((path) => ({ type: null, path, change: copiedEntry(path) })) : []),
-      ]);
+      this.emitMutations(made.map(({ type, path }) => ({
+        type, path, ...(observed ? { change: { before: null, after: this.inodes.get(path) ?? null } } : {}),
+      })));
       if (cursor === null) {
         cursor = job.src === '' ? '' : `${job.src}/`;
         if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
@@ -9711,11 +9709,10 @@ export class SqliteVFS {
    * One commit's mutations, in order. Every write event among them holds its
    * content before any observer hears of the first: an observer's callback
    * (or a write or collection it makes) runs between deliveries, and must not
-   * take what a later event of the same commit names. `type` null is heard by
-   * the write observers alone (a copy's entries; the bus has the tree's one).
+   * take what a later event of the same commit names.
    */
   private emitMutations(
-    mutations: readonly { type: VfsEventType | null; path: string; oldPath?: string; change?: { before: INode | null; after: INode | null } }[],
+    mutations: readonly { type: VfsEventType; path: string; oldPath?: string; change?: { before: INode | null; after: INode | null } }[],
   ): void {
     const observed = this.writeObservers.size > 0;
     const events: Mutation[] = mutations.map(({ type, path, oldPath, change }) => ({
@@ -9734,7 +9731,7 @@ export class SqliteVFS {
     const owner = this.activeMutationOwner;
     this.activeMutationOwner = null;
     try {
-      if (type !== null) this.events.emit(type, path, oldPath);
+      this.events.emit(type, path, oldPath);
       if (write !== undefined) write.deliver([...this.writeObservers]);
     } finally {
       this.activeMutationOwner = owner;

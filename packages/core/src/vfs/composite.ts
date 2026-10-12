@@ -25,7 +25,7 @@ import type {
   VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
-import type { VfsEvent, VfsEventType } from './events.js';
+import { inWatchedTree, projectChange, type VfsEvent, type VfsEventType } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
 import { posixAccess } from './posix-access.js';
@@ -365,7 +365,7 @@ function sourceKey(source: object): number {
  * compare), else its name there.
  */
 function fileKey(target: PinTarget, ino: number | undefined): string {
-  const store = sourceKey(target.source.fileStore ?? target.source);
+  const store = sourceKey(storeOf(target.source));
   return ino === undefined ? `${store}:${target.rel}` : `${store}#${ino}`;
 }
 
@@ -407,6 +407,24 @@ interface ChangeWatch {
   readonly path: string;
   readonly listener: (events: readonly VfsEvent[]) => void;
   readonly subscribed: Map<Mount, () => void>;
+  /** Batches published to it and not yet told, in landing order (judgeChanges judges each as it is told). */
+  readonly queue: Change[][];
+  /** An earlier batch's judgment awaits: the ones after it wait behind it. */
+  waiting: boolean;
+  stopped: boolean;
+}
+
+/** A change published to a watch: in namespace names, from the mount its ends are on. */
+interface Change {
+  readonly event: VfsEvent;
+  readonly mount: Mount;
+}
+
+/** watchChanges: who is told, and the watches with batches to tell (drainChanges). */
+interface ChangeWatches {
+  readonly watches: Set<ChangeWatch>;
+  readonly ready: ChangeWatch[];
+  draining: boolean;
 }
 
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
@@ -445,8 +463,14 @@ interface WriteSpec<T> {
   written?: Uint8Array;
   /** Whether what it changed is still what its path names (a held file, PinnedName.hold): a change to another file is no change there. */
   still?: () => Awaitable<boolean>;
-  /** What its change is told as (watchChanges); by default by its kind: a create addDir, a removal unlink, a rename rename, else change. */
-  told?: VfsEventType;
+  /**
+   * What its change is told as (watchChanges); by default by its kind: a
+   * create addDir, a removal unlink, a rename rename, else change. Null:
+   * nothing (it tells its own landings, or it made nothing).
+   */
+  told?: VfsEventType | null;
+  /** The backend it was made on, when not the one its mount gives this view now (a pinned file's). */
+  source?: VFS;
 }
 
 interface Table {
@@ -456,7 +480,7 @@ interface Table {
   /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
   writes?: WriteWatches;
   /** watchChanges: who is told. */
-  changes?: Set<ChangeWatch>;
+  changes?: ChangeWatches;
   /** Directory → names of mount points (or their missing ancestors) directly in it. */
   synthesized: Map<string, Set<string>>;
   /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -524,10 +548,9 @@ function relativeTo(point: string, path: string): string {
   return path.length === point.length ? '/' : path.slice(point.length);
 }
 
-/** Whether `path` is `tree` or under it. */
-function under(tree: string, path: string): boolean {
-  if (tree === ROOT_POINT || path === tree) return true;
-  return path.length > tree.length && path.charCodeAt(tree.length) === 47 && path.startsWith(tree);
+/** The store `found`'s files are in (VFS.fileStore): the backend itself, when it names none. */
+function storeOf(found: VFS): object {
+  return found.fileStore ?? found;
 }
 
 /** An rm -r report (VfsRemoval). */
@@ -959,7 +982,14 @@ export class CompositeVFS implements VFS {
     this.table.generation++;
     this.resynthesize();
     if (this.table.writes !== undefined) this.subscribeWrites(mount);
-    for (const watch of this.table.changes ?? []) watch.view.subscribeChanges(watch, mount);
+    for (const watch of this.table.changes?.watches ?? []) {
+      try {
+        watch.view.subscribeChanges(watch, mount);
+      } catch (error) {
+        // Its backend refuses the watch: its changes through this namespace are told all the same.
+        console.error('[composite-vfs] a mount refused a change watch:', error instanceof Error ? error.message : String(error));
+      }
+    }
     this.table.moved?.();
   }
 
@@ -976,9 +1006,14 @@ export class CompositeVFS implements VFS {
     this.table.generation++;
     this.table.writes?.subscribed.get(mount)?.();
     this.table.writes?.subscribed.delete(mount);
-    for (const watch of this.table.changes ?? []) {
-      watch.subscribed.get(mount)?.();
+    for (const watch of this.table.changes?.watches ?? []) {
+      const stop = watch.subscribed.get(mount);
       watch.subscribed.delete(mount);
+      try {
+        stop?.();
+      } catch (error) {
+        console.error('[composite-vfs] a change watch could not be stopped:', error instanceof Error ? error.message : String(error));
+      }
     }
     this.resynthesize();
     this.table.moved?.();
@@ -1085,33 +1120,61 @@ export class CompositeVFS implements VFS {
   // ── change notification ───────────────────────────────────────────────
 
   /**
-   * Every change this view shows at `path` or under it, on any mount, told
-   * once it landed (VfsEvent, paths in this namespace), in the batches its
-   * backend makes of them, in order on each mount: what it is and where,
-   * nothing read, held or waited for. The returned function stops it.
+   * Every change this view may see at `path` or under it, on any mount,
+   * told once it landed (VfsEvent, paths in this namespace), as the one
+   * rule tells a watch (projectChange): each end of a change told where
+   * this view shows that file (routed to its store from the mount it is on,
+   * not covered, its source present for this principal) and may search
+   * every directory above it, judged through this view's own lookup. In
+   * landing order, in the batches its backend makes of them; to the watches
+   * registered when it landed; a watch let go hears nothing more. No write
+   * waits for it, and nothing is read for it but whether the directory a
+   * backend makes whole (mkdir -p on a mount that resolves its own paths)
+   * was there; a judgment through a backend that awaits is waited for by
+   * that watch alone, its later changes behind it. The returned function
+   * stops it.
    *
    * A backend that tells its own changes (VFS.watchChanges: SQLite) is
    * watched per mount, as this view's principal sees it, so its every
-   * change is told, whoever made it; one the namespace does not show there
-   * (a mount covers it) is not, and a rename half shown is the add, or the
-   * unlink, its shown half is. Any other backend's changes are told as they
-   * are made through this namespace, by what the operation is: a directory
-   * made addDir, a file or link made add, rmdir unlinkDir, any other
-   * removal unlink, a rename rename, anything else change. Whether a write
-   * of a whole file or a range made its file, and what kind of entry rm -r
-   * removed, is not looked up: those are change and unlink.
+   * change is told, whoever made it. Any other backend's changes are told
+   * as they land through this namespace, at every mount of the same store
+   * (VFS.fileStore), by what the operation is: a directory made addDir, a
+   * file or link made add (a copy, each entry it made), rmdir unlinkDir,
+   * any other removal unlink at the root of what it removed, a rename
+   * rename, anything else change. Whether a write of a whole file or a
+   * range made its file, and what kind of entry rm -r removed, is not
+   * looked up: those are change and unlink.
    */
   watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void {
-    const watches = this.table.changes ??= new Set();
-    const watch: ChangeWatch = { view: this, path: normalizePath(path), listener, subscribed: new Map() };
-    watches.add(watch);
-    for (const mount of this.table.mounts.values()) this.subscribeChanges(watch, mount);
-    return () => {
-      if (!watches.delete(watch)) return;
-      for (const stop of watch.subscribed.values()) stop();
-      watch.subscribed.clear();
-      if (watches.size === 0 && this.table.changes === watches) delete this.table.changes;
-    };
+    const changes = this.table.changes ??= { watches: new Set(), ready: [], draining: false };
+    const watch: ChangeWatch = { view: this, path: normalizePath(path), listener, subscribed: new Map(), queue: [], waiting: false, stopped: false };
+    changes.watches.add(watch);
+    try {
+      for (const mount of this.table.mounts.values()) this.subscribeChanges(watch, mount);
+    } catch (error) {
+      this.stopWatch(changes, watch);
+      throw error;
+    }
+    return () => this.stopWatch(changes, watch);
+  }
+
+  /** `watch` let go: nothing more told, each backend subscription stopped (all of them, whichever throws). */
+  private stopWatch(changes: ChangeWatches, watch: ChangeWatch): void {
+    if (watch.stopped) return;
+    watch.stopped = true;
+    watch.queue.length = 0;
+    changes.watches.delete(watch);
+    if (changes.watches.size === 0 && this.table.changes === changes) delete this.table.changes;
+    let failed: unknown = null;
+    for (const stop of watch.subscribed.values()) {
+      try {
+        stop();
+      } catch (error) {
+        failed ??= error;
+      }
+    }
+    watch.subscribed.clear();
+    if (failed !== null) throw failed;
   }
 
   /**
@@ -1124,81 +1187,192 @@ export class CompositeVFS implements VFS {
     if (typeof mount.source === 'function') return;
     const { path } = watch;
     const rel = path === mount.point || path.startsWith(mount.under) ? relativeTo(mount.point, path)
-      : under(path, mount.point) ? '/' : null;
+      : inWatchedTree(path, mount.point) ? '/' : null;
     if (rel === null) return;
     const backend = this.backend(mount);
     if (backend === null || typeof backend.watchChanges !== 'function') return;
     const { point } = mount;
-    const reroot = (event: VfsEvent): VfsEvent => (event.oldPath === undefined
-      ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
-      : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp });
-    watch.subscribed.set(mount, backend.watchChanges(rel, (events) => this.hearChanges(watch, mount, point === ROOT_POINT ? events : events.map(reroot))));
+    const named = (event: VfsEvent): Change => ({
+      mount,
+      event: point === ROOT_POINT ? event : event.oldPath === undefined
+        ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
+        : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp },
+    });
+    watch.subscribed.set(mount, backend.watchChanges(rel, (events) => {
+      const changes = this.table.changes;
+      if (changes === undefined || watch.stopped) return;
+      this.publishChanges(changes, watch, events.map(named));
+      this.drainChanges(changes);
+    }));
   }
 
-  /** `events`, changes on `mount` (namespace paths), told to `watch` as far as this view shows them there. */
-  private hearChanges(watch: ChangeWatch, mount: Mount, events: readonly VfsEvent[]): void {
-    // The batch as it came, unless one of its changes is told otherwise (or not).
-    let told: VfsEvent[] | null = null;
-    for (let i = 0; i < events.length; i++) {
-      const event = events[i]!;
-      const shown = this.shownChange(watch, mount, event);
-      if (shown !== event && told === null) told = events.slice(0, i);
-      if (told !== null && shown !== null) told.push(shown);
+  /**
+   * `result`, `spec`'s mutation's answer, once it landed: its change told,
+   * then, to the watches registered now (tellLanded). One that awaits is
+   * told when it lands.
+   */
+  private landing<T>(spec: WriteSpec<T>, result: Awaitable<T>): Awaitable<T> {
+    const tell = (value: T): void => {
+      if (this.table.changes === undefined || spec.told === null) return;
+      const { oldPath } = spec;
+      const type = spec.told ?? (oldPath !== undefined ? 'rename' : spec.kind === 'create' ? 'addDir' : spec.kind === 'remove' ? 'unlink' : 'change');
+      this.tellLanded(spec.route.mount, spec.source, type, spec.landed?.(value) ?? [spec.path], oldPath);
+    };
+    if (isPromise(result)) {
+      return result.then((value) => {
+        tell(value);
+        return value;
+      });
     }
-    const out = told ?? events;
-    if (out.length === 0) return;
+    tell(result);
+    return result;
+  }
+
+  /**
+   * A change of `type` that landed at `paths` (and from `oldPath`) through
+   * `mount`, on `source` (by default what the mount gives this view), to
+   * each watch registered now: at every mount through which that watch's
+   * view sees the same store, unless that mount's backend tells the watch
+   * its own.
+   */
+  private tellLanded(mount: Mount, source: VFS | undefined, type: VfsEventType, paths: readonly string[], oldPath?: string): void {
+    const changes = this.table.changes;
+    if (changes === undefined) return;
+    const found = source ?? this.sourceOf(mount);
+    if (found === null) return;
+    const store = storeOf(found);
+    const timestamp = Date.now();
+    const rels = paths.map((at) => relativeTo(mount.point, at));
+    const oldRel = oldPath === undefined ? undefined : relativeTo(mount.point, oldPath);
+    for (const watch of [...changes.watches]) {
+      const batch: Change[] = [];
+      for (const other of this.table.mounts.values()) {
+        if (watch.subscribed.has(other)) continue;
+        const theirs = watch.view.sourceOf(other);
+        if (theirs === null || storeOf(theirs) !== store) continue;
+        for (const rel of rels) {
+          const at = CompositeVFS.reroot(other.point, rel);
+          batch.push({
+            mount: other,
+            event: oldRel === undefined ? { type, path: at, timestamp } : { type, path: at, oldPath: CompositeVFS.reroot(other.point, oldRel), timestamp },
+          });
+        }
+      }
+      this.publishChanges(changes, watch, batch);
+    }
+    this.drainChanges(changes);
+  }
+
+  private publishChanges(changes: ChangeWatches, watch: ChangeWatch, batch: Change[]): void {
+    if (batch.length === 0 || watch.stopped) return;
+    watch.queue.push(batch);
+    changes.ready.push(watch);
+  }
+
+  /**
+   * Each published batch told, in order, one drain at a time: a change a
+   * listener makes is published behind the ones being told, and told after
+   * them.
+   */
+  private drainChanges(changes: ChangeWatches): void {
+    if (changes.draining) return;
+    changes.draining = true;
     try {
-      watch.listener(out);
+      for (let watch = changes.ready.shift(); watch !== undefined; watch = changes.ready.shift()) watch.view.tellQueued(changes, watch);
+    } finally {
+      changes.draining = false;
+    }
+  }
+
+  /** `watch`'s queued batches, judged and told in order; one judged by awaiting holds the rest until it is told. */
+  private tellQueued(changes: ChangeWatches, watch: ChangeWatch): void {
+    while (!watch.stopped && !watch.waiting && watch.queue.length > 0) {
+      const judged = this.judgeChanges(watch, watch.queue.shift()!);
+      if (isPromise(judged)) {
+        watch.waiting = true;
+        void judged.then((events) => {
+          watch.waiting = false;
+          this.tellWatch(watch, events);
+        }, (error: unknown) => {
+          watch.waiting = false;
+          console.error('[composite-vfs] a change could not be judged:', error instanceof Error ? error.message : String(error));
+        }).finally(() => {
+          changes.ready.push(watch);
+          this.drainChanges(changes);
+        });
+        return;
+      }
+      this.tellWatch(watch, judged);
+    }
+  }
+
+  private tellWatch(watch: ChangeWatch, events: readonly VfsEvent[]): void {
+    if (watch.stopped || events.length === 0) return;
+    try {
+      watch.listener(events);
     } catch (error) {
       console.error('[composite-vfs] a change watcher failed:', error instanceof Error ? error.message : String(error));
     }
   }
 
-  /** `event` as `watch` is told it from `mount`: itself, a rename's shown half (add, or unlink), or nothing. */
-  private shownChange(watch: ChangeWatch, mount: Mount, event: VfsEvent): VfsEvent | null {
-    const path = this.showsChange(watch, mount, event.path);
-    if (event.oldPath === undefined) return path ? event : null;
-    const oldPath = this.showsChange(watch, mount, event.oldPath);
-    if (path && oldPath) return event;
-    return path ? { type: 'add', path: event.path, timestamp: event.timestamp }
-      : oldPath ? { type: 'unlink', path: event.oldPath, timestamp: event.timestamp }
-        : null;
-  }
-
   /**
-   * Whether `path` is in `watch`'s tree and shown there from `mount`
-   * (feedShows): looked up only where another mount covers that tree or
-   * lies in it, as only one can hide it.
+   * `batch` as `watch` is told it (projectChange): each end shown from the
+   * mount it is on (that mount still at its point, the namespace routing
+   * the path to it, its source present: feedShows), and, for a watch that
+   * is not root's, under directories it may search (searchable).
    */
-  private showsChange(watch: ChangeWatch, mount: Mount, path: string): boolean {
-    if (!under(watch.path, path)) return false;
-    for (const other of this.table.mounts.values()) {
-      if (other === mount) continue;
-      if (under(watch.path, other.point) || (under(other.point, watch.path) && other.point.length > mount.point.length)) return this.feedShows(path, mount);
+  private judgeChanges(watch: ChangeWatch, batch: readonly Change[]): Awaitable<VfsEvent[]> {
+    const routed = (path: string, mount: Mount): boolean => this.table.mounts.get(mount.point) === mount && this.feedShows(path, mount);
+    const cred = this.viewer.cred;
+    const project = (reached: (path: string) => boolean): VfsEvent[] => {
+      const told: VfsEvent[] = [];
+      for (const { event, mount } of batch) {
+        const shown = projectChange(event, watch.path, (path) => (routed(path, mount) && reached(path) ? path : null), watch.path);
+        if (shown !== null) told.push(shown);
+      }
+      return told;
+    };
+    if (cred === null || cred.uid === 0) return project(() => true);
+    const reach = new Map<string, Awaitable<boolean>>();
+    let waits = false;
+    for (const { event } of batch) {
+      for (const path of event.oldPath === undefined ? [event.path, watch.path] : [event.path, event.oldPath, watch.path]) {
+        if (reach.has(path)) continue;
+        const searched = this.searchable(path);
+        waits ||= isPromise(searched);
+        reach.set(path, searched);
+      }
     }
-    return true;
+    if (!waits) return project((path) => reach.get(path) === true);
+    const paths = [...reach.keys()];
+    return Promise.all(reach.values()).then((answers) => {
+      const known = new Map(paths.map((path, i) => [path, answers[i]]));
+      return project((path) => known.get(path) === true);
+    });
   }
 
   /**
-   * `run`, and once it lands, its change told to each watcher whose
-   * backend there does not tell its own (watchChanges): `run` itself when
-   * none is to be told.
+   * Whether this view may search every directory above `path`, by its own
+   * lookup (resolve, the last component not looked at). A directory gone
+   * (a removed tree, its entries told after it) is judged by the nearest
+   * one left above it.
    */
-  private telling<T>(spec: WriteSpec<T>, run: () => Awaitable<T>): () => Awaitable<T> {
-    const watches = this.table.changes;
-    if (watches === undefined) return run;
-    const { mount } = spec.route;
-    let told = false;
-    for (const watch of watches) told ||= !watch.subscribed.has(mount);
-    if (!told) return run;
-    return () => andThen(run(), (result) => {
-      const { oldPath } = spec;
-      const type = spec.told ?? (oldPath !== undefined ? 'rename' : spec.kind === 'create' ? 'addDir' : spec.kind === 'remove' ? 'unlink' : 'change');
-      const timestamp = Date.now();
-      const events = (spec.landed?.(result) ?? [spec.path]).map((path): VfsEvent => (oldPath === undefined ? { type, path, timestamp } : { type, path, oldPath, timestamp }));
-      for (const watch of watches) if (!watch.subscribed.has(mount)) watch.view.hearChanges(watch, mount, events);
-      return result;
-    });
+  private searchable(path: string): Awaitable<boolean> {
+    const decide = (sync: boolean): Awaitable<boolean> => {
+      const refused = (error: unknown): Awaitable<boolean> => {
+        if (sync && isAsyncMountRefusal(error)) return decide(false);
+        if (isVfsError(error, 'ENOENT') && path !== ROOT_POINT) return this.searchable(parentOf(path));
+        if (isVfsError(error)) return false;
+        throw error;
+      };
+      try {
+        const at = this.resolve(path, false, sync);
+        return isPromise(at) ? at.then((to) => to === path, refused) : at === path;
+      } catch (error) {
+        return refused(error);
+      }
+    };
+    return decide(true);
   }
 
   /**
@@ -1214,10 +1388,9 @@ export class CompositeVFS implements VFS {
    * kept its operand, did not land there.
    */
   private reportWrite<T>(spec: WriteSpec<T>, run: () => Awaitable<T>, sync: boolean): Awaitable<T> {
-    const told = this.telling(spec, run);
     const writes = this.table.writes;
-    if (writes === undefined || writes.subscribed.has(spec.route.mount)) return told();
-    return this.inTurn(writes, spec.route.mount, spec.path, sync, () => this.reportIn(writes, spec, told));
+    if (writes === undefined || writes.subscribed.has(spec.route.mount)) return this.landing(spec, run());
+    return this.inTurn(writes, spec.route.mount, spec.path, sync, () => this.reportIn(writes, spec, run));
   }
 
   /**
@@ -1230,8 +1403,8 @@ export class CompositeVFS implements VFS {
     mount: Mount, name: string, sync: boolean, prepare: () => Awaitable<{ spec: WriteSpec<T> | null; run: () => Awaitable<T> }>,
   ): Awaitable<T> {
     const writes = this.table.writes;
-    if (writes === undefined || writes.subscribed.has(mount)) return andThen(prepare(), ({ spec, run }) => (spec === null ? run() : this.telling(spec, run)()));
-    return this.inTurn(writes, mount, name, sync, () => andThen(prepare(), ({ spec, run }) => (spec === null ? run() : this.reportIn(writes, spec, this.telling(spec, run)))));
+    if (writes === undefined || writes.subscribed.has(mount)) return andThen(prepare(), ({ spec, run }) => (spec === null ? run() : this.landing(spec, run())));
+    return this.inTurn(writes, mount, name, sync, () => andThen(prepare(), ({ spec, run }) => (spec === null ? run() : this.reportIn(writes, spec, run))));
   }
 
   /** `report` in its turn among the observed mutations (takeTurn); a caller that cannot wait is refused while another holds it. */
@@ -1275,12 +1448,12 @@ export class CompositeVFS implements VFS {
     // A plain mkdir made what was not there (EEXIST otherwise); mkdir -p looks.
     const before = kind === 'create' && spec.existingIsNoop !== true ? null : capture(wantsBefore);
     return andThen(before, (prior) => {
-      // Nothing to make: mkdir -p of a directory that is there.
+      // Nothing to make: mkdir -p of a directory that is there (nothing changed, nothing told).
       if (kind === 'create' && prior !== null && prior !== false && prior.type === 'directory') {
         release();
         return run();
       }
-      return andThen(run(), (result) => {
+      return andThen(this.landing(spec, run()), (result) => {
         const landed = spec.landed?.(result) ?? [path];
         if (landed.length === 0) { release(); return result; }
         const stores = written !== undefined && wantsAfter && (ops as VFS).storesWrites === true && (prior === null || regular);
@@ -1477,7 +1650,7 @@ export class CompositeVFS implements VFS {
       if (at === null) return { spec: null, run: guarded };
       const { name, rel } = at;
       const spec: WriteSpec<T> = {
-        path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still: () => still(at),
+        path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still: () => still(at), source: target.source,
         ...(written === undefined ? {} : { written }), ...(told === undefined ? {} : { told }),
       };
       return { spec, run: guarded };
@@ -2543,7 +2716,7 @@ export class CompositeVFS implements VFS {
   private onMutation<T>(
     input: string, follow: boolean, sync: boolean, what: string,
     run: (ops: Ops, rel: string, path: string) => Awaitable<T>,
-    { parents = false, written, told }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType } = {},
+    { parents = false, written, told }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType | null } = {},
   ): Awaitable<T> {
     return andThen(this.resolve(input, follow, sync, parents), (path) => {
       this.present(path);
@@ -2645,10 +2818,13 @@ export class CompositeVFS implements VFS {
       // a backend that resolves its own paths makes the rest in one call.
       if (r.mount.options.resolvesPaths) {
         const whole = this.locate(path);
-        return this.reportWrite({ path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true }, () => {
+        // Watched, it looks first whether the directory is there: only one it made is told.
+        return andThen(this.table.changes === undefined ? null : this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
+          path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, ...(there?.type === 'directory' ? { told: null } : {}),
+        }, () => {
           this.guardMutation([at, path]);
           return ops.mkdir(whole.rel, { recursive: true, mode });
-        }, sync);
+        }, sync));
       }
       return andThen(this.softStat(ops, r.rel, true), (stat) => {
         if (stat !== null) {
@@ -2746,9 +2922,10 @@ export class CompositeVFS implements VFS {
             }, sync);
           }
           const targetOps = this.ops(route, sync);
-          return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write', told }, () => {
+          // Each entry the copy makes is told as it lands, the ones before a failure too.
+          return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write', told: null }, () => {
             this.guardMutation([toInput]);
-            return this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at);
+            return this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at, { ops: targetOps as SyncVFS, rel: route.rel, mount: route.mount, told });
           }, sync);
         };
         // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
@@ -2784,32 +2961,36 @@ export class CompositeVFS implements VFS {
    * Copy an entry (a tree when it is a directory) between backends, links as
    * links. `toAt` is the namespace path `toRel` names: each write, link and
    * directory is guarded there (guardMutation) right before it is made,
-   * after the reads it waited on. `made` is the copy's own root: a tree
-   * copied into itself (two mounts of one backend) meets it on the way and
-   * passes it by, as it was not there when the copy began.
+   * after the reads it waited on, and told once it lands (watchChanges):
+   * the root as `made.told` says, each entry under it as made. `made` is
+   * the copy's own root: a tree copied into itself (two mounts of one
+   * backend) meets it on the way and passes it by, as it was not there when
+   * the copy began.
    */
   private copyBytes(
     from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string, toAt: string,
-    made: { readonly ops: SyncVFS; readonly rel: string } = { ops: to, rel: toRel },
+    made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType },
   ): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
+    const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
+    const landed = (result: Awaitable<void>): Awaitable<void> => andThen(result, () => this.tellLanded(made.mount, undefined, told, [toAt]));
     if (stat.type === 'symlink') {
       if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
         throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
       }
       return andThen(from.readlink(fromRel), (target) => {
         this.guardMutation([toAt]);
-        return andThen(to.symlink!(target, toRel), () => 1);
+        return andThen(landed(to.symlink!(target, toRel)), () => 1);
       });
     }
     if (stat.type === 'file') {
       return andThen(from.readFile(fromRel), (bytes) => {
         this.guardMutation([toAt]);
-        return andThen(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1);
+        return andThen(landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode })), () => 1);
       });
     }
     this.guardMutation([toAt]);
-    return andThen(to.mkdir(toRel, mode === undefined ? undefined : { mode }), () => andThen(from.readdir(fromRel), (entries) =>
+    return andThen(landed(to.mkdir(toRel, mode === undefined ? undefined : { mode })), () => andThen(from.readdir(fromRel), (entries) =>
       entries.reduce<Awaitable<number>>((count, entry) => andThen(count, (n) => {
         const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
         const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
@@ -2846,28 +3027,34 @@ export class CompositeVFS implements VFS {
    * and `failures` says why each one stayed.
    */
   private removeAt(input: string, sync: boolean): Awaitable<VfsRemoval> {
+    // Each removal is told as it lands (watchChanges): a backend's own rm -r at the roots of what it removed, a walked one entry by entry.
     return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
       if (this.hasLiveBelow(path)) throw new Refusal('EBUSY', path, 'something is mounted beneath it');
       const backend = ops as SyncVFS;
+      const { mount } = this.locate(path);
       if (typeof backend.removeRecursive === 'function') {
         const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
-        return andThen(backend.removeRecursive(rel), (report) => (report
-          ? {
-            removed: report.removed.map(at),
-            kept: report.kept.map(at),
-            // Each failure named as Node names the call that met it, on the namespace's path.
-            failures: report.failures.map((f) => ({
-              path: at(f.path),
-              error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
-            })),
-          }
-          : { removed: [path], kept: [], failures: [] }));
+        return andThen(backend.removeRecursive(rel), (report) => {
+          const removal: VfsRemoval = report
+            ? {
+              removed: report.removed.map(at),
+              kept: report.kept.map(at),
+              // Each failure named as Node names the call that met it, on the namespace's path.
+              failures: report.failures.map((f) => ({
+                path: at(f.path),
+                error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
+              })),
+            }
+            : { removed: [path], kept: [], failures: [] };
+          this.tellLanded(mount, undefined, 'unlink', removal.removed);
+          return removal;
+        });
       }
-      return this.walkRemove(backend, rel, path);
-    });
+      return this.walkRemove(backend, rel, path, mount);
+    }, { told: null });
   }
 
-  private walkRemove(ops: SyncVFS, rel: string, path: string): Awaitable<VfsRemoval> {
+  private walkRemove(ops: SyncVFS, rel: string, path: string, mount: Mount): Awaitable<VfsRemoval> {
     const at = (r: string): string => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
     const order: Array<{ rel: string; dir: boolean }> = [];
     const visit = (r: string): Awaitable<void> => andThen(ops.stat(r, { follow: false }), (stat) => {
@@ -2910,8 +3097,12 @@ export class CompositeVFS implements VFS {
           // reads: a refusal keeps it (and the directories holding it).
           this.guardMutation([at(entry.rel)]);
           const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
-          if (isPromise(out)) return out.then(() => { gone.add(entry.rel); }, fail);
-          gone.add(entry.rel);
+          const removed = (): void => {
+            gone.add(entry.rel);
+            this.tellLanded(mount, undefined, entry.dir ? 'unlinkDir' : 'unlink', [at(entry.rel)]);
+          };
+          if (isPromise(out)) return out.then(removed, fail);
+          removed();
           return undefined;
         } catch (cause) {
           fail(cause);

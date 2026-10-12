@@ -23,6 +23,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 
 const enc = new TextEncoder();
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -153,6 +154,229 @@ await check('a process\'s watch of the root hears its namespace, as SQLite names
   kernel.writeFile('home/user/after-stop', 's');
   assert.deepEqual(heard, ['add home/user/root-watched', 'change home/user/m/mounted-watched']);
 });
+
+// ── Who may see a change: the one rule (projectChange), judged by the watching view ──
+const PUBLIC = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
+const OTHER = Object.freeze({ uid: 2000, gid: 2000, groups: Object.freeze([2000]), umask: 0o022 });
+/** A gate a backend call waits at, and the moment it is entered. */
+const gated = () => {
+  let release;
+  let entered;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const entering = new Promise((resolve) => { entered = resolve; });
+  return { gate, entering, release: () => release(), enter: () => entered() };
+};
+
+await check('a change under a directory the watcher may not search is not told to it, whichever mount it is on', async () => {
+  kernel.mkdir('secret', { recursive: true });
+  kernel.chmod('secret', 0o700);
+  const other = createSqliteVfsTestHarness();
+  const inner = new SqliteVFS(other.sql, other.ctx);
+  ns.mount('/secret/m', sqliteFiles(inner, CRED_KERNEL));
+  const user = watching('/', ns.as(PUBLIC));
+  const userSecret = watching('/secret', ns.as(PUBLIC));
+  const root = watching('/secret');
+  inner.as(CRED_KERNEL).writeFile('confidential-filename', 'x');
+  kernel.writeFile('secret/also', 'y');
+  await settled();
+  assert.deepEqual([...user.take(), ...userSecret.take()].filter((line) => line.includes('secret')), []);
+  assert.deepEqual(root.take().sort(), ['add /secret/also', 'add /secret/m/confidential-filename']);
+  for (const w of [user, userSecret, root]) w.stop();
+  ns.unmount('/secret/m');
+});
+
+await check('a mount whose source gives the watcher nothing, or another store, tells it nothing of another\'s writes', async () => {
+  const storeA = new MemoryVFS({ uid: 0, gid: 0 });
+  const storeB = new MemoryVFS({ uid: 0, gid: 0 });
+  ns.mount('/device', (principal) => (principal.cred?.uid === 1000 ? null : storeA));
+  ns.mount('/pc', (principal) => (principal.cred?.uid === 2000 ? storeB : storeA));
+  ns.mount('/actors', (principal) => (principal.actor === 'b' ? storeB : storeA));
+  const none = watching('/device', ns.as(PUBLIC));
+  const b = watching('/pc', ns.as(OTHER));
+  const sameUid = watching('/actors', ns.as(PUBLIC, 'b'));
+  const a = watching('/pc', ns.as(PUBLIC));
+  await ns.writeFile('/device/token', enc.encode('t'));
+  await ns.as(PUBLIC).writeFile('/pc/only-a', enc.encode('a'));
+  await ns.as(PUBLIC, 'a').writeFile('/actors/only-a', enc.encode('a'));
+  await settled();
+  assert.deepEqual(none.take(), [], 'no source for the watcher');
+  assert.deepEqual(b.take(), [], 'another store for the watcher');
+  assert.deepEqual(sameUid.take(), [], 'another store for another actor of the same uid');
+  assert.deepEqual(a.take(), ['change /pc/only-a'], 'its own store');
+  for (const w of [none, b, sameUid, a]) w.stop();
+  for (const point of ['/device', '/pc', '/actors']) ns.unmount(point);
+});
+
+await check('a write that lands after its mount is gone is not told', async () => {
+  const g = gated();
+  const backend = new MemoryVFS({ uid: 0, gid: 0 });
+  ns.mount('/gone', asyncOnly(backend, { beforeCall: (method) => (method === 'writeFile' ? (g.enter(), g.gate) : undefined) }));
+  const w = watching('/gone');
+  const root = watching('/');
+  const writing = ns.writeFile('/gone/file', enc.encode('f'));
+  await g.entering;
+  ns.unmount('/gone');
+  g.release();
+  await writing;
+  await settled();
+  assert.deepEqual(w.take(), []);
+  assert.deepEqual(root.take().filter((line) => line.includes('/gone')), []);
+  w.stop(); root.stop();
+});
+
+await check('a rename is told at each end the watcher may see: out, in from where it may not look, into where it may not look', async () => {
+  for (const dir of ['public', 'elsewhere', 'private']) kernel.mkdir(dir, { recursive: true });
+  kernel.chmod('private', 0o700);
+  kernel.writeFile('public/a', 'a');
+  kernel.writeFile('public/b', 'b');
+  kernel.writeFile('private/c', 'c');
+  const pub = watching('/public', ns.as(PUBLIC));
+  const all = watching('/', ns.as(PUBLIC));
+  const proc = files.bind({ pid: 4110, cred: PUBLIC });
+  const heard = [];
+  const stop = proc.subscribe('/public', (event) => heard.push(said(event)));
+  kernel.rename('public/a', 'elsewhere/a');
+  kernel.rename('public/b', 'private/b');
+  kernel.rename('private/c', 'public/c');
+  await settled();
+  assert.deepEqual(pub.take(), ['unlink /public/a', 'unlink /public/b', 'add /public/c']);
+  assert.deepEqual(all.take().filter((line) => !line.includes('/home')), ['rename /public/a -> /elsewhere/a', 'unlink /public/b', 'add /public/c']);
+  assert.deepEqual(heard, ['unlink public/a', 'unlink public/b', 'add public/c'], 'a process\\'s watch, as SQLite names it');
+  pub.stop(); all.stop(); stop();
+});
+
+await check('a watch of a path whose directory is renamed hears it go and come; a watched path renamed is followed', async () => {
+  kernel.mkdir('home/user/anc/sub', { recursive: true });
+  kernel.writeFile('home/user/anc/sub/file', 'f');
+  kernel.writeFile('home/user/followed', 'f');
+  const leaf = watching('/home/user/anc/sub/file');
+  const moved = watching('/home/user/anc2/sub/file');
+  const followed = watching('/home/user/followed');
+  await ns.rename('/home/user/anc', '/home/user/anc2');
+  await ns.rename('/home/user/followed', '/home/user/followed2');
+  await settled();
+  assert.deepEqual(leaf.take(), ['unlink /home/user/anc/sub/file']);
+  assert.deepEqual(moved.take(), ['add /home/user/anc2/sub/file']);
+  assert.deepEqual(followed.take(), ['rename /home/user/followed -> /home/user/followed2']);
+  leaf.stop(); moved.stop(); followed.stop();
+});
+
+await check('a copy tells each entry it made, SQLite\\'s and the namespace\\'s alike, the ones before a failure too', async () => {
+  kernel.mkdir('home/user/source/d', { recursive: true });
+  kernel.writeFile('home/user/source/file', 'f');
+  kernel.writeFile('home/user/source/d/deep', 'd');
+  const leaf = watching('/home/user/copy/file');
+  const tree = watching('/home/user/copy');
+  await ns.copy('/home/user/source', '/home/user/copy', { recursive: true });
+  await settled();
+  assert.deepEqual(leaf.take(), ['add /home/user/copy/file']);
+  assert.deepEqual(tree.take().sort(), ['add /home/user/copy/d/deep', 'add /home/user/copy/file', 'addDir /home/user/copy', 'addDir /home/user/copy/d']);
+  leaf.stop(); tree.stop();
+  const src = new MemoryVFS({ uid: 0, gid: 0 });
+  src.mkdir('/t');
+  src.writeFile('/t/a', enc.encode('a'));
+  src.writeFile('/t/b', enc.encode('b'));
+  const dst = new MemoryVFS({ uid: 0, gid: 0 });
+  const failing = new Proxy(dst, {
+    get(target, key) {
+      if (key === 'writeFile') return (path, ...rest) => { if (path === '/copy/b') throw Object.assign(new Error('EIO'), { code: 'EIO' }); return target.writeFile(path, ...rest); };
+      if (key === 'sync') return undefined;
+      const value = target[key];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  ns.mount('/csrc', src);
+  ns.mount('/cdst', failing);
+  const w = watching('/cdst');
+  await assert.rejects(ns.copy('/csrc/t', '/cdst/copy', { recursive: true }));
+  assert.deepEqual(w.take(), ['addDir /cdst/copy', 'add /cdst/copy/a']);
+  w.stop();
+  ns.unmount('/csrc'); ns.unmount('/cdst');
+});
+
+await check('a change on a store mounted twice is told at both names', async () => {
+  const shared = new MemoryVFS({ uid: 0, gid: 0 });
+  ns.mount('/a', shared);
+  ns.mount('/b', shared);
+  const a = watching('/a');
+  const b = watching('/b');
+  const root = watching('/');
+  await ns.writeFile('/a/file', enc.encode('f'));
+  assert.deepEqual(a.take(), ['change /a/file']);
+  assert.deepEqual(b.take(), ['change /b/file']);
+  assert.deepEqual(root.take().filter((line) => !line.includes('/home')).sort(), ['change /a/file', 'change /b/file']);
+  a.stop(); b.stop(); root.stop();
+  ns.unmount('/a'); ns.unmount('/b');
+});
+
+await check('mkdir -p tells only a directory it made', async () => {
+  ns.mount('/rp', new MemoryVFS({ uid: 0, gid: 0 }), { resolvesPaths: true });
+  const w = watching('/rp');
+  await ns.mkdir('/rp/d', { recursive: true });
+  await ns.mkdir('/rp/d', { recursive: true });
+  assert.deepEqual(w.take(), ['addDir /rp/d']);
+  w.stop();
+  ns.unmount('/rp');
+});
+
+await check('a change is told to the watches registered when it landed, whatever was registered when it began', async () => {
+  const g = gated();
+  const backend = new MemoryVFS({ uid: 0, gid: 0 });
+  let gate = null;
+  ns.mount('/late', asyncOnly(backend, { beforeCall: (method) => (method === 'writeFile' && gate !== null ? (g.enter(), gate) : undefined) }));
+  gate = g.gate;
+  const writing = ns.writeFile('/late/file', enc.encode('f'));
+  await g.entering;
+  const early = watching('/late');
+  early.stop();
+  const late = watching('/late');
+  g.release();
+  await writing;
+  gate = null;
+  assert.deepEqual(early.take(), []);
+  assert.deepEqual(late.take(), ['change /late/file']);
+  late.stop();
+  ns.unmount('/late');
+});
+
+await check('the engine\\'s listeners: one registered while a batch is told hears only what comes after; one let go then is not told', async () => {
+  const heard = { a: [], b: [], c: [] };
+  let stopA;
+  let stopC = null;
+  stopA = raw.events.on((batch) => {
+    heard.a.push(...batch.map(said));
+    if (stopC === null) stopC = raw.events.on((later) => heard.c.push(...later.map(said)));
+    stopA();
+  });
+  const stopB = raw.events.on((batch) => heard.b.push(...batch.map(said)));
+  kernel.writeFile('home/user/before', 'b');
+  await settled();
+  kernel.writeFile('home/user/after', 'a');
+  await settled();
+  assert.deepEqual(heard.a, ['add home/user/before']);
+  assert.deepEqual(heard.b, ['add home/user/before', 'add home/user/after']);
+  assert.deepEqual(heard.c, ['add home/user/after']);
+  stopB(); stopC();
+});
+
+await check('registering a watch stores nothing an open description holds', async () => {
+  kernel.writeFile('home/user/held.log', 'base:');
+  const writer = raw.openDescription('home/user/held.log', CRED_KERNEL, { read: false, write: true });
+  writer.write(writer.end(), enc.encode('held'));
+  let stored = 0;
+  const exec = harness.sql.exec.bind(harness.sql);
+  harness.sql.exec = (query, ...params) => { if (/^\s*(INSERT|UPDATE|DELETE)/i.test(query)) stored++; return exec(query, ...params); };
+  try {
+    const w = watching('/home/user/unrelated', ns.as(PUBLIC));
+    w.stop();
+  } finally {
+    harness.sql.exec = exec;
+  }
+  assert.equal(stored, 0, 'no storage write');
+  writer.close();
+  assert.equal(new TextDecoder().decode(kernel.readFile('home/user/held.log')), 'base:held');
+});
+
 
 if (failures.length > 0) {
   console.error(failures.join('\n'));

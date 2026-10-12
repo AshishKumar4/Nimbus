@@ -12,7 +12,7 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
-import type { VfsEvent } from './events.js';
+import { projectChange, type VfsEvent } from './events.js';
 import { normalizeVfsPath } from './path.js';
 
 function absolute(key: string): string {
@@ -99,11 +99,12 @@ export class SqliteFiles implements VFS {
   }
 
   /**
-   * Every mutation that lands at `path` or under it, through any view;
-   * paths absolute. The kernel's watch is the engine's own stream, batched
-   * as it publishes (SqliteVFS.events): it may look everywhere, and its
-   * names are the database's. Any other principal's is judged as each
-   * change is published, under its names (CredentialedVfs.subscribe).
+   * Every mutation that lands at `path` or under it, through any view, as
+   * the one rule tells a watch (projectChange); paths absolute. The kernel
+   * sees everywhere, and its names are the database's: its watch is the
+   * engine's own stream, batched as it publishes (SqliteVFS.events). Any
+   * other principal's is judged as each change is published, under its names
+   * (CredentialedVfs.subscribe).
    */
   watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void {
     if (this.view.cred.uid !== 0) {
@@ -114,18 +115,12 @@ export class SqliteFiles implements VFS {
       });
     }
     const tree = normalizeVfsPath(path);
-    const inTree = (key: string): boolean => tree === '' || key === tree || (key.startsWith(tree) && key.charCodeAt(tree.length) === 47);
+    const name = absolute(tree);
     return this.engine.events.on((batch) => {
       const told: VfsEvent[] = [];
       for (const event of batch) {
-        const oldPath = event.oldPath;
-        if (inTree(event.path)) {
-          told.push(oldPath === undefined
-            ? { type: event.type, path: absolute(event.path), timestamp: event.timestamp }
-            : { type: event.type, path: absolute(event.path), oldPath: absolute(oldPath), timestamp: event.timestamp });
-        } else if (oldPath !== undefined && inTree(oldPath)) {
-          told.push({ type: event.type, path: absolute(event.path), oldPath: absolute(oldPath), timestamp: event.timestamp });
-        }
+        const projected = projectChange(event, tree, absolute, name);
+        if (projected !== null) told.push(projected);
       }
       if (told.length > 0) listener(told);
     });
