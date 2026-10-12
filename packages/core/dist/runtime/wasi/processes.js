@@ -367,9 +367,14 @@ export function processHost(opts) {
                     // A write the session cannot take is the child's stdin gone (EPIPE).
                     pipe.forward = async (bytes) => {
                         await opts.release();
-                        return sup.cpStdinWrite(childPid, bytes).then(({ ok }) => ok, () => false);
+                        try {
+                            return (await sup.cpStdinWrite(childPid, bytes)).ok;
+                        }
+                        catch {
+                            return false;
+                        }
                     };
-                    pipe.end = () => sup.cpStdinEnd(childPid);
+                    pipe.end = async () => { await sup.cpStdinEnd(childPid); };
                     for (const chunk of pipe.chunks.splice(0))
                         await pipe.forward(chunk);
                     pipe.buffered = 0;
@@ -381,7 +386,10 @@ export function processHost(opts) {
                     }
                 }
                 else if (!inheritedInput) {
-                    await sup.cpStdinEnd(childPid).catch(() => { });
+                    try {
+                        await sup.cpStdinEnd(childPid);
+                    }
+                    catch { }
                 }
                 const child = { pid: childPid, start: null, status: null, failed: false, waiters: [] };
                 children.set(childPid, child);
@@ -487,7 +495,7 @@ export function processHost(opts) {
             const name = SIGNALS[signal];
             if (!name)
                 return E.INVAL;
-            return sup.cpKill(pid, name).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
+            return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
         },
     };
     const read = (fd, iovs, iovsLen, nread) => {

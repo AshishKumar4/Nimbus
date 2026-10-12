@@ -14,9 +14,7 @@ interface OutputChunk {
     news: number;
 }
 /**
- * Per-child mutable state. Created on spawn, torn down only when the
- * parent reaps via cpReap or after a configurable idle timeout (we leave
- * the entry around for late drain/wait calls).
+ * Per-child state retained for late drain/wait calls until explicitly reaped.
  */
 interface ChildEntry {
     pid: number;
@@ -256,14 +254,8 @@ export declare class ChildProcessManager {
      */
     drainOutput(childPid: number): Promise<DrainResult>;
     /**
-     * Synchronous kill. First-writer-wins on exit slot. The work behind the
-     * pid ends first, through the host's own terminate:
-     * the terminator its launch registered aborts a facet program's run, so
-     * the Dynamic Worker it held goes back to the ledger now rather than when
-     * the program would have ended on its own, and its ports, RPC resources
-     * and relayed sockets go with it. (`exit()`, which the stamp below calls,
-     * drops that terminator without running it.) Then the stamp wakes every
-     * waiter.
+     * End the host's work and clean its resources first: exit(), used by the
+     * stamp, drops the terminator without running it. The first stamp wins.
      */
     kill(childPid: number, signal?: string | number): boolean;
     /**

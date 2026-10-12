@@ -146,9 +146,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             signal: ac.signal,
             setUmask: (mask) => { self.processes.setUmask(child.pid, mask); },
             runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
-            // Reuse the broker's pid and let runtime RPC output reach its
-            // live queues. A direct inline invocation without a managed child
-            // still needs a captured result.
+            // Runtime RPC output feeds the broker's live pipes.
             __nimbusCaptureOutput: false,
             // A child's runtime reads its stdin from its own live channel, the
             // broker's queue for its pid (NIMBUS_CP_CHILD_PID), as the parent writes it.
@@ -190,9 +188,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         // that is not installed is not registered) is a program
         // the child's PATH may find, which runs as one named by its path does
         // (facet-direct): its own pid, live stdin, its output on its queues.
-        // That dispatch searches PATH from the child's cwd, as execvp does, and
-        // finding nothing is "command not found", 127. Null (also 127) only
-        // while no registry is attached.
+        // Resolve before replying to spawn: an absent executable is ENOENT.
         const view = processView(from.pid, self.processes.cred(from.pid));
         const shell = shellChildRunner(request, view, runShell);
         if (shell)
