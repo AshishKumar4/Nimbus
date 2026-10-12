@@ -310,7 +310,15 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 // verification point and it is not here. Bytes shared by another
                 // placement were verified by their owner; not an R2 outcome.
                 discardPendingNetwork();
-                verifiedDigest = spec.integrity ? strongestSriEntry(spec.integrity) : null;
+                // A malformed integrity string is not a verification: the network
+                // branch reports it when it parses there, and this path keeps its
+                // existing warn-and-proceed posture instead of throwing first.
+                try {
+                    verifiedDigest = spec.integrity ? strongestSriEntry(spec.integrity) : null;
+                }
+                catch {
+                    verifiedDigest = null;
+                }
                 tarballElapsedMs = Date.now() - r2WaitStart;
                 if (!sharedAcquisition)
                     pipelinedTarballRaceWins++;
