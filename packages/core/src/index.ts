@@ -59,7 +59,7 @@ export type {
   RuntimeManifest,
 } from './runtime/runtime-manifest.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
-export { ISOLATE_NETWORK, workspaceNetwork, type EgressStreams, type EgressTlsTarget, type WorkspaceEgress, type WorkspaceEgressTls, type WorkspaceNetwork } from './_shared/workspace-network.js';
+export { ISOLATE_NETWORK, selectProcessEgress, workspaceNetwork, type EgressFor, type EgressProcess, type EgressProcesses, type EgressStreams, type EgressTlsTarget, type WorkspaceEgress, type WorkspaceEgressTls, type WorkspaceNetwork } from './_shared/workspace-network.js';
 export type {
   Facet,
   FacetBindings,

@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: an egress per process (Kinu ask 45). `NimbusWorkspaceOptions.egressFor`
+  and `NimbusSession.egressFor` take `{ pid, execId }` and return the egress
+  for that process, or undefined to keep the workspace's. Nimbus asks once
+  per process while it lives (`WorkspaceNetwork.forProcess`), and everything
+  the process does goes through that one egress: its fetch, sockets and TLS,
+  its Dynamic Worker's outbound, a peer hosting it, and the commands it runs
+  (curl, wget, dig, ping, npm, pip, gem, git, wrangler dev, the inline node).
+  An embedder that mints it with the exec in its props can tell which exec
+  made each request. Without `egressFor`, nothing changes.
 - Added: under an egress, a program's `tls.connect({ servername })` with a
   name other than the host reaches the egress as `connectTls`'s optional
   `servername`, which the egress presents and checks the server by, as Node

@@ -17,6 +17,8 @@
  * the loader's default: the parent's network.
  */
 
+import type { ProcessEntry } from '../runtime/process-table.js';
+
 /**
  * What a host supplies: a Fetcher (a service binding, a `ctx.exports`
  * entrypoint), or on a host without one an object with the same two methods.
@@ -50,6 +52,26 @@ export interface EgressStreams {
 
 export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'> & Partial<WorkspaceEgressTls>;
 
+/** A process the host may mint an egress for (NimbusWorkspaceOptions.egressFor). */
+export interface EgressProcess {
+  readonly pid: number;
+  /** The exec that started it (`ProcessEntry.execId`), when the caller named one. */
+  readonly execId?: string;
+}
+
+/**
+ * The host's egress for one process: typically a `ctx.exports` entrypoint
+ * minted with the process's identity in its props, so each request, socket
+ * and TLS session it sees names the exec that made it. Undefined keeps the
+ * workspace's egress for that process.
+ */
+export type EgressFor = (process: EgressProcess) => WorkspaceEgress | undefined;
+
+/** The live processes a network selects for: their entries, by pid. */
+export interface EgressProcesses {
+  get(pid: number): ProcessEntry | undefined;
+}
+
 export interface WorkspaceNetwork {
   /** The host's egress, or undefined for the isolate's own network. */
   readonly egress: WorkspaceEgress | undefined;
@@ -62,6 +84,15 @@ export interface WorkspaceNetwork {
   readonly id: string;
   /** `fetch` for code that runs in the host's isolate on the workspace's behalf. */
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  /**
+   * The network process `pid` goes out through: the egress its host minted
+   * for it (`selectProcessEgress`), selected once while its process-table
+   * entry lives, so its binding, its Dynamic Worker's globalOutbound, a peer
+   * hosting it and the commands it runs all hold the same one. This network
+   * when the host mints none, and for pid 0 (no process: Nimbus's own work,
+   * or work already selected for).
+   */
+  forProcess(pid: number): WorkspaceNetwork;
 }
 
 /** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
@@ -69,13 +100,60 @@ export const ISOLATE_NETWORK: WorkspaceNetwork = {
   egress: undefined,
   id: '',
   fetch: (input, init) => globalThis.fetch(input, init),
+  forProcess: () => ISOLATE_NETWORK,
 };
 
 /** The network each egress object stands for (workspaceNetwork). */
 const networks = new WeakMap<WorkspaceEgress, WorkspaceNetwork>();
 
+/** The host's per-process egress, by the workspace egress it refines (selectProcessEgress). */
+const sources = new WeakMap<WorkspaceEgress, { egressFor: EgressFor; processes: EgressProcesses }>();
+
+/** Each live process's network, selected once (WorkspaceNetwork.forProcess). */
+const selections = new WeakMap<ProcessEntry, WorkspaceNetwork>();
+
 function egressNetwork(egress: WorkspaceEgress, id: string): WorkspaceNetwork {
-  return { egress, id, fetch: (input, init) => egress.fetch(new Request(input, init)) };
+  const network: WorkspaceNetwork = {
+    egress, id,
+    fetch: (input, init) => egress.fetch(new Request(input, init)),
+    forProcess: (pid) => (pid === 0 ? network : selectFor(network, egress, pid)),
+  };
+  return network;
+}
+
+function selectFor(workspace: WorkspaceNetwork, egress: WorkspaceEgress, pid: number): WorkspaceNetwork {
+  const source = sources.get(egress);
+  if (source === undefined) return workspace;
+  const entry = source.processes.get(pid);
+  if (entry === undefined) throw Object.assign(new Error(`no process ${pid} to select a network for`), { code: 'ESRCH' });
+  let selected = selections.get(entry);
+  if (selected === undefined) {
+    const own = source.egressFor(entry.execId === undefined ? { pid } : { pid, execId: entry.execId });
+    selected = own === undefined ? workspace : processNetwork(workspace, own, `${workspace.id}:p${pid}:${crypto.randomUUID()}`);
+    selections.set(entry, selected);
+  }
+  return selected;
+}
+
+/** One process's network: its own egress and id; any other process's is the workspace's to select. */
+function processNetwork(workspace: WorkspaceNetwork, egress: WorkspaceEgress, id: string): WorkspaceNetwork {
+  const network: WorkspaceNetwork = {
+    egress, id,
+    fetch: (input, init) => egress.fetch(new Request(input, init)),
+    forProcess: (pid) => (pid === 0 ? network : workspace.forProcess(pid)),
+  };
+  return network;
+}
+
+/**
+ * Has the workspace network over `egress` give each process of `processes`
+ * the egress `egressFor` mints for it (NimbusWorkspaceOptions.egressFor).
+ * One table per egress: a second for the same egress object is refused.
+ */
+export function selectProcessEgress(egress: WorkspaceEgress, egressFor: EgressFor, processes: EgressProcesses): void {
+  const known = sources.get(egress);
+  if (known === undefined) sources.set(egress, { egressFor, processes });
+  else if (known.processes !== processes) throw new Error('selectProcessEgress: this egress already selects for another process table');
 }
 
 /**
@@ -122,7 +200,7 @@ export function loaderOutbound(network: WorkspaceNetwork | undefined): { globalO
  * than given the isolate's network unasked.
  */
 export function requireNetwork(network: WorkspaceNetwork | undefined, who: string): WorkspaceNetwork {
-  if (network === undefined || network === null || typeof network.fetch !== 'function' || typeof network.id !== 'string') {
+  if (network === undefined || network === null || typeof network.fetch !== 'function' || typeof network.forProcess !== 'function' || typeof network.id !== 'string') {
     throw new TypeError(`${who}: a network is required: the workspace's (workspace.network), or ISOLATE_NETWORK for Nimbus's own work`);
   }
   return network;

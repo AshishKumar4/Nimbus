@@ -33,7 +33,7 @@ import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
 import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
-import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { selectProcessEgress, workspaceNetwork, type EgressFor, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand, type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
@@ -219,11 +219,13 @@ export interface NimbusWorkspaceOptions {
    * `node` program's fetch and http/https, streamed and redirected as Node's
    * fetch does; a worker or dev server a command starts.
    *
-   * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
-   * `connect()` carries plain TCP only and the TLS session could only be
-   * made off the egress (HTTPS by fetch or `https` is not affected); the
-   * WebSocket of an inline `node` program or a `localFacetHost` facet, which
-   * cannot cross its realm.
+   * A process's TLS socket (`tls.connect`) goes through the egress's optional
+   * `connectTls`, which makes the TLS session; without it, it is refused by
+   * name. Refused: TLS over a socket the program opened
+   * (`tls.connect({ socket })`, STARTTLS), since the egress carries that
+   * connection and workerd starts no TLS on one through a service binding;
+   * the WebSocket of an inline `node` program or a `localFacetHost` facet,
+   * which cannot cross its realm.
    *
    * Not covered: responses from Nimbus's shared npm packument cache are not
    * used under an egress, so the egress sees every registry read, but
@@ -234,6 +236,17 @@ export interface NimbusWorkspaceOptions {
    * Absent, the workspace uses the isolate's own network, as before.
    */
   readonly egress?: WorkspaceEgress;
+  /**
+   * The egress for one process of the workspace, `{ pid, execId }`: asked
+   * once per process while it lives, so everything the process does goes
+   * through the one it returns: its fetch, sockets and TLS, the commands it
+   * runs (curl, git, npm, pip and the rest), and its own Dynamic Worker,
+   * wherever it is hosted. Typically `egress` minted again with the exec in
+   * its props, so the host can tell which exec made each request. Undefined
+   * keeps `egress` for that process. Requires `egress`, which still carries
+   * the workspace's work that no process makes.
+   */
+  readonly egressFor?: EgressFor;
 }
 
 /**
@@ -340,7 +353,6 @@ export class NimbusWorkspace {
     if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
     await seedBaseFilesystem(filesystem, home);
     const kernel = new Kernel();
-    kernel.network = workspaceNetwork(options.egress);
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
     // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -352,6 +364,11 @@ export class NimbusWorkspace {
     // Only a supervisor this workspace created gets its pid base set here; a
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+    if (options.egressFor !== undefined) {
+      if (options.egress === undefined) throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
+      selectProcessEgress(options.egress, options.egressFor, processes);
+    }
+    kernel.network = workspaceNetwork(options.egress);
     // Its processes bind to this filesystem, so a reap releases them here,
     // and their output waits for what they wrote to be published: the one
     // place the table and the filesystem meet.

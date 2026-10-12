@@ -561,7 +561,9 @@ Implementation rules:
   `tls.connect({ socket })` (STARTTLS) fails with `ERR_NIMBUS_EGRESS_STARTTLS`:
   the egress carries that connection, and workerd starts no TLS on a
   connection through a service binding. Under an egress without
-  `connectTls`, TLS retains its named refusal. Without an egress, Node
+  `connectTls`, TLS retains its named refusal. A host's `egressFor` gives
+  each process its own egress, asked once per process: the process's
+  binding, globalOutbound, peer and commands all use it. Without an egress, Node
   outbound TCP retains its current refusal. Inline Node WebSockets relay their upgrade, messages and close through `egress.fetch`.
   Known Node difference: workerd resolves a refused plain CONNECT's
   `socket.opened` and then signals EOF/close without bytes or the egress's

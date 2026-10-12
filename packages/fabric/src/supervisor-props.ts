@@ -33,10 +33,10 @@ export interface SupervisorBindingProps {
   bindingKind: 'process';
   writerId: string;
   /**
-   * The workspace's egress (NimbusWorkspaceOptions.egress), when its host
-   * supplied one: the process's network, its packument reads and its sockets
-   * go out through it, from the binding (SupervisorRPC). With its id, so a
-   * cache this binding fills is the egress's own.
+   * The process's egress (NimbusWorkspaceOptions.egressFor, else .egress),
+   * when its host supplied one: the process's network, its packument reads
+   * and its sockets go out through it, from the binding (SupervisorRPC).
+   * With its id, so a cache this binding fills is the egress's own.
    */
   egress?: WorkspaceEgress;
   networkId?: string;
@@ -62,7 +62,9 @@ export function supervisorBindingProps(
   const doId = options.doId ?? own;
   const route = options.route ?? hostRoute() ?? undefined;
   const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx, pid) : {};
-  const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
+  // The process's own network (WorkspaceNetwork.forProcess): the egress its host minted for it, when one did.
+  const network = options.network.forProcess(pid);
+  const egress = network.egress === undefined ? {} : { egress: network.egress, networkId: network.id };
   return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId, ...egress };
 }
 
