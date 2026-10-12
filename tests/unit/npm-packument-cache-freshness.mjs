@@ -177,10 +177,16 @@ if (!expiredControl) {
     const renewed = await read();
     assert.equal(renewed.source, 'r2-cache', 'unchanged: the cached body stands');
     assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"', 'revalidated with the ETag');
-    assert.equal(Number(bucket.entries.get(packumentKey(NAME, REGISTRY)).customMetadata.expiresAt), now + 300_000, 'fresh again');
+    assert.equal(bucket.writes, 1, "R2's body is not put again to renew a stamp");
     const requests = registry.requests.length;
-    assert.equal((await read()).source, 'r2-cache');
-    assert.equal(registry.requests.length, requests, 'and served without asking again');
+    await withColoCache(async () => {
+      assert.equal((await read()).source, 'r2-cache');
+      now += 1_000;
+      const writes = bucket.writes;
+      assert.equal((await read()).source, 'r2-cache', 'the colo copy a 304 renewed is fresh again');
+      assert.equal(bucket.writes, writes);
+    });
+    assert.equal(registry.requests.length, requests + 1, 'one more revalidation, for the colo copy, then served without asking again');
 
     // An entry from before: no validators, an hour's stamp left.
     bucket.entries.set(packumentKey(NAME, REGISTRY), { json: registry.json(), uploaded: new Date(now), customMetadata: { expiresAt: String(now + PACKUMENT_TTL_MS) } });
@@ -188,6 +194,30 @@ if (!expiredControl) {
     assert.equal(legacy.source, 'network', 'an entry without validators is refetched');
     assert.equal(registry.requests.at(-1).ifNoneMatch, null, 'plainly');
     assert.equal(bucket.entries.get(packumentKey(NAME, REGISTRY)).customMetadata.etag, '"fixture-1"');
+
+    // A 304 that states no Cache-Control keeps the stored one (RFC 9111
+    // §4.3.4): fresh for max-age=300 again, not for the cache's own bound.
+    const registryFetch = globalThis.fetch;
+    await withColoCache(async () => {
+      const bareBucket = fakeBucket();
+      let asked = 0;
+      globalThis.fetch = async (input, init) => {
+        asked++;
+        const etag = '"e"';
+        if (new Request(input, init).headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+        return new Response(registry.json(), { status: 200, headers: { ETag: etag, 'Cache-Control': 'public, max-age=300' } });
+      };
+      const bare = () => new R2CacheClient(null, bareBucket).readThroughPackument(NAME, { registry: REGISTRY, retries: 0 });
+      now = START + 10_000_000;
+      await bare();
+      now += 301_000;
+      await bare();
+      assert.equal(asked, 2, 'revalidated once its max-age passed');
+      now += 301_000;
+      await bare();
+      assert.equal(asked, 3, 'and again after max-age, as the stored Cache-Control says, not after an hour');
+    });
+    globalThis.fetch = registryFetch;
 
     // A version nothing publishes: one revalidation, then ETARGET.
     const before = registry.requests.length;
