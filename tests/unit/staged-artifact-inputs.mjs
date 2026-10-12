@@ -94,6 +94,8 @@ try {
   const corePackage = await readFile(path.join(root, coreManifest), 'utf8');
   await writeFile(path.join(root, coreManifest), applyEdits(corePackage, modify(corePackage, ['sideEffects'], true, {})));
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), coreManifest, 'bun scripts/ci/remote-napi-loader.mjs');
+  await writeFile(path.join(root, coreManifest), applyEdits(corePackage, modify(corePackage, ['version'], '0.0.0', {})));
+  assert.equal(run('packages/worker/scripts/bundle-napi-wasm.mjs').status, 0, 'a release version is not an esbuild input');
   await copy(coreManifest);
 
   const added = 'packages/worker/scripts/napi-wasm/rolldown/binding/src/new.rs';
