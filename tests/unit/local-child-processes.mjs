@@ -26,7 +26,6 @@ const { NimbusWorkspace } = await import(`${core}/workspace/nimbus-workspace.${e
 const { localFacetHost } = await import(`${core}/runtime/local-facet-host.${ext}`);
 const { facetTaskSource } = await import(`${core}/runtime/facet-task.${ext}`);
 const { ISOLATE_NETWORK } = await import(`${core}/_shared/workspace-network.${ext}`);
-const { WASI_INSTANCE_PREAMBLE_SRC } = await import(`${core}/runtime/wasi-instance.${ext}`);
 const wabt = await wabtFactory();
 const compile = (source) => {
   const parsed = wabt.parseWat('local-child.wat', source);
@@ -157,5 +156,13 @@ try {
   assert.ok(opened.every(spec => spec.syscalls.children === broker), 'all facets share one manager');
   assert.equal(await broker.wait(orphan, 1000).then(status => status.signal), 'SIGTERM', 'parent log exit kills an unawaited child');
   assert.equal(broker._getChildEntry(orphan).parentPid, parentPid, 'supervisor pins the invoking parent pid');
+  let leftBehind;
+  ws.registry.register('leave-child', async (ctx) => {
+    leftBehind = await broker.spawn({ parentPid: ctx.pid, command: 'sleep', args: ['60'], env: {},
+      cwd: ctx.cwd, stdio: ['ignore', 'ignore', 'ignore'] });
+    return 0;
+  });
+  assert.equal((await ws.exec('leave-child')).exitCode, 0);
+  assert.equal((await broker.wait(leftBehind.childPid, 1000)).signal, 'SIGTERM', 'local exec publishes its log exit before reaping its tree');
   console.log('local child processes ok');
 } finally { await ws.close(); }
