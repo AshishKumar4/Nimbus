@@ -3979,6 +3979,12 @@ export async function collectClosureWasmImages(
   vfs: LaunchFs,
   bundle: Record<string, string | Uint8Array | FacetVfsDenial>,
   unstagedPaths: readonly string[],
+  /**
+   * A module's analysis as the data plan reads it (FacetManager
+   * _staticRefsOf: its file, once per revision), or null: then its cell is
+   * analyzed here.
+   */
+  staticRefs?: (path: string) => Promise<StaticFsRefs | null>,
 ): Promise<WasmImageRecord[]> {
   const byPath = new Map<string, WasmImageRecord>();
   for (const [path, cell] of Object.entries(bundle)) {
@@ -3991,6 +3997,15 @@ export async function collectClosureWasmImages(
     if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs'))) continue;
     // wasm-bindgen also uses a folded template/variable path. Reuse the
     // filesystem AST analysis rather than adding another string-pattern rule.
+    // The data plan analyzes the same files: one analysis serves both, and
+    // every launch after the first of a file's revision (a 487 KB pi chunk's
+    // took 1.1 s, warm, each launch).
+    const known = staticRefs ? await staticRefs(stripLeadingSlashes(path)) : null;
+    if (known !== null) {
+      // Its exact references hold its relative-literal images too (_staticRefsOf).
+      for (const ref of known.exact) if (ref.path.endsWith('.wasm')) named.add(stripLeadingSlashes(ref.path));
+      continue;
+    }
     for (const ref of findStaticFsReferences(cell, '/' + stripLeadingSlashes(path)).exact) {
       if (ref.path.endsWith('.wasm')) named.add(stripLeadingSlashes(ref.path));
     }
@@ -4502,6 +4517,8 @@ export interface PrefetchBundleOptions {
   preloads?: readonly PreloadModuleRoot[];
   /** `entryCode` is an ES module (`-e` or stdin, entryEsModuleKey): the VFS key it is staged at. */
   entryEsModule?: string;
+  /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
+  staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
 }
 
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -4619,6 +4636,7 @@ async function _buildPrefetchBundle(
     stripTypes = null,
     preloads = [],
     entryEsModule,
+    staticRefs,
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
@@ -4994,7 +5012,7 @@ async function _buildPrefetchBundle(
   // An evicted module is still one the program may load late (as runtime
   // code, through an import()): its images ride in the map, bytes only since
   // they compile on first use, and its reads are named for that import().
-  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths));
+  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths, staticRefs));
   phase('wasm');
   const readers = evictedReaders(evictedCells);
 
@@ -6584,39 +6602,47 @@ export class FacetManager {
     const out: StaticFsRefs[] = [];
     for (const path of paths) {
       if (!/\.(?:c|m)?js$/.test(path)) continue;
-      let rev: number;
-      try { rev = await vfs.revision(path); } catch { continue; }
-      const memo = this.staticRefsMemo.get(path);
-      let refs: StaticFsRefs;
-      if (memo && memo.rev === rev) {
-        refs = memo.refs;
-      } else {
-        let source: string;
-        try { source = await filesOf(vfs).readFileString(path); } catch { continue; }
-        await pacer.spend(source.length);
-        refs = findStaticFsReferences(source, '/' + path);
-        // A registered sibling image is also bytes its loader may read.
-        // CommonJS import.meta.url polyfills can hide that path from folding;
-        // the image collector's same relative-literal rule still names it.
-        for (const image of relativeWasmPaths(source, path)) {
-          const name = '/' + image;
-          const existing = refs.exact.find((ref) => ref.path === name);
-          if (existing) existing.sync = true;
-          else refs.exact.push({ path: name, sync: true });
-        }
-        this.staticRefsMemo.delete(path);
-        this.staticRefsMemo.set(path, { rev, refs });
-        for (const oldest of this.staticRefsMemo.keys()) {
-          if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX) break;
-          this.staticRefsMemo.delete(oldest);
-        }
-      }
+      const refs = await this._staticRefsOf(vfs, path, pacer);
+      if (refs === null) continue;
       if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
         out.push(refs);
         each?.(path, refs);
       }
     }
     return out;
+  }
+
+  /**
+   * One module's static filesystem references (_closureStaticRefs), parsed
+   * once per revision of its file in this session; null if it has no
+   * revision or cannot be read. The launch's image collector reads the same
+   * analysis (collectClosureWasmImages).
+   */
+  private async _staticRefsOf(vfs: LaunchFs, path: string, pacer?: TurnBudget): Promise<StaticFsRefs | null> {
+    let rev: number;
+    try { rev = await vfs.revision(path); } catch { return null; }
+    const memo = this.staticRefsMemo.get(path);
+    if (memo && memo.rev === rev) return memo.refs;
+    let source: string;
+    try { source = await filesOf(vfs).readFileString(path); } catch { return null; }
+    await pacer?.spend(source.length);
+    const refs = findStaticFsReferences(source, '/' + path);
+    // A registered sibling image is also bytes its loader may read.
+    // CommonJS import.meta.url polyfills can hide that path from folding;
+    // the image collector's same relative-literal rule still names it.
+    for (const image of relativeWasmPaths(source, path)) {
+      const name = '/' + image;
+      const existing = refs.exact.find((ref) => ref.path === name);
+      if (existing) existing.sync = true;
+      else refs.exact.push({ path: name, sync: true });
+    }
+    this.staticRefsMemo.delete(path);
+    this.staticRefsMemo.set(path, { rev, refs });
+    for (const oldest of this.staticRefsMemo.keys()) {
+      if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX) break;
+      this.staticRefsMemo.delete(oldest);
+    }
+    return refs;
   }
 
   private async _buildProcessBundle(
@@ -6697,6 +6723,7 @@ export class FacetManager {
       cwd: spec.cwd,
       entryCode: spec.entryCode,
       esbuild: this.esbuild ?? undefined,
+      staticRefs: (path) => this._staticRefsOf(vfs, path, pacer),
       bundleProfile: profile,
       moduleScope,
       observedReads: new Set(learning.dataReads),
