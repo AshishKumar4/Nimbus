@@ -2373,7 +2373,7 @@ export class SqliteVFS {
         const linked = this.lastLinkedPrefix;
         if (linked !== null && tree === this.inodes && linked.cred === cred
             && linked.epoch === this.resolutionEpoch && linked.tableEpoch === this.inodes.epoch
-            && ((followLeaf && current === linked.spelling) || current.startsWith(`${linked.spelling}/`))) {
+            && current.startsWith(`${linked.spelling}/`)) {
             return this.walkComponents(path, cred, followLeaf, creating, tree);
         }
         // For a name directly below it (a namespace walking a path a component at
@@ -2432,7 +2432,7 @@ export class SqliteVFS {
         const last = this.lastLinkedPrefix;
         const reusable = last !== null && tree === this.inodes && last.cred === cred
             && last.epoch === this.resolutionEpoch && last.tableEpoch === this.inodes.epoch
-            && ((followLeaf && input === last.spelling) || input.startsWith(`${last.spelling}/`));
+            && input.startsWith(`${last.spelling}/`);
         const start = reusable ? { path: last.name, hops: last.hops } : undefined;
         const suffix = reusable ? input.slice(last.spelling.length) : input;
         let hops = start?.hops ?? 0;
@@ -2684,12 +2684,7 @@ export class SqliteVFS {
      */
     revision(path, cred) {
         this.settleAppends();
-        if (path === undefined)
-            return this._revision;
-        // A credentialed caller asks about its own view; a confined one asking
-        // after /tmp/x means its own file, so the counter must be that file's.
-        const p = cred === undefined ? normalizeVfsPath(path) : this.lexicalKey(path, cred).value;
-        if (p === '')
+        if (path === undefined || path === '' || path === '/')
             return this._revision;
         // Mutations stamp the path a name resolves to, so that is the counter.
         let resolved;
@@ -2699,8 +2694,13 @@ export class SqliteVFS {
         catch {
             // A name that does not resolve is the name's own counter. Read, not
             // admitted: no lookup of it will find it through that name.
+            const p = cred === undefined ? normalizeVfsPath(path) : this.lexicalKey(path, cred).value;
+            if (p === '')
+                return this._revision;
             return this.pathRevision(p, this.inodes.peek(p) ?? this.loadInode(p) ?? null);
         }
+        if (resolved.path === '')
+            return this._revision;
         // The walk's own lookup of the leaf: a second would read SQLite again for a missing one.
         return this.pathRevision(resolved.path, resolved.inode ?? null);
     }
