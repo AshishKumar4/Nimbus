@@ -781,14 +781,21 @@ export function residentFilesystem(session, resident, delegation) {
                 if (walkRoot === null || (key !== walkRoot && !key.startsWith(walkRoot + '/')))
                     walkRoot = key;
                 const within = walkRoot;
+                // A walk is earned: the run's first directory open (an interpreter
+                // listing its working directory) opens that one alone, unless the
+                // last run in this facet walked from it.
+                const walking = opening.length > 0;
                 if (opening.length < WALKED_DIRECTORIES)
                     opening.push(key);
                 const handle = await directoryPool.open(path, key, async () => {
+                    const guessed = repeated(key, DIRECTORY_BATCH_LIMIT - 1);
+                    if (!walking && guessed.length === 0)
+                        return [];
                     // The existing bounded namespace listing owns these names. Walk
                     // only directories it actually reported; no invented path/prefix.
                     await listingOf(key);
                     // What the last run opened next comes first; then the walk on from here.
-                    const next = [...new Set([...repeated(key, DIRECTORY_BATCH_LIMIT - 1), ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)])];
+                    const next = [...new Set([...guessed, ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)])];
                     // Carry the caller's confinement/descriptor root to the authority;
                     // never replace a beneath lookup with an absolute one. A
                     // descriptor-relative open names only what is beneath its directory.
