@@ -89,6 +89,30 @@ try {
     assert.match(await real('show --stat --format=%s HEAD'), /topic-b[\s\S]*b\.txt/);
     assert.match(await real('blame a.txt'), /\) one$/m);
     assert.match(await real('log --graph --oneline'), /^\* [0-9a-f]+ topic-b$/m);
+
+    // A SHA-256 repository real git made: every ordinary command on it is
+    // real git's, so real git reads what was written.
+    await sh("mkdir r256 && printf 'hi\\n' > r256/f");
+    const in256 = async (args) => {
+      const r = await terminal.run(`cd r256 && ${ID} NIMBUS_WASI_FS_STATS=1 git ${args}; echo "status=$?"; cd ~`, 300_000);
+      assert.match(r.stdout, /status=0/, `${args}: ${r.stdout.slice(-600)}`);
+      assert.ok(r.stdout.includes(REAL), `git ${args} on a SHA-256 repository is real git's`);
+      return r.stdout.split('\n').filter((line) => !line.includes(REAL) && !/^status=/.test(line)).join('\n');
+    };
+    await in256('init -q --object-format=sha256');
+    await in256('add f');
+    await in256('commit -q -m first');
+    assert.match(await in256('rev-parse HEAD'), /^[0-9a-f]{64}$/m, 'a 64-hex commit id');
+    assert.match(await in256('show --stat --format=%s HEAD'), /first[\s\S]*f \|/);
+    assert.equal((await in256('status --porcelain')).trim(), '');
+
+    // A linked worktree real git added: ordinary commands there are real git's too.
+    await real('worktree add -q -b linked ../linked');
+    await sh("printf 'l\\n' > linked/l.txt");
+    const inLinked = await terminal.run(`cd linked && ${ID} NIMBUS_WASI_FS_STATS=1 git add l.txt && ${ID} NIMBUS_WASI_FS_STATS=1 git commit -q -m linked-l; echo "status=$?"; cd ~`, 300_000);
+    assert.match(inLinked.stdout, /status=0/, inLinked.stdout.slice(-600));
+    assert.ok(inLinked.stdout.includes(REAL), 'a linked worktree is real git\'s');
+    assert.match(await real('log --oneline -1 linked'), /linked-l$/m, 'the main repository sees the linked worktree\'s commit');
   } finally {
     await terminal.close().catch(() => {});
   }
