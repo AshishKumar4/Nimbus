@@ -116,8 +116,10 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
   const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, { notify: (line) => notices.push(line) });
   const vfsHarness = sessionFs ? null : createSqliteVfsTestHarness();
   const vfs = sessionFs ?? new SqliteVFS(vfsHarness.sql, vfsHarness.ctx);
+  // A database's namespace; a stand-in filesystem tells no changes.
+  const authority = sessionFs === null ? new ProcessFiles(vfs) : { vfs: { watchChanges: () => () => {} } };
   if (sessionFs === null) {
-    fm.setVfs(vfs, new ProcessFiles(vfs));
+    fm.setVfs(vfs, authority);
   }
   const self = {
     shell: {},
@@ -133,7 +135,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     sqliteFs: sessionFs,
     esbuildService: null,
     // The namespace as host code reads it: this fake session's one filesystem.
-    getFilesystemAuthority() { this.ensureSqliteFs?.(); return { namespaceFs: (cred) => this.sqliteFs.as(cred) }; },
+    getFilesystemAuthority() { this.ensureSqliteFs?.(); return { namespaceFs: (cred) => this.sqliteFs.as(cred), vfs: authority.vfs }; },
     cirrusReal: null,
     viteDevServer: null,
     _viteShimPid: null,
