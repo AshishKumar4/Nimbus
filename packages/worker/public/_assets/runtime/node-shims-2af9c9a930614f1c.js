@@ -11231,7 +11231,7 @@ const __diagChannelMod = __nativeBuiltin("diagnostics_channel");
 // ──  tls module (W3: forward to workerd, override createServer) ─────
 // ═══════════════════════════════════════════════════════════════════════
 
-function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
+function __nimbusEgressTlsConnect(real, net, args) {
   let options = {}, callback;
   if (args[0] !== null && typeof args[0] === 'object') { options = { ...args[0] }; callback = args[1]; }
   else {
@@ -11249,9 +11249,8 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     const bound = previous?._handle?.options;
     const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
     const port = Number(options.port ?? bound?.port);
-    if (options.servername !== undefined && options.servername !== host) throw notImplemented('options.servername', 'the egress makes TLS with the destination hostname as its SNI');
     if (previous) previous.destroy();
-    return { host, port };
+    return typeof options.servername === 'string' && options.servername !== '' ? { host, port, servername: options.servername } : { host, port };
   };
   let reader, writer, resource;
   let endedRead = false, endedWrite = false, stopped = false;
@@ -11473,7 +11472,7 @@ const __tlsMod = (() => {
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
     const egressed = globalThis.__nimbusEgress === true;
     if (egressed || !proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
-    const socket = egressed ? __nimbusEgressTlsConnect(real, realNet, args, notImplemented)
+    const socket = egressed ? __nimbusEgressTlsConnect(real, realNet, args)
       : proxied ? proxiedConnect(...args) : real.connect(...args);
     let closed = false;
     let hold = null;
