@@ -197,6 +197,9 @@ try {
     assert.doesNotMatch(names.stdout, /fixture\.nimbus\.test failed/);
     assert.match(names.stdout, /wrong\.nimbus\.test failed /);
     assert.match(names.stdout, /wrong\.nimbus\.test answer ""/);
+    for (const deadline = Date.now() + 5000; !/GOT fixture\.nimbus\.test/.test(fixtureOut) && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     assert.match(fixtureOut, /GOT fixture\.nimbus\.test hello/);
     assert.doesNotMatch(fixtureOut, /GOT wrong/);
   } finally { await terminal.close(); }
