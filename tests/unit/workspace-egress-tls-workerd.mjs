@@ -111,24 +111,40 @@ try {
     `);
     assert.equal(timeout.status, 0, timeout.stdout);
     assert.match(timeout.stdout, /TLS options timeout/);
-    const upgraded = await run(String.raw`
+    // A socket that has carried nothing upgrades: TLS from its first byte is what a new connection makes.
+    const untouched = await run(String.raw`
+      const tls = require('tls');
+      const plain = require('net').connect(443, 'egress-test.invalid');
+      const socket = tls.connect({ socket: plain, servername: 'api.egress-test.invalid' }, () => {
+        console.log('upgraded', socket instanceof tls.TLSSocket, socket.encrypted);
+        socket.write('HEAD /untouched HTTP/1.0\r\nHost: egress-test.invalid\r\n\r\n');
+      });
+      socket.on('data', (bytes) => console.log('answer', String(bytes).trim()));
+      socket.on('close', () => console.log('plain destroyed', plain.destroyed));
+      socket.on('error', (error) => { console.error(error.code + ' ' + error.message); process.exitCode = 1; });
+    `);
+    assert.equal(untouched.status, 0, untouched.stdout);
+    assert.match(untouched.stdout, /upgraded true true/);
+    assert.match(untouched.stdout, /answer via-egress-tls egress-test\.invalid:443 as api\.egress-test\.invalid HEAD \/untouched HTTP\/1\.0/);
+    assert.match(untouched.stdout, /plain destroyed true/);
+    // One that has (STARTTLS) is refused by name: the egress carries that connection, and a new one would not be it.
+    const carried = await run(String.raw`
       const tls = require('tls');
       const plain = require('net').connect(443, 'egress-test.invalid', () => plain.write('GET /start HTTP/1.0\r\nHost: egress-test.invalid\r\n\r\n'));
       plain.once('data', (bytes) => {
         console.log('plain', String(bytes).trim());
-        const socket = tls.connect({ socket: plain }, () => {
-          console.log('upgraded', plain.destroyed, socket instanceof tls.TLSSocket);
-          socket.write('HEAD /upgrade HTTP/1.0\r\nHost: egress-test.invalid\r\n\r\n');
-        });
-        socket.on('data', (bytes) => console.log('answer', String(bytes).trim()));
-        socket.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+        const socket = tls.connect({ socket: plain }, () => console.log('unexpected secureConnect'));
+        socket.on('data', (bytes) => console.log('unexpected answer', String(bytes).trim()));
+        socket.on('error', (error) => console.log('refused', error.code, error.message));
+        socket.on('close', () => console.log('plain destroyed', plain.destroyed));
       });
       plain.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
     `);
-    assert.equal(upgraded.status, 0, upgraded.stdout);
-    assert.match(upgraded.stdout, /plain plain-egress-ready/);
-    assert.match(upgraded.stdout, /upgraded true true/);
-    assert.match(upgraded.stdout, /answer via-egress-tls egress-test\.invalid:443 HEAD \/upgrade HTTP\/1\.0/);
+    assert.equal(carried.status, 0, carried.stdout);
+    assert.match(carried.stdout, /plain plain-egress-ready/);
+    assert.match(carried.stdout, /refused ERR_NIMBUS_EGRESS_STARTTLS Nimbus: TLS over a socket that has already carried bytes \(STARTTLS\) is not available/);
+    assert.match(carried.stdout, /plain destroyed true/);
+    assert.doesNotMatch(carried.stdout, /unexpected/);
   } finally { await terminal.close(); }
 } finally { await probe.stop(); }
 for (const mode of ['without-tls', 'without-egress']) {

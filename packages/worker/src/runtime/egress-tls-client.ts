@@ -1,3 +1,13 @@
+/**
+ * Why `tls.connect({ socket })` over a socket that has carried bytes is refused
+ * under an egress: the egress carries that connection, and workerd starts no
+ * TLS on a connection through a service binding.
+ */
+const EGRESS_STARTTLS_REFUSAL =
+  "Nimbus: TLS over a socket that has already carried bytes (STARTTLS) is not available when the workspace's network "
+  + 'goes through an egress: workerd starts no TLS on a connection through a service binding. '
+  + 'tls.connect({ socket }) upgrades a net.Socket only before it carries any bytes.';
+
 /** Native TLSSocket owns the Node stream; the egress owns its encrypted session. */
 export const EGRESS_TLS_CLIENT_SOURCE = String.raw`
 function __nimbusEgressTlsConnect(real, net, args) {
@@ -18,6 +28,10 @@ function __nimbusEgressTlsConnect(real, net, args) {
     const bound = previous?._handle?.options;
     const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
     const port = Number(options.port ?? bound?.port);
+    // One that has carried nothing is TLS from its first byte, as a new connection is.
+    if (previous && (!(previous instanceof net.Socket) || previous.bytesRead !== 0 || previous.bytesWritten !== 0)) {
+      throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', ${JSON.stringify(EGRESS_STARTTLS_REFUSAL)});
+    }
     if (previous) previous.destroy();
     return typeof options.servername === 'string' && options.servername !== '' ? { host, port, servername: options.servername } : { host, port };
   };

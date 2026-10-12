@@ -10,6 +10,11 @@ published independently in the `@nimbus-sh` npm scope.
   `servername`, which the egress presents and checks the server by, as Node
   does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. An egress that
   ignores the field connects as before (Kinu ask 44).
+- Changed: under an egress, `tls.connect({ socket })` over a socket that has
+  already carried bytes (STARTTLS) fails with `ERR_NIMBUS_EGRESS_STARTTLS`.
+  It used to make TLS on a new connection to the same host, which a STARTTLS
+  server answers as plaintext. A socket that has carried nothing still
+  upgrades (Kinu ask 46).
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
