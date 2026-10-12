@@ -26,7 +26,7 @@ import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, type ResidentCell 
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, prefixEnd, type Namespace } from './namespace.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
-import type { AcquireAnswer } from './supervisor.js';
+import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type FileHead, type ResidentTables } from './tables.js';
 
 /** An own write held in memory: the store had no room for it in its tables. */
@@ -55,7 +55,7 @@ export interface Cells {
    */
   readonly bundle: Record<string, unknown>;
   /** Apply one authority delta and unseal (see admit below). */
-  admit(result: AcquireAnswer | null | undefined): Admitted;
+  admit(result: VfsAcquireResult | null | undefined): Admitted;
   dropDated(): void;
   /** One row of 'file', or undefined. The existence/shape query. */
   head(path: string): FileHead | undefined;
@@ -187,7 +187,7 @@ export function createCells(
     return true;
   };
 
-  const admit = (result: AcquireAnswer | null | undefined): Admitted => {
+  const admit = (result: VfsAcquireResult | null | undefined): Admitted => {
     const t = coherence.tables('admit');
     const dropped: string[] = [];
     const relist: string[] = [];

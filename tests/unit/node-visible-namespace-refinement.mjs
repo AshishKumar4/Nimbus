@@ -94,7 +94,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
   const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev, store.sync.acquireOptions()));
   for (const dir of applied.relist) {
     relists++;
-    await store.sync.relist(supervisor, dir);
+    await store.transport.relist(supervisor, dir);
   }
   assert.ok(store.namespace.ready(), `${where}: the namespace went unready`);
   assert.deepEqual(sorted(namespace()), sorted(testCase.atAnswer), `${where}: namespace after one ACQUIRE`);

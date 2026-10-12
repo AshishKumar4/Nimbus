@@ -1131,7 +1131,7 @@ const __fsMod = (() => {
   let _barrierBegins = 0;
   function _nsOwnSet(k, state, extra) {
     const before = _nsOwn.get(k);
-    const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, settled: null };
+    const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, mode: extra?.mode, settled: null };
     try { __resident.namespace.overlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
       // The view is sealed by the store. Let the already-projected structural
@@ -1271,7 +1271,7 @@ const __fsMod = (() => {
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
       if (_createdHere.has(k)) {
-        return { type: "file", size, mode: 0o100666 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+        return { type: "file", size, mode: 0o100000 | (_createdHere.get(k) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
       }
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
@@ -1281,7 +1281,7 @@ const __fsMod = (() => {
     }
     const own = _nsOwnView(k);
     if (own === "absent") return "absent";
-    if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+    if (own && own.dir) return { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
       const found = __resident.namespace.resolve(_nsMovedEntry(k, own), false);
@@ -1368,8 +1368,8 @@ const __fsMod = (() => {
    * that the path is there, and the retirement of any revision stamp the old
    * content carried. One place, because every sync mutation owes all three.
    */
-  function _parkWrite(k, cell) {
-    _noteCreation(k);
+  function _parkWrite(k, cell, mode = 0o666) {
+    _noteCreation(k, mode);
     _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
@@ -1385,20 +1385,30 @@ const __fsMod = (() => {
    *
    * A path counts as created when nothing was there before the write and the
    * view KNOWS nothing was there. Unknown is not created: a file the process
-   * never staged may exist at the authority, owned by someone else.
+   * never staged may exist at the authority, owned by someone else. Each is
+   * kept with the mode the call that made it asked for (before the umask).
    */
-  const _createdHere = new Set();
-  function _noteCreation(k) {
+  const _createdHere = new Map();
+  function _noteCreation(k, mode = 0o666) {
     if (_createdHere.has(k)) return;
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
     if (_statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null) return;
-    _createdHere.add(k);
+    _createdHere.set(k, mode);
   }
   function _forgetCreation(k) {
     const prefix = k + "/";
-    for (const key of [..._createdHere]) if (key === k || key.startsWith(prefix)) _createdHere.delete(key);
+    for (const key of [..._createdHere.keys()]) if (key === k || key.startsWith(prefix)) _createdHere.delete(key);
+  }
+  /**
+   * The permission bits a call that may create a file asks for (its `mode`
+   * option), before the umask: 0666 unless it says. The authority applies them
+   * only to a file the call makes; one already there keeps its own.
+   */
+  function _createMode(opts, syscall, p) {
+    const mode = opts !== null && typeof opts === "object" ? opts.mode : undefined;
+    return mode === undefined ? 0o666 : _coerceMode(mode, syscall, p);
   }
 
   function _forgetSyncTree(k) {
@@ -2356,7 +2366,7 @@ const __fsMod = (() => {
     if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
     await __resident.admission.roomForPushed(delta);
     const applied = __resident.cells.admit(delta);
-    for (const dir of applied.relist) await __resident.sync.relist(supervisor, dir);
+    for (const dir of applied.relist) await __resident.transport.relist(supervisor, dir);
     if (!_nsActive()) return false;
     _cursor.epoch = applied.cursor.epoch;
     _cursor.rev = applied.cursor.rev;
@@ -2599,7 +2609,7 @@ const __fsMod = (() => {
       _cursor.epoch = applied.cursor.epoch;
       _cursor.rev = applied.cursor.rev;
       // A directory that became searchable has descendants no delta names.
-      for (const dir of applied.relist) await __resident.sync.relist(supervisor, dir);
+      for (const dir of applied.relist) await __resident.transport.relist(supervisor, dir);
       _nsRetire(begin);
       // The read lease this answer carried, from the moment it was asked:
       // what it vouches for is this answer, applied now.
@@ -3698,8 +3708,12 @@ const __fsMod = (() => {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    try { await _writeFileAsync(dest, await _readFileAsync(src)); }
-    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+    try {
+      const data = await _readFileAsync(src);
+      const from = (await _statAsync(src)).mode & 0o7777;
+      await _writeFileAsync(dest, data, { mode: from });
+      if (((await _statAsync(dest)).mode & 0o7777) !== from) await _chmodAsync(dest, from);
+    } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
 
   async function _existsAsync(p) {
@@ -3737,18 +3751,19 @@ const __fsMod = (() => {
   }
 
   async function _writeFileAsync(p, data, opts) {
+    const mode = _createMode(opts, "open", p);
     const absPath = _resolveFollow(p, "open");
     const supervisor = _supervisor();
     // A target this view cannot judge (on a mount, where the launch did not
     // list it) is the authority's to answer for, as the async rename's
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
-    const k = _parkWholeWrite(p, data, !!supervisor);
+    const k = _parkWholeWrite(p, data, !!supervisor, mode);
     if (!supervisor) return;
     const bytes = __nimbusVfsCellBytes(__vfsWrites[k]).slice();
     const decided = _decidedHere(absPath, bytes.byteLength);
     // Logged now, in program order; decided here, it is answered once logged.
-    const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: bytes } }, { acknowledged: decided });
+    const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode, data: bytes } }, { acknowledged: decided });
     if (decided) {
       _detachStructuralMutation(__nimbusDecided(logged.claimed, bytes.byteLength), "write", p);
       return;
@@ -4201,8 +4216,9 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    const k = _parkWholeWrite(p, data, false);
-    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
+    const mode = _createMode(opts, "open", p);
+    const k = _parkWholeWrite(p, data, false, mode);
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
   }
 
   /**
@@ -4210,7 +4226,7 @@ const __fsMod = (() => {
    * \`live\`: the async form, whose write-back the authority answers for a
    * target this view cannot judge (_ensureWritable).
    */
-  function _parkWholeWrite(p, data, live) {
+  function _parkWholeWrite(p, data, live, mode) {
     const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p, live);
     const k = _strip(absPath);
@@ -4218,7 +4234,7 @@ const __fsMod = (() => {
     if (data instanceof Uint8Array) cell = data;
     else if (typeof data === "string") cell = data;
     else cell = String(data);
-    _parkWrite(k, cell);
+    _parkWrite(k, cell, mode);
     _parkedPartial.delete(k);
     return k;
   }
@@ -4235,6 +4251,7 @@ const __fsMod = (() => {
   // the program was told it succeeded). The cell is the file's whole content
   // only when it extends a parked cell of this process's that was whole.
   function _appendLocal(p, data, opts, acknowledged) {
+    const mode = _createMode(opts, "open", p);
     const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
@@ -4263,13 +4280,13 @@ const __fsMod = (() => {
       // Both strings — string concat.
       cell = existing + (typeof data === "string" ? data : String(data));
     }
-    _parkWrite(k, cell);
+    _parkWrite(k, cell, mode);
     // Bundle content is only a sync-view cache and may be stale: only a
     // pending whole write of this process's owns the cell's prefix.
     if (wholeBefore) _parkedPartial.delete(k);
     else _parkedPartial.set(k, __vfsWriteGenerations[k]);
     const appended = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data))).slice();
-    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode: 0o666, data: appended } }, { acknowledged, partial: !wholeBefore });
+    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode, data: appended } }, { acknowledged, partial: !wholeBefore });
   }
 
   // ── existsSync ──
@@ -4383,15 +4400,15 @@ const __fsMod = (() => {
     }
     // A directory the view already shows (the namespace's, or one this
     // process made, whose mkdir is ahead in the log) is not made again.
+    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
     const known = new Set();
     for (const dir of created) {
       const was = _nsMeta(dir, true);
-      if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
+      if (was === "absent") _nsOwnSet(dir, "dir", { hide: true, mode });
       else if (was && typeof was === "object" && was.type === "directory") known.add(dir);
     }
     // Each directory this call makes, shallowest first, as mkdir -p takes
     // them: one already there (or made by another) answers success.
-    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
     const made = created.filter((dir) => !known.has(dir)).map((dir) => ({ dir, mode }));
     const queued = _queueStructuralMutation(absPath, "mkdir", p, () => Promise.all(
       made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
@@ -4496,8 +4513,8 @@ const __fsMod = (() => {
     // the authority's, whatever the move does to the local tables.
     const oldPrefix = oldK + "/";
     const createdMoved = [..._createdHere]
-      .filter((key) => key === oldK || key.startsWith(oldPrefix))
-      .map((key) => newK + key.slice(oldK.length));
+      .filter(([key]) => key === oldK || key.startsWith(oldPrefix))
+      .map(([key, mode]) => [newK + key.slice(oldK.length), mode]);
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
     // The file's own cell moves with its name (retired once the move is
     // answered, below); one that is only an append's bytes cannot stand for
@@ -4565,10 +4582,10 @@ const __fsMod = (() => {
     }
     _forgetCreation(oldK);
     _forgetCreation(newK);
-    for (const key of createdMoved) _createdHere.add(key);
+    for (const [key, mode] of createdMoved) _createdHere.set(key, mode);
     for (const [ok, entry] of [..._nsOwn]) {
       if ((ok === oldK || ok.startsWith(oldPrefix)) && entry.state === "dir") {
-        _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide });
+        _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide, mode: entry.mode });
       }
     }
     if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom ?? undefined, link: movedLink });
@@ -4610,12 +4627,18 @@ const __fsMod = (() => {
   // ── copyFileSync ──
   // Bytes, not utf8: a utf8 round trip replaces every byte ≥ 0x80 with
   // U+FFFD, which is how a copied .png or .woff2 arrived corrupted.
+  // The copy is left as copyfile leaves it: the source's mode, exactly (over
+  // a file that was there, and past the umask), the bytes made with it first.
   function copyFileSync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    try { writeFileSync(dest, readFileSync(src)); }
-    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+    try {
+      const data = readFileSync(src);
+      const from = statSync(src).mode & 0o7777;
+      writeFileSync(dest, data, { mode: from });
+      if ((statSync(dest).mode & 0o7777) !== from) chmodSync(dest, from);
+    } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
 
   /**
@@ -4723,10 +4746,13 @@ const __fsMod = (() => {
       const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
       throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
     }
+    // A directory it makes takes the source's mode once its entries are in, as Node's cp leaves it.
+    const made = statSync(dest, { throwIfNoEntry: false }) === undefined;
     mkdirSync(dest, { recursive: true });
     for (const ent of readdirSync(src, { withFileTypes: true })) {
       cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
     }
+    if (made) chmodSync(dest, st.mode & 0o7777);
   }
 
   // ── mkdtemp ──
@@ -4744,12 +4770,12 @@ const __fsMod = (() => {
   }
   function mkdtempSync(prefix) {
     const name = _mkdtempName(prefix);
-    mkdirSync(name);
+    mkdirSync(name, { mode: 0o700 });
     return name;
   }
   async function _mkdtempAsync(prefix) {
     const name = _mkdtempName(prefix);
-    await _mkdirAsync(name);
+    await _mkdirAsync(name, { mode: 0o700 });
     return name;
   }
 
@@ -5170,6 +5196,7 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
+    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
     const absPath = _resolveFollow(path, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
@@ -5191,12 +5218,9 @@ const __fsMod = (() => {
     // The authority answered, so what it said is what the sync view keeps:
     // its stat when something is there, and when nothing is, the file this
     // open creates is the process's own.
-    if (!liveMeta && supervisor && !localStat) _createdHere.add(_strip(absPath));
+    if (!liveMeta && supervisor && !localStat) _createdHere.set(_strip(absPath), createMode);
     if (!exists) {
-      await _writeFileAsync(path, new Uint8Array(0));
-      if (mode !== undefined && mode !== null) {
-        await _chmodAsync(path, Number(mode) & ~__processUmask);
-      }
+      await _writeFileAsync(path, new Uint8Array(0), { mode: createMode });
       size = 0;
     } else if (fl.truncate) {
       await _truncateAsync(path, 0);
@@ -5207,6 +5231,7 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
+    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
     const absPath = _resolveFollow(path, "open");
     _ensureAncestorsTraversable(absPath, "open", path);
     const st = statSync(path, { throwIfNoEntry: false });
@@ -5218,7 +5243,7 @@ const __fsMod = (() => {
     if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
     if (fl.read && exists) _ensureReadable(absPath, "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
-    if (!exists) _noteCreation(_strip(absPath));
+    if (!exists) _noteCreation(_strip(absPath), createMode);
     let size = exists ? st.size : 0;
     // O_TRUNC means "make it empty", so zeroing is the requested semantic,
     // and creating a genuinely absent file is too. O_APPEND must NEVER
@@ -5228,10 +5253,7 @@ const __fsMod = (() => {
     if (fl.truncate || (!exists && !fl.append)) {
       // Creating or truncating also makes the file resident, which is what
       // lets the sync read/write path serve it without blocking.
-      writeFileSync(path, new Uint8Array(0));
-      if (!exists && mode !== undefined && mode !== null) {
-        chmodSync(path, Number(mode) & ~__processUmask);
-      }
+      writeFileSync(path, new Uint8Array(0), { mode: createMode });
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
@@ -6248,21 +6270,30 @@ const __fsMod = (() => {
       // does for __dot__gitignore) sees the copy in the VFS instead of
       // ENOENT. Each directory is made as mkdir makes it, so the namespace's
       // overlay lists it for the writes beneath it.
-      await _mkdirAsync("/" + destK, { recursive: true });
+      // Each file is copied as copyFile copies it; a directory made here takes
+      // the source's mode once its entries are in, as Node's cp leaves it.
+      const made = [];
+      const makeDir = async (rel) => {
+        const at = rel ? "/" + destK + "/" + rel : "/" + destK;
+        if (!(await _existsAsync(at))) made.push([at, rel ? srcAbs + "/" + rel : srcAbs]);
+        await _mkdirAsync(at, { recursive: true });
+      };
+      await makeDir("");
       const walk = async (relDir) => {
         const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
         const ents = await _readdirAsync(absDir, { withFileTypes: true });
         for (const ent of ents) {
           const rel = relDir ? relDir + "/" + ent.name : ent.name;
           if (ent.isDirectory && ent.isDirectory()) {
-            await _mkdirAsync("/" + destK + "/" + rel, { recursive: true });
+            await makeDir(rel);
             await walk(rel);
           } else {
-            await _writeFileAsync("/" + destK + "/" + rel, await _readFileAsync(srcAbs + "/" + rel));
+            await _copyFileAsync(srcAbs + "/" + rel, "/" + destK + "/" + rel);
           }
         }
       };
       await walk("");
+      for (const [at, from] of made) await _chmodAsync(at, (await _statAsync(from)).mode & 0o7777);
     },
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
@@ -6405,14 +6436,18 @@ const __fsMod = (() => {
             for (const c of this._chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
             const out = new Uint8Array(total); let off = 0;
             for (const c of this._chunks) { const b = (c instanceof Uint8Array) ? c : _enc.encode(c); out.set(b, off); off += b.byteLength; }
-            writeFileSync(this.path, out);
+            writeFileSync(this.path, out, this._createOptions());
           } else {
-            writeFileSync(this.path, this._chunks.join(""));
+            writeFileSync(this.path, this._chunks.join(""), this._createOptions());
           }
           cb();
         } catch (e) { cb(e); }
       }
       open() {}
+      // The file it makes: its `mode` option's.
+      _createOptions() {
+        return this._opts !== null && typeof this._opts === "object" && this._opts.mode !== undefined ? { mode: this._opts.mode } : undefined;
+      }
       // lib/internal/fs/streams.js: ends the stream, \`cb\` once it has closed.
       close(cb) {
         if (cb) {
@@ -12436,7 +12471,7 @@ function __esmLoad(resolution) {
       const mod = { exports: {} };
       Object.defineProperty(mod, "__nimbusImportMeta", { value: {
         url: resolution.url,
-        resolve: (id) => __nimbusImportMetaResolve(id, resolution.url),
+        resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
       } });
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);

@@ -173,9 +173,7 @@ export function createAdmission(coherence: Coherence): Admission {
     grantAsk = (async () => {
       try {
         const answer = await asked.fsStorageGrant!(named, want, dbBytes());
-        const granted = Number(answer && answer.granted) || 0;
-        cap! += granted;
-        if (answer && typeof answer.cap === 'number') cap = Math.max(cap!, answer.cap);
+        cap! += Number(answer && answer.granted) || 0;
       } catch {}
     })().finally(() => { grantAsk = null; });
     return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap!);

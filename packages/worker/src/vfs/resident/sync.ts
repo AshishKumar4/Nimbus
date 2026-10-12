@@ -23,52 +23,18 @@
  * over — measured past the DO CPU limit at pi scale. See `synchronize`.
  */
 
-import {
-  FS_LIST_PAGE_LIMIT,
-  FS_LIST_TREE_MAX_ENTRIES,
-  FS_READ_BATCH_PATH_LIMIT,
-  FS_READ_BATCH_REQUEST_BYTES,
-} from '@nimbus-sh/core/constants.js';
-import type { ResidentEntry, ResidentNamespace } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { Admission } from './admission.js';
 import type { Admitted, Cells } from './cells.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost, type ResidentCell } from './cell-cost.js';
+import { residentCellCost, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
-import { nsDescribes, nsKey, nsRowAt, nsSplit, type Namespace } from './namespace.js';
-import type { ResidentCred } from './permissions.js';
-import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
-import type { AcquireAnswer, ListEntry, ResidentStat, ResidentSupervisor } from './supervisor.js';
-import { NS_DIR, NS_FILE, NS_LINK, RK_BINARY, RK_OWN_WRITE, type ResidentTables } from './tables.js';
+import { nsDescribes, nsKey, nsRowAt, type Namespace } from './namespace.js';
+import type { ResidentSupervisor } from './supervisor.js';
+import { NS_FILE, RK_OWN_WRITE } from './tables.js';
+import { messageOf, type FillReport, type Transport, type WantedFile } from './transport.js';
 
-/**
- * The `fsReadBatch` bounds, as the filler must respect them.
- *
- * These are not the store's to choose — they belong to the supervisor, and a
- * filler that guessed at them does not degrade gracefully: `_rpcFsReadBatch`
- * validates with zod and rejects the WHOLE call, so one over-packed batch
- * loses every path in it.
- */
-const BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
-const BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
-/**
- * Pages one enumeration may take before it gives up.
- *
- * A bound rather than an unbounded loop because `fsList` is a network call in
- * a boot path: a supervisor that never reported a null `next` would spin here
- * forever and the process would never start. At the page size above this
- * admits filesystems into the tens of millions of paths, so it bounds a defect
- * rather than a workload.
- */
-const MAX_LIST_PAGES = 4096;
 /** Dependencies and VCS state: written in bulk, read through the module map or not at all. */
 const PUSH_EXCLUDE = ['node_modules', '.git'];
-/** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
-const LOOKUP_CONTENT_BYTES = 256 * 1024;
-
-/** A file to fetch: its listed size and revision, the epoch they are on, and its content key. */
-interface WantedFile { path: string; size: number; rev: number; epoch: string; ckey?: string | null; stat?: ResidentStat | null }
-
-export interface FillReport { requested: number; filled: number; failed: number; bytes?: number; ranges?: number; copied?: number }
 
 export interface SyncReport extends FillReport {
   skipped?: string;
@@ -87,22 +53,16 @@ export interface Sync {
   setPushRoots(roots: unknown): void;
   pushable(path: string): boolean;
   acquireOptions(): { namespace: true; push?: { roots: string[]; exclude: string[] } };
-  applyAcquire(supervisor: ResidentSupervisor | null | undefined, result: AcquireAnswer): Promise<Admitted>;
-  relist(supervisor: ResidentSupervisor | null | undefined, dir: string): Promise<void>;
-  bootLazy(supervisor: ResidentSupervisor | null | undefined): Promise<boolean>;
-  namespaceView(supervisor: ResidentSupervisor, device: number, cred: ResidentCred): ResidentNamespace;
+  applyAcquire(supervisor: ResidentSupervisor | null | undefined, result: VfsAcquireResult): Promise<Admitted>;
   setPlan(paths: unknown): void;
   setManifests(manifests: unknown): void;
   adoptModuleBundle(bundle: Record<string, ResidentCell> | null | undefined, moduleCursor: unknown): Cursor | null;
-  fetchFiles(supervisor: ResidentSupervisor, files: WantedFile[]): Promise<Required<Omit<FillReport, 'bytes' | 'ranges' | 'copied'>> & { bytes: number; ranges: number; copied: number }>;
   synchronize(supervisor: ResidentSupervisor | null | undefined): Promise<SyncReport>;
   refillFromNamespace(supervisor: ResidentSupervisor, dropped: readonly string[]): Promise<FillReport>;
   requireNamespace(supervisor: ResidentSupervisor | null | undefined, bootFailure: string | null): Promise<string | null>;
 }
 
-const messageOf = (e: unknown): string => ((e as { message?: string } | null)?.message) || String(e);
-
-export function createSync(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells): Sync {
+export function createSync(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport): Sync {
   /**
    * The acquire options this store asks for: stats with every delta entry, and
    * the content of files changed under the push roots — the process's working
@@ -150,61 +110,6 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     : { namespace: true });
 
   /**
-   * Re-read the names beneath `dir` from the authority: a directory that just
-   * became searchable, whose descendants no delta will ever name.
-   */
-  const relist = async (supervisor: ResidentSupervisor | null | undefined, dir: string): Promise<void> => {
-    const t = coherence.tables('relist');
-    if (!supervisor || typeof supervisor.fsList !== 'function') { namespace.markReady(t, false, 'the session cannot list its filesystem'); return; }
-    const prefix = dir + '/';
-    const seen: ListEntry[] = [];
-    let replaceBytes = 0;
-    let incomingBytes = 0;
-    if (admission.inHeap) {
-      for (const row of t.nsKeys()) {
-        const key = row.parent ? row.parent + '/' + row.name : row.name;
-        if (!key.startsWith(prefix)) continue;
-        replaceBytes += namespaceRowBytes(row.parent, row.name, t.nsGet(row.parent, row.name)?.target);
-      }
-    }
-    let after = prefix;
-    let done = false;
-    for (let page = 0; page < MAX_LIST_PAGES && !done; page++) {
-      let listed;
-      try { listed = await supervisor.fsList(after, FS_LIST_PAGE_LIMIT); }
-      catch (e) { namespace.markReady(t, false, 'a listing of /' + dir + ' failed (' + messageOf(e) + ')'); return; }
-      if (!listed || !Array.isArray(listed.entries)) { namespace.markReady(t, false, 'a listing of /' + dir + ' came back without entries'); return; }
-      for (const entry of listed.entries) {
-        const k = nsKey(entry.path);
-        if (!k.startsWith(prefix)) {
-          if (k > prefix) { done = true; break; }
-          continue;
-        }
-        if (entry.stat) {
-          if (admission.inHeap && admission.cap !== null) {
-            const [parent, name] = nsSplit(k);
-            incomingBytes += namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
-            const refused = admission.namespaceRefusal(incomingBytes - replaceBytes);
-            if (refused !== null) {
-              namespace.markReady(t, false, refused);
-              return;
-            }
-          }
-          seen.push(entry);
-        }
-      }
-      if (listed.next === null || listed.next === undefined) done = true;
-      else after = listed.next;
-    }
-    if (!done) { namespace.markReady(t, false, 'a listing of /' + dir + ' did not finish'); return; }
-    if (!seen.every((entry) => nsDescribes(entry.stat))) { namespace.markReady(t, false, 'a listing of /' + dir + ' named an entry without its stat'); return; }
-    // Exactly what the listing has under the directory: a name it no longer
-    // shows (hidden now, or gone) leaves, one it shows is written.
-    namespace.deleteTree(t, dir, false);
-    for (const entry of seen) namespace.put(t, nsKey(entry.path), entry.stat!, entry.rev, entry.linkTarget, entry.unlisted ?? null);
-  };
-
-  /**
    * Apply one ACQUIRE answer to the store: room for what it pushes (N18), the
    * delta itself, then the directories it says no delta will itemise — relisted
    * now where the namespace is enumerated, forgotten where it is listed on
@@ -212,162 +117,14 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
    * WASI process's barrier run it; node-shims.ts's barriers run the same three
    * steps inline.
    */
-  const applyAcquire = async (supervisor: ResidentSupervisor | null | undefined, result: AcquireAnswer): Promise<Admitted> => {
+  const applyAcquire = async (supervisor: ResidentSupervisor | null | undefined, result: VfsAcquireResult): Promise<Admitted> => {
     await admission.roomForPushed(result);
     const applied = cells.admit(result);
     for (const dir of applied.relist) {
       if (namespace.lazy) namespace.forgetListed(dir);
-      else await relist(supervisor, dir);
+      else await transport.relist(supervisor, dir);
     }
     return applied;
-  };
-
-  /**
-   * Fetch these files from the authority and install them, each dated at the
-   * revision the listing reported it at.
-   *
-   * THE BATCH BOUNDS ARE THE SUPERVISOR'S AND ARE NOT NEGOTIABLE HERE.
-   * `_rpcFsReadBatch` validates with zod and rejects the WHOLE call, so an
-   * over-packed batch loses every path in it rather than degrading. Three
-   * separate bounds apply at once and the packing below respects all three:
-   *
-   *   paths per call      BATCH_PATHS            (FS_READ_BATCH_PATH_LIMIT)
-   *   requested bytes     BATCH_BYTES            (FS_READ_BATCH_REQUEST_BYTES)
-   *   bytes per range     RESIDENT_CHUNK_BYTES   (the single-value ceiling)
-   *
-   * Every file is split into RESIDENT_CHUNK_BYTES ranges — most files are one
-   * short range — and the ranges are packed into calls. That makes the large
-   * file the SAME path as the small one rather than a special case, and it means
-   * no whole-file buffer is ever held: each range is written straight into its
-   * own chunk row as it lands, and the head row follows only once every range of
-   * that file has.
-   *
-   * A row is stamped with its OWN listed revision rather than with the global
-   * cursor. Both are conservative — a write landing mid-fetch reports a revision
-   * above the stamp, so the next ACQUIRE evicts and refetches, while stamping
-   * newer than the bytes would keep a stale row forever — but the per-path
-   * revision is the tighter of the two, and it is the one that survives a
-   * reconcile: a row dated at the global cursor is indistinguishable from a row
-   * whose path moved at that same revision.
-   */
-  const fetchFiles = async (supervisor: ResidentSupervisor, wantedFiles: WantedFile[]) => {
-    // Content already held under another path, or wanted twice in this batch,
-    // is fetched once: equal keys are equal bytes (the second copy is local).
-    const t = coherence.tables('fetchFiles');
-    const requested = wantedFiles.length;
-    let copied = 0;
-    const files: WantedFile[] = [];
-    const later: WantedFile[] = [];
-    const fetching = new Set<string>();
-    for (const file of wantedFiles) {
-      if (file.ckey != null) {
-        if (cells.copyByKey(t, file.path, file.ckey, file.rev)) { copied++; continue; }
-        if (fetching.has(file.ckey)) { later.push(file); continue; }
-        fetching.add(file.ckey);
-      }
-      files.push(file);
-    }
-    // One flat list of ranges across all files, so packing is a single pass and
-    // a 25 MiB file and a 40-byte one are the same shape.
-    const ranges: { path: string; rev: number; epoch: string; part: number; parts: number; offset: number; length: number; size: number; ckey: string | null }[] = [];
-    for (const file of files) {
-      const parts = Math.max(1, Math.ceil(file.size / RESIDENT_CHUNK_BYTES));
-      for (let part = 0; part < parts; part++) {
-        const offset = part * RESIDENT_CHUNK_BYTES;
-        ranges.push({
-          path: file.path,
-          rev: file.rev,
-          epoch: file.epoch,
-          part,
-          parts,
-          offset,
-          length: Math.min(RESIDENT_CHUNK_BYTES, Math.max(0, file.size - offset)),
-          size: file.size,
-          ckey: file.ckey ?? null,
-        });
-      }
-    }
-
-    // Per-file landed-part counts, so a head row is written only once every
-    // range of that file is in. See cells.putHead.
-    const landed = new Map<string, number>();
-    let filled = 0, failed = 0, fetchedBytes = 0;
-    const failedPaths = new Set<string>();
-
-    for (let at = 0; at < ranges.length;) {
-      const batch: typeof ranges = [];
-      let bytes = 0;
-      while (
-        at < ranges.length
-        && batch.length < BATCH_PATHS
-        && (batch.length === 0 || bytes + ranges[at]!.length <= BATCH_BYTES)
-      ) {
-        bytes += ranges[at]!.length;
-        batch.push(ranges[at]!);
-        at++;
-      }
-      // N18: room for the batch first; what the ledger will not admit is read
-      // through the session instead of held.
-      if (!(await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES))) {
-        for (const r of batch) failedPaths.add(r.path);
-        continue;
-      }
-      let results;
-      try {
-        results = await supervisor.fsReadBatch!(
-          batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev })),
-        );
-      } catch {
-        for (const r of batch) failedPaths.add(r.path);
-        continue;
-      }
-      for (let i = 0; i < batch.length; i++) {
-        const range = batch[i]!;
-        const entry = results && results[i];
-        if (!entry || entry.error) {
-          // A denial is a real answer and is stored as one, so a later read
-          // reports EACCES synchronously instead of missing. Anything else is a
-          // path this store will not hold, and a read of it falls through to
-          // exactly the miss it would have had before.
-          const code = entry && typeof entry.error === 'object' && entry.error !== null ? entry.error.code : undefined;
-          if (code === 'EACCES' && range.part === 0) {
-            cells.put(t, range.path, { error: 'EACCES' }, range.rev);
-            filled++;
-          } else failedPaths.add(range.path);
-          continue;
-        }
-        if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
-        const chunk = residentBytes(entry.bytes);
-        if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
-        fetchedBytes += chunk.byteLength;
-        if (!cells.putChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
-        const seen = (landed.get(range.path) || 0) + 1;
-        landed.set(range.path, seen);
-        if (seen === range.parts && !failedPaths.has(range.path)) {
-          cells.putHead(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey);
-          filled++;
-        }
-      }
-    }
-
-    // A file whose ranges did not all land has chunk rows and no head, so it is
-    // unreadable rather than short. Drop them so the slot does not carry bytes
-    // nothing will ever serve.
-    for (const path of failedPaths) {
-      failed++;
-      t.chunkDelete(path);
-      t.fileDelete(path);
-    }
-
-    for (const file of later) {
-      if (cells.copyByKey(t, file.path, file.ckey, file.rev)) copied++;
-      else failed++;
-    }
-    if (ranges.length > 0) await admission.reportSize();
-    return {
-      requested, filled: filled + copied, failed,
-      bytes: fetchedBytes, ranges: ranges.length, copied,
-    };
   };
 
   /**
@@ -396,74 +153,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE) continue;
       refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch });
     }
-    if (refetch.length > 0) await fetchFiles(supervisor, refetch);
+    if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
     return applied.cursor;
-  };
-
-  /**
-   * Enumerate the whole filesystem, one page at a time.
-   *
-   * Every page is dated, and a page whose epoch differs from the first ABORTS
-   * the listing. The supervisor was replaced mid-walk, so the pages already
-   * collected describe a filesystem that no longer exists and the revision they
-   * would be dated at is meaningless. Returning short is safe — the rows simply
-   * are not there and the reads miss — while stitching the two halves together
-   * would date one incarnation's bytes at another's clock.
-   */
-  const enumerate = async (supervisor: ResidentSupervisor) => {
-    const t = coherence.tables('enumerate');
-    const entries: WantedFile[] = [];
-    // Every name, whatever its kind: the namespace is built from these.
-    const names: ListEntry[] = [];
-    let namespaceBytes = 0;
-    let after: string | null = null;
-    let cursor: Cursor | null = null;
-    for (let page = 0; page < MAX_LIST_PAGES; page++) {
-      const listed = await supervisor.fsList!(after, FS_LIST_PAGE_LIMIT);
-      if (!listed || !Array.isArray(listed.entries)) {
-        throw new Error('Nimbus: fsList returned no page');
-      }
-      if (cursor === null) {
-        cursor = { epoch: String(listed.epoch), rev: Number(listed.rev) };
-      } else if (String(listed.epoch) !== cursor.epoch) {
-        return { entries, names, cursor, complete: false, reason: 'the supervisor changed incarnation mid-enumeration' };
-      }
-      for (const entry of listed.entries) {
-        if (entry.stat) {
-          if (admission.inHeap && admission.cap !== null) {
-            const key = nsKey(entry.path);
-            const [parent, name] = nsSplit(key);
-            if (key) namespaceBytes += namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
-            const heap = coherence.heap;
-            const refused = admission.namespaceRefusal(namespaceBytes - (heap === null ? 0 : heap.nsBytes()));
-            if (refused !== null) namespace.refuse(t, refused);
-          }
-          names.push(entry);
-        }
-        // Directories carry no content, and a symlink's size is its TARGET's
-        // length rather than the resolved file's — reading one by that size
-        // would store a truncated file and call it whole. Content is fetched
-        // by the path a symlink resolves to.
-        if (entry.kind !== 'file') continue;
-        const path = nsKey(entry.path);
-        if (!path) continue;
-        const size = Number(entry.size);
-        // The path's own last-mutation revision. It is what makes a held row
-        // verifiable without fetching its bytes, and so what makes a poison
-        // repairable rather than fatal — see synchronize.
-        const rev = Number(entry.rev);
-        if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
-          throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
-        }
-        // Its stat, for the bytes the store already has: who may read them (namespace.readable).
-        entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey), stat: entry.stat ?? null });
-      }
-      if (listed.next === null || listed.next === undefined) {
-        return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
-      }
-      after = listed.next;
-    }
-    return { entries, names, cursor, complete: false, reason: 'the filesystem exceeded the enumeration page bound' };
   };
 
   /**
@@ -538,7 +229,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
 
     let listing;
     try {
-      listing = await enumerate(supervisor);
+      listing = await transport.enumerate(supervisor);
     } catch (e) {
       return { requested: 0, filled: 0, failed: 0, skipped: 'fsList failed: ' + messageOf(e) };
     }
@@ -666,7 +357,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       for (const { file, text } of copied) {
         if (!cells.put(t, file.path, text, file.rev, file.ckey)) fetch.push(file);
       }
-      filled = await fetchFiles(supervisor, fetch);
+      filled = await transport.fetchFiles(supervisor, fetch);
     }
     finally { giveBack(); }
 
@@ -740,217 +431,6 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       cells.put(t, path, bundle![path]!, rev);
     }
     return cells.admit({ poison: false, paths: [], epoch: String(given.epoch), rev }).cursor;
-  };
-
-  /**
-   * Start a namespace with no names at `cursor`, to be listed on demand. Every
-   * row and held file goes: nothing here is dated against the new cursor.
-   */
-  const beginLazy = (t: ResidentTables, cursor: Cursor): void => {
-    namespace.beginLazy();
-    t.clear();
-    cells.dropHeld(true);
-    coherence.writeCursor(t, cursor);
-    coherence.unseal();
-    coherence.setUndated(false);
-    namespace.markReady(t, true);
-  };
-
-  /**
-   * Boot a lazily listed namespace: the authority's current cursor (an ACQUIRE
-   * from no cursor is a poison by construction, which carries it) and no
-   * names. False when no cursor came back: the process then asks the
-   * authority for everything, as it did before this store.
-   */
-  const bootLazy = async (supervisor: ResidentSupervisor | null | undefined): Promise<boolean> => {
-    if (!supervisor || typeof supervisor.fsAcquire !== 'function') return false;
-    let answer = null;
-    try { answer = await supervisor.fsAcquire(null, 0, { namespace: true }); }
-    catch { return false; }
-    if (!answer || typeof answer.epoch !== 'string' || typeof answer.rev !== 'number') return false;
-    // Sealed until now, and this is what unseals it: nothing is held to date.
-    beginLazy(coherence.tables('bootLazy'), { epoch: answer.epoch, rev: answer.rev });
-    return true;
-  };
-
-  /**
-   * The ACQUIRE barrier of a lazily listed namespace, taken where input from
-   * outside the process enters it (the runtime decides where; see the core
-   * README's process model). An answer is applied as every barrier applies one
-   * (applyAcquire). One that cannot be — a poison, a delta without
-   * stats, no answer — dates nothing the store holds, and the namespace starts
-   * again from nothing at the authority's cursor: names are listed again on
-   * demand, never served from a state the cursor has left.
-   */
-  const lazyBarrier = async (supervisor: ResidentSupervisor): Promise<boolean> => {
-    const t = coherence.tables('lazyBarrier');
-    const cursor = coherence.cursor();
-    let answer: AcquireAnswer | null | undefined = null;
-    if (cursor !== null) {
-      try { answer = await supervisor.fsAcquire!(cursor.epoch, cursor.rev, { namespace: true }); }
-      catch { answer = null; }
-    }
-    if (answer && !answer.poison && typeof answer.epoch === 'string' && typeof answer.rev === 'number') {
-      await applyAcquire(supervisor, answer);
-      if (namespace.ready()) return true;
-      const now = coherence.cursor()!;
-      answer = { epoch: now.epoch, rev: now.rev };
-    }
-    if (answer && typeof answer.epoch === 'string' && typeof answer.rev === 'number') {
-      beginLazy(t, { epoch: answer.epoch, rev: answer.rev });
-      return true;
-    }
-    return bootLazy(supervisor);
-  };
-
-  /**
-   * Learn the names along one path in one round trip: an lstat of each key, in
-   * order from the shallowest. A path ten directories deep costs one batch
-   * rather than a listing of each directory on the way. A key below a symlink
-   * names what the session reached THROUGH the link, which is not that key's
-   * row, so nothing past the first link (or the first missing name) is written:
-   * the walk follows the link and asks again. A missing name is not recorded as
-   * absent; only a listed directory says what is not in it.
-   *
-   * With `contentBytes`, the same trip reads the last key's bytes and lstats it
-   * again: a program that stats a file opens it next (a compiler's header
-   * search, an interpreter's import), and a small file then costs nothing more.
-   * The bytes are kept only when both lstats show the same file at the same
-   * revision, so no write came between them and the read, and only when they
-   * are all of it.
-   */
-  const lookupKeys = async (supervisor: ResidentSupervisor, keys: string[], contentBytes: number): Promise<boolean> => {
-    if (!supervisor || typeof supervisor.fsReadBatch !== 'function' || keys.length === 0) return false;
-    const t = coherence.require();
-    const batch = keys.slice(0, BATCH_PATHS - 2);
-    const last = batch[batch.length - 1]!;
-    const withContent = contentBytes > 0 && batch.length === keys.length;
-    const requests: { path: string; lstat?: boolean; offset?: number; length?: number }[] = batch.map((k) => ({ path: '/' + k, lstat: true }));
-    if (withContent) requests.push({ path: '/' + last, offset: 0, length: contentBytes }, { path: '/' + last, lstat: true });
-    let answers;
-    try { answers = await supervisor.fsReadBatch(requests); }
-    catch { return false; }
-    if (!Array.isArray(answers) || answers.length !== requests.length) return false;
-    let reachedLast = false;
-    for (let i = 0; i < batch.length; i++) {
-      const answer = answers[i];
-      if (!answer || answer.error || answer.stat === null || answer.stat === undefined || !nsDescribes(answer.stat)) break;
-      let target;
-      if (answer.stat.type === 'symlink') {
-        try { target = await supervisor.readlink!('/' + batch[i]); }
-        catch { break; }
-        if (typeof target !== 'string') break;
-      }
-      if (!namespace.tryPut(t, batch[i]!, answer.stat, Number(answer.stat.revision) || 0, target)) return false;
-      if (i === batch.length - 1) reachedLast = true;
-      if (answer.stat.type !== 'directory') break;
-    }
-    if (withContent && reachedLast) {
-      const before = answers[batch.length - 1]!.stat!;
-      const read = answers[batch.length];
-      const after = answers[batch.length + 1];
-      const bytes = read && !read.error && read.bytes ? residentBytes(read.bytes) : null;
-      if (
-        before.type === 'file' && bytes !== null && bytes.byteLength === Number(before.size)
-        && after && !after.error && after.stat && after.stat.type === 'file'
-        && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision)
-        && await admission.ensureRoom(bytes.byteLength + RESIDENT_ROW_BYTES)
-      ) {
-        // Whatever was held there is replaced whole, never left headless or with stray parts.
-        t.fileDelete(last);
-        t.chunkDelete(last);
-        if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
-      }
-    }
-    return true;
-  };
-
-  /**
-   * List the entries directly under `dir`: its names (readdir) and each one's
-   * stat (an lstat batch), then each symlink's target. Two round trips for a
-   * directory of any size up to the batch bound, where a stat per name would be
-   * one each. A name that went between the two is not written; one that came is
-   * reported by the next delta, since the store's cursor predates both.
-   * Returns false when the directory cannot be listed (gone, not a directory,
-   * not readable): the caller asks the authority instead.
-   */
-  const listDirectory = async (supervisor: ResidentSupervisor, dir: string): Promise<boolean> => {
-    if (!supervisor || typeof supervisor.readdir !== 'function' || typeof supervisor.fsReadBatch !== 'function') return false;
-    const t = coherence.require();
-    let names;
-    try { names = await supervisor.readdir('/' + dir); }
-    catch { return false; }
-    if (!Array.isArray(names)) return false;
-    const keys = names.map((entry) => (dir === '' ? '' : dir + '/') + String(entry.name));
-    const stats = new Map<string, ResidentStat & { type: string }>();
-    for (let i = 0; i < keys.length; i += BATCH_PATHS) {
-      const batch = keys.slice(i, i + BATCH_PATHS);
-      let answers;
-      try { answers = await supervisor.fsReadBatch(batch.map((k) => ({ path: '/' + k, lstat: true }))); }
-      catch { return false; }
-      if (!Array.isArray(answers) || answers.length !== batch.length) return false;
-      for (let j = 0; j < batch.length; j++) {
-        const answer = answers[j];
-        if (!answer || answer.error) return false;
-        if (answer.stat === null || answer.stat === undefined) continue;
-        if (!nsDescribes(answer.stat)) return false;
-        stats.set(batch[j]!, answer.stat);
-      }
-    }
-    const targets = new Map<string, string>();
-    for (const [k, stat] of stats) {
-      if (stat.type !== 'symlink') continue;
-      let target;
-      try { target = await supervisor.readlink!('/' + k); }
-      catch { return false; }
-      if (typeof target !== 'string') return false;
-      targets.set(k, target);
-    }
-    // Only what the directory holds now: a row for a name it no longer shows goes.
-    for (const child of namespace.children(dir)) {
-      const k = (dir === '' ? '' : dir + '/') + child.name;
-      if (!stats.has(k)) namespace.deleteTree(t, k, true);
-    }
-    for (const [k, stat] of stats) {
-      if (!namespace.tryPut(t, k, stat, Number(stat.revision) || 0, targets.get(k))) return false;
-    }
-    namespace.markListed(dir);
-    return true;
-  };
-
-  /**
-   * List everything beneath `dir` in one answer (fsListTree): what a walker
-   * of the tree (git status, a build, an interpreter's startup) is about to
-   * look at, in one round trip instead of two per directory, every entry
-   * current at one revision. A subtree larger than the listing's bound is
-   * refused there (E2BIG), and listed one directory at a time instead.
-   * True when `dir` was listed whole.
-   */
-  const listSubtree = async (supervisor: ResidentSupervisor, dir: string): Promise<boolean> => {
-    if (!supervisor || typeof supervisor.fsListTree !== 'function') return false;
-    const t = coherence.require();
-    let tree;
-    try { tree = await supervisor.fsListTree('/' + dir, FS_LIST_TREE_MAX_ENTRIES); }
-    catch { return false; }
-    if (!tree || !Array.isArray(tree.entries)) return false;
-    const listed = [dir];
-    const written = new Set<string>();
-    for (const entry of tree.entries) {
-      const k = nsKey(entry.path);
-      if (!entry.stat || !nsDescribes(entry.stat)) return false;
-      if (!namespace.tryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) return false;
-      written.add(k);
-      if (entry.kind === 'directory' && !entry.unlisted) listed.push(k);
-    }
-    // A name the listing no longer shows under a directory it listed goes.
-    for (const directory of listed) {
-      for (const child of namespace.children(directory)) {
-        const k = (directory === '' ? '' : directory + '/') + child.name;
-        if (!written.has(k)) namespace.deleteTree(t, k, true);
-      }
-    }
-    for (const directory of listed) namespace.markListed(directory);
-    return true;
   };
 
   const fail = (pass: SyncReport | null): string | null => (pass && (pass.skipped || pass.incomplete)) || null;
@@ -1040,61 +520,9 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     setPushRoots(roots) {
       pushRoots = (Array.isArray(roots) ? roots : []).map((r) => String(r).replace(/^\/+|\/+$/g, ''));
     },
-    /** Whether a changed file at `path` is one the push roots would carry. */
     pushable,
     acquireOptions,
     applyAcquire,
-    relist,
-    bootLazy,
-    /**
-     * The store as a WASI process's filesystem adapter reads it (core
-     * runtime/wasi/resident-filesystem.ts, ResidentNamespace): names as lstats,
-     * listed on demand, file bytes held or fetched, and the barrier. `device` is
-     * the session's SQLite device, the only one the adapter answers for.
-     */
-    namespaceView(supervisor, device, cred) {
-      namespace.setCred(cred);
-      const encoder = new TextEncoder();
-      const typeOf = (kind: number): ResidentEntry['type'] => (kind === NS_DIR ? 'directory' : kind === NS_LINK ? 'symlink' : 'file');
-      const view: ResidentNamespace = {
-        device: Number(device),
-        cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
-        ready: () => namespace.lazy && namespace.ready(),
-        entry(k) {
-          const row = nsRowAt(coherence.require(), k);
-          if (row === undefined) return namespace.listedAt(k) ? null : undefined;
-          return {
-            type: typeOf(row.kind), dev: row.dev || 0, ino: row.ino, nlink: row.nlink || 1,
-            size: row.size, atime: row.atime, mtime: row.mtime, ctime: row.ctime,
-            mode: row.mode, uid: row.uid, gid: row.gid, revision: row.rev,
-            target: row.target == null ? null : String(row.target),
-          };
-        },
-        children(k) {
-          if (!namespace.isListed(k)) return undefined;
-          return namespace.children(k).map((child) => ({ name: child.name, type: typeOf(child.kind) }));
-        },
-        list: (k) => listDirectory(supervisor, k),
-        lookup: (keys, content) => lookupKeys(supervisor, keys, content ? LOOKUP_CONTENT_BYTES : 0),
-        listTree: (k) => listSubtree(supervisor, k),
-        content(k) {
-          const cell = cells.get(k);
-          if (cell === undefined || (typeof cell === 'object' && 'error' in cell)) return undefined;
-          return typeof cell === 'string' ? encoder.encode(cell) : cell;
-        },
-        async fill(k, entry) {
-          const cursor = coherence.cursor();
-          if (cursor === null) return null;
-          await fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
-          const bytes = view.content(k);
-          return bytes === undefined ? null : bytes;
-        },
-        barrier: () => lazyBarrier(supervisor),
-        reserve: (bytes) => admission.pin(bytes),
-        release: (bytes) => admission.unpin(bytes),
-      };
-      return view;
-    },
     setPlan(paths) {
       plan = new Set(Array.isArray(paths) ? paths.map((p) => nsKey(p)) : []);
     },
@@ -1104,7 +532,6 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       manifests = files === null ? null : new Map(Object.entries(files));
     },
     adoptModuleBundle,
-    fetchFiles,
     synchronize,
     /**
      * Refetch, after a delta the store applied without a listing, what it should
@@ -1126,7 +553,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         if (row === undefined || row.kind !== NS_FILE) continue;
         fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null });
       }
-      return fetchFiles(supervisor, fetch);
+      return transport.fetchFiles(supervisor, fetch);
     },
     /**
      * The launch's last step before user code: the namespace must answer, since

@@ -57,6 +57,8 @@ const expected = {
   'promise-copy.txt': 0o600,
   'copied-dir': 0o700,
   'copied-dir/key': 0o600,
+  'promise-copied-dir': 0o700,
+  'promise-copied-dir/key': 0o600,
 };
 const program = `
 const fs = require('fs');
@@ -81,6 +83,7 @@ const fs = require('fs');
   fs.copyFileSync(at('secret.txt'), at('copy-over.txt'));
   await fs.promises.copyFile(at('secret.txt'), at('promise-copy.txt'));
   fs.cpSync(at('private'), at('copied-dir'), { recursive: true });
+  await fs.promises.cp(at('private'), at('promise-copied-dir'), { recursive: true });
   const modes = {};
   for (const name of ${JSON.stringify(Object.keys(expected))}) modes[name] = fs.statSync(at(name)).mode & 0o777;
   console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777 }));

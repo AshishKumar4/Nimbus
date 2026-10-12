@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a file or directory a Node program creates has the mode it asked
+  for, as Node's does. `writeFile` and `appendFile` (sync, callback and
+  promise forms), `open` and write streams honour `mode`, less the umask, and
+  a file already there keeps its own. `mkdir` shows its `mode` to the
+  program's own `stat`. `mkdtemp` makes 0700. `copyFile` and `cp` leave the
+  source's mode. Before, such files were made 0666 less the umask, so
+  `writeFileSync(p, secret, { mode: 0o600 })` made a file others could read.
+
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Breaking: VFS-2b uses one change notification for the namespace:

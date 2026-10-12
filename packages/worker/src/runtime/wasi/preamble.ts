@@ -236,8 +236,8 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
   const ready = (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
-    if (root === null || !(await store.sync.bootLazy(supervisor))) return null;
-    view = store.sync.namespaceView(supervisor, root.dev, cred);
+    if (root === null || !(await store.lazy.bootLazy(supervisor))) return null;
+    view = store.lazy.namespaceView(supervisor, root.dev, cred);
     return view;
   })().catch(() => { view = null; return null; });
   const booting: ResidentNamespace = {

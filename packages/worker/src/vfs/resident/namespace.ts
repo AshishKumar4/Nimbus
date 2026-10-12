@@ -31,8 +31,12 @@ import type { Admission } from './admission.js';
 import { namespaceRowBytes } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import { namespaceAllows, type ModeMeta, type ResidentCred } from './permissions.js';
-import type { AcquireEntry, ListEntry, ResidentStat } from './supervisor.js';
+import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { NS_DIR, NS_FILE, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
+
+/** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
+export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'>
+  & Partial<Pick<RuntimeVfsStat, 'dev' | 'nlink' | 'revision'>>;
 
 /** Symlink hops before a resolution is ELOOP, as Linux's MAXSYMLINKS. */
 const NS_MAX_HOPS = 40;
@@ -61,8 +65,8 @@ export interface Namespace {
   rowAt(k: string): NsRow | undefined;
   /** Why the namespace is not answering (meaningful only while ready() is false). */
   notReadyCause(): string;
-  put(t: ResidentTables, k: string, stat: ResidentStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
-  tryPut(t: ResidentTables, k: string, stat: ResidentStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
+  put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
+  tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
   deleteTree(t: ResidentTables, k: string, self: boolean): void;
   /** Drop one row and what the table keeps of it in heap. */
   forget(t: ResidentTables, k: string): void;
@@ -72,10 +76,10 @@ export interface Namespace {
   children(k: string): { name: string; kind: number; mode: number }[];
   /** Whether the credential may read the file `stat` describes (see readable). */
   readable(stat: ModeMeta | null | undefined): boolean;
-  applyEntry(t: ResidentTables, entry: AcquireEntry): string | null;
-  replace(t: ResidentTables, entries: readonly ListEntry[]): void;
+  applyEntry(t: ResidentTables, entry: VfsInvalidatedPath): string | null;
+  replace(t: ResidentTables, entries: readonly VfsListEntry[]): void;
   noteOwnFile(k: string, size: number, rev: number): void;
-  noteLiveStat(k: string, stat: ResidentStat | null, written: number | undefined): void;
+  noteLiveStat(k: string, stat: (NsStat & { linkTarget?: string | null; target?: string | null }) | null, written: number | undefined): void;
   /** Every name forgotten, and the namespace stops answering (store.clear). */
   clear(): void;
   /** Whether this store lists on demand rather than enumerating. */
@@ -111,7 +115,7 @@ export function nsKey(path: unknown): string {
  * answering (as for a delta without stats) until a listing that does
  * describe every name restores it.
  */
-export function nsDescribes(stat: unknown): stat is ResidentStat & { type: string } {
+export function nsDescribes(stat: unknown): stat is Pick<RuntimeVfsStat, 'type' | 'mode' | 'uid' | 'gid'> {
   const described = stat as Record<string, unknown> | null | undefined;
   if (!described || typeof described.type !== 'string') return false;
   for (const field of ['mode', 'uid', 'gid']) {
@@ -215,7 +219,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
    * on when it did not name its entries, null when it did. Undefined (a delta,
    * a note) keeps what the row says.
    */
-  const put = (t: ResidentTables, k: string, stat: ResidentStat, rev: unknown, target?: string | null, unlistedAt?: string | null): void => {
+  const put = (t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlistedAt?: string | null): void => {
     const [parent, name] = nsSplit(k);
     const kind = nsKindCode(stat.type);
     const mount = kind !== NS_DIR ? null : unlistedAt === undefined ? (unlisted.get(k) ?? null) : unlistedAt;
@@ -238,7 +242,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
 
   // The authority operation may succeed while metadata cannot be cached.
   // A heap put refused for room has sealed the sync view; keep the async result.
-  const tryPut = (t: ResidentTables, k: string, stat: ResidentStat, rev: unknown, target?: string | null, unlistedAt?: string | null): boolean => {
+  const tryPut = (t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlistedAt?: string | null): boolean => {
     try { put(t, k, stat, rev, target, unlistedAt); return true; }
     catch (error) {
       if (admission.inHeap && (error as { code?: unknown } | null)?.code === 'ENOSPC') return false;

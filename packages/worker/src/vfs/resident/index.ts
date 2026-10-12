@@ -148,8 +148,10 @@
 import { createAdmission, type Admission } from './admission.js';
 import { createCells, type Cells } from './cells.js';
 import { createCoherence, type Coherence } from './coherence.js';
+import { createLazy, type Lazy } from './lazy.js';
 import { createNamespace, type Namespace } from './namespace.js';
 import { createSync, type Sync } from './sync.js';
+import { createTransport, type Transport } from './transport.js';
 import { heapTables, sqlTables, type HeapTables, type ResidentSql, type ResidentTables } from './tables.js';
 
 export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
@@ -180,7 +182,9 @@ export interface ResidentStore {
   readonly admission: Admission;
   readonly namespace: Namespace;
   readonly cells: Cells;
+  readonly transport: Transport;
   readonly sync: Sync;
+  readonly lazy: Lazy;
 }
 
 export function createResidentStore(options: ResidentStoreOptions = {}): ResidentStore {
@@ -189,7 +193,9 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
   const namespace = createNamespace(coherence, admission);
   const observeRead = options.observeRead ?? null;
   const cells = createCells(coherence, admission, namespace, observeRead);
-  const sync = createSync(coherence, admission, namespace, cells);
+  const transport = createTransport(coherence, admission, namespace, cells);
+  const sync = createSync(coherence, admission, namespace, cells, transport);
+  const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
 
   const bindTables = (t: ResidentTables, heap: HeapTables | null): void => {
     // A store can outlive its process. Own rows left by an earlier one are
@@ -222,6 +228,8 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
     admission,
     namespace,
     cells,
+    transport,
     sync,
+    lazy,
   };
 }
