@@ -405,7 +405,7 @@ interface ChangeWatch {
   readonly view: CompositeVFS;
   /** The namespace path watched, and everything under it. */
   readonly path: string;
-  readonly listener: (event: VfsEvent) => void;
+  readonly listener: (events: readonly VfsEvent[]) => void;
   readonly subscribed: Map<Mount, () => void>;
 }
 
@@ -1086,9 +1086,9 @@ export class CompositeVFS implements VFS {
 
   /**
    * Every change this view shows at `path` or under it, on any mount, told
-   * once it landed (VfsEvent, paths in this namespace): what it is and
-   * where, nothing read, held or waited for. The returned function stops
-   * it.
+   * once it landed (VfsEvent, paths in this namespace), in the batches its
+   * backend makes of them: what it is and where, nothing read, held or
+   * waited for. The returned function stops it.
    *
    * A backend that tells its own changes (VFS.watchChanges: SQLite) is
    * watched per mount, as this view's principal sees it, so its every
@@ -1101,7 +1101,7 @@ export class CompositeVFS implements VFS {
    * of a whole file or a range made its file, and what kind of entry rm -r
    * removed, is not looked up: those are change and unlink.
    */
-  watchChanges(path: string, listener: (event: VfsEvent) => void): () => void {
+  watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void {
     const watches = this.table.changes ??= new Set();
     const watch: ChangeWatch = { view: this, path: normalizePath(path), listener, subscribed: new Map() };
     watches.add(watch);
@@ -1123,33 +1123,40 @@ export class CompositeVFS implements VFS {
     const backend = this.backend(mount);
     if (backend === null || typeof backend.watchChanges !== 'function') return;
     const { point } = mount;
-    watch.subscribed.set(mount, backend.watchChanges(rel, point === ROOT_POINT
-      ? (event) => this.hearChange(watch, mount, event)
-      : (event) => this.hearChange(watch, mount, event.oldPath === undefined
-        ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
-        : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp })));
+    const reroot = (event: VfsEvent): VfsEvent => (event.oldPath === undefined
+      ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
+      : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp });
+    watch.subscribed.set(mount, backend.watchChanges(rel, (events) => this.hearChanges(watch, mount, point === ROOT_POINT ? events : events.map(reroot))));
   }
 
-  /** `event`, a change on `mount` (namespace paths), told to `watch` as far as this view shows it there. */
-  private hearChange(watch: ChangeWatch, mount: Mount, event: VfsEvent): void {
-    let told: VfsEvent | null = event;
-    if (event.oldPath === undefined) {
-      if (!this.showsChange(watch, mount, event.path)) told = null;
-    } else {
-      const path = this.showsChange(watch, mount, event.path);
-      const oldPath = this.showsChange(watch, mount, event.oldPath);
-      if (!path || !oldPath) {
-        told = path ? { type: 'add', path: event.path, timestamp: event.timestamp }
-          : oldPath ? { type: 'unlink', path: event.oldPath, timestamp: event.timestamp }
-            : null;
-      }
+  /** `events`, changes on `mount` (namespace paths), told to `watch` as far as this view shows them there. */
+  private hearChanges(watch: ChangeWatch, mount: Mount, events: readonly VfsEvent[]): void {
+    // The batch as it came, unless one of its changes is told otherwise (or not).
+    let told: VfsEvent[] | null = null;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i]!;
+      const shown = this.shownChange(watch, mount, event);
+      if (shown !== event && told === null) told = events.slice(0, i);
+      if (told !== null && shown !== null) told.push(shown);
     }
-    if (told === null) return;
+    const out = told ?? events;
+    if (out.length === 0) return;
     try {
-      watch.listener(told);
+      watch.listener(out);
     } catch (error) {
       console.error('[composite-vfs] a change watcher failed:', error instanceof Error ? error.message : String(error));
     }
+  }
+
+  /** `event` as `watch` is told it from `mount`: itself, a rename's shown half (add, or unlink), or nothing. */
+  private shownChange(watch: ChangeWatch, mount: Mount, event: VfsEvent): VfsEvent | null {
+    const path = this.showsChange(watch, mount, event.path);
+    if (event.oldPath === undefined) return path ? event : null;
+    const oldPath = this.showsChange(watch, mount, event.oldPath);
+    if (path && oldPath) return event;
+    return path ? { type: 'add', path: event.path, timestamp: event.timestamp }
+      : oldPath ? { type: 'unlink', path: event.oldPath, timestamp: event.timestamp }
+        : null;
   }
 
   /**
@@ -1182,10 +1189,8 @@ export class CompositeVFS implements VFS {
       const { oldPath } = spec;
       const type = spec.told ?? (oldPath !== undefined ? 'rename' : spec.kind === 'create' ? 'addDir' : spec.kind === 'remove' ? 'unlink' : 'change');
       const timestamp = Date.now();
-      for (const path of spec.landed?.(result) ?? [spec.path]) {
-        const event: VfsEvent = { type, path, timestamp, ...(oldPath !== undefined ? { oldPath } : {}) };
-        for (const watch of watches) if (!watch.subscribed.has(mount)) watch.view.hearChange(watch, mount, event);
-      }
+      const events = (spec.landed?.(result) ?? [spec.path]).map((path): VfsEvent => (oldPath === undefined ? { type, path, timestamp } : { type, path, oldPath, timestamp }));
+      for (const watch of watches) if (!watch.subscribed.has(mount)) watch.view.hearChanges(watch, mount, events);
       return result;
     });
   }

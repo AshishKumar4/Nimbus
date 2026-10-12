@@ -29,7 +29,7 @@
  *
  * Coalescing strategy
  * -------------------
- * The namespace tells each change as it lands. We add a ~50 ms
+ * The namespace tells changes as their filesystem batches them. We add a ~50 ms
  * debounce so a 1000-file npm install doesn't produce 1000 WS
  * frames. 50 ms absorbs
  * the typical burst pattern and stays well under the user-perceptible
@@ -170,23 +170,25 @@ export function handleFsWatchSubscribe(
     }
   };
 
-  /** A change in one of its trees, queued as SQLite names its paths. */
-  const onChange = (ev: VfsEvent) => {
-    if (sub.pending.length >= SUB_MAX_QUEUE) {
-      // Drop-oldest: shift instead of unbounded growth.
-      sub.pending.shift();
-      sub.dropped++;
+  /** Changes in one of its trees, queued as SQLite names their paths. */
+  const onChanges = (events: readonly VfsEvent[]) => {
+    for (const ev of events) {
+      if (sub.pending.length >= SUB_MAX_QUEUE) {
+        // Drop-oldest: shift instead of unbounded growth.
+        sub.pending.shift();
+        sub.dropped++;
+      }
+      sub.pending.push(ev.oldPath === undefined
+        ? { type: ev.type, path: ev.path.slice(1), timestamp: ev.timestamp }
+        : { type: ev.type, path: ev.path.slice(1), oldPath: ev.oldPath.slice(1), timestamp: ev.timestamp });
     }
-    sub.pending.push(ev.oldPath === undefined
-      ? { type: ev.type, path: ev.path.slice(1), timestamp: ev.timestamp }
-      : { type: ev.type, path: ev.path.slice(1), oldPath: ev.oldPath.slice(1), timestamp: ev.timestamp });
     // One-shot debounce: re-arm if no flush scheduled.
     if (!sub.flushTimer) {
       sub.flushTimer = setTimeout(flush, COALESCE_MS);
     }
   };
 
-  const stops = paths.map((path) => namespace.watchChanges(path, onChange));
+  const stops = paths.map((path) => namespace.watchChanges(path, onChanges));
   sub.unsub = () => {
     for (const stop of stops) {
       try { stop(); } catch {}

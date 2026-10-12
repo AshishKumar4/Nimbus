@@ -709,8 +709,12 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
     this.live();
-    const stop = this.namespace.watchChanges(path, (event) => {
-      listener(event.oldPath === undefined ? { ...event, path: event.path.slice(1) } : { ...event, path: event.path.slice(1), oldPath: event.oldPath.slice(1) });
+    const stop = this.namespace.watchChanges(path, (events) => {
+      for (const event of events) {
+        listener(event.oldPath === undefined
+          ? { type: event.type, path: event.path.slice(1), timestamp: event.timestamp }
+          : { type: event.type, path: event.path.slice(1), oldPath: event.oldPath.slice(1), timestamp: event.timestamp });
+      }
     });
     const dispose = (): void => { stop(); this.scope.subscriptions.delete(dispose); };
     this.scope.subscriptions.add(dispose);

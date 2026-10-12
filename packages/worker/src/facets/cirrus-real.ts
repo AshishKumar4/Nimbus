@@ -566,7 +566,7 @@ export class CirrusReal {
   private root: string;
   private basePath: string;
   private vfs: CredentialedVfs;
-  private watchChanges: ((listener: (event: VfsEvent) => void) => () => void) | null;
+  private watchChanges: ((listener: (events: readonly VfsEvent[]) => void) => () => void) | null;
   private userConfigBundle: string | null;
   private extraSyntheticFiles: Record<string, string>;
 
@@ -620,7 +620,7 @@ export class CirrusReal {
     /** Who the server reads its project as: the credential of the process it runs under. */
     cred: VfsCred;
     /** Watches the session's changes (CompositeVFS.watchChanges), for the facet's chokidar. */
-    watchChanges?: ((listener: (event: VfsEvent) => void) => () => void) | null;
+    watchChanges?: ((listener: (events: readonly VfsEvent[]) => void) => () => void) | null;
     userConfigBundle?: string | null;
     extraSyntheticFiles?: Record<string, string>;
     /** The workspace's network: the dev server (the user's config included) goes out through its egress. */
@@ -913,10 +913,10 @@ export class CirrusReal {
     // Wire the session's changes into the HMR bridge so the facet's
     // chokidar shim actually sees file changes.
     if (this.watchChanges) {
-      this._vfsUnsub = this.watchChanges((ev) => {
+      this._vfsUnsub = this.watchChanges((events) => {
         // chokidar uses 'addDir'/'unlinkDir' for directory events; the
         // namespace tells the same strings, so they pass through as-is.
-        this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
+        for (const ev of events) this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
       });
     }
   }

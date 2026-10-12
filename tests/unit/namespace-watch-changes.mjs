@@ -37,10 +37,12 @@ const failures = [];
 const check = async (name, run) => {
   try { await run(); } catch (error) { failures.push(`${name}: ${String(error?.message ?? error).split('\n').slice(0, 6).join(' | ')}`); }
 };
+/** The kernel hears SQLite's changes as the engine batches them: once its batch is out. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 const said = (event) => (event.oldPath === undefined ? `${event.type} ${event.path}` : `${event.type} ${event.oldPath} -> ${event.path}`);
 const watching = (path, view = ns) => {
   const heard = [];
-  const stop = view.watchChanges(path, (event) => heard.push(said(event)));
+  const stop = view.watchChanges(path, (events) => heard.push(...events.map(said)));
   return { heard, stop, take: () => heard.splice(0) };
 };
 
@@ -51,9 +53,11 @@ await check('SQLite\'s changes are told under the namespace\'s paths, whoever ma
   await ns.mkdir('/home/user/d');
   await ns.rename('/home/user/a.txt', '/home/user/d/a.txt');
   kernel.unlink('home/user/d/a.txt');
+  await settled();
   assert.deepEqual(w.take(), ['add /home/user/a.txt', 'change /home/user/a.txt', 'addDir /home/user/d', 'rename /home/user/a.txt -> /home/user/d/a.txt', 'unlink /home/user/d/a.txt']);
   w.stop();
   kernel.writeFile('home/user/after.txt', 'x');
+  await settled();
   assert.deepEqual(w.take(), [], 'a stopped watch hears nothing');
 });
 
@@ -91,6 +95,7 @@ await check('a write SQLite takes under a mount point is not told: the namespace
   const w = watching('/home/user');
   kernel.mkdir('home/user/m', { recursive: true });
   kernel.writeFile('home/user/m/hidden', 'h');
+  await settled();
   assert.deepEqual(w.take(), []);
   w.stop();
 });
@@ -99,6 +104,7 @@ await check('a watch is of its tree only', async () => {
   const w = watching('/home/user/m');
   kernel.writeFile('home/user/elsewhere', 'e');
   await ns.writeFile('/home/user/m/inside', enc.encode('i'));
+  await settled();
   assert.deepEqual(w.take(), ['change /home/user/m/inside']);
   w.stop();
 });
@@ -121,6 +127,7 @@ await check('a mount whose backend tells its own changes is heard from it, once'
   const w = watching('/');
   data.as(CRED_KERNEL).writeFile('made-there', 'x');
   await ns.writeFile('/data/made-here', enc.encode('y'));
+  await settled();
   assert.deepEqual(w.take().filter((line) => line.includes('/data')), ['add /data/made-there', 'add /data/made-here']);
   w.stop();
   ns.unmount('/data');
@@ -131,6 +138,7 @@ await check('a removed tree is heard entry by entry, as SQLite tells it', async 
   kernel.writeFile('home/user/t/u/f', 'f');
   const w = watching('/home/user/t');
   await ns.removeRecursive('/home/user/t');
+  await settled();
   assert.deepEqual(w.take().sort(), ['unlink /home/user/t/u/f', 'unlinkDir /home/user/t', 'unlinkDir /home/user/t/u'].sort());
   w.stop();
 });

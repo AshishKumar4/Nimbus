@@ -174,7 +174,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       basePath: opts.basePath,
       vfs: self.sqliteFs!,
       cred: opts.identity.cred,
-      watchChanges: (listener: (event: VfsEvent) => void) => self.getFilesystemAuthority().vfs.watchChanges('/', listener),
+      watchChanges: (listener: (events: readonly VfsEvent[]) => void) => self.getFilesystemAuthority().vfs.watchChanges('/', listener),
       userConfigBundle,
       extraSyntheticFiles,
       network: self.runtimeWorkspace!.network,

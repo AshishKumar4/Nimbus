@@ -31,13 +31,15 @@ kernel.mkdir('w/d', { recursive: true });
 kernel.writeFile('w/watched.txt', 'w');
 const files = new ProcessFiles(rawVfs);
 const fs = createFs(synchronousFilesystem({ process: files.bind({ pid: 4301, cred: CRED_KERNEL }) })(), '/');
+/** Node tells a watch's changes on a later turn. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 const hearing = (path, options) => {
   const heard = [];
   const watcher = fs.watch(path, options ?? {}, (type, name) => heard.push(`${type} ${name}`));
   return { heard, watcher };
 };
 
-await check('a directory\'s direct entries, as Node names them', () => {
+await check('a directory\'s direct entries, as Node names them', async () => {
   const { heard, watcher } = hearing('/w');
   kernel.writeFile('w/a.txt', 'a');
   kernel.writeFile('w/a.txt', 'b');
@@ -45,22 +47,26 @@ await check('a directory\'s direct entries, as Node names them', () => {
   kernel.rename('w/a.txt', 'w/b.txt');
   kernel.unlink('w/b.txt');
   kernel.writeFile('elsewhere.txt', 'e');
+  await settled();
   watcher.close();
   kernel.writeFile('w/after-close.txt', 'c');
+  await settled();
   assert.deepEqual(heard, ['rename a.txt', 'change a.txt', 'rename a.txt', 'rename b.txt', 'rename b.txt']);
 });
 
-await check('recursive: every entry under it, named from it', () => {
+await check('recursive: every entry under it, named from it', async () => {
   const { heard, watcher } = hearing('/w', { recursive: true });
   kernel.writeFile('w/d/deeper.txt', 'x');
+  await settled();
   watcher.close();
   assert.deepEqual(heard, ['rename d/deeper.txt']);
 });
 
-await check('a file: itself, by its own name', () => {
+await check('a file: itself, by its own name', async () => {
   const { heard, watcher } = hearing('/w/watched.txt');
   kernel.writeFile('w/watched.txt', 'changed');
   kernel.writeFile('w/other.txt', 'o');
+  await settled();
   watcher.close();
   assert.deepEqual(heard, ['change watched.txt']);
 });
