@@ -209,6 +209,18 @@ const FILES = {
     "writeFileSync(new URL('./generated-variant.mjs', import.meta.url), \"import './after.mjs?v';\\nimport './variant.mjs?v';\\n\");",
     "try { await import('./generated-variant.mjs'); } catch (e) { console.log('rejected', e.code); }",
   ].join('\n') + '\n',
+  // A late graph that links, with a staged module whose query import
+  // staging hands to the interpreter: every body runs once, in Node's order.
+  'late-link-soft/a.mjs': "console.log('A');\n",
+  'late-link-soft/b.mjs': "import './c.mjs?q';\nconsole.log('B');\n",
+  'late-link-soft/c.mjs': "console.log('C');\n",
+  'late-link-soft/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) { await import('./a.mjs'); await import('./b.mjs'); }",
+    "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './a.mjs';\\nimport './b.mjs';\\n\");",
+    "await import('./generated.mjs');",
+    "console.log('done');",
+  ].join('\n') + '\n',
   // JSON's __esModule/default are data, not CommonJS interop instructions.
   'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
   'json-query-esmodule/main.mjs': "import v from './data.json?q' with { type: 'json' };\nconsole.log(JSON.stringify(v));\n",
@@ -265,6 +277,7 @@ const COMMANDS = [
   'node js-query/main.mjs',
   'node late-link/main.mjs',
   'node late-link-staged/main.mjs',
+  'node late-link-soft/main.mjs',
   'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',

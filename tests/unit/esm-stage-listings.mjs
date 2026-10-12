@@ -72,7 +72,7 @@ try {
   const listed = await stageEsModules({ files, realpath, entries }, cells, options);
   const shape = (stage) => JSON.stringify({ table: stage.table, missing: stage.missing, members: stage.members, modules: [...stage.modules].map(([key, m]) => [key, m.text]) });
   assert.equal(shape(listed), shape(perFile), 'the listing stages what a realpath per file stages');
-  assert.deepEqual(perFile.table[0], ['module', 'w/app/main.js', [2, 4, 1, 5, 6, 7, -1]], 'main links the package behind its link, the linked file\'s target and its siblings');
+  assert.deepEqual(perFile.table[0], ['module', 'w/app/main.js', [2, 4, 1, 5, 6, 7, -2]], 'main links the package behind its link, the linked file\'s target and its siblings, and names its refusal (the first)');
   assert.deepEqual(perFile.missing.map((m) => m.code), ['ERR_MODULE_NOT_FOUND'], 'the package that is not installed is refused, as Node refuses it');
   assert.ok(asked.exists < existsAsked, `fewer existence questions by listing (${asked.exists}, against ${existsAsked})`);
   assert.ok(asked.realpath < filesAsked, `fewer realpaths by listing (${asked.realpath} and ${asked.entries} listings, against ${filesAsked})`);

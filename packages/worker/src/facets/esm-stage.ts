@@ -33,7 +33,8 @@ import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 /**
  * One row of a launch's ES module table, by id (a meta instance's query):
  * a staged ES module (the cell at a VFS key) with the ids of the rows its
- * static imports load (-1 for a refused one), the facade of the CommonJS
+ * static imports load (for a refused one, -2 less the number of its refusal
+ * in EsmStage.missing: every negative is no row), the facade of the CommonJS
  * cell at a key, the facade of a builtin or a package the process provides,
  * or the JSON module of the file at a key. A row's map module is its name
  * (esmRowName): its cell's module for a staged module, else its facade by id.
@@ -261,8 +262,9 @@ export async function stageEsModules(
     cjsResolve: requireResolve,
   }, { conditions, cwd: () => cwd, stripTypes: typeScript });
   const exportNames = async (path: string) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
-  const notStaged = (path: string) => Object.assign(
-    new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED },
+  // A valid module the registry does not carry: its url is what the interpreter loads in its place.
+  const notStaged = (path: string, url: string) => Object.assign(
+    new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED, url },
   );
 
   /** The row an import with `attributes` of what `resolution` names loads. */
@@ -282,7 +284,7 @@ export async function stageEsModules(
     // modules by URL), which a row by path cannot be: the importer's graph
     // is the interpreter's, which keeps each URL's instance.
     const { search, hash } = new URL(resolution.url);
-    if (search !== '' || hash !== '') throw notStaged(resolution.url);
+    if (search !== '' || hash !== '') throw notStaged(resolution.url, resolution.url);
     const key = stripLeadingSlashes(resolution.path);
     // Node's loader refuses to strip a TypeScript file under node_modules when it loads it.
     if (stripsTypes && stripsTypeScript(key) && typeScriptUnderNodeModules(key)) {
@@ -293,13 +295,13 @@ export async function stageEsModules(
     if (staged !== undefined) return staged;
     if (resolution.format === 'json') {
       const text = await readText(resolution.path);
-      if (text === null) throw notStaged(resolution.path);
+      if (text === null) throw notStaged(resolution.path, resolution.url);
       // Node's JSON translator: the object require() gives for the same
       // file, one in require.cache whichever loads it first.
       return member('json', key, (id, name) => jsonFacadeModule(name, id));
     }
     // CommonJS by Node's format for it, loaded by require().
-    if (!isCode(key)) throw notStaged(resolution.path);
+    if (!isCode(key)) throw notStaged(resolution.path, resolution.url);
     const exported = await exportNames(resolution.path);
     return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
   };
@@ -342,7 +344,7 @@ export async function stageEsModules(
         rowTargets.push(row);
         targets.push(esmRowName(table[row]!, row));
       } catch (error) {
-        rowTargets.push(-1);
+        rowTargets.push(-2 - missing.length);
         targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
         missing.push(refusal(error));
       }
