@@ -337,7 +337,7 @@ export function createViteCommand(self: ViteHost) {
         { longRunning: true, parentPid: ctx.pid },
       );
       self.viteDevServer = new ViteDevServer({
-        vfs: self.sqliteFs, cred: previewProcEntry.cred, esbuild: self.esbuildService, root: servedDist,
+        vfs: self.sqliteFs, cred: previewProcEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService, root: servedDist,
         onHmrMessage: () => {},
         sql: self.ctx.storage.sql,
         basePath: previewBasePath,
@@ -587,6 +587,7 @@ export function createViteCommand(self: ViteHost) {
       vfs: self.sqliteFs!,
       // The server reads and writes as the principal who ran the command.
       cred: viteProcEntry.cred,
+      namespace: self.getFilesystemAuthority().vfs,
       esbuild: self.esbuildService!,
       root: servedRoot,
       port: resolvedPort,
