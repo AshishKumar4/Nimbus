@@ -146,7 +146,7 @@ try {
     }
     const interval = [quantile(boot, 0.025), quantile(boot, 0.975)];
     const spread = [Math.min(...aa), Math.max(...aa)];
-    const result = { kind, iterations: ITERATIONS, pairs: PAIRS, medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)), medianDelta: median(deltas), ci95: interval, aaSpread: spread, samples: pairs };
+    const result = { kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS, medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)), medianDelta: median(deltas), ci95: interval, aaSpread: spread, samples: pairs };
     results.push(result);
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;

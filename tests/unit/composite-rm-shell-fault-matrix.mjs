@@ -50,7 +50,7 @@ const cases = [
   { name: 'operand stat EACCES', fault: 'operand-stat', kept: ['tree', 'tree/free'], errors: [['/walk/tree', 'Permission denied']] },
   { name: 'operand scandir EACCES', fault: 'operand-read', kept: ['tree', 'tree/free'], errors: [['/walk/tree', 'Permission denied']] },
   { name: 'writable mounted subtree', fault: 'mount-rw', kept: ['tree'], mounted: [], errors: [['/walk/tree/mounted', 'Device or resource busy']] },
-  { name: 'read-only mounted subtree', fault: 'mount-ro', kept: ['tree'], mounted: ['a', 'b'], errors: [['/walk/tree/mounted/a', 'Read-only file system'], ['/walk/tree/mounted/b', 'Read-only file system'], ['/walk/tree/mounted', 'Device or resource busy']] },
+  { name: 'read-only mounted subtree', fault: 'mount-ro', kept: ['tree'], mounted: ['a', 'b'], errors: [['/walk/tree/mounted/a', 'Read-only file system'], ['/walk/tree/mounted/b', 'Read-only file system']] },
   { name: 'two failed children', fault: 'two-read', kept: ['tree', 'tree/bad', 'tree/bad/secret', 'tree/worse', 'tree/worse/secret'], errors: [['/walk/tree/bad', 'Permission denied'], ['/walk/tree/worse', 'Permission denied']] },
   { name: 'actionable backend detail', fault: 'detail', kept: ['tree', 'tree/bad', 'tree/bad/secret'], errors: [['/walk/tree/bad', 'outside the consented directory']] },
 ];

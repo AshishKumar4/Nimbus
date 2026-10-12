@@ -3306,7 +3306,7 @@ export class CompositeVFS implements VFS {
     return andThen(visit(rel), () => {
       order.reverse();
       return andThen(order.reduce<Awaitable<void>>((chain, entry) => andThen(chain, () => {
-        if (gone.has(entry.rel) || (kept.has(entry.rel) && !(composed && this.table.mounts.has(at(entry.rel))))) return undefined;
+        if (gone.has(entry.rel) || kept.has(entry.rel)) return undefined;
         const fail = (cause: Error): void => {
           let error = errorOf(entry.rel, entry.dir ? 'rmdir' : 'unlink', cause);
           if (error.code === 'ENOENT') { missing(entry.rel); return; }
