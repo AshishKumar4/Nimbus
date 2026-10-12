@@ -606,7 +606,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
 
     const watcher = new EventEmitter();
-    if (cb) watcher.on('change', cb);
+    if (cb) watcher.on('change', (eventType, name) => cb(String(eventType), String(name)));
     const inside = (path: string): boolean => path === abs || path.startsWith(abs === '/' ? '/' : `${abs}/`);
     const told = (path: string, eventType: 'rename' | 'change'): void => {
       if (!inside(path)) return;
