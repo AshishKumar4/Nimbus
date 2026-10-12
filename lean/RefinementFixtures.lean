@@ -26,8 +26,8 @@ def fixtures : List (String × String) :=
    ("quiesce.json", QuiesceCases.fixture),
    ("resident-poison-reconcile.json", HeldCases.fixture),
    ("beneath.json", BeneathCases.fixture),
-   ("n18-ledger.json", LedgerCases.fixture)]
-   -- pipes.json (PipesCases.fixture): emitted with its bridge (RT-PIPE-001)
+   ("n18-ledger.json", LedgerCases.fixture),
+   ("pipes.json", PipesCases.fixture)]
 
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "fixtures"
