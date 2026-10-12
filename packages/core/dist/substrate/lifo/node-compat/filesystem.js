@@ -56,6 +56,7 @@ function bridgeFilesystem(bridge) {
                 throw syscallError('ENOENT', 'lstat', path);
             return stat;
         },
+        realpath: path => fs.realpath(path),
         mkdir: (path, options) => fs.mkdir(path, options),
         readdir: path => fs.readdir(path),
         unlink: path => fs.unlink(path),
@@ -71,8 +72,11 @@ function bridgeFilesystem(bridge) {
         ftruncate: (fd, size) => fs.ftruncate(fd, size),
         fsync: (fd) => fs.fsync(fd),
         close: (fd) => fs.close(fd),
-        watch: (path, listener) => bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
-            ? { ...event, path: `/${event.path}` }
-            : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` })) ?? (() => { }),
+        watch(path, listener) {
+            const stop = bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
+                ? { ...event, path: `/${event.path}` }
+                : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` }));
+            return { close: () => stop?.(), ref() { }, unref() { } };
+        },
     };
 }

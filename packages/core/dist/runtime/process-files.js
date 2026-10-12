@@ -671,14 +671,23 @@ class AwaitingProcessBridge {
     /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
     subscribe(path, listener) {
         this.live();
+        let stopped = false;
         const stop = this.namespace.watchChanges(path, (events) => {
             for (const event of events) {
+                if (stopped)
+                    break;
                 listener(event.oldPath === undefined
                     ? { type: event.type, path: event.path.slice(1), timestamp: event.timestamp }
                     : { type: event.type, path: event.path.slice(1), oldPath: event.oldPath.slice(1), timestamp: event.timestamp });
             }
         });
-        const dispose = () => { stop(); this.scope.subscriptions.delete(dispose); };
+        const dispose = () => {
+            if (stopped)
+                return;
+            stopped = true;
+            stop();
+            this.scope.subscriptions.delete(dispose);
+        };
         this.scope.subscriptions.add(dispose);
         return dispose;
     }

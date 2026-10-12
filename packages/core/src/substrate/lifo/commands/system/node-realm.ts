@@ -31,7 +31,7 @@ import type { RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../..
 import { realmOutcome, startRealm, type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext, CommandOutputStream } from '../types.js';
 import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
-import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { NodeFilesystem, NodeWatch } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
@@ -124,7 +124,13 @@ export function isHostEvent(value: unknown): value is HostEvent {
   switch (value.type) {
     case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
     case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
-    case 'changed': return typeof value.id === 'number' && record(value.event) && typeof value.event.type === 'string' && typeof value.event.path === 'string';
+    case 'changed':
+      return Number.isSafeInteger(value.id) && record(value.event)
+        && (value.event.type === 'add' || value.event.type === 'change' || value.event.type === 'unlink'
+          || value.event.type === 'addDir' || value.event.type === 'unlinkDir' || value.event.type === 'rename')
+        && typeof value.event.path === 'string'
+        && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
+        && typeof value.event.timestamp === 'number';
     default: return false;
   }
 }
@@ -227,6 +233,7 @@ function callFilesystem(fs: NodeFilesystem, method: unknown, args: readonly unkn
     case 'isDirectory': return fs.isDirectory(pathArg(a));
     case 'stat': return fs.stat(pathArg(a));
     case 'lstat': return fs.lstat(pathArg(a));
+    case 'realpath': return fs.realpath(pathArg(a));
     case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
     case 'readdir': return fs.readdir(pathArg(a));
     case 'unlink': return fs.unlink(pathArg(a));
@@ -312,7 +319,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       pending.delete(id);
     }
   };
-  const watches = new Map<number, () => void>();
+  const watches = new Map<number, NodeWatch>();
   let stdinTaken = false;
   const services: RealmServices = {
     filesystem,
@@ -330,7 +337,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (ports.delete(port)) kernel?.portRegistry.delete(port);
     },
     watch: (id, path) => {
-      watches.get(id)?.();
+      watches.get(id)?.close();
       watches.delete(id);
       if (path === null) return;
       watches.set(id, filesystem().watch(path, (event) => {
@@ -387,7 +394,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   for (const port of ports) kernel?.portRegistry.delete(port);
   for (const respond of pending.values()) respond(null);
   egress?.close();
-  for (const stop of watches.values()) stop();
+  for (const watch of watches.values()) watch.close();
   await written;
   if (end.terminated) return exitCodeForAbortSignal(ctx.signal);
   if (end.failure !== null) {
