@@ -269,6 +269,20 @@ export interface ProcessFsClient {
     draw(grant: ProcessFsGrant, bytes: number): boolean;
     /** The grant holding `key` (held, not shared), without counting a mutation. */
     held(key: string): ProcessFsGrant | undefined;
+    /**
+     * Take `roots` now, one after another, before the program decides or sends
+     * anything (a warm facet's run, with the subtree its last run changed): the
+     * one claim path, as for a subtree that earned it, with a range of
+     * LEARNED_GRANT_INOS. Resolves once each is held or refused; a hint only,
+     * which the session grants or refuses as any claim.
+     */
+    claimAhead(roots: readonly string[]): Promise<void>;
+    /**
+     * The subtree this run changed: the nearest directory above every
+     * mutation the client was asked about (holder) and every grant one was
+     * decided under, when it may be held; else null.
+     */
+    mutated(): string | null;
     /** Whether `key` is in a subtree the process holds or shares: what is decided there is not known elsewhere yet. */
     holds(key: string): boolean;
     /** Whether any op is logged and not yet answered. */
@@ -370,6 +384,12 @@ export declare function unsettledEnd(error: unknown): Error & {
 export declare function unsettledNoteOf(error: unknown): string;
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
+/**
+ * The range of a subtree taken ahead (claimAhead): a run that changes
+ * a repository's .git (a lock, a few objects) uses a handful; more renews
+ * it, doubled, as any range.
+ */
+export declare const LEARNED_GRANT_INOS = 64;
 /** Mutations in a subtree before the client takes it. */
 export declare const GRANT_AFTER = 8;
 /** A grant unused this long is given back. */

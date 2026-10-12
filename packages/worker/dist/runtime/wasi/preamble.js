@@ -155,8 +155,9 @@ let __wasiResident = null;
 /**
  * The store the last process of this facet left at the end of its run (a
  * warm facet, FacetSpec.warm): whose names it holds, the device the session's
- * filesystem reports, and the directories it opened. The next process of the
- * same credential continues it.
+ * filesystem reports, the directories it opened and the subtree it changed.
+ * The next process of the same credential continues it, and takes that
+ * subtree before it changes anything (ResidentDelegation.claim).
  */
 let __wasiKept = null;
 /** Who a store's names were walked as. */
@@ -232,7 +233,7 @@ function __wasiStartResident(sup, cred) {
         } : {}),
         isHomeRoot: isHomeDirectory,
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
-        ...(kept === null || view === null ? {} : { walked: kept.walked }),
+        ...(kept === null || view === null ? {} : { walked: kept.walked, ...(kept.mutated === null ? {} : { claim: [kept.mutated] }) }),
     });
     if (kept !== null && view !== null)
         fs.inbound();
@@ -297,8 +298,9 @@ export async function __wasiSettleWrites() {
                     .join('; ');
             // A run that ended with its store answering leaves it to the next process in this facet.
             const view = await resident.ready;
-            if (view !== null && view.ready())
-                __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
+            if (view !== null && view.ready()) {
+                __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked(), mutated: resident.fs.mutated() };
+            }
         }
     }
     catch (error) {

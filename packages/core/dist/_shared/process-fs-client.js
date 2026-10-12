@@ -91,6 +91,12 @@ export function unsettledNoteOf(error) {
 const DATA_PIECE_BYTES = WAVE_BYTES;
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
+/**
+ * The range of a subtree taken ahead (claimAhead): a run that changes
+ * a repository's .git (a lock, a few objects) uses a handful; more renews
+ * it, doubled, as any range.
+ */
+export const LEARNED_GRANT_INOS = 64;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
 /** `op` with the process's umask now, when it makes a name with a mode and names none (ProcessFsClientOptions.umask). */
@@ -748,7 +754,10 @@ export function processFsClient(options) {
      * subtree. Past MAX_DELEGATIONS_PER_PROCESS, the nearest grant and this
      * subtree become their common ancestor (when that may be taken).
      */
-    const claim = (root) => {
+    /** The subtree this run changed so far (ProcessFsClient.mutated): '' once it spans what may not be held. */
+    let changed = null;
+    const changedUnder = (key) => { changed = changed === null ? key : commonAncestor(changed, key); };
+    const claim = (root, first) => {
         const port = session.grants;
         if (port === undefined || claiming !== null || settling)
             return;
@@ -780,7 +789,7 @@ export function processFsClient(options) {
             await client.flush();
             paused = true;
             await quiet();
-            const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : (options.grantInos ?? GRANT_INOS);
+            const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : (first ?? options.grantInos ?? GRANT_INOS);
             let granted;
             try {
                 granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
@@ -806,6 +815,7 @@ export function processFsClient(options) {
                 closing: false,
                 ended: false,
                 lastUsed: now(),
+                used: false,
             };
             grants.push(grant);
             counters.grants++;
@@ -834,8 +844,11 @@ export function processFsClient(options) {
                 if (pendingSyncOps >= DECIDED_BACKLOG_OPS || pendingSyncBytes >= DECIDED_BACKLOG_BYTES)
                     return undefined;
                 held.lastUsed = now();
+                held.used = true;
+                changedUnder(held.root);
                 return held;
             }
+            changedUnder(parentKey(key));
             if (session.grants === undefined || settling || escaped !== null)
                 return undefined;
             // Shared, or another's: the session decides; a subtree it refused is not asked for again.
@@ -856,6 +869,23 @@ export function processFsClient(options) {
             if (deepest !== undefined)
                 claim(deepest);
             return undefined;
+        },
+        async claimAhead(roots) {
+            for (const root of roots.slice(0, MAX_DELEGATIONS_PER_PROCESS)) {
+                if (!allowedRoot(root) || [...refusedRoots].some((refused) => within(root, refused)))
+                    continue;
+                if (grants.some((grant) => !grant.ended && within(root, grant.root)))
+                    continue;
+                await claiming?.catch(() => { });
+                claim(root, LEARNED_GRANT_INOS);
+                await claiming?.catch(() => { });
+            }
+        },
+        mutated() {
+            for (const grant of grants)
+                if (grant.used)
+                    changedUnder(grant.root);
+            return changed !== null && allowedRoot(changed) ? changed : null;
         },
         number(grant) {
             const held = grant;

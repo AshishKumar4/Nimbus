@@ -185,6 +185,8 @@ export function residentFilesystem(session, resident, delegation) {
     const delegated = (name) => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
     /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
     let owed = false;
+    /** The subtrees this run takes before it changes anything (ResidentDelegation.claim), until they are held or refused. */
+    let claimingAhead = null;
     if (delegation !== undefined) {
         holder = delegationHolder({
             session: delegation.session,
@@ -202,6 +204,20 @@ export function residentFilesystem(session, resident, delegation) {
             // What it sent changed the session: the store catches up before it answers next.
             sent: () => { owed = true; directoryPool?.invalidate(); },
         });
+        // The subtrees taken ahead: until they are held or refused, nothing is
+        // changed or decided, and the barrier waits for them, so the first one
+        // is answered after the grant (what a peer did before it is in it).
+        const roots = delegation.claim ?? [];
+        if (roots.length > 0) {
+            const client = holder.client;
+            claimingAhead = client.claimAhead(roots).catch(() => { }).then(() => {
+                claimingAhead = null;
+                if (client.stats().grants > 0) {
+                    owed = true;
+                    directoryPool?.invalidate();
+                }
+            });
+        }
         if (delegation.readDirectories)
             directoryPool = readDirectoryPool({
                 call: (request) => { delegated('readDirectories'); return timed(delegation.readDirectories(request)); }, store, client: holder.client,
@@ -510,6 +526,8 @@ export function residentFilesystem(session, resident, delegation) {
             delegated(name);
             return remote();
         }
+        if (owed && claimingAhead !== null)
+            return claimingAhead.then(() => answer(name, local, remote));
         if (owed) {
             counts.barriers++;
             return store.barrier().then((ok) => {
@@ -530,6 +548,8 @@ export function residentFilesystem(session, resident, delegation) {
      * as local; DELEGATE (or false/undefined from the holder) hands it on.
      */
     const decide = (name, local) => {
+        if (claimingAhead !== null)
+            return claimingAhead.then(() => decide(name, local));
         if (holder === null || !store.ready())
             return DELEGATE;
         const settle = (value) => {
@@ -552,6 +572,8 @@ export function residentFilesystem(session, resident, delegation) {
     const keyFor = (path, follow) => after(resolve(path, follow), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
+        if (claimingAhead !== null)
+            return claimingAhead.then(() => changing(name, call));
         directoryPool?.invalidate();
         delegated(name);
         try {
@@ -601,6 +623,7 @@ export function residentFilesystem(session, resident, delegation) {
     // is answered first, and a refusal it recorded is this sync's answer.
     fs.syncInode = () => holder?.flush();
     fs.walked = () => opening;
+    fs.mutated = () => holder?.client.mutated() ?? null;
     fs.stats = () => ({
         ...counts,
         delegated: { ...counts.delegated },
@@ -811,6 +834,8 @@ export function residentFilesystem(session, resident, delegation) {
             // written through by its number; a directory, a file the store cannot
             // place, or one on a mount is the session's descriptor.
             const through = () => {
+                if (claimingAhead !== null)
+                    return claimingAhead.then(through);
                 if (holder === null || !store.ready() || flags.directory)
                     return DELEGATE;
                 return after(keyFor(path, false), (key) => {

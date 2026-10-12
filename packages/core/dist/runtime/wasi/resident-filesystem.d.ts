@@ -151,6 +151,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     stats(): ResidentFilesystemStats;
     /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
     walked(): readonly string[];
+    /** The subtree this run changed (ProcessFsClient.mutated): the next run's claim in the same facet (ResidentDelegation.claim). */
+    mutated(): string | null;
 }
 /** A held file the session refused part of: what a run reports, naming the file. */
 export interface UnsettledWrite {
@@ -209,6 +211,13 @@ export interface ResidentDelegation {
      * description is admitted only if the namespace still vouches for it.
      */
     readonly walked?: readonly string[];
+    /**
+     * The subtree the last run in this facet changed (its mutated()), taken
+     * before this run changes anything (ProcessFsClient.claimAhead). A hint:
+     * the session grants or refuses it as any claim, and nothing is decided
+     * under it before a barrier answered after the grant.
+     */
+    readonly claim?: readonly string[];
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map
