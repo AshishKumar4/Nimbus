@@ -34,6 +34,35 @@
  *   - Single source of truth: this module owns the `/s/<id>/` mapping.
  */
 import { NIMBUS_TOKEN_QUERY } from '../auth/middleware.js';
+/**
+ * Remove the browser's attach credentials on the forwarded edge. Behind this
+ * edge there is no browser and no second session, so a credential the
+ * browser selected for this route must not ride further into the session's
+ * own servers — the query is already deleted above, and every per-session
+ * (`__Host-nimbus_token-<sid>`) and legacy (`__Host-nimbus_token`) cookie
+ * goes here. Runs on exact names and the exact prefix only: a user's own
+ * cookie that merely mentions tokens is none of this function's business.
+ */
+export function stripNimbusAttachCookies(headers) {
+    const cookie = headers.get('Cookie');
+    if (!cookie)
+        return;
+    const kept = [];
+    for (const c of cookie.split(';')) {
+        const pair = c.trim();
+        const at = pair.indexOf('=');
+        if (at <= 0)
+            continue;
+        const name = pair.slice(0, at);
+        if (name === '__Host-nimbus_token' || name.startsWith('__Host-nimbus_token-'))
+            continue;
+        kept.push(pair);
+    }
+    if (kept.length === 0)
+        headers.delete('Cookie');
+    else
+        headers.set('Cookie', kept.join('; '));
+}
 /** Prefix for all session-scoped routes. Centralized for future refactors. */
 export const SESSION_ROUTE_PREFIX = '/s';
 /** Header the Worker sets on forwarded requests. The DO reads it. */
@@ -154,8 +183,12 @@ export function forwardToSession(request, route, env, opts) {
     // still attached would carry a live credential into inner-DO logs, the
     // referrers of whatever the session serves, and — on the port-preview
     // path — into the user's own untrusted server. Strip it here, once, on
-    // the single edge every session request crosses.
+    // the single edge every session request crosses. The attach cookie goes
+    // with it: behind this edge there is no browser and no second session,
+    // so a credential the browser selected for this route must not ride
+    // further into the session's own servers.
     innerUrl.searchParams.delete(NIMBUS_TOKEN_QUERY);
+    stripNimbusAttachCookies(headers);
     // Build the forwarded Request. Preserve body + method. For GETs/HEADs,
     // body is undefined (Request constructor rejects bodies there anyway).
     const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
@@ -174,7 +207,20 @@ export function forwardToSession(request, route, env, opts) {
     const doName = `${opts.tenantSegment}:${route.sessionId}`;
     const id = env.NIMBUS_SESSION.idFromName(doName);
     const stub = env.NIMBUS_SESSION.get(id);
-    return stub.fetch(inner);
+    const migrate = opts.migrateSessionCookies;
+    if (migrate === undefined || migrate.length === 0)
+        return stub.fetch(inner);
+    // Legacy migration on use: a jar that authenticated via the pre-per-session
+    // global cookie gets its verified credential re-issued under the
+    // route-owned name, and the global name expired, in this same response.
+    // Forwarded auth (Authorization/query) never holds the legacy name, so this
+    // is a no-op for every request but a legacy-cookie reconnect.
+    return stub.fetch(inner).then((response) => {
+        const migrated = new Response(response.body, response);
+        for (const value of migrate)
+            migrated.headers.append('Set-Cookie', value);
+        return migrated;
+    });
 }
 /**
  * The card every session-facing error/status page shares: dark, centered,

@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/sdk",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Nimbus SDK \u2014 Worker embedder, programmatic sandboxes, token mint, and client helpers.",
   "keywords": [
     "cloudflare",
@@ -82,12 +82,12 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@nimbus-sh/core": "^0.17.0",
-    "@nimbus-sh/worker": "^0.15.0"
+    "@nimbus-sh/core": "^0.18.0",
+    "@nimbus-sh/worker": "^0.16.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260928.1",
-    "@nimbus-sh/worker": "^0.15.0",
+    "@nimbus-sh/worker": "^0.16.0",
     "typescript": "^5.7.0"
   },
   "publishConfig": {
@@ -97,6 +97,6 @@
     "@nimbus-sh/config": "^0.3.0",
     "@nimbus-sh/platform": "^0.8.1",
     "zod": "^4.4.3",
-    "@nimbus-sh/core": "^0.17.0"
+    "@nimbus-sh/core": "^0.18.0"
   }
 }

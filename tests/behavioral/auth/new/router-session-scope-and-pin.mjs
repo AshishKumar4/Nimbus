@@ -119,7 +119,7 @@ a.check('attach exchange redirects to the clean session URL',
   && !exchangedLocation.includes('nimbus_token'),
   `status=${exchanged.status} location=${exchangedLocation}`);
 a.check('attach exchange sets a hardened session cookie',
-  exchangedCookie.startsWith('__Host-nimbus_token=')
+  exchangedCookie.startsWith(`__Host-nimbus_token-${createdSid}=`)
   && exchangedCookie.includes('Path=/')
   && exchangedCookie.includes('SameSite=None')
   && exchangedCookie.includes('HttpOnly')
@@ -128,7 +128,7 @@ a.check('attach exchange sets a hardened session cookie',
   exchangedCookie);
 
 const cookiePair = exchangedCookie.split(';', 1)[0];
-const cookieClaims = (await verifyNimbusToken(env, decodeURIComponent(cookiePair.slice('__Host-nimbus_token='.length)))).claims;
+const cookieClaims = (await verifyNimbusToken(env, decodeURIComponent(cookiePair.slice(`__Host-nimbus_token-${createdSid}=`.length)))).claims;
 a.check('session cookie holds a fresh sid-pinned attach-only token (not the bootstrap)',
   cookieClaims.sid === createdSid
   && cookieClaims.jti === undefined
@@ -153,7 +153,7 @@ const replayedJson = await replayed.json();
 a.check('replayed bootstrap attach URL is rejected',
   replayed.status === 401
   && replayedJson.code === 'E_BOOTSTRAP_CONSUMED'
-  && !(replayed.headers.get('Set-Cookie') || '').includes('__Host-nimbus_token='),
+  && !(replayed.headers.get('Set-Cookie') || '').includes(`__Host-nimbus_token-${createdSid}=`),
   `status=${replayed.status} body=${JSON.stringify(replayedJson)}`);
 
 // ── Bootstrap tokens open nothing except the exchange ────────────────────
@@ -222,12 +222,12 @@ const iframeCookie = iframeExchange.headers.get('Set-Cookie') || '';
 a.check('embedder query token on the shell URL exchanges into a cookie and clean redirect',
   iframeExchange.status === 302
   && iframeLocation === '/s/query-job/?embed=1'
-  && iframeCookie.startsWith('__Host-nimbus_token=')
+  && iframeCookie.startsWith('__Host-nimbus_token-query-job=')
   && iframeCookie.includes('HttpOnly'),
   `status=${iframeExchange.status} location=${iframeLocation} cookie=${iframeCookie}`);
 const iframeCookieClaims = (await verifyNimbusToken(
   env,
-  decodeURIComponent(iframeCookie.split(';', 1)[0].slice('__Host-nimbus_token='.length)),
+  decodeURIComponent(iframeCookie.split(';', 1)[0].slice('__Host-nimbus_token-query-job='.length)),
 )).claims;
 a.check('embedder exchange narrows the cookie token to sid-pinned attach with the same lifetime',
   iframeCookieClaims.sid === 'query-job'
@@ -297,7 +297,7 @@ class GatedNamespace extends FakeNamespace {
   );
   const [r1, r2] = await Promise.all([attach(), attach()]);
   const statuses = [r1.status, r2.status].sort();
-  const cookies = [r1, r2].filter((r) => (r.headers.get('Set-Cookie') || '').includes('__Host-nimbus_token='));
+  const cookies = [r1, r2].filter((r) => (r.headers.get('Set-Cookie') || '').includes('__Host-nimbus_token-'));
   const rejected = [r1, r2].find((r) => r.status === 401);
   const rejectedJson = rejected ? await rejected.json() : null;
   a.check('exactly one of two concurrent bootstrap exchanges wins',
