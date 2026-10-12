@@ -1,6 +1,11 @@
 /** Guest-side bookkeeping for real, single-use directory descriptions. It owns no filesystem authority. */
 import { DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
 function failure(code, message) { return Object.assign(new Error(`${code}: ${message}`), { code }); }
+/** A candidate's key as the batch reports it (no leading or trailing `/`), for one already prefetched; a descriptor-relative one never matches. */
+function keyOfPath(path) {
+    const named = typeof path === 'string' ? path : 'root' in path ? `${path.root}/${path.path}` : '';
+    return named.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+}
 export function readDirectoryPool({ call, store, client, before }) {
     const channel = crypto.randomUUID();
     let sequence = 0, generation = 0, cancelled = 0;
@@ -136,8 +141,13 @@ export function readDirectoryPool({ call, store, client, before }) {
                 const current = hit ? local(hit) : null;
                 if (hit && current && hit.openedRevision !== null && current.entry.revision === hit.openedRevision)
                     return claim(hit);
-                discardUnused();
-                const candidates = await prefetch();
+                // Only a hit that no longer holds is retired; the rest of what the
+                // walk was guessed to open stays, validated when it is claimed.
+                if (hit) {
+                    unused.delete(key);
+                    retiring.add(hit.handle.id);
+                }
+                const candidates = (await prefetch()).filter((candidate) => !unused.has(keyOfPath(candidate)));
                 if (began !== cancelled)
                     throw failure('EAGAIN', 'directory open was cancelled while preparing');
                 // At capacity, ACK retirement first. Do not spend credits merely
@@ -185,10 +195,11 @@ export function readDirectoryPool({ call, store, client, before }) {
             ended = true;
             cancelled++;
             await serial(async () => {
-                invalidate();
+                for (const id of owned.keys())
+                    retiring.add(id);
                 owned.clear();
                 claiming.clear();
-                retiring.clear();
+                await drain();
             });
         },
     };

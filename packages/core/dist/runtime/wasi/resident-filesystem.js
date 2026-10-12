@@ -211,6 +211,8 @@ export function residentFilesystem(session, resident, delegation) {
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
     const readers = new Set();
+    /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
+    const unwritten = new Set();
     /** Of those, where each was opened, until its fstat says what it is: a directory, or a file too big to hold whole. */
     const opened = new Map();
     const directories = new Map();
@@ -588,23 +590,11 @@ export function residentFilesystem(session, resident, delegation) {
     fs.flush = async () => { await holder?.flush(); };
     fs.settle = async () => {
         const failures = [];
-        if (directoryPool) {
-            try {
-                await directoryPool.dispose();
-            }
-            catch (error) {
-                failures.push({ path: '/', dev: 0, ino: 0, error });
-            }
-        }
-        // The run's end: what it logged is answered, and the subtrees it held are given back.
-        if (holder !== null) {
-            try {
-                await holder.settle();
-            }
-            catch (error) {
-                failures.push({ path: '/', dev: 0, ino: 0, error });
-            }
-        }
+        // The run's end, both at once: the directory descriptions it holds are
+        // retired, what it logged is answered, and what it held is given back.
+        await Promise.all([directoryPool?.dispose(), holder?.settle()].map((ending) => Promise.resolve(ending).catch((error) => {
+            failures.push({ path: '/', dev: 0, ino: 0, error });
+        })));
         return failures;
     };
     // A sync of a file through any descriptor: everything this process logged
@@ -833,7 +823,15 @@ export function residentFilesystem(session, resident, delegation) {
                     return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return handle; });
                 });
             };
-            return after(through(), (handle) => (handle === DELEGATE ? changing('open', () => authority.open(path, flags)) : handle));
+            return after(through(), (handle) => {
+                if (handle !== DELEGATE)
+                    return handle;
+                if (flags.create || flags.truncate)
+                    return changing('open', () => authority.open(path, flags));
+                // An open that makes and empties nothing changes nothing: its writes will, each a call of its own.
+                delegated('open');
+                return after(authority.open(path, flags), (opened) => { unwritten.add(opened.id); return opened; });
+            });
         }
         // A read-only open is the session's descriptor (it has what this process logged first).
         delegated('open');
@@ -964,6 +962,7 @@ export function residentFilesystem(session, resident, delegation) {
             counts.local++;
             return holder.write(handleId, offset, bytes);
         }
+        unwritten.delete(handleId);
         return changing('write', () => authority.write(handleId, offset, bytes));
     };
     fs.ftruncate = (handleId, size) => {
@@ -972,6 +971,7 @@ export function residentFilesystem(session, resident, delegation) {
             holder.ftruncate(handleId, size);
             return;
         }
+        unwritten.delete(handleId);
         return changing('ftruncate', () => authority.ftruncate(handleId, size));
     };
     fs.close = (handleId) => {
@@ -997,6 +997,10 @@ export function residentFilesystem(session, resident, delegation) {
             opened.delete(handleId);
             directories.delete(handleId);
             paged.delete(handleId);
+            delegated('close');
+            return authority.close(handleId);
+        }
+        if (unwritten.delete(handleId)) {
             delegated('close');
             return authority.close(handleId);
         }

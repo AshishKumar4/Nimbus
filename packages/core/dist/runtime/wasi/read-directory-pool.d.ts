@@ -33,9 +33,9 @@ export interface ReadDirectoryPool {
     /** A park timed out: late, not-yet-delivered descriptions are abandoned, never installed into the guest fd table. */
     cancelPending(): void;
     /**
-     * The process's run ended: nothing more is opened or sent. Its scope's
-     * release closes every description the pool still accounts for, so
-     * retiring them first would only cost the run a round trip.
+     * The run ended: every description the pool accounts for is retired. A
+     * shell's commands share its pid, and so its descriptor scope: a run
+     * cannot leave them to the scope's release.
      */
     dispose(): Promise<void>;
 }
