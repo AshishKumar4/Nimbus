@@ -124,13 +124,15 @@ for (const host of ['facet', 'peer']) {
         await box.files.write('/home/user/nested/src/index.js', NESTED);
         const dev = await box.startProcess('wrangler dev', { cwd: '/home/user/nested', execId: 'job-wrangler' });
         try {
-          let log = '';
-          await until('wrangler dev to build', async () => {
-            log = (await box.processes.logs(dev.pid)).text;
-            return /Worker built/.test(log) || null;
-          }, 180_000).catch((error) => { throw new Error(`${error.message}; its log: ${log.slice(-1500)}`); });
-          const served = await fetch(`${probe.base}/s/${encodeURIComponent(box.id)}/worker/`, { headers: { Authorization: `Bearer ${probe.token}` } });
-          const answer = await served.text();
+          // It builds on its first request; until then the route answers that it is not ready.
+          let answer = '';
+          await until('the Worker to answer', async () => {
+            const served = await fetch(`${probe.base}/s/${encodeURIComponent(box.id)}/worker/`, { headers: { Authorization: `Bearer ${probe.token}` } });
+            answer = await served.text();
+            return /^outer /.test(answer) || null;
+          }, 180_000).catch(async (error) => {
+            throw new Error(`${error.message}; last answer: ${answer.slice(0, 600)}; its log: ${(await box.processes.logs(dev.pid)).text.slice(-1200)}`);
+          });
           assert.equal(answer, 'outer via-egress who job-wrangler\nnested via-egress who job-wrangler', answer.slice(0, 1200));
         } finally {
           await box.processes.kill(dev.pid).catch(() => {});
