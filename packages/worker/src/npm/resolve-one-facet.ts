@@ -54,6 +54,7 @@
 import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetRegistryEvent } from './resolve-facet.js';
+import type { PackumentReadOptions } from './r2-cache.js';
 import { registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -196,7 +197,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
        */
       getPackument: (
         name: string,
-        options: { retries: number; timeoutMs: number; registry: string; revalidate?: boolean },
+        options: PackumentReadOptions,
       ) => Promise<{
         json: string | null;
         source: 'r2-cache' | 'network';
@@ -493,13 +494,20 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     return 'failed' in again ? loaded : again;
   };
   const stagedVersion = stagedBindingVersion();
-  let packument: Loaded = await revalidated(effName, await loadPackument(effName), (data) => (stagedVersion !== null
-    ? readProperty(data.versions, stagedVersion) !== undefined
-    : pickVersion(data) !== null));
-  if ('failed' in packument) return packument.failed;
-  let version = stagedVersion !== null && readProperty(packument.data.versions, stagedVersion) !== undefined
+  const choose = (data: Packument) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
     ? stagedVersion
-    : pickVersion(packument.data);
+    : pickVersion(data));
+  let packument: Loaded = await loadPackument(effName);
+  if ('failed' in packument) return packument.failed;
+  // One pick; a cached packument asked again only where it answered nothing (or not the staged version).
+  let version = choose(packument.data);
+  if (packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
+    const again = await loadPackument(effName, true);
+    if (!('failed' in again)) {
+      packument = again;
+      version = choose(again.data);
+    }
+  }
   if (__swap && __swap.since) {
     const own = version;
     let covered = false;

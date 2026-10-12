@@ -101,7 +101,7 @@ async function scenario(tier, request, colo) {
   const stored = bucket.entries.get(key);
   assert.equal(stored.json, registry.json());
   const expiresAt = Number(stored.customMetadata.expiresAt);
-  assert.equal(expiresAt, START + 300_000, "fresh for the registry's max-age");
+  assert.equal(expiresAt, START + PACKUMENT_TTL_MS);
   assert.equal(stored.customMetadata.etag, '"fixture-1"', "with the registry's ETag");
   if (colo) {
     assert.ok(colo.entries.has(packumentL2Url(NAME, REGISTRY)), 'the first registry response filled L2 as well');
@@ -159,10 +159,12 @@ try {
   else delete globalThis.caches;
 }
 assert.equal(failures.length, 0, failures.join('\n'));
-// ── an expired entry is revalidated with its ETag: a 304 renews it, without a body ──
-// And an entry cached before validators were kept is refetched once, not
-// trusted for the rest of its old hour; a version nothing publishes is
-// asked about once, and is no published version.
+// ── an expired entry is refetched on its ETag: a 304 keeps the cached body ──
+// Fresh reads never reach the registry. At expiry the refetch is
+// conditional; an unchanged packument (304) is kept as a fresh answer would
+// be, without its body. An entry cached without an ETag is used, and
+// refetched, as before. A version nothing publishes is asked about once,
+// and is no published version; one the cache answers is not asked at all.
 if (!expiredControl) {
   delete globalThis.caches;
   Date.now = () => now;
@@ -172,62 +174,44 @@ if (!expiredControl) {
     const registry = fakeRegistry();
     const client = () => new R2CacheClient(null, bucket);
     const read = (options = {}) => client().readThroughPackument(NAME, { registry: REGISTRY, retries: 0, ...options });
+    const resolve = (range) => resolveOnePackumentInFacet(
+      { name: NAME, range, cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: REGISTRY },
+      { SUPERVISOR: { async getPackument(packageName, options) { const c = client(); return { ...await c.readThroughPackument(packageName, options), events: c._cacheEvents }; } } },
+    );
     assert.equal((await read()).source, 'network');
-    now = START + 301_000;
+    now = START + PACKUMENT_TTL_MS - 1_000;
+    assert.equal((await read()).source, 'r2-cache');
+    assert.equal(registry.requests.length, 1, 'a fresh entry is not asked about');
+
+    now = START + PACKUMENT_TTL_MS + 1_000;
     const renewed = await read();
     assert.equal(renewed.source, 'r2-cache', 'unchanged: the cached body stands');
-    assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"', 'revalidated with the ETag');
-    assert.equal(bucket.writes, 1, "R2's body is not put again to renew a stamp");
-    const requests = registry.requests.length;
-    await withColoCache(async () => {
-      assert.equal((await read()).source, 'r2-cache');
-      now += 1_000;
-      const writes = bucket.writes;
-      assert.equal((await read()).source, 'r2-cache', 'the colo copy a 304 renewed is fresh again');
-      assert.equal(bucket.writes, writes);
-    });
-    assert.equal(registry.requests.length, requests + 1, 'one more revalidation, for the colo copy, then served without asking again');
+    assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"', 'refetched on its ETag');
+    const stored = bucket.entries.get(packumentKey(NAME, REGISTRY));
+    assert.equal(Number(stored.customMetadata.expiresAt), now + PACKUMENT_TTL_MS, 'kept as a fresh answer would be');
+    assert.equal(stored.customMetadata.etag, '"fixture-1"');
+    now += 1_000;
+    assert.equal((await read()).source, 'r2-cache');
+    assert.equal(registry.requests.length, 2, 'and not asked again while fresh');
 
-    // An entry from before: no validators, an hour's stamp left.
-    bucket.entries.set(packumentKey(NAME, REGISTRY), { json: registry.json(), uploaded: new Date(now), customMetadata: { expiresAt: String(now + PACKUMENT_TTL_MS) } });
-    const legacy = await read();
-    assert.equal(legacy.source, 'network', 'an entry without validators is refetched');
+    // An entry from before ETags were kept: used while fresh, then refetched plainly.
+    bucket.entries.set(packumentKey(NAME, REGISTRY), { json: registry.json(), uploaded: new Date(now), customMetadata: { expiresAt: String(now + 1_000) } });
+    assert.equal((await read()).source, 'r2-cache');
+    assert.equal(registry.requests.length, 2);
+    now += 2_000;
+    assert.equal((await read()).source, 'network');
     assert.equal(registry.requests.at(-1).ifNoneMatch, null, 'plainly');
     assert.equal(bucket.entries.get(packumentKey(NAME, REGISTRY)).customMetadata.etag, '"fixture-1"');
 
-    // A 304 that states no Cache-Control keeps the stored one (RFC 9111
-    // §4.3.4): fresh for max-age=300 again, not for the cache's own bound.
-    const registryFetch = globalThis.fetch;
-    await withColoCache(async () => {
-      const bareBucket = fakeBucket();
-      let asked = 0;
-      globalThis.fetch = async (input, init) => {
-        asked++;
-        const etag = '"e"';
-        if (new Request(input, init).headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
-        return new Response(registry.json(), { status: 200, headers: { ETag: etag, 'Cache-Control': 'public, max-age=300' } });
-      };
-      const bare = () => new R2CacheClient(null, bareBucket).readThroughPackument(NAME, { registry: REGISTRY, retries: 0 });
-      now = START + 10_000_000;
-      await bare();
-      now += 301_000;
-      await bare();
-      assert.equal(asked, 2, 'revalidated once its max-age passed');
-      now += 301_000;
-      await bare();
-      assert.equal(asked, 3, 'and again after max-age, as the stored Cache-Control says, not after an hour');
-    });
-    globalThis.fetch = registryFetch;
-
-    // A version nothing publishes: one revalidation, then ETARGET.
-    const before = registry.requests.length;
-    const missing = await resolveOnePackumentInFacet(
-      { name: NAME, range: '^9.0.0', cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: REGISTRY },
-      { SUPERVISOR: { async getPackument(packageName, options) { const c = client(); return { ...await c.readThroughPackument(packageName, options), events: c._cacheEvents }; } } },
-    );
+    const asked = registry.requests.length;
+    const met = await resolve('^1.0.0');
+    assert.equal(met.pkg?.version, '1.0.0');
+    assert.equal(registry.requests.length, asked, 'a range the cache answers is not asked about');
+    const missing = await resolve('^9.0.0');
     assert.equal(missing.pkg, null);
     assert.match(missing.error?.reason ?? '', /no published version/);
-    assert.equal(registry.requests.length, before + 1, 'asked once');
+    assert.equal(registry.requests.length, asked + 1, 'asked once');
+    assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"');
   } finally {
     globalThis.fetch = originalFetch;
     Date.now = originalNow;
