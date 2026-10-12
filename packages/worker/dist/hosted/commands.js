@@ -113,6 +113,31 @@ export async function registerHostedCommands(self, workspace) {
         return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes, realGit === undefined ? undefined : () => realGit(ctx));
     };
     registry.registerBuiltin('git', (ctx) => runGit(ctx));
+    const remoteHelper = async (ctx) => {
+        const [{ runRemoteHelper }, { createRemoteEngine }, { createLocalGit }, { pulledStdinReader, stdinBytesOf }] = await Promise.all([
+            import('../git/remote-helper.js'), import('../git/engine.js'), import('../git/local-git.js'), import('@nimbus-sh/core/shell/stdin-adapter.js'),
+        ]);
+        const stdinBytes = ctx.stdin === undefined ? { readBytes: async () => null } : stdinBytesOf(ctx.stdin);
+        const stdin = pulledStdinReader(() => stdinBytes.readBytes(65536));
+        return runRemoteHelper({
+            args: ctx.args, env: ctx.env, cwd: ctx.cwd,
+            readLine: async () => stdin?.readLine ? stdin.readLine() : null,
+            stdout: (text) => ctx.stdout.write(text),
+            stderr: (text) => ctx.stderr.write(text),
+            async readFile(path) {
+                try {
+                    return await ctx.vfs.readFile(path);
+                }
+                catch (error) {
+                    if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
+                        return null;
+                    throw error;
+                }
+            },
+        }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }), createLocalGit(self._ensureFacetProcessManager(), ctx));
+    };
+    registry.registerBuiltin('git-remote-http', remoteHelper);
+    registry.registerBuiltin('git-remote-https', remoteHelper);
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
     // 1. Register the clang-runner factory FIRST so the rehydration step

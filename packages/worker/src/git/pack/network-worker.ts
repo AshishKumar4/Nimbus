@@ -161,6 +161,13 @@ function gitPackContext(
   log: (message: string) => void, worktreeRoot: string | null = null,
 ): GraphContext {
   const dir = normalizeVfsPath(String(opts.dir));
+  const repository = opts.op === 'remote-fetch' ? opts.remoteFetch : undefined;
+  const gitDir = repository === undefined ? undefined : normalizeVfsPath(repository.gitDir);
+  const storage = gitDir === undefined ? undefined : {
+    gitDir,
+    commonDir: normalizeVfsPath(repository?.commonDir ?? gitDir),
+    objectDir: normalizeVfsPath(repository?.objectDir ?? (repository?.commonDir ?? gitDir) + '/objects'),
+  };
   // A pack's ranged writes, as its waves (the wave writer's deadline), stop at the phase deadline.
   const mutation = <T>(name: 'fsWriteRange' | 'rename' | 'lock', call: () => Promise<T>): Promise<T> => {
     if (deadline !== null && Date.now() >= deadline) return Promise.reject(new Error('git ' + (opts.phase || opts.op) + ' passed its phase deadline'));
@@ -180,7 +187,7 @@ function gitPackContext(
       unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
       readdir: (path) => supervisorNames(supervisor, stats, path),
     },
-    writer(onReceipts?: (receipts: CloneReceipt[]) => void) {
+    writer(onReceipts?: (receipts: CloneReceipt[]) => void, directoryRoot?: string) {
       const waves = createWaveWriter({
         supervisor: {
           // The writer's fence for this attempt goes with it: the session refuses a late original.
@@ -194,8 +201,8 @@ function gitPackContext(
           },
         },
         root,
-        worktreeRoot,
-        base: dir,
+        worktreeRoot: directoryRoot ?? worktreeRoot,
+        base: storage === undefined ? dir : undefined,
         deadline,
         onWave(report) {
           stats.filesWritten += report.files;
@@ -212,6 +219,7 @@ function gitPackContext(
       });
     },
     dir,
+    storage,
     url: opts.url ?? '',
     auth: opts.auth,
     marker: { path: '.git/' + GIT_CLONE_JOB_MARKER, text: cloneJobMarker(opts) },

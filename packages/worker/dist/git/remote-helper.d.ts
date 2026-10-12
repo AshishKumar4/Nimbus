@@ -18,9 +18,11 @@
  * Not stateless-connect or connect: with those git would run the protocol
  * itself, and git.wasm cannot demultiplex a sideband (start_async forks).
  */
-import type { RemoteEngine } from './engine.js';
+import { type RemoteEngine } from './engine.js';
 /** What the helper asks of the repository it serves, through git itself. */
 export interface LocalGit {
+    /** Git's own resolution of a source ref, including symbolic and packed common refs. */
+    resolve(gitDir: string, ref: string): Promise<string | null>;
     /** Of `oids`, those the repository has (git cat-file --batch-check). */
     has(gitDir: string, oids: string[]): Promise<Set<string>>;
     /**

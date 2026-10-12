@@ -67,6 +67,10 @@ const engine = {
 };
 
 const has = async (gitDir, oids) => new Set(oids.filter((oid) => spawnSync('git', ['--git-dir', gitDir, 'cat-file', '-e', oid]).status === 0));
+const resolve = async (gitDir, ref) => {
+  const value = git(['--git-dir', gitDir, 'cat-file', '--batch-check=%(objectname)'], ref + '\n').toString().trim();
+  return /^[0-9a-f]{40}$/.test(value) ? value : null;
+};
 const packObjects = ({ gitDir, include, exclude }) => {
   const have = exclude.filter((oid) => spawnSync('git', ['--git-dir', gitDir, 'cat-file', '-e', oid]).status === 0);
   const child = spawn('git', ['--git-dir', gitDir, 'pack-objects', '--revs', '--thin', '--stdout', '-q'], { stdio: ['pipe', 'pipe', 'inherit'] });
@@ -106,5 +110,5 @@ const code = await runRemoteHelper({
   stdout: write(process.stdout),
   stderr: write(process.stderr),
   readFile: async (path) => { try { return new Uint8Array(await readFile(path)); } catch { return null; } },
-}, engine, { has, packObjects });
+}, engine, { has, resolve, packObjects });
 process.exit(code);

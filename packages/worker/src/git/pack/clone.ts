@@ -59,9 +59,11 @@ export interface CloneReceipt extends EntryStat {
 export interface CloneContext {
   supervisor: CloneSupervisor;
   /** A wave writer rooted at the clone; `onReceipts` sees each published wave's files. */
-  writer(onReceipts?: (receipts: CloneReceipt[]) => void): CloneWriter;
+  writer(onReceipts?: (receipts: CloneReceipt[]) => void, directoryRoot?: string): CloneWriter;
   /** The worktree's VFS path; record paths are relative to it. */
   dir: string;
+  /** Raw helper fetches use Git's directories, not a clone's worktree-relative paths. */
+  storage?: { gitDir: string; commonDir: string; objectDir: string };
   url: string;
   auth?: GitTransportAuth;
   /** The ownership marker every wave re-asserts (repo-relative path). */
@@ -220,7 +222,7 @@ export { readRange };
 
 /** A resumed step run again after its answer was lost: its recorded outcome, its pack's naming finished; or null. */
 export async function settledBefore(context: CloneContext, tmpName: string, recordName: string): Promise<{ summary: PackSummary; extra: unknown } | null> {
-  return await resumeInstall(packFiles(context), join(context.dir, PACK_DIR), tmpName, join(context.dir, STAGE_DIR + '/' + recordName));
+  return await resumeInstall(packFiles(context), packDirectory(context), tmpName, stageDirectory(context) + '/' + recordName);
 }
 
 /**
@@ -230,9 +232,9 @@ export async function settledBefore(context: CloneContext, tmpName: string, reco
  */
 function packFiles(context: CloneContext, writer?: CloneWriter): PackFiles {
   const supervisor = context.supervisor;
-  const relative = (path: string): string => path.slice(context.dir.length + 1);
+  const relative = (path: string): string => context.storage ? path : path.slice(context.dir.length + 1);
   let own: CloneWriter | null = null;
-  const waves = (): CloneWriter => writer ?? (own ??= context.writer());
+  const waves = (): CloneWriter => writer ?? (own ??= context.writer(undefined, context.storage?.objectDir));
   return {
     fsWriteRange: (path, offset, bytes) => supervisor.fsWriteRange(path, offset, bytes),
     fsTruncate: (path, size) => supervisor.fsTruncate(path, size),
@@ -253,6 +255,14 @@ function packFiles(context: CloneContext, writer?: CloneWriter): PackFiles {
 
 export function join(dir: string, path: string): string {
   return dir + '/' + path;
+}
+
+export function packDirectory(context: CloneContext): string {
+  return context.storage ? context.storage.objectDir + '/pack' : join(context.dir, PACK_DIR);
+}
+
+function stageDirectory(context: CloneContext): string {
+  return context.storage ? context.storage.gitDir + '/nimbus-clone' : join(context.dir, STAGE_DIR);
 }
 
 function stripSlash(path: string): string {
@@ -328,7 +338,8 @@ async function storePack(
     // A clone's batches are sized to decode within one invocation's budget.
     throw new PackFormatError('pack ' + tmpName + ' ran past its decoding budget after ' + stored.pending.decoded + ' entries');
   }
-  return stored;
+  if (stored.summary === null) throw new PackFormatError('pack ' + tmpName + ' holds no objects');
+  return { result: stored.result, summary: stored.summary };
 }
 
 export interface StorePackOptions {
@@ -362,7 +373,7 @@ export interface PendingPack {
   promisor?: string;
 }
 
-export type StoredPack = { result: PackProcessResult; summary: PackSummary } | { pending: PendingPack };
+export type StoredPack = { result: PackProcessResult; summary: PackSummary | null } | { pending: PendingPack };
 
 /** storePack, or where its decoding stopped when the budget ran out first (see resumePack). */
 export async function storePackResumable(
@@ -372,7 +383,7 @@ export async function storePackResumable(
   tmpName: string,
   options: StorePackOptions,
 ): Promise<StoredPack> {
-  const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + tmpName));
+  const store = new RangedPackFile(packFiles(context), packDirectory(context) + '/' + tmpName);
   const result = await new PackStreamProcessor({
     store,
     cacheBytes: options.cacheBytes,
@@ -391,9 +402,9 @@ export async function resumePack(
   pending: PendingPack,
   options: Omit<StorePackOptions, 'promisor'>,
 ): Promise<StoredPack> {
-  const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + pending.tmpName));
+  const store = new RangedPackFile(packFiles(context), packDirectory(context) + '/' + pending.tmpName);
   store.size = pending.packBytes;
-  const records = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/ckpt-' + pending.tmpName), 0, pending.recordsBytes);
+  const records = await readRange(context.supervisor, stageDirectory(context) + '/ckpt-' + pending.tmpName, 0, pending.recordsBytes);
   const result = await new PackStreamProcessor({
     store,
     cacheBytes: options.cacheBytes,
@@ -417,8 +428,9 @@ async function settlePack(
   if (result.checkpoint !== null || result.entries === null) {
     const checkpoint = result.checkpoint!;
     const recordsBytes = checkpoint.records.byteLength;
-    await writer.file(STAGE_DIR + '/ckpt-' + tmpName, 0o644, checkpoint.records);
-    await writer.flush();
+    const checkpointWriter = context.storage ? context.writer(undefined, context.storage.gitDir) : writer;
+    await checkpointWriter.file((context.storage ? stageDirectory(context) : STAGE_DIR) + '/ckpt-' + tmpName, 0o644, checkpoint.records);
+    await checkpointWriter.flush();
     return {
       pending: {
         tmpName,
@@ -435,13 +447,12 @@ async function settlePack(
   const extra = record === undefined ? undefined : await record.publish();
   await writer.flush();
   const summary = await installPack(packFiles(context, writer), {
-    dir: join(context.dir, PACK_DIR),
+    dir: packDirectory(context),
     tmpName,
     result,
     promisor,
-    record: record === undefined ? undefined : { path: join(context.dir, STAGE_DIR + '/' + record.name), extra },
+    record: record === undefined ? undefined : { path: stageDirectory(context) + '/' + record.name, extra },
   });
-  if (summary === null) throw new PackFormatError('pack ' + tmpName + ' holds no objects');
   return { result, summary };
 }
 
@@ -802,6 +813,7 @@ async function cloneStream(
     budgetUnits: request.budgetUnits,
     onObject: (object) => watch.see(object.type, object.oid),
   });
+  if (!('pending' in stored) && stored.summary === null) throw new PackFormatError('the server sent no objects for the commit');
   await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows, sparse: request.sparse });
   await writer.flush();
   return {

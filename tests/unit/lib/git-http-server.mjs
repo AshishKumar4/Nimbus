@@ -17,7 +17,8 @@ export function startGitHttpServer(projectRoot, { plain = false, refuse = null }
       const url = new URL(request.url);
       requests.push({ method: request.method, path: url.pathname, authorization: request.headers.get('authorization') });
       const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array(0);
-      if (refuse !== null && refuse(url.pathname, body)) return new Response('refused', { status: 403 });
+      const refusal = refuse === null ? false : refuse(url.pathname, body);
+      if (refusal) return refusal instanceof Response ? refusal : new Response('refused', { status: 403 });
       const child = spawn('git', [...config, 'http-backend'], {
         env: {
           ...process.env,
