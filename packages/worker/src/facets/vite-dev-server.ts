@@ -25,6 +25,7 @@
 import { scanCjsExports } from '@nimbus-sh/core/runtime/cjs-export-names.js';
 import { createModuleLexer } from '@nimbus-sh/core/runtime/module-lexer.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { EsbuildService, EsbuildTransformOptions } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -91,6 +92,8 @@ export interface ViteDevServerOptions {
    * or synthesizes goes through the VFS as this principal.
    */
   cred: VfsCred;
+  /** The session's namespace, whose changes the server hears (CompositeVFS.watchChanges). */
+  namespace: Pick<CompositeVFS, 'watchChanges'>;
   esbuild: EsbuildService;
   /** Root directory in VFS (e.g. "home/user/projects") */
   root: string;
@@ -1384,7 +1387,7 @@ const SERVICE_PREBUNDLE_OPTIONS = Object.freeze({
 
 export class ViteDevServer {
   private vfs: CredentialedVfs;
-  private vfsEvents: SqliteVFS['events'];
+  private namespace: Pick<CompositeVFS, 'watchChanges'>;
   private esbuild: EsbuildService;
   private root: string;
   private onHmrMessage: (msg: any) => void;
@@ -1464,7 +1467,7 @@ export class ViteDevServer {
     this.configDir = opts.configDir ? normalizeVfsPath(opts.configDir) : null;
     this.onConfigChange = opts.onConfigChange ?? null;
     this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
-    this.vfsEvents = opts.vfs.events;
+    this.namespace = opts.namespace;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
     this.logPid = (opts.pid != null) ? opts.pid : null;
@@ -1631,7 +1634,7 @@ export class ViteDevServer {
     for (const message of this.viteEsbuild.unread) this.warnOnce(message);
 
     // Subscribe to VFS events for HMR
-    this.unsubVfs = this.vfsEvents.on((events) => {
+    this.unsubVfs = this.namespace.watchChanges('/', (events) => {
       this.handleVfsEvents(events);
     });
   }
@@ -1776,7 +1779,8 @@ export class ViteDevServer {
   }
 
   /** Handle VFS change events → trigger HMR. */
-  private handleVfsEvents(events: VfsEvent[]): void {
+  /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */
+  private handleVfsEvents(events: readonly VfsEvent[]): void {
     if (!this.running) return;
 
     let needsReload = false;
@@ -1787,8 +1791,9 @@ export class ViteDevServer {
 
     for (const event of events) {
       if (event.type === 'addDir' || event.type === 'unlinkDir') continue;
-      const path = event.path;
-      const touched = event.type === 'rename' && event.oldPath ? [path, event.oldPath] : [path];
+      const path = event.path.slice(1);
+      const oldPath = event.oldPath?.slice(1);
+      const touched = event.type === 'rename' && oldPath ? [path, oldPath] : [path];
       if (this.configDir !== null && touched.some((p) => isViteConfigPath(p, this.configDir!))) configChanged = true;
       if (touched.some((p) => isTsconfigPath(p) || this.tsconfigFiles.has(p.replace(/^\/+/, '')))) tsconfigChanged = true;
 
@@ -1810,7 +1815,7 @@ export class ViteDevServer {
       // a changed file a cache miss and the row is overwritten on reserve.
       // For renames, the original path is the one that goes away.
       if (this.npmCache && (event.type === 'unlink' || event.type === 'rename')) {
-        const gone = event.type === 'rename' ? (event.oldPath ?? path) : path;
+        const gone = event.type === 'rename' ? (oldPath ?? path) : path;
         this.npmCache.deleteUserModuleTransform(gone);
         this.npmCache.deleteUserModuleTransform(this.root + '/' + gone);
         if (gone.startsWith(this.root + '/')) {

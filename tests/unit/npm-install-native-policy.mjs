@@ -45,17 +45,14 @@ function resolvedResult(name, version, overrides = {}) {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
       dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
     },
-    deps: {}, peerDeps: {}, optionalDeps: {},
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }
 
+// A refusal carries the package refused, as the resolver task answers it:
+// its manifest still shapes the tree.
 function rejectedResult(from, reason, suggest) {
-  return {
-    pkg: null, deps: {}, peerDeps: {}, optionalDeps: {},
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-    error: { type: 'w6-reject', from, reason, suggest },
-  };
+  return { ...resolvedResult(from, '1.0.0'), error: { type: 'w6-reject', from, reason, suggest } };
 }
 
 // A table-listed package resolves like any other and reports the policy
@@ -126,9 +123,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'opt-sharp', dependencies: ok },
     (name) => {
       if (name === 'ok-a') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optShards });
-        r.optionalDeps = optShards;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optShards });
       }
       if (name === 'sharp') {
         return advisedResult('sharp', '0.34.0', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
@@ -362,7 +357,7 @@ function makeInstaller(pkgJson, resultFor) {
   const output = log.join('\n');
 
   assert.ok(result.failed.includes('native-gate'), `the later required chain upgrades the refusal (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*native-gate — /.test(output), `the skip line is logged once at refusal time:\n${output}`);
+  assert.ok(!/\[skip\].*native-gate/.test(output), `a required refusal is no skip:\n${output}`);
   assert.ok(/npm ERR! native-gate: Requires a native binding for linux-x64\./.test(output), `the refusal names the package + reason:\n${output}`);
   assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it:\n${output}`);
   console.log('  caseG: dev-first ancestor, deeper required chain — end-of-walk closure wins');
@@ -382,9 +377,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'opt-subtree', dependencies: { ...ok, x: '^1.0.0' } },
     (name) => {
       if (name === 'x') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
-        r.optionalDeps = optDeps;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
       }
       if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: yDeps });
       if (name === 'sharp') {
@@ -459,9 +452,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'opt-first', dependencies: { ...ok, a: '^1.0.0', x: '^1.0.0' } },
     (name) => {
       if (name === 'x') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
-        r.optionalDeps = optDeps;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
       }
       if (name === 'optional-root') return resolvedResult(name, '1.0.0', { dependencies: orDeps });
       if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: aDeps });
@@ -512,9 +503,7 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'shared-refusal', dependencies: { ...ok, x: '^1.0.0', y: '^1.0.0' } },
     (name) => {
       if (name === 'x') {
-        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
-        r.optionalDeps = optDeps;
-        return r;
+        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
       }
       if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: reqDeps });
       if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
@@ -531,17 +520,15 @@ function makeInstaller(pkgJson, resultFor) {
 
 // ── Case N: a required refusal reports identically across installs ─────
 //
-// The lockfile written after a partial install must not launder the
-// refusal into `Done!` on the next run: the depsJson closure check
-// invalidates it (the gated package is absent from the locked tree), the
-// walk re-runs, and the refusal is reported again. Registry-cache writes
-// are populated the way a real walk does so the closure check has its
-// input.
+// A required refusal changes nothing, as npm's EBADPLATFORM does: no
+// package is installed and no lockfile is written, so nothing can launder
+// the refusal into `Done!` on the next run, which walks again and reports
+// it again. Registry-cache writes are populated the way a real walk does.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const appDeps = { 'native-gate': '^1.0.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const cw = (name, version, deps = {}) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: JSON.stringify(deps), peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
@@ -561,21 +548,22 @@ function makeInstaller(pkgJson, resultFor) {
   );
   const first = await installer.install(PROJ);
   assert.ok(first.failed.includes('native-gate'), `first install fails on the refusal (failed=${JSON.stringify(first.failed)})`);
+  assert.deepEqual(first.installed, [], 'and installs nothing');
+  assert.equal(installer.npmCache.readLockfile(PROJ), null, 'nor writes a lockfile');
   log.length = 0;
   const second = await installer.install(PROJ);
   const output = log.join('\n');
   assert.ok(second.failed.includes('native-gate'), `second install reports the same refusal (failed=${JSON.stringify(second.failed)})`);
-  assert.ok(/Lockfile outdated\. Re-resolving/.test(output), `the partial lockfile is invalidated, not trusted:\n${output}`);
   assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it again:\n${output}`);
   assert.ok(!/\bDone!/.test(output), 'no success line over a missing required package');
-  console.log('  caseN: a partial lockfile re-resolves and re-reports the required refusal');
+  console.log('  caseN: a required refusal changes nothing, and is reported again');
 }
 
 // ── Case O: a complete tree's second install still uses the lockfile ────
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const cw = (name, version) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
@@ -617,7 +605,6 @@ function makeInstaller(pkgJson, resultFor) {
           optionalDependencies: wranglerOptDeps,
           bin: { wrangler: 'bin/wrangler.js' },
         });
-        r.optionalDeps = wranglerOptDeps;
         return r;
       }
       if (name === '@cloudflare/vite-plugin') {
@@ -658,17 +645,18 @@ function makeInstaller(pkgJson, resultFor) {
 // install. The second install must come back "Lockfile valid".
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  // A record is the registry package's: the alias's is react's, under react.
   const cw = (name, version) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
   const { installer, log } = makeInstaller(
     { name: 'alias-app', dependencies: { ...ok, vliw: 'npm:react@^19.0.0' } },
     (name) => {
-      const r = resolvedResult(name, name === 'vliw' ? '19.1.0' : '1.0.0');
-      r.cacheWrites = [cw(name, name === 'vliw' ? '19.1.0' : '1.0.0')];
-      return r;
+      if (name !== 'vliw') return { ...resolvedResult(name, '1.0.0'), cacheWrites: [cw(name, '1.0.0')] };
+      const r = resolvedResult(name, '19.1.0');
+      return { ...r, pkg: { ...r.pkg, registryName: 'react' }, cacheWrites: [cw('react', '19.1.0')] };
     },
   );
   const first = await installer.install(PROJ);
@@ -690,7 +678,7 @@ function makeInstaller(pkgJson, resultFor) {
 // which is not a semver range at all — answers presence-only.
 {
   const cw = (name, version) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
@@ -736,34 +724,35 @@ function makeInstaller(pkgJson, resultFor) {
     root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
     log.length = 0;
     const second = await installer.install(PROJ);
-    assert.ok(/Lockfile outdated/.test(log.join('\n')), `a changed range invalidates the lockfile:\n${log.join('\n')}`);
+    assert.ok(/Resolving /.test(log.join('\n')) && !/Lockfile valid/.test(log.join('\n')), `a changed range invalidates the lockfile:\n${log.join('\n')}`);
     console.log('  caseR: changed range re-resolves');
   }
 
-  // git root — presence-only
+  // git root — refused, whatever is installed under its name
   {
+    const asked = [];
     const { installer, log, harness } = makeInstaller(
       { name: 'git-app', dependencies: { ...ok, gitpkg: 'github:user/repo#v1' } },
-      (name) => resolvedResult(name, '1.0.0'),
+      (name) => { asked.push(name); return resolvedResult(name, '1.0.0'); },
     );
-    // A git spec never reaches the resolver — seed the lockfile and
-    // registry cache the way a real install left them, then confirm a
-    // non-semver range answers presence-only instead of invalidating.
+    // A git spec is not installed here, and never reaches the resolver:
+    // a registry package of its name installed before does not meet it.
     const entries = new Map();
     for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
       installer.npmCache.putRegistryEntries([cw(name, '1.0.0')]);
-      entries.set(name, { name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
+      entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
     }
     installer.npmCache.putRegistryEntries([cw('gitpkg', '0.0.0-abc123')]);
     entries.set('gitpkg', {
-      name: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
+      name: 'gitpkg', registryName: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
       depsJson: '{}', hoistedPath: `${NM}/gitpkg`,
     });
     installer.npmCache.writeLockfile(PROJ, entries, { storage: harness.ctx.storage });
     const result = await installer.install(PROJ);
-    assert.ok(/Lockfile valid/.test(log.join('\n')), `a git root answers presence-only:\n${log.join('\n')}`);
-    assert.deepEqual(result.failed, []);
-    console.log('  caseR: git root stays valid by presence');
+    assert.deepEqual(result.failed, ['gitpkg'], log.join('\n'));
+    assert.ok(/gitpkg@github:user\/repo#v1 is not a registry package/.test(log.join('\n')), `the refusal says why:\n${log.join('\n')}`);
+    assert.deepEqual(asked, [], 'nothing is resolved');
+    console.log('  caseR: a git root is refused');
   }
 }
 

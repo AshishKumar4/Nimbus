@@ -82,7 +82,9 @@ function session(store, generation) {
     get nimbusDebug() { return false; },
     get viteBasePath() { return `${BASE_PATH}/preview`; },
     async hydrateSessionBasePath() {},
-    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = { as: () => view, events: { on: () => () => {} } }; },
+    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = { as: () => view }; },
+    // The session's namespace: no file changes in this run.
+    getFilesystemAuthority() { return { vfs: { watchChanges: () => () => {} } }; },
     ensureBundlePool() { return null; },
     restorePersistedDevServer: (onlyPort) => routes.restorePersistedDevServer(self, onlyPort),
   };

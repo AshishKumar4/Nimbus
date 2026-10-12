@@ -47,8 +47,8 @@
  *   6. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
- *      events, packumentBytesDecoded, packumentSource, error?}.
+ *   7. Return {pkg, cacheWrites, messages, events, packumentBytesDecoded,
+ *      packumentSource, error?, nativeExecutable?}.
  */
 import { registryRecord, resolvedFromRecord } from './registry-record.js';
 /**
@@ -72,11 +72,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // (post-network-fetch). Threaded through `out()` into the result.
     const cacheStatEvents = [];
     let packumentElapsedMs = 0;
-    const out = (pkg, bytes, source, error) => ({
+    const out = (pkg, bytes, source, error, nativeExecutable) => ({
         pkg,
-        deps: pkg?.dependencies ?? {},
-        peerDeps: pkg?.peerDependencies ?? {},
-        optionalDeps: pkg?.optionalDependencies ?? {},
         cacheWrites,
         messages,
         events,
@@ -85,6 +82,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         packumentElapsedMs,
         cacheStatEvents,
         error,
+        nativeExecutable,
     });
     // npm parity: a table reject or a native-executable bin is a package
     // with no Workers-compatible build — real npm still installs it. The
@@ -113,28 +111,16 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             suggest: `${staged.from}@${newest}`,
         });
     };
-    const outNativeExecutableReject = (pkg, bytes, source) => {
+    // A native-executable bin is no failure (the package's JS tree installs);
+    // only an os/cpu/libc allowlist refuses it (EBADPLATFORM parity).
+    const outNativeExecutable = (pkg, bytes, source) => {
         const reject = NATIVE_EXECUTABLE_REJECT(pkg);
         if (!reject)
             return null;
-        if (spec.isOptional) {
-            messages.push(`[npm] [skip] ${spec.name} — ${reject.reason}`);
-            events.push({
-                type: 'transitive-skip',
-                from: spec.name,
-                reason: reject.reason,
-            });
-            return out(null, bytes, 'skipped');
-        }
-        // Only an os/cpu/libc allowlist fails the install (EBADPLATFORM
-        // parity); a native-executable bin is advisory — the package's JS
-        // tree installs and the reason is reported as an advisory.
         // @ts-ignore — preamble.
         const platformReject = NATIVE_PLATFORM_REJECT(pkg);
-        if (!platformReject) {
-            emitAdvisory(reject);
-            return null;
-        }
+        if (!platformReject)
+            return out(pkg, bytes, source, undefined, { from: reject.from, reason: reject.reason, suggest: reject.suggest });
         events.push({
             type: 'reject',
             from: platformReject.from,
@@ -142,7 +128,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             suggest: platformReject.suggest,
             ctx: 'transitive',
         });
-        return out(null, bytes, source, {
+        // The package, refused: its manifest still shapes the tree (npm places
+        // it, and checks its platform when it reifies).
+        return out(pkg, bytes, source, {
             type: 'w6-reject',
             from: platformReject.from,
             reason: platformReject.reason,
@@ -207,11 +195,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     //    which is how the second install in a session came back with lower
     //    versions than the first (measured: totalist, readdirp, mrmime,
     //    milliparsec, dot-prop, eta on json-server@1.0.0-beta.15).
+    //    Records are the registry package's (an alias's target's), by its name.
     const cached = (() => {
         const entries = spec.cachedEntries || [];
         if (entries.length === 0)
             return null;
-        const candidates = entries.filter((e) => e.name === request.installName);
+        // A record is trusted as the package it names only where it says so: a row from before records kept their registry identity may be another package's.
+        const candidates = entries.filter((e) => e.name === request.registryName && e.registryName === request.registryName);
         if (candidates.length === 0)
             return null;
         // A staged version the cache lacks is fetched, never answered by another.
@@ -223,12 +213,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     if (cached) {
         // Platform constraints + optionalDependencies round-trip so the ABI
         // policy makes the same decisions on warm-cache hits.
-        const pkgFromCache = resolvedFromRecord(cached);
+        const pkgFromCache = { ...resolvedFromRecord(cached), name: request.installName, registryName: request.registryName };
         adviseStagedBindingVersion(pkgFromCache);
-        const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
-        if (nativeReject)
-            return nativeReject;
-        return out(pkgFromCache, 0, 'cache-hit');
+        return outNativeExecutable(pkgFromCache, 0, 'cache-hit') ?? out(pkgFromCache, 0, 'cache-hit');
     }
     const hasVersions = (value) => value !== null && typeof value === 'object' && 'versions' in value && !!value.versions;
     // `value[key]` as JavaScript reads it, a primitive's through its wrapper; undefined for null and undefined.
@@ -380,25 +367,31 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const versionToResolved = (v) => {
         const packageName = request.installName || v.name;
         const binField = v.bin || {};
+        // A string bin is named for the package the manifest is (npm-normalize-package-bin), an alias's target.
         const bin = typeof binField === 'string'
-            ? { [String(packageName).split('/').pop()]: binField }
+            ? { [String(v.name || request.registryName).split('/').pop()]: binField }
             : binField;
-        // Required peers only: npm never installs an optional one
-        // (peerDependenciesMeta) the project does not list itself.
+        // Every peer, and which are optional (peerDependenciesMeta): an
+        // optional one is never installed for the package, and constrains the
+        // copy the tree has.
         let peerDependencies;
+        let peerDependenciesMeta;
         const peers = v.peerDependencies;
         if (peers && typeof peers === 'object') {
             const meta = v.peerDependenciesMeta;
-            const required = {};
+            const all = {};
+            const optional = {};
             for (const [n, r] of Object.entries(peers)) {
                 if (typeof r !== 'string')
                     continue;
+                all[n] = r;
                 if (meta && meta[n] && meta[n].optional === true)
-                    continue;
-                required[n] = r;
+                    optional[n] = { optional: true };
             }
-            if (Object.keys(required).length > 0)
-                peerDependencies = required;
+            if (Object.keys(all).length > 0)
+                peerDependencies = all;
+            if (Object.keys(optional).length > 0)
+                peerDependenciesMeta = optional;
         }
         const optionalDependencies = v.optionalDependencies && typeof v.optionalDependencies === 'object'
             ? Object.fromEntries(Object.entries(v.optionalDependencies).filter(([, r]) => typeof r === 'string'))
@@ -406,10 +399,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const resolvedOut = {
             name: packageName,
             version: v.version,
+            registryName: request.registryName,
             tarballUrl: v.dist?.tarball || '',
             integrity: v.dist?.integrity || v.dist?.shasum || '',
             dependencies: v.dependencies || {},
             peerDependencies,
+            ...(peerDependenciesMeta ? { peerDependenciesMeta } : {}),
+            ...((v.bundleDependencies ?? v.bundledDependencies) === undefined ? {} : { bundleDependencies: v.bundleDependencies ?? v.bundledDependencies }),
             optionalDependencies,
             os: Array.isArray(v.os) ? v.os : undefined,
             cpu: Array.isArray(v.cpu) ? v.cpu : undefined,
@@ -430,11 +426,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     };
     const pkg = versionToResolved(vData);
     adviseStagedBindingVersion(pkg);
-    const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
-    if (nativeReject)
-        return nativeReject;
-    // 5. Stage cache writes.
-    cacheWrites.push(registryRecord(pkg, Date.now()));
+    const native = outNativeExecutable(pkg, bytes, packumentSource);
+    if (native?.error)
+        return native;
+    // 5. Stage cache writes: the registry package's, under its name, the one
+    //    key a record has (an alias's lockfile entry names it too).
+    cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }, Date.now()));
     // Top-5 sibling versions.
     const sorted = Object.keys(data.versions)
         .map((v) => ({ v, p: PARSE_SEMVER(v) }))
@@ -448,9 +445,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         if (!otherData)
             continue;
         try {
-            cacheWrites.push(registryRecord(versionToResolved(otherData), Date.now()));
+            cacheWrites.push(registryRecord({ ...versionToResolved(otherData), name: request.registryName }, Date.now()));
         }
         catch { /* skip malformed */ }
     }
-    return out(pkg, bytes, packumentSource);
+    return native ?? out(pkg, bytes, packumentSource);
 };

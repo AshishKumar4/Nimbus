@@ -21,6 +21,26 @@ export interface NpmInstallInvocation {
      * in-process install path, which owns the package.json update itself.
      */
     saveDev: boolean;
+    /** `-O` / `--save-optional`: record the spec under optionalDependencies. */
+    saveOptional: boolean;
+    /** `-f` / `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+    force: boolean;
+    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced, not only the project's. */
+    strictPeerDeps: boolean;
+    /** `--legacy-peer-deps`: peers are neither installed nor checked, as npm 6 did. */
+    legacyPeerDeps: boolean;
+    /** `--omit=optional` (or `--no-optional`): what only optional dependencies need is not installed. */
+    omitOptional: boolean;
+    /** `--omit=peer`: what only peer dependencies need is not installed. */
+    omitPeer: boolean;
+    /** `--prefer-dedupe`: an installed copy is replaced by an older one that meets every edge too, so one copy serves them all. */
+    preferDedupe: boolean;
+    /** False for `--no-save`: package.json is left as it is. */
+    save: boolean;
+    /** What a saved range starts with: `--save-prefix`, '' for `--save-exact`, else '^'. */
+    savePrefix: string;
+    /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */
+    unsupported: string[];
 }
 export declare function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation;
 //# sourceMappingURL=npm-install-args.d.ts.map

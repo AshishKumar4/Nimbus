@@ -766,7 +766,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     self.nimbusWrangler = new NimbusWrangler({
       network: workspace.network,
       vfs: kernelFs,
-      vfsEvents: sqliteFs.events,
+      namespace: workspace.filesystem.vfs,
       esbuild: self.esbuildService!,
       env: self.env,
       // Supervisor DO ctx — required for ctx.facets.get() when
@@ -847,7 +847,7 @@ registry.register('npm-fast', async (ctx: any) => {
   });
   const installer = self.npmInstaller;
   if (!installer) throw new Error('npm installer is not initialized');
-  const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY });
+  const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal });
 
   const summary = installSummary({
     installed: result.installed.length, failed: result.failed, elapsedMs: result.elapsed,
@@ -1343,6 +1343,7 @@ registry.register('npx', async (ctx: any) => {
     (msg: string) => ctx.stdout.write(msg + '\n'),
     ctx.pid,
     ctx.env?.NPM_REGISTRY,
+    ctx.signal,
   );
   if (resolveResult.ok && resolveResult.binPath) {
     const nodeCmd = await registry.resolve('node');

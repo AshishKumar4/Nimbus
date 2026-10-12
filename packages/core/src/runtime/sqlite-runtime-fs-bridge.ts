@@ -598,11 +598,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.vfs.list(after ?? null, limit);
   }
 
-  /** A watch in the caller's view: its files, under its names, only those it could list. */
-  subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
-    return this.vfs.subscribe(path, listener);
-  }
-
   realpath(path: RuntimeFsPath): string {
     return called({ syscall: 'realpath', path }, () => {
       const resolved = this.walkOnSqlite(path, true)?.name ?? this.resolveDataPath(path, true);

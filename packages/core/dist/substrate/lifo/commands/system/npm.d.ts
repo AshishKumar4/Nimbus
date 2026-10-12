@@ -37,10 +37,31 @@ export interface NpmInstallPort {
         globalPrefix?: string;
         /** The running command's pid — authorizes the host's batch writes. */
         pid: number;
+        /** `--save-dev`: what is named is saved to devDependencies. */
+        saveDev?: boolean;
+        /** `--save-optional`: what is named is saved to optionalDependencies. */
+        saveOptional?: boolean;
+        /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+        force?: boolean;
+        /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+        strictPeerDeps?: boolean;
+        /** `--legacy-peer-deps`: peers are not installed, nor checked. */
+        legacyPeerDeps?: boolean;
+        /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
+        omitOptional?: boolean;
+        omitPeer?: boolean;
+        /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+        preferDedupe?: boolean;
+        /** False for `--no-save`: package.json is left as it is. */
+        save?: boolean;
+        /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+        savePrefix?: string;
+        /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
+        signal?: AbortSignal;
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
         registry: string;
         production?: boolean;
-        /** `npm ci`: validate package-lock.json, remove node_modules, place exactly what the lock records. */
+        /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
         fromLockfile?: boolean;
         npmLog?: NpmLogEmitter | null;
         onProgress?: (line: string) => void;
@@ -74,7 +95,14 @@ export declare function packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
-export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn): Command;
-export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): Promise<number>;
+export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, 
+/** Its network is the one the npx cache install fetches through. */
+kernel?: Kernel, deps?: NpmCommandDeps): Command;
+/**
+ * Install one package globally, through the install port (the host's, else
+ * the shell's own). Called directly by `lifo install` to avoid the
+ * shell.execute() round-trip, which can silently swallow output and errors.
+ */
+export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number>;
 export {};
 //# sourceMappingURL=npm.d.ts.map
