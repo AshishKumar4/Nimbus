@@ -186,6 +186,23 @@ def fallbackFailures (t : Tree) (pins : List Path) (rp point : Path) : List Comp
     !(subtree t q).any (fun child => child != q && pins.contains child)).map fun q =>
       ⟨point ++ q, "EBUSY", if look t q = some .dir then "rmdir" else "unlink"⟩
 
+/-- Every readable-fallback failure names an actual pinned subtree entry and has
+    no pinned proper descendant. Thus retained pinned ancestors do not acquire
+    extra failure lines, just as in the fault-aware operational walk. -/
+theorem fallback_failures_exact (t : Tree) (pins : List Path) (rp point : Path) :
+    ∀ f ∈ fallbackFailures t pins rp point, f.code = "EBUSY" ∧
+      ∃ q ∈ subtree t rp, f.path = point ++ q ∧ q ∈ pins ∧
+        ∀ child ∈ subtree t q, child ≠ q → child ∉ pins := by
+  intro f hf
+  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hf
+  obtain ⟨hsub, hq⟩ := List.mem_filter.mp hq
+  obtain ⟨hpin, hmin⟩ := Bool.and_eq_true.mp hq
+  refine ⟨rfl, q, hsub, rfl, List.contains_iff_mem.mp hpin, ?_⟩
+  intro child hchild hne hpin'
+  have hany : (subtree t q).any (fun child => child != q && pins.contains child) = true :=
+    List.any_eq_true.mpr ⟨child, hchild, by simp [hne, List.contains_iff_mem, hpin']⟩
+  simp [hany] at hmin
+
 def removalConfig (caps : Backend → Caps) (b : Backend) : CompositeRemoval.Config :=
   ⟨(caps b).readOnly, (caps b).pins, (caps b).faults⟩
 

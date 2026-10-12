@@ -729,6 +729,7 @@ requirements:
     theorems:
       - Nimbus.Vfs.CompositeOps.fallback_report_exact
       - Nimbus.Vfs.CompositeOps.roots_exact
+      - Nimbus.Vfs.CompositeOps.fallback_failures_exact
       - Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
       - Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
       - Nimbus.Vfs.CompositeOps.create_if_absent_reaches_backend
@@ -764,7 +765,12 @@ requirements:
       - Nimbus.Vfs.CompositeRemoval.walk_subtree_frame
       - Nimbus.Vfs.CompositeRemoval.walk_single_mount
     tsRefs:
-      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+      - packages/core/src/vfs/composite.ts#CompositeVFS.removeRecursive
+      - packages/core/src/vfs/composite.ts#CompositeVFS.readRange
+      - packages/core/src/vfs/composite.ts#CompositeVFS.writeFileIfRevision
+      - packages/core/src/vfs/composite.ts#CompositeVFS.readFileAtRevision
+      - packages/core/src/vfs/composite.ts#CompositeVFS.copy
+      - packages/core/src/vfs/composite.ts#CompositeVFS.stat
     refinement:
       - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
     remainingEvidence:
