@@ -21,7 +21,7 @@
  *     previewed app owns the path space so the requested path is kept.
  */
 import { type NimbusAuthEnv } from './token.js';
-import { type VerifiedNimbusRequestToken } from './types.js';
+import { type VerifiedNimbusToken, type VerifiedNimbusRequestToken } from './types.js';
 /**
  * Cookie name used for in-iframe token persistence.
  *
@@ -138,17 +138,18 @@ export declare function expireLegacyNimbusTokenCookie(): string;
 /**
  * Migration headers for a request that authenticated via the legacy global
  * cookie: re-issue its verified token under the route-owned name and expire
- * the legacy name, in the same response. Returns [] unless the jar holds the
- * legacy name but NOT the route-owned one — a jar that already migrated, or
- * that never had the legacy credential, gets no extra bytes. The re-issued
+ * the legacy name, in the same response. Returns [] unless verification used
+ * the legacy name — headers, queries and route-owned cookies never
+ * cause this migration, even if a legacy name is present. The re-issued
  * token keeps its verified expiry; this never mints, never extends, never
  * consults anything but the already-verified claims.
  */
 export declare function sessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusRequestToken, sessionId: string): string[];
 /**
  * Largest attach-cookie jar an exchange will grow: at most this many
- * per-session names, and the request's Cookie header plus the new
- * `Set-Cookie` bytes stay under this many bytes in total. Sessions
+ * per-session names, a separate request-header budget, and Chrome's CHIPS
+ * name/value storage quota. The proposed cookie is measured, never estimated
+ * from a fixed-size placeholder. Sessions
  * accumulate (one name each, never evicted), so issuance stops before the
  * jar would push a browser past its per-request header ceiling; the
  * caller retries from a fresh profile or prunes dead sessions first.

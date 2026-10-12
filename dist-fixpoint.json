@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7d0e1d6386c7f3a6cd33628ab0a8a8e325f4ddf8c53e640713a7cc259ca38a82",
+  "fingerprint": "b69155b16f484b370da279701840ec8e94154d296ff89eefb3028ce12e7e9a94",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2027,9 +2027,9 @@
     "packages/worker/dist/auth/index.d.ts": "9f6942a3e63e728385a35a97a77c584ead31d99d35b9b72b9047fb0ba37addab",
     "packages/worker/dist/auth/index.d.ts.map": "f9f8407508e4f71bf4ab19507cc185b09ffb40a1b2fa0a630dc505849fcb5748",
     "packages/worker/dist/auth/index.js": "8889f637429cab780a674d9e8502739a8930286279ddf4530693d698d820dc6d",
-    "packages/worker/dist/auth/middleware.d.ts": "29e445a5d35a16268b7911101c8b33e7244c43dd6380c505badd02af5ad0a141",
-    "packages/worker/dist/auth/middleware.d.ts.map": "b00b3c65225f33a6cc697ff88d270edfc87014129b5d02989e64d64f2c7bffa4",
-    "packages/worker/dist/auth/middleware.js": "2cf2f3be70a826ded00fe725aec09b5444df9e173b8f2802cca9d7fb833c8d53",
+    "packages/worker/dist/auth/middleware.d.ts": "e153a6b2b26bb4299b096c19fcab143c92c72ccce033d71de8a5cac3c2e605fb",
+    "packages/worker/dist/auth/middleware.d.ts.map": "b4cdeb57b79728f4d98fda6f8630b69395e00003f9a5ec29ae99d02827faad30",
+    "packages/worker/dist/auth/middleware.js": "1a89ee0a2fc7c7b8da00af89ac8e1652ea7328a0099cd0b94428c7c3aa9fcc63",
     "packages/worker/dist/auth/token.d.ts": "5feed85797431cd1fdd1f804d318c875590aabffaf9d313a53018f0a04e54ffb",
     "packages/worker/dist/auth/token.d.ts.map": "9ef0635f8922b62869d1100f6b50d6d07b5945e2efbde277f5e0a6eb5262b6c1",
     "packages/worker/dist/auth/token.js": "ddcf6b76220521fce11cb4557e76a05778341a9a821ba248614e6d425fd8e427",
@@ -2847,7 +2847,7 @@
     "packages/worker/src/_shared/session-router.ts": "5c440b2f2f808468de9145b711432682dea5510775b88de2124f97703e288f2a",
     "packages/worker/src/amaro-wasm-artifact.generated.ts": "c2c6459ea2fcec19900f16889091b1d02f05c2149c4ecaa920656ec90cddda23",
     "packages/worker/src/auth/index.ts": "723b31b7d1d104f9bfc19d6b8d9b3631e6d73b8ab7f818800e0c23a4b8b22925",
-    "packages/worker/src/auth/middleware.ts": "a7a5c59317636c3f2fbc385162c60bbf983ddfe2ae49f25a6a8d1338827667ac",
+    "packages/worker/src/auth/middleware.ts": "17cf8dcb231ae72c6ad96096845556df8af78b2f4893e6512bd5d8727f19ea41",
     "packages/worker/src/auth/token.ts": "1508686fdc934253906d0709446df5e23cba05bc4de8dceae8508d31ba32f39c",
     "packages/worker/src/auth/types.ts": "8cb5eee073e354c11858f8b9f0319032de67d2fe670471d902d3fcf6ec9d0fa0",
     "packages/worker/src/bindings/body.ts": "686e3ccfcf99b8062d9f62cb7f399b87865c8b8e3c299896e321734def422878",
