@@ -34,6 +34,7 @@ import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.j
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { VITE_CONFIG_KEY } from '../session/keys.js';
 import type { SessionInternal } from '../session/internal.js';
+import type { FacetProcessManager } from '../facets/process.js';
 import { isJsonObject } from '../npm/package-lock.js';
 
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
@@ -48,6 +49,7 @@ export type RuntimeCommandHost = Pick<SessionInternal,
   readonly env: RuntimeCatalogEnv;
   routeLoopback: SessionInternal['routeLoopback'];
   ensureGlobalPrefixDirs: SessionInternal['ensureGlobalPrefixDirs'];
+  _ensureFacetProcessManager(): FacetProcessManager;
 };
 
 export async function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void> {
@@ -132,6 +134,29 @@ const runGit = async (ctx: CommandContext, realGit?: Command): Promise<number> =
     realGit === undefined ? undefined : () => realGit(ctx));
 };
 registry.registerBuiltin('git', (ctx) => runGit(ctx));
+const remoteHelper: Command = async (ctx) => {
+  const [{ runRemoteHelper }, { createRemoteEngine }, { createLocalGit }, { pulledStdinReader, stdinBytesOf }] = await Promise.all([
+    import('../git/remote-helper.js'), import('../git/engine.js'), import('../git/local-git.js'), import('@nimbus-sh/core/shell/stdin-adapter.js'),
+  ]);
+  const stdinBytes = ctx.stdin === undefined ? { readBytes: async () => null } : stdinBytesOf(ctx.stdin);
+  const stdin = pulledStdinReader(() => stdinBytes.readBytes(65536));
+  return runRemoteHelper({
+    args: ctx.args, env: ctx.env, cwd: ctx.cwd,
+    readLine: async () => stdin?.readLine ? stdin.readLine() : null,
+    stdout: (text) => ctx.stdout.write(text),
+    stderr: (text) => ctx.stderr.write(text),
+    async readFile(path) {
+      try { return await ctx.vfs.readFile(path); }
+      catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
+        throw error;
+      }
+    },
+  }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }),
+  createLocalGit(self._ensureFacetProcessManager(), ctx));
+};
+registry.registerBuiltin('git-remote-http', remoteHelper);
+registry.registerBuiltin('git-remote-https', remoteHelper);
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
 //

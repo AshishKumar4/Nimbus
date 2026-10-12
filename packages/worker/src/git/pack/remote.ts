@@ -18,7 +18,7 @@
  * The pack a fetch asks for is never thin: every delta's base is in it, so
  * none is read from the repository's packs or loose objects.
  */
-import { resumePack, storePackResumable, type CloneContext, type PendingPack } from './clone.js';
+import { packDirectory, resumePack, storePackResumable, type CloneContext, type PendingPack } from './clone.js';
 import { PackFormatError } from './format.js';
 import { discoverReceivePack, sendPack, type ReceiveCommand } from './receive-pack.js';
 import { discover, requestPack, type Advertisement, type UploadPackOptions } from './upload-pack.js';
@@ -64,6 +64,9 @@ export async function listRefs(remote: RemoteTransport, request: { forPush: bool
 }
 
 export interface FetchPackRequest {
+  gitDir: string;
+  commonDir?: string;
+  objectDir?: string;
   jobId: string;
   wants: string[];
   depth?: number;
@@ -101,11 +104,15 @@ const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const join = (dir: string, path: string) => dir + '/' + path;
 
+function gitPath(context: CloneContext, path: string): string {
+  return join(context.storage?.commonDir ?? join(context.dir, '.git'), path);
+}
+
 /** A file of the repository's .git, or null when there is none. */
 async function gitFile(context: CloneContext, path: string): Promise<string | null> {
   let bytes: Uint8Array | null;
   try {
-    bytes = await context.supervisor.fsReadRange(join(context.dir, '.git/' + path), 0, 64 * 1024 * 1024);
+    bytes = await context.supervisor.fsReadRange(gitPath(context, path), 0, 64 * 1024 * 1024);
   } catch (error) {
     const code = (error as { code?: unknown })?.code;
     if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') return null;
@@ -123,10 +130,10 @@ async function refTips(context: CloneContext): Promise<string[]> {
     if (match !== null) tips.set(match[2], match[1]);
   }
   const walk = async (dir: string): Promise<void> => {
-    for (const name of await context.supervisor.readdir(join(context.dir, '.git/' + dir))) {
+    for (const name of await context.supervisor.readdir(gitPath(context, dir))) {
       const path = dir + '/' + name;
       // A directory lists its refs; a file is one (a symbolic ref names another, already listed).
-      if ((await context.supervisor.readdir(join(context.dir, '.git/' + path))).length > 0) {
+      if ((await context.supervisor.readdir(gitPath(context, path))).length > 0) {
         await walk(path);
         continue;
       }
@@ -140,7 +147,7 @@ async function refTips(context: CloneContext): Promise<string[]> {
 
 /** The repository's promisor packs: whether any pack is one. */
 async function hasPromisorPack(context: CloneContext): Promise<boolean> {
-  return (await context.supervisor.readdir(join(context.dir, '.git/objects/pack'))).some((name) => name.endsWith('.promisor'));
+  return (await context.supervisor.readdir(packDirectory(context))).some((name) => name.endsWith('.promisor'));
 }
 
 /** One request for `wants`, the pack stored; or where its decoding stopped. */
@@ -175,7 +182,7 @@ export async function fetchPack(context: CloneContext, request: FetchPackRequest
     const wrote = await updateShallow(context, shallow, shallows);
     return { pending: null, packName: null, objects: 0, bytes: 0, shallow: wrote, promisor: false, selfContained: shallow.complete && !filtered && !wrote };
   }
-  const writer = context.writer();
+  const writer = context.writer(undefined, context.storage?.objectDir);
   const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId, {
     budgetUnits: request.budgetUnits,
     ...(filtered ? { promisor: request.wants.map((oid) => oid + ' ' + oid + '\n').join('') } : {}),
@@ -187,7 +194,7 @@ export async function fetchPack(context: CloneContext, request: FetchPackRequest
 
 /** A fetch whose pack's decoding stopped at the budget, continued from its stored bytes. */
 export async function fetchPackResume(context: CloneContext, request: { pending: PendingPack & { shallow: ShallowUpdate }; budgetUnits?: number }): Promise<FetchPackStep> {
-  const writer = context.writer();
+  const writer = context.writer(undefined, context.storage?.objectDir);
   const stored = await resumePack(context, writer, request.pending, { budgetUnits: request.budgetUnits });
   await writer.flush();
   const { shallow } = request.pending;
@@ -225,11 +232,12 @@ async function updateShallow(context: CloneContext, update: ShallowUpdate, befor
   const next = new Set(before);
   for (const oid of update.shallows) next.add(oid);
   for (const oid of update.unshallows) next.delete(oid);
-  const writer = context.writer();
+  const writer = context.writer(undefined, context.storage?.commonDir);
+  const path = context.storage ? gitPath(context, 'shallow') : '.git/shallow';
   if (next.size === 0) {
-    if (before.length > 0) await writer.remove('.git/shallow');
+    if (before.length > 0) await writer.remove(path);
   } else {
-    await writer.file('.git/shallow', 0o644, encoder.encode([...next].sort().join('\n') + '\n'));
+    await writer.file(path, 0o644, encoder.encode([...next].sort().join('\n') + '\n'));
   }
   await writer.flush();
   return true;

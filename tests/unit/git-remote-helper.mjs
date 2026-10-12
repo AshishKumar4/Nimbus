@@ -44,7 +44,7 @@ async function converse(input, { env = { GIT_DIR: '.git' }, url = 'https://examp
     stdout: (text) => { out += text; },
     stderr: (text) => { err += text; },
     readFile: async () => null,
-  }, engine, { has: async () => new Set(), packObjects: () => null });
+  }, engine, { has: async () => new Set(), resolve: async () => null, packObjects: () => null });
   return { code, out, err, asked };
 }
 
