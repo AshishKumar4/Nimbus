@@ -36,7 +36,7 @@ import { doUnavailableError } from './do-errors.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
-import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, expireSessionCookie, enforceSessionCookieCapacity, sessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
+import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, expireSessionCookie, enforceSessionCookieCapacity, planSessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
@@ -135,14 +135,16 @@ export function createNimbusHandler(options = {}) {
         // HTML, local JSON, destroy results — passes through here, so no branch
         // can leave migration or destroy-expiry out. Sites below only record
         // which session authenticated; this wrapper applies the headers.
-        let sessionContext = null;
+        let plannedMigration = [];
         let destroyedSession = null;
+        // Plan at authentication, before any dispatch: the capacity check throws
+        // here, so a refusal always precedes the session DO's side effects.
+        const planMigration = (verified, sessionId) => {
+            plannedMigration = verified === null ? [] : planSessionCookieMigration(request.headers.get('Cookie'), verified, sessionId);
+        };
         const applySessionResponsePolicy = async (response) => {
             const answered = await response;
-            const setCookies = [];
-            if (sessionContext !== null) {
-                setCookies.push(...sessionCookieMigration(request.headers.get('Cookie'), sessionContext.verified, sessionContext.sessionId));
-            }
+            const setCookies = [...plannedMigration];
             if (destroyedSession !== null)
                 setCookies.push(expireSessionCookie(destroyedSession));
             if (setCookies.length === 0)
@@ -254,7 +256,7 @@ export function createNimbusHandler(options = {}) {
                 ? `/app/${preview.name}`
                 : `/port/${preview.port}`;
             if (auth.verified)
-                sessionContext = { verified: auth.verified, sessionId: preview.sid };
+                planMigration(auth.verified, preview.sid);
             return answered(forwardToSession(request, {
                 sessionId: preview.sid,
                 innerPath: `${scopedInner}${url.pathname === '/' ? '/' : url.pathname}`,
@@ -273,27 +275,15 @@ export function createNimbusHandler(options = {}) {
                 return new Response('Internal error in embedder route', { status: 500 });
             }
         }
-        const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
+        const remoteOutbox = { destroyedSessionId: null };
+        const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk, remoteOutbox);
         if (sdkResponse) {
-            // A successful browser DELETE frees its jar slot through the one
-            // policy below: expire exactly the destroyed sid's cookie, nothing
-            // else. Auth failures, unknown sids, and failed destroys leave the
-            // jar untouched — expiry needs a proven destroy answer.
-            if (request.method === 'DELETE') {
-                const destroyed = parseSessionRoute(url.pathname);
-                if (destroyed !== null && destroyed.innerPath === '/' && isValidSessionId(destroyed.sessionId)) {
-                    try {
-                        const body = await sdkResponse.clone().json();
-                        const result = body.result;
-                        if (result?.ok === true && typeof result?.destroyedAt === 'number') {
-                            destroyedSession = destroyed.sessionId;
-                        }
-                    }
-                    catch {
-                        // Unparseable answer: not a proven destroy; jar untouched.
-                    }
-                }
-            }
+            // A proven destroy frees its jar slot through the one policy below:
+            // remote-api reports the disposition as internal metadata, so no JSON
+            // re-parse or path rediscovery happens here. Anything else leaves the
+            // jar untouched.
+            if (remoteOutbox.destroyedSessionId !== null)
+                destroyedSession = remoteOutbox.destroyedSessionId;
             return answered(sdkResponse);
         }
         if (url.pathname === '/api/nimbus/oauth/callback') {
@@ -379,8 +369,7 @@ export function createNimbusHandler(options = {}) {
             if (auth instanceof Response)
                 return auth;
             const tenantSegment = auth.tenantSegment;
-            if (auth.verified)
-                sessionContext = { verified: auth.verified, sessionId: route.sessionId };
+            planMigration(auth.verified, route.sessionId);
             if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
                 const rawPort = url.searchParams.get('port');
                 const port = rawPort && /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
@@ -413,13 +402,13 @@ export function createNimbusHandler(options = {}) {
             // handleNimbusRemoteApi above when the remote API is enabled.
             if (route.innerPath === '/' || route.innerPath === '') {
                 if (request.method !== 'GET' && request.method !== 'HEAD') {
-                    return new Response('Method not allowed', {
+                    return answered(Promise.resolve(new Response('Method not allowed', {
                         status: 405,
                         headers: {
                             Allow: remoteApiEnabled(options.sdk) ? 'GET, HEAD, DELETE' : 'GET, HEAD',
                             'Cache-Control': 'no-store',
                         },
-                    });
+                    })));
                 }
                 if (env.ASSETS) {
                     const shellUrl = new URL('/s/index.html', url.origin);

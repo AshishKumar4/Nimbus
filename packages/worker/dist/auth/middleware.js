@@ -233,7 +233,14 @@ export function expireSessionCookie(sessionId) {
  * token keeps its verified expiry; this never mints, never extends, never
  * consults anything but the already-verified claims.
  */
-export function sessionCookieMigration(requestCookie, verified, sessionId) {
+/**
+ * Plan the legacy-migration headers for an authenticated session request.
+ * Runs at authentication, before any session dispatch: the capacity check
+ * throws here, so a refusal precedes every side effect and the response
+ * policy below only applies already-validated headers, never failing after
+ * a write has committed. Returns [] when no migration applies.
+ */
+export function planSessionCookieMigration(requestCookie, verified, sessionId) {
     if (!requestCookie)
         return [];
     if (verified.credentialSource !== 'legacy-cookie')
@@ -246,6 +253,14 @@ export function sessionCookieMigration(requestCookie, verified, sessionId) {
         expireLegacyNimbusTokenCookie(),
         cookie,
     ];
+}
+/**
+ * The response half of {@link planSessionCookieMigration}: headers already
+ * validated at authentication. Kept as a thin alias so response sites name
+ * the policy, not the plan step.
+ */
+export function sessionCookieMigration(requestCookie, verified, sessionId) {
+    return planSessionCookieMigration(requestCookie, verified, sessionId);
 }
 /**
  * Largest attach-cookie jar an exchange will grow: at most this many

@@ -151,7 +151,20 @@ export declare function expireSessionCookie(sessionId: string): string;
  * token keeps its verified expiry; this never mints, never extends, never
  * consults anything but the already-verified claims.
  */
-export declare function sessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusRequestToken, sessionId: string): string[];
+/**
+ * Plan the legacy-migration headers for an authenticated session request.
+ * Runs at authentication, before any session dispatch: the capacity check
+ * throws here, so a refusal precedes every side effect and the response
+ * policy below only applies already-validated headers, never failing after
+ * a write has committed. Returns [] when no migration applies.
+ */
+export declare function planSessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusRequestToken, sessionId: string): readonly string[];
+/**
+ * The response half of {@link planSessionCookieMigration}: headers already
+ * validated at authentication. Kept as a thin alias so response sites name
+ * the policy, not the plan step.
+ */
+export declare function sessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusRequestToken, sessionId: string): readonly string[];
 /**
  * Largest attach-cookie jar an exchange will grow: at most this many
  * per-session names, a separate request-header budget, and Chrome's CHIPS
