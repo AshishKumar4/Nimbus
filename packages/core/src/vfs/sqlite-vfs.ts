@@ -5935,7 +5935,9 @@ export class SqliteVFS {
    * behind. The subtree is read a page at a time, never held whole.
    */
   private removeRecursive(path: string, cred: VfsCred): number {
-    const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
+    const entry = entryVfsPath(path);
+    const resolved = this.checkAccess(entry.path, 0, cred, { followLeaf: false });
+    if (entry.directory && resolved.inode?.kind !== 'directory') throw vfsKeyError('ENOTDIR', path);
     this.assertMutationsAllowed([this.lexicalKey(path, cred).value, resolved.path]);
     if (!resolved.inode) throw vfsKeyError('ENOENT', normalizeVfsPath(path));
     this.checkParentAccess(resolved.path, cred);
@@ -8529,6 +8531,16 @@ export class SqliteVFS {
     }
   }
 
+  /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
+  private deletionKey(path: string, cred: VfsCred, memo?: Map<string, string>): PhysicalVfsKey {
+    if (normalizeVfsLookupPath(path) !== null) {
+      const literal = this.lexicalKey(path, cred);
+      if (this.inodes.get(literal.value) !== undefined) return this.physicalKey(literal.value);
+    }
+    const key = this.storageKey(path, cred);
+    return this.inodes.get(key.value) !== undefined ? key : this.physicalKey(this.createdPath(key.value, cred, memo));
+  }
+
   private normalizeBatchInode(
     entry: BatchInodeEntry,
     cred: VfsCred,
@@ -8627,10 +8639,7 @@ export class SqliteVFS {
 
     // A row left at its literal key (under a link's own name, by an older
     // build) is removed where it is; otherwise the name is where it resolves.
-    const deleted = (path: string): string => {
-      const key = this.storageKey(path, cred).value;
-      return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
-    };
+    const deleted = (path: string): string => this.deletionKey(path, cred, placed).value;
     const deletes = (payload.deletePaths ?? []).map(deleted);
     const linked = this.linkReplacedByDirectory(inodes.filter((entry) => entry.isDir).map((entry) => entry.path), deletes, priors);
     if (linked !== null) throw linkedDirectoryRefusal(linked);
@@ -8996,10 +9005,7 @@ export class SqliteVFS {
         const keys = [...directories.map((inode) => this.storageKey(inode.path, cred, this.inodes, true).value), ...deletes.map((path) => this.storageKey(path, cred).value)];
         this.readAlong(keys);
         const placed = new Map<string, string>();
-        const placedAt = (path: string): string => {
-          const key = this.storageKey(path, cred).value;
-          return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
-        };
+        const placedAt = (path: string): string => this.deletionKey(path, cred, placed).value;
         const linked = this.linkReplacedByDirectory(
           directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred, this.inodes, true).value, cred, placed)),
           deletes.map(placedAt),

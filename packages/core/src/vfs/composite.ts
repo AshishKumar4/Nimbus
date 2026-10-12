@@ -3204,7 +3204,7 @@ export class CompositeVFS implements VFS {
 
   /** rmdir, or on a backend without it, an emptiness check and unlink. */
   private rmdirAt(input: string, sync: boolean): Awaitable<void> {
-    return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
+    return this.onMutation(entryVfsPath(input).path, false, sync, 'removed', (ops, rel, path) => {
       const backend = ops as SyncVFS;
       if (typeof backend.rmdir === 'function') return backend.rmdir(rel);
       return andThen(backend.stat(rel, { follow: false }), (stat) => {
@@ -3229,7 +3229,9 @@ export class CompositeVFS implements VFS {
    */
   private removeAt(input: string, sync: boolean, keepVanishedAncestors = false): Awaitable<VfsRemoval> {
     // Each removal is told as it lands (watchChanges): a backend's own rm -r at the roots of what it removed, a walked one entry by entry.
-    return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
+    const entry = entryVfsPath(input);
+    return this.onMutation(entry.path, false, sync, 'removed', (ops, rel, path): Awaitable<VfsRemoval> => {
+      const remove = (): Awaitable<VfsRemoval> => {
       const { mount } = this.locate(path);
       const composed = this.hasLiveBelow(path) || this.isStructural(path) || mount.options.readOnly === true;
       if (composed) return this.walkRemove(ops, rel, path, mount, sync, true, keepVanishedAncestors);
@@ -3254,6 +3256,13 @@ export class CompositeVFS implements VFS {
         });
       }
       return this.walkRemove(backend, rel, path, mount, sync, false, keepVanishedAncestors);
+      };
+      if (!entry.directory) return remove();
+      return andThen(ops.stat(rel, { follow: false }), (stat) => {
+        if (stat === null) throw new Refusal('ENOENT', path);
+        if (stat.type !== 'directory') throw new Refusal('ENOTDIR', path);
+        return remove();
+      });
     }, { told: null, children: true });
   }
 
