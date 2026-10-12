@@ -9,17 +9,17 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-fd385949760861fb.js";
-export const NODE_SHIMS_BUILD_ID = "fd385949760861fb";
-export const NODE_SHIMS_SHA256 = "fd385949760861fb065f46e5d47a8e48ed0e876ae0a95b7b1bb60ff7b627d8df";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-849de318a94af7ad.js";
+export const NODE_SHIMS_BUILD_ID = "849de318a94af7ad";
+export const NODE_SHIMS_SHA256 = "849de318a94af7adbe398f670a040e033b940d15d6dac41abafce380b85d5976";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-5eba1719f249b2fb.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "5eba1719f249b2fb";
 export const VFS_WRITE_LEDGER_SHA256 = "5eba1719f249b2fb30675be75f94b9fc17bf1d9cc8ded5f12f814d4d9c010e0f";
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-cee1b56d97466527.js";
-export const RESIDENT_STORE_BUILD_ID = "cee1b56d97466527";
-export const RESIDENT_STORE_SHA256 = "cee1b56d97466527f62e29745271c4ec34bf137379cb846d34f175ae3b9d9f3e";
+export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-da291b3122f21f55.js";
+export const RESIDENT_STORE_BUILD_ID = "da291b3122f21f55";
+export const RESIDENT_STORE_SHA256 = "da291b3122f21f55357788d9f78f649b33ebc9316329286d3a830832b58ea77a";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";

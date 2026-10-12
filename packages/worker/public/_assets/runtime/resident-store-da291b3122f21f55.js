@@ -929,7 +929,7 @@ var __nimbusResidentModule = (() => {
     let cause = "the process has not listed it yet";
     let lazy = false;
     const listed = /* @__PURE__ */ new Set();
-    const ready = () => coherence.bound() && coherence.sealed() === null && ok;
+    const ready = () => ok && coherence.serving();
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
       ok = !!isReady;
@@ -1700,6 +1700,7 @@ var __nimbusResidentModule = (() => {
         heap = heapTables2;
       },
       bound: () => t !== null,
+      serving: () => t !== null && !isSealed,
       tables(doing) {
         if (t === null) throw new Error("Nimbus: " + doing + " before the store was bound");
         return t;

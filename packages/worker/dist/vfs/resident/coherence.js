@@ -34,6 +34,7 @@ export function createCoherence() {
     return {
         bind(tables, heapTables) { t = tables; heap = heapTables; },
         bound: () => t !== null,
+        serving: () => t !== null && !isSealed,
         tables(doing) {
             if (t === null)
                 throw new Error('Nimbus: ' + doing + ' before the store was bound');

@@ -119,7 +119,7 @@ export function createNamespace(coherence, admission) {
     let lazy = false;
     /** Directories (keys) every entry of which is a row: below them a missing row is an absent name. */
     const listed = new Set();
-    const ready = () => coherence.bound() && coherence.sealed() === null && ok;
+    const ready = () => ok && coherence.serving();
     const markReady = (t, isReady, why) => {
         t.metaSet('ns', isReady ? '1' : '0');
         ok = !!isReady;

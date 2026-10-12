@@ -4016,8 +4016,11 @@ const __fsMod = (() => {
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
 
   // The one POSIX calculation (core vfs/posix-access.ts), as the store's
-  // library carries it: every node runner evaluates that library first.
+  // library carries it: every node runner evaluates that library first. The
+  // process's credential as it reads it, made once; the entry is filled per check.
   const _posixAccess = typeof __nimbusResidentModule !== "undefined" ? __nimbusResidentModule.posixAccess : null;
+  let _accessCred = null;
+  const _accessEntry = { mode: 0, uid: 0, gid: 0 };
   /**
    * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
    * META, by POSIX's owner/group/other rule. Only a stat that states the
@@ -4031,7 +4034,11 @@ const __fsMod = (() => {
     const uid = Number(meta?.uid);
     const gid = Number(meta?.gid);
     if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return false;
-    return _posixAccess({ mode, uid, gid }, want, { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) });
+    _accessCred ??= { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) };
+    _accessEntry.mode = mode;
+    _accessEntry.uid = uid;
+    _accessEntry.gid = gid;
+    return _posixAccess(_accessEntry, want, _accessCred);
   }
 
   /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
