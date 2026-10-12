@@ -1,0 +1,130 @@
+#!/usr/bin/env bun
+// Which git answers each form, with real git installed: the routing table.
+//   - every form the built-in git runs as git does (the hot plain forms:
+//     status, add, diff, plain commit and checkout, ...) is the built-in's;
+//   - every form main's built-in mis-ran (it ignored an option or operand)
+//     and every form it never ran is real git's, handed over before any
+//     effect with the invocation untouched (LittleButterfly's inventory of
+//     main vs this branch, lists A and B);
+//   - a sparse-checkout the built-in implements stays the built-in's.
+
+import assert from 'node:assert/strict';
+
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+
+const harness = createSqliteVfsTestHarness();
+const vfs = new SqliteVFS(harness.sql, harness.ctx);
+vfs.as(CRED_KERNEL).mkdir('home/user', { recursive: true, mode: 0o755 });
+vfs.as(CRED_KERNEL).chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+const files = new ProcessFiles(vfs);
+const user = vfs.as(CRED_SESSION_USER);
+
+/** `git <words>` in repo through the front door, real git installed: who answered. */
+async function engine(words) {
+  const args = ['-C', 'repo', '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...words];
+  const handed = [];
+  let stdout = '';
+  let stderr = '';
+  await runGitCommand({
+    pid: 1, cred: CRED_SESSION_USER, args, cwd: '/home/user', env: {},
+    stdout: { write(s) { stdout += s; }, writeBytes(b) { stdout += Buffer.from(b).toString('utf8'); } },
+    stderr: { write(s) { stderr += s; } },
+    vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
+    signal: new AbortController().signal,
+  }, vfs, undefined, undefined, undefined, undefined, undefined, async () => {
+    assert.equal(stdout + stderr, '', `${words.join(' ')}: nothing of the built-in's before the handoff`);
+    handed.push([...args]);
+    return 0;
+  });
+  if (handed.length === 0) return 'built-in';
+  assert.deepEqual(handed, [args], `${words.join(' ')}: the invocation reaches real git untouched`);
+  return 'real git';
+}
+
+// A repository with a commit, a branch and a remote, as the forms expect.
+async function setup() {
+  const plain = async (words) => {
+    const handed = [];
+    const code = await runGitCommand({
+      pid: 1, cred: CRED_SESSION_USER, args: ['-C', 'repo', '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...words], cwd: '/home/user', env: {},
+      stdout: { write() {}, writeBytes() {} }, stderr: { write() {} },
+      vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }), signal: new AbortController().signal,
+    }, vfs, undefined, undefined, undefined, undefined, undefined, async () => { handed.push(words); return 0; });
+    assert.equal(code, 0, words.join(' '));
+    assert.deepEqual(handed, [], words.join(' '));
+  };
+  user.mkdir('home/user/repo', { recursive: true });
+  await plain(['init', '-q', '-b', 'main']);
+  user.writeFile('home/user/repo/a.txt', 'one\n');
+  await plain(['add', 'a.txt']);
+  await plain(['commit', '-q', '-m', 'first']);
+  await plain(['branch', 'topic']);
+  await plain(['remote', 'add', 'origin', 'https://example.com/repo.git']);
+}
+await setup();
+
+// The built-in's: forms main ran as git does.
+const BUILT_IN = [
+  ['status'], ['status', '--porcelain'], ['status', '-s'], ['status', '-sz'], ['status', '--porcelain=v1', '-uno'],
+  ['add', 'a.txt'], ['add', '-A'], ['add', '.'], ['add', '-u'], ['add', '-n', 'a.txt'],
+  ['diff'], ['diff', '--stat'], ['diff', '--cached'], ['diff', '--name-only'], ['diff', 'HEAD'],
+  ['commit', '-m', 'x', '--allow-empty'], ['commit', '-qam', 'x', '--allow-empty'], ['commit', '--allow-empty', '-m', '--amend'],
+  ['checkout', 'topic'], ['checkout', '-b', 'fresh'], ['checkout', '--', 'a.txt'], ['checkout', 'main', '--', 'a.txt'],
+  ['log'], ['log', '--oneline'], ['log', '-n', '5'], ['log', '-3'], ['log', '--max-count=2', '--oneline'],
+  ['branch'], ['branch', 'another'], ['branch', '-D', 'another'], ['branch', '--show-current'],
+  ['tag', 'v1'], ['tag'], ['tag', '-d', 'v1'],
+  ['remote'], ['remote', '-v'], ['remote', 'add', 'up', 'https://example.com/up.git'], ['remote', 'remove', 'up'],
+  ['config', 'core.editor', 'vi'], ['config', 'core.editor'], ['config', '--unset', 'core.editor'],
+  ['rev-parse', 'HEAD'], ['rev-parse', '--abbrev-ref', 'HEAD'], ['rev-parse', '--show-toplevel'],
+  ['ls-files'], ['ls-files', '-s'],
+  ['reset', '--hard', 'HEAD'], ['reset', '--soft', 'HEAD'], ['reset', 'a.txt'],
+  ['merge', 'topic'],
+  ['fetch', 'origin'], ['pull', 'origin', 'main'], ['push', 'origin', 'main'],
+  ['sparse-checkout', 'list'],
+];
+
+// Real git's: lists A and B (main mis-ran them) and commands the built-in never ran.
+const REAL_GIT = [
+  // commit
+  ['commit', '--amend', '-m', 'x'], ['commit', '--no-verify', '-m', 'x'], ['commit', '-n', '-m', 'x'], ['commit', '-m', 'x', 'a.txt'],
+  ['commit', '-m', 'x', '--', 'a.txt'], ['commit', '-F', 'msg.txt'], ['commit', '-s', '-m', 'x'], ['commit', '-S', '-m', 'x'],
+  ['commit', '--author=A <a@b>', '-m', 'x'], ['commit', '--date=2020-01-01', '-m', 'x'], ['commit', '--reset-author', '-m', 'x'],
+  ['commit', '--dry-run', '-m', 'x'], ['commit', '-v', '-m', 'x'],
+  // log
+  ['log', 'main'], ['log', 'main..topic'], ['log', '--', 'a.txt'], ['log', '--all'], ['log', '--decorate'],
+  ['log', '--pretty=format:%s'], ['log', '--since=2020-01-01'], ['log', '--author=Ada'], ['log', '--grep=x'], ['log', '--graph', '--oneline'],
+  ['log', '--stat'], ['log', '-p'], ['log', '--reverse'], ['log', '--no-merges'],
+  // branch
+  ['branch', '-d', 'topic'], ['branch', '--list', 'top*'], ['branch', 'new', 'topic'], ['branch', '-D', 'topic', 'other'],
+  ['branch', '-m', 'renamed'], ['branch', '-vv'], ['branch', '--show-current', 'extra'],
+  // checkout
+  ['checkout', '-b', 'fresh2', 'topic'], ['checkout', '-f', 'topic'], ['checkout', '--detach', 'topic'], ['checkout', '--ours', '--', 'a.txt'],
+  ['checkout', '--theirs', '--', 'a.txt'], ['checkout', '-B', 'main'], ['checkout', '--track', 'origin/main'], ['checkout', 'topic', 'extra'],
+  // remote
+  ['remote', 'set-url', 'origin', 'https://example.com/new.git'], ['remote', 'show', 'origin'], ['remote', 'rename', 'origin', 'upstream'],
+  ['remote', 'update'], ['remote', 'prune', 'origin'], ['remote', 'get-url', 'origin'],
+  // transport
+  ['fetch', 'origin', 'main'], ['fetch', 'origin', '--prune'], ['fetch', 'origin', '--tags'], ['fetch', '--all'], ['fetch', '--unshallow=x', 'origin'],
+  ['pull', 'origin', 'main', '--rebase'], ['pull', '--ff-only', 'origin', 'main'], ['pull', 'origin', 'main', '--no-rebase'], ['pull', 'origin', 'main', 'other'],
+  ['push', 'origin', 'main', '-u'], ['push', 'origin', 'main', '--set-upstream'], ['push', 'origin', 'main', '--force'],
+  ['push', 'origin', 'main', '--force-with-lease'], ['push', 'origin', 'main', '--tags'], ['push', 'origin', 'main', '--delete'], ['push', 'origin', 'main', 'other'],
+  // merge
+  ['merge', '--ff-only', 'topic'], ['merge', '--no-ff', 'topic'], ['merge', '--squash', 'topic'], ['merge', '--no-commit', 'topic'],
+  ['merge', '-s', 'ours', 'topic'], ['merge', '-X', 'theirs', 'topic'], ['merge', 'topic', 'main'],
+  // tag, status, add, diff
+  ['tag', '-F', '-', 'v2'], ['status', '--short=x'], ['status', '-sb'], ['status', '--porcelain=v2'], ['add', '--all=x'], ['add', '-p'], ['add', '-N', 'a.txt'],
+  ['diff', '-p', '--stat'], ['diff', 'main', 'topic'],
+  // commands the built-in never ran
+  ['stash'], ['stash', 'pop'], ['rebase', 'main'], ['switch', 'topic'], ['restore', 'a.txt'], ['show', 'HEAD'], ['blame', 'a.txt'],
+  ['cherry-pick', 'topic'], ['revert', 'HEAD'], ['worktree', 'list'], ['reflog'], ['gc'], ['bisect', 'start'], ['notes', 'list'],
+];
+
+const wrong = [];
+for (const words of BUILT_IN) if (await engine(words) !== 'built-in') wrong.push(`built-in expected: git ${words.join(' ')}`);
+for (const words of REAL_GIT) if (await engine(words) !== 'real git') wrong.push(`real git expected: git ${words.join(' ')}`);
+assert.deepEqual(wrong, [], wrong.join('\n'));
+console.log(`git-routing-table: ${BUILT_IN.length} forms built-in, ${REAL_GIT.length} real git`);
