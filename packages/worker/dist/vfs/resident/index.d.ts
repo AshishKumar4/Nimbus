@@ -147,8 +147,10 @@
 import { type Admission } from './admission.js';
 import { type Cells } from './cells.js';
 import { type Coherence } from './coherence.js';
+import { type Lazy } from './lazy.js';
 import { type Namespace } from './namespace.js';
 import { type Sync } from './sync.js';
+import { type Transport } from './transport.js';
 export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
@@ -175,7 +177,9 @@ export interface ResidentStore {
     readonly admission: Admission;
     readonly namespace: Namespace;
     readonly cells: Cells;
+    readonly transport: Transport;
     readonly sync: Sync;
+    readonly lazy: Lazy;
 }
 export declare function createResidentStore(options?: ResidentStoreOptions): ResidentStore;
 //# sourceMappingURL=index.d.ts.map

@@ -1,7 +1,8 @@
 /**
- * The session calls a process's store makes (session/supervisor-calls.ts),
- * as the store asks them: each may be missing from a supervisor (an older
- * one, a test's), and the store then does without it. Answers are read
- * defensively, field by field, as an answer over RPC may be anything.
+ * The session calls a process's store makes, as the session declares them
+ * (session/supervisor-calls.ts): each optional, as a supervisor may lack one
+ * (a test's) and the store then does without it, and each answer awaited
+ * whether or not it is a promise. What an answer holds crossed an RPC, so the
+ * store reads it field by field.
  */
 export {};

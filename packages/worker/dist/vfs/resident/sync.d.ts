@@ -22,31 +22,14 @@
  * full repopulation" made an npm install re-buy the whole filesystem over and
  * over — measured past the DO CPU limit at pi scale. See `synchronize`.
  */
-import type { ResidentNamespace } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { Admission } from './admission.js';
 import type { Admitted, Cells } from './cells.js';
 import { type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { type Namespace } from './namespace.js';
-import type { ResidentCred } from './permissions.js';
-import type { AcquireAnswer, ResidentStat, ResidentSupervisor } from './supervisor.js';
-/** A file to fetch: its listed size and revision, the epoch they are on, and its content key. */
-interface WantedFile {
-    path: string;
-    size: number;
-    rev: number;
-    epoch: string;
-    ckey?: string | null;
-    stat?: ResidentStat | null;
-}
-export interface FillReport {
-    requested: number;
-    filled: number;
-    failed: number;
-    bytes?: number;
-    ranges?: number;
-    copied?: number;
-}
+import type { ResidentSupervisor } from './supervisor.js';
+import { type FillReport, type Transport } from './transport.js';
 export interface SyncReport extends FillReport {
     skipped?: string;
     incomplete?: string;
@@ -75,22 +58,13 @@ export interface Sync {
             exclude: string[];
         };
     };
-    applyAcquire(supervisor: ResidentSupervisor | null | undefined, result: AcquireAnswer): Promise<Admitted>;
-    relist(supervisor: ResidentSupervisor | null | undefined, dir: string): Promise<void>;
-    bootLazy(supervisor: ResidentSupervisor | null | undefined): Promise<boolean>;
-    namespaceView(supervisor: ResidentSupervisor, device: number, cred: ResidentCred): ResidentNamespace;
+    applyAcquire(supervisor: ResidentSupervisor | null | undefined, result: VfsAcquireResult): Promise<Admitted>;
     setPlan(paths: unknown): void;
     setManifests(manifests: unknown): void;
     adoptModuleBundle(bundle: Record<string, ResidentCell> | null | undefined, moduleCursor: unknown): Cursor | null;
-    fetchFiles(supervisor: ResidentSupervisor, files: WantedFile[]): Promise<Required<Omit<FillReport, 'bytes' | 'ranges' | 'copied'>> & {
-        bytes: number;
-        ranges: number;
-        copied: number;
-    }>;
     synchronize(supervisor: ResidentSupervisor | null | undefined): Promise<SyncReport>;
     refillFromNamespace(supervisor: ResidentSupervisor, dropped: readonly string[]): Promise<FillReport>;
     requireNamespace(supervisor: ResidentSupervisor | null | undefined, bootFailure: string | null): Promise<string | null>;
 }
-export declare function createSync(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells): Sync;
-export {};
+export declare function createSync(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport): Sync;
 //# sourceMappingURL=sync.d.ts.map

@@ -147,8 +147,10 @@
 import { createAdmission } from './admission.js';
 import { createCells } from './cells.js';
 import { createCoherence } from './coherence.js';
+import { createLazy } from './lazy.js';
 import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
+import { createTransport } from './transport.js';
 import { heapTables, sqlTables } from './tables.js';
 export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
@@ -159,7 +161,9 @@ export function createResidentStore(options = {}) {
     const namespace = createNamespace(coherence, admission);
     const observeRead = options.observeRead ?? null;
     const cells = createCells(coherence, admission, namespace, observeRead);
-    const sync = createSync(coherence, admission, namespace, cells);
+    const transport = createTransport(coherence, admission, namespace, cells);
+    const sync = createSync(coherence, admission, namespace, cells, transport);
+    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
     const bindTables = (t, heap) => {
         // A store can outlive its process. Own rows left by an earlier one are
         // writes that never reached the authority or cells whose acknowledgement it
@@ -188,6 +192,8 @@ export function createResidentStore(options = {}) {
         admission,
         namespace,
         cells,
+        transport,
         sync,
+        lazy,
     };
 }

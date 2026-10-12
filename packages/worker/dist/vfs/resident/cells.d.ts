@@ -23,7 +23,7 @@ import type { Admission } from './admission.js';
 import { type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { type Namespace } from './namespace.js';
-import type { AcquireAnswer } from './supervisor.js';
+import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FileHead, type ResidentTables } from './tables.js';
 /** What one admitted delta did. */
 export interface Admitted {
@@ -47,7 +47,7 @@ export interface Cells {
      */
     readonly bundle: Record<string, unknown>;
     /** Apply one authority delta and unseal (see admit below). */
-    admit(result: AcquireAnswer | null | undefined): Admitted;
+    admit(result: VfsAcquireResult | null | undefined): Admitted;
     dropDated(): void;
     /** One row of 'file', or undefined. The existence/shape query. */
     head(path: string): FileHead | undefined;

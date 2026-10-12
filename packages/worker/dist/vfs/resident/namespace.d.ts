@@ -29,8 +29,10 @@
 import type { Admission } from './admission.js';
 import type { Coherence } from './coherence.js';
 import { type ModeMeta, type ResidentCred } from './permissions.js';
-import type { AcquireEntry, ListEntry, ResidentStat } from './supervisor.js';
+import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type NsRow, type ResidentTables } from './tables.js';
+/** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
+export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'> & Partial<Pick<RuntimeVfsStat, 'dev' | 'nlink' | 'revision'>>;
 export interface Lookup {
     path: string;
     row: NsRow | undefined;
@@ -60,8 +62,8 @@ export interface Namespace {
     rowAt(k: string): NsRow | undefined;
     /** Why the namespace is not answering (meaningful only while ready() is false). */
     notReadyCause(): string;
-    put(t: ResidentTables, k: string, stat: ResidentStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
-    tryPut(t: ResidentTables, k: string, stat: ResidentStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
+    put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
+    tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
     deleteTree(t: ResidentTables, k: string, self: boolean): void;
     /** Drop one row and what the table keeps of it in heap. */
     forget(t: ResidentTables, k: string): void;
@@ -75,10 +77,13 @@ export interface Namespace {
     }[];
     /** Whether the credential may read the file `stat` describes (see readable). */
     readable(stat: ModeMeta | null | undefined): boolean;
-    applyEntry(t: ResidentTables, entry: AcquireEntry): string | null;
-    replace(t: ResidentTables, entries: readonly ListEntry[]): void;
+    applyEntry(t: ResidentTables, entry: VfsInvalidatedPath): string | null;
+    replace(t: ResidentTables, entries: readonly VfsListEntry[]): void;
     noteOwnFile(k: string, size: number, rev: number): void;
-    noteLiveStat(k: string, stat: ResidentStat | null, written: number | undefined): void;
+    noteLiveStat(k: string, stat: (NsStat & {
+        linkTarget?: string | null;
+        target?: string | null;
+    }) | null, written: number | undefined): void;
     /** Every name forgotten, and the namespace stops answering (store.clear). */
     clear(): void;
     /** Whether this store lists on demand rather than enumerating. */
@@ -103,9 +108,7 @@ export declare function nsKey(path: unknown): string;
  * answering (as for a delta without stats) until a listing that does
  * describe every name restores it.
  */
-export declare function nsDescribes(stat: unknown): stat is ResidentStat & {
-    type: string;
-};
+export declare function nsDescribes(stat: unknown): stat is Pick<RuntimeVfsStat, 'type' | 'mode' | 'uid' | 'gid'>;
 /**
  * The exclusive upper bound of a prefix under the BINARY collation SQLite gives
  * a TEXT PRIMARY KEY — the successor of the last code unit it can increment.
