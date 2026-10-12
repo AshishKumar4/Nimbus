@@ -26,6 +26,7 @@ var __nimbusResidentModule = (() => {
     NS_LINK: () => NS_LINK,
     createResidentStore: () => createResidentStore,
     namespaceRowBytes: () => namespaceRowBytes,
+    posixAccess: () => posixAccess,
     residentFileCost: () => residentFileCost
   });
 
@@ -2566,7 +2567,8 @@ var __nimbusResidentModule = (() => {
     const coherence = createCoherence();
     const admission = createAdmission(coherence);
     const namespace = createNamespace(coherence, admission);
-    const cells = createCells(coherence, admission, namespace, options.observeRead ?? null);
+    const observeRead = options.observeRead ?? null;
+    const cells = createCells(coherence, admission, namespace, observeRead);
     const sync = createSync(coherence, admission, namespace, cells);
     const bindTables = (t, heap) => {
       t.dropOwn();
@@ -2618,6 +2620,7 @@ var __nimbusResidentModule = (() => {
         bindTables(t, t);
         admission.bindHeap(budget);
       },
+      observeRead,
       coherence,
       admission,
       namespace,

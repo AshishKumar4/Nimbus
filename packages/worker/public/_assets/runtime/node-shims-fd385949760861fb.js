@@ -3150,7 +3150,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
-    if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(k);
+    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -6139,17 +6139,9 @@ const __fsMod = (() => {
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
 
-  // The one POSIX calculation (core vfs/posix-access.ts), as compiled.
-  const _posixAccess = function posixAccess(entry, want, cred) {
-    const requested = want & 0o7;
-    if (requested === 0)
-        return true;
-    const permissions = entry.mode & 0o777;
-    if (cred.uid === 0)
-        return (requested & 0o1) === 0 || (permissions & 0o111) !== 0;
-    const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
-    return ((permissions >> shift) & requested) === requested;
-};
+  // The one POSIX calculation (core vfs/posix-access.ts), as the store's
+  // library carries it: every node runner evaluates that library first.
+  const _posixAccess = typeof __nimbusResidentModule !== "undefined" ? __nimbusResidentModule.posixAccess : null;
   /**
    * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
    * META, by POSIX's owner/group/other rule. Only a stat that states the
@@ -17786,7 +17778,7 @@ const __nimbusAdvised = new WeakSet();
 // `required`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(String(resolvedPath).replace(/^\/+/, ""));
+  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\/+/, "");
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;

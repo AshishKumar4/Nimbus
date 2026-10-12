@@ -53,7 +53,6 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
-import { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ES_MODULE_SCOPE_GLOBAL } from '@nimbus-sh/core/runtime/module-format.js';
@@ -1027,7 +1026,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
-    if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(k);
+    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -4016,8 +4015,9 @@ const __fsMod = (() => {
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
 
-  // The one POSIX calculation (core vfs/posix-access.ts), as compiled.
-  const _posixAccess = ${posixAccess};
+  // The one POSIX calculation (core vfs/posix-access.ts), as the store's
+  // library carries it: every node runner evaluates that library first.
+  const _posixAccess = typeof __nimbusResidentModule !== "undefined" ? __nimbusResidentModule.posixAccess : null;
   /**
    * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
    * META, by POSIX's owner/group/other rule. Only a stat that states the
@@ -12141,7 +12141,7 @@ const __nimbusAdvised = new WeakSet();
 // \`required\`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(String(resolvedPath).replace(/^\\/+/, ""));
+  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\\/+/, "");
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
