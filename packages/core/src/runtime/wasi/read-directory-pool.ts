@@ -1,5 +1,5 @@
 /** Guest-side bookkeeping for real, single-use directory descriptions. It owns no filesystem authority. */
-import { DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
+import { DIRECTORY_BATCH_LIMIT, DIRECTORY_END_WAIT_MS, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
 import type { RuntimeFileHandle, RuntimeFsPath, VfsAcquireResult } from '../os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult, ReadDirectoryDescription } from '../read-directory-batch.js';
@@ -17,6 +17,8 @@ interface Options {
   readonly client: ProcessFsClient;
   /** Publish the caller's pending writes before recording the original lease ask. */
   readonly before: () => Promise<void>;
+  /** How long dispose waits for the channel's last exchange (DIRECTORY_END_WAIT_MS). */
+  readonly endWaitMs?: number;
 }
 export interface ReadDirectoryPool {
   open(path: RuntimeFsPath, key: string, prefetch: () => Promise<readonly RuntimeFsPath[]>): Promise<RuntimeFileHandle | null>;
@@ -56,7 +58,7 @@ function keyOfPath(path: RuntimeFsPath): string {
   return named.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
 }
 
-export function readDirectoryPool({ call, store, client, before }: Options): ReadDirectoryPool {
+export function readDirectoryPool({ call, store, client, before, endWaitMs = DIRECTORY_END_WAIT_MS }: Options): ReadDirectoryPool {
   const channel = crypto.randomUUID();
   let sequence = 0, generation = 0, cancelled = 0;
   let owner: string | null = null, epoch: string | null = null;
@@ -223,13 +225,20 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
     async dispose() {
       ended = true;
       cancelled++;
-      await serial(async () => {
-        for (const id of owned.keys()) retiring.add(id);
-        owned.clear(); claiming.clear();
-        invalidate();
-        // The channel's last exchange: it retires the rest and ends the channel.
-        if (sequence > 0) await exchange([], false, true);
-      });
+      for (const id of owned.keys()) retiring.add(id);
+      owned.clear(); claiming.clear();
+      invalidate();
+      if (sequence === 0) return;
+      // The channel's last exchange retires the rest and ends the channel. It
+      // is sent now, not behind an exchange the session may never answer (a
+      // park the watchdog gave up on): its later sequence supersedes that
+      // one. The run waits for it at most endWaitMs.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        exchange([], false, true).then(() => {}, () => {}),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, endWaitMs); }),
+      ]);
+      clearTimeout(timer);
     },
   };
 }

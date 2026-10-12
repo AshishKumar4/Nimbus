@@ -149,6 +149,16 @@ export const FS_LIST_PAGE_LIMIT = 8192;
  */
 export const DIRECTORY_PREFETCH_LIMIT = 128;
 export const DIRECTORY_BATCH_LIMIT = 64;
+/**
+ * How long a run's end waits for its directory channel's last exchange:
+ * past it (an earlier exchange the session never answered holds the
+ * channel's turn) the run ends anyway, and what the channel still holds is
+ * charged to the process's scope until its release, as an abandoned
+ * answer's descriptions are. The WASI park deadline's length.
+ */
+export const DIRECTORY_END_WAIT_MS = 10_000;
+/** Ended directory channels a scope remembers, refusing a late request of one; the oldest is forgotten first. */
+export const DIRECTORY_ENDED_CHANNELS = 4 * DIRECTORY_PREFETCH_LIMIT;
 
 // Entries one subtree listing (fsListTree) carries before it is refused
 // (E2BIG): two list pages' worth, in one round trip and one revision.

@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
-import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT } from '../constants.js';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_ENDED_CHANNELS } from '../constants.js';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
 
 export const DIRECTORY_READ_RPC = 'fsReadDirectories' as const;
@@ -69,6 +69,8 @@ interface Budget {
   ended: boolean;
   reserved: number;
   readonly channels: Map<string, Channel>;
+  /** Channels a run ended (`end`), oldest first: a late request of one is refused, never a channel again. */
+  readonly endedChannels: Set<string>;
   readonly tracked: Map<number, Tracked>;
   tail: Promise<void>;
 }
@@ -106,12 +108,13 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
   if (scope.closed) throw refusal('ESTALE', 'directory descriptor scope ended');
   let budget = scopes.get(scope);
   if (budget === undefined) {
-    const created: Budget = { ended: false, reserved: 0, channels: new Map(), tracked: new Map(), tail: Promise.resolve() };
+    const created: Budget = { ended: false, reserved: 0, channels: new Map(), endedChannels: new Set(), tracked: new Map(), tail: Promise.resolve() };
     scopes.set(scope, created);
     // The scope closes its descriptions; the account ends on the same release, before the scope is marked closed.
     scope.subscriptions.add(() => {
       created.ended = true;
       created.channels.clear();
+      created.endedChannels.clear();
       created.tracked.clear();
       scopes.delete(scope);
     });
@@ -120,6 +123,7 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
   const live = (): void => { if (scope.closed || budget.ended) throw refusal('ESTALE', 'directory descriptor scope ended'); };
   const run = async (): Promise<ReadDirectoryBatchResult> => {
     live();
+    if (budget.endedChannels.has(request.channel)) throw refusal('ESTALE', 'directory prefetch channel ended');
     let channel = budget.channels.get(request.channel);
     if (!channel) {
       // A late request from a rewound run cannot close reused descriptor numbers.
@@ -159,6 +163,11 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
         if (record.channel === request.channel) { try { await close(id); } catch (error) { closeErrors.push(error); } }
       }
       budget.channels.delete(request.channel);
+      budget.endedChannels.add(request.channel);
+      for (const oldest of budget.endedChannels) {
+        if (budget.endedChannels.size <= DIRECTORY_ENDED_CHANNELS) break;
+        budget.endedChannels.delete(oldest);
+      }
     }
     if (closeErrors.length) throw closeErrors[0];
     live();

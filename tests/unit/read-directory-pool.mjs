@@ -3,7 +3,7 @@ import { processFsClient } from '../../packages/core/src/_shared/process-fs-clie
 import { readDirectoryPool } from '../../packages/core/src/runtime/wasi/read-directory-pool.ts';
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
-function fixture() {
+function fixture(options = {}) {
   let clock = 1000, next = 0, cursor = { epoch: 'E', rev: 1 };
   const calls = [], held = new Map(), recalls = new Map(), nodes = new Map();
   const s = { calls, held, nodes, hook: null, admission: null, clock: (value) => { clock = value; } };
@@ -22,6 +22,7 @@ function fixture() {
     },
   });
   const pool = readDirectoryPool({
+    ...options,
     client, before: async () => {},
     store: {
       ready: () => true, cursor: () => cursor, entry: (key) => nodes.get(key),
@@ -133,6 +134,21 @@ function fixture() {
   assert.ok(s.calls[sent].retire.length >= 1, 'it is retired');
   assert.equal(s.pool.owns(d1.id), true);
   await s.close();
+}
+
+// The run ends even when an exchange is never answered (a park the watchdog
+// gave up on): its end is sent at once, and waited for at most endWaitMs.
+{
+  const s = fixture({ endWaitMs: 20 });
+  await s.pool.open('/d0', 'd0', async () => ['/d1']);
+  s.hook = () => new Promise(() => {});
+  const hung = s.pool.open('/d5', 'd5', async () => []);
+  hung.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const sent = s.calls.length;
+  await s.pool.dispose();
+  assert.equal(s.calls.length, sent + 1, 'the end went out beside the unanswered exchange');
+  assert.equal(s.calls[sent].end, true);
 }
 
 // Lost/late first answer: the original ask cannot be replaced by arrival time.
