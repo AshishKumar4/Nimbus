@@ -136,7 +136,8 @@ export function extractBearerToken(request: Request, sessionId?: string): string
  *         `requireToken` is true (default).
  * @throws Any error from {@link verifyNimbusToken}.
  */
-export function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts?: { requireToken?: boolean; sessionId?: string }): Promise<VerifiedNimbusToken | null>;
+export function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusToken>;
+export function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: { requireToken: true; sessionId?: string }): Promise<VerifiedNimbusToken>;
 export function verifyRequestToken(
   request: Request,
   env: NimbusAuthEnv,
