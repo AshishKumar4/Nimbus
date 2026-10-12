@@ -92,12 +92,15 @@ function quoteShellToken(value) {
 function shellLineFromSpawn(command, args) {
     return [command, ...(Array.isArray(args) ? args : [])].map((part) => quoteShellToken(String(part))).join(' ');
 }
+function shellPlanFor(request) {
+    const args = Array.isArray(request.args) ? request.args.map(String) : [];
+    if (isShellCommand(request.command))
+        return parseShellCommandArgs(request.command, args);
+    return request.shell ? { kind: 'command', commandLine: shellLineFromSpawn(request.command, args), args: [] } : null;
+}
 /** Shell spawns share parsing and script/stdin loading across local and remote hosts. */
 export function shellChildRunner(request, vfs, execute) {
-    const args = Array.isArray(request.args) ? request.args.map(String) : [];
-    const plan = isShellCommand(request.command)
-        ? parseShellCommandArgs(request.command, args)
-        : request.shell ? { kind: 'command', commandLine: shellLineFromSpawn(request.command, args), args: [] } : null;
+    const plan = shellPlanFor(request);
     if (!plan)
         return null;
     return {
@@ -138,6 +141,10 @@ export class ChildProcessManager {
     deps;
     constructor(deps) {
         this.deps = deps;
+    }
+    /** Bind the platform's runner and cleanup to the workspace's existing broker. */
+    bindHost(host) {
+        this.deps = { ...host, processes: this.deps.processes };
     }
     // ── spawn ───────────────────────────────────────────────────────────────
     /**
@@ -195,7 +202,7 @@ export class ChildProcessManager {
             exitWaiters: [],
         };
         this.children.set(pid, child);
-        child.parentClosed = this.deps.processes.subscribeExit(req.parentPid, () => {
+        child.parentClosed = this.deps.processes.subscribeTerminal(req.parentPid, () => {
             if (child.exitCode === null)
                 this.kill(pid, 'SIGTERM');
         });
@@ -207,7 +214,7 @@ export class ChildProcessManager {
             this.deps.processes.openInput(pid);
         if (child.stdio[0] === 'ignore')
             this.deps.processes.endInput(pid);
-        const dispatchReq = { ...req, command: normalizeChildCommand(req.command) };
+        const dispatchReq = shellPlanFor(req) ? req : { ...req, command: normalizeChildCommand(req.command) };
         let runner;
         try {
             runner = await this.deps.resolve(dispatchReq, { pid, cwd: req.cwd, env: childEnv });

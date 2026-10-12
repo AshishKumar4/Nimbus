@@ -72,6 +72,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     private onTerminalCb;
     private readonly endWaiters;
+    private readonly terminalSubscribers;
     /** Releases an ended process's filesystem binding; see setRelease. */
     private release;
     /** Tells that filesystem the process has ended, at its end; see setRelease. */
@@ -205,6 +206,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * genuine owner exists.
      */
     setOnTerminal(cb: (pid: number) => void): void;
+    /** Observe the authoritative end, even when that runtime has no log consumer. */
+    subscribeTerminal(pid: number, listener: () => void): () => void;
     /**
      * `pid`'s exit status once it leaves `running`, however it leaves: what a
      * caller whose program ran on as a resident (FacetManager._promote) waits

@@ -208,6 +208,7 @@ The editor opens this file in Markdown preview mode by default. Use
 }
 export class NimbusSession extends CloudflareDurableObject {
     #runtimeServices;
+    get childProcessHost() { return this.#runtimeServices.childProcessHost; }
     // this.ctx and this.env are provided by the DurableObject base class
     runtimeWorkspace = null;
     runtimeReady = null;

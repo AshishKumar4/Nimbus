@@ -51,6 +51,7 @@ export class SessionProcessSupervisor {
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
     endWaiters = new Map();
+    terminalSubscribers = new Map();
     /** Releases an ended process's filesystem binding; see setRelease. */
     release = null;
     /** Tells that filesystem the process has ended, at its end; see setRelease. */
@@ -332,6 +333,18 @@ export class SessionProcessSupervisor {
     setOnTerminal(cb) {
         this.onTerminalCb = cb;
     }
+    /** Observe the authoritative end, even when that runtime has no log consumer. */
+    subscribeTerminal(pid, listener) {
+        let subscribers = this.terminalSubscribers.get(pid);
+        if (!subscribers)
+            this.terminalSubscribers.set(pid, subscribers = new Set());
+        subscribers.add(listener);
+        return () => {
+            subscribers.delete(listener);
+            if (subscribers.size === 0)
+                this.terminalSubscribers.delete(pid);
+        };
+    }
     /**
      * `pid`'s exit status once it leaves `running`, however it leaves: what a
      * caller whose program ran on as a resident (FacetManager._promote) waits
@@ -364,6 +377,14 @@ export class SessionProcessSupervisor {
         this.endWaiters.delete(pid);
         for (const resolve of waiters ?? [])
             resolve(this.table.get(pid)?.exitCode ?? 0);
+        const subscribers = this.terminalSubscribers.get(pid);
+        this.terminalSubscribers.delete(pid);
+        for (const listener of subscribers ?? []) {
+            try {
+                listener();
+            }
+            catch { /* the process is gone regardless */ }
+        }
         if (!this.onTerminalCb)
             return;
         try {

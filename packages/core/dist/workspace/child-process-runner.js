@@ -9,28 +9,7 @@ import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
 export async function resolveWorkspaceChild(workspace, request, origin) {
     const processes = workspace.processes;
     const view = new ProcessView(workspace.filesystem.bind({ pid: origin.pid, cred: processes.cred(origin.pid) }));
-    const shellRunner = shellChildRunner(request, view, async (context, commandLine) => {
-        const shell = workspace.shellFor(context.pid, { cwd: context.cwd, env: context.env });
-        const stop = new AbortController();
-        const stopped = processes.holdWork(context.pid, reason => stop.abort(reason));
-        try {
-            const result = await shell.execute(commandLine, {
-                stdin: context.stdin,
-                onStdout: context.output.onStdout,
-                onStderr: context.output.onStderr,
-                signal: stop.signal,
-            });
-            return result.exitCode;
-        }
-        finally {
-            try {
-                await shell.closeDescriptors();
-            }
-            finally {
-                stopped();
-            }
-        }
-    });
+    const shellRunner = shellChildRunner(request, view, (context, line) => runChildShell(workspace, context, line));
     if (shellRunner)
         return shellRunner;
     if (request.command.includes('/')) {
@@ -42,40 +21,63 @@ export async function resolveWorkspaceChild(workspace, request, origin) {
     const resolution = resolutionOf(command);
     if (resolution?.kind === 'program')
         await view.access(resolution.path, X_OK);
-    return {
-        async run(context) {
-            const stop = new AbortController();
-            const stopped = processes.holdWork(context.pid, reason => stop.abort(reason));
-            const cred = processes.cred(context.pid);
-            const runAs = workspace.shell.getRunAsHost();
-            const ctx = {
-                pid: context.pid, cred, args: context.args, cwd: context.cwd, env: context.env,
-                vfs: view, stdin: context.stdin, signal: stop.signal,
-                stdout: { write: text => context.output.onStdout(textBytes(text)), writeBytes: context.output.onStdout },
-                stderr: { write: text => context.output.onStderr(textBytes(text)), writeBytes: context.output.onStderr },
-                isFdTerminal: () => false,
-                setUmask: mask => { processes.setUmask(context.pid, mask); },
-                runAs: (target, argv, options) => {
-                    if (!runAs)
-                        throw new Error('Nimbus: workspace has no credential-transition host');
-                    return runAs(options?.parent ?? ctx, target, argv);
-                },
-                __nimbusCaptureOutput: false,
-                __nimbusBinSpawn: { callerPid: context.pid, command: [context.command, ...context.args].join(' '), liveInput: true },
-            };
-            try {
-                context.onStarted();
-                return await command(ctx);
-            }
-            catch (error) {
-                if (isBrokenPipe(error))
-                    return KILLED_BY_SIGPIPE.status;
-                await context.output.onStderr(textBytes(`${context.command}: ${errorText(error)}\n`));
-                return 1;
-            }
-            finally {
-                stopped();
-            }
+    return { run: context => runChildCommand(workspace, context, command) };
+}
+/** A child's isolated shell owns its work until all of its descriptors close. */
+export async function runChildShell(workspace, child, line) {
+    const shell = workspace.shellFor(child.pid, { cwd: child.cwd, env: child.env });
+    const stop = new AbortController();
+    const stopped = workspace.processes.holdWork(child.pid, reason => stop.abort(reason));
+    try {
+        const result = await shell.execute(line, { stdin: child.stdin,
+            onStdout: child.output.onStdout, onStderr: child.output.onStderr, signal: stop.signal });
+        return typeof result.exitCode === 'number' ? result.exitCode : 0;
+    }
+    finally {
+        try {
+            await shell.closeDescriptors();
+        }
+        finally {
+            stopped();
+        }
+    }
+}
+/** The platform may admit a launch, but descriptors, identity and lifecycle stay in core. */
+export async function runChildCommand(workspace, child, command, invoke) {
+    const processes = workspace.processes;
+    const stop = new AbortController();
+    const stopped = processes.holdWork(child.pid, reason => stop.abort(reason));
+    const cred = processes.cred(child.pid);
+    const runAs = workspace.shell.getRunAsHost();
+    const ctx = {
+        pid: child.pid, cred, args: child.args, cwd: child.cwd, env: child.env,
+        vfs: new ProcessView(workspace.filesystem.bind({ pid: child.pid, cred })), stdin: child.stdin, signal: stop.signal,
+        stdout: { write: text => child.output.onStdout(textBytes(String(text))), writeBytes: child.output.onStdout },
+        stderr: { write: text => child.output.onStderr(textBytes(String(text))), writeBytes: child.output.onStderr },
+        isFdTerminal: () => false,
+        setUmask: mask => { processes.setUmask(child.pid, mask); },
+        runAs: (target, argv, options) => {
+            if (!runAs)
+                throw new Error('Nimbus: workspace has no credential-transition host');
+            return runAs(options?.parent ?? ctx, target, argv);
         },
+        __nimbusCaptureOutput: false,
+        __nimbusBinSpawn: { callerPid: child.pid, command: [child.command, ...child.args].join(' '), liveInput: true },
     };
+    try {
+        if (invoke)
+            return await invoke(ctx);
+        child.onStarted();
+        const code = await command(ctx);
+        return typeof code === 'number' ? code : 0;
+    }
+    catch (error) {
+        if (isBrokenPipe(error))
+            return KILLED_BY_SIGPIPE.status;
+        await child.output.onStderr(textBytes(`${child.command}: ${errorText(error)}\n`));
+        return 1;
+    }
+    finally {
+        stopped();
+    }
 }

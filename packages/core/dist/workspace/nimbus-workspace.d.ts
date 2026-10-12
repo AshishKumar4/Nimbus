@@ -31,7 +31,7 @@ import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { ChildProcessManager } from '../runtime/child-process-manager.js';
+import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
@@ -148,6 +148,7 @@ export interface NimbusWorkspaceOptions {
     readonly ctxExports?: CtxExports;
     /** The process table that allocated supervisor-binding pids. */
     readonly processes?: SessionProcessSupervisor;
+    readonly childProcesses?: ChildProcessHost;
     readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
     readonly filesystemNamespace?: string;
     /**

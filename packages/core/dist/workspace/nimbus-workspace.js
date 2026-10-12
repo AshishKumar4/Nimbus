@@ -184,10 +184,12 @@ export class NimbusWorkspace {
                 return resolveWorkspaceChild(workspace, request, origin);
             },
             terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+            ...options.childProcesses,
         });
         const host = options.facets;
         const facets = host ? {
-            ...host,
+            parking: host.parking,
+            memoryBudgetBytes: host.memoryBudgetBytes,
             open: spec => host.open({
                 ...spec,
                 syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
@@ -390,7 +392,6 @@ export class NimbusWorkspace {
         }
         finally {
             this.processes.exit(pid, exitCode);
-            this.processes.markExit(pid, exitCode);
             // Its descriptors close as it exits; its entry, and what it bound in
             // the filesystem, go even if one fails to.
             try {

@@ -76,6 +76,7 @@ export declare function renderWelcomeMarkdown(version: string): string;
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
     #private;
+    get childProcessHost(): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessHost;
     runtimeWorkspace: NimbusWorkspace | null;
     private runtimeReady;
     get runtimeManager(): RuntimeManager;
