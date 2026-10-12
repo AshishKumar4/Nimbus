@@ -159,6 +159,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   stats(): ResidentFilesystemStats;
   /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
   walked(): readonly string[];
+  /** The subtree this run changed (ProcessFsClient.mutated): the next run's claim in the same facet (ResidentDelegation.claim). */
+  mutated(): string | null;
 }
 
 /** A held file the session refused part of: what a run reports, naming the file. */
@@ -334,6 +336,13 @@ export interface ResidentDelegation {
    * description is admitted only if the namespace still vouches for it.
    */
   readonly walked?: readonly string[];
+  /**
+   * The subtree the last run in this facet changed (its mutated()), taken
+   * before this run changes anything (ProcessFsClient.claimAhead). A hint:
+   * the session grants or refuses it as any claim, and nothing is decided
+   * under it before a barrier answered after the grant.
+   */
+  readonly claim?: readonly string[];
 }
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
@@ -399,6 +408,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
   /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
   let owed = false;
+  /** The subtrees this run takes before it changes anything (ResidentDelegation.claim), until they are held or refused. */
+  let claimingAhead: Promise<void> | null = null;
   if (delegation !== undefined) {
     holder = delegationHolder({
       session: delegation.session,
@@ -416,6 +427,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // What it sent changed the session: the store catches up before it answers next.
       sent: () => { owed = true; directoryPool?.invalidate(); },
     });
+    // The subtrees taken ahead: until they are held or refused, nothing is
+    // changed or decided, and the barrier waits for them, so the first one
+    // is answered after the grant (what a peer did before it is in it).
+    const roots = delegation.claim ?? [];
+    if (roots.length > 0) {
+      const client = holder.client;
+      claimingAhead = client.claimAhead(roots).catch(() => {}).then(() => {
+        claimingAhead = null;
+        if (client.stats().grants > 0) { owed = true; directoryPool?.invalidate(); }
+      });
+    }
     if (delegation.readDirectories) directoryPool = readDirectoryPool({
       call: (request) => { delegated('readDirectories'); return timed(delegation.readDirectories!(request)); }, store, client: holder.client,
       before: async () => { if (holder?.pending()) await holder.send(); },
@@ -687,6 +709,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return remote();
     };
     if (!store.ready()) { delegated(name); return remote(); }
+    if (owed && claimingAhead !== null) return claimingAhead.then(() => answer(name, local, remote));
     if (owed) {
       counts.barriers++;
       return store.barrier().then((ok) => {
@@ -705,6 +728,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * as local; DELEGATE (or false/undefined from the holder) hands it on.
    */
   const decide = <T>(name: string, local: () => T | Delegate | Promise<T | Delegate>): T | Delegate | Promise<T | Delegate> => {
+    if (claimingAhead !== null) return claimingAhead.then(() => decide(name, local));
     if (holder === null || !store.ready()) return DELEGATE;
     const settle = (value: T | Delegate): T | Delegate => {
       if (value !== DELEGATE) counts.local++;
@@ -727,6 +751,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
   const changing = <T>(name: string, call: () => T | Promise<T>): T | Promise<T> => {
+    if (claimingAhead !== null) return claimingAhead.then(() => changing(name, call));
     directoryPool?.invalidate();
     delegated(name);
     try {
@@ -774,6 +799,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // is answered first, and a refusal it recorded is this sync's answer.
   fs.syncInode = () => holder?.flush();
   fs.walked = () => opening;
+  fs.mutated = () => holder?.client.mutated() ?? null;
   fs.stats = () => ({
     ...counts,
     delegated: { ...counts.delegated },
@@ -955,6 +981,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // written through by its number; a directory, a file the store cannot
       // place, or one on a mount is the session's descriptor.
       const through = (): RuntimeFileHandle | Delegate | Promise<RuntimeFileHandle | Delegate> => {
+        if (claimingAhead !== null) return claimingAhead.then(through);
         if (holder === null || !store.ready() || flags.directory) return DELEGATE;
         return after(keyFor(path, false), (key) => {
           if (key === DELEGATE) return DELEGATE;
