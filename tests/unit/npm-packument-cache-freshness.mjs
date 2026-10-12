@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { PACKUMENT_TTL_MS, R2CacheClient, packumentKey, packumentL2Url, packumentUrl } from '../../packages/worker/src/npm/r2-cache.ts';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
-import { withColoCache } from './lib/colo-cache.mjs';
+import { fakeColoCache, withColoCache } from './lib/colo-cache.mjs';
 import './lib/resolve-facet-scope.mjs';
 
 const expiredControl = process.argv.includes('--expired-control');
@@ -95,7 +95,8 @@ async function scenario(tier, request, colo) {
     { SUPERVISOR: {
       async getPackument(packageName, options) {
         const client = new R2CacheClient(null, bucket);
-        return { ...await client.readThroughPackument(packageName, options), events: client._cacheEvents };
+        const read = options?.revalidate ? client.revalidatePackument(packageName, options) : client.readThroughPackument(packageName, options);
+        return { ...await read, events: client._cacheEvents };
       },
     } },
   );
@@ -185,7 +186,10 @@ if (!expiredControl) {
     const read = (options = {}) => client().readThroughPackument(NAME, { registry: REGISTRY, retries: 0, ...options });
     const resolve = (range) => resolveOnePackumentInFacet(
       { name: NAME, range, cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: REGISTRY },
-      { SUPERVISOR: { async getPackument(packageName, options) { const c = client(); return { ...await c.readThroughPackument(packageName, options), events: c._cacheEvents }; } } },
+      { SUPERVISOR: { async getPackument(packageName, options) {
+        const c = client();
+        return { ...await (options?.revalidate ? c.revalidatePackument(packageName, options) : c.readThroughPackument(packageName, options)), events: c._cacheEvents };
+      } } },
     );
     assert.equal((await read()).source, 'network');
     now = START + PACKUMENT_TTL_MS - 1_000;
@@ -224,9 +228,11 @@ if (!expiredControl) {
 
     // A 304 renews an entry only where it still holds what was validated.
     // A reads revision 1 expired and is told it is unchanged; before A's
-    // renewal lands, revision 2 is published and B caches it: A's renewal
-    // writes nothing over it, in R2 or in the colo.
-    for (const colo of [false, true]) {
+    // renewal lands, revision 2 is published and B caches it, in A's colo
+    // or another: A's renewal writes nothing over it in R2, nor revision 1
+    // into A's colo once R2's renewal did not hold.
+    for (const where of ['R2', 'colo', 'another colo']) {
+      const colo = where !== 'R2';
       const race = async () => {
         now = START;
         const raced = fakeBucket();
@@ -245,17 +251,19 @@ if (!expiredControl) {
         assert.equal(published.requests.at(-1).ifNoneMatch, '"fixture-1"');
         published.publish('2.0.0');
         raced.gate = null;
+        const mine = globalThis.caches;
+        if (where === 'another colo') globalThis.caches = { default: fakeColoCache() };
         const b = await readRaced();
+        globalThis.caches = mine;
         assert.equal(b.source, 'network');
         open();
         assert.equal((await a).source, 'r2-cache');
         const stored = raced.entries.get(packumentKey(NAME, REGISTRY));
-        assert.ok(JSON.parse(stored.json).versions['2.0.0'], `${colo ? 'colo' : 'R2'}: the newer body stays in R2`);
+        assert.ok(JSON.parse(stored.json).versions['2.0.0'], `${where}: the newer body stays in R2`);
         assert.equal(stored.customMetadata.etag, '"fixture-2"');
-        if (colo) {
-          const copy = globalThis.caches.default.entries.get(packumentL2Url(NAME, REGISTRY));
-          assert.equal(copy.headers['x-nimbus-etag'], '"fixture-2"', 'and in the colo');
-        }
+        const copy = colo ? globalThis.caches.default.entries.get(packumentL2Url(NAME, REGISTRY)) : undefined;
+        if (where === 'colo') assert.equal(copy.headers['x-nimbus-etag'], '"fixture-2"', 'and in the colo');
+        if (where === 'another colo') assert.equal(copy, undefined, "A's colo is not given the body R2 no longer holds");
       };
       if (colo) await withColoCache(race);
       else await race();
