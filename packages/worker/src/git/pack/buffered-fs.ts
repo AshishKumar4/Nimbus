@@ -400,11 +400,14 @@ export function createBufferedFs(
       return bufferMutation(async () => {
         const now = Date.now();
         ensureMetadataParents(p, now);
-        // The mode asked for (0666 when none, as a program's create), less the
-        // 022 umask this facet makes files under: git's library asks 0777 for an
-        // executable and leaves the narrowing to the umask, which it has no other way to get.
-        const mode = (requested ?? 0o666) & ~0o022 & 0o7777;
-        const fileMetadata: OverlayEntry = { kind: 'file', size: buf.length, mode, mtimeMs: now, ctimeMs: now, atimeMs: now };
+        // The session makes the file with the bits asked for (0666 when none, as
+        // a program's create) under its own creation policy: the process's
+        // umask, a default ACL, a setgid parent. This facet's own record of it
+        // is git's view, as every overlay stat here is: executable or not.
+        const mode = requested ?? 0o666;
+        const fileMetadata: OverlayEntry = {
+          kind: 'file', size: buf.length, mode: (mode & 0o111) !== 0 ? 0o755 : 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now,
+        };
         setMetadata(p, fileMetadata);
         if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {
           // What the waves hold before it lands first; then the file, as a program writes it.
