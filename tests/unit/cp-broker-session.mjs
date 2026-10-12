@@ -19,6 +19,7 @@
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
@@ -53,11 +54,12 @@ const decoder = new TextDecoder();
   const registry = createDefaultRegistry();
   registerUnixCommands(registry, rawVfs);
   const launched = [];
-  registry.register('node', async (ctx) => {
+  const node = async (ctx) => {
     launched.push(ctx.args.join(' '));
     ctx.stdout.write('node ran\n');
     return 0;
-  });
+  };
+  registry.register('node', node);
 
   const processes = new SessionProcessSupervisor();
   const parent = processes.spawn('node', ['parent.js'], '/home/user');
@@ -109,7 +111,12 @@ const decoder = new TextDecoder();
   });
   session.shell.setCwd('/home/user');
   // NimbusWorkspace.shellFor, over this harness's shell.
-  session.runtimeWorkspace = { shellFor };
+  session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
+    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, cwd: '/home/user' });
+  session.runtimeWorkspace.registry.register('node', node);
+  session._setCpRegistry(session.runtimeWorkspace.registry);
+  session.shell = session.runtimeWorkspace.shell;
+  assert.equal(session._ensureChildProcessManager(), session.runtimeWorkspace.children, 'the session delegates to the workspace-owned broker');
 
   const spawn = async (command, args, { env = {}, cwd = '/home/user' } = {}) => (await session._rpcCpSpawn({
     command, args, env, cwd, stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid,
@@ -139,6 +146,7 @@ const decoder = new TextDecoder();
   });
   {
     const pid = await spawn('byte-duplex', []);
+    assert.equal(session.runtimeWorkspace.children.isChild(pid), true, 'session spawns are owned by the workspace broker');
     let seq = 0;
     for (const bytes of [new Uint8Array([0xff, 0xfe, 0x00, 0x80]), new Uint8Array([0xc3, 0x28, 0xf0, 0x9f, 0x00])]) {
       assert.equal((await session._rpcCpStdinWrite(pid, bytes)).ok, true);
