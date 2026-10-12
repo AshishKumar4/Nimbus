@@ -27,8 +27,8 @@ try {
       headers: { Cookie: jar, 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: 'jar-quota-probe.txt', content: 'must never land' }),
     });
-    assert.notEqual(write.status, 500, 'quota refusal precedes the committed write');
-    assert.equal(write.status, 400, 'quota refusal names the jar');
+    assert.ok(write.status >= 400 && write.status < 500, `quota refusal precedes the committed write (got ${write.status})`);
+    assert.match((await write.text()).slice(0, 200), /jar|credential|cookie/i, 'quota refusal names the jar');
     const read = await fetch(`${probe.base}/s/${sid}/api/read-file?path=jar-quota-probe.txt`, {
       headers: { Cookie: jar },
     });

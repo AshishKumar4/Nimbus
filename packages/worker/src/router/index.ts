@@ -298,11 +298,24 @@ export function createNimbusHandler(
     let plannedMigration: readonly string[] = [];
     let destroyedSession: string | null = null;
     // Plan at authentication, before any dispatch: the capacity check throws
-    // here, so a refusal always precedes the session DO's side effects.
+    // here, so a refusal always precedes the session DO's side effects. A
+    // refusal is an auth answer (same envelope as resolveNimbusRouteAuth),
+    // never an unhandled throw.
+    let authRefusal: Response | null = null;
     const planMigration = (verified: VerifiedNimbusRequestToken | null, sessionId: string): void => {
-      plannedMigration = verified === null ? [] : planSessionCookieMigration(
-        request.headers.get('Cookie'), verified, sessionId);
+      if (verified === null || authRefusal !== null) {
+        if (verified === null) plannedMigration = [];
+        return;
+      }
+      try {
+        plannedMigration = planSessionCookieMigration(
+          request.headers.get('Cookie'), verified, sessionId);
+      } catch (e) {
+        if (e instanceof NimbusAuthError) authRefusal = authErrorResponse(e);
+        else throw e;
+      }
     };
+    const authRefused = (): Response | null => authRefusal;
     const applySessionResponsePolicy = async (response: Promise<Response> | Response): Promise<Response> => {
       const answered = await response;
       const setCookies: string[] = [...plannedMigration];
@@ -428,6 +441,7 @@ export function createNimbusHandler(
         ? `/app/${preview.name}`
         : `/port/${preview.port}`;
       if (auth.verified) planMigration(auth.verified, preview.sid);
+      if (authRefused() !== null) return authRefused()!;
       return answered(forwardToSession(
         request,
         {
@@ -561,6 +575,7 @@ export function createNimbusHandler(
       if (auth instanceof Response) return auth;
       const tenantSegment = auth.tenantSegment;
       planMigration(auth.verified, route.sessionId);
+      if (authRefused() !== null) return authRefused()!;
 
       if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
         const rawPort = url.searchParams.get('port');
