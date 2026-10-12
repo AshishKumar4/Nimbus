@@ -214,7 +214,10 @@ export interface NimbusWorkspaceOptions {
      * wherever it is hosted. Typically `egress` minted again with the exec in
      * its props, so the host can tell which exec made each request. Undefined
      * keeps `egress` for that process. Requires `egress`, which still carries
-     * the workspace's work that no process makes.
+     * the workspace's work that no process makes. A host that builds the
+     * network for its `facets` itself makes it with
+     * `selectProcessEgress(egress, egressFor, processes)` and passes the same
+     * `processes`.
      */
     readonly egressFor?: EgressFor;
 }

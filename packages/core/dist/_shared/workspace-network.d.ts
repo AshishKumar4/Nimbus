@@ -80,19 +80,22 @@ export interface WorkspaceNetwork {
      * for it (`selectProcessEgress`), selected once while its process-table
      * entry lives, so its binding, its Dynamic Worker's globalOutbound, a peer
      * hosting it and the commands it runs all hold the same one. This network
-     * when the host mints none, and for pid 0 (no process: Nimbus's own work,
-     * or work already selected for).
+     * itself when the host mints none (decided when the network is made), and
+     * for pid 0 (no process: Nimbus's own work, or work already selected for).
      */
     forProcess(pid: number): WorkspaceNetwork;
 }
 /** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
 export declare const ISOLATE_NETWORK: WorkspaceNetwork;
 /**
- * Has the workspace network over `egress` give each process of `processes`
- * the egress `egressFor` mints for it (NimbusWorkspaceOptions.egressFor).
- * One table per egress: a second for the same egress object is refused.
+ * The workspace network over `egress`, made to give each process of
+ * `processes` the egress `egressFor` mints for it
+ * (NimbusWorkspaceOptions.egressFor). Decided when the network is made: a
+ * host that builds the network itself (for its facets) selects first, then
+ * `workspaceNetwork(egress)` answers this one. Refused when the network over
+ * `egress` was made without this table.
  */
-export declare function selectProcessEgress(egress: WorkspaceEgress, egressFor: EgressFor, processes: EgressProcesses): void;
+export declare function selectProcessEgress(egress: WorkspaceEgress, egressFor: EgressFor, processes: EgressProcesses): WorkspaceNetwork;
 /**
  * The workspace network over `egress`, or the isolate's own network when
  * there is none. One per egress object: whatever asks for it (the workspace,
