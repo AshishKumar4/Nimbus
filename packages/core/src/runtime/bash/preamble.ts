@@ -982,7 +982,11 @@ function step(s: BashSession, proc: BashProc): void {
     if (e instanceof Signalled) { finishProc(s, proc, 0, e.signal); return; }
     throw e;
   }
-  if (c.reason === null) { finishProc(s, proc, 0); return; }
+  if (c.reason === null) {
+    // A rewind that never reached its landing ran the guest off its end: not an exit.
+    if (c.rewinding) throw new Error(`bash-runner: pid ${proc.pid} returned from _start mid-rewind, its longjmp or resume target lost`);
+    finishProc(s, proc, 0); return;
+  }
   ex.asyncify_stop_unwind();
   const r = c.reason; c.reason = null;
   const dv = proc.DV();

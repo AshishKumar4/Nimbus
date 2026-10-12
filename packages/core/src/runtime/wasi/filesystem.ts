@@ -194,7 +194,7 @@ export interface AuthorityFilesystemOptions {
   duplicate?(fd: number): number | null;
 }
 
-const STANDARD_STREAMS: ReadonlyMap<string, number> = new Map([['/dev/stdin', 0], ['/dev/stdout', 1], ['/dev/stderr', 2]]);
+const STANDARD_STREAMS: Readonly<Record<string, number>> = { '/dev/stdin': 0, '/dev/stdout': 1, '/dev/stderr': 2 };
 
 /**
  * The descriptor an absolute guest path names, as Linux's /dev/fd/N,
@@ -203,7 +203,7 @@ const STANDARD_STREAMS: ReadonlyMap<string, number> = new Map([['/dev/stdin', 0]
  */
 export function namedDescriptor(path: string): number | null {
   const normal = '/' + path.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
-  const stream = STANDARD_STREAMS.get(normal);
+  const stream = Object.hasOwn(STANDARD_STREAMS, normal) ? STANDARD_STREAMS[normal] : undefined;
   if (stream !== undefined) return stream;
   const numbered = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d{1,9})$/.exec(normal);
   return numbered === null ? null : Number(numbered[1]);

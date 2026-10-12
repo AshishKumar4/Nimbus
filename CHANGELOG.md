@@ -11,6 +11,11 @@ published independently in the `@nimbus-sh` npm scope.
   substitution works: `source <(...)`, `done < <(...)`, `diff <(...) <(...)`.
   Before, `/dev/fd/N` was not found, `/dev/stdin` read as empty, and writes
   to `/dev/stdout` and `/dev/stderr` were silently discarded.
+- Fixed: a bash run whose non-local jump lost its target (an `exit` or
+  `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
+  "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
+  target lost". It used to report exit status 0. The jump itself is fixed
+  with the next bash runtime build (bash-runner@4).
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
