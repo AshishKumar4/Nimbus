@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 let bytes = new Uint8Array([1, 2, 3]);
 const bundle = new Proxy({}, {
   has(_target, key) { return key === 'home/user/file.bin' && bytes !== null; },
@@ -12,7 +13,7 @@ const bundle = new Proxy({}, {
 });
 const ticks = [];
 const fs = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', 'setInterval', 'clearInterval',
-  '"use strict";' + generateShimsCode() + '\nreturn builtins.fs;')(
+  '"use strict";' + nodeFacetSources('').residentStore + generateShimsCode() + '\nreturn builtins.fs;')(
   bundle, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.js', '/home/user',
   (callback) => { ticks.push(callback); return ticks.length; }, () => {},
