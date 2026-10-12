@@ -60,6 +60,7 @@ import {
   requireSessionPin,
   authErrorResponse,
   setNimbusTokenCookie,
+  expireSessionCookie,
   enforceSessionCookieCapacity,
   sessionCookieMigration,
   NIMBUS_TOKEN_QUERY,
@@ -282,6 +283,33 @@ export function createNimbusHandler(
   async function route(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     // Capture ctx.exports on first call (loopback bindings for facets).
     if ((ctx as any)?.exports) adoptCtxExports((ctx as any).exports);
+    // Session authenticated by this request, if any: the one response policy
+    // below (legacy migration, destroy expiry) covers every answer path —
+    // forwarded DO answers, local shell HTML, local JSON — so no branch can
+    // leave one out. Branches that authenticate a session set this; the
+    // preview-capability and OAuth-callback forwards carry no session
+    // credential and stay untouched.
+    // The one authenticated-session response policy: every answer produced
+    // while a session is authenticated — forwarded DO answers, local shell
+    // HTML, local JSON, destroy results — passes through here, so no branch
+    // can leave migration or destroy-expiry out. Sites below only record
+    // which session authenticated; this wrapper applies the headers.
+    let sessionContext: { verified: VerifiedNimbusRequestToken; sessionId: string } | null = null;
+    let destroyedSession: string | null = null;
+    const applySessionResponsePolicy = async (response: Response): Promise<Response> => {
+      const setCookies: string[] = [];
+      if (sessionContext !== null) {
+        setCookies.push(...sessionCookieMigration(
+          request.headers.get('Cookie'), sessionContext.verified, sessionContext.sessionId));
+      }
+      if (destroyedSession !== null) setCookies.push(expireSessionCookie(destroyedSession));
+      if (setCookies.length === 0) return response;
+      const melded = new Response(response.body, response);
+      for (const value of setCookies) melded.headers.append('Set-Cookie', value);
+      return melded;
+    };
+    const answered = (response: Promise<Response> | Response): Promise<Response> =>
+      applySessionResponsePolicy(Promise.resolve(response));
 
     const url = new URL(request.url);
     const previewSuffix = readPreviewHostSuffix(env);
@@ -385,7 +413,8 @@ export function createNimbusHandler(
       const scopedInner = preview.name !== undefined
         ? `/app/${preview.name}`
         : `/port/${preview.port}`;
-      return forwardToSession(
+      if (auth.verified) sessionContext = { verified: auth.verified, sessionId: preview.sid };
+      return answered(forwardToSession(
         request,
         {
           sessionId: preview.sid,
@@ -393,12 +422,8 @@ export function createNimbusHandler(
           basePath: '',
         },
         env,
-        {
-          tenantSegment: auth.tenantSegment,
-          migrateSessionCookies: auth.verified ? sessionCookieMigration(
-            request.headers.get('Cookie'), auth.verified, preview.sid) : [],
-        },
-      );
+        { tenantSegment: auth.tenantSegment },
+      ));
     }
 
     // Embedder custom routes run first among the control-plane routes.
@@ -413,7 +438,27 @@ export function createNimbusHandler(
     }
 
     const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
-    if (sdkResponse) return sdkResponse;
+    if (sdkResponse) {
+      // A successful browser DELETE frees its jar slot through the one
+      // policy below: expire exactly the destroyed sid's cookie, nothing
+      // else. Auth failures, unknown sids, and failed destroys leave the
+      // jar untouched — expiry needs a proven destroy answer.
+      if (request.method === 'DELETE') {
+        const destroyed = parseSessionRoute(url.pathname);
+        if (destroyed !== null && destroyed.innerPath === '/' && isValidSessionId(destroyed.sessionId)) {
+          try {
+            const body = await sdkResponse.clone().json() as unknown;
+            const result = (body as { result?: unknown }).result as { ok?: unknown; destroyedAt?: unknown } | undefined;
+            if (result?.ok === true && typeof result?.destroyedAt === 'number') {
+              destroyedSession = destroyed.sessionId;
+            }
+          } catch {
+            // Unparseable answer: not a proven destroy; jar untouched.
+          }
+        }
+      }
+      return answered(sdkResponse);
+    }
 
     if (url.pathname === '/api/nimbus/oauth/callback') {
       // Signed by the session that started the flow: a state this deployment
@@ -513,25 +558,26 @@ export function createNimbusHandler(
       );
       if (auth instanceof Response) return auth;
       const tenantSegment = auth.tenantSegment;
+      if (auth.verified) sessionContext = { verified: auth.verified, sessionId: route.sessionId };
 
       if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
         const rawPort = url.searchParams.get('port');
         const port = rawPort && /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
         if (!Number.isInteger(port) || port < 1 || port > 65535) {
-          return Response.json(
+          return answered(Promise.resolve(Response.json(
             { error: 'Invalid port' },
             {
               status: 400,
               headers: { 'Cache-Control': 'no-store' },
             },
-          );
+          )));
         }
 
         if (!previewSuffix || !isPreviewHostSafeSid(route.sessionId)) {
-          return Response.json(
+          return answered(Promise.resolve(Response.json(
             { url: null, reason: 'unavailable' },
             { headers: { 'Cache-Control': 'no-store' } },
-          );
+          )));
         }
 
         let previewUrl = `https://${buildPreviewHost(route.sessionId, port, previewSuffix)}/`;
@@ -547,10 +593,10 @@ export function createNimbusHandler(
           });
           previewUrl += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: token })}`;
         }
-        return Response.json(
+        return answered(Promise.resolve(Response.json(
           { url: previewUrl },
           { headers: { 'Cache-Control': 'no-store' } },
-        );
+        )));
       }
 
       // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
@@ -577,15 +623,15 @@ export function createNimbusHandler(
           // pane (see _shared/preview-isolation.ts). Only on request: the
           // default shell keeps no embedder policy, so every other preview,
           // and every third-party frame inside one, loads as it always has.
-          if (!isIsolatedShellUrl(url)) return shell;
+          if (!isIsolatedShellUrl(url)) return answered(Promise.resolve(shell));
           const headers = new Headers(shell.headers);
           for (const [name, value] of Object.entries(ISOLATED_SHELL_HEADERS)) headers.set(name, value);
-          return new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers });
+          return answered(Promise.resolve(new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers })));
         }
-        return new Response(
+        return answered(Promise.resolve(new Response(
           '<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>',
           { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
-        );
+        )));
       }
 
       // Best-effort fire onSessionStart on WebSocket upgrade. Hooks
@@ -608,14 +654,12 @@ export function createNimbusHandler(
         }
       }
 
-      return forwardToSession(request, route, env, {
+      return answered(forwardToSession(request, route, env, {
         tenantSegment,
         ...(auth.verified?.claims.scopes !== undefined
           ? { callerScopes: auth.verified.claims.scopes }
           : {}),
-        migrateSessionCookies: auth.verified ? sessionCookieMigration(
-          request.headers.get('Cookie'), auth.verified, route.sessionId) : [],
-      });
+      }));
     }
 
     // ── Back-compat legacy root paths → landing page ────────────────

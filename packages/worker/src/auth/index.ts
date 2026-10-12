@@ -24,6 +24,7 @@ export {
   requireSessionPin,
   setNimbusTokenCookie,
   expireLegacyNimbusTokenCookie,
+  expireSessionCookie,
   enforceSessionCookieCapacity,
   nimbusTokenCookieName,
   sessionCookieMigration,
