@@ -341,7 +341,7 @@ export function parseCloneFilter(spec: string): string {
   if (/^object:type=(blob|tree|commit|tag)$/.test(spec) || /^sparse:oid=.+$/.test(spec)) unsupportedOption('clone', `--filter=${spec}`);
   if (spec.startsWith('combine:')) {
     const filters = spec.slice('combine:'.length).split('+');
-    let valid = filters.length > 1;
+    let valid = filters.length > 0 && filters[0] !== '';
     for (const filter of filters) {
       try { parseCloneFilter(decodeURIComponent(filter)); }
       catch (error) { if (!(error instanceof UnsupportedGitOperation)) valid = false; }
@@ -685,6 +685,7 @@ function parseMergeArgs(args: readonly string[]) {
     if (dashdash || arg === '-' || !arg.startsWith('-')) { operands.push(arg); continue; }
     if (arg === '--') { dashdash = true; continue; }
     if (arg === '--quiet' || /^-q+$/.test(arg)) quiet = true;
+    else if (arg === '--no-edit') { /* The built-in never opens an editor. */ }
     else unsupportedOption('merge', arg);
   }
   if (operands.length > 1) unsupportedOption('merge', 'multiple heads');

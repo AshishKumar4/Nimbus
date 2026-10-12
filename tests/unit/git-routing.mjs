@@ -13,7 +13,7 @@ import { CRED_KERNEL, CRED_SESSION_USER, GIT_WASI_ENV } from '../../packages/cor
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
-import { encodeIndexFile, splitIndexEntries } from '../../packages/worker/src/git/worktree/dircache.ts';
+import { encodeIndexFile } from '../../packages/worker/src/git/worktree/dircache.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -208,7 +208,7 @@ assert.equal((await git([...inRepo, 'config', '--get', 'user.name'], { env: conf
 // Real git's unreadable index modes are identified before any writes,
 // including checkout -b and commit -a's otherwise early mutations.
 for (const signature of ['link', 'sdir']) {
-  user.writeFile('home/user/repo/.git/index', encodeIndexFile(splitIndexEntries(indexBefore), [{ signature, bytes: new Uint8Array(20) }]));
+  user.writeFile('home/user/repo/.git/index', encodeIndexFile([], [{ signature, bytes: new Uint8Array(20) }]));
   const before = user.readFile('home/user/repo/.git/index');
   for (const words of [['status'], ['add', 'f'], ['commit', '-am', 'no-commit'], ['checkout', '-b', 'unreadable'], ['reset', '--hard', 'HEAD'], ['merge', 'topic']]) {
     const ran = await git([...inRepo, ...identity, ...words]);
