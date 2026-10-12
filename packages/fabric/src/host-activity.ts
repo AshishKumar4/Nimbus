@@ -163,7 +163,7 @@ export class HostActivity {
 export class SentRequests {
   #next = 0;
   #ended: number[] = [];
-  /** An id for a request with `scope`, the ids to report, and abandon(id) sent if the scope aborts first. */
+  /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
   send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): { id: number; ended: number[] } {
     const id = this.#next++;
     const ended = this.#ended;
@@ -171,15 +171,7 @@ export class SentRequests {
     // Reported as ended only once any abandon was delivered: a report that
     // overtook it would leave the handler holding the late abandon for good.
     const end = () => { this.#ended.push(id); };
-    const left = () => { void abandon(id).then(end, end); };
-    if (scope.signal.aborted) left();
-    else {
-      scope.signal.addEventListener('abort', left, { once: true });
-      void scope.settled.then(() => {
-        scope.signal.removeEventListener('abort', left);
-        if (!scope.signal.aborted) end();
-      });
-    }
+    void scope.settled.then((delivered) => { if (delivered) end(); else void abandon(id).then(end, end); });
     return { id, ended };
   }
 }

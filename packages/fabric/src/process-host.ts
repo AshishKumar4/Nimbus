@@ -444,7 +444,7 @@ class PeerProcessHost implements ProcessHost {
         started,
         lost: loss.signal,
         handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(async () => {
-          const lease = observation.acquire(scope.signal);
+          const lease = observation.acquire();
           void scope.settled.then(lease.release);
           try {
             const sending = sent.send(scope, abandon);

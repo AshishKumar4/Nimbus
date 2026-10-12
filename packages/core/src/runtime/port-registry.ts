@@ -106,8 +106,8 @@ const DECODABLE_CONTENT_CODINGS = new Map<string, 'gzip' | 'deflate'>([
  * of, so it is not held to it.
  *
  * The pipe into the last stage is explicit, so its settlement is when the
- * body is done with: its end (`owner.settle`), its failure (`owner.fail`),
- * or `owner.signal` aborting it.
+ * body is done with: its end (`owner.settle`), or its failure, `owner.signal`
+ * aborting it among them (`owner.fail`).
  */
 export function relayRpcBody(response: Response, method: string, owner: BodyOwner, gated: TransformStream<Uint8Array, Uint8Array> | null = null): Response {
   if (response.body === null) {
@@ -126,29 +126,30 @@ export function relayRpcBody(response: Response, method: string, owner: BodyOwne
   });
 }
 
-/** Who owns work for a relayed body: it ends with `signal`, and hears once the relay settles. */
+/** Who owns work for a relayed body: it ends with `signal`, and says how the relay ended. */
 export interface BodyOwner {
   readonly signal: AbortSignal;
   /** The response was delivered whole: its body's end, or no body. */
   settle(): void;
   /** The response will not be delivered, for any reason: to its handler, the caller has left. */
-  fail(reason?: unknown): void;
+  fail(): void;
 }
 
 /**
  * One response's scope (RouteableFacetTarget), and the owner whose relay
- * settles it. Its signal is the caller's, or the relay failing, whichever
- * comes first: a client that resets is seen both ways, in either order.
+ * settles it: delivered, or not. A caller that leaves is done with the
+ * response whatever its relay still waits on; a client that resets is seen
+ * both ways (its signal, the relay failing), in either order, and the first
+ * says.
  */
 export function responseScope(caller: AbortSignal): { scope: ResponseScope; owner: BodyOwner } {
-  let settle = (): void => {};
-  const settled = new Promise<void>((resolve) => { settle = resolve; });
-  const failed = new AbortController();
-  const signal = AbortSignal.any([caller, failed.signal]);
-  // A caller that leaves is done with the body, whatever its relay still waits on.
-  signal.addEventListener('abort', settle, { once: true });
-  const fail = (reason?: unknown) => failed.abort(reason ?? new DOMException('The response was not delivered', 'AbortError'));
-  return { scope: { signal, settled }, owner: { signal, settle, fail } };
+  let resolve = (_delivered: boolean): void => {};
+  const settled = new Promise<boolean>((done) => { resolve = done; });
+  const left = () => resolve(false);
+  const end = (delivered: boolean) => { caller.removeEventListener('abort', left); resolve(delivered); };
+  if (caller.aborted) left();
+  else caller.addEventListener('abort', left, { once: true });
+  return { scope: { signal: caller, settled }, owner: { signal: caller, settle: () => end(true), fail: () => end(false) } };
 }
 
 function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: WritableStream<Uint8Array>): void {

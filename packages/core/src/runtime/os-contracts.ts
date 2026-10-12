@@ -710,10 +710,14 @@ export interface RouteableFacetTarget {
  * the experimental `enable_abortsignal_rpc`), and a process is reached by RPC.
  */
 export interface ResponseScope {
-  /** Aborts when the response will not reach its caller: the client went away, or the relay failed. */
+  /** The caller's own: aborts when its client goes away. */
   readonly signal: AbortSignal;
-  /** Settles once the caller is done with the body: its end, or `signal` aborting. */
-  readonly settled: Promise<void>;
+  /**
+   * Settles once the caller is done with the response: true when it was
+   * delivered whole, false when it was not (the client left, or the relay or
+   * the handler failed).
+   */
+  readonly settled: Promise<boolean>;
 }
 
 export interface RuntimePortBridge {

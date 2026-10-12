@@ -628,7 +628,7 @@ function spawnResident(
     acquireActivity: observation.acquire,
     // A request waits for the pinned incarnation, never for the boot.
     handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: { id: number; ended: number[] }) => {
-      const lease = observation.acquire(scope.signal);
+      const lease = observation.acquire();
       void scope.settled.then(lease.release);
       try {
         const { id, ended } = relayed ?? sent.send(scope, abandon);

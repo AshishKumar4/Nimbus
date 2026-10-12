@@ -9515,7 +9515,7 @@ export class FacetManager {
           fetch: async (request) => {
             const { scope, owner } = responseScope(request.signal);
             try { return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner); }
-            catch (error) { owner.fail(error); throw error; }
+            catch (error) { owner.fail(); throw error; }
           },
           connect: async (request) => {
             if (typeof target.handleWebSocketRequest !== 'function') {
