@@ -3092,6 +3092,63 @@ interface OptionalModuleGroup {
   members: ReadonlySet<string>;
 }
 
+/**
+ * What the size guard keeps of a snapshot over `bound` raw bytes: it drops
+ * the `evictable` paths in order until what remains fits. A path is kept
+ * while something holds it: `independent` (paths staged on their own), or a
+ * kept group it is a member of. Evicting an independent path drops every
+ * group that has it (a group missing a member cannot load); evicting a
+ * group's root drops the group. `rawTotal` is the snapshot's bytes before any
+ * eviction; each eviction leaves the bytes of what is still held.
+ *
+ * Each path's holders are counted once, and an eviction releases only what
+ * it drops: the set used to be built again from every kept group after each
+ * eviction, pacing all of it each time, and a pi launch evicting 530 to 838
+ * files spent seconds of turns on it.
+ */
+export async function retainWithinBound(
+  bound: number,
+  rawTotal: number,
+  independent: Set<string>,
+  keptGroups: Set<OptionalModuleGroup>,
+  evictable: readonly string[],
+  rawBytes: ReadonlyMap<string, number>,
+  pacer?: { spend(bytes: number): Promise<void> },
+): Promise<{ retained: Set<string>; rawTotal: number }> {
+  const holders = new Map<string, number>();
+  const hold = (path: string) => holders.set(path, (holders.get(path) ?? 0) + 1);
+  for (const path of independent) hold(path);
+  for (const group of keptGroups) {
+    let work = 0;
+    for (const path of group.members) { hold(path); work += path.length + 256; }
+    if (pacer) await pacer.spend(work);
+  }
+  let heldBytes = 0;
+  for (const path of holders.keys()) heldBytes += rawBytes.get(path) ?? 0;
+  const release = (path: string) => {
+    const left = (holders.get(path) ?? 0) - 1;
+    if (left > 0) { holders.set(path, left); return; }
+    if (holders.delete(path)) heldBytes -= rawBytes.get(path) ?? 0;
+  };
+  const drop = async (group: OptionalModuleGroup) => {
+    keptGroups.delete(group);
+    let work = 0;
+    for (const member of group.members) { release(member); work += member.length + 256; }
+    if (pacer) await pacer.spend(work);
+  };
+  for (const path of evictable) {
+    if (rawTotal <= bound) break;
+    if (independent.delete(path)) {
+      release(path);
+      for (const group of [...keptGroups]) if (group.members.has(path)) await drop(group);
+    } else {
+      for (const group of [...keptGroups]) if (group.root === path) await drop(group);
+    }
+    rawTotal = heldBytes;
+  }
+  return { retained: new Set(holders.keys()), rawTotal };
+}
+
 export async function greedyAddMainEntries(
   vfs: LaunchFs,
   cwd: string,
@@ -4890,27 +4947,9 @@ async function _buildPrefetchBundle(
         return (unitBytes.get(b) ?? weight(b)) - (unitBytes.get(a) ?? weight(a));
       });
     const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
-    async function retainedPaths(): Promise<Set<string>> {
-      const retained = new Set(independent);
-      for (const group of keptGroups) {
-        let work = 0;
-        for (const path of group.members) { retained.add(path); work += path.length + 256; }
-        if (pacer) await pacer.spend(work);
-      }
-      return retained;
-    }
-    let retained = await retainedPaths();
-    for (const path of evictable) {
-      if (rawTotal <= maxBundleBytes) break;
-      if (independent.delete(path)) {
-        for (const group of keptGroups) if (group.members.has(path)) keptGroups.delete(group);
-      } else {
-        for (const group of keptGroups) if (group.root === path) keptGroups.delete(group);
-      }
-      retained = await retainedPaths();
-      rawTotal = 0;
-      for (const path of retained) rawTotal += rawBytes.get(path) ?? 0;
-    }
+    const kept = await retainWithinBound(maxBundleBytes, rawTotal, independent, keptGroups, evictable, rawBytes, pacer);
+    const retained = kept.retained;
+    rawTotal = kept.rawTotal;
     const evicted: BundleCellSize[] = [];
     for (const k of Object.keys(bundle)) {
       if (retained.has(k)) continue;
