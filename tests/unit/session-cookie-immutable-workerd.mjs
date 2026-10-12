@@ -20,10 +20,11 @@ try {
 
     const exchange = await fetch(`${probe.base}${attachPathFor(sid)}`, { redirect: 'manual' });
     assert.equal(exchange.status, 302);
-    const legacy = exchange.headers.getSetCookie().map((v) => v.split(';', 1)[0])
-      .find((v) => v.startsWith('__Host-nimbus_token='));
-    assert.ok(legacy, 'the exchange sets the legacy global cookie name');
-    const jar = legacy;
+    const perSid = exchange.headers.getSetCookie().map((v) => v.split(';', 1)[0])
+      .find((v) => v.startsWith(`__Host-nimbus_token-${sid}=`));
+    assert.ok(perSid, 'the exchange sets the route-owned cookie name');
+    // A pre-deploy tab's jar: the same verified bytes under the legacy name.
+    const jar = `__Host-nimbus_token=${perSid.slice(perSid.indexOf('=') + 1)}`;
 
     // Shell HTML through the real ASSETS fetch must migrate, not 500.
     const shell = await fetch(`${probe.base}/s/${sid}/`, { headers: { Cookie: jar } });
