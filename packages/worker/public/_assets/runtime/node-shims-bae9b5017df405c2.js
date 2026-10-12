@@ -15164,6 +15164,10 @@ Object.defineProperty(builtins, "http", {
       let nativeResponse;
       const captureResponse = (incoming, response) => {
         nativeResponse = response;
+        // A request abandoned or timed out ends its response as a dropped
+        // socket does in Node: 'close' with no 'finish', and no more writes.
+        if (inbound.signal.aborted) response.destroy();
+        else inbound.signal.addEventListener("abort", () => response.destroy(), { once: true });
         // workerd's #toReqRes keeps only the text before the first unquoted
         // comma of these fields (splitHeaderValue, meant to pick the first of
         // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
@@ -15204,7 +15208,6 @@ Object.defineProperty(builtins, "http", {
       timer = setTimeout(() => {
         deadline.resolve(new __nativeHttpResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 }));
         detach();
-        nativeResponse?.destroy();
         controller.abort();
       }, Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000);
       try {

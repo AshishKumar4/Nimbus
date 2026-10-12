@@ -175,14 +175,6 @@ export declare class Processes {
     run<T>(supervisor: ResidentSupervisorProps, supervise: Supervise, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
 }
 /**
- * A process's response body handed on through a native pipe this host owns.
- * A caller that leaves (`signal`) ends the pipe at once, and the process's
- * own stream with it: a read left waiting on that stream outlives the caller
- * and keeps this actor loaded. What leaves is not an object the loaded worker
- * owns, so it can cross to another actor. `settled` hears the pipe end.
- */
-export declare function hostOwnedResponse(ctx: Pick<DurableObjectState, 'waitUntil'>, response: Response, signal: AbortSignal, settled?: () => void): Response;
-/**
  * The write log a process left in its facet's store (process-fs-journal.ts),
  * read through the journal reader class the facet is opened with now, over
  * the same SQLite. The name is aborted first: a get with a new class of a

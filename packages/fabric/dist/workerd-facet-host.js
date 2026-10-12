@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig } from './host-activity.js';
+import { cancelWhenAbandoned, hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -459,7 +459,11 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             const lease = observation.acquire(scope.signal);
             void scope.settled.then(lease.release);
             try {
-                return await admitted(request, (guarded) => facet.handleHttpRequest(guarded));
+                return await admitted(request, async (guarded) => {
+                    const { response, cancel } = await facet.hostHttpRequest(guarded);
+                    cancelWhenAbandoned(scope, cancel);
+                    return response;
+                });
             }
             catch (error) {
                 lease.release();
@@ -480,22 +484,6 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         name,
         slot,
     };
-}
-/**
- * A process's response body handed on through a native pipe this host owns.
- * A caller that leaves (`signal`) ends the pipe at once, and the process's
- * own stream with it: a read left waiting on that stream outlives the caller
- * and keeps this actor loaded. What leaves is not an object the loaded worker
- * owns, so it can cross to another actor. `settled` hears the pipe end.
- */
-export function hostOwnedResponse(ctx, response, signal, settled = () => { }) {
-    if (response.body === null) {
-        settled();
-        return response;
-    }
-    const { readable, writable } = new IdentityTransformStream();
-    ctx.waitUntil(response.body.pipeTo(writable, { signal }).catch(() => { }).finally(settled));
-    return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 /**
  * A resident's failed start, logged to the session's log with the facet and

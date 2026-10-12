@@ -14,6 +14,7 @@
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
 import { type ResidentBootSpec } from './process-fabric.js';
+import { type Abandonable } from './host-activity.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -52,13 +53,11 @@ export interface HostedHttpRequest {
     headers: [string, string][];
     body: ReadableStream | null;
 }
-export interface HostedHttpResponse {
+export interface HostedHttpResponse extends Abandonable {
     status: number;
     statusText: string;
     headers: [string, string][];
     body: ReadableStream | null;
-    /** Ends this host's relay of `body`, for a caller that abandons the response. */
-    cancel(): void;
 }
 export type HostedReply<T> = T | {
     hostLost: string;

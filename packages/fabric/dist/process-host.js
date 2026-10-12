@@ -67,7 +67,7 @@
  */
 import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { cancelWhenAbandoned, hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
@@ -77,7 +77,7 @@ import { ProcessHostLost, } from './process-fabric.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, HOSTED_WATCH_HEADER, HOSTED_RESIDENCY_HEADER, HOSTED_FAILURE_HEADER, headerPairs, isolateToken, } from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
-import { hostOwnedResponse, processes, } from './workerd-facet-host.js';
+import { processes, } from './workerd-facet-host.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
@@ -140,7 +140,7 @@ class FacetProcessHost {
             ...facet,
             started: loss.route(() => facet.started).finally(starting.release),
             lost: loss.signal,
-            handleHttpRequest: (request, scope) => loss.route(async () => hostOwnedResponse(this.ctx, await facet.handleHttpRequest(request, scope), scope.signal)),
+            handleHttpRequest: (request, scope) => loss.route(() => facet.handleHttpRequest(request, scope)),
             handleWebSocketRequest: (request) => loss.route(() => facet.handleWebSocketRequest(request)),
             release: () => {
                 loss.release();
@@ -595,17 +595,7 @@ async function routeThroughPeer(stub, workerKey, capability, request, scope) {
         headers: headerPairs(request.headers),
         body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
     });
-    // The peer relays the body on a pipe of its own, which a caller that
-    // abandons the response ends through `cancel`: RPC carries no signal.
-    const cancel = () => { void Promise.resolve(result.cancel()).catch(() => { }); };
-    if (scope.signal.aborted)
-        cancel();
-    else
-        scope.signal.addEventListener('abort', cancel, { once: true });
-    void scope.settled.then(() => {
-        scope.signal.removeEventListener('abort', cancel);
-        disposeRpcResource(result.cancel);
-    });
+    cancelWhenAbandoned(scope, result.cancel);
     const responseHeaders = new Headers();
     for (const [key, value] of result.headers)
         responseHeaders.append(key, value);

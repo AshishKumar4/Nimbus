@@ -19,7 +19,7 @@ import { z } from 'zod/v4';
 import { ProcessHostLost } from './process-fabric.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
-import { processes, abortFacet, deleteFacetStorage, hostOwnedResponse } from './workerd-facet-host.js';
+import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
 import { HOST_INCARNATION_HEADER } from './host-activity.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
@@ -333,12 +333,21 @@ export class PeerHost {
             }
             const abandoned = new AbortController();
             const { scope, owner } = responseScope(abandoned.signal);
-            const response = hostOwnedResponse(this.ctx, await facet.handleHttpRequest(new Request(wire.url, init), scope), abandoned.signal, owner.settle);
+            const response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
+            let body = null;
+            if (response.body) {
+                const { readable, writable } = new IdentityTransformStream();
+                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: abandoned.signal }).catch(() => { }).finally(owner.settle));
+                body = readable;
+            }
+            else
+                owner.settle();
             return {
                 status: response.status,
                 statusText: response.statusText,
                 headers: headerPairs(response.headers),
-                body: response.body, cancel: () => abandoned.abort(new DOMException('The response was abandoned', 'AbortError')),
+                body,
+                cancel: () => abandoned.abort(new DOMException('The response was abandoned', 'AbortError')),
             };
         });
     }

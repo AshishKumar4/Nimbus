@@ -1,4 +1,5 @@
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
+import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
     readonly ready?: Promise<void>;
@@ -36,6 +37,20 @@ export declare class HostActivity {
     private start;
     private failed;
 }
+/**
+ * A response relayed from another actor, which its caller can abandon.
+ * Workers RPC carries no signal, so the relay hands back `cancel`: an RPC stub
+ * the caller calls when its own caller leaves, and disposes once done.
+ */
+export interface Abandonable {
+    cancel(): void;
+}
+/** What a resident's leaf answers its host (the adapter's hostHttpRequest). */
+export interface HostedLeafResponse extends Abandonable {
+    response: Response;
+}
+/** Call `cancel` if `scope`'s caller leaves; dispose it once the caller is done, either way. */
+export declare function cancelWhenAbandoned(scope: ResponseScope, cancel: Abandonable['cancel']): void;
 export declare function hostActivity(host: object): HostActivity;
 /**
  * One native fetch endpoint, outside the guest's HTTP handler, on every
