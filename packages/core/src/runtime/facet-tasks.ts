@@ -261,6 +261,10 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
                     'Pool preamble may have failed to load.',
             };
         }
+        if ((typeof WebAssembly.Suspending !== 'function' || typeof WebAssembly.promising !== 'function')
+            && WebAssembly.Module.imports(mod).some(entry => entry.module === 'nimbus_proc')) {
+            return { ok: false, mode: 'wasi', error: 'nimbus_proc requires JSPI (WebAssembly.Suspending and WebAssembly.promising); this host cannot suspend native child-process syscalls' };
+        }
         // Install the preopens. fd 3 = the user's session root preopen. The
         // shim's fd table is reset by initFS each call.
         if (args.wasiFs) {

@@ -374,7 +374,8 @@ export class NimbusWorkspace {
     });
     const host = options.facets;
     const facets: FacetHost | undefined = host ? {
-      ...host,
+      parking: host.parking,
+      memoryBudgetBytes: host.memoryBudgetBytes,
       open: spec => host.open({
         ...spec,
         syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
@@ -587,7 +588,6 @@ export class NimbusWorkspace {
       return result;
     } finally {
       this.processes.exit(pid, exitCode);
-      this.processes.markExit(pid, exitCode);
       // Its descriptors close as it exits; its entry, and what it bound in
       // the filesystem, go even if one fails to.
       try {

@@ -33,7 +33,7 @@ assert.equal(stopped, true, 'a reader disappearing releases its blocked writer w
 stopped = false;
 const third = await broker.spawn({ parentPid: parent, command: 'producer', args: [], env: {}, cwd: '/', stdio: ['ignore','pipe','ignore'] });
 await new Promise(r => setTimeout(r,30));
-processes.markExit(parent,0);
+processes.exit(parent,0);
 await new Promise(r => setTimeout(r,30));
 assert.equal(stopped,true,'a parent that exits without reading cannot leave an output writer blocked forever');
 assert.equal((await broker.wait(third.childPid,0)).done,true);

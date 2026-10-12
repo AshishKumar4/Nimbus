@@ -276,16 +276,19 @@ function shellLineFromSpawn(command: string, args: string[]): string {
   return [command, ...(Array.isArray(args) ? args : [])].map((part) => quoteShellToken(String(part))).join(' ');
 }
 
+function shellPlanFor(request: SpawnReq): ShellSpawnPlan | null {
+  const args = Array.isArray(request.args) ? request.args.map(String) : [];
+  if (isShellCommand(request.command)) return parseShellCommandArgs(request.command, args);
+  return request.shell ? { kind: 'command', commandLine: shellLineFromSpawn(request.command, args), args: [] } : null;
+}
+
 /** Shell spawns share parsing and script/stdin loading across local and remote hosts. */
 export function shellChildRunner(
   request: SpawnReq,
   vfs: Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>,
   execute: (context: ChildRunnerContext, commandLine: string) => Promise<number>,
 ): ChildRunner | null {
-  const args = Array.isArray(request.args) ? request.args.map(String) : [];
-  const plan: ShellSpawnPlan | null = isShellCommand(request.command)
-    ? parseShellCommandArgs(request.command, args)
-    : request.shell ? { kind: 'command', commandLine: shellLineFromSpawn(request.command, args), args: [] } : null;
+  const plan = shellPlanFor(request);
   if (!plan) return null;
   return {
     async run(context) {
@@ -390,7 +393,7 @@ export class ChildProcessManager {
       exitWaiters: [],
     };
     this.children.set(pid, child);
-    child.parentClosed = this.deps.processes.subscribeExit(req.parentPid, () => {
+    child.parentClosed = this.deps.processes.subscribeTerminal(req.parentPid, () => {
       if (child.exitCode === null) this.kill(pid, 'SIGTERM');
     });
     // Every child kind owns an fd onto the same input store. Runners in
@@ -399,7 +402,7 @@ export class ChildProcessManager {
     else this.deps.processes.openInput(pid);
     if (child.stdio[0] === 'ignore') this.deps.processes.endInput(pid);
 
-    const dispatchReq = { ...req, command: normalizeChildCommand(req.command) };
+    const dispatchReq = shellPlanFor(req) ? req : { ...req, command: normalizeChildCommand(req.command) };
     let runner: ChildRunner | null;
     try {
       runner = await this.deps.resolve(dispatchReq, { pid, cwd: req.cwd, env: childEnv });

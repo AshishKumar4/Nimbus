@@ -71,6 +71,9 @@ async function __nimbusPyBoot(args) {
     getMemory: () => instance.exports.memory,
     stdoutBytes: __nimbusPyOutput.stdoutBytes,
     stderrBytes: __nimbusPyOutput.stderrBytes,
+    ...(typeof supervisor.cpReadStdin === 'function' ? {
+      stdinRead: (maxBytes) => supervisor.cpReadStdin(args.supervisorPid, 8000, undefined, maxBytes),
+    } : {}),
   });
   if (typeof __wasiPrepareFilesystem === 'function') {
     await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
