@@ -189,8 +189,9 @@ export class NimbusWorkspace {
                 return resolveWorkspaceChild(workspace, request, origin);
             },
             terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
-            ...options.childProcesses,
         });
+        if (options.childProcesses)
+            children.bindHost(options.childProcesses);
         const host = options.facets;
         const facets = host ? {
             parking: host.parking,

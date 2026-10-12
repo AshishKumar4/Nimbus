@@ -108,6 +108,17 @@ export function processHost(opts) {
         });
         return { ready, cancel: () => finish(null, true) };
     };
+    /**
+     * An import that has to wait for its answer, in a guest that cannot be
+     * suspended: refused by name before it does anything. A promise returned
+     * where an i32 belongs would read as 0, success.
+     */
+    const mustWait = (name) => {
+        if (opts.parks)
+            return;
+        throw new Error(`nimbus_proc.${name} has to wait for its answer, and this guest cannot be suspended: `
+            + 'a WASI guest\'s child processes need JSPI (WebAssembly.Suspending and WebAssembly.promising)');
+    };
     const notify = (child) => {
         for (const waiter of child.waiters.splice(0))
             waiter();
@@ -130,24 +141,27 @@ export function processHost(opts) {
     /**
      * A descriptor on `pipe`'s `end` went: the last writer ends what a reader
      * or a child sees. A child's stdin the session cannot end is past helping:
-     * the session is gone, and the child with it.
+     * the session is gone, and the child with it. Only ending a child's stdin
+     * waits; everything else is done when this returns.
      */
-    const drop = async (pipe, end) => {
+    const drop = (pipe, end) => {
         if (end === 'read') {
             pipe.readers--;
             if (pipe.readers === 0)
                 wake(pipe);
-            return;
+            return undefined;
         }
         pipe.writers--;
         if (pipe.writers > 0)
-            return;
+            return undefined;
         wake(pipe);
-        if (pipe.end && !pipe.ended) {
-            pipe.ended = true;
-            await pipe.end().catch(() => { });
-        }
+        if (!pipe.end || pipe.ended)
+            return undefined;
+        pipe.ended = true;
+        return pipe.end().catch(() => { });
     };
+    /** The answer once `dropped` (a drop's wait, if it has one) is done. */
+    const after = (dropped) => (dropped ? dropped.then(() => E.SUCCESS) : E.SUCCESS);
     /** The strings in a NUL-separated buffer the guest passed. */
     const strings = (ptr, len) => {
         if (len === 0)
@@ -303,7 +317,7 @@ export function processHost(opts) {
             if (copy.kind === 'pipe')
                 hold(copy);
             opts.fds.set(to, copy);
-            return replaced ? drop(replaced.pipe, replaced.end).then(() => E.SUCCESS) : E.SUCCESS;
+            return after(replaced ? drop(replaced.pipe, replaced.end) : undefined);
         },
         spawn(argvPtr, argvLen, envPtr, envLen, dirPtr, dirLen, fdin, fdout, fderr, pidPtr) {
             const sup = supervisor();
@@ -312,6 +326,7 @@ export function processHost(opts) {
             const argv = strings(argvPtr, argvLen);
             if (argv.length === 0)
                 return E.INVAL;
+            mustWait('spawn');
             const env = {};
             for (const entry of strings(envPtr, envLen)) {
                 const at = entry.indexOf('=');
@@ -452,6 +467,7 @@ export function processHost(opts) {
             const now = answer();
             if (now !== null)
                 return now;
+            mustWait('start');
             return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
         },
         wait(pid, options, statusPtr, waitedPtr) {
@@ -481,6 +497,7 @@ export function processHost(opts) {
                 view().setInt32(waitedPtr, 0, true);
                 return E.SUCCESS;
             }
+            mustWait('wait');
             return parkedWait((wake) => { for (const child of candidates)
                 child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
         },
@@ -495,6 +512,7 @@ export function processHost(opts) {
             const name = SIGNALS[signal];
             if (!name)
                 return E.INVAL;
+            mustWait('kill');
             return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
         },
     };
@@ -608,7 +626,7 @@ export function processHost(opts) {
         if (!entry)
             return null;
         opts.fds.delete(fd);
-        return drop(entry.pipe, entry.end).then(() => E.SUCCESS);
+        return after(drop(entry.pipe, entry.end));
     };
     const readiness = (fd, want) => {
         const entry = pipeEntry(fd);
