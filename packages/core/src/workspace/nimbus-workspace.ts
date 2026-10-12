@@ -861,7 +861,7 @@ function registerWasmRuntimes(deps: {
         import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
       ]);
       return makeGitRunnerFactory({
-        facets: deps.facets, filesystem: deps.filesystem,
+        facets: deps.facets, filesystem: deps.filesystem, processes,
         fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
       });
     }),

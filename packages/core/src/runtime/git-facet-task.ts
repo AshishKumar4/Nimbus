@@ -7,16 +7,13 @@ export interface GitFacetArgs {
   argv: string[];
   env: Record<string, string>;
   cred: WasiCred;
-  /** The session pid git runs as: the parent of the children it starts. */
+  /** The session pid git runs as (its runtime process): its output and input, and the parent of the children it starts. */
   pid: number;
-  /** Its output goes to the session as it is written (SupervisorRPC stdout/stderr), not back in the result. */
-  live: boolean;
 }
 
+/** What a git run ends with; its output went to the session as it was written (SupervisorRPC stdout/stderr). */
 export interface GitFacetResult {
   exitCode: number;
-  stdout: Uint8Array;
-  stderr: Uint8Array;
   error?: string;
   /** git's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
   fsStats?: ResidentFilesystemStats | null;
@@ -32,7 +29,7 @@ export async function gitFacetCall(args: GitFacetArgs, facetEnv: FacetBindings):
   const gitMod = modules?.['git.wasm'];
   const run = Reflect.get(globalThis, '__gitRun') as ((a: unknown) => Promise<GitFacetResult>) | undefined;
   if (!gitMod || typeof run !== 'function') {
-    return { exitCode: 127, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git-runner: the facet has no git image or no __gitRun' };
+    return { exitCode: 127, error: 'git-runner: the facet has no git image or no __gitRun' };
   }
   return await run({ ...args, gitMod, supervisor: facetEnv?.SUPERVISOR });
 }

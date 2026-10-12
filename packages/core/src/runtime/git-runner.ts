@@ -7,17 +7,17 @@
  * share/git/gitconfig as its system configuration, and the caller's
  * credential, so its filesystem calls are answered from its own copy of the
  * namespace (wasi/resident-filesystem.ts) and its writes reach the session as
- * the caller's. What it prints goes to the session as it prints it when it
- * runs as another process's child (a parent reading it, git's own children
- * among them); run from the shell, it comes back when git exits, until the
- * shell's relay of a process's output carries bytes (it carries text).
+ * the caller's. Like every runtime it is a process of its own
+ * (runtime-stdio.ts openRuntimeStdio: its pid, descriptor scope and byte
+ * channels, the caller's input pumped to it), or the process a broker
+ * started for it as another's child; what it prints goes to the session as
+ * it prints it, byte for byte (git's output is not always UTF-8: cat-file,
+ * archive, a diff of a Latin-1 file).
  *
  * A child git starts (a hook, an alias's shell command, `git fetch` under
  * `git pull`, a remote helper) is an ordinary session process, started
  * through the session's child-process route (wasi/processes.ts, the
- * nimbus_proc imports git-wasi-compat.c calls). Standard input reads as
- * empty. Output is passed on byte for byte (git's output is not always
- * UTF-8: cat-file, archive, a diff of a Latin-1 file).
+ * nimbus_proc imports git-wasi-compat.c calls), git's process its parent.
  *
  * The image is read once per session, uncached (3.7 MB of runtime blob that
  * would otherwise displace the user's working set). A git that ran to its
@@ -38,6 +38,8 @@ import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred, type NimbusF
 import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath } from '../vfs/path.js';
+import { openRuntimeStdio } from './runtime-stdio.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { makeGitFsmonitor, type GitFsmonitorState } from './git-fsmonitor.js';
 
@@ -45,12 +47,6 @@ import { makeGitFsmonitor, type GitFsmonitorState } from './git-fsmonitor.js';
 const GIT_WASM = 'share/git/git.wasm';
 const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
 
-/**
- * The environment git sees: the caller's, minus what names the host's world
- * (PATH entries, a terminal), plus where its configuration is. GIT_* and the
- * identity and locale variables pass through as the user set them.
- */
-const PASSED_ENV = /^(GIT_|HOME$|USER$|LOGNAME$|TZ$|LANG$|LC_|EMAIL$|NO_COLOR$)/;
 
 /** Warm facets kept idle between runs; past it, a facet a run leaves is let go. */
 const WARM_GIT_FACETS = 2;
@@ -58,6 +54,7 @@ const WARM_GIT_FACETS = 2;
 export function makeGitRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
+  processes: SessionProcessSupervisor;
   fsmonitorState?: GitFsmonitorState;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
   const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
@@ -116,19 +113,26 @@ export function makeGitRunnerFactory(deps: {
         return 1;
       }
 
+      // The caller's environment, as a process's children get it (custom
+      // variables, the broker's depth bound), and where git's configuration is.
       const env: Record<string, string> = {};
-      for (const [name, value] of Object.entries(ctx.env ?? {})) {
-        if (typeof value === 'string' && PASSED_ENV.test(name)) env[name] = value;
-      }
+      for (const [name, value] of Object.entries(ctx.env ?? {})) if (typeof value === 'string') env[name] = value;
       env.GIT_CONFIG_SYSTEM = `/${normalizeVfsPath(systemConfig)}`;
       env.HOME ??= '/home/user';
       env[GIT_WASI_ENV] = '1';
 
+      let stdio: ReturnType<typeof openRuntimeStdio>;
+      try {
+        stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '));
+      } catch (error) {
+        ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
+        return 1;
+      }
       const warm = idle.pop() ?? `git-${incarnation}-${++named}`;
       const facet = deps.facets.open({
         tag: 'git-runner',
         concurrency: 1,
-        syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
+        syscalls: stdio.syscalls,
         preamble: GIT_RUNNER_PREAMBLE,
         wasmModules: { 'git.wasm': await image },
         warm,
@@ -137,36 +141,39 @@ export function makeGitRunnerFactory(deps: {
         argv: ['git', '-C', `/${normalizeVfsPath(cwd)}`, ...argv],
         env,
         cred,
-        pid: ctx.pid,
-        // Another process's child: its output goes to that parent's queues as git prints it.
-        live: (ctx as { __nimbusBinSpawn?: unknown }).__nimbusBinSpawn !== undefined,
+        pid: stdio.pid,
       };
-      let result: GitFacetResult;
-      const submitted = Date.now();
+      let outcome = 1;
       try {
-        result = await facet.submit(GIT_CALL_TASK, args, { timeoutMs: GIT_TIMEOUT_MS, signal: ctx.signal });
-      } catch (error) {
-        // The facet may still be running, or be gone: its key is not used again.
-        if (ctx.signal.aborted) return 130;
-        ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
-        return 1;
+        let result: GitFacetResult;
+        const submitted = Date.now();
+        try {
+          result = await facet.submit(GIT_CALL_TASK, args, { timeoutMs: GIT_TIMEOUT_MS, signal: stdio.signal });
+        } catch (error) {
+          // The facet may still be running, or be gone: its key is not used again.
+          if (stdio.signal.aborted) return (outcome = 130);
+          ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
+          return (outcome = 1);
+        }
+        // A facet in which a syscall was abandoned may still be written by it: never another git's.
+        if (result.error === undefined && result.reusable === true && idle.length < WARM_GIT_FACETS) idle.push(warm);
+        const returned = Date.now();
+        if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') {
+          // Milliseconds from the command's start: the host's clock, and the facet's where it moved.
+          const at = (time: number | undefined) => (time === undefined ? null : time - started);
+          const phases = { submitted: at(submitted), entered: at(result.clock?.entered), instantiated: at(result.clock?.instantiated), exited: at(result.clock?.exited), returned: at(returned) };
+          ctx.stderr.write(`[wasi-fs] git ${JSON.stringify({ ...result.fsStats, phases })}\n`);
+        }
+        if (result.error) {
+          ctx.stderr.write(`${binName}: ${result.error}\n`);
+          return (outcome = result.exitCode || 1);
+        }
+        return (outcome = result.exitCode);
+      } finally {
+        // The call's pool and its capability go; a warm facet's isolate stays for the next git.
+        facet.dispose();
+        stdio.finish(outcome);
       }
-      // A facet in which a syscall was abandoned may still be written by it: never another git's.
-      if (result.error === undefined && result.reusable === true && idle.length < WARM_GIT_FACETS) idle.push(warm);
-      const returned = Date.now();
-      await writeOut(ctx.stdout, result.stdout);
-      await writeOut(ctx.stderr, result.stderr);
-      if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') {
-        // Milliseconds from the command's start: the host's clock, and the facet's where it moved.
-        const at = (time: number | undefined) => (time === undefined ? null : time - started);
-        const phases = { submitted: at(submitted), entered: at(result.clock?.entered), instantiated: at(result.clock?.instantiated), exited: at(result.clock?.exited), returned: at(returned) };
-        ctx.stderr.write(`[wasi-fs] git ${JSON.stringify({ ...result.fsStats, phases })}\n`);
-      }
-      if (result.error) {
-        ctx.stderr.write(`${binName}: ${result.error}\n`);
-        return result.exitCode || 1;
-      }
-      return result.exitCode;
     };
   };
 }
@@ -191,30 +198,22 @@ const GIT_RUNNER_PREAMBLE_TAIL = `
 // ── BEGIN: git-runner preamble ────────────────────────────────────────
 globalThis.__gitRun = async function __gitRun(args) {
   const entered = Date.now();
-  const stdout = [];
-  const stderr = [];
-  const joined = (parts) => {
-    const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
-    let at = 0;
-    for (const p of parts) { out.set(p, at); at += p.byteLength; }
-    return out;
-  };
   // The session root at '/', every path git is given absolute.
   __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: args.cred, pid: args.pid });
   // After initFS, which drops any supervisor a pooled isolate still held.
   __wasiAdoptSupervisor(args.supervisor || null);
 
-  // Live to the session, or kept for the caller.
-  const live = args.live && args.supervisor ? __wasiSupervisorOutput(args.supervisor) : null;
+  // git's process's byte channels: its output as it writes it, its input as the caller's is pumped to it.
+  const output = __wasiSupervisorOutput(args.supervisor);
   let memory = null;
   const wasi = __wasiMakeImports({
     abi: 'preview1',
     argv: args.argv,
     env: args.env,
     getMemory: () => memory,
-    stdoutBytes: live ? live.stdoutBytes : (b) => { stdout.push(b); },
-    stderrBytes: live ? live.stderrBytes : (b) => { stderr.push(b); },
-    stdinRead: args.supervisor ? (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes) : undefined,
+    stdoutBytes: output.stdoutBytes,
+    stderrBytes: output.stderrBytes,
+    stdinRead: (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes),
   });
   let instance;
   try {
@@ -225,7 +224,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     });
     instance = r instanceof WebAssembly.Instance ? r : r.instance;
   } catch (e) {
-    return { exitCode: 1, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git.wasm instantiate failed: ' + (e && e.message) };
+    return { exitCode: 1, error: 'git.wasm instantiate failed: ' + (e && e.message) };
   }
   memory = instance.exports.memory;
   const instantiated = Date.now();
@@ -233,11 +232,9 @@ globalThis.__gitRun = async function __gitRun(args) {
   const exited = Date.now();
   // git waits for its children; one it left running runs on without it.
   wasi.procDispose();
-  const lost = live ? await live.drain() : null;
+  const lost = await output.drain();
   return {
     exitCode: run.exitCode,
-    stdout: joined(stdout),
-    stderr: joined(stderr),
     error: run.error || (lost ? 'output lost: ' + lost : undefined),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
     reusable: typeof __wasiReusable === 'function' && __wasiReusable(),
