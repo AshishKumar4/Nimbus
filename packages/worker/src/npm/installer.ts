@@ -371,6 +371,8 @@ export class NpmInstaller {
     engineDir: string | null,
   ): Promise<NpmInstallResult> {
     const registry = npmRegistryOrigin(opts?.registry);
+    // Every request the install makes goes out through the invoking process's network.
+    const network = this.network.forProcess(opts.pid);
     const phases: Record<string, number> = {};
     // What is installed and what failed, by placement: labelled once the outcome is settled.
     const installedAt = new Map<string, string>();
@@ -413,8 +415,8 @@ export class NpmInstaller {
     let tree: PlannedTree;
     let usedLockfile = false;
     if (opts.fromLockfile) {
-      const locked = await this.treeFromPackageLock(projDir, project, log, registry, opts.legacyPeerDeps === true);
-      tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
+      const locked = await this.treeFromPackageLock(network, projDir, project, log, registry, opts.legacyPeerDeps === true);
+      tree = await this.resolveTreeViaFanout(network, roots, locked.installed, log, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
       if (tree.plan.lockMismatches.length > 0) {
         throw new Error(
           `\`npm ci\` can only install packages when your package.json and ${locked.lockName} are in sync. ` +
@@ -425,7 +427,7 @@ export class NpmInstaller {
       log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
     } else {
       const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile);
-      tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
+      tree = await this.resolveTreeViaFanout(network, roots, installed, log, engine);
       // The lockfile answered every edge: nothing resolved, nothing failed.
       usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
       log(usedLockfile ? `Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.` : `Resolved ${tree.plan.nodes.size} packages.`);
@@ -746,6 +748,8 @@ export class NpmInstaller {
    * between layers, NO fallback to single-facet on missing bindings.
    */
   private async resolveTreeViaFanout(
+    /** The invoking process's network (WorkspaceNetwork.forProcess): every packument read goes through it. */
+    network: WorkspaceNetwork,
     roots: readonly TreeRoot[],
     installed: ReadonlyArray<InstalledPackage<ResolvedPackage>>,
     log: (msg: string) => void,
@@ -817,7 +821,7 @@ export class NpmInstaller {
     // pool is stateless across submitMany calls.
     const fanoutPool = new Fanout(this.env, this.ctx!, {
       tag: 'npm-resolve-fanout',
-      network: this.network,
+      network,
       // 5 minutes per layer is generous; typical layers complete in
       // 1-3 s. Per-task this gates each packument fetch + R2 race.
       timeoutMs: 5 * 60_000,
@@ -1159,7 +1163,7 @@ export class NpmInstaller {
     const phaseProfile: string[] = [];
     const fanoutPool = new Fanout(this.env, this.ctx!, {
       tag: 'npm-install-batch',
-      network: this.network,
+      network: this.network.forProcess(pid ?? 0),
       // Whole-batch timeout. With per-shard parallelism of N=8 peer
       // DOs each running pLimit(3), Mossaic-class 456 packages
       // typical 30-60 s wall clock. 10 min covers pathological cases.
@@ -1650,6 +1654,7 @@ export class NpmInstaller {
    * version.
    */
   private async treeFromPackageLock(
+    network: WorkspaceNetwork,
     projDir: string,
     fs: ProjectFs,
     log: (msg: string) => void,
@@ -1755,7 +1760,7 @@ export class NpmInstaller {
     // package there, anything it brings below it, unless the lock already
     // placed that path.
     for (const { placement, folderName, spec } of swapPlacements) {
-      const swapped = await this.resolveTreeViaFanout([{ name: folderName, range: spec, type: 'prod' }], [], log, { registry });
+      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, { registry });
       const parent = placement.includes('/node_modules/') ? parentPlacement(placement) : null;
       const rebase = (path: string) => (parent === null ? path : `${parent}/node_modules/${path}`);
       const failed = new Map(swapped.plan.failures.map((failure) => [failure.id, failure]));

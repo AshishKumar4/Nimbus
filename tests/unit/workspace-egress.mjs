@@ -14,6 +14,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { loaderOutbound, workspaceNetwork } from '../../packages/core/src/_shared/workspace-network.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
+import { createLifoPkgCommand } from '../../packages/core/src/substrate/lifo/commands/system/lifo.ts';
 
 const openWorkspace = (options = {}) => {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -116,6 +117,37 @@ try {
     assert.deepEqual(a.seen, ['GET https://example.test/a']);
     assert.deepEqual(b.seen, ['GET https://example.test/b']);
     assert.notEqual(wsA.network.id, wsB.network.id, 'two egresses share a cache identity');
+  }
+
+  // ── Two workspaces over one egress: each one's per-process egress is its own ──
+  {
+    const shared = recordingEgress();
+    // Each workspace's egressFor mints an egress that records the workspace and the exec.
+    const minted = [];
+    const egressFor = (name) => ({ execId }) => ({
+      async fetch(request) {
+        minted.push(`${name} ${execId ?? '-'} ${request.method} ${request.url}`);
+        return new Response(`${name} ${execId ?? '-'}`);
+      },
+    });
+    const wsA = await openWorkspace({ egress: shared, egressFor: egressFor('A') });
+    const wsB = await openWorkspace({ egress: shared });
+    const wsC = await openWorkspace({ egress: shared, egressFor: egressFor('C') });
+    // lifo search too, as a host that registers it does.
+    wsA.registry.register('lifo', createLifoPkgCommand(wsA.registry, undefined, wsA.kernel));
+    await wsA.exec('NPM_REGISTRY=https://example.test lifo search who');
+    const a = await wsA.exec('curl -s https://example.test/a');
+    const b = await wsB.exec('curl -s https://example.test/b');
+    const c = await wsC.exec('curl -s https://example.test/c');
+    assert.equal(a.stdout.trim(), 'A -', a.stdout + a.stderr);
+    assert.match(b.stdout, /egress answered GET \/b/, b.stdout + b.stderr);
+    assert.equal(c.stdout.trim(), 'C -', c.stdout + c.stderr);
+    assert.deepEqual(minted, [
+      'A - GET https://example.test/-/v1/search?text=lifo-pkg-who&size=20',
+      'A - GET https://example.test/a',
+      'C - GET https://example.test/c',
+    ]);
+    assert.deepEqual(shared.seen, ['GET https://example.test/b'], 'a workspace without egressFor went through another\'s selection');
   }
 
   // ── A Dynamic Worker loaded for the workspace ───────────────────────────

@@ -138,17 +138,19 @@ export function hopInit(hop: HopRequest, signal: AbortSignal): RequestInit {
  * One hop as a kernel serves it: a loopback URL (by name through its
  * resolver) from its port registry or loopback router, refused there if
  * nothing listens, never fetched; any other off the box through the
- * workspace's network (its host's egress, when it supplied one). With no
- * kernel, every hop goes through the isolate's own network.
+ * network of the command's process `pid` (its host's egress, when it
+ * supplied one). With no kernel, every hop goes through the isolate's own
+ * network.
  */
 export async function sendHop(
   kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback' | 'network'> & Partial<Pick<Kernel, 'dns'>> | undefined,
+  pid: number,
   url: URL,
   init: RequestInit,
 ): Promise<WorkspaceRequestResult> {
   const port = kernel ? workspaceRequestPort(kernel, url) : null;
   if (kernel && port !== null) return await dispatchWorkspaceRequest(kernel, port, new Request(url, init));
-  return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).fetch(url, init) };
+  return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).forProcess(pid).fetch(url, init) };
 }
 
 /** Where a walk ended: its final response and the URL it came from, the hop that failed, or the cap. */

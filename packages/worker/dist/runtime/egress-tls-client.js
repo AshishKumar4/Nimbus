@@ -1,6 +1,14 @@
+/**
+ * Why `tls.connect({ socket })` is refused under an egress: the egress carries
+ * that connection, and workerd starts no TLS on a connection through a
+ * service binding. A new connection would not be the same one.
+ */
+const EGRESS_STARTTLS_REFUSAL = "Nimbus: TLS over a socket the program opened (tls.connect({ socket }), as STARTTLS does) is not available "
+    + "when the workspace's network goes through an egress: the egress carries that connection, "
+    + 'and workerd starts no TLS on a connection through a service binding';
 /** Native TLSSocket owns the Node stream; the egress owns its encrypted session. */
 export const EGRESS_TLS_CLIENT_SOURCE = String.raw `
-function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
+function __nimbusEgressTlsConnect(real, net, args) {
   let options = {}, callback;
   if (args[0] !== null && typeof args[0] === 'object') { options = { ...args[0] }; callback = args[1]; }
   else {
@@ -10,17 +18,14 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     if (args[i] !== null && typeof args[i] === 'object') Object.assign(options, args[i++]);
     callback = args[i];
   }
+  // As Node's tls.connect: a servername it sets must be a string (TLSSocket.setServername).
+  if (options.servername && typeof options.servername !== 'string') throw invalidArgType('name', 'string', options.servername);
   const previous = options.socket;
-  const target = async () => {
-    if (previous?.connecting) await new Promise((resolve, reject) => {
-      previous.once('connect', resolve); previous.once('error', reject);
-    });
-    const bound = previous?._handle?.options;
-    const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
-    const port = Number(options.port ?? bound?.port);
-    if (options.servername !== undefined && options.servername !== host) throw notImplemented('options.servername', 'the egress makes TLS with the destination hostname as its SNI');
-    if (previous) previous.destroy();
-    return { host, port };
+  const target = () => {
+    if (previous !== undefined) throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', ${JSON.stringify(EGRESS_STARTTLS_REFUSAL)});
+    const host = options.host ?? 'localhost';
+    const port = Number(options.port);
+    return typeof options.servername === 'string' && options.servername !== '' ? { host, port, servername: options.servername } : { host, port };
   };
   let reader, writer, resource;
   let endedRead = false, endedWrite = false, stopped = false;
@@ -35,10 +40,10 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
   let admit;
   const admitted = new Promise((resolve) => { admit = resolve; });
   const ready = admitted.then(async () => {
+    const where = target();
     await __nimbusRawSocket();
-    const where = await target();
     if (stopped) return;
-    resource = await __supervisor.netTls(previous ? 'upgrade' : 'open', '', where);
+    resource = await __supervisor.netTls('open', '', where);
     if (stopped) {
       await Promise.all([resource.readable.cancel(), resource.writable.abort()]);
       resource[Symbol.dispose]?.(); resource = undefined;
@@ -86,10 +91,10 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
   carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
     socket: initial, reader: readable.getReader({ mode: 'byob' }), writer: writable.getWriter(),
     bytesRead: 0, bytesWritten: 0, reading: false,
-    options: { host: options.host ?? previous?._host ?? 'localhost', port: Number(options.port ?? previous?._handle?.options.port), addressType: 0 },
+    options: { host: options.host ?? 'localhost', port: Number(options.port), addressType: 0 },
   } });
   const socket = real.connect({ ...options, socket: carrier }, callback);
-  if (!previous && options.timeout) socket.setTimeout(options.timeout);
+  if (previous === undefined && options.timeout) socket.setTimeout(options.timeout);
   ready.catch((error) => socket.destroy(error));
   return socket;
 }
