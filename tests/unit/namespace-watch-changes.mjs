@@ -241,7 +241,7 @@ await check('a rename is told at each end the watcher may see: out, in from wher
   await settled();
   assert.deepEqual(pub.take(), ['unlink /public/a', 'unlink /public/b', 'add /public/c']);
   assert.deepEqual(all.take().filter((line) => !line.includes('/home')), ['rename /public/a -> /elsewhere/a', 'unlink /public/b', 'add /public/c']);
-  assert.deepEqual(heard, ['unlink public/a', 'unlink public/b', 'add public/c'], 'a process\\'s watch, as SQLite names it');
+  assert.deepEqual(heard, ['unlink public/a', 'unlink public/b', 'add public/c'], 'a process\'s watch, as SQLite names it');
   pub.stop(); all.stop(); stop();
 });
 
@@ -261,7 +261,7 @@ await check('a watch of a path whose directory is renamed hears it go and come; 
   leaf.stop(); moved.stop(); followed.stop();
 });
 
-await check('a copy tells each entry it made, SQLite\\'s and the namespace\\'s alike, the ones before a failure too', async () => {
+await check('a copy tells each entry it made, SQLite\'s and the namespace\'s alike, the ones before a failure too', async () => {
   kernel.mkdir('home/user/source/d', { recursive: true });
   kernel.writeFile('home/user/source/file', 'f');
   kernel.writeFile('home/user/source/d/deep', 'd');
@@ -339,7 +339,7 @@ await check('a change is told to the watches registered when it landed, whatever
   ns.unmount('/late');
 });
 
-await check('the engine\\'s listeners: one registered while a batch is told hears only what comes after; one let go then is not told', async () => {
+await check('the engine\'s listeners: one registered while a batch is told hears only what comes after; one let go then is not told', async () => {
   const heard = { a: [], b: [], c: [] };
   let stopA;
   let stopC = null;

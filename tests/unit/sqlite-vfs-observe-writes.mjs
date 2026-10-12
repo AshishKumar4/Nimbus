@@ -278,8 +278,8 @@ for (const via of ['writeBatch', 'writeStream']) {
   ]);
 }
 
-// ── A copied tree reports every entry it copied, page by page; the bus
-//    still hears of the tree once ──
+// ── A copied tree reports every entry it copied, page by page, to the
+//    write observers and the bus alike ──
 {
   const { raw, vfs, kernel } = open();
   vfs.mkdir('home/user/src');
@@ -298,7 +298,7 @@ for (const via of ['writeBatch', 'writeStream']) {
     ['create', 'home/user/dst/sub', 'dir'],
     ['create', 'home/user/dst/sub/deep', 'deep'],
   ].sort());
-  assert.deepEqual(bus, ['home/user/dst'], 'the bus heard of a copy more than once');
+  assert.deepEqual(bus.sort(), ['home/user/dst', ...[0, 1, 2, 3, 4].map((index) => `home/user/dst/f${index}`), 'home/user/dst/sub', 'home/user/dst/sub/deep'].sort(), 'the bus hears each entry once');
 }
 
 // ── A copy reports only the rows it inserted: one another writer made at
