@@ -55,7 +55,7 @@ const script = String.raw`
       -I${DIR}/include -I${DIR} -I${LIBC} -include ${DIR}/git-wasi-compat.h \
       ${GUEST}.c ${LIBC}/nimbus-fs.c ${DIR}/git-wasi-compat.c \
       -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
-      -Wl,--import-memory -Wl,--initial-memory=524288 -Wl,-z,stack-size=65536 \
+      -Wl,--initial-memory=524288 -Wl,-z,stack-size=65536 \
       -Wl,--export=guest_umask -Wl,--export=guest_create -o ${GUEST}.wasm
     "$WASI_SDK/bin/llvm-strip" ${GUEST}.wasm
   ' git-build "$W" > "$W/build.log" 2>&1; then build=ok; else build=failed; fi

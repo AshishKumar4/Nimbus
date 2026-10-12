@@ -15,13 +15,15 @@ try {
       return result.stdout;
     };
     const credential = 'protocol=https\\nhost=credentials.example\\nusername=ada\\npassword=secret\\n\\n';
-    await run(`umask 022; printf '${credential}' | git credential-store store`);
+    await run(`umask 022; printf '${credential}' > ~/credential-input`);
+    assert.equal(await run('cat ~/credential-input'), credential.replaceAll('\\n', '\n'));
+    await run('git credential-store store < ~/credential-input');
     assert.equal((await run('stat -c %a ~/.git-credentials')).trim(), '600', 'only the owner can read credentials');
     assert.equal(await run('cat ~/.git-credentials'), 'https://ada:secret@credentials.example\n');
     assert.equal((await run('umask')).trim(), '0022', 'git does not change its parent shell mask');
-    await run(`printf '${credential}' | git credential-store store`);
+    await run('git credential-store store < ~/credential-input');
     assert.equal((await run('stat -c %a ~/.git-credentials')).trim(), '600', 'replacing the credential store stays private');
-    assert.equal(await run("printf 'protocol=https\\nhost=credentials.example\\n\\n' | git credential-store get"), 'username=ada\npassword=secret\n', 'stored credentials can be retrieved');
+    assert.equal(await run('git credential-store get < ~/credential-input'), 'username=ada\npassword=secret\n', 'stored credentials can be retrieved');
   } finally {
     await terminal.close().catch(() => {});
   }

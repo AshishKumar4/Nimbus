@@ -9,16 +9,19 @@ const module = new WebAssembly.Module(readFileSync(new URL('./lib/wasi-libc-crea
 const P = await loadWasiPreamble();
 const session = makeSession();
 try {
-  const guest = makeGuest(P, session, { cred: session.cred });
+  let memory;
+  const guest = makeGuest(P, session, { cred: session.cred }, { getMemory: () => memory });
   const instance = new WebAssembly.Instance(module, {
-    env: { memory: guest.memory }, wasi_snapshot_preview1: guest.wasi,
+    wasi_snapshot_preview1: guest.wasi,
     nimbus_fs: { ...guest.fsImport, fd_chmod: (...args) => guest.fsImport.fd_chmod(...args) },
     nimbus_proc: guest.procImport,
   });
+  memory = instance.exports.memory;
   const { guest_create: create, guest_umask: umask, _initialize: initialize } = instance.exports;
   initialize();
   const file = (name, mode, exclusive = true) => {
-    const [ptr] = guest.putStr(`/home/user/${name}\0`);
+    const ptr = 256;
+    new Uint8Array(memory.buffer).set(new TextEncoder().encode(`/home/user/${name}\0`), ptr);
     return create(ptr, mode, exclusive ? 1 : 0);
   };
   const modeOf = (name) => session.root.stat(`home/user/${name}`).mode & 0o777;
