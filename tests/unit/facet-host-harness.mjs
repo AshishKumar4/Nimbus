@@ -14,7 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { callerLeftSignal, hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
 installHostWatchSocket();
 
@@ -124,12 +124,11 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async hostHttpRequest(request) {
+        async hostHttpRequest(request, left) {
           const instance = await ensure(name, start);
-          if (evaluatesAdapter) return instance.hostHttpRequest(request);
-          const abandoned = new AbortController();
-          const admitted = admit(instance, request, abandoned.signal);
-          return { response: admitted instanceof Request ? await instance.handleHttpRequest(admitted) : admitted, cancel: () => abandoned.abort() };
+          if (evaluatesAdapter) return instance.hostHttpRequest(request, left);
+          const admitted = admit(instance, request, callerLeftSignal(left));
+          return admitted instanceof Request ? instance.handleHttpRequest(admitted) : admitted;
         },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
         async fetch(request) {
@@ -372,8 +371,8 @@ export function createProcessHost(mode, world, disk, {
 export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
   const calls = [];
   const stubs = [];
-  /** Each response's cancel stub a peer handed back, and whether its caller disposed it. */
-  const cancels = [];
+  /** Each request's caller stub a peer was handed: how often it kept a copy, and disposed one. */
+  const lefts = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -444,13 +443,14 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
             case 'awaitHostedBoot': return Promise.race([_rpcAwaitHostedBoot(peer, args[0]), peer.death]);
-            case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]).then((reply) => {
-              if (!('cancel' in reply)) return reply;
-              // RPC hands the caller a stub for the function, which it must dispose.
-              const record = { disposed: false };
-              cancels.push(record);
-              return { ...reply, cancel: Object.assign(() => reply.cancel(), { [Symbol.dispose]() { record.disposed = true; } }) };
-            });
+            case 'routeHostedHttp': {
+              // RPC hands the callee a stub for the caller's function, which it dups to keep past the call.
+              const record = { dups: 0, disposed: 0 };
+              lefts.push(record);
+              const left = args[1].left;
+              const stub = Object.assign(() => left(), { dup: () => { record.dups++; return Object.assign(() => left(), { [Symbol.dispose]() { record.disposed++; } }); } });
+              return _rpcRouteHostedHttp(peer, args[0], { ...args[1], left: stub });
+            }
             case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);
             default: return Promise.reject(new Error(`peer stub: unserved op ${op}`));
           }
@@ -458,7 +458,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       };
     },
   };
-  return { ns, peers, calls, stubs, cancels };
+  return { ns, peers, calls, stubs, lefts };
 }
 
 /**

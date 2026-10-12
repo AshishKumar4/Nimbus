@@ -33,9 +33,10 @@ async function incarnation(process) {
   assert.ok(value, 'the initial authenticated watch pins the original instance');
   return value;
 }
-// The host's own entry answers the response with its cancel (HostedLeafResponse).
+// The host's own entry takes the request's caller (CallerLeft) beside it.
+const staying = () => new Promise(() => {});
 async function call(process, entry, sent) {
-  return entry === 'hostHttpRequest' ? (await process.hostHttpRequest(sent)).response : process[entry](sent);
+  return entry === 'hostHttpRequest' ? process.hostHttpRequest(sent, staying) : process[entry](sent);
 }
 function request(nonce, token = capability, upgrade = false) {
   return new Request('https://leaf.invalid/user/path?kept=yes', {
@@ -86,9 +87,13 @@ for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
 }
 {
   const ctx = { starts: 0, handlers: 0, seen: [] }, process = new NimbusProcess(ctx, {});
-  const { response, cancel } = await process.hostHttpRequest(request(await incarnation(process)));
+  const leaving = Promise.withResolvers();
+  let dups = 0, disposed = 0;
+  const left = Object.assign(() => leaving.promise, { dup: () => { dups++; return Object.assign(() => leaving.promise, { [Symbol.dispose]() { disposed++; } }); } });
+  const response = await process.hostHttpRequest(request(await incarnation(process)), left);
   assert.equal(await response.text(), 'guest answer');
   assert.equal(ctx.signal.aborted, false);
-  cancel();
-  assert.equal(ctx.signal.aborted, true, 'the guest sees its host abandon the response as its request signal');
+  leaving.resolve(true); await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ctx.signal.aborted, true, 'the guest sees its caller leave as its request signal');
+  assert.deepEqual([dups, disposed], [1, 1], 'the leaf keeps its own copy of the caller stub until the answer, then disposes it');
 }

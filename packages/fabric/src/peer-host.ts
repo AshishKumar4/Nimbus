@@ -26,7 +26,7 @@ import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type R
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
-import { HOST_INCARNATION_HEADER, type Abandonable } from './host-activity.js';
+import { callerLeftSignal, HOST_INCARNATION_HEADER, type CallerLeft } from './host-activity.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
 /**
@@ -88,9 +88,11 @@ export interface HostedHttpRequest {
   url: string;
   headers: [string, string][];
   body: ReadableStream | null;
+  /** Its caller, who can leave it before or after its headers. */
+  left: CallerLeft;
 }
 
-export interface HostedHttpResponse extends Abandonable {
+export interface HostedHttpResponse {
   status: number;
   statusText: string;
   headers: [string, string][];
@@ -389,8 +391,9 @@ export class PeerHost {
    * The response body is re-piped through an identity stream owned by THIS
    * isolate before it is returned, for the same reason the parts exist at all:
    * what leaves here must not be an object the loaded worker owns. That pipe's
-   * settlement is when the process's work for the response is done, and the
-   * coordinator ends it through `cancel` when its caller abandons the response.
+   * settlement is when the process's work for the response is done; the
+   * coordinator's caller leaving (`wire.left`) ends the request, before its
+   * headers or after.
    */
   async routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
     return this.answer(workerKey, async () => {
@@ -401,13 +404,14 @@ export class PeerHost {
       for (const [k, v] of wire.headers) headers.append(k, v);
       const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
       if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
-      const abandoned = new AbortController();
-      const { scope, owner } = responseScope(abandoned.signal);
-      const response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
+      const { scope, owner } = responseScope(callerLeftSignal(wire.left));
+      let response: Response;
+      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope); }
+      catch (error) { owner.settle(); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {
         const { readable, writable } = new IdentityTransformStream();
-        this.ctx.waitUntil(response.body.pipeTo(writable, { signal: abandoned.signal }).catch(() => {}).finally(owner.settle));
+        this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).catch(() => {}).finally(owner.settle));
         body = readable;
       } else owner.settle();
       return {
@@ -415,7 +419,6 @@ export class PeerHost {
         statusText: response.statusText,
         headers: headerPairs(response.headers),
         body,
-        cancel: () => abandoned.abort(new DOMException('The response was abandoned', 'AbortError')),
       };
     });
   }

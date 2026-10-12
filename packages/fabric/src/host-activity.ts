@@ -153,28 +153,39 @@ export class HostActivity {
 }
 
 /**
- * A response relayed from another actor, which its caller can abandon.
- * Workers RPC carries no signal, so the relay hands back `cancel`: an RPC stub
- * the caller calls when its own caller leaves, and disposes once done.
+ * Whether a request's caller left it, asked by its handler on another actor:
+ * true once the caller has left the response, false once it is done with it.
+ * Minted with the request and passed beside it (a function crosses Workers
+ * RPC as a stub, a signal does not), so the handler hears a caller that
+ * leaves before any header as well as after one.
  */
-export interface Abandonable {
-  cancel(): void;
-}
+export type CallerLeft = () => Promise<boolean>;
 
-/** What a resident's leaf answers its host (the adapter's hostHttpRequest). */
-export interface HostedLeafResponse extends Abandonable {
-  response: Response;
-}
-
-/** Call `cancel` if `scope`'s caller leaves; dispose it once the caller is done, either way. */
-export function cancelWhenAbandoned(scope: ResponseScope, cancel: Abandonable['cancel']): void {
-  const abandon = () => { void Promise.resolve(cancel()).catch(() => {}); };
-  if (scope.signal.aborted) abandon();
-  else scope.signal.addEventListener('abort', abandon, { once: true });
-  void scope.settled.then(() => {
-    scope.signal.removeEventListener('abort', abandon);
-    disposeRpcResource(cancel);
+/** The caller of a request with `scope`, for its handler on another actor. */
+export function callerLeft(scope: ResponseScope): CallerLeft {
+  const left = new Promise<boolean>((resolve) => {
+    if (scope.signal.aborted) resolve(true);
+    else scope.signal.addEventListener('abort', () => resolve(true), { once: true });
+    void scope.settled.then(() => resolve(false));
   });
+  return () => left;
+}
+
+/**
+ * The handler's side: a signal that aborts when the caller leaves, or when
+ * the caller can no longer be asked (its actor is gone). A stub received as
+ * a call's argument is the call's; its `dup` is held until the answer.
+ */
+export function callerLeftSignal(left: CallerLeft): AbortSignal {
+  const abandoned = new AbortController();
+  const leave = () => abandoned.abort(new DOMException('The caller left the request', 'AbortError'));
+  const dup: unknown = Reflect.get(left, 'dup');
+  const held: unknown = typeof dup === 'function' ? Reflect.apply(dup, left, []) : left;
+  const ask = typeof held === 'function' ? held : left;
+  void Promise.resolve(Reflect.apply(ask, undefined, []))
+    .then((gone: unknown) => { if (gone === true) leave(); }, leave)
+    .finally(() => disposeRpcResource(held));
+  return abandoned.signal;
 }
 
 const activities = new WeakMap<object, HostActivity>();
@@ -236,13 +247,15 @@ export class NimbusProcess extends Base {
     const admitted = this.#admit(request);
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
-  // The host's HTTP entry (HostedLeafResponse): the guest sees its caller
-  // leave as its request's signal, which cancel aborts.
-  async hostHttpRequest(request) {
+  // The host's HTTP entry: the guest sees its caller leave (CallerLeft) as its
+  // request's signal, before its headers as well as after.
+  hostHttpRequest(request, left) {
     const abandoned = new AbortController();
+    const held = typeof left.dup === 'function' ? left.dup() : left;
+    const leave = () => abandoned.abort();
+    Promise.resolve(held()).then((gone) => { if (gone) leave(); }, leave).finally(() => held[Symbol.dispose]?.());
     const admitted = this.#admit(request, abandoned.signal);
-    const cancel = () => abandoned.abort();
-    return { response: admitted instanceof Request ? await super.handleHttpRequest(admitted) : admitted, cancel };
+    return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
   fetch(request) {
     if (request.headers.get(${watch}) !== ${key}) {

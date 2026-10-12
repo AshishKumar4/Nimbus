@@ -19,13 +19,23 @@ const output = {
   escapeOutput() {},
 };
 
-for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body']) {
-  let source, cancelled = false, watching = 0;
+for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body', 'leave-before-headers']) {
+  let source, cancelled = false, watching = 0, heard = false;
+  const handling = Promise.withResolvers();
   const world = createFacetWorld(() => ({
     startProcess: async () => ({}),
-    handleHttpRequest: async () => ending === 'no-body'
-      ? new Response(null, { status: 204 })
-      : new Response(new ReadableStream({ start(controller) { source = controller; }, cancel() { cancelled = true; } }), { headers: { 'Content-Length': '3' } }),
+    handleHttpRequest: async (request) => {
+      if (ending === 'leave-before-headers') {
+        // A handler that never answers headers hears its caller leave through its request.
+        handling.resolve();
+        await new Promise((resolve) => request.signal.addEventListener('abort', resolve, { once: true }));
+        heard = true;
+        throw new Error('the client left before any header');
+      }
+      return ending === 'no-body'
+        ? new Response(null, { status: 204 })
+        : new Response(new ReadableStream({ start(controller) { source = controller; }, cancel() { cancelled = true; } }), { headers: { 'Content-Length': '3' } });
+    },
   }), { resolveConfig: false });
   const ctx = createFacetCtx(world, `${mode}-${route}-${ending}`), env = { LOADER: world.loader };
   const peers = mode === 'peer' ? createPeerNamespace(world, env) : null;
@@ -41,18 +51,27 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
   const label = `${mode} ${route} ${ending}`;
   let response;
   try {
-    if (route === 'port') {
-      const ports = new PortRegistry(); ports.setOutput(output); ports.bindFacetStub(11, process); ports.register(3011, 11);
-      response = await ports.routeRequest(3011, new Request('https://app.invalid/', { signal: client.signal }), '/');
-    } else {
-      const { scope, owner } = responseScope(client.signal);
-      response = relayRpcBody(await process.handleHttpRequest(new Request('https://app.invalid/'), scope), 'GET', owner);
+    const answered = route === 'port'
+      ? (() => { const ports = new PortRegistry(); ports.setOutput(output); ports.bindFacetStub(11, process); ports.register(3011, 11); return ports.routeRequest(3011, new Request('https://app.invalid/', { signal: client.signal }), '/'); })()
+      : (async () => { const { scope, owner } = responseScope(client.signal); try { return relayRpcBody(await process.handleHttpRequest(new Request('https://app.invalid/'), scope), 'GET', owner); } catch (error) { owner.settle(); throw error; } })();
+    if (ending === 'leave-before-headers') {
+      await handling.promise; await turns();
+      assert.equal(watching, 1, `${label}: the process owns its work while its handler runs`);
+      client.abort(new DOMException('The client has disconnected', 'AbortError'));
+      const outcome = await answered.then((value) => value.status, (error) => error.message);
+      await turns();
+      assert.equal(heard, true, `${label}: the handler hears its caller leave before any header`);
+      assert.ok(outcome === 502 || /left before any header/.test(outcome), `${label}: ${outcome}`);
+      assert.equal(watching, 0, `${label}: and the work is released`);
+      assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === peers.lefts[0].disposed), `${label}: the peer disposes its caller stub`);
+      continue;
     }
+    response = await answered;
     await turns();
     if (ending === 'no-body') {
       assert.equal(response.status, 204);
       assert.equal(watching, 0, `${label}: a response without a body owns nothing past its headers`);
-      assert.ok(peers?.cancels.every((cancel) => cancel.disposed) ?? true, `${label}: the peer's cancel stub is disposed`);
+      assert.ok(peers?.lefts.every((left) => left.dups === left.disposed) ?? true, `${label}: the peer disposes its copy of the caller stub`);
       continue;
     }
     assert.equal(watching, 1, `${label}: the process owns its work after the response headers`);
@@ -83,7 +102,8 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     }
     reader.releaseLock();
     assert.equal(watching, 0, `${label}: EOF, error, mismatch and a leaving client release the work`);
-    assert.ok(peers === null || (peers.cancels.length === 1 && peers.cancels[0].disposed), `${label}: the peer's cancel stub lives for this response only`);
+    await turns();
+    assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === 1 && peers.lefts[0].disposed === 1), `${label}: the peer holds the caller stub for this response only`);
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }
 assert.ok(published.length > 0, 'the port relay published the process output before its body');

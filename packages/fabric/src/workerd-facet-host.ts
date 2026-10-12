@@ -15,14 +15,14 @@
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import {
-  cancelWhenAbandoned,
+  callerLeft,
   hostActivity,
   HOST_INCARNATION_HEADER,
   HOST_REQUEST_HEADER,
   HOST_WATCH_HEADER,
   observeResidentConfig,
+  type CallerLeft,
   type HostActivityLease,
-  type HostedLeafResponse,
 } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
@@ -99,8 +99,8 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
-  /** Inbound HTTP through the host adapter (observeResidentConfig). */
-  hostHttpRequest(request: Request): Promise<HostedLeafResponse>;
+  /** Inbound HTTP through the host adapter (observeResidentConfig), whose caller can leave it. */
+  hostHttpRequest(request: Request, left: CallerLeft): Promise<Response>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
    * an upgrade can take: a 101 owns a live socket, which the RPC
@@ -615,11 +615,7 @@ function spawnResident(
       const lease = observation.acquire(scope.signal);
       void scope.settled.then(lease.release);
       try {
-        return await admitted(request, async (guarded) => {
-          const { response, cancel } = await facet.hostHttpRequest(guarded);
-          cancelWhenAbandoned(scope, cancel);
-          return response;
-        });
+        return await admitted(request, (guarded) => facet.hostHttpRequest(guarded, callerLeft(scope)));
       } catch (error) { lease.release(); throw error; }
     },
     // An upgrade hands its socket to the caller at the handshake.
