@@ -1,4 +1,4 @@
-import { after, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
+import { after, closeResident, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -161,6 +161,19 @@ function bumpPipe(s, e, d) { const pp = s.pipes.get(e.pipeId); if (e.end === 'r'
     pp.readers += d;
 else
     pp.writers += d; }
+/**
+ * What a second descriptor on entry `e` holds (dup, dup2, a fork's copy): the
+ * same open, as dup(2) shares an open file description and its offset. An
+ * authority file's is the authority's own dup; a resident copy is shared.
+ * A pipe end's count is the caller's to bump.
+ */
+async function duplicateEntry(s, e) {
+    if (e.kind === 'authority')
+        return { ...e, handle: await s.fs.dup(e.handle.id) };
+    if (e.kind === 'resident')
+        return shareResident(e);
+    return { ...e };
+}
 /** A new descriptor on what `proc`'s stream or pipe descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
 function duplicateStream(s, proc, fd) {
     const e = proc.fds.get(fd);
@@ -183,6 +196,8 @@ function closeFd(s, proc, fd) {
     // would report the whole slice as failed instead of its exit code.
     if (e.kind === 'authority')
         queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => { }));
+    if (e.kind === 'resident')
+        closeResident(e);
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);
         const pp = s.pipes.get(e.pipeId);
@@ -927,7 +942,7 @@ function makeProc(s, pid, ppid, fds) {
                 return stream;
             try {
                 const nf = lowestFd(proc);
-                proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
+                proc.fds.set(nf, await duplicateEntry(s, e));
                 return nf;
             }
             catch (error) {
@@ -943,7 +958,7 @@ function makeProc(s, pid, ppid, fds) {
             try {
                 // The old descriptor is released only once the duplicate exists, so a
                 // failed dup2 leaves the target fd exactly as POSIX requires: untouched.
-                const copy = e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e };
+                const copy = await duplicateEntry(s, e);
                 const displaced = proc.fds.get(n);
                 if (displaced?.kind === 'preopen') {
                     // `exec 3>file` claims the descriptor wasi-libc cached as its
@@ -1575,7 +1590,7 @@ async function doFork(s, parent) {
     const childPid = s.pidNext++;
     const childFds = new Map();
     for (const [fd, e] of parent.fds) {
-        childFds.set(fd, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
+        childFds.set(fd, await duplicateEntry(s, e));
         if (e.kind === 'pipe')
             bumpPipe(s, e, 1);
     }

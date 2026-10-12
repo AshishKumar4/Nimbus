@@ -1,4 +1,14 @@
 import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
+export function shareResident(open) {
+    open.opens++;
+    return open;
+}
+/** One descriptor on a resident open closed; the last gives its pin back. */
+export function closeResident(open) {
+    if (--open.opens === 0)
+        open.release?.();
+}
 /**
  * Synthetic paths that name a socket rather than a file, and the one place
  * their spelling lives — the codec recognises them to hand them back, the host
@@ -432,14 +442,14 @@ export function installAuthorityFilesystem(imports, options) {
                     if (pinned === null)
                         return open();
                     const id = options.allocateFd();
-                    fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, name, release: pinned.release, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+                    fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, name, release: pinned.release, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
                     u32(out, id);
                     return 0;
                 });
             }
             return after(residentContent(fs, target, st), bytes => {
                 const id = options.allocateFd();
-                fds.set(id, { kind: 'resident', stat: st, bytes, name, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+                fds.set(id, { kind: 'resident', stat: st, bytes, name, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
                 u32(out, id);
                 return 0;
             });
@@ -466,7 +476,7 @@ export function installAuthorityFilesystem(imports, options) {
             return 0;
         const e = entry(fd);
         if (e.kind === 'resident') {
-            e.release?.();
+            closeResident(e);
             fds.delete(fd);
             return 0;
         }
@@ -484,7 +494,7 @@ export function installAuthorityFilesystem(imports, options) {
         // dup2 closes what it lands on, and only the owner of that fd knows how:
         // a socket's stream and a pipe's writer count are the host's to release.
         if (target?.kind === 'resident')
-            target.release?.();
+            closeResident(target);
         const released = !target || target.kind === 'resident' ? undefined
             : target.kind === 'authority' ? fs.close(target.handle.id)
                 : hostClose?.(to);

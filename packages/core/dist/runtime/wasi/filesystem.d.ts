@@ -24,13 +24,22 @@ export interface ResidentFd {
     bytes: Uint8Array;
     /** The file's name, which a path naming this descriptor opens again (descriptorNamed). */
     name: RuntimeFsPath;
-    /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
+    /** Given back when the last descriptor on it goes, when the filesystem pinned the bytes for it (pinContent). */
     release?: () => void;
+    /**
+     * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
+     * and with it its offset (shareResident, closeResident).
+     */
+    opens: number;
     position: number;
     rights: bigint;
     rightsInheriting: bigint;
     fdflags: number;
 }
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
+export declare function shareResident(open: ResidentFd): ResidentFd;
+/** One descriptor on a resident open closed; the last gives its pin back. */
+export declare function closeResident(open: ResidentFd): void;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
