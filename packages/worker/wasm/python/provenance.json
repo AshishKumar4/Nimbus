@@ -1,0 +1,33 @@
+{
+  "artifact": "cpython",
+  "source": {
+    "inputs": {
+      "../../scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "../../scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
+      "Setup.local": "a7f117c96caaaab335b7bc39c753699d0e96341c6c6dff4cb8c9061f549d1a0f",
+      "build-in-bwrap.sh": "c16556aef36e22ec448d558c8c650496e84e50bf191b908893ca505c18a9d9d0",
+      "build-python.sh": "fd03f1a540f2064d30167e179836e35fb399a2a605bc34f343b7ddfa7b471490",
+      "config.site-nimbus-wasi": "03c22c8582d316a68beda01c3ff8c7fcce94c344822ce9ac35e6f5dabbc8fab3",
+      "include/__struct_sockaddr_un.h": "7356db4435c9aed4f664a64398313627f614b2c70f75bac71f3ec2ec009930ca",
+      "include/netdb.h": "a54e68403aafba5b531f55103464afa557f1fd8d6c960f21886babb657639cf5",
+      "include/nimbus-ext.h": "f029ba64ebf293a6be74e9f3e6684c72ff0569ad3eb613aa1f380d0b1ff4bede",
+      "include/nimbus-net.h": "43f13107d174a4fd911132d7b70bcfcfa6d3e31d9780179c2bd1218238c17267",
+      "include/nimbus-wasi-compat.h": "f8dc0606423f206ae2647c7c173dd5829d6d83de3d68a2ea130fb42b953159a1",
+      "inputs.mjs": "f6e9550c5ceb5d961e335a4536a2eb29859b969c9e5836304ab4ec4a45c8dbe4",
+      "meson-wasi-link.py": "8c23ab5124988e1664c35680a5acbc181ec1316b7963dce2e3c9ce0db4037cfd",
+      "nimbus-cxx-noeh.c": "1629fcec5c8da61e875684b055a8141d3ff32311422242c0465d2bab4e46b3f1",
+      "nimbus-net.c": "194cb2991c90f144fa5ba3be3a3ecfb96ae13cf5871adb4a16fedd26036d12eb",
+      "nimbus-py.c": "a7744fe02da952defd2ab2b9f62b08af216407b6ce090d65de82a388bfa0b9c7",
+      "nimbus-wasi-compat.c": "7ee71852f372ca80e9c78576699ce662a5a3db3386f933c02484dbdc109f2bfe",
+      "patches/0001-pthread-stubs-support-tls-destructors.patch": "6d6b6facc6c418209795884eab7a508b4c09245cbcaeee44f3e6264653dab8be",
+      "patches/0002-numpy-share-one-reference-lapack.patch": "58f6724a8436fa67bd7383c4d484c4f5ed8248d18f5d7eb85be5e79b9c527b73",
+      "patches/0003-numpy-namespace-the-legacy-random-build.patch": "84fefd4997223b0698052db81d1236bf9c206f915b83ae4de089169a8d29cfe2"
+    }
+  },
+  "outputs": {
+    "python-sci.wasm": "5f24efd29dd08670d9384be66d06f8d845f8309d71d3cc3117ac74cd362b8830",
+    "python.wasm": "bf1041f9932afb4eac0ee39df69770339de0e0d511d160acfa3999fc2154ff5a",
+    "python313.zip": "62ff741c1fc8e0d67120c41a27737d2a91a3f1558c2a3c7f132ce3efc4c39d02",
+    "sci-packages.zip": "c8f75fa904af325b5b2bc5c800936cd398bb74ea3df49fd519962dc8bbe6ca19"
+  }
+}
