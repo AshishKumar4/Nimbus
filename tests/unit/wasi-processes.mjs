@@ -147,19 +147,21 @@ function session() {
   return { sup, control };
 }
 
-async function guest({ stdinRead } = {}) {
+/** A guest; `stdin` answers its process's input channel, as the session's cpReadStdin does. */
+async function guest({ stdin } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-processes-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiSupervisorOutput, fdTable };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   const { sup, control } = session();
+  // The layer reads fd 0 through the supervisor it adopted, for the pid it was given.
+  if (stdin) sup.cpReadStdin = (pid, _waitMs, _acquire, maxBytes) => { assert.equal(pid, GUEST_PID, 'the guest reads its own channel'); return stdin(maxBytes); };
   const memory = new WebAssembly.Memory({ initial: 4 });
   const stdout = [];
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], pid: GUEST_PID });
   P.__wasiAdoptSupervisor(sup);
   const bundle = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory,
-    stdinRead,
     stdoutBytes: (bytes) => stdout.push(dec.decode(bytes)), stderrBytes: () => {},
   });
   const wasi = bundle.wasiImport;
@@ -275,7 +277,7 @@ let checks = 0;
   let queued = Uint8Array.of(0, 255, 195, 169, 65);
   const requested = [];
   let closed = false;
-  const g = await guest({ stdinRead: async (maxBytes) => {
+  const g = await guest({ stdin: async (maxBytes) => {
     requested.push(maxBytes);
     const data = queued.slice(0, maxBytes);
     queued = queued.slice(maxBytes);
@@ -586,7 +588,7 @@ let checks = 0;
 // its packet before touching RpcProperty fields, and retain output pressure.
 {
   const packet = { data: Uint8Array.of(255), ended: false };
-  const g = await guest({ stdinRead: () => ({ then(resolve) { resolve(packet); } }) });
+  const g = await guest({ stdin: () => ({ then(resolve) { resolve(packet); } }) });
   assert.deepEqual(await g.read(0,1,true), { errno:E.SUCCESS,bytes:[255] });
   let release;
   const gate = new Promise(resolve=>{release=resolve;});
