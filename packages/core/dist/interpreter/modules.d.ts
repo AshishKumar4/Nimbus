@@ -1,14 +1,18 @@
 /**
- * modules.ts — an ES module as a launch's map runs one: Node's CommonJS
- * wrapper function, linked as runtime/esm-interop.ts says, the way the next
- * launch's cell (async-module-lowering.ts) links the same text. Its imports
- * are requires and its exports the getters of module.exports. compile.ts
- * makes the plan (Compiler.modulePlan); this runs it, with the interop
- * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
+ * modules.ts — an ES module the interpreter evaluates (one a program produced
+ * after its launch began, or a staged one the registry could not evaluate
+ * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
+ * function, linked as runtime/esm-interop.ts says. Its imports are calls of
+ * the require it is given, told each is an import (ESM_LOAD_HELPER), which
+ * the loader resolves as Node's ESM loader does,
+ * and its exports the getters of module.exports. compile.ts makes the plan
+ * (Compiler.modulePlan); this runs it, with the interop helpers the launch
+ * compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env } from './runtime.js';
+import { type StackInfo } from './stack.js';
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
@@ -17,6 +21,7 @@ export interface ModuleHelpers {
     readonly interop: NativeFunction;
     readonly namespace: NativeFunction;
     readonly star: NativeFunction;
+    readonly load: NativeFunction;
 }
 /**
  * What an export's getter reads: its value from the evaluation's frame, or a
@@ -35,6 +40,7 @@ export type ModuleExport = {
 };
 /** A module, compiled. */
 export interface ModulePlan {
+    readonly stack: StackInfo;
     /** The module scope's frame (runtime.ts frameTemplate). */
     readonly frame: Env;
     /** Slots of the wrapper's arguments. */

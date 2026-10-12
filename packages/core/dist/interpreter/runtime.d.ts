@@ -4,6 +4,7 @@
  */
 import type { FactoryFunctionInfo, HostOperators, HostOps, NativeFunction } from './host-ops.js';
 import { SafeWeakSet } from './intrinsics.js';
+import { type StackInfo } from './stack.js';
 /**
  * A scope's environment: slot 0 is the enclosing environment, the rest are
  * the scope's bindings (scope.ts assigns the slots).
@@ -54,6 +55,7 @@ export declare class FunctionInfo implements FactoryFunctionInfo {
     readonly strict: boolean;
     /** The source text Function.prototype.toString answers. */
     readonly source: string;
+    stack: StackInfo | null;
     body: Sync | null;
     gen: Gen | null;
     /** The body evaluates to the return value itself (an arrow's expression body). */

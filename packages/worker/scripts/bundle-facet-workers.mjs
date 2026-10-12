@@ -834,7 +834,7 @@ async function main() {
   const esmResolver = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'esm-resolver.ts'),
     'esm-resolver',
-    { shared: ['node-error'] },
+    { shared: ['node-error', 'exports-resolver'] },
   );
   if (!/^function createEsmResolver\(/m.test(esmResolver)) {
     throw new Error('[bundle-facet-workers/esm-resolver] the bundle no longer declares function createEsmResolver');
@@ -859,7 +859,7 @@ async function main() {
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
   );
-  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
+  for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
       throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
     }

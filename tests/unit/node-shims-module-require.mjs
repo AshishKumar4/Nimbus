@@ -50,19 +50,14 @@ assert.match(requireFromFacet('/home/user/module-require.js'), /^v\d+\./);
 assert.equal(requireFromFacet('/home/user/local-require.js'), 'local');
 assert.deepEqual(requireFromFacet('/home/user/compile-cache.js'), [true, true, true, false, false]);
 
-// An absolute file: URL is a specifier Node's dynamic import() accepts, and it
-// is how a package loads a path its own resolver just produced:
-// @nuxt/cli's loadKit imports pathToFileURL(resolveModulePath('@nuxt/kit')).href.
-// The ESM→CJS transform routes those through this same resolver, so the scheme
-// has to be understood here or the href is looked up as a package name —
-// "Cannot find module 'file:///…/@nuxt/kit/dist/index.mjs'" with the file
-// sitting right there.
-assert.equal(requireFromFacet('file:///home/user/local-require.js'), 'local');
-assert.match(requireFromFacet('file:///home/user/module-require.js'), /^v\d+\./);
-// A cache-busting query is the standard HMR spelling of the same import, and
-// percent-escapes are how a file URL carries a path with a space in it.
-assert.equal(requireFromFacet('file:///home/user/local-require.js?t=1790000000'), 'local');
-assert.equal(requireFromFacet('file:///home/user/kit%20dist/index.mjs'), 'kit');
+// Native ESM accepts file: URLs (covered by the import differential), but
+// Node's CommonJS require accepts filesystem paths, not file: URL strings.
+for (const href of [
+  'file:///home/user/local-require.js',
+  'file:///home/user/module-require.js',
+  'file:///home/user/local-require.js?t=1790000000',
+  'file:///home/user/kit%20dist/index.mjs',
+]) assert.throws(() => requireFromFacet(href), (error) => error.code === 'MODULE_NOT_FOUND');
 
 // A module that fails to load inside a package the ABI policy lists says why
 // that package cannot run here, once, whichever module required it.

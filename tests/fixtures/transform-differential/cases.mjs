@@ -1,7 +1,7 @@
 // Modules the transform differential (tests/unit/transform-differential.mjs)
-// lowers with esbuild-wasm 0.24.2 and with the transform facet's Oxc engine,
+// transforms with esbuild-wasm 0.24.2 and with the transform facet's Oxc engine,
 // one per shape of module syntax, TypeScript, JSX, naming collision and
-// refusal that changes what CommonJS a module becomes. File names carry the
+// refusal that changes explicit CommonJS or browser output. File names carry the
 // path a cell would be staged at, which decides its loader.
 export const CASES = [
   ["arrow-default.mjs", "export default () => 1;"],

@@ -195,8 +195,8 @@ try {
   );
   /** The runtime's answer: a tree-relative path, or null. */
   function runtime(file, specifier, mode) {
-    if (mode === 'require') return runtimeResolve.require(specifier, dirname(file)) ?? null;
     try {
+      if (mode === 'require') return runtimeResolve.require(specifier, dirname(file)) ?? null;
       const url = runtimeResolve.meta(specifier, 'file:///' + file);
       assert.ok(url.startsWith('file:///'), `runtime answered a non-file URL: ${url}`);
       return url.slice('file:///'.length);

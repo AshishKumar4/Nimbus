@@ -80,5 +80,5 @@ export function typescriptFallbackCandidates(base: string): string[] {
   return [base + '.ts', base + '.tsx'];
 }
 
-/** Directory entry points, probed after node's `index.{js,cjs,mjs,json}`. */
+/** Nimbus source-policy entries, probed after Node's `index.{js,json,node}`. */
 export const TYPESCRIPT_INDEX_CANDIDATES = ['/index.ts', '/index.tsx'] as const;

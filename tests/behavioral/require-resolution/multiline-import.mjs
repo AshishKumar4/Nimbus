@@ -39,7 +39,7 @@
 //      both reachable
 //
 // The synthetic packages are `type: module`, so they export: an ES module's
-// `module.exports` is a ReferenceError in Node (module-format-matches-node).
+// `module.exports` is a ReferenceError in Node (module-format-matches-node-workerd).
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 

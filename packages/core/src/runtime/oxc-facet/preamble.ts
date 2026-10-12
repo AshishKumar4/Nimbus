@@ -16,12 +16,12 @@
  */
 import { createOxcTransform } from '../oxc-transform.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
-import { lowerAsyncModule, lowerEsModule } from '../async-module-lowering.js';
+import { readEsModule } from '../native-esm.js';
 import { rewriteProvidedCommonJsModules } from '../provided-packages.js';
 import { stripTypeScript } from '../typescript-strip.js';
 import type { TransformRuntime } from '../esbuild-service.js';
 
-const runtime: TransformRuntime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules, stripTypeScript };
+const runtime: TransformRuntime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules, stripTypeScript };
 Object.assign(globalThis, {
   __nimbusCreateOxcTransform: createOxcTransform,
   __nimbusTransformRuntime: runtime,

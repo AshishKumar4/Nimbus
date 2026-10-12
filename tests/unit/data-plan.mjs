@@ -334,23 +334,21 @@ assert.equal(noTs.rules.typescript.files, 0);
   }
 }
 
-// An entry is the file Node's resolver loads for it, as the module-map walk
-// resolves it (require-resolution.ts): a `main` naming a directory goes
-// through that directory's own package.json `main`, and an extensionless
-// one through every extension Node tries.
+// Speculative planning can oversample a main directory's metadata; it does
+// not relax runtime resolution. Node does not implicitly append .cjs.
 {
   const ns = namespace({
     'home/user/app/package.json': JSON.stringify({ dependencies: { nested: '1', cjs: '1' } }),
     'home/user/app/node_modules/nested/package.json': JSON.stringify({ name: 'nested', main: 'lib' }),
     'home/user/app/node_modules/nested/lib/package.json': JSON.stringify({ main: 'actual.cjs' }),
     'home/user/app/node_modules/nested/lib/actual.cjs': 'x',
-    'home/user/app/node_modules/cjs/package.json': JSON.stringify({ name: 'cjs', main: 'dist/entry' }),
+    'home/user/app/node_modules/cjs/package.json': JSON.stringify({ name: 'cjs', main: 'dist/entry.cjs' }),
     'home/user/app/node_modules/cjs/dist/entry.cjs': 'x',
   });
   const plan = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   const planned = new Set(plan.paths);
-  assert.ok(planned.has('home/user/app/node_modules/nested/lib/actual.cjs'), "a directory main through its own package.json's main");
-  assert.ok(planned.has('home/user/app/node_modules/cjs/dist/entry.cjs'), 'an extensionless main as Node probes it');
+  assert.ok(planned.has('home/user/app/node_modules/nested/lib/actual.cjs'), 'speculative directory metadata oversampling is retained');
+  assert.ok(planned.has('home/user/app/node_modules/cjs/dist/entry.cjs'), 'an explicit .cjs main is named as Node requires it');
 }
 
 // A link on a mount whose backend resolves its own paths leads where that

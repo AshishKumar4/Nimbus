@@ -1,12 +1,11 @@
 #!/usr/bin/env bun
 /**
- * Entry-script module format: which files the runtime handler parses as ESM.
+ * Entry-script module format: which files the runtime handler stages as ESM.
  *
- * workerd forbids codegen from strings at request time, so a facet can only
- * run CommonJS — an ESM entry has to be rewritten before it is shipped. The
- * handler therefore has to answer Node's own question ("is this file a
- * module?") the same way Node does, and Node answers it from the extension
- * plus the nearest package.json `type`:
+ * An ES module reaches the runner as its source and esModule:true; the launch
+ * compiles TypeScript/JSX and stages native modules. The handler answers
+ * Node's own question ("is this file a module?") from the extension, the
+ * nearest package.json `type`, and syntax where the package has no type:
  *
  *   .mjs → module, .cjs → commonjs, .js and NO EXTENSION → package type.
  *
@@ -19,8 +18,6 @@
 
 import assert from 'node:assert/strict';
 import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
-
-const TRANSFORM_MARKER = '/* nimbus-test: transformed */';
 
 function makeHandler(files, { nodeCommandLine = false } = {}) {
   const transforms = [];
@@ -55,7 +52,7 @@ function makeHandler(files, { nodeCommandLine = false } = {}) {
       getEsbuild: () => ({
         async transform(code, opts) {
           transforms.push({ code, opts });
-          return { code: TRANSFORM_MARKER + '\n' + code, map: '' };
+          assert.fail('the runtime handler delegates module compilation to the launch');
         },
         // A type strip, as the transform facet's amaro answers it: the annotations blanked, and Node's format.
         async transformMany(requests) {
@@ -87,7 +84,7 @@ async function runScript(files, scriptPath, options) {
     stdout: { write: () => {} },
     stderr: { write: (v) => stderr.push(v) },
   });
-  return { exitCode, stderr: stderr.join(''), code: built.ran(), transforms: built.transforms };
+  return { exitCode, stderr: stderr.join(''), code: built.ran(), opts: built.ranOpts(), transforms: built.transforms };
 }
 
 const ESM_SOURCE = '#!/usr/bin/env node\nimport "../lib/tsc.js";\n';
@@ -96,18 +93,17 @@ const CJS_SOURCE = "#!/usr/bin/env node\nrequire('../lib/tsc.js')\n";
 const MODULE_PKG = JSON.stringify({ name: 'typescript', type: 'module', bin: { tsc: './bin/tsc' } });
 const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } });
 
-// ── extensionless bin in a type:module package → ESM, must be rewritten ──
+// ── extensionless bin in a type:module package → native ESM ──
 {
   const r = await runScript({
     'home/user/node_modules/typescript/package.json': MODULE_PKG,
     'home/user/node_modules/typescript/bin/tsc': ESM_SOURCE,
   }, '/home/user/node_modules/typescript/bin/tsc');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.ok(r.code.startsWith(TRANSFORM_MARKER), 'extensionless ESM bin must reach the runner as CJS');
-  assert.equal(r.transforms.length, 1);
-  assert.equal(r.transforms[0].opts.esModule, 'node', 'lowered as an ES module, in Node\'s scope');
-  // The shebang is stripped before the transform, never handed to esbuild.
-  assert.doesNotMatch(r.transforms[0].code, /^#!/);
+  assert.equal(r.code, ESM_SOURCE.slice(ESM_SOURCE.indexOf('\n') + 1), 'the runner gets the original source after the handler\'s shebang strip');
+  assert.equal(r.transforms.length, 0, 'native ESM is staged by the launch, not transformed by the handler');
+  assert.equal(r.opts.esModule, true);
+  assert.equal(r.opts.moduleScope, 'node');
 }
 
 // ── extensionless bin in a package with no `type` → CommonJS, untouched ──
@@ -118,6 +114,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   }, '/home/user/node_modules/typescript/bin/tsc');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'a CommonJS bin must not be rewritten');
+  assert.equal(r.opts.esModule, undefined);
   assert.match(r.code, /require\('\.\.\/lib\/tsc\.js'\)/);
 }
 
@@ -130,6 +127,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   }, '/home/user/node_modules/dep/bin/dep');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'an ancestor type:module must not reach into a CommonJS package');
+  assert.equal(r.opts.esModule, undefined);
 }
 
 // ── .cjs stays CommonJS even inside a type:module package ──
@@ -140,14 +138,16 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   }, '/home/user/main.cjs');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, '.cjs is CommonJS by definition');
+  assert.equal(r.opts.esModule, undefined);
 }
 
 // ── .mjs is ESM with no package.json in sight ──
 {
   const r = await runScript({ 'home/user/main.mjs': 'import "./x.js";\n' }, '/home/user/main.mjs');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.transforms.length, 1);
-  assert.ok(r.code.startsWith(TRANSFORM_MARKER));
+  assert.equal(r.transforms.length, 0);
+  assert.equal(r.code, 'import "./x.js";\n');
+  assert.equal(r.opts.esModule, true);
 }
 
 // ── .js follows the package type (pre-existing behavior, kept) ──
@@ -157,7 +157,9 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
     'home/user/main.js': 'import "./x.js";\n',
   }, '/home/user/main.js');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.transforms.length, 1);
+  assert.equal(r.transforms.length, 0);
+  assert.equal(r.code, 'import "./x.js";\n');
+  assert.equal(r.opts.esModule, true);
 }
 
 // ── a dot in a DIRECTORY name is not an extension ──
@@ -170,8 +172,9 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
     'home/user/node_modules/my.pkg/bin/cli': 'import "./x.js";\n',
   }, '/home/user/node_modules/my.pkg/bin/cli');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.transforms.length, 1, 'a dotted directory must not hide an extensionless entry');
-  assert.equal(r.transforms[0].opts.esModule, 'node');
+  assert.equal(r.transforms.length, 0);
+  assert.equal(r.code, 'import "./x.js";\n');
+  assert.equal(r.opts.esModule, true, 'a dotted directory must not hide an extensionless ES entry');
 }
 
 // ── an extensionless CommonJS body inside a type:module project survives ──
@@ -190,6 +193,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   }, '/home/user/node_modules/.bin/genpkg');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'the shim is no package\'s: CommonJS, untransformed');
+  assert.equal(r.opts.esModule, undefined);
   assert.match(r.code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
 }
 
@@ -200,59 +204,82 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
     'home/user/.hookrc': 'import "./x.js";\n',
   }, '/home/user/.hookrc');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.transforms.length, 1);
-  assert.equal(r.transforms[0].opts.esModule, 'node');
+  assert.equal(r.transforms.length, 0);
+  assert.equal(r.code, 'import "./x.js";\n');
+  assert.equal(r.opts.esModule, true);
 }
 
-// ── TypeScript entries keep their own loader ──
+// ── TypeScript entries reach the launch as written ──
 {
   const r = await runScript({ 'home/user/main.ts': 'export const x: number = 1;\n' }, '/home/user/main.ts');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.transforms[0].opts.loader, 'ts');
+  assert.equal(r.transforms.length, 0);
+  assert.equal(r.code, 'export const x: number = 1;\n');
+  assert.equal(r.opts.esModule, true, 'the launch compiles and stages TypeScript entries');
 }
 
 // ── .mts and .cts are TypeScript as well: ESM and CommonJS TypeScript ──
 //
-// The handler listed .ts and .tsx itself, so `node main.mts` reached the facet
-// as TypeScript ("Missing initializer in const declaration", or "Cannot use
-// import statement outside a module"), and so did `node main.cts`. It now
-// asks the table the bundle's ESM pass asks. `.cts` compiles even inside a
-// type:module package, where `.cjs` (above) is left alone.
+// The same loader table covers .mts/.cts/.tsx. The handler marks every
+// TypeScript or JSX entry for the launch to compile and decide its emit's
+// module format, even a CommonJS .cts inside a type:module package.
 for (const [entry, source] of [
   ['home/user/main.mts', 'import { x } from "./x.mjs";\nconst n: number = x;\n'],
   ['home/user/main.cts', 'const x = require("./x.cjs");\nconst n: number = x;\n'],
+  ['home/user/main.tsx', 'export const view = <div />;\n'],
+  ['home/user/main.jsx', 'export const view = <div />;\n'],
 ]) {
   const r = await runScript({
     'home/user/package.json': JSON.stringify({ name: 'app', type: 'module' }),
     [entry]: source,
   }, `/${entry}`);
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.transforms.length, 1, `${entry} must be compiled before it runs`);
-  assert.equal(r.transforms[0].opts.loader, 'ts');
-  assert.equal(r.transforms[0].opts.format, 'cjs');
-  assert.ok(r.code.startsWith(TRANSFORM_MARKER), `${entry} reaches the runner as its CommonJS emit`);
+  assert.equal(r.transforms.length, 0, `${entry} is compiled by the launch`);
+  assert.equal(r.code, source, `${entry} reaches the runner as written`);
+  assert.equal(r.opts.esModule, true, `${entry} is marked for compilation and staging`);
 }
 
 // ── Under node, TypeScript is Node's: stripped, then run as JavaScript of Node's format ──
 //
-// The strip is a request of its own; an ES module's stripped code is then
-// lowered like any ES entry, CommonJS runs as stripped, and a file Node
+// The strip is a request of its own; an ES module's stripped code reaches
+// the runner natively, CommonJS runs as stripped, and a file Node
 // refuses is code that throws Node's error.
 {
   const node = { nodeCommandLine: true };
   const esm = await runScript({ 'home/user/main.mts': 'export const x: number = 1;\n' }, '/home/user/main.mts', node);
   assert.equal(esm.exitCode, 0, esm.stderr);
-  assert.deepEqual(esm.transforms.map((t) => t.opts.stripOnly ? 'strip' : t.opts.esModule), ['strip', 'node'], 'stripped, then lowered');
-  assert.equal(esm.transforms[1].code, `export const x${' '.repeat(': number'.length)} = 1;\n`, 'the lowering takes the stripped code');
+  assert.deepEqual(esm.transforms.map((t) => t.opts.stripOnly ? 'strip' : t.opts.esModule), ['strip'], 'only the Node type strip runs in the handler');
+  assert.equal(esm.code, `export const x${' '.repeat(': number'.length)} = 1;\n`, 'the runner gets the stripped native module');
+  assert.equal(esm.opts.esModule, true);
   const cjs = await runScript({ 'home/user/main.cts': 'const x: number = 1;\nmodule.exports = x;\n' }, '/home/user/main.cts', node);
   assert.equal(cjs.exitCode, 0, cjs.stderr);
   assert.equal(cjs.transforms.length, 1, 'only the strip');
   assert.equal(cjs.code, `const x${' '.repeat(': number'.length)} = 1;\nmodule.exports = x;\n`, 'CommonJS runs as stripped');
+  assert.equal(cjs.opts.esModule, undefined);
   const refused = await runScript({ 'home/user/main.ts': 'enum E {}\n' }, '/home/user/main.ts', node);
   assert.match(refused.code, /__nimbusNodeError\(SyntaxError, "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX"/, 'a refused file throws Node\'s error');
   const vendored = await runScript({ 'home/user/node_modules/x/main.ts': 'const x: number = 1;\n' }, '/home/user/node_modules/x/main.ts', node);
   assert.equal(vendored.transforms.length, 0, 'TypeScript under node_modules is not stripped');
   assert.match(vendored.code, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/);
+}
+
+// ── ES eval and stdin programs reach the runner exactly as written ──
+for (const input of ['eval', 'stdin']) {
+  const source = 'export const answer = await Promise.resolve(42);\n';
+  const built = makeHandler({}, { nodeCommandLine: true });
+  const stderr = [];
+  const exitCode = await built.handler({
+    vfs: built.fs,
+    args: input === 'eval' ? ['--input-type=module', '-e', source] : ['--input-type=module', '-'],
+    cwd: '/home/user', env: {},
+    cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    stdin: { async readAll() { return source; }, async read() { return null; } },
+    stdout: { write: () => {} }, stderr: { write: (v) => stderr.push(v) },
+  });
+  assert.equal(exitCode, 0, stderr.join(''));
+  assert.equal(built.ran(), source, `${input} ES input is passed as written`);
+  assert.equal(built.ranOpts().esModule, true);
+  assert.equal(built.transforms.length, 0, `${input} ES input is staged by the launch`);
 }
 
 // ── `-` runs the program on stdin, with its arguments after argv[1] ──

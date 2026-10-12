@@ -5,6 +5,7 @@ import { createConsole } from '../node-compat/console.js';
 import { Buffer } from '../node-compat/buffer.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
+import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
 import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 // ─── CDN + WASM module registry ───
 const DEFAULT_CDN = 'https://esm.sh';
@@ -129,7 +130,9 @@ async function executeCjsCommand(entryPath, source, ctx, lifo) {
         process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
         console: createConsole(ctx.stdout, ctx.stderr),
     }));
+    let native;
     try {
+        native = await createNativeEsmLoader(nodeCtx, loader);
         // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
         const exported = loader.load(entryPath, { source, esm: false });
         const handler = typeof exported === 'function'
@@ -147,6 +150,9 @@ async function executeCjsCommand(entryPath, source, ctx, lifo) {
             return e.exitCode;
         await ctx.stderr.write(e instanceof Error ? `${e.stack || e.message}\n` : `${String(e)}\n`);
         return 1;
+    }
+    finally {
+        native?.dispose();
     }
 }
 /**

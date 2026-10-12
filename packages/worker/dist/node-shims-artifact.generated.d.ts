@@ -32,6 +32,10 @@ export declare const JS_INTERPRETER_SHA256: string;
 export declare const JS_INTERPRETER_OPS_ENTRY: string;
 export declare const JS_INTERPRETER_OPS_BUILD_ID: string;
 export declare const JS_INTERPRETER_OPS_SHA256: string;
+/** @nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs */
+export declare const JS_PARSER_ENTRY: string;
+export declare const JS_PARSER_BUILD_ID: string;
+export declare const JS_PARSER_SHA256: string;
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export declare const NODE_LIB_ENTRY: string;
 export declare const NODE_LIB_BUILD_ID: string;

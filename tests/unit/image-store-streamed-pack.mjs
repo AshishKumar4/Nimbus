@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { ImageStore, FACET_IMAGE_WRITE_SLICE_BYTES } from '../../packages/fabric/src/image-store.ts';
-import { decodeCommonJsPackBytes, encodeCommonJsPack, facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
+import { decodeCodePackBytes, encodeCodePack, facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
 
 // The disk: each file its written pieces, kept as the store hands them over
 // (copied with the native constructor, so the disk's own copies are not
@@ -52,7 +52,7 @@ for (let i = 0; i < 96; i++) {
   const body = i % 7 === 0 ? 'é€😀'.repeat(8 * 1024) : `module.exports = ${i};\n`.repeat(3 * 1024);
   modules[`node_modules/pkg/${i}.js`] = body;
 }
-const expected = new TextEncoder().encode(encodeCommonJsPack(modules).join(''));
+const expected = new TextEncoder().encode(encodeCodePack(modules).join(''));
 const largestModuleBytes = Math.max(...Object.values(modules).map((text) => new TextEncoder().encode(text).byteLength));
 const allowed = Math.max(FACET_IMAGE_WRITE_SLICE_BYTES, largestModuleBytes) * 2;
 assert.ok(expected.byteLength > 2 * allowed, `the pack (${expected.byteLength} bytes) is larger than any buffer the store may hold (${allowed})`);
@@ -78,13 +78,13 @@ const watch = async (run) => {
   }
 };
 
-const pack = encodeCommonJsPack(modules);
+const pack = encodeCodePack(modules);
 const paths = await watch(() => store.materialize(3, [['code pack', pack]], pacer));
 const path = paths['code pack'];
 assert.equal(path, facetImagePath(await facetImageDigest(expected)), 'the pack is named by the digest of its bytes');
 const stored = contents(path.replace(/^\/+/, ''));
 assert.ok(sameBytes(stored, expected), 'and holds exactly them');
-assert.deepEqual(Object.keys(decodeCommonJsPackBytes(stored)), Object.keys(modules), 'which decode to every module');
+assert.deepEqual(Object.keys(decodeCodePackBytes(stored)), Object.keys(modules), 'which decode to every module');
 assert.ok(largest <= allowed, `no buffer the size of the image: the largest was ${largest} bytes, the pack ${expected.byteLength}`);
 assert.ok(writes.every((n) => n <= FACET_IMAGE_WRITE_SLICE_BYTES), 'each write is one slice at most');
 assert.ok(writes.slice(0, -1).every((n) => n === FACET_IMAGE_WRITE_SLICE_BYTES), 'and every slice but the last is whole, so no write reads a partial chunk back');
@@ -94,7 +94,7 @@ console.log('  a code pack is encoded, digested and written a module at a time')
 // The same pack again: already stored at its digest, so nothing is written,
 // and nothing the size of the image is made to find that out.
 writes.length = 0;
-const again = await watch(() => store.materialize(4, [['code pack', encodeCommonJsPack(modules)]], pacer));
+const again = await watch(() => store.materialize(4, [['code pack', encodeCodePack(modules)]], pacer));
 assert.equal(again['code pack'], path, 'the same pack names the same image');
 assert.equal(writes.length, 0, 'an image already stored is not written again');
 assert.ok(largest <= allowed, `nor encoded whole to be recognized: the largest buffer was ${largest} bytes`);
@@ -110,10 +110,10 @@ console.log('  a pack already stored is recognized without a whole copy and not 
   let n = SLICE - 2;
   let pack;
   for (let step = 0; step < 4; step++) {
-    pack = encodeCommonJsPack({ 'straddle.js': 'a'.repeat(n) + tail });
+    pack = encodeCodePack({ 'straddle.js': 'a'.repeat(n) + tail });
     n = SLICE - 2 - new TextEncoder().encode(pack[0]).byteLength;
   }
-  pack = encodeCommonJsPack({ 'straddle.js': 'a'.repeat(n) + tail });
+  pack = encodeCodePack({ 'straddle.js': 'a'.repeat(n) + tail });
   assert.equal(new TextEncoder().encode(pack[0]).byteLength + n, SLICE - 2, 'the emoji starts two bytes before the slice ends');
   const whole = new TextEncoder().encode(pack.join(''));
   writes.length = 0;
@@ -129,7 +129,7 @@ console.log('  a pack already stored is recognized without a whole copy and not 
 const cut = path.replace(/^\/+/, '');
 files.set(cut, [contents(cut).slice(0, FACET_IMAGE_WRITE_SLICE_BYTES)]);
 writes.length = 0;
-await store.materialize(5, [['code pack', encodeCommonJsPack(modules)]], pacer);
+await store.materialize(5, [['code pack', encodeCodePack(modules)]], pacer);
 assert.ok(sameBytes(contents(cut), expected), 'a partial image is replaced whole');
 console.log('  a partial pack is rewritten');
 

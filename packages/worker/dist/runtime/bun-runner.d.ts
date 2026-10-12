@@ -52,11 +52,9 @@ export declare const BUN_VERSION = "1.1.42";
  */
 export declare const BUN_SHIM_PREAMBLE: string;
 /**
- * Run a bun script with the Bun shim preamble prepended.
- *
- * The user's `code` is wrapped:
- *   <BUN_SHIM_PREAMBLE>;
- *   <user code>
+ * Run a bun script, the Bun shim preamble evaluated before its entry
+ * (RunFreshOpts.preamble): the entry itself is the program's own module,
+ * an ES module's staged as it is (core runtime/native-esm.ts).
  *
  * Routing follows runFresh: argv flags --watch / --inspect /
  * --inspect-brk, or a program the handler judged to start a server

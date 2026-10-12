@@ -32,7 +32,7 @@ import { typescriptFallbackCandidates } from '../../packages/core/src/_shared/ty
 import { NODE_SHIM_RESOLUTION_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
-  bundleTypescriptLoader,
+  bundleCompiledLoader,
   isBundleModuleCandidate,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { FakeVfs } from './lib/fake-require-fs.mjs';
@@ -163,13 +163,14 @@ for (const [base, expected] of TABLE) {
   for (const [path, loader] of [
     ['app/src/program.ts', 'ts'],
     ['app/src/view.tsx', 'tsx'],
+    ['app/src/view.jsx', 'jsx'],
     ['app/src/mod.mts', 'ts'],
     ['app/src/mod.cts', 'ts'],
     ['app/src/plain.js', null],
     ['app/src/data.json', null],
     ['app/node_modules/.bin/cli', null],
   ]) {
-    assert.equal(bundleTypescriptLoader(path), loader, `loader for ${path}`);
+    assert.equal(bundleCompiledLoader(path), loader, `loader for ${path}`);
     if (loader !== null) {
       assert.ok(
         isBundleModuleCandidate(path),
