@@ -336,26 +336,11 @@ var __nimbusResidentModule = (() => {
   var NS_DIR = 1;
   var NS_LINK = 2;
   var num = (value) => Number(value);
-  var keyOf = (value) => value == null ? null : String(value);
-  var chunkRow = (row) => ({
-    txt: row.txt == null ? null : String(row.txt),
-    bin: row.bin == null ? null : row.bin
-  });
-  var nsRow = (row) => ({
-    kind: num(row.kind),
-    size: num(row.size),
-    mode: num(row.mode),
-    uid: num(row.uid),
-    gid: num(row.gid),
-    atime: num(row.atime),
-    mtime: num(row.mtime),
-    ctime: num(row.ctime),
-    ino: num(row.ino),
-    rev: num(row.rev),
-    target: keyOf(row.target),
-    dev: num(row.dev),
-    nlink: num(row.nlink)
-  });
+  var rowOf = (rows) => {
+    for (const row of rows) return row;
+    return void 0;
+  };
+  var rowsOf = (rows) => [...rows];
   function sqlTables(sql) {
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
@@ -398,16 +383,14 @@ var __nimbusResidentModule = (() => {
         sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", k, v);
       },
       fileHead(path) {
-        const row = first(sql.exec("SELECT kind, size, chunks FROM file WHERE path = ?", path));
-        return row === void 0 ? void 0 : { kind: num(row.kind), size: num(row.size), chunks: num(row.chunks) };
+        return rowOf(sql.exec("SELECT kind, size, chunks FROM file WHERE path = ?", path));
       },
       fileRev(path) {
         const row = first(sql.exec("SELECT rev FROM file WHERE path = ?", path));
         return row === void 0 ? void 0 : num(row.rev);
       },
       fileRevKey(path) {
-        const row = first(sql.exec("SELECT rev, ckey FROM file WHERE path = ?", path));
-        return row === void 0 ? void 0 : { rev: num(row.rev), ckey: keyOf(row.ckey) };
+        return rowOf(sql.exec("SELECT rev, ckey FROM file WHERE path = ?", path));
       },
       fileOwnSize(path) {
         const row = first(sql.exec("SELECT size FROM file WHERE path = ? AND rev = ?", path, RK_OWN_WRITE));
@@ -426,8 +409,7 @@ var __nimbusResidentModule = (() => {
         sql.exec("DELETE FROM file WHERE path = ?", path);
       },
       fileByKey(ckey, notPath) {
-        const row = first(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
-        return row === void 0 ? void 0 : { path: String(row.path), kind: num(row.kind), size: num(row.size), chunks: num(row.chunks) };
+        return rowOf(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
       },
       filePaths(from, to) {
         return [...ranged("SELECT path FROM file", from, to)].map((row) => String(row.path));
@@ -436,7 +418,7 @@ var __nimbusResidentModule = (() => {
         return first(ranged("SELECT path FROM file", from, to, " LIMIT 1")) !== void 0;
       },
       fileRevsIn(from, to) {
-        return [...ranged("SELECT path, rev FROM file", from, to)].map((row) => ({ path: String(row.path), rev: num(row.rev) }));
+        return rowsOf(ranged("SELECT path, rev FROM file", from, to));
       },
       // In key order, as every other scan here is: the primary key's index
       // serves it, and both backings then answer in one order.
@@ -444,21 +426,19 @@ var __nimbusResidentModule = (() => {
         return [...sql.exec("SELECT path FROM file ORDER BY path")].map((row) => String(row.path));
       },
       fileRows() {
-        return [...sql.exec("SELECT path, rev, ckey FROM file ORDER BY path")].map((row) => ({ path: String(row.path), rev: num(row.rev), ckey: keyOf(row.ckey) }));
+        return rowsOf(sql.exec("SELECT path, rev, ckey FROM file ORDER BY path"));
       },
       fileOwnPaths() {
         return [...sql.exec("SELECT path FROM file WHERE rev = ? ORDER BY path", RK_OWN_WRITE)].map((row) => String(row.path));
       },
       fileStats() {
-        const row = first(sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file"));
-        return row === void 0 ? void 0 : { n: num(row.n), b: num(row.b) };
+        return rowOf(sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file"));
       },
       chunkFirst(path) {
-        const row = first(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? AND part = 0", path));
-        return row === void 0 ? void 0 : chunkRow(row);
+        return rowOf(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? AND part = 0", path));
       },
       chunkParts(path) {
-        return [...sql.exec("SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part", path)].map(chunkRow);
+        return rowsOf(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part", path));
       },
       chunkAddText(path, part, txt) {
         sql.exec("INSERT INTO chunk (path, part, txt) VALUES (?, ?, ?)", path, part, txt);
@@ -514,12 +494,11 @@ var __nimbusResidentModule = (() => {
         );
       },
       nsGet(parent, name) {
-        const row = first(sql.exec(
+        return rowOf(sql.exec(
           "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink FROM ns WHERE parent = ? AND name = ?",
           parent,
           name
         ));
-        return row === void 0 ? void 0 : nsRow(row);
       },
       nsDelete(parent, name) {
         sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name);
@@ -535,16 +514,16 @@ var __nimbusResidentModule = (() => {
         sql.exec("DELETE FROM ns");
       },
       nsKeys() {
-        return [...sql.exec("SELECT parent, name FROM ns")].map((row) => ({ parent: String(row.parent), name: String(row.name) }));
+        return rowsOf(sql.exec("SELECT parent, name FROM ns"));
       },
       nsOfKind(kind) {
-        return [...sql.exec("SELECT parent, name FROM ns WHERE kind = ?", kind)].map((row) => ({ parent: String(row.parent), name: String(row.name) }));
+        return rowsOf(sql.exec("SELECT parent, name FROM ns WHERE kind = ?", kind));
       },
       nsUnlisted() {
-        return [...sql.exec("SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL", NS_DIR)].map((row) => ({ parent: String(row.parent), name: String(row.name), target: String(row.target) }));
+        return rowsOf(sql.exec("SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL", NS_DIR));
       },
       nsChildren(parent) {
-        return [...sql.exec("SELECT name, kind, mode FROM ns WHERE parent = ?", parent)].map((row) => ({ name: String(row.name), kind: num(row.kind), mode: num(row.mode) }));
+        return rowsOf(sql.exec("SELECT name, kind, mode FROM ns WHERE parent = ?", parent));
       },
       nsCount() {
         const row = first(sql.exec("SELECT count(*) AS n FROM ns"));

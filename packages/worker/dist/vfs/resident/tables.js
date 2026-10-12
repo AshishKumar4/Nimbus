@@ -48,16 +48,17 @@ export const NS_FILE = 0;
 export const NS_DIR = 1;
 export const NS_LINK = 2;
 const num = (value) => Number(value);
-const keyOf = (value) => (value == null ? null : String(value));
-const chunkRow = (row) => ({
-    txt: row.txt == null ? null : String(row.txt),
-    bin: row.bin == null ? null : row.bin,
-});
-const nsRow = (row) => ({
-    kind: num(row.kind), size: num(row.size), mode: num(row.mode), uid: num(row.uid), gid: num(row.gid),
-    atime: num(row.atime), mtime: num(row.mtime), ctime: num(row.ctime), ino: num(row.ino), rev: num(row.rev),
-    target: keyOf(row.target), dev: num(row.dev), nlink: num(row.nlink),
-});
+/**
+ * A row as SQLite gives it, with the types its columns hold: every number
+ * column INTEGER or REAL, every text column TEXT (NULL only where nullable).
+ * Handed over as is, as the store always read it: a lookup allocates no copy.
+ */
+const rowOf = (rows) => {
+    for (const row of rows)
+        return row;
+    return undefined;
+};
+const rowsOf = (rows) => [...rows];
 export function sqlTables(sql) {
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'"))
@@ -114,15 +115,9 @@ export function sqlTables(sql) {
         databaseSize() { return num(sql.databaseSize ?? 0); },
         metaGet(k) { const row = first(sql.exec('SELECT v FROM meta WHERE k = ?', k)); return row === undefined ? undefined : String(row.v); },
         metaSet(k, v) { sql.exec('INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)', k, v); },
-        fileHead(path) {
-            const row = first(sql.exec('SELECT kind, size, chunks FROM file WHERE path = ?', path));
-            return row === undefined ? undefined : { kind: num(row.kind), size: num(row.size), chunks: num(row.chunks) };
-        },
+        fileHead(path) { return rowOf(sql.exec('SELECT kind, size, chunks FROM file WHERE path = ?', path)); },
         fileRev(path) { const row = first(sql.exec('SELECT rev FROM file WHERE path = ?', path)); return row === undefined ? undefined : num(row.rev); },
-        fileRevKey(path) {
-            const row = first(sql.exec('SELECT rev, ckey FROM file WHERE path = ?', path));
-            return row === undefined ? undefined : { rev: num(row.rev), ckey: keyOf(row.ckey) };
-        },
+        fileRevKey(path) { return rowOf(sql.exec('SELECT rev, ckey FROM file WHERE path = ?', path)); },
         fileOwnSize(path) {
             const row = first(sql.exec('SELECT size FROM file WHERE path = ? AND rev = ?', path, RK_OWN_WRITE));
             return row === undefined ? undefined : num(row.size);
@@ -134,22 +129,19 @@ export function sqlTables(sql) {
         fileStampOwn(path, rev) { sql.exec('UPDATE file SET rev = ? WHERE path = ? AND rev = ?', rev, path, RK_OWN_WRITE); },
         fileDelete(path) { sql.exec('DELETE FROM file WHERE path = ?', path); },
         fileByKey(ckey, notPath) {
-            const row = first(sql.exec('SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1', ckey, notPath));
-            return row === undefined ? undefined : { path: String(row.path), kind: num(row.kind), size: num(row.size), chunks: num(row.chunks) };
+            return rowOf(sql.exec('SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1', ckey, notPath));
         },
         filePaths(from, to) { return [...ranged('SELECT path FROM file', from, to)].map((row) => String(row.path)); },
         fileAny(from, to) { return first(ranged('SELECT path FROM file', from, to, ' LIMIT 1')) !== undefined; },
-        fileRevsIn(from, to) { return [...ranged('SELECT path, rev FROM file', from, to)].map((row) => ({ path: String(row.path), rev: num(row.rev) })); },
+        fileRevsIn(from, to) { return rowsOf(ranged('SELECT path, rev FROM file', from, to)); },
         // In key order, as every other scan here is: the primary key's index
         // serves it, and both backings then answer in one order.
         fileAllPaths() { return [...sql.exec('SELECT path FROM file ORDER BY path')].map((row) => String(row.path)); },
-        fileRows() {
-            return [...sql.exec('SELECT path, rev, ckey FROM file ORDER BY path')].map((row) => ({ path: String(row.path), rev: num(row.rev), ckey: keyOf(row.ckey) }));
-        },
+        fileRows() { return rowsOf(sql.exec('SELECT path, rev, ckey FROM file ORDER BY path')); },
         fileOwnPaths() { return [...sql.exec('SELECT path FROM file WHERE rev = ? ORDER BY path', RK_OWN_WRITE)].map((row) => String(row.path)); },
-        fileStats() { const row = first(sql.exec('SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file')); return row === undefined ? undefined : { n: num(row.n), b: num(row.b) }; },
-        chunkFirst(path) { const row = first(sql.exec('SELECT txt, bin FROM chunk WHERE path = ? AND part = 0', path)); return row === undefined ? undefined : chunkRow(row); },
-        chunkParts(path) { return [...sql.exec('SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part', path)].map(chunkRow); },
+        fileStats() { return rowOf(sql.exec('SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file')); },
+        chunkFirst(path) { return rowOf(sql.exec('SELECT txt, bin FROM chunk WHERE path = ? AND part = 0', path)); },
+        chunkParts(path) { return rowsOf(sql.exec('SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part', path)); },
         chunkAddText(path, part, txt) { sql.exec('INSERT INTO chunk (path, part, txt) VALUES (?, ?, ?)', path, part, txt); },
         chunkAddBin(path, part, bin) { sql.exec('INSERT INTO chunk (path, part, bin) VALUES (?, ?, ?)', path, part, bin); },
         chunkSetBin(path, part, bin) { sql.exec('INSERT OR REPLACE INTO chunk (path, part, bin) VALUES (?, ?, ?)', path, part, bin); },
@@ -178,8 +170,7 @@ export function sqlTables(sql) {
                 + 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, Number(dev) || 0, Number(nlink) || 1);
         },
         nsGet(parent, name) {
-            const row = first(sql.exec('SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink FROM ns WHERE parent = ? AND name = ?', parent, name));
-            return row === undefined ? undefined : nsRow(row);
+            return rowOf(sql.exec('SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink FROM ns WHERE parent = ? AND name = ?', parent, name));
         },
         nsDelete(parent, name) { sql.exec('DELETE FROM ns WHERE parent = ? AND name = ?', parent, name); },
         nsDeleteChildren(parent) { sql.exec('DELETE FROM ns WHERE parent = ?', parent); },
@@ -190,15 +181,10 @@ export function sqlTables(sql) {
                 sql.exec('DELETE FROM ns WHERE parent >= ? AND parent < ?', from, to);
         },
         nsClear() { sql.exec('DELETE FROM ns'); },
-        nsKeys() { return [...sql.exec('SELECT parent, name FROM ns')].map((row) => ({ parent: String(row.parent), name: String(row.name) })); },
-        nsOfKind(kind) { return [...sql.exec('SELECT parent, name FROM ns WHERE kind = ?', kind)].map((row) => ({ parent: String(row.parent), name: String(row.name) })); },
-        nsUnlisted() {
-            return [...sql.exec('SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL', NS_DIR)]
-                .map((row) => ({ parent: String(row.parent), name: String(row.name), target: String(row.target) }));
-        },
-        nsChildren(parent) {
-            return [...sql.exec('SELECT name, kind, mode FROM ns WHERE parent = ?', parent)].map((row) => ({ name: String(row.name), kind: num(row.kind), mode: num(row.mode) }));
-        },
+        nsKeys() { return rowsOf(sql.exec('SELECT parent, name FROM ns')); },
+        nsOfKind(kind) { return rowsOf(sql.exec('SELECT parent, name FROM ns WHERE kind = ?', kind)); },
+        nsUnlisted() { return rowsOf(sql.exec('SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL', NS_DIR)); },
+        nsChildren(parent) { return rowsOf(sql.exec('SELECT name, kind, mode FROM ns WHERE parent = ?', parent)); },
         nsCount() { const row = first(sql.exec('SELECT count(*) AS n FROM ns')); return row === undefined ? 0 : num(row.n); },
     };
 }
