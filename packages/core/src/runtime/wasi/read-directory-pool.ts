@@ -233,7 +233,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
       // is sent now, not behind an exchange the session may never answer (a
       // park the watchdog gave up on): its later sequence supersedes that
       // one. The run waits for it at most endWaitMs.
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       await Promise.race([
         exchange([], false, true).then(() => {}, () => {}),
         new Promise<void>((resolve) => { timer = setTimeout(resolve, endWaitMs); }),
