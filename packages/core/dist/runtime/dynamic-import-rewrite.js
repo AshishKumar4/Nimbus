@@ -78,13 +78,20 @@ function loaderCall(loader, parentUrl) {
 }
 /**
  * A static specifier's attributes clause, in its statement (which ends at
- * `statementEnd`): from the specifier's end through the clause's closing
- * brace, the last brace of the statement. What lies between is the clause
- * and trivia.
+ * `statementEnd`, as the lexer reports it: just past the clause): from the
+ * specifier's end through the clause's closing brace, the last brace of the
+ * statement. What lies between is the clause and trivia.
  */
 function attributesClause(source, site, statementEnd) {
     const close = source.lastIndexOf('}', statementEnd - 1);
     return close >= site.end ? { start: site.end, end: close + 1 } : undefined;
+}
+/** The same clause as the grammar reads it: through the brace after its last attribute (`lastEnd`), past trivia and a trailing comma. */
+function attributesClauseAfter(source, site, lastEnd) {
+    let at = skipTrivia(source, lastEnd).at;
+    if (source[at] === ',')
+        at = skipTrivia(source, at + 1).at;
+    return source[at] === '}' ? { start: site.end, end: at + 1 } : undefined;
 }
 /**
  * The lexer's reading of a cell's import() calls, import.meta and static
@@ -199,7 +206,8 @@ export function readModuleImportSites(code) {
                 if (typeof attribute.value.value === 'string')
                     attributes[key] = attribute.value.value;
             }
-            const clause = Object.keys(attributes).length > 0 ? attributesClause(code, source, statement.end) : undefined;
+            const last = statement.attributes?.[statement.attributes.length - 1];
+            const clause = last === undefined ? undefined : attributesClauseAfter(code, source, last.end);
             statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...(clause ? { clause } : {}) });
         },
     });

@@ -286,6 +286,14 @@ export function builtinFacadeModule(name, id, names) {
     return facadeModule(name, id, names, true);
 }
 /**
+ * The module an ES module imports JSON file `id` through (Node's JSON
+ * translator): `default` is the file's value, the object require() gives
+ * for the same file, which its meta instance's `l` loads.
+ */
+export function jsonFacadeModule(name, id) {
+    return facadeModule(name, id, [], false);
+}
+/**
  * ESM_META_MODULE: one instance per staged module (`?<id>`). Its evaluation
  * hands the module its bindings from the runner (ESM_HOST_MODULE's `host`),
  * which tags the module with the batch evaluating it. On workerd it is the

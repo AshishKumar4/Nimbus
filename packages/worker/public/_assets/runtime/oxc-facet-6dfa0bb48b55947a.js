@@ -9558,6 +9558,11 @@ error: the Oxc transform crashed (${reason})`);
     const close = source.lastIndexOf("}", statementEnd - 1);
     return close >= site.end ? { start: site.end, end: close + 1 } : void 0;
   }
+  function attributesClauseAfter(source, site, lastEnd) {
+    let at2 = skipTrivia(source, lastEnd).at;
+    if (source[at2] === ",") at2 = skipTrivia(source, at2 + 1).at;
+    return source[at2] === "}" ? { start: site.end, end: at2 + 1 } : void 0;
+  }
   function lexedImportSites(code) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
@@ -9636,7 +9641,8 @@ error: the Oxc transform crashed (${reason})`);
           const key = attribute.key.type === "Identifier" ? attribute.key.name : String(attribute.key.value);
           if (typeof attribute.value.value === "string") attributes[key] = attribute.value.value;
         }
-        const clause = Object.keys(attributes).length > 0 ? attributesClause(code, source, statement.end) : void 0;
+        const last = statement.attributes?.[statement.attributes.length - 1];
+        const clause = last === void 0 ? void 0 : attributesClauseAfter(code, source, last.end);
         statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...clause ? { clause } : {} });
       }
     });
