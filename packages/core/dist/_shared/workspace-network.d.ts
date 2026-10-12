@@ -16,6 +16,7 @@
  * globalOutbound. The key is omitted when there is no egress, which keeps
  * the loader's default: the parent's network.
  */
+import type { ProcessEntry } from '../runtime/process-table.js';
 /**
  * What a host supplies: a Fetcher (a service binding, a `ctx.exports`
  * entrypoint), or on a host without one an object with the same two methods.
@@ -45,6 +46,23 @@ export interface EgressStreams {
     writable: WritableStream<Uint8Array>;
 }
 export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'> & Partial<WorkspaceEgressTls>;
+/** A process the host may mint an egress for (NimbusWorkspaceOptions.egressFor). */
+export interface EgressProcess {
+    readonly pid: number;
+    /** The exec that started it (`ProcessEntry.execId`), when the caller named one. */
+    readonly execId?: string;
+}
+/**
+ * The host's egress for one process: typically a `ctx.exports` entrypoint
+ * minted with the process's identity in its props, so each request, socket
+ * and TLS session it sees names the exec that made it. Undefined keeps the
+ * workspace's egress for that process.
+ */
+export type EgressFor = (process: EgressProcess) => WorkspaceEgress | undefined;
+/** The live processes a network selects for: their entries, by pid. */
+export interface EgressProcesses {
+    get(pid: number): ProcessEntry | undefined;
+}
 export interface WorkspaceNetwork {
     /** The host's egress, or undefined for the isolate's own network. */
     readonly egress: WorkspaceEgress | undefined;
@@ -57,9 +75,24 @@ export interface WorkspaceNetwork {
     readonly id: string;
     /** `fetch` for code that runs in the host's isolate on the workspace's behalf. */
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+    /**
+     * The network process `pid` goes out through: the egress its host minted
+     * for it (`selectProcessEgress`), selected once while its process-table
+     * entry lives, so its binding, its Dynamic Worker's globalOutbound, a peer
+     * hosting it and the commands it runs all hold the same one. This network
+     * when the host mints none, and for pid 0 (no process: Nimbus's own work,
+     * or work already selected for).
+     */
+    forProcess(pid: number): WorkspaceNetwork;
 }
 /** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
 export declare const ISOLATE_NETWORK: WorkspaceNetwork;
+/**
+ * Has the workspace network over `egress` give each process of `processes`
+ * the egress `egressFor` mints for it (NimbusWorkspaceOptions.egressFor).
+ * One table per egress: a second for the same egress object is refused.
+ */
+export declare function selectProcessEgress(egress: WorkspaceEgress, egressFor: EgressFor, processes: EgressProcesses): void;
 /**
  * The workspace network over `egress`, or the isolate's own network when
  * there is none. One per egress object: whatever asks for it (the workspace,

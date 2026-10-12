@@ -23,7 +23,7 @@ import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
-import { type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { type EgressFor, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -189,11 +189,13 @@ export interface NimbusWorkspaceOptions {
      * `node` program's fetch and http/https, streamed and redirected as Node's
      * fetch does; a worker or dev server a command starts.
      *
-     * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
-     * `connect()` carries plain TCP only and the TLS session could only be
-     * made off the egress (HTTPS by fetch or `https` is not affected); the
-     * WebSocket of an inline `node` program or a `localFacetHost` facet, which
-     * cannot cross its realm.
+     * A process's TLS socket (`tls.connect`) goes through the egress's optional
+     * `connectTls`, which makes the TLS session; without it, it is refused by
+     * name. Refused: TLS over a socket the program opened
+     * (`tls.connect({ socket })`, STARTTLS), since the egress carries that
+     * connection and workerd starts no TLS on one through a service binding;
+     * the WebSocket of an inline `node` program or a `localFacetHost` facet,
+     * which cannot cross its realm.
      *
      * Not covered: responses from Nimbus's shared npm packument cache are not
      * used under an egress, so the egress sees every registry read, but
@@ -204,6 +206,17 @@ export interface NimbusWorkspaceOptions {
      * Absent, the workspace uses the isolate's own network, as before.
      */
     readonly egress?: WorkspaceEgress;
+    /**
+     * The egress for one process of the workspace, `{ pid, execId }`: asked
+     * once per process while it lives, so everything the process does goes
+     * through the one it returns: its fetch, sockets and TLS, the commands it
+     * runs (curl, git, npm, pip and the rest), and its own Dynamic Worker,
+     * wherever it is hosted. Typically `egress` minted again with the exec in
+     * its props, so the host can tell which exec made each request. Undefined
+     * keeps `egress` for that process. Requires `egress`, which still carries
+     * the workspace's work that no process makes.
+     */
+    readonly egressFor?: EgressFor;
 }
 /**
  * A durable filesystem and a shell over it.

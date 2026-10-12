@@ -30,10 +30,10 @@ export interface SupervisorBindingProps {
     bindingKind: 'process';
     writerId: string;
     /**
-     * The workspace's egress (NimbusWorkspaceOptions.egress), when its host
-     * supplied one: the process's network, its packument reads and its sockets
-     * go out through it, from the binding (SupervisorRPC). With its id, so a
-     * cache this binding fills is the egress's own.
+     * The process's egress (NimbusWorkspaceOptions.egressFor, else .egress),
+     * when its host supplied one: the process's network, its packument reads
+     * and its sockets go out through it, from the binding (SupervisorRPC).
+     * With its id, so a cache this binding fills is the egress's own.
      */
     egress?: WorkspaceEgress;
     networkId?: string;

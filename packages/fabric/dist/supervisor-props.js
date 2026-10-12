@@ -32,7 +32,9 @@ options) {
     const doId = options.doId ?? own;
     const route = options.route ?? hostRoute() ?? undefined;
     const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx, pid) : {};
-    const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
+    // The process's own network (WorkspaceNetwork.forProcess): the egress its host minted for it, when one did.
+    const network = options.network.forProcess(pid);
+    const egress = network.egress === undefined ? {} : { egress: network.egress, networkId: network.id };
     return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId, ...egress };
 }
 /** The one mint for SUPERVISOR/outbound capabilities handed to a process. */

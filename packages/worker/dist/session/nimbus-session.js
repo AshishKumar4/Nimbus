@@ -13,7 +13,7 @@ import * as runtimeServices from '../hosted/services.js';
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
-import { workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { selectProcessEgress, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -692,7 +692,14 @@ export class NimbusSession extends CloudflareDurableObject {
     #egress;
     /** {@link workspaceEgress}, for the session's init and processes (not part of the embedder surface). */
     egressForWorkspace() {
-        this.#egress ??= { egress: this.workspaceEgress() };
+        if (this.#egress === undefined) {
+            const egress = this.workspaceEgress();
+            const egressFor = this.egressFor;
+            if (egress !== undefined && egressFor !== undefined) {
+                selectProcessEgress(egress, (process) => egressFor.call(this, process), this.processes);
+            }
+            this.#egress = { egress };
+        }
         return this.#egress.egress;
     }
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */

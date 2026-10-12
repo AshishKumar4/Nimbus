@@ -132,7 +132,8 @@ export function localFacetHost(network) {
         parking: engineParks(),
         // A worker of a Bun or Node process, not a Worker isolate.
         memoryBudgetBytes: 1024 * 1024 * 1024,
-        open: (spec) => new RealmFacet(spec, network),
+        // A facet acting for a process goes out through that process's network (WorkspaceNetwork.forProcess).
+        open: (spec) => new RealmFacet(spec, network.forProcess(spec.syscalls?.pid ?? 0)),
     };
 }
 /** Why a call ended without its answer. */
