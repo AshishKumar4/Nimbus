@@ -88,20 +88,20 @@ export interface PipeFdEntry {
   rightsInheriting?: bigint;
 }
 
-/** The child-process calls this module makes, as the session's SupervisorRPC answers them. */
+/** Remote supervisors answer by promise; a non-parking local realm answers on the caller's stack. */
 interface ChildProcessSupervisor {
   cpSpawn(req: {
     command: string; args: string[]; env: Record<string, string>; cwd: string;
     stdio: Array<'pipe' | 'ignore' | 'inherit'>; parentPid: number;
-  }): Promise<{ childPid: number }>;
-  cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }>;
-  cpStdinEnd(childPid: number): Promise<void>;
+  }): { childPid: number } | Promise<{ childPid: number }>;
+  cpStdinWrite(childPid: number, data: Uint8Array): { ok: boolean } | Promise<{ ok: boolean }>;
+  cpStdinEnd(childPid: number): void | Promise<void>;
   cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
     chunks: Array<{ seq: number; data: Uint8Array }>; closed: boolean; maxSeq: number; news?: number[];
   }>;
   /** With `knownStarted` false it answers at the child's start too (`started`); a refused spawn ends with `spawnError`, its errno's code. */
   cpWait(childPid: number, waitMs: number, acquire?: undefined, knownStarted?: boolean): Promise<ChildWait>;
-  cpKill(childPid: number, signal: string): Promise<boolean>;
+  cpKill(childPid: number, signal: string): boolean | Promise<boolean>;
 }
 
 interface ChildWait {
@@ -466,16 +466,16 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
           // A write the session cannot take is the child's stdin gone (EPIPE).
           pipe.forward = async (bytes) => {
             await opts.release();
-            return sup.cpStdinWrite(childPid, bytes).then(({ ok }) => ok, () => false);
+            try { return (await sup.cpStdinWrite(childPid, bytes)).ok; } catch { return false; }
           };
-          pipe.end = () => sup.cpStdinEnd(childPid);
+          pipe.end = async () => { await sup.cpStdinEnd(childPid); };
           for (const chunk of pipe.chunks.splice(0)) await pipe.forward(chunk);
           pipe.buffered = 0;
           wake(pipe);
           // The child holds the read end until it exits.
           if (pipe.writers === 0 && !pipe.ended) { pipe.ended = true; await pipe.end().catch(() => {}); }
         } else if (!inheritedInput) {
-          await sup.cpStdinEnd(childPid).catch(() => {});
+          try { await sup.cpStdinEnd(childPid); } catch {}
         }
         const child: Child = { pid: childPid, start: null, status: null, failed: false, waiters: [] };
         children.set(childPid, child);
@@ -558,7 +558,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (signal === 0) return E.SUCCESS;
       const name = SIGNALS[signal];
       if (!name) return E.INVAL;
-      return sup.cpKill(pid, name).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
+      return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
     },
   };
 
