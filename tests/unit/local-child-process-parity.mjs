@@ -28,9 +28,12 @@ const { openRuntimeStdio } = await import(`${core}/runtime/runtime-stdio.${ext}`
 const sqlite = await hostSqlite();
 const host = localFacetHost(ISOLATE_NETWORK);
 const name = process.env.CHILD_PARITY_CASE;
-if (name === 'host' || name === 'python') {
+if (name === 'host' || name === 'python' || name === 'shell-path') {
   const seed = await NimbusWorkspace.create({ ...sqlite });
-  seedRuntime(seed.vfs, RUNTIMES.find(runtime => runtime.name === (name === 'host' ? 'bash' : 'cpython')));
+  const runtime = RUNTIMES.find(runtime => runtime.name === (name === 'python' ? 'cpython' : 'bash'));
+  // A shebang needs an installed interpreter, independently of broker normalization.
+  seedRuntime(seed.vfs, name === 'shell-path' ? { ...runtime, entrypoints: [...runtime.entrypoints,
+    { binName: 'sh', runner: runtime.entrypoints[0].runner, args: [] }] } : runtime);
   await seed.close();
 }
 const ws = await NimbusWorkspace.create({ ...sqlite, cwd: '/home/user', facets: Object.create(host) });
