@@ -28,7 +28,7 @@ import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntr
 import { inWatchedTree, projectChange, type VfsEvent, type VfsEventType } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
-import { walkVfsPath } from './path-walk.js';
+import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
@@ -2952,7 +2952,7 @@ export class CompositeVFS implements VFS {
   }
 
   private mkdirAt(input: string, options: { recursive?: boolean; mode?: number } | undefined, sync: boolean): Awaitable<void> {
-    return andThen(this.resolve(input, false, sync, options?.recursive === true), (path) => {
+    return andThen(this.resolve(entryVfsPath(input).path, false, sync, options?.recursive === true), (path) => {
       this.present(path);
       if (this.isStructural(path)) {
         // mkdir -p of a live mount point (or a directory above one) has nothing to do.
@@ -3028,7 +3028,9 @@ export class CompositeVFS implements VFS {
   }
 
   private renameAt(fromInput: string, toInput: string, sync: boolean): Awaitable<void> {
-    return andThen(this.resolve(fromInput, false, sync), (from) => andThen(this.resolve(toInput, false, sync), (to) => {
+    const fromEntry = entryVfsPath(fromInput);
+    const toEntry = entryVfsPath(toInput);
+    return andThen(this.resolve(fromEntry.path, false, sync), (from) => andThen(this.resolve(toEntry.path, false, sync), (to) => {
       this.present(from);
       this.present(to);
       const source = this.locate(from);
@@ -3042,6 +3044,16 @@ export class CompositeVFS implements VFS {
       return andThen(this.reachable(from, sync), () => andThen(this.reachable(to, sync), () => {
         const move = (): Awaitable<void> => {
           this.guardMutation([fromInput, from, toInput, to]);
+          if (fromEntry.directory || toEntry.directory) {
+            return andThen(this.softStat(this.ops(source, sync), source.rel, false), (stat) => {
+              if (stat === null) throw new Refusal('ENOENT', from);
+              if (stat.type !== 'directory') throw new Refusal('ENOTDIR', from);
+              return andThen(this.softStat(this.ops(target, sync), target.rel, false), (end) => {
+                if (toEntry.directory && end !== null && end.type !== 'directory') throw new Refusal('ENOTDIR', to);
+                return this.renameIn(source, target, from, sync);
+              });
+            });
+          }
           return this.renameIn(source, target, from, sync);
         };
         // A name renamed onto itself changes nothing.

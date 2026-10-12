@@ -29,7 +29,7 @@
 
 import { projectChange, VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
 import { normalizeVfsPath, normalizeVfsLookupPath, parentKey, parentVfsPath, pathsOverlap, plainVfsPath, stripLeadingSlashes } from './path.js';
-import { walkVfsPath } from './path-walk.js';
+import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { PathRevisions, type OwnGeneration } from './path-revisions.js';
 import { z } from 'zod/v4';
 import {
@@ -4631,11 +4631,15 @@ export class SqliteVFS {
 
   /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
   private mkdir(path: string, options: { recursive?: boolean; mode?: number; ino?: number } | undefined, cred: VfsCred): void {
-    const normalized = this.storageKey(path.replace(/\/+$/, ''), cred, this.inodes, options?.recursive === true).value;
+    const normalized = this.storageKey(entryVfsPath(path).path, cred, this.inodes, options?.recursive === true).value;
     // A directory that is there is made already: no mutation, so no lease
     // refuses it (a session's mkdir -p of its home while a lease holds a
     // repository under it). Each one made is checked as it is made.
-    if (this.exists(normalized, cred)) return;
+    const existing = this.probeInode(normalized, cred, false);
+    if (existing !== undefined) {
+      if (existing.kind !== 'directory') throw vfsKeyError('EEXIST', path);
+      return;
+    }
     this.admit(this.lexicalKey(path, cred), this.physicalKey(normalized));
     // A directory is created where its name resolves with the last component
     // unfollowed, as mkdir(2) does: under a link to a directory, inside that
@@ -5896,7 +5900,7 @@ export class SqliteVFS {
   }
 
   private rmdir(path: string, cred: VfsCred): void {
-    const np = this.storageKey(path, cred).value;
+    const np = this.storageKey(entryVfsPath(path).path, cred).value;
     // Everything below acts on the directory the name resolves to, the one
     // whose permissions are checked.
     const resolved = this.checkAccess(np, 0, cred, { followLeaf: false });
@@ -6018,11 +6022,14 @@ export class SqliteVFS {
 
   private rename(oldPath: string, newPath: string, cred: VfsCred): void {
     // Resolve private /tmp names to storage keys before reading or mutating.
-    const source = this.checkAccess(oldPath, 0, cred, { followLeaf: false });
+    const from = entryVfsPath(oldPath);
+    const destination = entryVfsPath(newPath);
+    const source = this.checkAccess(from.path, 0, cred, { followLeaf: false });
     const inode = source.inode;
     if (!inode) throw vfsKeyError('ENOENT', oldPath);
-    const destination = inode.isDir ? newPath.replace(/\/+$/, '') : newPath;
-    const target = this.checkAccess(destination, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+    if ((from.directory || destination.directory) && inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', oldPath);
+    const target = this.checkAccess(destination.path, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+    if (destination.directory && target.inode !== undefined && target.inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', newPath);
     this.assertMutationsAllowed([this.lexicalKey(oldPath, cred).value, this.lexicalKey(newPath, cred).value, source.path, target.path]);
     oldPath = source.path;
     newPath = target.path;
